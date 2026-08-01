@@ -686,6 +686,7 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
         let public_config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
             ThresholdParams::with_bft_consensus(3, 2).expect("threshold params"),
             members,
             Vec::new(),

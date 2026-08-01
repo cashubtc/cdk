@@ -7,13 +7,16 @@
 use core::fmt;
 use std::collections::BTreeMap;
 
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
+
 use crate::nuts::nut01::{trusted_dealer_keygen, BlsSecretKey};
 use crate::{mint_url::MintUrl, Amount, CurrencyUnit, SecretKey};
 
 use super::{
     FederatedKeyset, FederationCheckpointPolicy, FederationConfig, FederationDkgTranscript,
-    FederationError, FederationPaymentObservationPolicy, MemberConfigPrivate, MemberConfigPublic,
-    MemberId, Result, ThresholdParams,
+    FederationError, FederationPaymentObservationPolicy, FederationSetupAuthorizationHash,
+    MemberConfigPrivate, MemberConfigPublic, MemberId, Result, ThresholdParams,
 };
 
 /// Member input for trusted-dealer config generation.
@@ -246,8 +249,14 @@ pub fn generate_trusted_dealer_configs_with_options(
         federated_keysets.push(federated_keyset);
     }
 
-    let mut public_config =
-        FederationConfig::new(threshold_params, public_members, federated_keysets)?;
+    let setup_authorization =
+        trusted_dealer_setup_authorization(threshold_params, &public_members, &federated_keysets)?;
+    let mut public_config = FederationConfig::new(
+        setup_authorization,
+        threshold_params,
+        public_members,
+        federated_keysets,
+    )?;
     public_config.checkpoint_policy = options.checkpoint_policy;
     public_config.payment_observation_policy =
         FederationPaymentObservationPolicy::development_single_observation_for_testing();
@@ -273,6 +282,62 @@ pub fn generate_trusted_dealer_configs_with_options(
         public_config,
         private_configs,
     })
+}
+
+fn trusted_dealer_setup_authorization(
+    threshold_params: ThresholdParams,
+    members: &BTreeMap<MemberId, MemberConfigPublic>,
+    keysets: &[FederatedKeyset],
+) -> Result<FederationSetupAuthorizationHash> {
+    let mut transcript = Vec::new();
+    append_trusted_dealer_field(
+        &mut transcript,
+        b"cdk/federation/setup/test-trusted-dealer/v1",
+    )?;
+    transcript.extend_from_slice(&threshold_params.member_count.to_be_bytes());
+    transcript.extend_from_slice(&threshold_params.signature_threshold.to_be_bytes());
+    transcript.extend_from_slice(&threshold_params.consensus_threshold.to_be_bytes());
+    for (member_id, member) in members {
+        transcript.extend_from_slice(&member_id.get().to_be_bytes());
+        append_trusted_dealer_field(
+            &mut transcript,
+            member.public_mint_url.to_string().as_bytes(),
+        )?;
+        append_trusted_dealer_field(
+            &mut transcript,
+            member.federation_api_url.to_string().as_bytes(),
+        )?;
+        append_trusted_dealer_field(&mut transcript, &member.identity_public_key.to_bytes())?;
+    }
+    for keyset in keysets {
+        append_trusted_dealer_field(&mut transcript, &keyset.id.to_bytes())?;
+        append_trusted_dealer_field(&mut transcript, keyset.unit.to_string().as_bytes())?;
+        transcript.push(u8::from(keyset.active));
+        transcript.extend_from_slice(&keyset.input_fee_ppk.to_be_bytes());
+        match keyset.final_expiry {
+            Some(expiry) => {
+                transcript.push(1);
+                transcript.extend_from_slice(&expiry.to_be_bytes());
+            }
+            None => transcript.push(0),
+        }
+        for (amount, aggregate_key) in &keyset.aggregate_keys {
+            transcript.extend_from_slice(&u64::from(*amount).to_be_bytes());
+            append_trusted_dealer_field(&mut transcript, &aggregate_key.to_bytes())?;
+        }
+    }
+    Ok(FederationSetupAuthorizationHash::from_bytes(
+        Sha256Hash::hash(&transcript).to_byte_array(),
+    ))
+}
+
+fn append_trusted_dealer_field(output: &mut Vec<u8>, value: &[u8]) -> Result<()> {
+    let length = u32::try_from(value.len()).map_err(|_| FederationError::InvalidSetup {
+        reason: "test trusted-dealer field length does not fit u32".to_string(),
+    })?;
+    output.extend_from_slice(&length.to_be_bytes());
+    output.extend_from_slice(value);
+    Ok(())
 }
 
 fn validate_coefficient_count(

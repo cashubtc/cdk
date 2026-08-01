@@ -630,6 +630,7 @@ mod tests {
             ),
         ]);
         let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
             ThresholdParams::new(2, 2, 2).expect("thresholds"),
             members,
             Vec::new(),

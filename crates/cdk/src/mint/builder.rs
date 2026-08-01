@@ -1358,6 +1358,7 @@ mod tests {
             )
             .expect("local member keyset share");
         let mut final_public_config = FederationConfig::new(
+            setup_public_config.setup_authorization,
             setup_public_config.threshold_params,
             setup_public_config.members.clone(),
             vec![keyset_share.keyset.clone()],

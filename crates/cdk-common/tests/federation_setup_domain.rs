@@ -1,0 +1,571 @@
+//! Multi-operator federation setup domain validation tests.
+
+#![cfg(feature = "federation")]
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::str::FromStr;
+
+use cdk_common::federation::{
+    FederationCheckpointPolicy, FederationConfig, FederationDkgKeysetSpec, FederationError,
+    FederationPaymentObservationPolicy, FederationSetupApproval, FederationSetupAuthorizationHash,
+    FederationSetupBitcoinNetwork, FederationSetupCoordinatorPublicKey, FederationSetupEnrollment,
+    FederationSetupFrostApplication, FederationSetupFrostPolicy, FederationSetupId,
+    FederationSetupInvitation, FederationSetupInvitationCapability, FederationSetupInvitationId,
+    FederationSetupManifest, FederationSetupManifestHash, FederationSetupProposal,
+    FederationSetupProposalBody, FederationSetupProtocolVersions, FederationSetupUrlPolicy,
+    MemberId, ThresholdParams, FEDERATION_MAX_SETUP_URL_BYTES,
+    FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+};
+use cdk_common::mint_url::MintUrl;
+use cdk_common::nuts::nut01::SecretKey;
+use cdk_common::{Amount, CurrencyUnit};
+
+const SETUP_ID_BYTES: [u8; 32] = [7; 32];
+const COORDINATOR_SECRET: u16 = 60_000;
+const NOW_UNIX: u64 = 1_900_000_000;
+const URL_POLICY: FederationSetupUrlPolicy = FederationSetupUrlPolicy::RequireHttps;
+
+#[test]
+fn constructors_canonicalize_keysets_and_manifest_round_trips() {
+    let enrollments = enrollments();
+    let mut reversed_keysets = keysets();
+    reversed_keysets.reverse();
+
+    let canonical = proposal_body(enrollments.clone(), thresholds(), versions(), keysets())
+        .expect("canonical proposal body");
+    let reordered = proposal_body(enrollments, thresholds(), versions(), reversed_keysets)
+        .expect("reordered proposal body");
+    assert_eq!(canonical, reordered);
+    assert_eq!(
+        canonical.canonical_bytes().expect("canonical bytes"),
+        reordered.canonical_bytes().expect("reordered bytes")
+    );
+
+    let manifest = manifest_from_body(canonical);
+    let encoded = serde_json::to_vec(&manifest).expect("manifest serializes");
+    let decoded: FederationSetupManifest =
+        serde_json::from_slice(&encoded).expect("manifest deserializes");
+    assert_eq!(decoded, manifest);
+    decoded.validate(URL_POLICY).expect("round trip validates");
+}
+
+#[test]
+fn proposal_and_manifest_tampering_fail_closed() {
+    let fixture = fixture();
+
+    let mut tampered_proposal = fixture.proposal.clone();
+    tampered_proposal
+        .body
+        .checkpoint_policy
+        .checkpoint_interval_journal_operations += 1;
+    assert!(matches!(
+        tampered_proposal.validate(URL_POLICY),
+        Err(FederationError::SetupProposalHashMismatch { .. })
+    ));
+
+    let mut tampered_approval = fixture
+        .approvals
+        .get(&member_id(1))
+        .expect("member one approval")
+        .clone();
+    tampered_approval.signature = fixture
+        .approvals
+        .get(&member_id(2))
+        .expect("member two approval")
+        .signature;
+    assert!(matches!(
+        tampered_approval.validate(&fixture.proposal),
+        Err(FederationError::SetupSignatureVerificationFailed {
+            context: "approval"
+        })
+    ));
+
+    let mut tampered_manifest = fixture.manifest;
+    tampered_manifest.manifest_hash = FederationSetupManifestHash::from_bytes([9; 32]);
+    assert!(matches!(
+        tampered_manifest.validate(URL_POLICY),
+        Err(FederationError::SetupManifestHashMismatch { .. })
+    ));
+}
+
+#[test]
+fn wrong_signer_and_incomplete_or_extra_approvals_are_rejected() {
+    let fixture = fixture();
+    let wrong_signer = FederationSetupApproval::sign_no_aux_rand_for_test_vector(
+        &fixture.proposal,
+        member_id(1),
+        &secret_key(2),
+        URL_POLICY,
+    );
+    assert_invalid_setup(
+        wrong_signer.expect_err("wrong signer must fail"),
+        "approval secret",
+    );
+
+    let mut missing = fixture.approvals.clone();
+    missing.remove(&member_id(3));
+    let missing_result = FederationSetupManifest::certify_no_aux_rand_for_test_vector(
+        fixture.proposal.clone(),
+        missing,
+        &secret_key(COORDINATOR_SECRET),
+        URL_POLICY,
+    );
+    assert_invalid_setup(
+        missing_result.expect_err("missing approval must fail"),
+        "exactly one approval",
+    );
+
+    let mut extra = fixture.approvals;
+    let extra_member = member_id(4);
+    let mut extra_approval = extra
+        .get(&member_id(1))
+        .expect("member one approval")
+        .clone();
+    extra_approval.member_id = extra_member;
+    assert!(extra.insert(extra_member, extra_approval).is_none());
+    let extra_result = FederationSetupManifest::certify_no_aux_rand_for_test_vector(
+        fixture.proposal,
+        extra,
+        &secret_key(COORDINATOR_SECRET),
+        URL_POLICY,
+    );
+    assert_invalid_setup(
+        extra_result.expect_err("extra approval must fail"),
+        "exactly one approval",
+    );
+}
+
+#[test]
+fn duplicate_identity_url_member_binding_and_invitation_are_rejected() {
+    let base = enrollments();
+
+    let mut duplicate_identity = base.clone();
+    duplicate_identity.insert(
+        member_id(2),
+        signed_enrollment(2, 1, 2, "https://mint-2.example", "https://peer-2.example"),
+    );
+    assert_invalid_setup(
+        proposal_body(duplicate_identity, thresholds(), versions(), keysets())
+            .expect_err("duplicate identity must fail"),
+        "duplicate member identity",
+    );
+
+    let mut duplicate_url = base.clone();
+    duplicate_url.insert(
+        member_id(2),
+        signed_enrollment(2, 2, 2, "https://mint-1.example", "https://peer-2.example"),
+    );
+    assert_invalid_setup(
+        proposal_body(duplicate_url, thresholds(), versions(), keysets())
+            .expect_err("duplicate URL must fail"),
+        "duplicate member URL",
+    );
+
+    let mut duplicate_member_binding = base.clone();
+    duplicate_member_binding.insert(
+        member_id(2),
+        signed_enrollment(
+            1,
+            4,
+            4,
+            "https://mint-other.example",
+            "https://peer-other.example",
+        ),
+    );
+    assert_invalid_setup(
+        proposal_body(
+            duplicate_member_binding,
+            thresholds(),
+            versions(),
+            keysets(),
+        )
+        .expect_err("duplicate member binding must fail"),
+        "enrollment binding mismatch",
+    );
+
+    let mut duplicate_invitation = base;
+    duplicate_invitation.insert(
+        member_id(2),
+        signed_enrollment(2, 2, 1, "https://mint-2.example", "https://peer-2.example"),
+    );
+    assert_invalid_setup(
+        proposal_body(duplicate_invitation, thresholds(), versions(), keysets())
+            .expect_err("duplicate invitation must fail"),
+        "duplicate invitation ID",
+    );
+}
+
+#[test]
+fn unsafe_threshold_incompatible_version_and_oversized_url_are_rejected() {
+    let unsafe_threshold = ThresholdParams::new(3, 1, 2).expect("structurally valid threshold");
+    assert!(matches!(
+        proposal_body(enrollments(), unsafe_threshold, versions(), keysets()),
+        Err(FederationError::UnsafeThresholdProfile { .. })
+    ));
+
+    let mut incompatible = versions();
+    incompatible.bls_dkg += 1;
+    assert!(matches!(
+        incompatible.validate(),
+        Err(FederationError::SetupVersionMismatch {
+            component: "bls_dkg",
+            ..
+        })
+    ));
+
+    let oversized_url = MintUrl::from_str(&format!(
+        "https://coordinator.example/{}",
+        "a".repeat(FEDERATION_MAX_SETUP_URL_BYTES)
+    ))
+    .expect("oversized URL remains syntactically valid");
+    let invitation = FederationSetupInvitation::new(
+        setup_id(),
+        invitation_id(1),
+        member_id(1),
+        oversized_url,
+        coordinator_identity(),
+        NOW_UNIX + FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+        invitation_capability(),
+        NOW_UNIX,
+        URL_POLICY,
+    );
+    assert!(matches!(
+        invitation,
+        Err(FederationError::SetupSizeLimitExceeded {
+            artifact: "coordinator",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn invitation_validation_is_expiry_aware_and_diagnostics_are_redacted() {
+    let capability = invitation_capability();
+    let invitation = FederationSetupInvitation::new(
+        setup_id(),
+        invitation_id(1),
+        member_id(1),
+        mint_url("https://coordinator.example"),
+        coordinator_identity(),
+        NOW_UNIX + FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+        capability,
+        NOW_UNIX,
+        URL_POLICY,
+    )
+    .expect("valid invitation");
+
+    let capability_debug = format!("{capability:?}");
+    let invitation_debug = format!("{invitation:?}");
+    let secret_hex = "ab".repeat(32);
+    assert!(capability_debug.contains("[REDACTED]"));
+    assert!(invitation_debug.contains("[REDACTED]"));
+    assert!(!capability_debug.contains(&secret_hex));
+    assert!(!invitation_debug.contains(&secret_hex));
+
+    invitation
+        .validate(
+            NOW_UNIX + FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS - 1,
+            URL_POLICY,
+        )
+        .expect("an invitation remains valid until its expiry");
+    assert!(invitation
+        .validate(
+            NOW_UNIX + FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+            URL_POLICY,
+        )
+        .is_err());
+}
+
+#[test]
+fn manifest_derives_exact_config_and_authorization_is_mandatory() {
+    let fixture = fixture();
+    let setup_config = fixture
+        .manifest
+        .setup_public_config()
+        .expect("manifest derives setup config");
+    let authorization = fixture
+        .manifest
+        .setup_authorization_hash()
+        .expect("manifest authorization");
+    let mut expected = FederationConfig::new(
+        authorization,
+        fixture.proposal.body.threshold_params,
+        fixture.proposal.body.member_configurations(),
+        Vec::new(),
+    )
+    .expect("expected setup config");
+    expected.payment_observation_policy = fixture.proposal.body.payment_observation_policy.clone();
+    expected.checkpoint_policy = fixture.proposal.body.checkpoint_policy;
+    assert_eq!(setup_config, expected);
+    assert_eq!(setup_config.setup_authorization, authorization);
+    assert_eq!(
+        fixture.manifest.keyset_specs(),
+        fixture.proposal.body.keysets
+    );
+    assert_eq!(
+        fixture.manifest.frost_policy(),
+        &fixture.proposal.body.frost
+    );
+    assert_ne!(
+        fixture
+            .manifest
+            .ceremony_id()
+            .expect("ceremony ID")
+            .to_bytes(),
+        authorization.to_bytes()
+    );
+
+    let alternate = FederationConfig::new(
+        FederationSetupAuthorizationHash::from_bytes([99; 32]),
+        setup_config.threshold_params,
+        setup_config.members.clone(),
+        Vec::new(),
+    )
+    .expect("alternate explicit authorization");
+    assert_ne!(alternate.federation_id, setup_config.federation_id);
+
+    let mut encoded = serde_json::to_value(&setup_config).expect("config serializes");
+    encoded
+        .as_object_mut()
+        .expect("config JSON object")
+        .remove("setup_authorization");
+    assert!(serde_json::from_value::<FederationConfig>(encoded).is_err());
+}
+
+#[test]
+fn zero_setup_and_invitation_identifiers_are_rejected() {
+    let zero_setup = FederationSetupInvitation::new(
+        FederationSetupId::from_bytes([0; 32]),
+        invitation_id(1),
+        member_id(1),
+        mint_url("https://coordinator.example"),
+        coordinator_identity(),
+        NOW_UNIX + FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+        invitation_capability(),
+        NOW_UNIX,
+        URL_POLICY,
+    );
+    assert_invalid_setup(zero_setup.expect_err("zero setup ID must fail"), "setup ID");
+
+    let zero_invitation = FederationSetupInvitation::new(
+        setup_id(),
+        FederationSetupInvitationId::from_bytes([0; 32]),
+        member_id(1),
+        mint_url("https://coordinator.example"),
+        coordinator_identity(),
+        NOW_UNIX + FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+        invitation_capability(),
+        NOW_UNIX,
+        URL_POLICY,
+    );
+    assert_invalid_setup(
+        zero_invitation.expect_err("zero invitation ID must fail"),
+        "invitation ID",
+    );
+}
+
+struct Fixture {
+    proposal: FederationSetupProposal,
+    approvals: BTreeMap<MemberId, FederationSetupApproval>,
+    manifest: FederationSetupManifest,
+}
+
+fn fixture() -> Fixture {
+    let body = proposal_body(enrollments(), thresholds(), versions(), keysets())
+        .expect("valid proposal body");
+    let proposal = FederationSetupProposal::sign_no_aux_rand_for_test_vector(
+        body,
+        &secret_key(COORDINATOR_SECRET),
+        URL_POLICY,
+    )
+    .expect("valid proposal");
+    let approvals = approvals(&proposal);
+    let manifest = FederationSetupManifest::certify_no_aux_rand_for_test_vector(
+        proposal.clone(),
+        approvals.clone(),
+        &secret_key(COORDINATOR_SECRET),
+        URL_POLICY,
+    )
+    .expect("valid manifest");
+    Fixture {
+        proposal,
+        approvals,
+        manifest,
+    }
+}
+
+fn manifest_from_body(body: FederationSetupProposalBody) -> FederationSetupManifest {
+    let proposal = FederationSetupProposal::sign_no_aux_rand_for_test_vector(
+        body,
+        &secret_key(COORDINATOR_SECRET),
+        URL_POLICY,
+    )
+    .expect("valid proposal");
+    FederationSetupManifest::certify_no_aux_rand_for_test_vector(
+        proposal.clone(),
+        approvals(&proposal),
+        &secret_key(COORDINATOR_SECRET),
+        URL_POLICY,
+    )
+    .expect("valid manifest")
+}
+
+fn approvals(proposal: &FederationSetupProposal) -> BTreeMap<MemberId, FederationSetupApproval> {
+    (1..=3)
+        .map(|member| {
+            let member_id = member_id(member);
+            let approval = FederationSetupApproval::sign_no_aux_rand_for_test_vector(
+                proposal,
+                member_id,
+                &secret_key(member),
+                URL_POLICY,
+            )
+            .expect("valid approval");
+            (member_id, approval)
+        })
+        .collect()
+}
+
+fn proposal_body(
+    enrollments: BTreeMap<MemberId, FederationSetupEnrollment>,
+    threshold_params: ThresholdParams,
+    required_versions: FederationSetupProtocolVersions,
+    keysets: Vec<FederationDkgKeysetSpec>,
+) -> Result<FederationSetupProposalBody, FederationError> {
+    FederationSetupProposalBody::new(
+        setup_id(),
+        coordinator_identity(),
+        enrollments,
+        threshold_params,
+        required_versions,
+        FederationSetupBitcoinNetwork::Signet,
+        FederationPaymentObservationPolicy::member_quorum(threshold_params.consensus_threshold),
+        FederationCheckpointPolicy::default(),
+        keysets,
+        FederationSetupFrostPolicy::new(
+            1,
+            vec![FederationSetupFrostApplication::CdkOnchain {
+                application_key_epoch: 1,
+                confirmation_policy_version: 1,
+                minimum_confirmations: 1,
+                fee_policy_version: 1,
+            }],
+            FederationSetupBitcoinNetwork::Signet,
+        )
+        .expect("valid FROST policy"),
+        URL_POLICY,
+    )
+}
+
+fn enrollments() -> BTreeMap<MemberId, FederationSetupEnrollment> {
+    (1..=3)
+        .map(|member| {
+            (
+                member_id(member),
+                signed_enrollment(
+                    member,
+                    member,
+                    u8::try_from(member).expect("small member ID"),
+                    &format!("https://mint-{member}.example"),
+                    &format!("https://peer-{member}.example"),
+                ),
+            )
+        })
+        .collect()
+}
+
+fn signed_enrollment(
+    member: u16,
+    secret_scalar: u16,
+    invitation_byte: u8,
+    public_url: &str,
+    federation_url: &str,
+) -> FederationSetupEnrollment {
+    FederationSetupEnrollment::sign_no_aux_rand_for_test_vector(
+        setup_id(),
+        FederationSetupInvitationId::from_bytes([invitation_byte; 32]),
+        member_id(member),
+        mint_url(public_url),
+        mint_url(federation_url),
+        [u8::try_from(member).expect("small member ID") + 10; 32],
+        versions(),
+        &secret_key(secret_scalar),
+        URL_POLICY,
+    )
+    .expect("valid enrollment")
+}
+
+fn keysets() -> Vec<FederationDkgKeysetSpec> {
+    vec![
+        FederationDkgKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            [Amount::from(1), Amount::from(2)]
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+        )
+        .expect("sat keyset"),
+        FederationDkgKeysetSpec::new(
+            CurrencyUnit::Usd,
+            true,
+            1,
+            None,
+            [Amount::from(1), Amount::from(5)]
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+        )
+        .expect("USD keyset"),
+    ]
+}
+
+fn thresholds() -> ThresholdParams {
+    ThresholdParams::new(3, 2, 3).expect("safe 2-of-3 threshold")
+}
+
+fn versions() -> FederationSetupProtocolVersions {
+    FederationSetupProtocolVersions::default()
+}
+
+fn setup_id() -> FederationSetupId {
+    FederationSetupId::from_bytes(SETUP_ID_BYTES)
+}
+
+fn invitation_id(member: u8) -> FederationSetupInvitationId {
+    FederationSetupInvitationId::from_bytes([member; 32])
+}
+
+fn invitation_capability() -> FederationSetupInvitationCapability {
+    FederationSetupInvitationCapability::from_bytes([0xab; 32])
+        .expect("non-zero invitation capability")
+}
+
+fn coordinator_identity() -> FederationSetupCoordinatorPublicKey {
+    FederationSetupCoordinatorPublicKey::new(secret_key(COORDINATOR_SECRET).public_key())
+        .expect("valid coordinator identity")
+}
+
+fn member_id(value: u16) -> MemberId {
+    MemberId::new(value).expect("non-zero member ID")
+}
+
+fn mint_url(value: &str) -> MintUrl {
+    MintUrl::from_str(value).expect("valid URL fixture")
+}
+
+fn secret_key(value: u16) -> SecretKey {
+    let mut bytes = [0_u8; 32];
+    bytes[30..].copy_from_slice(&value.to_be_bytes());
+    SecretKey::from_slice(&bytes).expect("fixture scalar is a valid non-zero secret key")
+}
+
+fn assert_invalid_setup(error: FederationError, expected_reason: &str) {
+    match error {
+        FederationError::InvalidSetup { reason } => assert!(
+            reason.contains(expected_reason),
+            "expected `{expected_reason}` in `{reason}`"
+        ),
+        other => panic!("expected invalid setup error, got {other}"),
+    }
+}

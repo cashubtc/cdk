@@ -26,6 +26,7 @@ mod liveness;
 mod operation;
 mod operator_status;
 mod recovery;
+mod setup;
 mod signing;
 mod suffix_verifier;
 mod transaction_proposal;
@@ -213,6 +214,23 @@ pub use self::operator_status::{
 pub use self::recovery::{
     FederationRecoveryAction, FederationRecoveryActionCount, FederationRecoveryPhase,
     FederationWalletRecoveryStatus,
+};
+pub use self::setup::{
+    FederationSetupApproval, FederationSetupAuthorizationHash, FederationSetupBitcoinNetwork,
+    FederationSetupCoordinatorPublicKey, FederationSetupEnrollment,
+    FederationSetupFrostApplication, FederationSetupFrostPolicy, FederationSetupId,
+    FederationSetupInvitation, FederationSetupInvitationCapability, FederationSetupInvitationId,
+    FederationSetupManifest, FederationSetupManifestHash, FederationSetupProposal,
+    FederationSetupProposalBody, FederationSetupProposalHash, FederationSetupProtocolVersions,
+    FederationSetupSignature, FederationSetupUrlPolicy, FEDERATION_MAX_SETUP_ARTIFACT_BYTES,
+    FEDERATION_MAX_SETUP_ENROLLMENT_BYTES, FEDERATION_MAX_SETUP_INVITATION_BYTES,
+    FEDERATION_MAX_SETUP_KEYSETS, FEDERATION_MAX_SETUP_STATUS_BYTES,
+    FEDERATION_MAX_SETUP_URL_BYTES, FEDERATION_SETUP_BLS_DKG_PROTOCOL_VERSION,
+    FEDERATION_SETUP_BLS_KEYSET_VERSION, FEDERATION_SETUP_DEFAULT_INVITATION_LIFETIME_SECS,
+    FEDERATION_SETUP_FROST_CIPHERSUITE_VERSION, FEDERATION_SETUP_FROST_DKG_PROTOCOL_VERSION,
+    FEDERATION_SETUP_INVITATION_CAPABILITY_BYTES, FEDERATION_SETUP_INVITATION_PREFIX,
+    FEDERATION_SETUP_MAX_INVITATION_LIFETIME_SECS, FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+    FEDERATION_SETUP_PRIVATE_REST_PROTOCOL_VERSION, FEDERATION_SETUP_PROTOCOL_VERSION,
 };
 pub use self::signing::{
     FederationAcceptedSigningRequest, FederationBlindSignatureShare,
@@ -1647,6 +1665,62 @@ pub enum FederationError {
         /// Sequence carried by the request.
         found: u64,
     },
+    /// A multi-operator setup artifact failed structural or policy validation.
+    #[error("Invalid federation setup: {reason}")]
+    InvalidSetup {
+        /// Bounded non-secret validation reason.
+        reason: String,
+    },
+    /// A multi-operator setup component used an unsupported protocol version.
+    #[error(
+        "Federation setup version mismatch for {component}: expected={expected}, found={found}"
+    )]
+    SetupVersionMismatch {
+        /// Setup component being validated.
+        component: &'static str,
+        /// Supported version.
+        expected: u16,
+        /// Received version.
+        found: u16,
+    },
+    /// A bounded multi-operator setup artifact exceeded its byte limit.
+    #[error("Federation setup {artifact} exceeds byte limit: found={found}, max={max}")]
+    SetupSizeLimitExceeded {
+        /// Stable artifact class.
+        artifact: &'static str,
+        /// Canonical or encoded byte length.
+        found: usize,
+        /// Maximum accepted byte length.
+        max: usize,
+    },
+    /// A multi-operator setup signature had an invalid byte encoding.
+    #[error("Invalid federation setup {context} signature encoding")]
+    InvalidSetupSignature {
+        /// Stable signed-message context.
+        context: &'static str,
+    },
+    /// A multi-operator setup signature did not verify against its claimed identity.
+    #[error("Federation setup {context} signature verification failed")]
+    SetupSignatureVerificationFailed {
+        /// Stable signed-message context.
+        context: &'static str,
+    },
+    /// A proposal carried a hash other than its canonical body hash.
+    #[error("Federation setup proposal hash mismatch: expected={expected}, found={found}")]
+    SetupProposalHashMismatch {
+        /// Recomputed canonical proposal hash.
+        expected: String,
+        /// Hash carried by the proposal.
+        found: String,
+    },
+    /// A manifest carried a certification hash other than its canonical approval-set hash.
+    #[error("Federation setup manifest hash mismatch: expected={expected}, found={found}")]
+    SetupManifestHashMismatch {
+        /// Recomputed certification hash.
+        expected: String,
+        /// Hash carried by the manifest.
+        found: String,
+    },
     /// A federation invite code could not be parsed.
     #[error("Invalid federation invite: {reason}")]
     InvalidFederationInvite {
@@ -1859,7 +1933,13 @@ mod tests {
         let members = test_roster();
         let (keyset, _) = test_keyset(&members);
         let params = ThresholdParams::new(3, 2, 3).expect("threshold params");
-        FederationConfig::new(params, members, vec![keyset]).expect("public config")
+        FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            vec![keyset],
+        )
+        .expect("public config")
     }
 
     fn raw_invite_code(invite: &FederationInvite) -> String {
@@ -2289,8 +2369,12 @@ mod tests {
     fn federation_id_is_deterministic_for_roster() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
-        let id = FederationConfig::derive_federation_id(params, &members).expect("id");
-        let config = FederationConfig::new(params, members.clone(), Vec::new()).expect("config");
+        let setup_authorization = FederationSetupAuthorizationHash::from_bytes([1; 32]);
+        let id = FederationConfig::derive_federation_id(setup_authorization, params, &members)
+            .expect("id");
+        let config =
+            FederationConfig::new(setup_authorization, params, members.clone(), Vec::new())
+                .expect("config");
 
         assert_eq!(config.federation_id, id);
         assert_eq!(
@@ -2303,7 +2387,13 @@ mod tests {
     #[test]
     fn federation_config_advertises_only_current_wallet_protocol_version() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let config = FederationConfig::new(params, test_roster(), Vec::new()).expect("config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster(),
+            Vec::new(),
+        )
+        .expect("config");
 
         assert_eq!(
             config.wallet_protocol_version,
@@ -2322,7 +2412,13 @@ mod tests {
     #[test]
     fn federation_config_rejects_removed_member_protocol_fields() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let config = FederationConfig::new(params, test_roster(), Vec::new()).expect("config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster(),
+            Vec::new(),
+        )
+        .expect("config");
 
         for field in ["protocol_versions", "consensus_item_version"] {
             let mut json = serde_json::to_value(&config).expect("config json");
@@ -2335,7 +2431,13 @@ mod tests {
     #[test]
     fn federation_config_rejects_missing_wallet_protocol_version() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let config = FederationConfig::new(params, test_roster(), Vec::new()).expect("config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster(),
+            Vec::new(),
+        )
+        .expect("config");
         let mut json = serde_json::to_value(&config).expect("config json");
         json.as_object_mut()
             .expect("config object")
@@ -2350,7 +2452,13 @@ mod tests {
     #[test]
     fn federation_config_rejects_unsupported_wallet_protocol_version() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let mut config = FederationConfig::new(params, test_roster(), Vec::new()).expect("config");
+        let mut config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster(),
+            Vec::new(),
+        )
+        .expect("config");
         let expected = config.wallet_protocol_version;
         let found = expected.saturating_add(1);
         config.wallet_protocol_version = found;
@@ -2362,8 +2470,13 @@ mod tests {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
         let (keyset, private_shares) = test_keyset(&members);
-        let config =
-            FederationConfig::new(params, members.clone(), vec![keyset.clone()]).expect("config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members.clone(),
+            vec![keyset.clone()],
+        )
+        .expect("config");
         assert_eq!(keyset.id.get_version(), KeySetVersion::Version02);
         let config_json = serde_json::to_string(&config).expect("config json");
         assert_eq!(
@@ -2398,7 +2511,13 @@ mod tests {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
         let (keyset, _) = test_keyset(&members);
-        let config = FederationConfig::new(params, members, vec![keyset]).expect("config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            vec![keyset],
+        )
+        .expect("config");
         assert_eq!(
             config.payment_observation_policy,
             FederationPaymentObservationPolicy::member_quorum(params.consensus_threshold)
@@ -2431,7 +2550,13 @@ mod tests {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
         let (keyset, _) = test_keyset(&members);
-        let config = FederationConfig::new(params, members, vec![keyset]).expect("config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            vec![keyset],
+        )
+        .expect("config");
         let mut json = serde_json::to_value(&config).expect("config json");
         json["keysets"][0]
             .as_object_mut()
@@ -2495,8 +2620,13 @@ mod tests {
     #[test]
     fn dkg_commitment_round_validates_pre_reveal_hashes() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let config =
-            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster(),
+            Vec::new(),
+        )
+        .expect("public config");
         let reveals = dkg_reveals(&config);
         let commitments = dkg_commitments(&reveals);
         let round =
@@ -2519,7 +2649,7 @@ mod tests {
             .commitment_hash;
         assert_eq!(
             commitment_hash.to_hex(),
-            "0cbfd40e1de0dc973b5e9bc8fc2ac50529181b4c814c1db3f14491be4222a6ae"
+            "e2466da0cb52688634c0eab1a356974191eb6cbf6091a01148a1345a88fe2173"
         );
         let hash_json = serde_json::to_string(&commitment_hash).expect("hash json");
         assert_eq!(
@@ -2569,9 +2699,13 @@ mod tests {
     fn dkg_keyset_spec_rejects_oversized_federation_roster() {
         let member_count = (FEDERATION_MAX_DKG_MEMBERS + 1) as u16;
         let params = ThresholdParams::with_bft_consensus(member_count, 44).expect("params");
-        let config =
-            FederationConfig::new(params, test_roster_with_count(member_count), Vec::new())
-                .expect("oversized public config remains valid outside dealer-free DKG");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster_with_count(member_count),
+            Vec::new(),
+        )
+        .expect("oversized public config remains valid outside dealer-free DKG");
         let spec = FederationDkgKeysetSpec::new(
             CurrencyUnit::Sat,
             true,
@@ -2592,8 +2726,13 @@ mod tests {
     #[test]
     fn dkg_commitment_round_rejects_changed_reveal_after_commitment() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let config =
-            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster(),
+            Vec::new(),
+        )
+        .expect("public config");
         let mut reveals = dkg_reveals(&config);
         let commitments = dkg_commitments(&reveals);
         let round =
@@ -2615,8 +2754,13 @@ mod tests {
     #[test]
     fn dkg_commitment_round_rejects_bad_reveal_coefficient_count() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let config =
-            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster(),
+            Vec::new(),
+        )
+        .expect("public config");
         let mut reveals = dkg_reveals(&config);
         let commitments = dkg_commitments(&reveals);
         let round =
@@ -2640,8 +2784,13 @@ mod tests {
     #[test]
     fn dkg_commitment_round_rejects_missing_or_unknown_participants() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let config =
-            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster(),
+            Vec::new(),
+        )
+        .expect("public config");
         let reveals = dkg_reveals(&config);
         let mut commitments = dkg_commitments(&reveals);
         commitments.remove(&member_id(2));
@@ -2665,8 +2814,13 @@ mod tests {
     #[test]
     fn dkg_setup_state_collects_commitments_and_reveals_idempotently() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let config =
-            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster(),
+            Vec::new(),
+        )
+        .expect("public config");
         let reveals = dkg_reveals(&config);
         let commitments = dkg_commitments(&reveals);
         let mut state = FederationDkgSetupState::new(&config);
@@ -2716,8 +2870,13 @@ mod tests {
     #[test]
     fn dkg_setup_state_rejects_conflicting_commitment_or_reveal() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let config =
-            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster(),
+            Vec::new(),
+        )
+        .expect("public config");
         let reveals = dkg_reveals(&config);
         let mut state = FederationDkgSetupState::new(&config);
         let first_reveal = reveals.get(&member_id(1)).expect("first reveal").clone();
@@ -2750,8 +2909,13 @@ mod tests {
     #[test]
     fn dkg_setup_state_rejects_cross_ceremony_commitment_without_mutation() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let config =
-            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster(),
+            Vec::new(),
+        )
+        .expect("public config");
         let first_reveal = dkg_reveal(&config, member_id(1), 11);
         let first_commitment =
             FederationDkgParticipantCommitment::from_reveal(&first_reveal).expect("commitment");
@@ -2777,8 +2941,13 @@ mod tests {
     #[test]
     fn dkg_setup_state_rejects_reveal_without_prior_commitment() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let config =
-            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster(),
+            Vec::new(),
+        )
+        .expect("public config");
         let reveal = dkg_reveal(&config, member_id(1), 11);
         let mut state = FederationDkgSetupState::new(&config);
 
@@ -2793,8 +2962,13 @@ mod tests {
     fn dkg_participant_state_accepts_only_current_v1_shape() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
-        let setup_config =
-            FederationConfig::new(params, members.clone(), Vec::new()).expect("setup config");
+        let setup_config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members.clone(),
+            Vec::new(),
+        )
+        .expect("setup config");
         let keyset_spec = FederationDkgKeysetSpec::new(
             CurrencyUnit::Sat,
             true,
@@ -2834,8 +3008,13 @@ mod tests {
     fn dealer_free_dkg_participants_derive_same_five_member_keyset_after_reload() {
         let params = ThresholdParams::with_bft_consensus(5, 3).expect("params");
         let members = test_roster_with_count(5);
-        let setup_config =
-            FederationConfig::new(params, members.clone(), Vec::new()).expect("setup config");
+        let setup_config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members.clone(),
+            Vec::new(),
+        )
+        .expect("setup config");
         let keyset_spec = FederationDkgKeysetSpec::new(
             CurrencyUnit::Sat,
             true,
@@ -3013,8 +3192,13 @@ mod tests {
     #[test]
     fn dealer_free_dkg_participant_reload_rejects_tampered_secret_contribution() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let setup_config =
-            FederationConfig::new(params, test_roster(), Vec::new()).expect("setup config");
+        let setup_config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster(),
+            Vec::new(),
+        )
+        .expect("setup config");
         let keyset_spec = FederationDkgKeysetSpec::new(
             CurrencyUnit::Sat,
             true,
@@ -3055,8 +3239,13 @@ mod tests {
     #[test]
     fn dealer_free_dkg_rejects_participant_keyset_policy_mismatch() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let setup_config =
-            FederationConfig::new(params, test_roster(), Vec::new()).expect("setup config");
+        let setup_config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster(),
+            Vec::new(),
+        )
+        .expect("setup config");
         let base_spec = FederationDkgKeysetSpec::new(
             CurrencyUnit::Sat,
             true,
@@ -3108,8 +3297,13 @@ mod tests {
     fn dkg_commitment_round_derives_keyset_and_pedersen_transcript() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
-        let setup_config =
-            FederationConfig::new(params, members.clone(), Vec::new()).expect("setup config");
+        let setup_config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members.clone(),
+            Vec::new(),
+        )
+        .expect("setup config");
         let reveals = dkg_reveals(&setup_config);
         let commitments = dkg_commitments(&reveals);
         let round = FederationDkgCommitmentRound::new(&setup_config, commitments).expect("round");
@@ -3124,8 +3318,13 @@ mod tests {
             .validate(params, &members)
             .expect("derived keyset validates");
 
-        let mut public_config =
-            FederationConfig::new(params, members, vec![keyset.clone()]).expect("public config");
+        let mut public_config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            vec![keyset.clone()],
+        )
+        .expect("public config");
         let public_ceremony =
             FederationDkgPublicCeremony::new(&setup_config, round, reveals).expect("ceremony");
         let transcript = FederationDkgTranscript::pedersen_dkg(
@@ -3136,7 +3335,7 @@ mod tests {
         .expect("pedersen DKG transcript");
         assert_eq!(
             transcript.transcript_hash.to_hex(),
-            "5ed12527c0fd385dc5d3fb5d275429fdeeaeff416f0ea8dc32a3c1f2bd49cb88"
+            "b61cf7085ede7e8811d8ce77ab9082542d979a1d2be75cf692738e72fe08fa9d"
         );
         assert_eq!(
             transcript.payload.setup_method,
@@ -3171,16 +3370,26 @@ mod tests {
     fn dkg_pedersen_transcript_binds_complete_public_ceremony() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
-        let setup_config =
-            FederationConfig::new(params, members.clone(), Vec::new()).expect("setup config");
+        let setup_config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members.clone(),
+            Vec::new(),
+        )
+        .expect("setup config");
         let reveals = dkg_reveals(&setup_config);
         let commitments = dkg_commitments(&reveals);
         let round = FederationDkgCommitmentRound::new(&setup_config, commitments).expect("round");
         let keyset = round
             .derive_federated_keyset(&setup_config, &reveals)
             .expect("keyset");
-        let public_config =
-            FederationConfig::new(params, members, vec![keyset.clone()]).expect("public config");
+        let public_config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            vec![keyset.clone()],
+        )
+        .expect("public config");
         let public_ceremony =
             FederationDkgPublicCeremony::new(&setup_config, round, reveals.clone())
                 .expect("public ceremony");
@@ -3255,8 +3464,13 @@ mod tests {
     fn dkg_commitment_round_derives_member_keyset_share() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
-        let setup_config =
-            FederationConfig::new(params, members.clone(), Vec::new()).expect("setup config");
+        let setup_config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members.clone(),
+            Vec::new(),
+        )
+        .expect("setup config");
         let reveals = dkg_reveals(&setup_config);
         let commitments = dkg_commitments(&reveals);
         let round = FederationDkgCommitmentRound::new(&setup_config, commitments).expect("round");
@@ -3272,8 +3486,13 @@ mod tests {
 
         assert_eq!(material.keyset.id.get_version(), KeySetVersion::Version02);
         assert_eq!(material.secret_shares.len(), 1);
-        let public_config = FederationConfig::new(params, members, vec![material.keyset.clone()])
-            .expect("public config");
+        let public_config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            vec![material.keyset.clone()],
+        )
+        .expect("public config");
         let private_config = MemberConfigPrivate {
             federation_id: None,
             member_id: local_member,
@@ -3290,8 +3509,13 @@ mod tests {
     fn dkg_finalized_member_config_assembles_from_durable_records() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
-        let setup_config =
-            FederationConfig::new(params, members.clone(), Vec::new()).expect("setup config");
+        let setup_config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members.clone(),
+            Vec::new(),
+        )
+        .expect("setup config");
         let reveals = dkg_reveals(&setup_config);
         let commitments = dkg_commitments(&reveals);
         let round = FederationDkgCommitmentRound::new(&setup_config, commitments).expect("round");
@@ -3304,9 +3528,13 @@ mod tests {
                 &dkg_member_secret_contributions(&setup_config, local_member),
             )
             .expect("local member keyset share");
-        let mut public_config =
-            FederationConfig::new(params, members, vec![keyset_share.keyset.clone()])
-                .expect("public config");
+        let mut public_config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            vec![keyset_share.keyset.clone()],
+        )
+        .expect("public config");
         let private_configs = dkg_transcript_private_configs(&public_config);
         let transcript_signatures = dkg_transcript_signature_records(
             &public_config,
@@ -3350,8 +3578,13 @@ mod tests {
     fn dkg_finalized_member_config_rejects_missing_transcript_signature() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
-        let setup_config =
-            FederationConfig::new(params, members.clone(), Vec::new()).expect("setup config");
+        let setup_config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members.clone(),
+            Vec::new(),
+        )
+        .expect("setup config");
         let reveals = dkg_reveals(&setup_config);
         let commitments = dkg_commitments(&reveals);
         let round = FederationDkgCommitmentRound::new(&setup_config, commitments).expect("round");
@@ -3364,9 +3597,13 @@ mod tests {
                 &dkg_member_secret_contributions(&setup_config, local_member),
             )
             .expect("local member keyset share");
-        let public_config =
-            FederationConfig::new(params, members, vec![keyset_share.keyset.clone()])
-                .expect("public config");
+        let public_config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            vec![keyset_share.keyset.clone()],
+        )
+        .expect("public config");
         let private_configs = dkg_transcript_private_configs(&public_config);
         let mut transcript_signatures = dkg_transcript_signature_records(
             &public_config,
@@ -3392,8 +3629,13 @@ mod tests {
     #[test]
     fn dkg_member_keyset_share_rejects_bad_secret_contributions() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let config =
-            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster(),
+            Vec::new(),
+        )
+        .expect("public config");
         let reveals = dkg_reveals(&config);
         let commitments = dkg_commitments(&reveals);
         let round =
@@ -3476,8 +3718,13 @@ mod tests {
     #[test]
     fn dkg_reveal_rejects_keyset_spec_amount_mismatch() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let config =
-            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            test_roster(),
+            Vec::new(),
+        )
+        .expect("public config");
         let mut reveals = dkg_reveals(&config);
         reveals
             .get_mut(&member_id(1))
@@ -3504,7 +3751,13 @@ mod tests {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
         let (keyset, _) = test_keyset(&members);
-        let mut config = FederationConfig::new(params, members, vec![keyset]).expect("config");
+        let mut config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            vec![keyset],
+        )
+        .expect("config");
 
         config.validate().expect("consensus quorum policy");
         let mint_policy =
@@ -3594,7 +3847,12 @@ mod tests {
         );
 
         assert!(matches!(
-            FederationConfig::new(params, members, vec![keyset]),
+            FederationConfig::new(
+                crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+                params,
+                members,
+                vec![keyset]
+            ),
             Err(FederationError::InvalidFederatedKeysetVersion { .. })
         ));
     }
@@ -3607,7 +3865,12 @@ mod tests {
         keyset.id = Id::v1_from_keys(&keyset.keys());
 
         assert!(matches!(
-            FederationConfig::new(params, members, vec![keyset]),
+            FederationConfig::new(
+                crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+                params,
+                members,
+                vec![keyset]
+            ),
             Err(FederationError::InvalidFederatedKeysetVersion { .. })
         ));
     }
@@ -3617,7 +3880,13 @@ mod tests {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
         let (keyset, _) = test_keyset(&members);
-        let config = FederationConfig::new(params, members, vec![keyset]).expect("config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            vec![keyset],
+        )
+        .expect("config");
         let mut json = serde_json::to_value(&config).expect("config json");
         let keysets = json
             .get_mut("keysets")
@@ -3647,7 +3916,13 @@ mod tests {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
         let (keyset, private_shares) = test_keyset_with_seed(&members, 7);
-        let config = FederationConfig::new(params, members, vec![keyset.clone()]).expect("config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            vec![keyset.clone()],
+        )
+        .expect("config");
         let member_id = member_id(1);
         let member_shares = private_shares
             .get(&member_id)
@@ -3668,7 +3943,13 @@ mod tests {
         let members = test_roster();
         let (keyset, _) = test_keyset_with_seed(&members, 7);
         let (_, wrong_private_shares) = test_keyset_with_seed(&members, 9);
-        let config = FederationConfig::new(params, members, vec![keyset.clone()]).expect("config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            vec![keyset.clone()],
+        )
+        .expect("config");
         let member_id = member_id(1);
         let member_shares = wrong_private_shares
             .get(&member_id)
@@ -3690,8 +3971,13 @@ mod tests {
         let members = test_roster();
         let (old_keyset, _) = test_keyset_with_seed(&members, 1);
         let (new_keyset, _) = test_keyset_with_seed(&members, 7);
-        let config =
-            FederationConfig::new(params, members, vec![old_keyset.clone()]).expect("config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            vec![old_keyset.clone()],
+        )
+        .expect("config");
         let old_output = BlindedMessage::new(
             Amount::from(1),
             old_keyset.id,
@@ -3748,7 +4034,13 @@ mod tests {
         let (old_keyset, _) = test_keyset_with_seed(&members, 1);
         let (mut new_keyset, _) = test_keyset_with_seed(&members, 7);
         new_keyset.active = false;
-        let config = FederationConfig::new(params, members, vec![old_keyset]).expect("config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            vec![old_keyset],
+        )
+        .expect("config");
 
         assert!(matches!(
             config.apply_keyset_rotation(&FederationKeysetRotationOperation { keyset: new_keyset }),
@@ -3761,7 +4053,13 @@ mod tests {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
         let (keyset, _) = test_keyset(&members);
-        let config = FederationConfig::new(params, members, vec![keyset.clone()]).expect("config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            vec![keyset.clone()],
+        )
+        .expect("config");
         let placeholder = BlindedMessage::new(
             Amount::ZERO,
             keyset.id,
@@ -3782,7 +4080,13 @@ mod tests {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
         let (keyset, _) = test_keyset(&members);
-        let config = FederationConfig::new(params, members, vec![keyset.clone()]).expect("config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            vec![keyset.clone()],
+        )
+        .expect("config");
         let placeholder = BlindedMessage::new(
             Amount::ZERO,
             Id::v2_from_data(
@@ -3819,9 +4123,10 @@ mod tests {
             .get_mut(&member_id(1))
             .expect("member shares")
             .insert(amount, wrong_keyset.public_shares()[0]);
+        let setup_authorization = FederationSetupAuthorizationHash::from_bytes([1; 32]);
 
         assert!(matches!(
-            FederationConfig::new(params, members, vec![keyset]),
+            FederationConfig::new(setup_authorization, params, members, vec![keyset]),
             Err(FederationError::AggregateKeyMismatch { amount, .. }) if amount == Amount::from(1)
         ));
     }
@@ -3835,9 +4140,10 @@ mod tests {
             .get_mut(&member_id)
             .expect("member")
             .identity_public_key = SecretKey::bls_from_reduced_bytes(&[9; 32]).public_key();
+        let setup_authorization = FederationSetupAuthorizationHash::from_bytes([1; 32]);
 
         assert!(matches!(
-            FederationConfig::new(params, members, Vec::new()),
+            FederationConfig::new(setup_authorization, params, members, Vec::new()),
             Err(FederationError::InvalidIdentityKeyKind { member_id: id }) if id == member_id
         ));
     }

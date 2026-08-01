@@ -3976,8 +3976,13 @@ mod tests {
             (roster_member_id(2), member_config(2, &second_secret)),
         ]);
         let threshold_params = ThresholdParams::new(2, 2, 2).expect("threshold params");
-        let config = FederationConfig::new(threshold_params, members, Vec::new())
-            .expect("federation config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            threshold_params,
+            members,
+            Vec::new(),
+        )
+        .expect("federation config");
         let first_private = private_member(1, first_secret);
         let second_private = private_member(2, second_secret);
         (config, first_private, second_private)

@@ -1830,6 +1830,7 @@ mod tests {
             identity_public_key: peer_identity.public_key(),
         };
         let public_config = FederationConfig::new(
+            cdk_common::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
             ThresholdParams::with_bft_consensus(2, 1).expect("thresholds"),
             BTreeMap::from([(member_id, member), (peer_id, peer)]),
             Vec::new(),
@@ -1881,6 +1882,7 @@ mod tests {
             })
             .collect();
         let public_config = FederationConfig::new(
+            cdk_common::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
             ThresholdParams::with_bft_consensus(5, 3).expect("thresholds"),
             members,
             Vec::new(),

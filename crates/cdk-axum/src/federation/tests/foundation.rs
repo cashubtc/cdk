@@ -963,9 +963,7 @@ impl AlephBftNetworkLatencyModel {
             .wrapping_add(1_442_695_040_888_963_407);
         let nominal_micros =
             u64::try_from(self.nominal_round_trip.as_micros()).expect("test RTT fits u64");
-        let jitter_micros = nominal_micros
-            .saturating_mul(u64::from(self.jitter_percent))
-            / 100;
+        let jitter_micros = nominal_micros.saturating_mul(u64::from(self.jitter_percent)) / 100;
         let sample_width = jitter_micros.saturating_mul(2).saturating_add(1);
         let sampled_round_trip_micros = nominal_micros
             .saturating_sub(jitter_micros)
@@ -2151,8 +2149,7 @@ impl Transport for RouterFederationTransportRegistry {
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
             }
-            let (request_delay, response_delay) =
-                self.next_aleph_bft_network_round_trip_delays();
+            let (request_delay, response_delay) = self.next_aleph_bft_network_round_trip_delays();
             if !request_delay.is_zero() {
                 tokio::time::sleep(request_delay).await;
             }
@@ -3895,6 +3892,7 @@ async fn durable_dkg_transcript_fixture() -> (
     let keyset_share =
         derive_and_persist_dkg_member_keyset_share(&state, &setup_public_config).await;
     let mut final_public_config = FederationConfig::new(
+        cdk_common::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
         setup_public_config.threshold_params,
         setup_public_config.members.clone(),
         vec![keyset_share.keyset.clone()],

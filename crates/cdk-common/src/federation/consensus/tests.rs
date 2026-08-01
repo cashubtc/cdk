@@ -220,8 +220,13 @@ fn consensus_config_three() -> (FederationConfig, Vec<MemberConfigPrivate>) {
         ),
     ]);
     let threshold_params = ThresholdParams::new(3, 2, 2).expect("threshold params");
-    let config =
-        FederationConfig::new(threshold_params, members, Vec::new()).expect("federation config");
+    let config = FederationConfig::new(
+        crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+        threshold_params,
+        members,
+        Vec::new(),
+    )
+    .expect("federation config");
     let private_members = vec![
         private_member(1, first_secret),
         private_member(2, second_secret),

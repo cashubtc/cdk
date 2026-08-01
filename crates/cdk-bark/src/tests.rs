@@ -75,6 +75,7 @@ fn base_config() -> FederationConfig {
         })
         .collect::<BTreeMap<_, _>>();
     FederationConfig::new(
+        cdk_common::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
         ThresholdParams::new(3, 2, 2).expect("threshold"),
         members,
         Vec::new(),

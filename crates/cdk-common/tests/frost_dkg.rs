@@ -47,6 +47,7 @@ fn config_with_threshold(member_count: u16, threshold: u16) -> FederationConfig 
         })
         .collect::<BTreeMap<_, _>>();
     FederationConfig::new(
+        cdk_common::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
         ThresholdParams::new(member_count, threshold, threshold).expect("thresholds"),
         members,
         Vec::new(),
@@ -257,15 +258,15 @@ fn frost_wallet_configs_round_trip_derive_addresses_and_reject_wrong_bindings() 
     assert_eq!(
         root.digest().expect("root digest vector"),
         [
-            25, 49, 167, 123, 1, 143, 175, 217, 177, 47, 221, 160, 245, 195, 67, 219, 31, 20, 83,
-            120, 106, 214, 48, 43, 6, 104, 214, 253, 89, 124, 113, 25,
+            96, 233, 76, 30, 206, 243, 158, 49, 139, 110, 9, 8, 221, 153, 22, 61, 77, 138, 22, 30,
+            104, 178, 193, 40, 189, 71, 205, 45, 54, 26, 168, 163,
         ]
     );
     assert_eq!(
         wallet.digest().expect("wallet digest vector"),
         [
-            233, 128, 91, 98, 239, 186, 145, 186, 60, 3, 251, 56, 63, 200, 60, 237, 163, 147, 65,
-            140, 209, 134, 103, 58, 221, 27, 253, 123, 52, 232, 55, 58,
+            129, 24, 18, 56, 53, 221, 98, 167, 97, 125, 136, 164, 139, 151, 148, 31, 61, 198, 151,
+            6, 164, 16, 209, 54, 86, 23, 185, 226, 232, 154, 220, 249,
         ]
     );
     let base_digest = config.config_digest().expect("base config digest");
@@ -522,8 +523,8 @@ fn bark_application_vectors_are_distinct_consistent_persistent_and_scope_bound()
     assert_eq!(
         actual_vectors,
         [
-            "2-of-3:app=023fe9d439c15afe4a670277c74fae52567fb686bed5300206ec764dd32d39b5d2:vtxo0=0300f5af8f73f0340cc963ed47346b349e996c0802e3a51932b6e74aa2637d3fd1:vtxomax=03059e314904e5ff6309812e3e04e083cc225419e048069b974c96fc9c5d3a7159:shares=0352d2d8d1fadceaa5e43cfa29b1b89a6d7156c9f47e364d98bdd78678068e8a28,03a45a2090f1b1008cef8e93ce5a4ef15fe598d2eb0141977ba7d33ccdb6aa9680,03b481ac05287d28b4f58c5a102f38286e92438083c54d77d3bf0fe64f6e0dbfd4",
-            "3-of-5:app=0213ae2a027ff4e715a175cf0c1aae9273bdb77c681bc9c308cbb09483fef1b163:vtxo0=0241b697ee0d7f7a01d445711d9cbf7f2e07f3b974c6cf494568508f2b2badeb2d:vtxomax=0262e8135ed230bc700502c63346dc833d2fbb044eb1901bcf46cfa5324e5b86cc:shares=026367d2ceb4f4d62a98a159d55bd31fe0a3d0368651e9022b08711dee11ab3f97,03cc3597e5d7845c4795517226cb67cf3fb737b79a4a8637e1ddb6e228745c01f5,03ed8f4b8425c88c1c7792aca1e3accb8e5ea5bfe75f9098b89560c6dfb310f833,026649f2728dff183f23a49b86feb85b04e1843ae59c26d7f791343c3ed6a9320b,0259e6ee0db02f8696b8f7aaea04309ed6651409e8896cb62a08ca4d841c7e7578",
+            "2-of-3:app=027d0e2c7b2e7d02b2d7288dbfee49608c76112e31dacaed7e1b0c7a6db97056e2:vtxo0=034172d3d39adbe59489275a5b23c2f31203a36e6cf86620261037caa0dde52084:vtxomax=02cd5fd2d1319e0b5874a28b1cf5a3db6b96e547d451b6c5f3a99e4f09e21b0248:shares=024a127c09697df05a016da70aceb91e6d28cf91923e06c8609771e08a7de0b09b,03ad83c692cec9fc1553527a1cfb693dac2208c6e6bba7d5d3a71cb6260f2750e5,03f938454e815175f61a11ef31252669f52e8506e946bd6bd9ffea111f2422584c",
+            "3-of-5:app=03d11a0a3c0f5015d890249fb0ee47e8cc4c0bb422885ecea9ee0ad45385050f71:vtxo0=027b2494d653ebe5a0158e1716506102c479a3bd6a7e141be3603a44c2cc3f5cff:vtxomax=025ab2b40a23328ac65351d10a15f898743bd62b95fcf25f84712fb7ba05285d68:shares=024b12cafe4004405af36f295af2673469ca262b6e9d4c97c41f672ee613cc4661,035a9e0d1fd8c0589d26970ca9e1a14ead9ac4574c531e6c341e93a912e29a572d,03dd7e2ecf9b20cd1d5063ea9c969ce414091f99b8eb3438347d95dcf84d1acd71,0212336dcb7ac042057c75b2dea93f9ece5304b0a7c897c70f6f0843ab97aaa254,039b275958fa7b90bdc985f8a19da3cbdaabf28701e6f37d4a1b2d947bb42cba76",
         ]
     );
 }

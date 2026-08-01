@@ -1742,8 +1742,13 @@ mod tests {
             private_members.push(private_member(id, secret));
         }
         let threshold_params = ThresholdParams::with_bft_consensus(4, 3).expect("threshold params");
-        let public_config =
-            FederationConfig::new(threshold_params, members, Vec::new()).expect("public config");
+        let public_config = FederationConfig::new(
+            cdk_common::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            threshold_params,
+            members,
+            Vec::new(),
+        )
+        .expect("public config");
 
         (public_config, private_members)
     }
@@ -1898,6 +1903,7 @@ mod tests {
             private_members.push(private_member(id, secret));
         }
         let public_config = FederationConfig::new(
+            cdk_common::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
             ThresholdParams::new(5, 3, 3).expect("threshold params"),
             members,
             Vec::new(),

@@ -5,7 +5,20 @@
 use cdk_common::bitcoin::hashes::sha256::Hash as Sha256Hash;
 use cdk_common::bitcoin::hashes::Hash;
 use cdk_common::bitcoin::secp256k1::schnorr::Signature;
+use std::collections::{BTreeMap, BTreeSet};
+use std::str::FromStr;
+
+use cdk_common::federation::{
+    FederationCheckpointPolicy, FederationDkgKeysetSpec, FederationPaymentObservationPolicy,
+    FederationSetupApproval, FederationSetupBitcoinNetwork, FederationSetupCoordinatorPublicKey,
+    FederationSetupEnrollment, FederationSetupFrostApplication, FederationSetupFrostPolicy,
+    FederationSetupId, FederationSetupInvitationCapability, FederationSetupInvitationId,
+    FederationSetupManifest, FederationSetupProposal, FederationSetupProposalBody,
+    FederationSetupProtocolVersions, FederationSetupUrlPolicy, MemberId, ThresholdParams,
+};
+use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut01::SecretKey;
+use cdk_common::{Amount, CurrencyUnit};
 use serde::{Deserialize, Serialize};
 
 const SETUP_PROTOCOL_VERSION: u16 = 1;
@@ -98,6 +111,16 @@ fn frozen_setup_transcript_vectors_are_stable_and_signatures_verify() {
         );
     }
     assert_eq!(actual, expected);
+
+    let production = VectorFile {
+        version: SETUP_PROTOCOL_VERSION,
+        vectors: expected
+            .vectors
+            .iter()
+            .map(build_production_vector)
+            .collect(),
+    };
+    assert_eq!(production, expected);
 }
 
 fn vector_is_unfilled(vector: &ExpectedVector) -> bool {
@@ -204,6 +227,181 @@ fn build_vector(
         first_approval_signature: approvals[0].signature.to_string(),
         manifest_certification_hash: hex(manifest_certification_hash),
         coordinator_manifest_signature: coordinator_manifest_signature.to_string(),
+    }
+}
+
+fn build_production_vector(expected: &ExpectedVector) -> ExpectedVector {
+    let setup_id_bytes = labeled_hash(b"setup-id", expected.name.as_bytes());
+    let setup_id = FederationSetupId::from_bytes(setup_id_bytes);
+    let coordinator_secret = secret_key(65_000);
+    let coordinator_identity =
+        FederationSetupCoordinatorPublicKey::new(coordinator_secret.public_key())
+            .expect("coordinator fixture identity");
+    let url_policy = FederationSetupUrlPolicy::RequireHttps;
+    let slug = expected.name.replace("-of-", "of");
+    let coordinator_url =
+        MintUrl::from_str(&format!("https://setup.{slug}.example")).expect("coordinator URL");
+
+    let mut enrollments = BTreeMap::new();
+    for member in 1..=expected.member_count {
+        let member_id = MemberId::new(member).expect("fixture member id");
+        let invitation_id =
+            FederationSetupInvitationId::from_bytes(invitation_id(setup_id_bytes, member));
+        let enrollment = FederationSetupEnrollment::sign_no_aux_rand_for_test_vector(
+            setup_id,
+            invitation_id,
+            member_id,
+            MintUrl::from_str(&format!("https://mint-{member}.{slug}.example")).expect("mint URL"),
+            MintUrl::from_str(&format!("https://federation-{member}.{slug}.example"))
+                .expect("federation URL"),
+            member_nonce(setup_id_bytes, member),
+            FederationSetupProtocolVersions::default(),
+            &secret_key(member),
+            url_policy,
+        )
+        .expect("production enrollment fixture");
+        assert!(enrollments.insert(member_id, enrollment).is_none());
+    }
+
+    let keyset = FederationDkgKeysetSpec::new(
+        CurrencyUnit::Sat,
+        true,
+        0,
+        None,
+        [Amount::from(1), Amount::from(2), Amount::from(4)]
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+    )
+    .expect("production keyset fixture");
+    let network = FederationSetupBitcoinNetwork::Signet;
+    let frost = FederationSetupFrostPolicy::new(
+        1,
+        vec![FederationSetupFrostApplication::CdkOnchain {
+            application_key_epoch: 1,
+            confirmation_policy_version: 1,
+            minimum_confirmations: 1,
+            fee_policy_version: 1,
+        }],
+        network,
+    )
+    .expect("production FROST fixture");
+    let proposal_body = FederationSetupProposalBody::new(
+        setup_id,
+        coordinator_identity,
+        enrollments,
+        ThresholdParams::new(
+            expected.member_count,
+            expected.signature_threshold,
+            expected.consensus_threshold,
+        )
+        .expect("production threshold fixture"),
+        FederationSetupProtocolVersions::default(),
+        network,
+        FederationPaymentObservationPolicy::member_quorum(expected.consensus_threshold),
+        FederationCheckpointPolicy::default(),
+        vec![keyset],
+        frost,
+        url_policy,
+    )
+    .expect("production proposal body fixture");
+    let proposal_canonical_bytes = proposal_body
+        .canonical_bytes()
+        .expect("production proposal bytes")
+        .len();
+    let proposal = FederationSetupProposal::sign_no_aux_rand_for_test_vector(
+        proposal_body,
+        &coordinator_secret,
+        url_policy,
+    )
+    .expect("production proposal fixture");
+
+    let mut approvals = BTreeMap::new();
+    for member in 1..=expected.member_count {
+        let member_id = MemberId::new(member).expect("fixture member id");
+        let approval = FederationSetupApproval::sign_no_aux_rand_for_test_vector(
+            &proposal,
+            member_id,
+            &secret_key(member),
+            url_policy,
+        )
+        .expect("production approval fixture");
+        assert!(approvals.insert(member_id, approval).is_none());
+    }
+    let first_enrollment_signature = proposal
+        .body
+        .enrollments
+        .get(&MemberId::new(1).expect("first member"))
+        .expect("first enrollment")
+        .signature
+        .to_string();
+    let first_approval_signature = approvals
+        .get(&MemberId::new(1).expect("first member"))
+        .expect("first approval")
+        .signature
+        .to_string();
+    let manifest = FederationSetupManifest::certify_no_aux_rand_for_test_vector(
+        proposal,
+        approvals,
+        &coordinator_secret,
+        url_policy,
+    )
+    .expect("production manifest fixture");
+    let setup_config = manifest
+        .setup_public_config()
+        .expect("manifest derives setup public config");
+    assert_eq!(
+        setup_config.setup_authorization,
+        manifest
+            .setup_authorization_hash()
+            .expect("setup authorization")
+    );
+
+    let first_invitation_id =
+        FederationSetupInvitationId::from_bytes(invitation_id(setup_id_bytes, 1));
+    let first_capability =
+        FederationSetupInvitationCapability::from_bytes(invitation_capability(setup_id_bytes, 1))
+            .expect("fixture invitation capability");
+    let invitation_capability_hash = first_capability.capability_hash(
+        setup_id,
+        first_invitation_id,
+        MemberId::new(1).expect("first member"),
+    );
+    let invitation_public = invitation_public_body(
+        setup_id_bytes,
+        first_invitation_id.to_bytes(),
+        1,
+        &coordinator_url.to_string(),
+        &coordinator_identity.public_key().to_bytes(),
+    );
+    let first_capability_bytes = first_capability.expose_secret();
+    let invitation_checksum = hash_transcript(
+        INVITATION_CHECKSUM_DOMAIN,
+        &[
+            &length_prefixed(&invitation_public),
+            &first_capability_bytes,
+        ],
+    );
+
+    ExpectedVector {
+        name: expected.name.clone(),
+        member_count: expected.member_count,
+        signature_threshold: expected.signature_threshold,
+        consensus_threshold: expected.consensus_threshold,
+        proposal_canonical_bytes,
+        coordinator_public_key: coordinator_identity.to_string(),
+        invitation_capability_hash: hex(invitation_capability_hash),
+        invitation_checksum: hex(&invitation_checksum[..6]),
+        first_enrollment_signature,
+        proposal_hash: manifest.proposal.proposal_hash.to_string(),
+        setup_authorization_hash: manifest
+            .setup_authorization_hash()
+            .expect("setup authorization")
+            .to_string(),
+        ceremony_id: manifest.ceremony_id().expect("ceremony id").to_string(),
+        coordinator_proposal_signature: manifest.proposal.coordinator_signature.to_string(),
+        first_approval_signature,
+        manifest_certification_hash: manifest.manifest_hash.to_string(),
+        coordinator_manifest_signature: manifest.coordinator_signature.to_string(),
     }
 }
 

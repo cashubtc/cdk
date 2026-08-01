@@ -5,8 +5,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use bitcoin::hashes::{sha256, Hash};
 use cdk_common::federation::{
     FederationCheckpointPolicy, FederationConfig, FederationDkgCeremonyId, FederationDkgKeysetSpec,
-    FederationPaymentObservationPolicy, MemberConfigPrivate, MemberConfigPublic, MemberId,
-    ThresholdParams, FEDERATION_MAX_DKG_MEMBERS,
+    FederationPaymentObservationPolicy, FederationSetupAuthorizationHash, MemberConfigPrivate,
+    MemberConfigPublic, MemberId, ThresholdParams, FEDERATION_MAX_DKG_MEMBERS,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
@@ -81,8 +81,15 @@ pub(crate) fn run_dkg_roster_command(args: &FederationDkgRosterArgs) -> Result<(
     threshold_params
         .validate_bft_safety()
         .context("unsafe production federation threshold profile")?;
-    let mut public_config = FederationConfig::new(threshold_params, members, Vec::new())
-        .context("invalid setup-only federation roster")?;
+    let temporary_setup_authorization =
+        FederationSetupAuthorizationHash::from_bytes(SecretKey::generate().to_secret_bytes());
+    let mut public_config = FederationConfig::new(
+        temporary_setup_authorization,
+        threshold_params,
+        members,
+        Vec::new(),
+    )
+    .context("invalid setup-only federation roster")?;
     if let Some(payment_threshold) = args.payment_observation_threshold {
         public_config.payment_observation_policy =
             FederationPaymentObservationPolicy::member_quorum(payment_threshold);

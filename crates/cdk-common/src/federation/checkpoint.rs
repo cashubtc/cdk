@@ -1581,8 +1581,11 @@ impl FederationCheckpointQuorum {
         // establishes every config invariant that grants checkpoint authority.
         // In particular, malformed thresholds must never manufacture an empty
         // `VerifiedFederationCheckpointQuorum`.
-        let expected_federation_id =
-            FederationConfig::derive_federation_id(config.threshold_params, &config.members)?;
+        let expected_federation_id = FederationConfig::derive_federation_id(
+            config.setup_authorization,
+            config.threshold_params,
+            &config.members,
+        )?;
         if expected_federation_id != config.federation_id {
             return Err(FederationError::FederationIdMismatch {
                 expected: expected_federation_id,
@@ -1786,7 +1789,13 @@ mod tests {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        let config = FederationConfig::new(params, members, Vec::new()).expect("config");
+        let config = FederationConfig::new(
+            crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+            params,
+            members,
+            Vec::new(),
+        )
+        .expect("config");
         let private_configs = (1..=4)
             .map(|id| {
                 let member_id = member_id(id);
@@ -2037,7 +2046,7 @@ mod tests {
                 finalized_digest.as_str(),
             ),
             (
-                "61b0608c5a52cc89337cc93cc1d78993e17672c7c2178ccb8f8d00d53a6ae6d5",
+                "a4c7c40f068a7f7e3eb431237c494e59ebb329167ab6a5a5123c8c70d8115628",
                 "6f98c1caffcb0b8c7970d6b697c821e0f46949fce43c74c4e349a10e38ccfb3d",
                 "d741b5d8863d623672627c1d7fd5ccea7a0420e78b9b68ac89b231ae2be5daa2",
             )
@@ -2459,6 +2468,7 @@ mod tests {
             .expect("member")
             .identity_public_key = identity_secret(8).public_key();
         other_config.federation_id = FederationConfig::derive_federation_id(
+            other_config.setup_authorization,
             other_config.threshold_params,
             &other_config.members,
         )

@@ -929,6 +929,7 @@ fn write_dkg_setup_route_probe_requests(
         })?;
     }
     let mut final_public_config = FederationConfig::new(
+        public_config.setup_authorization,
         public_config.threshold_params,
         public_config.members.clone(),
         vec![route_probe_keyset],

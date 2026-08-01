@@ -564,7 +564,7 @@ impl FederationBarkPolicyConfig {
         Ok(config)
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         let outgoing_safety_window = self
             .refresh_before_expiry_blocks
             .saturating_sub(self.emergency_exit_before_expiry_blocks);

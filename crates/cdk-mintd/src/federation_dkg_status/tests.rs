@@ -214,6 +214,7 @@ fn dkg_completion_fixture(local_member: MemberId) -> DkgCompletionFixture {
         .derive_member_keyset_share(&setup_public_config, &reveals, local_member, &contributions)
         .expect("local member keyset share");
     let mut final_public_config = FederationConfig::new(
+        cdk_common::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
         setup_public_config.threshold_params,
         setup_public_config.members.clone(),
         vec![keyset_share.keyset.clone()],

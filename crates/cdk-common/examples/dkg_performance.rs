@@ -772,6 +772,7 @@ impl BaseFixture {
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
         let public_config = FederationConfig::new(
+            cdk_common::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
             ThresholdParams::with_bft_consensus(profile.members, profile.threshold)?,
             members,
             Vec::new(),

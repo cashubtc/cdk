@@ -1,8 +1,9 @@
 # Federated Cashu multi-operator setup implementation plan
 
-> **Status — Milestone 0 complete, 2026-08-01:** The v1 transcript, threat
-> model, protocol limits, and executable 2-of-3, 3-of-5, and maximum-member
-> fixed vectors are frozen. Milestone 1 domain types are next. This document
+> **Status — Milestone 1 complete, 2026-08-01:** The pure setup domain,
+> canonical artifact validation, certified-manifest derivation, and mandatory
+> public-config authorization binding are implemented and verified. Milestone
+> 2 durable setup storage is next. This document
 > defines the implementation sequence for replacing CDK's file-mediated
 > federation enrollment and roster assembly with an authenticated, restartable
 > multi-operator setup workflow.
@@ -669,18 +670,55 @@ for at least 2-of-3, 3-of-5, and maximum-member proposal shapes.
 
 ### Milestone 1 — Pure setup domain types
 
-- [ ] Implement setup IDs, enrollment, proposal, approval, manifest, canonical
+- [x] Implement setup IDs, enrollment, proposal, approval, manifest, canonical
   hashing, validation, and redacted diagnostics in `cdk-common`.
-- [ ] Derive setup-only federation config, keyset spec, ceremony ID, and FROST
+- [x] Derive setup-only federation config, keyset spec, ceremony ID, and FROST
   root policy from one validated manifest.
-- [ ] Add the required setup authorization hash to public config validation.
-- [ ] Add compile-time feature isolation so standalone builds do not acquire
+- [x] Add the required setup authorization hash to public config validation.
+- [x] Add compile-time feature isolation so standalone builds do not acquire
   federation setup behavior.
 
 **Tests:** canonical reordering, field tampering, wrong signer, missing/extra
 approval, duplicate identity/URL/member ID, unsafe threshold, incompatible
 version, oversized input, redacted debug, serialization round trip, and exact
 derived-config equality.
+
+**Completed 2026-08-01:**
+
+- Added the feature-gated setup domain in
+  `crates/cdk-common/src/federation/setup/mod.rs`, including bounded and
+  versioned invitations, signed enrollments, canonical proposal publication,
+  unanimous approvals, certified manifests, URL and identifier validation,
+  exact protocol tuples, FROST application policy, and redacted invitation
+  diagnostics.
+- Setup proposals canonicalize keysets and member records, reject zero or
+  duplicate setup bindings, use domain-separated binary transcripts, and
+  derive the setup authorization and DKG ceremony ID independently. The frozen
+  2-of-3, 3-of-5, and 64-member vectors now exercise the production encoder and
+  signature validators rather than only the reference implementation.
+- `FederationConfig` now requires `setup_authorization` during construction and
+  deserialization, includes it in federation-ID derivation and therefore in
+  full config validation and config digests, and preserves it when final
+  configs are assembled. Digest fixtures affected by that deliberate identity
+  change were regenerated.
+- Added `crates/cdk-common/tests/federation_setup_domain.rs` with eight focused
+  cases covering canonical reordering, proposal/manifest/approval tampering,
+  wrong signers, missing and extra approvals, duplicate identity/URL/member and
+  invitation bindings, unsafe thresholds, incompatible versions, size limits,
+  expiry behavior, secret redaction, strict serialization, mandatory setup
+  authorization, and exact manifest-derived configuration.
+- Verified with `cargo test -p cdk-common --features federation` (480 passed,
+  4 ignored), `cargo clippy -p cdk-common --features federation --all-targets -- -D warnings`,
+  `cargo check -p cdk-common --no-default-features`, and
+  `cargo check --workspace --all-targets`. All changed Rust sources passed
+  targeted `rustfmt`; the Milestone 0 note about the unusable workspace-wide
+  format check remains applicable.
+- The existing file-mediated `federation dkg-roster` command receives an
+  explicit temporary authorization so it remains buildable until its removal
+  in Milestone 7. Test-only trusted-dealer setup uses a deterministic,
+  domain-separated authorization until Milestone 7 replaces those callers with
+  strict signed-manifest fixtures. DKG record/message binding to the manifest
+  remains intentionally deferred to Milestone 5.
 
 ### Milestone 2 — Durable setup storage
 

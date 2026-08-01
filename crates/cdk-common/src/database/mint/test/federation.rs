@@ -152,6 +152,7 @@ fn dkg_public_config() -> FederationConfig {
         (member_id(2), member_public(2)),
     ]);
     FederationConfig::new(
+        crate::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
         ThresholdParams::new(2, 2, 2).expect("threshold params"),
         members,
         Vec::new(),

@@ -15,6 +15,7 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use super::dkg::{FederationDkgTranscript, FederationDkgTranscriptHash};
 use super::frost_config::FederationFrostWalletConfig;
 use super::operation::{FederationKeysetRotationOperation, FederationPaymentObservationQuorum};
+use super::setup::FederationSetupAuthorizationHash;
 use super::{
     append_bytes, append_str, FederationCheckpointPolicy, FederationError, Result,
     FEDERATION_CONFIG_DIGEST_VERSION, FEDERATION_INVITE_PREFIX, FEDERATION_INVITE_VERSION,
@@ -972,6 +973,8 @@ impl FederatedKeyset {
 pub struct FederationConfig {
     /// Stable federation roster ID.
     pub federation_id: FederationId,
+    /// Unanimously approved setup proposal authorization.
+    pub setup_authorization: FederationSetupAuthorizationHash,
     /// Wallet-facing federation protocol required by this public config.
     pub wallet_protocol_version: u16,
     /// Federation threshold settings.
@@ -998,13 +1001,16 @@ impl FederationConfig {
     ///
     /// Development setup must replace the payment policy explicitly before signing the config.
     pub fn new(
+        setup_authorization: FederationSetupAuthorizationHash,
         threshold_params: ThresholdParams,
         members: BTreeMap<MemberId, MemberConfigPublic>,
         keysets: Vec<FederatedKeyset>,
     ) -> Result<Self> {
-        let federation_id = Self::derive_federation_id(threshold_params, &members)?;
+        let federation_id =
+            Self::derive_federation_id(setup_authorization, threshold_params, &members)?;
         let config = Self {
             federation_id,
+            setup_authorization,
             wallet_protocol_version: FEDERATION_WALLET_PROTOCOL_VERSION,
             threshold_params,
             members,
@@ -1022,6 +1028,7 @@ impl FederationConfig {
 
     /// Derive the deterministic federation ID from threshold params and roster.
     pub fn derive_federation_id(
+        setup_authorization: FederationSetupAuthorizationHash,
         threshold_params: ThresholdParams,
         members: &BTreeMap<MemberId, MemberConfigPublic>,
     ) -> Result<FederationId> {
@@ -1035,6 +1042,7 @@ impl FederationConfig {
 
         let mut transcript = Vec::new();
         append_bytes(&mut transcript, FEDERATION_ROSTER_HASH_VERSION);
+        transcript.extend_from_slice(&setup_authorization.to_bytes());
         transcript.extend_from_slice(&threshold_params.member_count.to_be_bytes());
         transcript.extend_from_slice(&threshold_params.signature_threshold.to_be_bytes());
         transcript.extend_from_slice(&threshold_params.consensus_threshold.to_be_bytes());
@@ -1088,7 +1096,11 @@ impl FederationConfig {
             self.wallet_protocol_version,
         )?;
 
-        let expected_id = Self::derive_federation_id(self.threshold_params, &self.members)?;
+        let expected_id = Self::derive_federation_id(
+            self.setup_authorization,
+            self.threshold_params,
+            &self.members,
+        )?;
         if expected_id != self.federation_id {
             return Err(FederationError::FederationIdMismatch {
                 expected: expected_id,
@@ -1128,7 +1140,11 @@ impl FederationConfig {
             self.wallet_protocol_version,
         )?;
 
-        let expected_id = Self::derive_federation_id(self.threshold_params, &self.members)?;
+        let expected_id = Self::derive_federation_id(
+            self.setup_authorization,
+            self.threshold_params,
+            &self.members,
+        )?;
         if expected_id != self.federation_id {
             return Err(FederationError::FederationIdMismatch {
                 expected: expected_id,
