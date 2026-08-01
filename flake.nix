@@ -1359,6 +1359,12 @@
             '';
             doCheck = false;
             installPhaseCommand = "";
+            # mkCargoDerivation would otherwise also compress the whole cargo
+            # target dir into $out/target.tar.zst (crane's cargoArtifacts
+            # mechanism). Nothing consumes this package's artifacts and the
+            # extra tarball (~4.7 GB) nearly doubles the store path that binary
+            # caches have to push and every runner has to pull, so skip it.
+            doInstallCargoArtifacts = false;
           }
         );
 
@@ -1389,6 +1395,7 @@
         # Expose deps for explicit cache warming
         packages = {
           default = defaultPackage;
+          attic-client = pkgs.attic-client;
           deps = workspaceDeps;
           deps-msrv = workspaceDepsMsrv;
           # Language bindings (cached cdylib + uniffi codegen)

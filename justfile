@@ -86,6 +86,14 @@ attic-push:
     '.#default'
     '.#deps'
     '.#deps-msrv'
+    '.#itest-archive'
+    '.#start-fake-mint'
+    '.#start-regtest-mints'
+    '.#start-fake-auth-mint'
+    '.#start-regtest'
+    '.#signatory'
+    '.#cdk-payment-processor'
+    '.#cdk-mintd-grpc'
   )
   system="$(nix eval --impure --raw --expr builtins.currentSystem)"
   if [[ "$system" == *-linux ]]; then
@@ -180,14 +188,10 @@ test:
   # Unit/lib tests always run from source (not included in the nextest archive)
   cargo test --lib --workspace --exclude cdk-postgres
 
-  # Run pure integration tests
-  if [ -n "${CDK_ITEST_ARCHIVE:-}" ] && [ -f "$CDK_ITEST_ARCHIVE" ]; then
-    # Run the mint integration test from the pre-built nextest archive
-    cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(/^mint$/)"
-  else
-    # Run pure integration tests
-    cargo test -p cdk-integration-tests --test mint
-  fi
+  # Run the mint integration test (from the pre-built nextest archive when
+  # CDK_ITEST_ARCHIVE is set, otherwise via cargo test)
+  source ./misc/itest_helpers.sh
+  run_test mint
 
 test-units:
   #!/usr/bin/env bash
@@ -241,11 +245,13 @@ test-pure db="memory":
   fi
 
   if [ -n "${CDK_ITEST_ARCHIVE:-}" ] && [ -f "$CDK_ITEST_ARCHIVE" ]; then
-    # Run pure integration tests from nextest archive
-    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~integration_tests_pure)" -j 1
-    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~test_swap_flow)" -j 1
-    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~wallet_saga)" -j 1
-    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~nwc_e2e)" -j 1
+    # Run pure integration tests from nextest archive (extracted once, reused)
+    source ./misc/itest_helpers.sh
+    export CDK_TEST_DB_TYPE={{db}}
+    run_test integration_tests_pure -j 1
+    run_test test_swap_flow -j 1
+    run_test wallet_saga -j 1
+    run_test nwc_e2e -j 1
   else
     # Run pure integration tests (cargo test will only build what's needed for the test)
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure -- --test-threads 1

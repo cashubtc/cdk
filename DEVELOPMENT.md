@@ -209,10 +209,11 @@ attic login cashudevkit-cache <attic-api-endpoint> <write-token>
 just attic-push
 ```
 
-The recipe pushes the default package plus the reusable native and MSRV Crane
-dependency artifacts. On Linux it also pushes the static-musl dependencies;
-that target is skipped automatically on macOS. Attic credentials are local
-publisher secrets and must not be committed to the repository.
+The recipe pushes the default package, reusable native and MSRV Crane
+dependency artifacts, and the integration-test archive and harness binaries.
+On Linux it also pushes the static-musl dependencies; that target is skipped
+automatically on macOS. Attic credentials are local publisher secrets and must
+not be committed to the repository.
 
 ### Release Binaries
 

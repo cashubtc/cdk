@@ -18,6 +18,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # Extract the ~19 GB nextest archive once per runner host, shared by all
+  # jobs on that host, instead of once per job into each job's TMPDIR
+  # (per-job extraction multiplied disk usage and filled self-hosted runner
+  # disks when several itest jobs ran concurrently).
+  CDK_NEXTEST_EXTRACT_ROOT: /var/tmp/cdk-nextest-extract
 
 jobs:
   pre-commit-checks:
@@ -63,7 +68,16 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Build shared Crane dependencies
-        run: nix build -L .#deps
+        run: nix build -L .#deps --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
+      # Deps change only with Cargo.lock/toolchain, so this mostly dedupes.
+      - name: Push to Attic cache
+        # Never push from fork PRs (secrets are withheld there anyway; belt and braces).
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+          ATTIC_CACHE: ${{ vars.ATTIC_CACHE }}
+        run: nix shell .#attic-client --command misc/attic_push.sh "$RUNNER_TEMP/cdk-cache-paths.txt"
 
   warm-msrv-nix-cache:
     name: "Warm MSRV Nix cache (${{ matrix.host }})"
@@ -84,7 +98,17 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Build MSRV Crane dependencies
-        run: nix build -L .#deps-msrv
+        run: nix build -L .#deps-msrv --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths-msrv.txt"
+      # MSRV deps change only with Cargo.lock.msrv/toolchain, so this mostly
+      # dedupes; without it every new revision rebuilds them from scratch.
+      - name: Push to Attic cache
+        # Never push from fork PRs (secrets are withheld there anyway; belt and braces).
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+          ATTIC_CACHE: ${{ vars.ATTIC_CACHE }}
+        run: nix shell .#attic-client --command misc/attic_push.sh "$RUNNER_TEMP/cdk-cache-paths-msrv.txt"
 
   quick-check:
     name: "Quick Check (workspace clippy)"
@@ -185,7 +209,18 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Run clippy and tests
-        run: nix build -L .#checks.x86_64-linux.${{ matrix.check }}
+        run: nix build -L .#checks.x86_64-linux.${{ matrix.check }} --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
+      # Push per-revision check outputs so re-runs and rebased PRs substitute
+      # them instead of recompiling; cachix's 5 GB quota evicts them within
+      # days (this is why Check jobs bounce between ~0.2 min and ~20 min).
+      - name: Push to Attic cache
+        # Never push from fork PRs (secrets are withheld there anyway; belt and braces).
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+          ATTIC_CACHE: ${{ vars.ATTIC_CACHE }}
+        run: nix shell .#attic-client --command misc/attic_push.sh "$RUNNER_TEMP/cdk-cache-paths.txt"
 
   # Pre-build integration test binaries via Nix/Crane (cached by Cachix)
   # This builds both the test harness binaries (included in the regtest dev shell)
@@ -214,7 +249,18 @@ jobs:
             .#start-regtest \
             .#signatory \
             .#cdk-payment-processor \
-            .#cdk-mintd-grpc
+            .#cdk-mintd-grpc \
+            --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
+      # Push the per-revision archive + harness binaries to the self-hosted
+      # Attic cache instead of churning the 5 GB Cachix quota.
+      - name: Push to Attic cache
+        # Never push from fork PRs (secrets are withheld there anyway; belt and braces).
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+          ATTIC_CACHE: ${{ vars.ATTIC_CACHE }}
+        run: nix shell .#attic-client --command misc/attic_push.sh "$RUNNER_TEMP/cdk-cache-paths.txt"
 
   # Tests that require a running PostgreSQL instance
   postgres-tests:
@@ -426,7 +472,7 @@ jobs:
       - name: Resolve nextest archive path
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
-      - name: Test fake mint
+      - name: Test pure
         run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just test-pure ${{ matrix.database }}"
       - name: Basic mint integration test
         if: matrix.database == 'memory'
@@ -435,7 +481,8 @@ jobs:
             set -euo pipefail
             export TMPDIR=\$(mktemp -d -p \"\$PWD\")
             export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
-            cargo nextest run --archive-file \"\$CDK_ITEST_ARCHIVE\" --workspace-remap . -E \"binary(/^mint$/)\"
+            source ./misc/itest_helpers.sh
+            run_test mint
           "
 
   payment-processor-itests:
