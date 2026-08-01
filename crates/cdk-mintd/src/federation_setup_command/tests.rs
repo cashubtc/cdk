@@ -11,13 +11,15 @@ use cdk_common::federation::{
     FederationCheckpointPolicy, FederationDkgKeysetSpec, FederationPaymentObservationPolicy,
     FederationSetupApproval, FederationSetupBitcoinNetwork, FederationSetupEnrollment,
     FederationSetupFrostApplication, FederationSetupFrostPolicy, FederationSetupInvitation,
-    FederationSetupInvitationState, FederationSetupProposal, FederationSetupUrlPolicy, MemberId,
-    ThresholdParams, FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+    FederationSetupInvitationState, FederationSetupParticipantPhase, FederationSetupProposal,
+    FederationSetupUrlPolicy, MemberId, ThresholdParams,
+    FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::{Amount, CurrencyUnit};
 use cdk_sqlite::MintSqliteDatabase;
 use tempfile::TempDir;
+use tokio::sync::oneshot;
 
 use super::*;
 
@@ -433,6 +435,209 @@ async fn independent_operators_review_and_approve_without_copying_private_materi
     ] {
         assert_protected(&path);
     }
+}
+
+#[tokio::test]
+async fn ordinary_http_client_drives_three_independent_operator_stores_to_certification() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("setup listener");
+    let coordinator_address = listener.local_addr().expect("setup address");
+    let now = current_unix_time().expect("current time");
+    let root = TempDir::new().expect("test directory");
+    let creator_dir = root.path().join("creator");
+    let member_two_dir = root.path().join("member-two");
+    let member_three_dir = root.path().join("member-three");
+    for directory in [&creator_dir, &member_two_dir, &member_three_dir] {
+        std::fs::create_dir(directory).expect("independent operator directory");
+    }
+
+    let creator_config = creator_dir.join("setup.json");
+    let creator_db_path = creator_dir.join("mint.sqlite");
+    let creator_db = Arc::new(
+        MintSqliteDatabase::new(creator_db_path.clone())
+            .await
+            .expect("creator database"),
+    );
+    let mut spec = create_spec();
+    spec.coordinator_url = mint_url(&format!("http://{coordinator_address}"));
+    let created = create_setup(
+        creator_db.as_ref(),
+        &creator_config,
+        &creator_dir,
+        &creator_db_path,
+        &spec,
+        now,
+    )
+    .await
+    .expect("creator setup");
+    let (_, creator_secrets) = load_local_state(&creator_config, now).expect("creator state");
+    let dynamic_database: cdk_common::database::DynMintDatabase = creator_db.clone();
+    let service = Arc::new(
+        cdk_axum::FederationSetupCoordinatorService::new(
+            dynamic_database,
+            created.setup_id,
+            3,
+            creator_secrets
+                .coordinator_secret_key
+                .clone()
+                .expect("coordinator secret"),
+            URL_POLICY,
+            cdk_axum::FederationSetupCoordinatorServiceConfig::default(),
+        )
+        .expect("setup service"),
+    );
+    let router = cdk_axum::create_federation_setup_router(service.clone());
+    let (shutdown, shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async {
+            let _ = shutdown_receiver.await;
+        })
+        .await
+        .expect("setup server");
+    });
+
+    let member_two_id = MemberId::new(2).expect("member two");
+    let member_three_id = MemberId::new(3).expect("member three");
+    let member_two_invitation = read_invitation(
+        created
+            .invitation_paths
+            .get(&member_two_id)
+            .expect("member two invitation"),
+    );
+    let member_three_invitation = read_invitation(
+        created
+            .invitation_paths
+            .get(&member_three_id)
+            .expect("member three invitation"),
+    );
+    let member_two_config = member_two_dir.join("setup.json");
+    let member_three_config = member_three_dir.join("setup.json");
+    let member_two_db_path = member_two_dir.join("mint.sqlite");
+    let member_three_db_path = member_three_dir.join("mint.sqlite");
+    let member_two_db = MintSqliteDatabase::new(member_two_db_path.clone())
+        .await
+        .expect("member two database");
+    let member_three_db = MintSqliteDatabase::new(member_three_db_path.clone())
+        .await
+        .expect("member three database");
+    let coordinator = HttpSetupCoordinator::default();
+    let (member_two_join, member_three_join) = tokio::join!(
+        join_setup(
+            &member_two_db,
+            &coordinator,
+            &member_two_config,
+            &member_two_dir,
+            &member_two_db_path,
+            member_two_invitation,
+            mint_url("http://127.0.0.1:8412"),
+            mint_url("http://127.0.0.1:8512"),
+            URL_POLICY,
+            now,
+        ),
+        join_setup(
+            &member_three_db,
+            &coordinator,
+            &member_three_config,
+            &member_three_dir,
+            &member_three_db_path,
+            member_three_invitation,
+            mint_url("http://127.0.0.1:8413"),
+            mint_url("http://127.0.0.1:8513"),
+            URL_POLICY,
+            now,
+        )
+    );
+    member_two_join.expect("member two HTTP join");
+    member_three_join.expect("member three HTTP join");
+
+    let proposal = propose_setup(creator_db.as_ref(), &creator_config, now)
+        .await
+        .expect("publish proposal");
+    review_local_proposal(creator_db.as_ref(), &creator_config, proposal.clone(), now)
+        .await
+        .expect("creator review");
+    let (member_two_review, member_three_review) = tokio::join!(
+        fetch_and_review_proposal(&member_two_db, &coordinator, &member_two_config, now),
+        fetch_and_review_proposal(&member_three_db, &coordinator, &member_three_config, now,)
+    );
+    assert_eq!(
+        member_two_review.expect("member two review"),
+        member_three_review.expect("member three review")
+    );
+    approve_setup(
+        creator_db.as_ref(),
+        &coordinator,
+        &creator_config,
+        proposal.proposal_hash,
+        now,
+    )
+    .await
+    .expect("creator approval");
+    let (member_two_approval, member_three_approval) = tokio::join!(
+        approve_setup(
+            &member_two_db,
+            &coordinator,
+            &member_two_config,
+            proposal.proposal_hash,
+            now,
+        ),
+        approve_setup(
+            &member_three_db,
+            &coordinator,
+            &member_three_config,
+            proposal.proposal_hash,
+            now,
+        )
+    );
+    member_two_approval.expect("member two approval");
+    member_three_approval.expect("member three approval");
+
+    let (member_two_status, member_three_status) = tokio::join!(
+        setup_status(&member_two_config),
+        setup_status(&member_three_config)
+    );
+    assert_eq!(
+        member_two_status
+            .expect("member two status")
+            .coordinator_phase,
+        cdk_common::federation::FederationSetupCoordinatorPhase::Certified
+    );
+    assert_eq!(
+        member_three_status
+            .expect("member three status")
+            .coordinator_phase,
+        cdk_common::federation::FederationSetupCoordinatorPhase::Certified
+    );
+    for (database, config_path) in [
+        (&member_two_db, &member_two_config),
+        (&member_three_db, &member_three_config),
+    ] {
+        let config = read_local_config(config_path).expect("member config");
+        let session = database
+            .get_federation_setup_session(created.setup_id)
+            .await
+            .expect("member session")
+            .expect("member session exists");
+        assert_eq!(
+            session.participant_phase,
+            FederationSetupParticipantPhase::Certified
+        );
+        let manifest = database
+            .get_federation_setup_manifest(config.setup_id)
+            .await
+            .expect("member manifest")
+            .expect("member manifest exists");
+        assert_eq!(manifest.proposal.proposal_hash, proposal.proposal_hash);
+    }
+
+    let _ = shutdown.send(());
+    server.await.expect("setup server task");
+    service.shutdown().await;
 }
 
 #[cfg(unix)]

@@ -3892,7 +3892,7 @@ async fn durable_dkg_transcript_fixture() -> (
     let keyset_share =
         derive_and_persist_dkg_member_keyset_share(&state, &setup_public_config).await;
     let mut final_public_config = FederationConfig::new(
-        cdk_common::federation::FederationSetupAuthorizationHash::from_bytes([1; 32]),
+        setup_public_config.setup_authorization,
         setup_public_config.threshold_params,
         setup_public_config.members.clone(),
         vec![keyset_share.keyset.clone()],

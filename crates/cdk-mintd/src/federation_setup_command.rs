@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
@@ -19,10 +20,11 @@ use cdk_common::federation::{
     FederationSetupFrostPolicy, FederationSetupId, FederationSetupInvitation,
     FederationSetupInvitationCapability, FederationSetupInvitationId,
     FederationSetupInvitationRecord, FederationSetupInvitationState, FederationSetupLocalRole,
-    FederationSetupParticipantPhase, FederationSetupProposal, FederationSetupProposalBody,
-    FederationSetupProposalHash, FederationSetupProposalReview, FederationSetupProtocolVersions,
-    FederationSetupSession, FederationSetupUrlPolicy, MemberId, ThresholdParams,
-    FEDERATION_SETUP_MAX_INVITATION_LIFETIME_SECS, FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+    FederationSetupManifest, FederationSetupParticipantPhase, FederationSetupProposal,
+    FederationSetupProposalBody, FederationSetupProposalHash, FederationSetupProposalReview,
+    FederationSetupProtocolVersions, FederationSetupSession, FederationSetupUrlPolicy, MemberId,
+    ThresholdParams, FEDERATION_SETUP_MAX_INVITATION_LIFETIME_SECS,
+    FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::SecretKey;
@@ -122,10 +124,30 @@ pub(crate) async fn run_setup_command(args: &cli::FederationSetupArgs) -> Result
             println!("member_id: {}", invitation.member_id.get());
             println!("invitation_file: {}", args.output.display());
         }
-        cli::FederationSetupCommand::Join(_) => {
-            bail!(
-                "setup join requires the bounded coordinator transport introduced by Milestone 4"
-            );
+        cli::FederationSetupCommand::Join(args) => {
+            let invitation =
+                read_private_text_file(&args.invitation_file, "federation setup invitation")?
+                    .trim()
+                    .parse::<FederationSetupInvitation>()
+                    .context("invalid federation setup invitation")?;
+            let db = cdk_sqlite::MintSqliteDatabase::new(args.database.clone())
+                .await
+                .context("failed to open federation setup database")?;
+            let enrollment = join_setup(
+                &db,
+                &HttpSetupCoordinator::default(),
+                &args.config,
+                &args.state_dir,
+                &args.database,
+                invitation,
+                parse_mint_url(&args.public_mint_url, "public mint URL")?,
+                parse_mint_url(&args.federation_api_url, "federation API URL")?,
+                setup_url_policy(args.allow_insecure_localhost),
+                current_unix_time()?,
+            )
+            .await?;
+            println!("setup_id: {}", enrollment.setup_id);
+            println!("member_id: {}", enrollment.member_id.get());
         }
         cli::FederationSetupCommand::Propose(args) => {
             let config = read_local_config(&args.config)?;
@@ -140,13 +162,25 @@ pub(crate) async fn run_setup_command(args: &cli::FederationSetupArgs) -> Result
             let db = cdk_sqlite::MintSqliteDatabase::new(config.database_path().to_path_buf())
                 .await
                 .context("failed to open federation setup database")?;
-            let proposal = db
-                .get_federation_setup_proposal(config.setup_id())
-                .await
-                .context("failed to load the local setup proposal")?
-                .ok_or_else(|| anyhow!("no local setup proposal is available to review"))?;
-            let review =
-                review_local_proposal(&db, &args.config, proposal, current_unix_time()?).await?;
+            let review = match config.local_role {
+                FederationSetupLocalRole::Coordinator { .. } => {
+                    let proposal = db
+                        .get_federation_setup_proposal(config.setup_id())
+                        .await
+                        .context("failed to load the local setup proposal")?
+                        .ok_or_else(|| anyhow!("no local setup proposal is available to review"))?;
+                    review_local_proposal(&db, &args.config, proposal, current_unix_time()?).await?
+                }
+                FederationSetupLocalRole::Member { .. } => {
+                    fetch_and_review_proposal(
+                        &db,
+                        &HttpSetupCoordinator::default(),
+                        &args.config,
+                        current_unix_time()?,
+                    )
+                    .await?
+                }
+            };
             match args.json {
                 true => println!("{}", review.to_pretty_json()?),
                 false => println!("{review}"),
@@ -154,14 +188,6 @@ pub(crate) async fn run_setup_command(args: &cli::FederationSetupArgs) -> Result
         }
         cli::FederationSetupCommand::Approve(args) => {
             let config = read_local_config(&args.config)?;
-            if !matches!(
-                config.local_role,
-                FederationSetupLocalRole::Coordinator { .. }
-            ) {
-                bail!(
-                    "joining-member approval requires the bounded coordinator transport introduced by Milestone 4"
-                );
-            }
             let db = cdk_sqlite::MintSqliteDatabase::new(config.database_path().to_path_buf())
                 .await
                 .context("failed to open federation setup database")?;
@@ -169,13 +195,39 @@ pub(crate) async fn run_setup_command(args: &cli::FederationSetupArgs) -> Result
                 .context("invalid exact proposal hash")?;
             let approval = approve_setup(
                 &db,
-                &UnavailableCoordinator,
+                &HttpSetupCoordinator::default(),
                 &args.config,
                 hash,
                 current_unix_time()?,
             )
             .await?;
             println!("approved_proposal_hash: {}", approval.proposal_hash);
+        }
+        cli::FederationSetupCommand::Serve(args) => {
+            serve_setup_coordinator(&args.config, args.listen).await?;
+        }
+        cli::FederationSetupCommand::Status(args) => {
+            let status = setup_status(&args.config).await?;
+            match args.json {
+                true => println!("{}", serde_json::to_string_pretty(&status)?),
+                false => {
+                    println!("setup_id: {}", status.setup_id);
+                    println!(
+                        "phase: {}",
+                        coordinator_phase_label(status.coordinator_phase)
+                    );
+                    println!(
+                        "enrollments: {}/{}",
+                        status.enrolled_members.len(),
+                        status.member_count
+                    );
+                    println!(
+                        "approvals: {}/{}",
+                        status.approved_members.len(),
+                        status.member_count
+                    );
+                }
+            }
         }
     }
     Ok(())
@@ -187,33 +239,190 @@ pub(crate) async fn run_setup_command(_args: &cli::FederationSetupArgs) -> Resul
 }
 
 #[cfg(feature = "sqlite")]
-struct UnavailableCoordinator;
+#[derive(Debug, Default)]
+struct HttpSetupCoordinator(cdk_axum::FederationSetupHttpClient);
 
 #[cfg(feature = "sqlite")]
 #[async_trait]
-impl FederationSetupCoordinator for UnavailableCoordinator {
+impl FederationSetupCoordinator for HttpSetupCoordinator {
     async fn enroll(
         &self,
-        _invitation: &FederationSetupInvitation,
-        _enrollment: &FederationSetupEnrollment,
+        invitation: &FederationSetupInvitation,
+        enrollment: &FederationSetupEnrollment,
     ) -> Result<FederationSetupEnrollment> {
-        bail!("coordinator transport is unavailable")
+        self.0
+            .enroll(invitation, enrollment)
+            .await
+            .context("setup enrollment HTTP request failed")
     }
 
     async fn proposal(
         &self,
-        _invitation: &FederationSetupInvitation,
+        invitation: &FederationSetupInvitation,
     ) -> Result<FederationSetupProposal> {
-        bail!("coordinator transport is unavailable")
+        self.0
+            .proposal(invitation)
+            .await
+            .context("setup proposal HTTP request failed")
     }
 
     async fn approve(
         &self,
-        _invitation: &FederationSetupInvitation,
-        _approval: &cdk_common::federation::FederationSetupApproval,
+        invitation: &FederationSetupInvitation,
+        approval: &cdk_common::federation::FederationSetupApproval,
     ) -> Result<cdk_common::federation::FederationSetupApproval> {
-        bail!("coordinator transport is unavailable")
+        self.0
+            .approve(invitation, approval)
+            .await
+            .context("setup approval HTTP request failed")
     }
+}
+
+#[cfg(feature = "sqlite")]
+async fn serve_setup_coordinator(config_path: &Path, listen: std::net::SocketAddr) -> Result<()> {
+    let now_unix = current_unix_time()?;
+    let (config, secrets) = load_local_state(config_path, now_unix)?;
+    let draft = config
+        .coordinator
+        .as_ref()
+        .ok_or_else(|| anyhow!("only the setup creator can run the coordinator service"))?;
+    let coordinator_secret_key = secrets
+        .coordinator_secret_key
+        .clone()
+        .ok_or_else(|| anyhow!("protected setup coordinator identity is missing"))?;
+    let database: cdk_common::database::DynMintDatabase = Arc::new(
+        cdk_sqlite::MintSqliteDatabase::new(config.database_path().to_path_buf())
+            .await
+            .context("failed to open federation setup database")?,
+    );
+    let service = Arc::new(
+        cdk_axum::FederationSetupCoordinatorService::new(
+            database,
+            config.setup_id,
+            draft.threshold_params.member_count,
+            coordinator_secret_key,
+            config.url_policy,
+            cdk_axum::FederationSetupCoordinatorServiceConfig::default(),
+        )
+        .context("failed to initialize setup coordinator service")?,
+    );
+    let router = cdk_axum::create_federation_setup_router(service.clone());
+    let listener = tokio::net::TcpListener::bind(listen)
+        .await
+        .context("failed to bind setup-only coordinator listener")?;
+    println!("setup_id: {}", config.setup_id);
+    println!("setup_only_listen: {listen}");
+    let server = axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::warn!("setup coordinator shutdown signal failed: {error}");
+        }
+    });
+    let result = server.await.context("setup-only coordinator server failed");
+    service.shutdown().await;
+    result
+}
+
+#[cfg(feature = "sqlite")]
+async fn setup_status(config_path: &Path) -> Result<cdk_common::federation::FederationSetupStatus> {
+    let now_unix = current_unix_time()?;
+    let (config, secrets) = load_local_state(config_path, now_unix)?;
+    let database = cdk_sqlite::MintSqliteDatabase::new(config.database_path().to_path_buf())
+        .await
+        .context("failed to open federation setup database")?;
+    match config.local_role {
+        FederationSetupLocalRole::Coordinator { .. } => {
+            let draft = config
+                .coordinator
+                .as_ref()
+                .ok_or_else(|| anyhow!("local coordinator policy is missing"))?;
+            let coordinator_secret_key = secrets
+                .coordinator_secret_key
+                .clone()
+                .ok_or_else(|| anyhow!("protected setup coordinator identity is missing"))?;
+            let database: cdk_common::database::DynMintDatabase = Arc::new(database);
+            let service = cdk_axum::FederationSetupCoordinatorService::new(
+                database,
+                config.setup_id,
+                draft.threshold_params.member_count,
+                coordinator_secret_key,
+                config.url_policy,
+                cdk_axum::FederationSetupCoordinatorServiceConfig::default(),
+            )
+            .context("failed to initialize local setup status reader")?;
+            service
+                .local_status()
+                .await
+                .context("failed to read local setup status")
+        }
+        FederationSetupLocalRole::Member { .. } => {
+            let invitation = secrets
+                .invitation
+                .as_ref()
+                .ok_or_else(|| anyhow!("protected joining invitation is missing"))?;
+            let client = cdk_axum::FederationSetupHttpClient::default();
+            let status = client
+                .status(invitation)
+                .await
+                .context("failed to fetch authenticated setup status")?;
+            if status.manifest_hash.is_some() {
+                let manifest = client
+                    .manifest(invitation)
+                    .await
+                    .context("failed to fetch authenticated certified manifest")?;
+                persist_local_manifest(&database, &config, &secrets, &manifest, now_unix).await?;
+            }
+            Ok(status)
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+async fn persist_local_manifest<DB>(
+    database: &DB,
+    config: &FederationSetupLocalConfig,
+    secrets: &FederationSetupLocalSecrets,
+    manifest: &FederationSetupManifest,
+    now_unix: u64,
+) -> Result<()>
+where
+    DB: Database<DatabaseError> + Send + Sync + 'static,
+{
+    manifest
+        .validate(config.url_policy)
+        .context("invalid certified setup manifest")?;
+    validate_proposal_for_local_state(&manifest.proposal, config, secrets)?;
+    if let Some(existing) = database
+        .get_federation_setup_manifest(config.setup_id)
+        .await
+        .context("failed to load local certified setup manifest")?
+    {
+        if existing != *manifest {
+            bail!("local setup is already certified by a different manifest");
+        }
+        return Ok(());
+    }
+    let session = require_local_session(database, config).await?;
+    if session.participant_phase != FederationSetupParticipantPhase::Approved {
+        bail!("certified manifest cannot be persisted before local approval");
+    }
+    let certified = session
+        .with_participant_phase(FederationSetupParticipantPhase::Certified, now_unix)
+        .context("manifest certification is not legal in the current setup phase")?;
+    let mut transaction = Database::begin_transaction(database)
+        .await
+        .context("failed to begin setup manifest transaction")?;
+    transaction
+        .store_federation_setup_manifest(&session, &certified, manifest)
+        .await
+        .context("failed to persist certified setup manifest")?;
+    transaction
+        .commit()
+        .await
+        .context("failed to commit certified setup manifest")
 }
 
 #[cfg(feature = "sqlite")]
@@ -231,6 +440,21 @@ fn setup_url_policy(allow_insecure_localhost: bool) -> FederationSetupUrlPolicy 
     match allow_insecure_localhost {
         true => FederationSetupUrlPolicy::AllowInsecureLocalhost,
         false => FederationSetupUrlPolicy::RequireHttps,
+    }
+}
+
+#[cfg(feature = "sqlite")]
+const fn coordinator_phase_label(
+    phase: cdk_common::federation::FederationSetupCoordinatorPhase,
+) -> &'static str {
+    use cdk_common::federation::FederationSetupCoordinatorPhase;
+
+    match phase {
+        FederationSetupCoordinatorPhase::CollectingEnrollments => "collecting_enrollments",
+        FederationSetupCoordinatorPhase::ProposalPublished => "proposal_published",
+        FederationSetupCoordinatorPhase::Certified => "certified",
+        FederationSetupCoordinatorPhase::Closed => "closed",
+        FederationSetupCoordinatorPhase::Aborted => "aborted",
     }
 }
 

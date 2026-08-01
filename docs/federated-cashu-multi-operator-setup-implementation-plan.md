@@ -1,9 +1,10 @@
 # Federated Cashu multi-operator setup implementation plan
 
-> **Status — Milestone 3 complete, 2026-08-01:** The pure setup domain,
+> **Status — Milestone 4 complete, 2026-08-01:** The pure setup domain,
 > durable SQLite/PostgreSQL state, protected local identities and invitations,
-> immutable proposal review, and exact-hash approval fence are implemented and
-> verified. Milestone 4's bounded coordinator HTTP service and client are next.
+> immutable proposal review, exact-hash approval fence, and bounded setup-only
+> coordinator HTTP service and authenticated client are implemented and
+> verified. Milestone 5's certified-manifest handoff to DKG is next.
 > This document
 > defines the implementation sequence for replacing CDK's file-mediated
 > federation enrollment and roster assembly with an authenticated, restartable
@@ -628,6 +629,19 @@ The wallet crates, wallet database, public Cashu routes, mint business logic,
 AlephBFT ordering, and payment backends should require no setup-specific
 behavior.
 
+## Coding-agent goal prompt
+
+Implement this plan milestone by milestone while following
+`docs/federated-cashu-implementation-plan.md` as the governing contract. After
+each milestone, run proportional checks, update this implementation plan with
+the exact progress and verification evidence, and create a separate
+conventional commit. Finish with a real Nocean deployment based on
+`scripts/deploy_nocean_federation.sh`: use independent per-operator tmux
+sessions and state, exercise the ordinary public CLI setup workflow, and prove
+that every member enters DKG independently and concurrently without centralized
+private configuration or member-by-member orchestration. A new deployment
+script may be added for the invitation-based CLI flow.
+
 ## Milestone sequence
 
 Each milestone must be a coherent, independently testable change. Record exact
@@ -877,19 +891,72 @@ private material.
 
 ### Milestone 4 — Bounded coordinator service
 
-- [ ] Implement the setup-only Axum router, invitation authentication,
+- [x] Implement the setup-only Axum router, invitation authentication,
   enrollment consumption, proposal publication, approval collection, manifest
   certification, and status.
-- [ ] Add strict request/response limits, deadlines, rate limits, no-store
+- [x] Add strict request/response limits, deadlines, rate limits, no-store
   headers, redirect rejection, and redacted structured errors.
-- [ ] Keep local lifecycle actions off the network router.
-- [ ] Add cancellation ownership so timed-out requests cannot leave overlapping
+- [x] Keep local lifecycle actions off the network router.
+- [x] Add cancellation ownership so timed-out requests cannot leave overlapping
   uncancellable storage or signature work.
 
 **Tests:** real localhost HTTP with network permission, invalid/expired/replayed
 invitations, concurrent enrollment, wrong setup identity, signature failure,
 proposal equivocation, approval conflict, slow client, oversized body, storage
 failure, rate saturation, and clean shutdown.
+
+**Milestone 4 implementation note (2026-08-01):**
+
+- Added a setup-only Axum service with exactly five authenticated protocol
+  routes: enrollment, proposal, approval, manifest, and bounded status. It
+  validates the one-use invitation capability against durable metadata, pins
+  the setup ID and coordinator identity, accepts exact enrollment and approval
+  replays, rejects conflicting replays, and atomically stores the final
+  approval, certified manifest, and coordinator phase. Invitation expiry blocks
+  an unused slot but does not strand an operator that already consumed the
+  invitation and is continuing the same ceremony.
+- Added coordinator-signed response envelopes bound to the route, request
+  correlation nonce, setup ID, protocol version, canonical response-body hash,
+  and pinned setup identity. The client uses one nonce across bounded retries,
+  disables redirects, enforces response limits and deadlines, validates every
+  signed response, and never accepts ambient DNS or redirect identity as the
+  trust root.
+- Applied body and response limits, a whole-request timeout that includes body
+  extraction, global/per-source/per-invitation concurrency admission, bounded
+  weak-key admission maps, `Cache-Control: no-store` on success and failure,
+  and stable redacted error codes. Timed-out operation tasks retain their owned
+  permits until completion; shutdown rejects new work and waits for every owned
+  task, closing the cancellation race without serializing DKG computation.
+- Added `federation setup serve` as an isolated setup-only listener and made
+  member `join`, `review`, `approve`, and `status` use the authenticated HTTP
+  client. Member status atomically persists and validates a ready certified
+  manifest. Proposal creation, creator review/approval, activation, abort, and
+  service management remain local actions; no wallet, runtime, activation, or
+  remote process-management route was added.
+- The real-localhost setup suite passes (`6 passed`) and covers concurrent
+  invitation ownership, exact replay, invalid/expired credentials, bad member
+  signatures, proposal readiness and equivocation, coordinator-identity
+  mismatch, approval conflict, complete certification, redirects, slow and
+  oversized bodies, injected storage failure, admission saturation and stale
+  key cleanup, no-store errors, timeout ownership, and clean shutdown. The
+  ordinary three-operator HTTP workflow passes with independent directories and
+  SQLite databases, concurrent member enrollment and approval, identical
+  reviews/manifests, and local transition to `Certified`.
+- `cdk-common` with federation passed (`484 passed`, `4 ignored`), the complete
+  serial `cdk-mintd` federation suite passed (`230 passed`), and the final
+  focused three-operator HTTP workflow passed after the timeout/admission
+  hardening. The `cdk-axum` regression run with a 16 MiB test-thread stack
+  passed `567` tests and exposed five failures in two older DKG test fixtures
+  that rebuilt final configs with a hard-coded setup authorization; both
+  fixtures now preserve the setup config's authorization, and all seven tests
+  in the affected groups pass when rerun (`1 + 1 + 5`). The known deep AlephBFT
+  test that overflows the platform's default test-thread stack passes with the
+  larger stack.
+- `cargo check --workspace --all-targets`, federation-disabled `cdk-common`,
+  strict changed-crate Clippy, targeted `rustfmt`, and `git diff --check` pass.
+  Clippy required explicit allowances only for pre-existing findings outside
+  this milestone, and workspace-wide formatting remains blocked by the
+  pre-existing unformatted sibling Bark dependency.
 
 ### Milestone 5 — Certified-manifest handoff to DKG
 

@@ -47,6 +47,7 @@ cdk-bdk = { workspace = true, optional = true, features = ["bitcoin-rpc", "esplo
 cdk-bark = { workspace = true, optional = true }
 cdk-http-client = { workspace = true, features = ["bitreq"] }
 tokio.workspace = true
+tower = { workspace = true, features = ["timeout"] }
 tracing.workspace = true
 thiserror.workspace = true
 futures.workspace = true
@@ -76,6 +77,7 @@ bip39 = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 musig2.workspace = true
+reqwest.workspace = true
 
 [lints]
 workspace = true

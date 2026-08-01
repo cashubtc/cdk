@@ -21,9 +21,15 @@ use super::{
 use crate::mint_url::MintUrl;
 use crate::nuts::nut01::{PublicKey, SecretKey};
 
+mod http;
 mod persistence;
 mod review;
 
+pub use self::http::{
+    FederationSetupCorrelationNonce, FederationSetupEnrollmentAcknowledgement,
+    FederationSetupResponseBody, FederationSetupResponseEnvelope, FederationSetupResponseRouteKind,
+    FederationSetupSignedResponse, FederationSetupStatus, FEDERATION_SETUP_CORRELATION_HEADER,
+};
 pub use self::persistence::{
     FederationSetupActivation, FederationSetupCoordinatorPhase, FederationSetupInvitationRecord,
     FederationSetupInvitationState, FederationSetupLocalRole, FederationSetupParticipantPhase,
@@ -176,6 +182,11 @@ setup_hash_type!(
     /// Canonical hash of one complete manifest approval certificate.
     FederationSetupManifestHash,
     "setup manifest hash"
+);
+setup_hash_type!(
+    /// Canonical hash of one complete signed setup enrollment.
+    FederationSetupEnrollmentHash,
+    "setup enrollment hash"
 );
 
 impl From<FederationSetupProposalHash> for FederationSetupAuthorizationHash {
@@ -1676,7 +1687,8 @@ impl FederationSetupManifest {
         Ok(config)
     }
 
-    fn canonical_bytes(&self) -> Result<Vec<u8>> {
+    /// Return the canonical complete manifest bytes.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
         let proposal_body = self.proposal.body.canonical_bytes()?;
         let mut output = Vec::new();
         append_bytes(&mut output, &proposal_body)?;

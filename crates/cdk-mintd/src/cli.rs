@@ -407,6 +407,10 @@ pub enum FederationSetupCommand {
     Review(FederationSetupReviewArgs),
     /// Approve exactly one previously reviewed proposal hash.
     Approve(FederationSetupApproveArgs),
+    /// Run only the bounded setup coordinator HTTP service.
+    Serve(FederationSetupServeArgs),
+    /// Show authenticated setup progress and persist a ready manifest.
+    Status(FederationSetupStatusArgs),
 }
 
 #[cfg(feature = "federation")]
@@ -545,6 +549,28 @@ pub struct FederationSetupApproveArgs {
     /// Exact proposal hash displayed by `setup review`.
     #[arg(long)]
     pub proposal_hash: String,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationSetupServeArgs {
+    /// Protected creator setup config path.
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Socket address for the isolated setup-only HTTP service.
+    #[arg(long)]
+    pub listen: std::net::SocketAddr,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationSetupStatusArgs {
+    /// Protected local setup config path.
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Print the stable machine-readable status document.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub json: bool,
 }
 
 #[cfg(feature = "federation")]
@@ -1165,6 +1191,27 @@ mod tests {
             ])
             .expect("setup config command parses");
         }
+        CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "setup",
+            "serve",
+            "--config",
+            "operator/setup.json",
+            "--listen",
+            "127.0.0.1:18080",
+        ])
+        .expect("setup-only serve command parses");
+        CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "setup",
+            "status",
+            "--config",
+            "operator/setup.json",
+            "--json",
+        ])
+        .expect("setup status command parses");
         CLIArgs::try_parse_from([
             "cdk-mintd",
             "federation",

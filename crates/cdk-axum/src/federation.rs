@@ -65,6 +65,7 @@ mod payment_schedule;
 pub(crate) mod peer_client;
 mod private_request;
 pub(crate) mod runtime_components;
+mod setup;
 mod status_routes;
 mod sync_config;
 mod sync_loop;
@@ -134,6 +135,11 @@ pub(crate) use self::payment_observation::FederationPaymentObserver;
 #[cfg(test)]
 use self::peer_client::FederationRestPeerClient;
 pub(super) use self::private_request::admit_private_request;
+pub use self::setup::{
+    create_federation_setup_router, FederationSetupCoordinatorService,
+    FederationSetupCoordinatorServiceConfig, FederationSetupHttpClient, FederationSetupHttpError,
+    FederationSetupHttpErrorCode,
+};
 use self::status_routes::{post_local_status, post_status};
 #[cfg(test)]
 use self::sync_config::FederationPeerReconnectBackoff;
