@@ -184,7 +184,7 @@ impl Wallet {
                     "Receive saga {} - input proofs not spent, compensating",
                     saga_id
                 );
-                self.mark_transaction_failed_best_effort(*saga_id).await;
+                self.mark_transaction_failed(*saga_id).await?;
                 self.compensate_receive(saga_id).await?;
                 Ok(RecoveryAction::Compensated)
             }

@@ -45,7 +45,7 @@ impl Wallet {
                     "Send saga {} in ProofsReserved state - compensating",
                     saga.id
                 );
-                self.mark_transaction_failed_best_effort(saga.id).await;
+                self.mark_transaction_failed(saga.id).await?;
                 self.compensate_send(&saga.id).await?;
                 Ok(RecoveryAction::Compensated)
             }

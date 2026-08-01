@@ -1239,9 +1239,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
         let operation_id = self.state_data.operation_id;
         let final_proofs = &self.state_data.final_proofs;
 
-        self.wallet
-            .mark_transaction_failed_best_effort(operation_id)
-            .await;
+        self.wallet.mark_transaction_failed(operation_id).await?;
         self.wallet
             .localstore
             .update_proofs_state(final_proofs.ys()?, State::Unspent)
@@ -1296,9 +1294,7 @@ impl<'a> MeltSaga<'a, PaymentPending> {
             final_proofs.total_amount().unwrap_or(Amount::ZERO)
         );
 
-        self.wallet
-            .mark_transaction_failed_best_effort(operation_id)
-            .await;
+        self.wallet.mark_transaction_failed(operation_id).await?;
         self.wallet
             .localstore
             .update_proofs_state(final_proofs.ys()?, State::Unspent)

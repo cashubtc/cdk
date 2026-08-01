@@ -976,9 +976,7 @@ impl<'a> SendSaga<'a, Prepared> {
                         "Send saga confirmation failed (definitive): {}. Running compensations.",
                         e
                     );
-                    self.wallet
-                        .mark_transaction_failed_best_effort(operation_id)
-                        .await;
+                    self.wallet.mark_transaction_failed(operation_id).await?;
                     execute_compensations(&mut self.compensations).await?;
                 }
                 Err(e)

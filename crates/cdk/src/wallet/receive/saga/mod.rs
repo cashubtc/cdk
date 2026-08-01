@@ -415,9 +415,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             Err(err) => {
                 if err.is_definitive_failure() {
                     tracing::error!("Failed to post swap request (definitive): {}", err);
-                    self.wallet
-                        .mark_transaction_failed_best_effort(operation_id)
-                        .await;
+                    self.wallet.mark_transaction_failed(operation_id).await?;
                     execute_compensations(&mut self.compensations).await?;
                 } else {
                     tracing::warn!("Failed to post swap request (ambiguous): {}.", err,);

@@ -77,7 +77,7 @@ impl Wallet {
                     "Issue saga {} in SecretsPrepared state - cleaning up",
                     saga.id
                 );
-                self.mark_transaction_failed_best_effort(saga.id).await;
+                self.mark_transaction_failed(saga.id).await?;
                 self.compensate_issue(&saga.id).await?;
                 Ok(RecoveryAction::Compensated)
             }
@@ -107,7 +107,7 @@ impl Wallet {
         let replay_result = self.try_replay_mint(saga_id, data).await;
         if let Err(e) = &replay_result {
             if is_mint_limit_error(e) {
-                self.mark_transaction_failed_best_effort(*saga_id).await;
+                self.mark_transaction_failed(*saga_id).await?;
                 self.compensate_issue(saga_id).await?;
             }
         }

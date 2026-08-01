@@ -1003,9 +1003,7 @@ impl<'a> MintSaga<'a, Prepared> {
                         "Mint saga execution failed (definitive): {}. Running compensations.",
                         e
                     );
-                    wallet
-                        .mark_transaction_failed_best_effort(operation_id)
-                        .await;
+                    wallet.mark_transaction_failed(operation_id).await?;
                     if let Err(comp_err) = execute_compensations(&mut compensations).await {
                         tracing::error!("Compensation failed: {}", comp_err);
                     }

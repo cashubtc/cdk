@@ -87,18 +87,14 @@ impl Wallet {
         Ok(true)
     }
 
-    /// Mark a saga transaction as failed without blocking its compensation path.
-    pub(crate) async fn mark_transaction_failed_best_effort(&self, saga_id: uuid::Uuid) {
-        if let Err(error) = self
-            .update_transaction_status_by_saga_id(saga_id, TransactionStatus::Failed)
-            .await
-        {
-            tracing::warn!(
-                saga_id = %saga_id,
-                %error,
-                "Failed to mark transaction as failed; continuing compensation"
-            );
-        }
+    /// Mark a saga transaction as failed before compensating it.
+    ///
+    /// Persistence errors are propagated so compensation cannot delete the
+    /// saga before its transaction reaches a durable terminal state.
+    pub(crate) async fn mark_transaction_failed(&self, saga_id: uuid::Uuid) -> Result<(), Error> {
+        self.update_transaction_status_by_saga_id(saga_id, TransactionStatus::Failed)
+            .await?;
+        Ok(())
     }
 
     /// Get proofs for a transaction by transaction ID
