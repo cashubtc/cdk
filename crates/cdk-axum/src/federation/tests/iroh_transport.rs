@@ -10,6 +10,25 @@ fn federation_test_router(state: MintState) -> Router {
         .with_state(state)
 }
 
+fn spawn_http_federation_server(
+    listener: tokio::net::TcpListener,
+    state: MintState,
+) -> (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, federation_test_router(state))
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("HTTP federation server");
+    });
+    (shutdown, task)
+}
+
 #[tokio::test]
 async fn one_hybrid_transport_dials_mixed_http_and_iroh_roster() {
     let first_node = cdk_iroh::IrohNode::ephemeral(cdk_iroh::IrohConfig::static_only())
@@ -191,4 +210,203 @@ async fn all_iroh_private_routes_preserve_dkg_signatures_and_replay_fences() {
     second_server.shutdown().await.expect("second Iroh shutdown");
     first_server.shutdown().await.expect("first Iroh shutdown");
     third_node.close().await;
+}
+
+#[tokio::test]
+async fn mixed_http_iroh_roster_operates_restarts_and_catches_up() {
+    let nodes = vec![
+        cdk_iroh::IrohNode::ephemeral(cdk_iroh::IrohConfig::static_only())
+            .await
+            .expect("first client node"),
+        cdk_iroh::IrohNode::ephemeral(cdk_iroh::IrohConfig::static_only())
+            .await
+            .expect("second server node"),
+        cdk_iroh::IrohNode::ephemeral(cdk_iroh::IrohConfig::static_only())
+            .await
+            .expect("third client node"),
+    ];
+    for source in &nodes {
+        for target in &nodes {
+            if source.endpoint_id() != target.endpoint_id() {
+                source.add_ticket(target.endpoint_ticket());
+            }
+        }
+    }
+    let first_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("first HTTP listener");
+    let first_address = first_listener.local_addr().expect("first HTTP address");
+    let third_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("third HTTP listener");
+    let third_address = third_listener.local_addr().expect("third HTTP address");
+    let federation_api_urls = vec![
+        MintUrl::from_str(&format!("http://{first_address}"))
+            .expect("first HTTP federation URL"),
+        iroh_federation_url(nodes[1].endpoint_id()),
+        MintUrl::from_str(&format!("http://{third_address}"))
+            .expect("third HTTP federation URL"),
+    ];
+    let (public, private) = transport_config_with_member_federation_api_urls(
+        ThresholdParams::with_bft_consensus(3, 2).expect("three-member thresholds"),
+        federation_api_urls,
+    );
+    let first_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("first db"));
+    let first_seed = Mnemonic::generate(12)
+        .expect("first mnemonic")
+        .to_seed_normalized("");
+    let mut first_state = federation_route_state_for_private_with_db(
+        public.clone(),
+        private[0].clone(),
+        Arc::clone(&first_db),
+        &first_seed,
+    )
+    .await;
+    let mut second_state =
+        federation_route_state_for_private(public.clone(), private[1].clone()).await;
+    let mut third_state =
+        federation_route_state_for_private(public.clone(), private[2].clone()).await;
+    first_state.federation.transport = federation_transport_with_iroh_node(nodes[0].clone());
+    second_state.federation.transport = federation_transport_with_iroh_node(nodes[1].clone());
+    third_state.federation.transport = federation_transport_with_iroh_node(nodes[2].clone());
+
+    let (first_shutdown, first_task) =
+        spawn_http_federation_server(first_listener, first_state.clone());
+    let second_server =
+        cdk_iroh::IrohServer::start(nodes[1].clone(), federation_test_router(second_state.clone()));
+    let (third_shutdown, third_task) =
+        spawn_http_federation_server(third_listener, third_state.clone());
+    let clients = private
+        .iter()
+        .cloned()
+        .zip(nodes.iter().cloned())
+        .map(|(private, node)| {
+            FederationRestPeerClient::new(
+                federation_transport_with_iroh_node(node),
+                &public,
+                private,
+            )
+            .expect("mixed federation peer client")
+        })
+        .collect::<Vec<_>>();
+    for client in &clients {
+        for member in public.members.values() {
+            assert_eq!(
+                client
+                    .peer_status(member)
+                    .await
+                    .expect("directed mixed peer status")
+                    .member_id,
+                member.member_id
+            );
+        }
+    }
+
+    let quote_id = QuoteId::new();
+    second_state
+        .submit_federation_envelope(mint_quote_envelope(&second_state, &quote_id))
+        .await
+        .expect("source operation before target restart");
+    let (_, quorum) = recovery_checkpoint_quorum_for_state(
+        &second_state,
+        &public,
+        None,
+        &[&private[0], &private[1], &private[2]],
+    )
+    .await;
+    let mut transaction = second_state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin source checkpoint promotion");
+    transaction
+        .promote_verified_federation_checkpoint(
+            &quorum.verify(&public).expect("verify source checkpoint quorum"),
+        )
+        .await
+        .expect("promote source checkpoint");
+    transaction.commit().await.expect("commit source checkpoint");
+    let mut transaction = second_state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin source backup transaction");
+    transaction
+        .replace_federation_aleph_bft_backup_chunks(
+            quorum.checkpoint.aleph_bft_session,
+            &[vec![1; 16]],
+        )
+        .await
+        .expect("persist source backup");
+    transaction
+        .set_federation_aleph_bft_active_session(quorum.checkpoint.aleph_bft_session)
+        .await
+        .expect("persist source active session");
+    transaction.commit().await.expect("commit source backup");
+
+    first_shutdown.send(()).expect("stop first HTTP member");
+    first_task.await.expect("first HTTP server task");
+    drop(first_state);
+    let mut restarted_first = federation_route_state_for_private_with_db(
+        public.clone(),
+        private[0].clone(),
+        Arc::clone(&first_db),
+        &first_seed,
+    )
+    .await;
+    let (replayed_consensus, replayed_sequences) =
+        crate::create_federation_runtime_state(&restarted_first.mint)
+            .await
+            .expect("replay first runtime after restart");
+    restarted_first.federation.consensus = replayed_consensus;
+    restarted_first.federation.sequences = replayed_sequences;
+    restarted_first.federation.transport =
+        federation_transport_with_iroh_node(nodes[0].clone());
+    let restarted_listener = tokio::net::TcpListener::bind(first_address)
+        .await
+        .expect("restarted first HTTP listener");
+    let (restarted_shutdown, restarted_task) =
+        spawn_http_federation_server(restarted_listener, restarted_first.clone());
+    let restarted_client = FederationRestPeerClient::new(
+        federation_transport_with_iroh_node(nodes[0].clone()),
+        &public,
+        private[0].clone(),
+    )
+    .expect("restarted mixed peer client");
+    let source_member = public.member(member_id(2)).expect("Iroh source member");
+    assert_eq!(
+        run_federation_peer_sync_round(
+            &restarted_first,
+            &restarted_client,
+            std::slice::from_ref(source_member),
+        )
+        .await,
+        1
+    );
+    let source_status = restarted_client
+        .sync_once_from_member(&restarted_first, source_member)
+        .await
+        .expect("catch up restarted HTTP member from Iroh member");
+    assert_eq!(source_status.operation_count, 1);
+    assert!(restarted_first
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("caught-up quote lookup")
+        .is_some());
+
+    restarted_shutdown
+        .send(())
+        .expect("stop restarted first HTTP member");
+    restarted_task
+        .await
+        .expect("restarted first HTTP server task");
+    third_shutdown.send(()).expect("stop third HTTP member");
+    third_task.await.expect("third HTTP server task");
+    second_server.shutdown().await.expect("second Iroh shutdown");
+    nodes[0].close().await;
+    nodes[2].close().await;
 }

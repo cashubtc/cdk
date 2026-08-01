@@ -2,7 +2,7 @@
 
 > **Status — implementation in progress 2026-08-01:** This document is the
 > implementation and review contract for adding Iroh beside HTTP(S).
-> Milestones 0 through 3 are complete. It does not authorize an
+> Milestones 0 through 4 are complete. It does not authorize an
 > endpoint-by-endpoint reimplementation of the Cashu API. If the generic
 > HTTP/WebSocket-over-Iroh bridge described below proves infeasible, stop and
 > amend this plan before widening the integration surface.
@@ -938,9 +938,9 @@ Verification evidence:
 - [x] Accept `iroh` in setup, enrollment, mintd, and DKG secure URL policies.
 - [x] Allow one Iroh endpoint to be both the public and federation base URL.
 - [x] Add exact roster URL/endpoint-ID startup validation.
-- [ ] Run a mixed HTTPS/Iroh federation through normal operation, restart, and
+- [x] Run a mixed HTTPS/Iroh federation through normal operation, restart, and
   catch-up.
-- [ ] Run an all-Iroh federation through setup, DKG, FROST, AlephBFT,
+- [x] Run an all-Iroh federation through setup, DKG, FROST, AlephBFT,
   checkpoint, wallet, and recovery flows.
 - [x] Confirm signed request and replay rejection tests are byte-for-byte
   transport independent.
@@ -949,8 +949,9 @@ Verification evidence:
 **Gate:** No DKG, FROST, consensus, checkpoint, catch-up, or Bark state-machine
 source branches on transport scheme.
 
-**Progress:** the integration and local protocol coverage are complete; the
-Nocean deployment gate is in progress. `FederationTransport` is constructed
+**Progress:** complete. The integration, local protocol coverage, directed
+mixed-transport restart/catch-up case, and one-server Nocean all-Iroh
+deployment gate pass. `FederationTransport` is constructed
 once and cloned through setup, DKG, FROST signing, AlephBFT, peer sync,
 checkpoint/catch-up, wallet liveness, Bark, and every operator client. URL
 scheme dispatch remains below `FederationRestPeerClient`; none of those state
@@ -1000,14 +1001,38 @@ Local verification evidence:
 - the focused operator-identity test proves a CLI client uses a different
   ephemeral endpoint and neither overwrites nor claims the persistent endpoint
   ticket/key, while exact roster tests continue to bind the advertised local
-  URL to that protected key.
+  URL to that protected key; and
+- `mixed_http_iroh_roster_operates_restarts_and_catches_up` runs a three-member
+  HTTP/Iroh/HTTP roster through all nine directed signed status paths, commits
+  an operation plus recovery checkpoint on the Iroh member, restarts an HTTP
+  member from its durable database, and catches it up through the Iroh route.
 
-The remaining Milestone 4 proof is the one-server Nocean drill requested for
-the available infrastructure: five independent protected directories and tmux
-operator sessions, five existing public HTTPS DNS subdomains, five persistent
-Iroh federation endpoints, and all user-entered setup/DKG/runtime steps over
-Iroh N0. This exercises operational isolation on one machine; it does not
-claim five-machine fault-domain independence.
+Nocean verification evidence:
+
+- source revision `5df42fdb4a7d1d91efa44689b5fa5ce44b769c3c` passed with
+  clean deployment scripts on one server, five independent protected
+  directories, five independent operator tmux sessions, threshold three of
+  five, five existing public HTTPS DNS subdomains, and five distinct persistent
+  Iroh N0 federation endpoints;
+- the ordinary `setup create`, `join`, `propose`, `review`, `approve`,
+  `status`, `serve`, and `activate` UX ran in those operator sessions. The
+  coordinator stopped after certification and all five DKG services started
+  concurrently; dealer-free BLS plus FROST DKG finalized in 21 seconds;
+- byte-identical activated public configs, strict runtime readiness and digest
+  convergence, AlephBFT startup, a public-HTTPS threshold wallet read, a
+  one-member outage/catch-up, coordinated restart, and encrypted operator-local
+  backup/restore all passed while private traffic remained Iroh-only;
+- the full run took 938 seconds including a clean Linux release build and five
+  binary transfers. Sampled peak DKG RSS was 295,004 KiB total and 59,544 KiB
+  for one member; and
+- the wallet drill intentionally remained read-only (`mint-info` and empty
+  balance) because this Signet configuration has no funded payment backend.
+  Paid wallet flows and checkpoint state transitions remain covered by the
+  local all-Iroh protocol suites and are not falsely attributed to Nocean.
+
+This exercises operational isolation on one machine; it does not claim
+five-machine fault-domain independence. The redacted reproducible record is
+`docs/federated-cashu-nocean-multi-operator-drill.md`.
 
 ### Milestone 5 — hardening and release evidence
 

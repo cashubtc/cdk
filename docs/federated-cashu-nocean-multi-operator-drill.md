@@ -2,16 +2,18 @@
 
 ## Result
 
-The 2026-08-01 invitation-based setup deployment passed on source revision
-`5d4381051d32a5d8e50bef76cae69b213fa72949`.
+The 2026-08-01 invitation-based Iroh setup deployment passed on source revision
+`5df42fdb4a7d1d91efa44689b5fa5ce44b769c3c`.
 
 This was a **single-host, five-operator deployment**, not a multi-machine run.
 It is the accepted cost-constrained topology for the current federation-setup
 milestone: one Nocean server, five independent operator environments, and
-separate public mint and private federation DNS subdomains for every member.
-The strict deployment mode still requires five unique machines for a future
-parent-plan production run. This result closes the multi-operator setup
-deployment milestone, but it does not close that separate multi-host gate.
+five existing public mint DNS subdomains. Setup and every private federation
+route used five distinct persistent Iroh N0 endpoints; no private federation
+DNS name or certificate was used. The strict deployment mode still requires
+five unique machines for a future parent-plan production run. This result
+closes the Iroh multi-operator setup/DKG deployment gate, but it does not close
+that separate multi-host gate.
 
 No invitation, credential, private key, private config, machine identity,
 server address, operator path, wallet seed, or generated deployment artifact is
@@ -27,9 +29,9 @@ included in this report.
 - The deployment driver transferred only protected invitation files. All other
   cross-operator data used authenticated setup, DKG, and runtime protocol
   messages.
-- Five public mint HTTPS virtual hosts and five distinct private federation
-  HTTPS virtual hosts terminated at the Nocean reverse proxy and forwarded to
-  operator-local loopback listeners.
+- Five public mint HTTPS virtual hosts terminated at the existing Nocean
+  reverse proxy. Setup, DKG, FROST, AlephBFT, checkpoint/catch-up, status, and
+  other private federation calls used Iroh endpoint URLs directly.
 - The operator panes executed the normal public commands: `setup create`,
   `join`, `propose`, `review`, `approve`, `status`, `serve`, and `activate`.
 - After certification, the coordinator was stopped before all five DKG services
@@ -43,17 +45,17 @@ ready/converged federation status checks, and the separate wallet session.
 
 | Evidence | Value |
 |---|---|
-| Proposal/setup authorization | `39049ad2c7630391269a05b392087226814650e1a3b8c2184df330820be99de7` |
-| Certified manifest | `f620dbaaa03f53cc39955ae78d8c4b57156670972e04dc4603349543f62655fd` |
-| DKG transcript | `238b512f71607c10a1ebb1d01a1ab8ecb720b88b71f33b551d4427bdca7360cc` |
-| Final config digest | `849d66885b59a7d3dc93b24e707233bac7fe1b29b0c00750e6deebbef377e44a` |
-| Byte-identical public config | `cc83cf19d80d1be3271dfe69f4c65e0bb25499a4c0ee8d41d31bbfce82ef02f1` |
+| Proposal/setup authorization | `00dd0da71bbc84c5ecf34805c79a496b10afc540cfd39a365e513151370ec29d` |
+| Certified manifest | `25ae8923a5b074ec7357766cff3e711bb3097cbd89fbec9193dcb8932653aa0a` |
+| DKG transcript | `b81d1f88d7bfd29b8d7039019c62c05b49069ee2c8b88829e6883ecb150ee984` |
+| Final config digest | `ae4137b62b1498a9fff5b68a912110a038f1eb82b7c0e2b3d3c2b7c062f3e6d9` |
+| Byte-identical public config | `baba0460a383c081ea0e9ca35a931eb88ab30768321cdec6335989a6f9701e8b` |
 
-The DKG phase took 19 seconds. The full driver run, including cached release
-build verification, transfer, failure drill, setup, DKG,
+The concurrent DKG/FROST phase took 21 seconds. The full driver run, including
+a clean Linux release build verification, transfer, failure drill, setup, DKG,
 activation, runtime checks, wallet checks, restarts, backup, and report
-generation, took 239 seconds. Sampled peak DKG RSS was 215,692 KiB across all
-five services and 43,824 KiB for one service.
+generation, took 938 seconds. Sampled peak DKG RSS was 295,004 KiB across all
+five services and 59,544 KiB for one service.
 
 ## Failure and recovery drills
 
@@ -83,16 +85,38 @@ separate payment-backend gate.
 
 ## Issues corrected during the drill
 
-The live process exposed and fixed deployment-only integration gaps:
+The Iroh rerun retained the earlier deployment hardening and exposed one
+transport integration gap:
+
+- a current Iroh endpoint cannot connect to its own endpoint ID, while DKG
+  deliberately sends identical signed readiness and artifact requests to every
+  member, including self. The first run certified all five operators but stayed
+  at the DKG readiness barrier with zero participant states. The generic Iroh
+  client now uses one lazy unadvertised companion endpoint only for that local
+  target-ID case. The same router, signed request validation, replay fence,
+  admission limits, and shared connection pool remain in use; no DKG/FROST
+  state machine branch was added. A focused transport regression and a signed
+  federation self/remote/replay test cover the behavior.
+
+The deployment tooling also now:
+
+- initializes each protected Iroh endpoint before rendering operator metadata,
+  uses N0 discovery without ticket exchange, and keeps all private/setup URLs
+  off DNS;
+- runs one-shot setup and operator commands through ephemeral configured
+  dialing endpoints, while only `setup serve` and the mint runtime own the
+  protected persistent identity; and
+- checks setup readiness with the authenticated CLI over Iroh rather than
+  treating an HTTP status code as reachability.
+
+Earlier hardening retained by this run includes:
 
 - the Linux container build now mounts the optional Bark path dependency
   read-only because Cargo resolves the workspace path even without Bark
   features;
 - tmux sessions start with a stable idle pane before applying window policy;
-- authenticated setup readiness recognizes `401` while coordinator-loss checks
-  require both `200` and `401` to disappear;
-- the five distinct federation TLS virtual hosts are validated rather than
-  reusing public mint identities;
+- authenticated setup readiness and coordinator loss are checked through the
+  normal setup protocol;
 - the active setup ceremony and runtime use the same operator-local SQLite
   database, preserving activation evidence without a copy or migration;
 - the runtime payment configuration matches the certified FROST/BDK
@@ -112,7 +136,7 @@ The setup UX, identity isolation, concurrency, restart, and backup behavior are
 verified on the accepted one-server Nocean topology. This is not evidence of
 machine-level fault or administrative independence. The parent plan's future
 multi-host production gate still needs five supplied SSH operator environments,
-or another genuinely multi-machine topology, with the same public/private TLS
+or another genuinely multi-machine topology, with public HTTPS and private Iroh
 routing. The driver already rejects a false multi-host claim in strict mode and
 accepts exactly five SSH aliases, so no protocol or deployment-code change is
 required for that extension.
