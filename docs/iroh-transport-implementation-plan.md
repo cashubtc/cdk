@@ -1,0 +1,902 @@
+# Iroh transport for CDK: implementation plan
+
+> **Status — implementation in progress 2026-08-01:** This document is the
+> implementation and review contract for adding Iroh beside HTTP(S). Milestone
+> 0 is complete. It does not authorize an
+> endpoint-by-endpoint reimplementation of the Cashu API. If the generic
+> HTTP/WebSocket-over-Iroh bridge described below proves infeasible, stop and
+> amend this plan before widening the integration surface.
+
+## Outcome
+
+CDK wallets and federation members can use either ordinary HTTP(S) URLs or
+Iroh URLs:
+
+```text
+https://mint.example
+iroh://<endpoint-id>
+```
+
+The URL scheme selects the transport for each request. An Iroh-enabled client
+remains an HTTP(S) client too, so one wallet can talk to HTTPS and Iroh mints
+and one federation can contain HTTPS and Iroh members at the same time. There
+is no automatic fallback from one scheme to the other.
+
+The implementation lives primarily in a new `crates/cdk-iroh` crate. It plugs
+into the existing `cdk_http_client::Transport` boundary and forwards inbound
+Iroh requests to the same fully assembled Axum router used by the HTTP server.
+The existing wallet `HttpClient<T>` remains the one mapping of Cashu routes.
+The existing federation peer client remains the one mapping of private
+federation routes, including DKG, FROST, consensus, checkpoint, catch-up, and
+Bark traffic.
+
+The target shape is:
+
+```text
+MintUrl
+  |
+  v
+HttpClient<IrohTransport<Async>>
+  |-- http / https / ws / wss --> existing Async transport
+  `-- iroh ---------------------> cached Iroh connection
+                                      |
+                                      v
+                              HTTP/1.1 or WebSocket
+                              on an Iroh QUIC stream
+                                      |
+                    +-----------------+-----------------+
+                    |                                   |
+                 HTTPS TCP                         Iroh endpoint
+                    |                                   |
+                    +---------- same Axum Router -------+
+```
+
+## Complexity assessment
+
+This is a medium-to-high complexity transport addition, but it should have a
+small product-code integration surface.
+
+- The generic REST client integration is medium complexity because
+  `cdk_http_client::Transport` already exists and the wallet already maps every
+  Cashu endpoint through it.
+- The server bridge and native NUT-17 WebSocket upgrade are the main technical
+  risks. They must be proven with a small end-to-end spike before integration.
+- Mixed-transport federation is medium complexity once one shared transport is
+  injected at the federation runtime boundary. The route mapping itself must
+  not change.
+- Operational identity persistence, discovery, resource bounds, shutdown, and
+  adverse-network testing make the total effort larger than a single-file
+  patch even though normal Cashu handlers should not change.
+- Iroh's current stable release has an MSRV conflict with CDK that must be
+  resolved before implementation starts.
+
+The expected review shape is one substantial new crate plus small, mechanical
+changes at a few named seams. Endpoint handlers, mint business logic, wallet
+sagas, federation state machines, database schemas, and Cashu wire types are
+outside the permitted change surface.
+
+## Goals
+
+- Keep HTTP(S) behavior unchanged and available alongside Iroh.
+- Make `iroh://<endpoint-id>` work transparently with the ordinary wallet
+  builder and every native wallet-to-mint Cashu operation.
+- Carry REST, authentication headers, status codes, errors, bounded responses,
+  and NUT-17 subscriptions without a second Cashu API implementation.
+- Let a mint expose HTTP(S), Iroh, or both, with at least one listener required.
+- Let every federation member independently advertise an HTTPS or Iroh private
+  federation URL.
+- Support all-Iroh federations with no HTTPS certificates or DNS names.
+- Support mixed federations in which an HTTPS member calls an Iroh member and
+  an Iroh member calls an HTTPS member.
+- Reuse one persistent Iroh endpoint per mint for inbound and outbound traffic.
+- Preserve existing federation request signatures, replay protection,
+  idempotency, admission limits, and DKG/FROST state machines.
+- Keep builds that do not enable the `iroh` feature free of Iroh dependencies
+  and behavior changes.
+- Make future Axum routes available over Iroh automatically.
+
+## Non-goals
+
+- Replacing HTTP(S), Tor, Axum, or `cdk-http-client`.
+- Defining new Cashu request or response payloads.
+- Adding an Iroh alternative for every method in `MintConnector` or every
+  federation endpoint.
+- Encoding relay URLs, socket addresses, or discovery policy in `MintUrl`.
+- Silently falling back from Iroh to HTTPS, or from HTTPS to Iroh.
+- Treating Iroh connectivity as consensus, authorization, or replay
+  protection.
+- Removing application-layer encryption from DKG or FROST private messages.
+- Routing unrelated third-party protocols such as LNURL callbacks or an
+  external OIDC provider through Iroh. Their own URLs remain authoritative.
+- Browser/WASM support in version 1. Native mobile targets may be enabled only
+  after the selected Iroh version and CDK bindings compile and pass lifecycle
+  tests on those targets.
+- Transport redundancy under one mint URL. If CDK later needs ordered fallback
+  URLs, that is a separate URL/configuration design.
+
+## Thin-surface review contract
+
+The following are hard implementation constraints:
+
+1. `crates/cdk-iroh` owns all Iroh endpoint, connection, discovery, stream,
+   HTTP bridge, WebSocket bridge, error, and metrics code.
+2. `crates/cdk/src/wallet/mint_connector/http_client.rs` remains the only
+   wallet-side Cashu REST mapping. No Iroh-specific route is added there.
+3. `crates/cdk-axum` continues to build one Axum router. No second Iroh router
+   and no copied handler table are allowed.
+4. `FederationRestPeerClient` remains the only federation route mapping. DKG,
+   FROST, AlephBFT, checkpoints, catch-up, wallet liveness, and Bark do not get
+   Iroh-specific clients.
+5. Existing source changes are limited to dependency/feature declarations and
+   these integration seams:
+   - the default wallet transport alias/factory;
+   - preservation of the `iroh` scheme for NUT-17 and one generic
+     WebSocket-over-caller-stream constructor;
+   - mint listener construction, shared endpoint injection, and shutdown;
+   - federation default-transport construction; and
+   - URL/security policy validation for `iroh` as a secure transport.
+6. No wallet saga, mint operation, quote, proof, signing, consensus, DKG,
+   FROST, Bark, or persistence behavior may branch on `iroh`.
+7. An integration test with a route known only to a test Axum router must prove
+   that an unlisted future route works over Iroh. This is the regression test
+   against endpoint duplication.
+8. Any production-code change outside this list requires a written amendment
+   to this document explaining why the generic boundary was insufficient.
+
+Mechanical replacement of scattered `Async::default()` calls with a cloned
+runtime-owned default transport is permitted. It must be one transport
+injection refactor, not local Iroh logic in each caller.
+
+## Current CDK boundaries to reuse
+
+### Wallet client
+
+`cdk/src/wallet/mint_connector/http_client.rs` is already generic over
+`cdk_http_client::Transport`. All Cashu route joining, JSON serialization,
+authentication token selection, OIDC transport reuse, status mapping, NUT-19
+retry policy, and bounded response handling flow through that transport.
+
+The ordinary wallet type alias currently fixes the generic client to
+`transport::Async`. With `iroh` enabled, that alias should instead select the
+hybrid Iroh transport. Wallet construction and public wallet APIs should not
+change.
+
+### Mint server
+
+`cdk-axum` already produces an Axum `Router` containing `/v1`, authentication,
+custom payment-method routes, `/v1/ws`, and, when enabled,
+`/federation/v1`. `cdk-mintd` then adds body limits, compression, tracing, and
+custom routers before starting the TCP listener.
+
+The Iroh listener must receive a clone of that final router after all layers
+and merges. Passing an earlier router would create observable differences in
+limits, compression, tracing, custom routes, or authentication.
+
+### Federation client
+
+`cdk-axum/src/federation/peer_client.rs` is already generic over the same
+`Transport` trait. Every current federation REST operation joins its target
+member's `federation_api_url` and calls that transport. Scheme-aware dispatch
+therefore belongs below this client.
+
+The current direct construction of `Async::default()` in federation runtime
+and operator modules must be replaced by a small centralized transport factory
+or an injected cloned handle. No endpoint method should be edited merely to
+support Iroh.
+
+## Crate design: `cdk-iroh`
+
+The new crate has the same optional transport role that Tor has today, but is
+isolated more strongly in its own crate.
+
+Suggested modules:
+
+```text
+crates/cdk-iroh/
+  Cargo.toml
+  README.md
+  src/
+    lib.rs
+    address.rs
+    client.rs
+    config.rs
+    connection_pool.rs
+    endpoint.rs
+    error.rs
+    io.rs
+    server.rs
+    transport.rs
+  tests/
+    http_bridge.rs
+    websocket_bridge.rs
+    discovery.rs
+    resource_limits.rs
+```
+
+The exact module split can change, but the responsibilities cannot leak into
+Cashu endpoint code.
+
+### Public types
+
+- `IrohTransport<H = cdk_http_client::Async>` implements
+  `cdk_http_client::Transport` and contains an ordinary HTTP transport plus a
+  cloneable Iroh client handle.
+- `IrohNode` owns one Iroh `Endpoint`, its connection pool, address book, and
+  lifecycle. Mintd constructs it with a persistent key; a wallet can construct
+  a client-only node with an ephemeral key retained for the node's lifetime.
+- `IrohServer` accepts Iroh connections and serves a provided Axum/Tower
+  service until shutdown.
+- `IrohConfig` contains discovery, relay, bind, timeouts, admission limits, and
+  static peer hints without depending on mint or federation configuration.
+- `IrohConnectionInfo` contains the authenticated remote Iroh endpoint ID and
+  is inserted into request extensions for diagnostics and future policy. It is
+  not a replacement for Cashu auth or signed federation envelopes.
+
+Every public type needs redacted `Debug`, bounded errors, documentation, and
+focused unit tests. Secret keys, full endpoint tickets, request bodies, auth
+headers, and peer addresses must not appear in logs or errors.
+
+`IrohTransport::default()` must remain synchronous because the existing wallet
+client requires `Transport: Default`. It therefore creates a cheap,
+clone-shared lazy node whose endpoint binds on the first Iroh operation. The
+mint runtime does not use that lazy random identity: it explicitly constructs
+the persistent node before starting listeners or federation workers and
+injects an `IrohTransport` backed by that node.
+
+### Dependency direction
+
+The dependency direction must remain acyclic:
+
+```text
+cdk-http-client <--- cdk-iroh <--- cdk / cdk-axum / cdk-mintd
+                         |
+                         `--------> iroh, hyper, tower, tokio
+```
+
+`cdk-iroh` may depend on `cdk-http-client` to implement its existing transport
+trait. `cdk-http-client` must not depend on `cdk-iroh`. The only expected
+`cdk-http-client` source change is a transport-neutral native helper that wraps
+a caller-provided async byte stream as its existing `WsSender`/`WsReceiver`.
+
+## URL, addressing, and discovery
+
+### Canonical mint URL
+
+Version 1 uses exactly:
+
+```text
+iroh://<endpoint-id>
+```
+
+`<endpoint-id>` is Iroh's canonical textual endpoint ID. A base mint URL:
+
+- must have the `iroh` scheme;
+- must contain exactly one valid endpoint ID as its host;
+- must not contain user information, a port, query, or fragment; and
+- may contain a normalized base path only where CDK already supports base
+  paths.
+
+`MintUrl::join_paths` continues to create `/v1/...` and
+`/federation/v1/...` paths. Parsing tests must prove that normalization does
+not corrupt an endpoint ID and that path joining preserves the `iroh` scheme.
+
+Do not place an `EndpointTicket`, relay URL, IP address, or discovery query in
+the mint URL. The endpoint ID is stable identity; network coordinates are
+mutable reachability data.
+
+### Discovery policy
+
+`iroh://<endpoint-id>` is sufficient only when the client can resolve current
+reachability information. Support these explicit modes:
+
+- `n0`: use Iroh's N0 preset and its address lookup/relay defaults;
+- `custom`: use an operator-configured Iroh address lookup and relay policy;
+  and
+- `static`: disable network lookup and seed an in-memory address book with
+  standard Iroh `EndpointTicket` values.
+
+Use `iroh-tickets::EndpointTicket` as the standard out-of-band bootstrap
+format. Configuration and CLI flags may accept endpoint tickets, but the
+ticket's endpoint ID must equal the corresponding `iroh://` URL. Persist only
+operator-approved hints; learned relay/direct addresses are mutable cache, not
+federation consensus or Cashu token identity.
+
+This provides a domain-free self-hosted option: exchange endpoint tickets
+through the operator setup channel and use static/custom relay configuration.
+It does not require inventing a second mint URL syntax.
+
+Failure to discover an endpoint must return a specific, bounded connection
+error identifying only the endpoint ID fingerprint and discovery mode. It must
+not trigger HTTPS fallback.
+
+### Persistent mint identity
+
+- Mintd generates or imports one Iroh secret key and writes it with the same
+  protected, atomic secret-file rules used for other mint private material.
+- Restarting a mint preserves its endpoint ID.
+- A configured public or federation Iroh URL must match the derived endpoint
+  ID before listeners or federation workers start.
+- One process reuses one endpoint for accepting and dialing. Do not create an
+  endpoint in every `Async::default()` call.
+- Wallet client endpoints may be ephemeral, but live for the complete wallet
+  transport/node lifetime so connections can be reused.
+- Rotating a mint Iroh key is an explicit URL/roster change. It is not an
+  automatic recovery action.
+
+One endpoint can serve both `/v1` and `/federation/v1`; the route namespaces
+and existing authentication separate them. Setup validation must therefore
+allow a member's public and federation base URL to be the same Iroh endpoint.
+Separate public/private Iroh identities can be a later isolation feature, not
+a requirement for version 1.
+
+## Transport protocol
+
+### Use standard HTTP and WebSocket framing
+
+Do not define a second JSON/CBOR request envelope. Use a versioned Iroh ALPN,
+provisionally:
+
+```text
+cashu-cdk-http/1
+```
+
+After the Iroh connection is authenticated, open one bidirectional QUIC stream
+per HTTP transaction and run an HTTP/1.1 connection on that stream. Reuse the
+same Iroh QUIC connection for concurrent streams. A NUT-17 WebSocket performs
+the standard HTTP upgrade and keeps its stream open.
+
+Requests use origin-form path/query targets and an authority derived from the
+endpoint ID. The server rejects an authority that names a different endpoint.
+The client-side WebSocket helper accepts a prebuilt handshake request so it
+does not need to reinterpret `iroh` as a DNS WebSocket scheme.
+
+This deliberately carries familiar HTTP semantics over Iroh rather than
+implementing HTTP/3 or a CDK-specific RPC protocol:
+
+- method, path, query, headers, status, and body semantics stay identical;
+- Axum routing and middleware are reused directly;
+- Cashu JSON bytes are not translated by the Iroh layer;
+- WebSocket JSON-RPC messages remain unchanged; and
+- future routes need no transport registration.
+
+The Milestone 0 spike must prove that Hyper HTTP/1 upgrades and Axum WebSocket
+handling work over the safe Iroh send/receive stream adapter. If they do not,
+the implementation must pause for design review. Polling is acceptable as a
+temporary development fallback, not as the completed NUT-17 implementation.
+
+### Client request rules
+
+For an `iroh` URL, `IrohTransport`:
+
+1. validates and extracts the endpoint ID;
+2. preserves the path and query as the HTTP request target;
+3. resolves mutable address hints according to configured discovery policy;
+4. obtains or creates a cached authenticated Iroh connection for the endpoint
+   ID and ALPN;
+5. opens a fresh bidirectional stream;
+6. sends the ordinary HTTP request, including content type and Cashu auth
+   headers; and
+7. maps the HTTP status/body to `RawResponse` and the existing `HttpError`
+   behavior.
+
+`http_get`, `http_get_raw`, `http_post`, `http_post_bounded`, and
+`http_post_form_raw` are thin serialization helpers around one internal raw
+request function. `ws_connect` uses the same connection pool and a long-lived
+stream.
+
+For `http`, `https`, `ws`, and `wss`, the hybrid transport delegates unchanged
+to its inner `Async` transport. DNS TXT resolution and proxy configuration also
+delegate to `Async`; proxy configuration does not silently proxy or disable
+Iroh.
+
+Unsupported schemes fail explicitly. The scheme of the request, not which
+listener happens to be reachable, is authoritative.
+
+### Retry and ambiguity
+
+- Reuse healthy Iroh connections and evict them after terminal connection
+  errors.
+- A connection attempt may be retried only before request bytes are accepted
+  by a stream.
+- Do not automatically replay an ambiguous POST. Existing NUT-19 retry logic
+  and federation idempotency own application retries.
+- Disable 0-RTT for Cashu mutations, DKG, FROST, Bark, and federation
+  operations in version 1.
+- Preserve existing request deadlines. Connection establishment, stream open,
+  header read, body read, and graceful close also need bounded deadlines.
+
+### Server request rules
+
+- Accept only the versioned Cashu ALPN.
+- Apply global and per-connection limits before spawning stream work.
+- Serve each admitted stream through the same final Axum router used by the
+  TCP listener.
+- Insert authenticated remote endpoint information into request extensions.
+- Strip or reject malformed authority, hop-by-hop headers outside the required
+  HTTP upgrade flow, oversized headers, invalid methods, and invalid paths.
+- Preserve the router's request body limit, decompression, compression,
+  tracing, authentication, and error response behavior.
+- Bound response collection/streaming exactly as the corresponding HTTP client
+  method requires; `http_post_bounded` must reject while reading, not after an
+  unbounded allocation.
+- Cancel stream tasks on connection close and drain them on graceful shutdown.
+
+## Wallet integration
+
+Add a native `iroh` feature to `cdk` and wire it to the optional `cdk-iroh`
+dependency. Under that feature, the ordinary wallet `HttpClient` alias uses
+`IrohTransport<Async>`. Because it is a hybrid transport, HTTPS support remains
+enabled and applications do not select a different wallet type.
+
+The wallet builder continues to call `HttpClient::new(mint_url, auth_wallet)`.
+No public wallet method, FFI method, or Cashu endpoint implementation changes.
+Applications opt in at build time and select Iroh at runtime only by supplying
+an `iroh://` mint URL.
+
+NUT-17 currently rewrites HTTPS to WSS and all other schemes to WS. Change this
+small scheme switch so:
+
+- `https` becomes `wss`;
+- `http` becomes `ws`;
+- `iroh` remains `iroh`; and
+- any other scheme returns `NotSupported`.
+
+`IrohTransport::ws_connect` then performs the standard WebSocket handshake on
+an Iroh stream. Existing polling fallback stays available for transient or
+unsupported streaming, but successful native Iroh deployments must use and
+test the streaming path.
+
+## Mint listener integration
+
+Add an optional mintd Iroh configuration section containing:
+
+- enabled/disabled;
+- secret key file or protected generated-key location;
+- discovery mode and custom lookup/relay settings;
+- static peer endpoint tickets;
+- bind addresses where applicable;
+- connection, stream, request, header, and shutdown timeouts; and
+- global/per-peer connection and stream admission limits.
+
+Refactor the existing single-listener tail of mintd into a small supervised
+listener set:
+
+- HTTP(S) listener, unchanged when enabled;
+- Iroh listener, using the same final router clone when enabled; and
+- shared shutdown that signals, drains, and joins both.
+
+At least one public listener must be enabled. Iroh-only operation must not
+require an HTTPS certificate, TCP public bind, or DNS name. Starting both is a
+normal supported configuration.
+
+The Iroh node is constructed once before federation workers start. Its cloned
+transport handle is injected into those workers, while the server half accepts
+inbound streams. Listener startup fails closed if the configured URL, key,
+discovery publication, or route service cannot be initialized.
+
+## Federation and DKG integration
+
+### Scheme-aware peer dispatch
+
+Every outbound federation request continues to use the target member's
+`federation_api_url`:
+
+- `https://...` is delegated to the existing HTTP transport;
+- `iroh://<endpoint-id>` is sent over Iroh; and
+- any other production scheme is rejected.
+
+One roster may mix schemes in any order. No federation-wide transport mode is
+introduced. A member that advertises HTTPS can still dial another member's
+Iroh URL using its configured local Iroh node; its existing signed federation
+request authenticates the sender. A member that advertises Iroh must use the
+persistent endpoint matching that URL.
+
+The Iroh handshake authenticates the dialed receiver endpoint. Existing
+`FederationSignedRequest` validation authenticates the sender, receiver,
+federation, message kind, sequence, and body. Keep both layers. Do not replace
+the secp256k1 federation identity with the Iroh Ed25519 endpoint identity in
+version 1.
+
+### One injected transport
+
+Create the default federation transport once at the federation runtime or
+mintd composition boundary and clone it into peer clients and background
+workers. Replace direct `Async::default()` construction in DKG, sync,
+AlephBFT, wallet liveness, checkpoint, payment observation, Bark, smoke, and
+operator modules with that shared boundary.
+
+This is an intentional prerequisite refactor because a production mint must
+not create multiple random Iroh identities or independent connection pools.
+The refactor must pass all HTTP-only federation tests before Iroh behavior is
+enabled.
+
+### Secure transport policy
+
+Rename misleading HTTPS-only policy names such as
+`RequireHttps` to `RequireSecureTransport` while federation formats are still
+undeployed. The production secure set is:
+
+```text
+https
+iroh
+```
+
+Plain HTTP remains allowed only for explicit loopback development policy.
+Apply the same rule to multi-operator setup URLs, enrollment validation, DKG
+secret-share delivery, setup coordinator calls, and mintd CLI validation.
+
+Iroh transport encryption does not justify removing signed envelopes,
+recipient binding, durable replay fences, or application-layer protection of
+private DKG/FROST shares. Those properties keep the ceremony transport-neutral
+and protect stored/forwarded payloads.
+
+### Coverage requirement
+
+The all-Iroh federation test must complete the real setup and DKG path, FROST
+rounds, AlephBFT message exchange, operation submission, checkpoint creation,
+catch-up, restart, and wallet mint/swap/melt flow without an HTTPS listener or
+DNS name. If `federation-bark` is enabled, its complete transport surface must
+run through the same test harness.
+
+## Feature and compatibility policy
+
+- Add `cdk-iroh` as a workspace dependency, disabled by default.
+- Add native `iroh` features to `cdk`, `cdk-axum`, and `cdk-mintd` with clear
+  feature propagation.
+- `iroh` and `tor` are independent opt-ins and must compile together. The
+  ordinary Iroh-enabled alias handles HTTP(S) and Iroh; the explicit Tor wallet
+  client remains available for Tor. Cargo feature unification must not silently
+  route Iroh through Tor or make the explicit Tor type the default.
+- Federation without `iroh` remains HTTP-only and behaviorally unchanged.
+- Wallet builds without `iroh` retain the existing `Async` alias.
+- `wasm32-unknown-unknown` without `iroh` must keep passing. Version 1 should
+  reject the unsupported `iroh`+browser feature combination clearly.
+- No Cashu protocol version, NUT payload, token format, or database migration
+  is introduced by this transport.
+
+## MSRV and dependency gate
+
+CDK declares Rust 1.85.0. As of this plan, current `iroh` 1.0.3 declares Rust
+1.91. This is a release-policy decision, not a detail to discover after the
+transport is written.
+
+Milestone 0 must produce a small dependency report covering:
+
+- the newest Iroh release compatible with CDK's current MSRV;
+- API and wire differences between that release and current stable Iroh;
+- the transitive dependency and binary-size impact;
+- native Linux, macOS, Android, and iOS support relevant to CDK; and
+- maintenance/security consequences of pinning a pre-1.0 Iroh release.
+
+Then choose and document exactly one path:
+
+1. raise the workspace MSRV to the current stable Iroh requirement in a
+   separate, explicitly reviewed policy change; or
+2. pin the newest acceptable MSRV-compatible Iroh release with an upgrade plan
+   and compatibility tests.
+
+Do not pretend an optional feature avoids Cargo's package `rust-version`
+contract, and do not patch out an upstream MSRV declaration.
+
+**Milestone 0 decision:** use path 1. The workspace MSRV is raised explicitly
+to Rust 1.91.0, with exact pins to `iroh = 1.0.3` and
+`iroh-tickets = 1.0.0`. The attempted Rust-1.85 alternative is documented in
+`crates/cdk-iroh/docs/dependency-decision.md`: Iroh 0.95.1 has no compatible
+standard ticket crate, Iroh 0.93.2 conflicts with CDK's existing stable
+Salsa20 dependency graph, and Iroh 0.35 is too old to accept as a new
+production transport dependency.
+
+Relevant upstream references:
+
+- [Iroh crate and address lookup](https://docs.rs/iroh/latest/iroh/index.html)
+- [Iroh endpoint connection behavior](https://docs.rs/iroh/latest/iroh/endpoint/struct.Endpoint.html)
+- [Iroh endpoint tickets](https://docs.rs/iroh-tickets/latest/iroh_tickets/endpoint/struct.EndpointTicket.html)
+- [Current Iroh manifest and MSRV](https://docs.rs/crate/iroh/latest/source/Cargo.toml)
+
+## Expected existing-code changes
+
+This table is a review budget, not permission for unrelated cleanup.
+
+| Area | Permitted change | Explicitly unchanged |
+|---|---|---|
+| Root manifests | workspace dependency and lockfile | unrelated dependency versions |
+| `cdk-http-client` | generic native WebSocket wrapper for a caller-provided stream | `Transport` REST methods and HTTP backends |
+| `cashu::MintUrl` | Iroh parsing/path-join tests; minimal validation fix only if tests require it | serialized URL shape and Cashu types |
+| `cdk` wallet | feature/dependency, default transport alias, NUT-17 scheme switch | endpoint mapping, sagas, wallet API, FFI API |
+| `cdk-axum` | feature/dependency, final-router handoff, shared federation transport injection, secure-scheme policy | handlers, route table, mint state machines |
+| `cdk-common` | transport-neutral secure URL policy accepting `https` and `iroh` | federation payloads, signatures, DKG/FROST types |
+| `cdk-mintd` | Iroh config, persistent key lifecycle, listener supervision, transport construction | payment/database/signatory setup |
+| Tests/docs | transport conformance and deployment documentation | weakening or skipping existing suites |
+
+Keep the `cdk-iroh` pull request reviewable by separating prerequisite
+transport injection from functional Iroh support. Avoid formatting or renaming
+unrelated federation code while replacing default transport construction.
+
+## Milestone sequence
+
+Each milestone is independently reviewable and must record exact commands,
+results, and tests not run.
+
+### Milestone 0 — dependency and stream-bridge spike
+
+- [x] Resolve the MSRV decision and pin exact Iroh/Iroh-ticket versions.
+- [x] Build a standalone safe adapter joining Iroh send/receive halves into the
+  async byte stream required by Hyper and Tokio Tungstenite.
+- [x] Prove GET, POST, status/body errors, concurrent requests, and an Axum
+  WebSocket upgrade over a local Iroh connection.
+- [x] Prove one QUIC connection can carry concurrent short HTTP streams and a
+  long-lived WebSocket stream.
+- [x] Confirm graceful cancellation and no task leak when either endpoint
+  closes.
+- [x] Freeze the ALPN, HTTP version, authority rules, limits, and error mapping
+  in short protocol documentation and golden tests.
+
+**Gate:** The test router serves an arbitrary route and NUT-17-shaped echo
+WebSocket over Iroh with no route-specific bridge code. If this gate fails,
+stop; do not begin endpoint mapping.
+
+**Progress:** complete in the Milestone 0 commit. The new `cdk-iroh` spike owns
+a safe `IrohStream` adapter that delegates Tokio reads and writes to Iroh's
+separate receive/send halves without unsafe code or buffering. Its synthetic
+Axum router is passed generically through Hyper HTTP/1.1 with upgrades. One
+authenticated Iroh connection carried a long-lived NUT-17-shaped echo
+WebSocket while sixteen short requests ran concurrently; GET, POST, arbitrary
+future route, query, status/body preservation, and wrong-authority rejection
+all passed. Separate cancellation cases closed the client and server around
+partial HTTP streams and observed zero remaining stream or WebSocket tasks.
+
+The frozen `cashu-cdk-http/1` ALPN, origin-form/authority rules, limits,
+timeouts, non-replay rule, and error mapping are recorded in
+`crates/cdk-iroh/docs/http-bridge-v1.md` and fixed by a golden test. The bridge
+contains no `/v1` or `/federation/v1` route list and no Cashu payload mapping.
+
+Verification evidence:
+
+- `cargo test -p cdk-iroh --offline`: all three spike tests and doc tests pass
+  on the macOS host;
+- `cargo clippy -p cdk-iroh --all-targets --offline -- -D warnings`: passes;
+- `cargo fmt -p cdk-iroh -- --check`: passes with only the repository's
+  stable-rustfmt warnings about nightly formatting options;
+- an official Rust 1.91 Linux container, with the workspace and required Bark
+  sibling mounted read-only, passes
+  `cargo check -p cdk-iroh --locked`, proving the declared MSRV and Linux
+  dependency graph;
+- the normal `cdk-iroh` graph resolves to 259 unique runtime package versions;
+  the optimized, unstripped end-to-end bridge test executable is 15,066,832
+  bytes, a preliminary upper-bound artifact rather than a final mintd size
+  delta; and
+- `cargo test -p cdk-iroh --release --no-run --offline` passes.
+
+`cargo tree -p cdk --no-default-features --features wallet` contains zero Iroh
+packages, confirming that adding the workspace crate and dependency pins did
+not pull Iroh into the existing feature-disabled wallet graph.
+
+The attempted `aarch64-apple-ios` library check stopped before CDK/Iroh code
+because the host's non-rustup toolchain does not have that standard-library
+target installed. Android and iOS compilation/lifecycle tests remain required
+before those native targets are enabled. `cargo audit` was not run because the
+command is not installed; advisory review remains part of Milestone 5. No
+Nocean deployment is claimed for this local feasibility milestone.
+
+### Milestone 1 — standalone `cdk-iroh` crate
+
+- [ ] Add endpoint construction for ephemeral client and persistent server
+  identities.
+- [ ] Add N0, custom, and static-ticket discovery configuration.
+- [ ] Add connection pooling keyed by endpoint ID and ALPN.
+- [ ] Add one-stream-per-transaction HTTP client and bounded response reads.
+- [ ] Add WebSocket-over-stream support.
+- [ ] Add generic Axum/Tower server support with request extensions.
+- [ ] Add admission, timeouts, shutdown, redacted errors, tracing, and metrics.
+- [ ] Implement `IrohTransport<Async>` with explicit scheme dispatch.
+- [ ] Add a transport conformance suite covering raw, JSON, form, auth,
+  bounded, error, and streaming behavior.
+
+**Gate:** `cdk-iroh` passes its complete tests against a synthetic router and
+an in-process Iroh network without depending on `cdk`, `cdk-axum`, or mint
+business logic.
+
+### Milestone 2 — transparent wallet integration
+
+- [ ] Add feature propagation and the hybrid default wallet transport alias.
+- [ ] Preserve `iroh` in the NUT-17 URL scheme switch.
+- [ ] Add the generic native WebSocket stream constructor to
+  `cdk-http-client`.
+- [ ] Prove one wallet instance can use an HTTPS mint and an Iroh mint in the
+  same process.
+- [ ] Run one reusable `MintConnector` conformance suite unchanged against
+  HTTP and Iroh, covering every existing connector method and payment-method
+  variant, including batch operations, auth, custom methods, NUT-19 retries,
+  and NUT-17 subscriptions. Do not maintain a second Iroh endpoint list.
+- [ ] Prove an Iroh connection error does not attempt HTTPS fallback.
+
+**Gate:** No production endpoint method changes, and a test-only future route
+is reachable automatically through the bridge.
+
+### Milestone 3 — mint listener and operator configuration
+
+- [ ] Add protected persistent endpoint-key management.
+- [ ] Add discovery, relay, ticket, bind, limit, and timeout configuration.
+- [ ] Hand the final layered router to `IrohServer`.
+- [ ] Supervise HTTP and Iroh listeners together with graceful shutdown.
+- [ ] Support HTTP-only, Iroh-only, and dual-listener mintd startup.
+- [ ] Validate configured Iroh URLs against the derived endpoint ID.
+- [ ] Document endpoint ticket export/import and N0 versus self-hosted
+  discovery.
+
+**Gate:** The same mint state is reachable over HTTPS and Iroh, custom routes
+and middleware behave identically, and Iroh-only startup uses no certificate or
+DNS name.
+
+### Milestone 4 — heterogeneous federation and DKG
+
+- [ ] Land the HTTP-only shared federation transport-injection refactor.
+- [ ] Use the hybrid transport for every federation runtime and operator
+  client.
+- [ ] Accept `iroh` in setup, enrollment, mintd, and DKG secure URL policies.
+- [ ] Allow one Iroh endpoint to be both the public and federation base URL.
+- [ ] Add exact roster URL/endpoint-ID startup validation.
+- [ ] Run a mixed HTTPS/Iroh federation through normal operation, restart, and
+  catch-up.
+- [ ] Run an all-Iroh federation through setup, DKG, FROST, AlephBFT,
+  checkpoint, wallet, and recovery flows.
+- [ ] Confirm signed request and replay rejection tests are byte-for-byte
+  transport independent.
+- [ ] Include Bark transport coverage when that feature is enabled.
+
+**Gate:** No DKG, FROST, consensus, checkpoint, catch-up, or Bark state-machine
+source branches on transport scheme.
+
+### Milestone 5 — hardening and release evidence
+
+- [ ] Test direct path, relay path, address change, offline discovery, stale
+  ticket, relay loss, and direct/relay migration.
+- [ ] Test malformed HTTP, invalid ALPN, unknown endpoint ID, oversized
+  headers/body/response, slow streams, connection churn, admission saturation,
+  and shutdown under load.
+- [ ] Test request ambiguity without unsafe POST replay.
+- [ ] Test endpoint key mismatch and key-file loss/corruption fail closed.
+- [ ] Compare status codes, Cashu error bodies, compression, auth, and
+  WebSocket behavior between HTTPS and Iroh.
+- [ ] Measure connection setup, warm-request latency, stream concurrency,
+  memory, file descriptors, and relay bandwidth.
+- [ ] Run standalone, federation, Tor, FFI/native, MSRV, and WASM-without-Iroh
+  regression builds.
+- [ ] Complete security review of the stream adapter, key storage, discovery,
+  URL parsing, resource bounds, and mixed-transport federation assumptions.
+
+**Gate:** Release documentation contains reproducible local, relay, and
+multi-host results and accurately lists unsupported target combinations.
+
+## Verification matrix
+
+### Transport selection
+
+| Caller | Target URL | Expected path |
+|---|---|---|
+| Iroh-enabled wallet | `https://...` | existing HTTP transport only |
+| Iroh-enabled wallet | `iroh://...` | Iroh transport only |
+| non-Iroh wallet | `https://...` | existing HTTP transport only |
+| non-Iroh wallet | `iroh://...` | explicit unsupported-scheme error |
+| federation member | peer HTTPS URL | existing HTTP transport only |
+| federation member | peer Iroh URL | shared Iroh node and pool only |
+
+### Listener modes
+
+| HTTP listener | Iroh listener | Expected result |
+|---|---|---|
+| enabled | disabled | current behavior |
+| disabled | enabled | domain-free Iroh-only mint |
+| enabled | enabled | both URLs serve the same mint/router |
+| disabled | disabled | startup failure |
+
+### Federation topologies
+
+| Topology | Required proof |
+|---|---|
+| all HTTPS | existing suites unchanged |
+| all Iroh | complete setup, DKG, runtime, wallet, restart, catch-up |
+| alternating HTTPS/Iroh | every directed member pair communicates |
+| public HTTPS/private Iroh | wallet over HTTPS, all federation traffic over Iroh |
+| public Iroh/private HTTPS | wallet over Iroh, federation traffic over HTTPS |
+
+### Failure cases
+
+- Unknown or malformed Iroh endpoint ID.
+- Endpoint ticket ID differs from URL ID.
+- Configured secret key derives a different advertised ID.
+- No discovery result in N0, custom, or static mode.
+- Stale direct address with working relay, and stale relay with working direct
+  path.
+- Peer supports Iroh but not the Cashu ALPN.
+- HTTP parse failure or WebSocket upgrade rejection on an Iroh stream.
+- Request or response exceeds the correct bound while streaming.
+- Connection closes before any request bytes versus after ambiguous request
+  delivery.
+- Saturated global/per-peer stream admission.
+- Shutdown during REST, DKG, AlephBFT, and WebSocket traffic.
+- HTTPS peer failure does not try Iroh, and Iroh peer failure does not try
+  HTTPS.
+
+## Security invariants
+
+- The endpoint ID in the URL is the Iroh transport authentication target.
+- Discovery data changes reachability, never peer identity.
+- Relay operators can forward encrypted traffic but cannot terminate the Iroh
+  connection or change the authenticated endpoint ID.
+- The Iroh secret key is persistent mint private material and follows CDK's
+  protected file, backup, redaction, and rotation rules.
+- Federation secp256k1 identities and signed request envelopes remain the
+  application authorization roots.
+- Cashu auth headers have identical scope over HTTPS and Iroh and are never
+  logged.
+- DKG/FROST recipient binding and private payload protection remain enabled.
+- No non-idempotent request is replayed after ambiguous delivery by the
+  transport layer.
+- All parsing and buffering are size bounded before allocation or task spawn.
+- Per-peer limits use authenticated Iroh endpoint IDs where available, while
+  existing federation member admission continues to use signed member IDs.
+- An authenticated transport peer is not automatically allowed to call
+  federation routes; the existing route authentication decides access.
+
+## Observability
+
+Expose bounded metrics for:
+
+- endpoint online/offline state without secret or address labels;
+- connection attempts and outcomes by discovery mode and direct/relay class;
+- active connections and streams;
+- request count, duration, status class, and bounded failure kind;
+- pool hits, reconnects, admission rejection, and timeout stage; and
+- HTTP versus Iroh federation request outcomes by non-secret member ID.
+
+Logs may include a shortened endpoint ID fingerprint, route template, method,
+status class, transport, timeout stage, and direct/relay classification. They
+must not include secret keys, full tickets, IP addresses by default, auth
+headers, request/response bodies, DKG/FROST private payloads, payment secrets,
+local paths, or operator-identifying data.
+
+## Prohibited shortcuts
+
+- Do not copy the `/v1` or `/federation/v1` route list into `cdk-iroh`.
+- Do not add `iroh_get_keys`, `iroh_swap`, `iroh_dkg_*`, or equivalent methods.
+- Do not create a second mint router or bypass its middleware.
+- Do not make polling the permanent NUT-17 implementation.
+- Do not use a process-global random Iroh endpoint to avoid transport
+  injection.
+- Do not create a fresh endpoint or connection for every request.
+- Do not put endpoint tickets, relay URLs, or IP addresses into Cashu mint
+  URLs, tokens, or federation consensus hashes.
+- Do not infer fallback URLs or rewrite `iroh://` to `https://`.
+- Do not accept any authenticated Iroh endpoint as a federation member.
+- Do not remove signed federation envelopes because Iroh authenticates its
+  connection.
+- Do not retry ambiguous mutations below the existing application retry layer.
+- Do not raise limits or timeouts merely to make load tests pass.
+- Do not raise CDK's MSRV or pin an obsolete Iroh release without the explicit
+  Milestone 0 decision.
+
+## Definition of done
+
+The Iroh transport is complete only when:
+
+- an application using the ordinary native wallet API can change only a mint
+  URL from HTTPS to `iroh://<endpoint-id>` and use every Cashu operation;
+- the same wallet instance can communicate with HTTPS and Iroh mints;
+- REST and NUT-17 use the existing Cashu JSON and WebSocket protocols through
+  one generic bridge;
+- a mint can run HTTP-only, Iroh-only, or both against the same final router;
+- a future test route works over both listeners without registering it in
+  `cdk-iroh`;
+- an all-Iroh federation completes setup, real DKG/FROST, consensus, wallet
+  operations, checkpointing, restart, and catch-up without HTTPS or DNS names;
+- a mixed HTTPS/Iroh federation passes directed connectivity and failure
+  tests;
+- existing HTTP-only, standalone, Tor, and federation tests remain unchanged
+  in behavior;
+- feature-disabled builds contain no Iroh dependency or runtime behavior;
+- persistent identity, discovery, bounds, ambiguity, observability, and
+  shutdown requirements are verified; and
+- reviewers can identify every existing-code modification as one of the thin
+  integration seams in this plan, with the Cashu endpoint and state-machine
+  implementations untouched.

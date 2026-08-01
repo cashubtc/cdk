@@ -138,7 +138,7 @@
         };
 
         # MSRV stable
-        msrv_toolchain = pkgs.rust-bin.stable."1.85.0".default.override {
+        msrv_toolchain = pkgs.rust-bin.stable."1.91.0".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
           extensions = [
             "rustfmt"

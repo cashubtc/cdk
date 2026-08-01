@@ -1,0 +1,31 @@
+[package]
+name = "cdk-iroh"
+version.workspace = true
+authors = ["CDK Developers"]
+description = "Iroh transport bridge for CDK"
+homepage.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "README.md"
+
+[dependencies]
+iroh.workspace = true
+iroh-tickets.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+
+[dev-dependencies]
+axum.workspace = true
+bytes = "1"
+futures.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = { workspace = true, features = ["handshake"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tower.workspace = true
+
+[lints]
+workspace = true

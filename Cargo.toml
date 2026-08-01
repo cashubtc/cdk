@@ -36,7 +36,7 @@ bare_urls = "warn"
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.85.0"
+rust-version = "1.91.0"
 license = "Apache-2.0 OR MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
@@ -80,12 +80,18 @@ cdk-frost = { path = "./crates/cdk-frost", version = "=0.18.0" }
 cdk-frost-bip32 = { path = "./crates/cdk-frost-bip32", version = "=0.18.0" }
 cdk-frost-bark = { path = "./crates/cdk-frost-bark", version = "=0.18.0" }
 cdk-bark = { path = "./crates/cdk-bark", version = "=0.18.0", default-features = false }
+cdk-iroh = { path = "./crates/cdk-iroh", version = "=0.18.0" }
 clap = { version = "4.5.31", features = ["derive"] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 cbor-diag = "0.1.12"
 config = { version = "0.15.11", features = ["toml"] }
 criterion = "0.6.0"
 futures = { version = "0.3.28", default-features = false, features = ["async-await"] }
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1", "server"] }
+hyper-util = { version = "0.1", features = ["service", "tokio"] }
+iroh = { version = "=1.0.3", default-features = false, features = ["tls-ring"] }
+iroh-tickets = "=1.0.0"
 frost-secp256k1-tr = { version = "=3.0.0", default-features = false, features = ["serialization"] }
 ff = { version = "0.13", default-features = false }
 group = { version = "0.13", default-features = false }
