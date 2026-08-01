@@ -1223,9 +1223,19 @@ follow-up closes that product-level gap:
 
 The focused local regression passes 98 wallet federation tests, all 26 TUI
 tests, strict TUI Clippy, the exact mintd deployment-feature compile check,
-and the setup-command tests. A fresh one-server Nocean deployment is the final
-gate for this follow-up; record its revision and timings in the Nocean
-evidence after it completes.
+and the setup-command tests.
+
+The fresh one-server Nocean gate passed on clean source revision
+`e4784e84f1d7ef19688adc243bc869aade817acb`. Five independent operator tmux
+sessions completed the normal setup transcript and concurrent threshold-3-of-5
+BLS/FROST DKG in 23 seconds. Public wallet, setup, DKG, and private federation
+URLs were all Iroh; the driver verified that the configured TCP ports remained
+closed during setup, DKG, and runtime. The Iroh-enabled TUI imported the
+federation and loaded threshold mint information both normally and with one
+member offline. A second TUI process on the development machine then connected
+to the deployed public Iroh URL, validated all five Iroh roster entries, and
+loaded the empty wallet balance. The complete clean-build, deployment,
+recovery, restart, and backup drill took 1,219 seconds.
 
 ## Verification matrix
 

@@ -99,6 +99,17 @@ five independently operated processes and 59,544 KiB for one process. The
 complete deployment, restart, outage/catch-up, and backup/restore run took 938
 seconds including a clean release build and binary transfers.
 
+A later public-wallet all-Iroh follow-up passed on clean revision
+`e4784e84f1d7ef19688adc243bc869aade817acb`. Its fresh threshold-3-of-5 Nocean
+ceremony completed concurrent BLS/FROST DKG in 23 seconds and the complete
+clean-build drill in 1,219 seconds. Every public wallet and private federation
+member URL used the same member-local Iroh endpoint. Setup, DKG, and runtime
+had HTTP disabled, and the deployment verified that all configured TCP mint
+ports were closed. The Iroh-enabled TUI imported the federation, loaded
+threshold mint information with all members and with one member offline, and
+passed a separate external connection check covering all five roster entries.
+Sampled peak DKG RSS was 296,300 KiB total and 60,620 KiB for one member.
+
 Production metrics expose the fixed discovery class, connection attempts and
 failures, initial direct/relay/unknown path outcomes, reconnects, pool hits,
 active connections and streams, request/status counts, a saturating aggregate

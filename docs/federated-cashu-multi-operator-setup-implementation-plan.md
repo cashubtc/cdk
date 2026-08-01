@@ -1415,6 +1415,16 @@ paid runtime operations, a one-member outage/catch-up, and coordinated restart
 with HTTP disabled. This is additional transport/process evidence; the
 one-server Nocean result above remains the deployment evidence for this plan.
 
+A subsequent fresh Nocean deployment also moved the public wallet entrypoint
+to Iroh. Clean revision `e4784e84f1d7ef19688adc243bc869aade817acb`
+completed the five-operator ordinary CLI transcript, concurrent threshold-3-of-5
+BLS/FROST DKG, TUI federation discovery, a one-member outage/catch-up, restart,
+and backup/restore with HTTP disabled for setup, DKG, and runtime. The driver
+verified closed TCP mint ports and an external TUI client validated the full
+five-member Iroh roster. This strengthens the accepted one-server deployment
+evidence without changing or satisfying the separate multi-host fault-domain
+gate.
+
 ## Verification matrix
 
 At minimum, implementation must cover:

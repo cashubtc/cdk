@@ -19,6 +19,31 @@ No invitation, credential, private key, private config, machine identity,
 server address, operator path, wallet seed, or generated deployment artifact is
 included in this report.
 
+### All-Iroh public-wallet follow-up
+
+A fresh follow-up deployment passed on clean source revision
+`e4784e84f1d7ef19688adc243bc869aade817acb`. It retained the accepted
+single-host, five-operator and threshold-three topology, but removed the public
+HTTPS dependency: each member advertised its persistent Iroh endpoint for both
+public wallet and private federation traffic. The setup coordinator, all five
+concurrent DKG services, and all five runtimes had HTTP disabled. The driver
+verified that every configured TCP mint port remained closed in each phase.
+
+The Iroh-enabled TUI discovered the public federation through a member Iroh
+URL, required all five advertised public URLs to use Iroh, loaded threshold
+mint information, and repeated the read with one member offline. An independent
+TUI process on the development machine then connected to the deployed Iroh
+entrypoint and validated the five-member roster and empty balance. No DNS name
+or HTTPS reverse proxy participated in these federation or wallet checks.
+
+Concurrent dealer-free BLS/FROST DKG took 23 seconds. The complete clean Linux
+release build, transfer, recovery drill, setup, DKG, activation, wallet checks,
+outage/catch-up, coordinated restart, backup/restore, and report generation
+took 1,219 seconds. Sampled peak DKG RSS was 296,300 KiB across the five
+services and 60,620 KiB for one service. As with the earlier run, this proves
+operator/process isolation on one affordable server, not multi-machine fault
+domains or a funded Signet paid-wallet flow.
+
 ## Topology and operator UX
 
 - Five members with a BLS threshold of three.
