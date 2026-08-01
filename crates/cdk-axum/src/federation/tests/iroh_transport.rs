@@ -134,6 +134,14 @@ async fn all_iroh_private_routes_preserve_dkg_signatures_and_replay_fences() {
     .expect("all-Iroh peer client");
 
     assert_eq!(
+        client
+            .peer_status(public.member(member_id(1)).expect("local member"))
+            .await
+            .expect("Iroh self status")
+            .member_id,
+        member_id(1)
+    );
+    assert_eq!(
         client.peer_status(target).await.expect("Iroh peer status").member_id,
         member_id(2)
     );

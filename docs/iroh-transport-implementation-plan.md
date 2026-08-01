@@ -88,7 +88,10 @@ outside the permitted change surface.
 - Support all-Iroh federations with no HTTPS certificates or DNS names.
 - Support mixed federations in which an HTTPS member calls an Iroh member and
   an Iroh member calls an HTTPS member.
-- Reuse one persistent Iroh endpoint per mint for inbound and outbound traffic.
+- Reuse one advertised persistent Iroh endpoint per mint for all remote inbound
+  and outbound traffic. Because current Iroh rejects connecting an endpoint to
+  its own ID, transport-addressed local-member requests use one lazy internal
+  companion endpoint while retaining the same signed route and replay checks.
 - Preserve existing federation request signatures, replay protection,
   idempotency, admission limits, and DKG/FROST state machines.
 - Keep builds that do not enable the `iroh` feature free of Iroh dependencies
@@ -224,6 +227,8 @@ Cashu endpoint code.
 - `IrohNode` owns one Iroh `Endpoint`, its connection pool, address book, and
   lifecycle. Mintd constructs it with a persistent key; a wallet can construct
   a client-only node with an ephemeral key retained for the node's lifetime.
+  A runtime node may lazily own one unadvertised companion endpoint solely for
+  requests whose target ID equals its own; remote traffic never uses it.
 - `IrohServer` accepts Iroh connections and serves a provided Axum/Tower
   service until shutdown.
 - `IrohConfig` contains discovery, relay, bind, timeouts, admission limits, and
@@ -961,6 +966,18 @@ exact set of remote roster tickets and rejects missing, duplicate, extraneous,
 cross-member duplicate, and local-key-mismatch configurations. Setup clients
 skip activated-roster validation because those files do not exist before DKG;
 the setup server and activated runtime still own the protected identity.
+
+The first Nocean attempt exposed one current-Iroh invariant absent from HTTP:
+an endpoint cannot dial its own endpoint ID. DKG intentionally fans the same
+signed readiness and artifact requests to every roster member, including the
+sender, so all five members waited at the readiness barrier even though remote
+discovery and setup calls worked. The generic Iroh client now detects only
+that target-ID equality and uses one lazy, unadvertised companion endpoint to
+reach the same local `IrohServer`. It retains the main node's limits, shared
+connection pool, HTTP bridge, signed federation envelope validation, and replay
+fence. A focused transport test and the all-Iroh federation route test prove
+local and remote signed requests both succeed. No DKG, FROST, AlephBFT,
+checkpoint, catch-up, or Bark state-machine code branches on this case.
 
 Local verification evidence:
 

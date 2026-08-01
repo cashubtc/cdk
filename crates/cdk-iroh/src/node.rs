@@ -7,6 +7,7 @@ use iroh::{
     endpoint::{presets, Builder},
     Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey,
 };
+use tokio::sync::OnceCell;
 
 use crate::{
     address::peer_fingerprint, config::DiscoveryMode, metrics::MetricsInner, pool::ConnectionPool,
@@ -20,6 +21,7 @@ struct NodeInner {
     config: IrohConfig,
     pool: ConnectionPool,
     metrics: Arc<MetricsInner>,
+    self_dial_node: OnceCell<IrohNode>,
 }
 
 /// A clone-shared Iroh endpoint with explicit identity and discovery lifecycle.
@@ -79,6 +81,7 @@ impl IrohNode {
                 config,
                 pool,
                 metrics,
+                self_dial_node: OnceCell::new(),
             }),
         })
     }
@@ -112,12 +115,48 @@ impl IrohNode {
 
     /// Gracefully closes this endpoint and all of its connections.
     pub async fn close(&self) {
-        self.inner.metrics.set_online(false);
-        self.inner.endpoint.close().await;
+        if let Some(self_dial_node) = self.inner.self_dial_node.get() {
+            self_dial_node.close_endpoint_only().await;
+        }
+        self.close_endpoint_only().await;
+    }
+
+    /// Returns an endpoint capable of dialing `target`.
+    ///
+    /// Iroh endpoints cannot connect to their own endpoint ID. Federation
+    /// protocols deliberately send the same signed request to every member,
+    /// including the local member, so that case uses one lazy internal
+    /// companion endpoint. The advertised persistent identity and the shared
+    /// connection pool remain unchanged for all remote traffic.
+    pub(crate) async fn dial_node(&self, target: EndpointId) -> Result<Self, Error> {
+        if target != self.endpoint_id() {
+            return Ok(self.clone());
+        }
+        let ticket = self.endpoint_ticket();
+        let mut config = self.inner.config.clone();
+        config.bind_addr = None;
+        if !config
+            .static_tickets
+            .iter()
+            .any(|configured| configured.endpoint_addr().id == target)
+        {
+            config.static_tickets.push(ticket);
+        }
+        let node = self
+            .inner
+            .self_dial_node
+            .get_or_try_init(|| Self::ephemeral(config))
+            .await?;
+        Ok(node.clone())
     }
 
     pub(crate) fn endpoint(&self) -> &Endpoint {
         &self.inner.endpoint
+    }
+
+    async fn close_endpoint_only(&self) {
+        self.inner.metrics.set_online(false);
+        self.inner.endpoint.close().await;
     }
 
     pub(crate) fn config(&self) -> &IrohConfig {

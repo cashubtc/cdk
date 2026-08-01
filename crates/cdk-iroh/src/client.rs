@@ -60,10 +60,11 @@ impl IrohClient {
             });
         }
         let target = IrohTarget::parse(&url)?;
+        let dial_node = self.node.dial_node(target.endpoint_id).await?;
         let connection = self
             .node
             .pool()
-            .connect(self.node.endpoint(), target.endpoint_id, protocol::ALPN)
+            .connect(dial_node.endpoint(), target.endpoint_id, protocol::ALPN)
             .await?;
         let (send, recv) = match tokio::time::timeout(
             self.node.config().timeouts.stream_open,
@@ -294,10 +295,15 @@ impl IrohClient {
 
         let target =
             IrohTarget::parse(url).map_err(|error| WsError::Connection(error.to_string()))?;
+        let dial_node = self
+            .node
+            .dial_node(target.endpoint_id)
+            .await
+            .map_err(|error| WsError::Connection(error.to_string()))?;
         let connection = self
             .node
             .pool()
-            .connect(self.node.endpoint(), target.endpoint_id, protocol::ALPN)
+            .connect(dial_node.endpoint(), target.endpoint_id, protocol::ALPN)
             .await
             .map_err(|error| WsError::Connection(error.to_string()))?;
         let (send, recv) = tokio::time::timeout(

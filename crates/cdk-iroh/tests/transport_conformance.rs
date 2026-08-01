@@ -289,6 +289,23 @@ async fn endpoint_identities_and_discovery_modes_are_explicit() -> TestResult {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn runtime_node_routes_self_requests_through_companion_endpoint() -> TestResult {
+    let node = IrohNode::ephemeral(loopback_config()).await?;
+    let server = IrohServer::start(node.clone(), synthetic_router());
+    let transport = IrohTransport::with_node(node.clone(), MockHttp::default());
+    let response = transport
+        .http_get_raw(iroh_url(node.endpoint_id(), "/future-route")?, None)
+        .await?;
+    assert_eq!(response.text().await?, "future-route");
+    let remote = transport
+        .http_get_raw(iroh_url(node.endpoint_id(), "/peer")?, None)
+        .await?;
+    assert_ne!(remote.text().await?, node.endpoint_id().to_string());
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn transport_conformance_and_pooling() -> TestResult {
     let fixture = Fixture::start().await?;
 
