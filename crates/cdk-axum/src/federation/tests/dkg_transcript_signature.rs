@@ -7,6 +7,7 @@ async fn private_dkg_transcript_signature_route_accepts_signed_peer_request() {
     let local_member = local_private.member_id;
     let payload = FederationDkgTranscriptSignatureRequest::new(
         public_config.federation_id,
+        public_config.setup_authorization,
         peer_private.member_id,
         transcript_hash,
         FederationDkgTranscriptSignature::sign(transcript_hash, &peer_private)
@@ -66,6 +67,7 @@ async fn private_dkg_transcript_signature_route_rejects_conflict_before_sequence
     let local_member = local_private.member_id;
     let first_payload = FederationDkgTranscriptSignatureRequest::new(
         public_config.federation_id,
+        public_config.setup_authorization,
         peer_private.member_id,
         transcript_hash,
         FederationDkgTranscriptSignature::sign(transcript_hash, &peer_private)
@@ -73,6 +75,7 @@ async fn private_dkg_transcript_signature_route_rejects_conflict_before_sequence
     );
     let conflicting_payload = FederationDkgTranscriptSignatureRequest::new(
         public_config.federation_id,
+        public_config.setup_authorization,
         peer_private.member_id,
         transcript_hash,
         FederationDkgTranscriptSignature::sign(transcript_hash, &peer_private)
@@ -168,6 +171,7 @@ async fn private_dkg_transcript_signature_route_rejects_wrong_hash_before_sequen
     assert_ne!(wrong_hash, expected_hash);
     let payload = FederationDkgTranscriptSignatureRequest::new(
         public_config.federation_id,
+        public_config.setup_authorization,
         peer_private.member_id,
         wrong_hash,
         FederationDkgTranscriptSignature::sign(wrong_hash, &peer_private)
@@ -217,6 +221,7 @@ async fn private_dkg_transcript_signature_route_rejects_bad_signature_before_seq
             .expect("bad transcript signature");
     let payload = FederationDkgTranscriptSignatureRequest::new(
         public_config.federation_id,
+        public_config.setup_authorization,
         peer_private.member_id,
         transcript_hash,
         bad_signature,

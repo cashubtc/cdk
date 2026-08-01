@@ -20,10 +20,11 @@ use super::transport::{
     FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest,
 };
 use super::{
-    append_bytes, FederationError, Result, FEDERATION_DKG_COMMITMENT_HASH_VERSION,
-    FEDERATION_DKG_PARTICIPANT_STATE_VERSION, FEDERATION_DKG_PUBLIC_CEREMONY_VERSION,
-    FEDERATION_DKG_TRANSCRIPT_HASH_VERSION, FEDERATION_DKG_TRANSCRIPT_SIGNATURE_VERSION,
-    FEDERATION_MAX_DKG_KEYSET_AMOUNTS, FEDERATION_MAX_DKG_MEMBERS,
+    append_bytes, FederationError, FederationSetupAuthorizationHash, Result,
+    FEDERATION_DKG_COMMITMENT_HASH_VERSION, FEDERATION_DKG_PARTICIPANT_STATE_VERSION,
+    FEDERATION_DKG_PUBLIC_CEREMONY_VERSION, FEDERATION_DKG_TRANSCRIPT_HASH_VERSION,
+    FEDERATION_DKG_TRANSCRIPT_SIGNATURE_VERSION, FEDERATION_MAX_DKG_KEYSET_AMOUNTS,
+    FEDERATION_MAX_DKG_MEMBERS,
 };
 use crate::nuts::nut01::{
     aggregate_public_key_commitments, aggregate_secret_key_shares, evaluate_public_key_commitments,
@@ -38,6 +39,8 @@ use crate::{Amount, CurrencyUnit, Id, PublicKey};
 pub struct FederationDkgMemberKeysetShare {
     /// Federation roster this completed DKG keyset belongs to.
     pub federation_id: FederationId,
+    /// Certified setup authorization that permitted this DKG.
+    pub setup_authorization: FederationSetupAuthorizationHash,
     /// Local federation member that owns the secret shares.
     pub member_id: MemberId,
     /// Public aggregate keyset derived from all revealed DKG commitments.
@@ -82,6 +85,11 @@ impl FederationDkgMemberKeysetShare {
                 return Err(FederationError::FederationIdMismatch {
                     expected: setup_public_config.federation_id,
                     found: share.federation_id,
+                });
+            }
+            if share.setup_authorization != setup_public_config.setup_authorization {
+                return Err(FederationError::DkgTranscriptMismatch {
+                    reason: "local DKG keyset share setup authorization mismatch".to_string(),
                 });
             }
             if share.member_id != local_member {
@@ -336,6 +344,8 @@ impl FederationDkgCeremonyState {
 pub struct FederationDkgCeremonyRecord {
     /// Federation roster and threshold this ceremony belongs to.
     pub federation_id: FederationId,
+    /// Certified setup authorization that permitted this ceremony.
+    pub setup_authorization: FederationSetupAuthorizationHash,
     /// Unique ceremony identifier.
     pub ceremony_id: FederationDkgCeremonyId,
     /// Local member that owns this database record.
@@ -355,6 +365,7 @@ impl FederationDkgCeremonyRecord {
     #[must_use]
     pub fn active(
         federation_id: FederationId,
+        setup_authorization: FederationSetupAuthorizationHash,
         ceremony_id: FederationDkgCeremonyId,
         member_id: MemberId,
         keyset_spec: FederationDkgKeysetSpec,
@@ -362,6 +373,7 @@ impl FederationDkgCeremonyRecord {
     ) -> Self {
         Self {
             federation_id,
+            setup_authorization,
             ceremony_id,
             member_id,
             keyset_spec,
@@ -503,6 +515,8 @@ impl<'de> Deserialize<'de> for FederationDkgCommitmentHash {
 pub struct FederationDkgParticipantCommitment {
     /// Federation roster hash this commitment belongs to.
     pub federation_id: FederationId,
+    /// Certified setup authorization that permitted this commitment.
+    pub setup_authorization: FederationSetupAuthorizationHash,
     /// Unique DKG ceremony this commitment belongs to.
     pub ceremony_id: FederationDkgCeremonyId,
     /// Member that committed to later reveal material.
@@ -516,6 +530,7 @@ impl FederationDkgParticipantCommitment {
     pub fn from_reveal(reveal: &FederationDkgParticipantCommitmentReveal) -> Result<Self> {
         Ok(Self {
             federation_id: reveal.federation_id,
+            setup_authorization: reveal.setup_authorization,
             ceremony_id: reveal.ceremony_id,
             member_id: reveal.member_id,
             commitment_hash: reveal.commitment_hash()?,
@@ -528,6 +543,12 @@ impl FederationDkgParticipantCommitment {
             return Err(FederationError::DkgCommitmentMismatch {
                 member_id: self.member_id,
                 reason: "federation id mismatch".to_string(),
+            });
+        }
+        if self.setup_authorization != public_config.setup_authorization {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.member_id,
+                reason: "setup authorization mismatch".to_string(),
             });
         }
         let member =
@@ -584,6 +605,8 @@ impl FederationDkgParticipantCommitment {
 pub struct FederationDkgParticipantCommitmentReveal {
     /// Federation roster hash this reveal belongs to.
     pub federation_id: FederationId,
+    /// Certified setup authorization that permitted this reveal.
+    pub setup_authorization: FederationSetupAuthorizationHash,
     /// Unique DKG ceremony this reveal belongs to.
     pub ceremony_id: FederationDkgCeremonyId,
     /// Member that reveals public polynomial commitments.
@@ -609,6 +632,12 @@ impl FederationDkgParticipantCommitmentReveal {
             return Err(FederationError::DkgCommitmentMismatch {
                 member_id: self.member_id,
                 reason: "federation id mismatch".to_string(),
+            });
+        }
+        if self.setup_authorization != public_config.setup_authorization {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.member_id,
+                reason: "setup authorization mismatch".to_string(),
             });
         }
         if !public_config.members.contains_key(&self.member_id) {
@@ -718,6 +747,7 @@ impl FederationDkgParticipantCommitmentReveal {
 pub struct FederationDkgParticipantState {
     version: u16,
     federation_id: FederationId,
+    setup_authorization: FederationSetupAuthorizationHash,
     ceremony_id: FederationDkgCeremonyId,
     member_id: MemberId,
     pub(super) reveal: FederationDkgParticipantCommitmentReveal,
@@ -788,6 +818,7 @@ impl FederationDkgParticipantState {
             .collect();
         let reveal = FederationDkgParticipantCommitmentReveal {
             federation_id: public_config.federation_id,
+            setup_authorization: public_config.setup_authorization,
             ceremony_id,
             member_id,
             keyset_spec,
@@ -812,6 +843,7 @@ impl FederationDkgParticipantState {
                 receiver,
                 FederationDkgSecretShareRequest::new(
                     public_config.federation_id,
+                    public_config.setup_authorization,
                     ceremony_id,
                     member_id,
                     receiver,
@@ -823,6 +855,7 @@ impl FederationDkgParticipantState {
         Ok(Self {
             version: FEDERATION_DKG_PARTICIPANT_STATE_VERSION,
             federation_id: public_config.federation_id,
+            setup_authorization: public_config.setup_authorization,
             ceremony_id,
             member_id,
             reveal,
@@ -845,6 +878,14 @@ impl FederationDkgParticipantState {
             return Err(FederationError::FederationIdMismatch {
                 expected: public_config.federation_id,
                 found: self.federation_id,
+            });
+        }
+        if self.setup_authorization != public_config.setup_authorization
+            || self.reveal.setup_authorization != self.setup_authorization
+        {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.member_id,
+                reason: "participant state setup authorization mismatch".to_string(),
             });
         }
         if self.reveal.ceremony_id != self.ceremony_id {
@@ -946,6 +987,8 @@ impl FederationDkgParticipantState {
 pub struct FederationDkgCommitmentRound {
     /// Federation roster hash for this setup round.
     pub federation_id: FederationId,
+    /// Certified setup authorization for this setup round.
+    pub setup_authorization: FederationSetupAuthorizationHash,
     /// Unique DKG ceremony represented by this round.
     pub ceremony_id: FederationDkgCeremonyId,
     /// Deterministic participant order.
@@ -969,6 +1012,7 @@ impl FederationDkgCommitmentRound {
             .ceremony_id;
         let round = Self {
             federation_id: public_config.federation_id,
+            setup_authorization: public_config.setup_authorization,
             ceremony_id,
             participant_order: public_config.members.keys().copied().collect(),
             commitments,
@@ -982,6 +1026,11 @@ impl FederationDkgCommitmentRound {
         if self.federation_id != public_config.federation_id {
             return Err(FederationError::DkgCommitmentRoundMismatch {
                 reason: "federation id mismatch".to_string(),
+            });
+        }
+        if self.setup_authorization != public_config.setup_authorization {
+            return Err(FederationError::DkgCommitmentRoundMismatch {
+                reason: "setup authorization mismatch".to_string(),
             });
         }
         let expected_order = public_config.members.keys().copied().collect::<Vec<_>>();
@@ -1270,6 +1319,7 @@ impl FederationDkgCommitmentRound {
             FederationDkgPublicCeremony::new(public_config, self.clone(), reveals.clone())?;
         Ok(FederationDkgMemberKeysetShare {
             federation_id: public_config.federation_id,
+            setup_authorization: public_config.setup_authorization,
             member_id,
             keyset,
             public_ceremony,
@@ -1289,6 +1339,8 @@ impl FederationDkgCommitmentRound {
 pub struct FederationDkgPublicCeremony {
     /// Public ceremony record format version.
     pub version: u16,
+    /// Certified setup authorization that permitted this public ceremony.
+    pub setup_authorization: FederationSetupAuthorizationHash,
     /// Pre-reveal commitment round for every federation member.
     pub commitment_round: FederationDkgCommitmentRound,
     /// Revealed public polynomial commitments for every federation member.
@@ -1304,6 +1356,7 @@ impl FederationDkgPublicCeremony {
     ) -> Result<Self> {
         let ceremony = Self {
             version: FEDERATION_DKG_PUBLIC_CEREMONY_VERSION,
+            setup_authorization: public_config.setup_authorization,
             commitment_round,
             reveals,
         };
@@ -1325,6 +1378,11 @@ impl FederationDkgPublicCeremony {
                     "public ceremony version mismatch: expected={}, found={}",
                     FEDERATION_DKG_PUBLIC_CEREMONY_VERSION, self.version
                 ),
+            });
+        }
+        if self.setup_authorization != public_config.setup_authorization {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "public ceremony setup authorization mismatch".to_string(),
             });
         }
         self.commitment_round
@@ -1389,6 +1447,8 @@ fn dkg_participant_secret_share(
 pub struct FederationDkgSetupState {
     /// Federation roster hash for this setup state.
     pub federation_id: FederationId,
+    /// Certified setup authorization for this setup state.
+    pub setup_authorization: FederationSetupAuthorizationHash,
     /// Ceremony accepted by the first commitment, if setup has started.
     pub ceremony_id: Option<FederationDkgCeremonyId>,
     /// Deterministic participant order.
@@ -1405,6 +1465,7 @@ impl FederationDkgSetupState {
     pub fn new(public_config: &FederationConfig) -> Self {
         Self {
             federation_id: public_config.federation_id,
+            setup_authorization: public_config.setup_authorization,
             ceremony_id: None,
             participant_order: public_config.members.keys().copied().collect(),
             commitments: BTreeMap::new(),
@@ -1417,6 +1478,11 @@ impl FederationDkgSetupState {
         if self.federation_id != public_config.federation_id {
             return Err(FederationError::DkgCommitmentRoundMismatch {
                 reason: "federation id mismatch".to_string(),
+            });
+        }
+        if self.setup_authorization != public_config.setup_authorization {
+            return Err(FederationError::DkgCommitmentRoundMismatch {
+                reason: "setup authorization mismatch".to_string(),
             });
         }
         let expected_order = public_config.members.keys().copied().collect::<Vec<_>>();
@@ -1852,6 +1918,8 @@ pub struct FederationDkgTranscriptPayload {
     pub setup_method: FederationDkgSetupMethod,
     /// Federation ID bound by this transcript.
     pub federation_id: FederationId,
+    /// Certified setup authorization bound by this transcript.
+    pub setup_authorization: FederationSetupAuthorizationHash,
     /// Threshold parameters bound by this transcript.
     pub threshold_params: ThresholdParams,
     /// Deterministic member order used as DKG participant order.
@@ -1899,6 +1967,7 @@ impl FederationDkgTranscript {
         FederationDkgTranscriptPayload {
             setup_method,
             federation_id: public_config.federation_id,
+            setup_authorization: public_config.setup_authorization,
             threshold_params: public_config.threshold_params,
             participant_order: public_config.members.keys().copied().collect(),
             member_identity_public_keys: public_config
@@ -2124,6 +2193,11 @@ impl FederationDkgTranscript {
                 reason: "federation id mismatch".to_string(),
             });
         }
+        if self.payload.setup_authorization != public_config.setup_authorization {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "transcript setup authorization mismatch".to_string(),
+            });
+        }
         if self.payload.threshold_params != public_config.threshold_params {
             return Err(FederationError::DkgTranscriptMismatch {
                 reason: "threshold parameter mismatch".to_string(),
@@ -2313,6 +2387,11 @@ impl FederationDkgFinalizedMemberConfig {
                 return Err(FederationError::FederationIdMismatch {
                     expected: setup_public_config.federation_id,
                     found: share.federation_id,
+                });
+            }
+            if share.setup_authorization != setup_public_config.setup_authorization {
+                return Err(FederationError::DkgTranscriptMismatch {
+                    reason: "final DKG keyset share setup authorization mismatch".to_string(),
                 });
             }
             if share.member_id != local_member {

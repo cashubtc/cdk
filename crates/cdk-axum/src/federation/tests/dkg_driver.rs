@@ -70,6 +70,7 @@ impl DkgDriverTestFederation {
             state
                 .federation
                 .set_dkg_auto_start_config_for_test(Some(Arc::new(FederationDkgAutoStartConfig {
+                    setup_authorization: public_config.setup_authorization,
                     ceremony_id,
                     root_key_epoch: 1,
                     keyset_spec: keyset_spec.clone(),
@@ -141,22 +142,19 @@ impl DkgDriverTestFederation {
     }
 
     async fn drive_round(&self) -> Vec<FederationDkgDriverTickOutcome> {
-        let mut outcomes = Vec::with_capacity(self.members.len());
-        for member in &self.members {
+        futures::future::join_all(self.members.iter().map(|member| async move {
             let mut delivery_tracker = member.delivery_tracker.lock().await;
-            outcomes.push(
-                run_federation_dkg_driver_tick(
-                    &member.state,
-                    &member.client,
-                    &member.participant,
-                    FederationDkgSecretShareTransportPolicy::RequireHttps,
-                    &mut delivery_tracker,
-                )
-                .await
-                .expect("DKG driver tick"),
-            );
-        }
-        outcomes
+            run_federation_dkg_driver_tick(
+                &member.state,
+                &member.client,
+                &member.participant,
+                FederationDkgSecretShareTransportPolicy::RequireHttps,
+                &mut delivery_tracker,
+            )
+            .await
+            .expect("concurrent DKG driver tick")
+        }))
+        .await
     }
 
     async fn restart_member(&mut self, index: usize) {
@@ -171,6 +169,7 @@ impl DkgDriverTestFederation {
         state
             .federation
             .set_dkg_auto_start_config_for_test(Some(Arc::new(FederationDkgAutoStartConfig {
+                setup_authorization: self.public_config.setup_authorization,
                 ceremony_id: self.ceremony_id,
                 root_key_epoch: 1,
                 keyset_spec: self.keyset_spec.clone(),
@@ -362,6 +361,7 @@ async fn dkg_cannot_complete_while_one_configured_member_withholds() {
     // recovery path is.
     let readiness = FederationDkgReadinessRequest::new(
         federation.public_config.federation_id,
+        federation.public_config.setup_authorization,
         federation.ceremony_id,
         federation.keyset_spec.clone(),
     );
@@ -685,6 +685,7 @@ async fn dkg_completion_marks_registered_ceremony_complete_idempotently() {
     for member in &federation.members {
         let ceremony = FederationDkgCeremonyRecord::active(
             federation.public_config.federation_id,
+            federation.public_config.setup_authorization,
             federation.ceremony_id,
             member.private_config.member_id,
             federation.keyset_spec.clone(),
@@ -900,6 +901,7 @@ async fn dkg_readiness_waits_for_exact_all_member_configuration_without_persiste
         .remove(&missing_member.federation_api_url);
     let request = FederationDkgReadinessRequest::new(
         federation.public_config.federation_id,
+        federation.public_config.setup_authorization,
         federation.ceremony_id,
         federation.keyset_spec.clone(),
     );
@@ -958,6 +960,7 @@ async fn dkg_readiness_waits_for_exact_all_member_configuration_without_persiste
     changed_spec.input_fee_ppk = 1;
     let mismatched = FederationDkgReadinessRequest::new(
         federation.public_config.federation_id,
+        federation.public_config.setup_authorization,
         federation.ceremony_id,
         changed_spec,
     );

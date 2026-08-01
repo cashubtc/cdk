@@ -931,6 +931,7 @@ async fn federation_restart_activates_driver_derived_dkg_records() {
         .map(|private_config| {
             FederationDkgTranscriptSignatureRequest::new(
                 final_public_config.federation_id,
+                final_public_config.setup_authorization,
                 private_config.member_id,
                 transcript_hash,
                 FederationDkgTranscriptSignature::sign(transcript_hash, private_config)

@@ -1230,6 +1230,8 @@ pub struct Federation {
     /// threshold profiles below the production BFT safety bounds.
     #[serde(default)]
     pub allow_development_payment_observation_policy: bool,
+    /// Protected local multi-operator setup config used for certified DKG handoff.
+    pub setup_config_path: Option<PathBuf>,
     /// Path to the shared public federation config JSON file.
     pub public_config_path: Option<PathBuf>,
     /// Path to this member's private federation config JSON file.

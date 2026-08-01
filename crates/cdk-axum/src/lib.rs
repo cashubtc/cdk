@@ -57,8 +57,8 @@ mod custom_router;
 mod federation;
 #[cfg(feature = "federation")]
 pub use self::federation::{
-    create_federation_setup_router, run_federation_dkg_driver, FederationDkgAutoStartConfig,
-    FederationDkgDriverRunConfig, FederationDkgDriverRunOutcome, FederationDkgDriverTickOutcome,
+    create_federation_setup_router, FederationDkgAutoStartConfig, FederationDkgDriverRunConfig,
+    FederationDkgDriverRunOutcome, FederationDkgDriverTickOutcome,
     FederationDkgSecretShareTransportPolicy, FederationPeerSyncConfig,
     FederationPeerSyncConfigError, FederationSetupCoordinatorService,
     FederationSetupCoordinatorServiceConfig, FederationSetupHttpClient, FederationSetupHttpError,
@@ -1186,11 +1186,14 @@ mod tests {
         let application_id = cdk::federation::FederationFrostApplicationId::from_bytes([7; 32])
             .expect("application id");
         let root = cdk::federation::FederationFrostRootPublicConfig {
-            version: 1,
+            version: 2,
             federation_id: cdk::federation::FederationId::from_bytes([11; 32]),
+            setup_authorization: cdk::federation::FederationSetupAuthorizationHash::from_bytes(
+                [10; 32],
+            ),
             ceremony_id: cdk::federation::FederationDkgCeremonyId::from_bytes([12; 32]),
             root_key_epoch: 1,
-            dkg_protocol_version: 1,
+            dkg_protocol_version: 2,
             ciphersuite_version: 1,
             threshold: 2,
             participant_mapping: BTreeMap::new(),
@@ -2424,6 +2427,32 @@ pub async fn create_mint_router_with_custom_cache_and_federation_dkg(
     .await
 }
 
+/// Create the isolated setup runtime exposing only authenticated DKG routes.
+#[cfg(feature = "federation")]
+pub async fn create_federation_dkg_setup_router(
+    mint: Arc<Mint>,
+    federation_peer_sync_config: FederationPeerSyncConfig,
+    federation_dkg_config: FederationDkgAutoStartConfig,
+) -> Result<Router> {
+    federation_peer_sync_config.validate()?;
+    create_mint_router_with_custom_cache_inner(
+        mint,
+        HttpCache::default(),
+        Vec::new(),
+        false,
+        false,
+        federation_peer_sync_config,
+        Some(federation_dkg_config),
+        None,
+        #[cfg(feature = "federation-bark")]
+        None,
+        true,
+        #[cfg(test)]
+        false,
+    )
+    .await
+}
+
 /// Create mint [`Router`] with federation DKG and member-local watch-only BDK policy.
 #[cfg(feature = "federation")]
 #[allow(unused_mut, unused_variables)]
@@ -2448,6 +2477,7 @@ pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallet(
         federation_bdk_config,
         #[cfg(feature = "federation-bark")]
         None,
+        false,
         #[cfg(test)]
         false,
     )
@@ -2478,6 +2508,7 @@ pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallets
         federation_dkg_config,
         federation_bdk_config,
         federation_bark_config,
+        false,
         #[cfg(test)]
         false,
     )
@@ -2504,6 +2535,7 @@ pub(crate) async fn create_mint_router_without_federation_peer_sync(
         None,
         #[cfg(feature = "federation-bark")]
         None,
+        false,
         true,
     )
     .await
@@ -2522,6 +2554,7 @@ async fn create_mint_router_with_custom_cache_inner(
     #[cfg(feature = "federation-bark")] federation_bark_config: Option<
         cdk_bark::FederatedBarkLocalConfig,
     >,
+    #[cfg(feature = "federation")] federation_setup_only: bool,
     #[cfg(all(test, feature = "federation"))] federation_local_finality_test: bool,
 ) -> Result<Router> {
     #[cfg(all(feature = "federation", feature = "prometheus"))]
@@ -2689,6 +2722,19 @@ async fn create_mint_router_with_custom_cache_inner(
         let config = federation_dkg_config
             .expect("enabled federation DKG driver must retain its validated configuration");
         federation::spawn_federation_dkg_driver(state.clone(), federation_peer_sync_config, config);
+    }
+
+    #[cfg(feature = "federation")]
+    if federation_setup_only {
+        let router = Router::new()
+            .nest("/federation/v1", federation::create_federation_dkg_router())
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                federation_invalid_operation_alert_middleware,
+            ))
+            .layer(from_fn(cors_middleware))
+            .with_state(state);
+        return Ok(router);
     }
 
     let v1_router = Router::new()

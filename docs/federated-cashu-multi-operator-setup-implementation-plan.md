@@ -1,10 +1,13 @@
 # Federated Cashu multi-operator setup implementation plan
 
-> **Status — Milestone 4 complete, 2026-08-01:** The pure setup domain,
+> **Status — Milestone 5 complete, 2026-08-01:** The pure setup domain,
 > durable SQLite/PostgreSQL state, protected local identities and invitations,
 > immutable proposal review, exact-hash approval fence, and bounded setup-only
 > coordinator HTTP service and authenticated client are implemented and
-> verified. Milestone 5's certified-manifest handoff to DKG is next.
+> verified. DKG now starts only from a locally persisted certified manifest,
+> all BLS/FROST artifacts bind its setup authorization, and member drivers run
+> independently and concurrently. Milestone 6's finalization and explicit
+> activation UX is next.
 > This document
 > defines the implementation sequence for replacing CDK's file-mediated
 > federation enrollment and roster assembly with an authenticated, restartable
@@ -960,20 +963,76 @@ failure, rate saturation, and clean shutdown.
 
 ### Milestone 5 — Certified-manifest handoff to DKG
 
-- [ ] Require a validated complete manifest before participant-state
+- [x] Require a validated complete manifest before participant-state
   generation or DKG readiness.
-- [ ] Bind setup authorization into BLS and FROST records, signatures,
+- [x] Bind setup authorization into BLS and FROST records, signatures,
   transcripts, activation, export, and startup.
-- [ ] Derive all shared DKG inputs from the manifest and remove arbitrary
+- [x] Derive all shared DKG inputs from the manifest and remove arbitrary
   production overrides.
-- [ ] Bump affected undeployed protocol versions and regenerate fixtures.
-- [ ] Prove every member starts its own driver concurrently after certification;
+- [x] Bump affected undeployed protocol versions and regenerate fixtures.
+- [x] Prove every member starts its own driver concurrently after certification;
   no member ID is a protocol coordinator.
 
 **Tests:** existing DKG unit/route/restart/partition/equivocation suites plus
 wrong-manifest, same-roster/different-policy, cross-setup replay, mismatched
 authorization, and coordinator-disappears-after-all-members-persist-the-manifest
 cases.
+
+**Completed 2026-08-01:**
+
+- Added a protected local manifest file and an independent 64-byte runtime seed
+  to local setup state version 2. `setup status` persists the exact durable
+  certificate locally; startup revalidates its unanimous signatures, proposal,
+  URL policy, local enrollment/identity binding, and setup authorization before
+  deriving any DKG input. Missing, conflicting, tampered, cross-setup, or
+  locally mismatched manifests fail before participant-state generation.
+- Made the manifest the only public construction path for
+  `FederationDkgAutoStartConfig`. Its setup config, authorization, ceremony ID,
+  BLS keyset policy, FROST root epoch, and secret-share transport policy are all
+  derived from the certificate. `cdk-mintd` requires
+  `federation.setup_config_path` while DKG is enabled, rejects simultaneous raw
+  public/private configs, and rejects the old raw ceremony, replacement, and
+  amount inputs. The direct DKG runner and auto-start fields are crate-private.
+- Added setup authorization to durable BLS participant state, lifecycle,
+  readiness, commitments, reveals, secret shares, local keyset shares, public
+  ceremony, transcript requests/payloads/signatures, activation signatures,
+  final member assembly, FROST DKG contexts/results, and exported FROST root
+  configuration. The BLS participant/public-ceremony formats, commitment and
+  transcript domains, private REST protocol, activation domain, FROST DKG
+  protocol, and FROST public-root schema now use their strict undeployed v2
+  forms; fixed vectors and fixtures were regenerated.
+- Added an isolated post-certification router exposing only authenticated
+  `/federation/v1/dkg/*` routes. Each member registers its own manifest-bound
+  lifecycle record and spawns its own driver. The multi-member DKG harness now
+  executes every member tick with `join_all`; there is no member-ID coordinator
+  and the CPU admission semaphore remains machine-local, so it cannot serialize
+  members on separate machines.
+- The ordinary three-operator HTTP test now proves DKG is unavailable before
+  certification, persists the certificate independently in all three stores,
+  shuts the setup coordinator down, and only then derives identical public DKG
+  context plus distinct local identities/lifecycle records. Domain tests prove
+  same-roster/different-policy and cross-setup proposals derive different setup
+  authorizations; readiness, FROST-context, activation, and signed-route tests
+  reject mismatched authorization.
+- Verification passed: setup domain and transcript vectors (`11 + 1` tests),
+  `cdk-common` federation library (`465 passed`, `1 ignored`), the DKG-focused
+  `cdk-axum` suite (`58 passed`) including restart/partition/equivocation and
+  concurrent drivers, CDK mint federation regressions (`146 passed`), the
+  complete serial `cdk-mintd` federation suite (`230 passed`), and the
+  independent-operator setup suite (`3 passed`). The seven manifest-bound DKG
+  persistence cases also pass against a live local PostgreSQL instance.
+  Workspace all-target checking, the federation-plus-PostgreSQL/no-SQLite
+  feature check, strict changed-library Clippy with explicit allowances only
+  for recorded pre-existing findings, targeted `rustfmt`, and
+  `git diff --check` pass.
+- Version 1 intentionally starts exactly one initial BLS keyset ceremony, which
+  matches the frozen singular ceremony-ID transcript and the public CLI. A
+  multi-keyset initial ceremony needs a future versioned sub-ceremony
+  derivation; accepting a multi-keyset manifest and silently reusing one
+  ceremony ID is forbidden. `federation setup serve` selects coordinator-only
+  or DKG-only mode at process start, so operators currently stop and relaunch it
+  after local manifest persistence. Milestone 6 will make that handoff and DKG
+  progress explicit in the finalization/status UX.
 
 ### Milestone 6 — Finalization and explicit activation UX
 

@@ -866,6 +866,7 @@ impl CompleteFixture {
                 )?;
                 Ok(FederationDkgTranscriptSignatureRequest::new(
                     base.public_config.federation_id,
+                    base.public_config.setup_authorization,
                     *member,
                     hash,
                     signature,

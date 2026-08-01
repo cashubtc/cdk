@@ -8,9 +8,10 @@ use std::str::FromStr;
 use bitcoin::base64::Engine as _;
 use bitcoin::hashes::{sha256, Hash};
 use cdk_common::federation::{
-    FederationCheckpointPolicy, FederationConfig, FederationDkgKeysetSpec, FederationError,
-    FederationPaymentObservationPolicy, FederationSetupApproval, FederationSetupAuthorizationHash,
-    FederationSetupBitcoinNetwork, FederationSetupCoordinatorPublicKey, FederationSetupEnrollment,
+    FederationCheckpointPolicy, FederationConfig, FederationDkgCeremonyId, FederationDkgKeysetSpec,
+    FederationError, FederationFrostDkgContext, FederationPaymentObservationPolicy,
+    FederationSetupApproval, FederationSetupAuthorizationHash, FederationSetupBitcoinNetwork,
+    FederationSetupCoordinatorPublicKey, FederationSetupEnrollment,
     FederationSetupFrostApplication, FederationSetupFrostPolicy, FederationSetupId,
     FederationSetupInvitation, FederationSetupInvitationCapability, FederationSetupInvitationId,
     FederationSetupInvitationRecord, FederationSetupLocalRole, FederationSetupManifest,
@@ -441,6 +442,28 @@ fn manifest_derives_exact_config_and_authorization_is_mandatory() {
         authorization.to_bytes()
     );
 
+    let mut different_policy = fixture.proposal.body.clone();
+    different_policy
+        .checkpoint_policy
+        .checkpoint_interval_journal_operations += 1;
+    assert_ne!(
+        different_policy
+            .setup_authorization_hash()
+            .expect("alternate policy authorization"),
+        authorization,
+        "the same roster with a different policy must authorize a different DKG"
+    );
+
+    let mut different_setup = fixture.proposal.body.clone();
+    different_setup.setup_id = FederationSetupId::from_bytes([8; 32]);
+    assert_ne!(
+        different_setup
+            .setup_authorization_hash()
+            .expect("alternate setup authorization"),
+        authorization,
+        "an otherwise identical proposal from another setup must not replay"
+    );
+
     let alternate = FederationConfig::new(
         FederationSetupAuthorizationHash::from_bytes([99; 32]),
         setup_config.threshold_params,
@@ -449,6 +472,18 @@ fn manifest_derives_exact_config_and_authorization_is_mandatory() {
     )
     .expect("alternate explicit authorization");
     assert_ne!(alternate.federation_id, setup_config.federation_id);
+
+    let mut frost_context = FederationFrostDkgContext::new(
+        &setup_config,
+        FederationDkgCeremonyId::from_bytes([42; 32]),
+        fixture.proposal.body.frost.root_key_epoch,
+    )
+    .expect("manifest-bound FROST context");
+    frost_context.setup_authorization = FederationSetupAuthorizationHash::from_bytes([99; 32]);
+    assert!(matches!(
+        frost_context.validate_against(&setup_config),
+        Err(FederationError::DkgTranscriptMismatch { .. })
+    ));
 
     let mut encoded = serde_json::to_value(&setup_config).expect("config serializes");
     encoded

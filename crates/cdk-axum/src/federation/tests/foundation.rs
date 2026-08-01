@@ -3327,6 +3327,7 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
                     crate::FederationSyncState::for_aleph_bft()
                 }))),
                 Some(Arc::new(FederationDkgAutoStartConfig {
+                    setup_authorization: public_config.setup_authorization,
                     ceremony_id: FederationDkgCeremonyId::from_bytes([55; 32]),
                     root_key_epoch: 1,
                     keyset_spec: cdk::federation::FederationDkgKeysetSpec::new(
@@ -3620,6 +3621,7 @@ fn dkg_reveal(
 ) -> cdk::federation::FederationDkgParticipantCommitmentReveal {
     cdk::federation::FederationDkgParticipantCommitmentReveal {
         federation_id: public_config.federation_id,
+        setup_authorization: public_config.setup_authorization,
         ceremony_id: cdk::federation::FederationDkgCeremonyId::from_bytes([55; 32]),
         member_id,
         keyset_spec: cdk::federation::FederationDkgKeysetSpec::new(
@@ -3667,6 +3669,7 @@ fn dkg_secret_share_request(
 ) -> FederationDkgSecretShareRequest {
     FederationDkgSecretShareRequest::new(
         public_config.federation_id,
+        public_config.setup_authorization,
         cdk::federation::FederationDkgCeremonyId::from_bytes([55; 32]),
         sender,
         receiver,
@@ -3774,6 +3777,7 @@ fn dkg_transcript_signature_request(
     .expect("transcript signature");
     FederationDkgTranscriptSignatureRequest::new(
         public_config.federation_id,
+        public_config.setup_authorization,
         private_config.member_id,
         transcript.transcript_hash,
         signature,

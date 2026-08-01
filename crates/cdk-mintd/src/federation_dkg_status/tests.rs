@@ -89,6 +89,7 @@ fn dkg_reveal_for_status(
         .collect::<Vec<_>>();
     FederationDkgParticipantCommitmentReveal {
         federation_id: public_config.federation_id,
+        setup_authorization: public_config.setup_authorization,
         ceremony_id: dkg_ceremony_id(),
         member_id,
         keyset_spec: FederationDkgKeysetSpec::new(
@@ -134,6 +135,7 @@ fn dkg_secret_share_request_for_status(
         .collect::<Vec<_>>();
     FederationDkgSecretShareRequest::new(
         public_config.federation_id,
+        public_config.setup_authorization,
         dkg_ceremony_id(),
         sender,
         receiver,
@@ -234,6 +236,7 @@ fn dkg_completion_fixture(local_member: MemberId) -> DkgCompletionFixture {
         .map(|private_config| {
             FederationDkgTranscriptSignatureRequest::new(
                 final_public_config.federation_id,
+                final_public_config.setup_authorization,
                 private_config.member_id,
                 transcript_hash,
                 FederationDkgTranscriptSignature::sign(transcript_hash, private_config)
@@ -945,6 +948,7 @@ fn dkg_progress_report_exposes_aborted_and_replacement_lifecycle() {
         .clone();
     let old = FederationDkgCeremonyRecord::active(
         fixture.setup_public_config.federation_id,
+        fixture.setup_public_config.setup_authorization,
         old_id,
         member_id(2),
         keyset_spec.clone(),
@@ -953,6 +957,7 @@ fn dkg_progress_report_exposes_aborted_and_replacement_lifecycle() {
     let aborted = old.aborted_by(replacement_id).expect("aborted ceremony");
     let replacement = FederationDkgCeremonyRecord::active(
         fixture.setup_public_config.federation_id,
+        fixture.setup_public_config.setup_authorization,
         replacement_id,
         member_id(2),
         keyset_spec,
@@ -989,6 +994,7 @@ async fn read_database_records_loads_persisted_dkg_completion_records() {
         dkg_participant_state_for_status(&fixture.setup_public_config, member_id(2));
     let ceremony = FederationDkgCeremonyRecord::active(
         fixture.setup_public_config.federation_id,
+        fixture.setup_public_config.setup_authorization,
         dkg_ceremony_id(),
         member_id(2),
         reveal.keyset_spec.clone(),

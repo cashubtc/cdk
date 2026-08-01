@@ -24,9 +24,10 @@ use super::{
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationMaterializedStateDigest, FederationMaterializedStateRowFingerprint,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservationReportSummary, FederationWalletRecoveryStatus,
-    InMemoryFederationJournal, MemberConfigPrivate, MemberId, Result,
-    FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES, FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
+    FederationPaymentObservationReportSummary, FederationSetupAuthorizationHash,
+    FederationWalletRecoveryStatus, InMemoryFederationJournal, MemberConfigPrivate, MemberId,
+    Result, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+    FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
 };
 use crate::nuts::nut01::BlsSecretKeyShare;
 use crate::Amount;
@@ -41,12 +42,12 @@ pub use self::aleph_bft_backup::{
 };
 
 /// Version of the private federation REST payload format.
-pub const FEDERATION_REST_API_VERSION: u16 = 1;
+pub const FEDERATION_REST_API_VERSION: u16 = 2;
 
-const FEDERATION_REST_BODY_HASH_VERSION: &[u8] = b"cdk-federation-rest-body-v1";
-const FEDERATION_REST_SIGNATURE_VERSION: &[u8] = b"cdk-federation-rest-signature-v1";
+const FEDERATION_REST_BODY_HASH_VERSION: &[u8] = b"cdk-federation-rest-body-v2";
+const FEDERATION_REST_SIGNATURE_VERSION: &[u8] = b"cdk-federation-rest-signature-v2";
 const FEDERATION_DKG_ACTIVATION_SIGNATURE_VERSION: &[u8] =
-    b"cdk-federation-dkg-activation-signature-v1";
+    b"cdk-federation-dkg-activation-signature-v2";
 
 /// Private federation REST message kind covered by member signatures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -191,6 +192,8 @@ impl FederationRestMessageKind {
 pub struct FederationDkgReadinessRequest {
     /// Federation whose members are preparing the ceremony.
     pub federation_id: FederationId,
+    /// Certified setup authorization required by every participant.
+    pub setup_authorization: FederationSetupAuthorizationHash,
     /// Exact ceremony identifier configured by every participant.
     pub ceremony_id: FederationDkgCeremonyId,
     /// Exact aggregate keyset policy configured by every participant.
@@ -202,11 +205,13 @@ impl FederationDkgReadinessRequest {
     #[must_use]
     pub fn new(
         federation_id: FederationId,
+        setup_authorization: FederationSetupAuthorizationHash,
         ceremony_id: FederationDkgCeremonyId,
         keyset_spec: FederationDkgKeysetSpec,
     ) -> Self {
         Self {
             federation_id,
+            setup_authorization,
             ceremony_id,
             keyset_spec,
         }
@@ -223,6 +228,11 @@ impl FederationDkgReadinessRequest {
             return Err(FederationError::FederationIdMismatch {
                 expected: public_config.federation_id,
                 found: self.federation_id,
+            });
+        }
+        if self.setup_authorization != public_config.setup_authorization {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "DKG readiness setup authorization mismatch".to_string(),
             });
         }
         self.keyset_spec.validate_for_federation(public_config)?;
@@ -2378,6 +2388,8 @@ impl FederationDkgRevealRequest {
 pub struct FederationDkgSecretShareRequest {
     /// Federation whose DKG round this contribution belongs to.
     pub federation_id: FederationId,
+    /// Certified setup authorization for this private contribution.
+    pub setup_authorization: FederationSetupAuthorizationHash,
     /// Unique DKG ceremony this private contribution belongs to.
     pub ceremony_id: FederationDkgCeremonyId,
     /// Participant that generated the secret-share contributions.
@@ -2393,6 +2405,7 @@ impl FederationDkgSecretShareRequest {
     #[must_use]
     pub fn new(
         federation_id: FederationId,
+        setup_authorization: FederationSetupAuthorizationHash,
         ceremony_id: FederationDkgCeremonyId,
         sender: MemberId,
         receiver: MemberId,
@@ -2400,6 +2413,7 @@ impl FederationDkgSecretShareRequest {
     ) -> Self {
         Self {
             federation_id,
+            setup_authorization,
             ceremony_id,
             sender,
             receiver,
@@ -2418,6 +2432,12 @@ impl FederationDkgSecretShareRequest {
             return Err(FederationError::FederationIdMismatch {
                 expected: public_config.federation_id,
                 found: self.federation_id,
+            });
+        }
+        if self.setup_authorization != public_config.setup_authorization {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.sender,
+                reason: "secret contribution setup authorization mismatch".to_string(),
             });
         }
         public_config
@@ -2498,6 +2518,8 @@ impl FederationDkgSecretShareRequest {
 pub struct FederationDkgTranscriptSignatureRequest {
     /// Federation whose transcript is being signed.
     pub federation_id: FederationId,
+    /// Certified setup authorization for the signed transcript.
+    pub setup_authorization: FederationSetupAuthorizationHash,
     /// Member that produced the transcript signature.
     pub signer: MemberId,
     /// Public setup transcript hash being signed.
@@ -2511,12 +2533,14 @@ impl FederationDkgTranscriptSignatureRequest {
     #[must_use]
     pub fn new(
         federation_id: FederationId,
+        setup_authorization: FederationSetupAuthorizationHash,
         signer: MemberId,
         transcript_hash: FederationDkgTranscriptHash,
         signature: FederationDkgTranscriptSignature,
     ) -> Self {
         Self {
             federation_id,
+            setup_authorization,
             signer,
             transcript_hash,
             signature,
@@ -2535,6 +2559,11 @@ impl FederationDkgTranscriptSignatureRequest {
                 found: self.federation_id,
             });
         }
+        if self.setup_authorization != public_config.setup_authorization {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "transcript signature setup authorization mismatch".to_string(),
+            });
+        }
         ensure_dkg_payload_sender(self.signer, sender)?;
         let member = public_config
             .member(self.signer)
@@ -2551,6 +2580,8 @@ impl FederationDkgTranscriptSignatureRequest {
 pub struct FederationDkgActivationRequest {
     /// Federation whose finalized configuration is being confirmed.
     pub federation_id: FederationId,
+    /// Certified setup authorization confirmed by this member.
+    pub setup_authorization: FederationSetupAuthorizationHash,
     /// Dealer-free ceremony that produced the finalized keyset.
     pub ceremony_id: FederationDkgCeremonyId,
     /// Member confirming readiness to activate.
@@ -2619,11 +2650,13 @@ impl FederationDkgActivationRequest {
             signer,
             transcript_hash,
             final_config_digest,
+            final_public_config.setup_authorization,
         );
         let signature =
             FederationDkgTranscriptSignature::sign_no_aux_rand(signing_hash, private_config)?;
         Ok(Self {
             federation_id: final_public_config.federation_id,
+            setup_authorization: final_public_config.setup_authorization,
             ceremony_id,
             signer,
             transcript_hash,
@@ -2665,6 +2698,13 @@ impl FederationDkgActivationRequest {
             return Err(FederationError::FederationIdMismatch {
                 expected: setup_public_config.federation_id,
                 found: self.federation_id,
+            });
+        }
+        if self.setup_authorization != setup_public_config.setup_authorization
+            || final_public_config.setup_authorization != setup_public_config.setup_authorization
+        {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "DKG activation setup authorization mismatch".to_string(),
             });
         }
 
@@ -2734,6 +2774,11 @@ impl FederationDkgActivationRequest {
                 found: self.federation_id,
             });
         }
+        if self.setup_authorization != setup_public_config.setup_authorization {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "DKG activation setup authorization mismatch".to_string(),
+            });
+        }
         let member =
             setup_public_config
                 .member(self.signer)
@@ -2747,6 +2792,7 @@ impl FederationDkgActivationRequest {
                 self.signer,
                 self.transcript_hash,
                 self.final_config_digest,
+                self.setup_authorization,
             ),
             member,
         )
@@ -2759,9 +2805,10 @@ fn dkg_activation_signing_hash(
     signer: MemberId,
     transcript_hash: FederationDkgTranscriptHash,
     final_config_digest: FederationConfigDigest,
+    setup_authorization: FederationSetupAuthorizationHash,
 ) -> FederationDkgTranscriptHash {
     let mut transcript = Vec::with_capacity(
-        FEDERATION_DKG_ACTIVATION_SIGNATURE_VERSION.len() + 32 + 32 + 2 + 32 + 32,
+        FEDERATION_DKG_ACTIVATION_SIGNATURE_VERSION.len() + 32 + 32 + 2 + 32 + 32 + 32,
     );
     transcript.extend_from_slice(FEDERATION_DKG_ACTIVATION_SIGNATURE_VERSION);
     transcript.extend_from_slice(&federation_id.to_bytes());
@@ -2769,6 +2816,7 @@ fn dkg_activation_signing_hash(
     transcript.extend_from_slice(&signer.get().to_be_bytes());
     transcript.extend_from_slice(&transcript_hash.to_bytes());
     transcript.extend_from_slice(&final_config_digest.to_bytes());
+    transcript.extend_from_slice(&setup_authorization.to_bytes());
     FederationDkgTranscriptHash::from_bytes(Sha256Hash::hash(&transcript).to_byte_array())
 }
 
@@ -4011,6 +4059,7 @@ mod tests {
     ) -> FederationDkgParticipantCommitmentReveal {
         FederationDkgParticipantCommitmentReveal {
             federation_id: public_config.federation_id,
+            setup_authorization: public_config.setup_authorization,
             ceremony_id: dkg_ceremony_id(),
             member_id,
             keyset_spec: FederationDkgKeysetSpec::new(
@@ -5303,6 +5352,7 @@ mod tests {
         let keyset_spec = dkg_reveal(&config, first_private.member_id, 11).keyset_spec;
         let payload = FederationDkgReadinessRequest::new(
             config.federation_id,
+            config.setup_authorization,
             dkg_ceremony_id(),
             keyset_spec.clone(),
         );
@@ -5321,6 +5371,17 @@ mod tests {
             .payload
             .validate(&config, dkg_ceremony_id(), &keyset_spec)
             .expect("matching readiness request");
+        let cross_setup = FederationDkgReadinessRequest::new(
+            config.federation_id,
+            FederationSetupAuthorizationHash::from_bytes([99; 32]),
+            dkg_ceremony_id(),
+            keyset_spec.clone(),
+        );
+        assert!(matches!(
+            cross_setup.validate(&config, dkg_ceremony_id(), &keyset_spec),
+            Err(FederationError::DkgTranscriptMismatch { reason })
+                if reason.contains("setup authorization")
+        ));
         assert!(request
             .payload
             .validate(
@@ -5341,6 +5402,34 @@ mod tests {
             serde_json::from_str(&json).expect("decoded DKG readiness request");
         assert_eq!(decoded.kind, FederationRestMessageKind::DkgReadiness);
         decoded.verify(&config, receiver).expect("decoded verifies");
+    }
+
+    #[test]
+    fn dkg_activation_signature_hash_binds_setup_authorization() {
+        let federation_id = FederationId::from_bytes([1; 32]);
+        let ceremony_id = FederationDkgCeremonyId::from_bytes([2; 32]);
+        let signer = roster_member_id(1);
+        let transcript_hash = FederationDkgTranscriptHash::from_bytes([3; 32]);
+        let final_config_digest = FederationConfigDigest::from_bytes([4; 32]);
+
+        assert_ne!(
+            dkg_activation_signing_hash(
+                federation_id,
+                ceremony_id,
+                signer,
+                transcript_hash,
+                final_config_digest,
+                FederationSetupAuthorizationHash::from_bytes([5; 32]),
+            ),
+            dkg_activation_signing_hash(
+                federation_id,
+                ceremony_id,
+                signer,
+                transcript_hash,
+                final_config_digest,
+                FederationSetupAuthorizationHash::from_bytes([6; 32]),
+            )
+        );
     }
 
     #[test]
@@ -5398,6 +5487,7 @@ mod tests {
             .expect("transcript signature");
         let payload = FederationDkgTranscriptSignatureRequest::new(
             config.federation_id,
+            config.setup_authorization,
             first_private.member_id,
             transcript_hash,
             signature,
@@ -5435,6 +5525,7 @@ mod tests {
                 .expect("bad transcript signature");
         let bad_payload = FederationDkgTranscriptSignatureRequest::new(
             config.federation_id,
+            config.setup_authorization,
             first_private.member_id,
             transcript_hash,
             bad_signature,
@@ -5452,6 +5543,7 @@ mod tests {
         let receiver = roster_member_id(2);
         let payload = FederationDkgSecretShareRequest::new(
             config.federation_id,
+            config.setup_authorization,
             dkg_ceremony_id(),
             first_private.member_id,
             receiver,
@@ -5525,6 +5617,7 @@ mod tests {
             .collect();
         let payload = FederationDkgRevealRequest::new(FederationDkgParticipantCommitmentReveal {
             federation_id: config.federation_id,
+            setup_authorization: config.setup_authorization,
             ceremony_id: dkg_ceremony_id(),
             member_id: first_private.member_id,
             keyset_spec,
@@ -5555,6 +5648,7 @@ mod tests {
         let receiver = roster_member_id(2);
         let sender_mismatch = FederationDkgSecretShareRequest::new(
             config.federation_id,
+            config.setup_authorization,
             dkg_ceremony_id(),
             second_private.member_id,
             receiver,
@@ -5562,6 +5656,7 @@ mod tests {
         );
         let receiver_mismatch = FederationDkgSecretShareRequest::new(
             config.federation_id,
+            config.setup_authorization,
             dkg_ceremony_id(),
             first_private.member_id,
             first_private.member_id,
@@ -5572,6 +5667,7 @@ mod tests {
         );
         let signer_mismatch = FederationDkgSecretShareRequest::new(
             config.federation_id,
+            config.setup_authorization,
             dkg_ceremony_id(),
             first_private.member_id,
             receiver,

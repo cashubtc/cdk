@@ -306,12 +306,12 @@ use crate::{Amount, CurrencyUnit, Id};
 
 const FEDERATION_ROSTER_HASH_VERSION: &[u8] = b"cdk-federation-roster-v1";
 const FEDERATION_CONFIG_DIGEST_VERSION: &[u8] = b"cdk-federation-config-digest-v1";
-const FEDERATION_DKG_COMMITMENT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-commitment-v1";
-const FEDERATION_DKG_PARTICIPANT_STATE_VERSION: u16 = 1;
-const FEDERATION_DKG_PUBLIC_CEREMONY_VERSION: u16 = 1;
-const FEDERATION_DKG_TRANSCRIPT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-transcript-v1";
+const FEDERATION_DKG_COMMITMENT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-commitment-v2";
+const FEDERATION_DKG_PARTICIPANT_STATE_VERSION: u16 = 2;
+const FEDERATION_DKG_PUBLIC_CEREMONY_VERSION: u16 = 2;
+const FEDERATION_DKG_TRANSCRIPT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-transcript-v2";
 const FEDERATION_DKG_TRANSCRIPT_SIGNATURE_VERSION: &[u8] =
-    b"cdk-federation-dkg-transcript-signature-v1";
+    b"cdk-federation-dkg-transcript-signature-v2";
 const FEDERATION_KEYSET_ROTATION_PROOF_VERSION: &[u8] = b"cdk-federation-keyset-rotation-pop-v1";
 const FEDERATION_OPERATOR_REDACTED_VALUE: &str = "[REDACTED]";
 const FEDERATION_OPERATOR_REDACTED_PATH: &str = "[REDACTED_PATH]";
@@ -2151,6 +2151,7 @@ mod tests {
     ) -> FederationDkgParticipantCommitmentReveal {
         FederationDkgParticipantCommitmentReveal {
             federation_id: public_config.federation_id,
+            setup_authorization: public_config.setup_authorization,
             ceremony_id: dkg_ceremony_id(),
             member_id,
             keyset_spec: FederationDkgKeysetSpec::new(
@@ -2247,6 +2248,7 @@ mod tests {
                 participant_id,
                 FederationDkgSecretShareRequest::new(
                     public_config.federation_id,
+                    public_config.setup_authorization,
                     dkg_ceremony_id(),
                     participant_id,
                     local_member_id,
@@ -2294,6 +2296,7 @@ mod tests {
             .map(|private_config| {
                 FederationDkgTranscriptSignatureRequest::new(
                     public_config.federation_id,
+                    public_config.setup_authorization,
                     private_config.member_id,
                     transcript_hash,
                     FederationDkgTranscriptSignature::sign(transcript_hash, private_config)
@@ -2669,7 +2672,7 @@ mod tests {
             .commitment_hash;
         assert_eq!(
             commitment_hash.to_hex(),
-            "e2466da0cb52688634c0eab1a356974191eb6cbf6091a01148a1345a88fe2173"
+            "88ec968b9ea173d047dd82a8bd398bccd5f725f1947f3bb76fa20e170fb10cf3"
         );
         let hash_json = serde_json::to_string(&commitment_hash).expect("hash json");
         assert_eq!(
@@ -2979,7 +2982,7 @@ mod tests {
     }
 
     #[test]
-    fn dkg_participant_state_accepts_only_current_v1_shape() {
+    fn dkg_participant_state_accepts_only_current_v2_shape() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
         let setup_config = FederationConfig::new(
@@ -3008,15 +3011,15 @@ mod tests {
         )
         .expect("participant state");
         let state_json = serde_json::to_value(&state).expect("participant state json");
-        assert_eq!(state_json["version"], serde_json::json!(1));
-        for version in [0, 2, u16::MAX] {
+        assert_eq!(state_json["version"], serde_json::json!(2));
+        for version in [0, 1, u16::MAX] {
             let mut unsupported = state_json.clone();
             unsupported["version"] = serde_json::json!(version);
             let unsupported = serde_json::from_value::<FederationDkgParticipantState>(unsupported)
-                .expect("complete non-v1 state decodes before semantic validation");
+                .expect("complete non-v2 state decodes before semantic validation");
             unsupported
                 .validate(&setup_config)
-                .expect_err("non-v1 participant state must fail closed");
+                .expect_err("non-v2 participant state must fail closed");
         }
         let mut unknown = state_json;
         unknown["unknown_state_field"] = serde_json::json!(true);
@@ -3355,7 +3358,7 @@ mod tests {
         .expect("pedersen DKG transcript");
         assert_eq!(
             transcript.transcript_hash.to_hex(),
-            "b61cf7085ede7e8811d8ce77ab9082542d979a1d2be75cf692738e72fe08fa9d"
+            "043f061260b7edf6fbe18ed67116d3257539cb528a142c2a78d4b39f70141dcd"
         );
         assert_eq!(
             transcript.payload.setup_method,

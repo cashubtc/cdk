@@ -52,9 +52,9 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::federation::FederationBarkReceiveAntiDosPolicy;
 #[cfg(feature = "federation")]
 use cdk_common::federation::{
-    FederationConfig, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
-    FederationDkgCeremonyState, FederationDkgKeysetSpec, FederationDkgSetupMethod,
-    FederationPaymentObservationContext, FederationPaymentVerificationPolicy, MemberConfigPrivate,
+    FederationConfig, FederationDkgCeremonyRecord, FederationDkgCeremonyState,
+    FederationDkgSetupMethod, FederationPaymentObservationContext,
+    FederationPaymentVerificationPolicy, MemberConfigPrivate,
 };
 // internal crate modules
 #[cfg(feature = "prometheus")]
@@ -1323,32 +1323,21 @@ fn configure_federation(
         return Ok(mint_builder);
     }
 
-    let public_config_path = federation.public_config_path.as_deref().ok_or_else(|| {
-        anyhow!("federation.public_config_path must be set when federation is enabled")
-    })?;
-    let private_config_path = federation.private_config_path.as_deref().ok_or_else(|| {
-        anyhow!("federation.private_config_path must be set when federation is enabled")
-    })?;
-
-    let public_config = read_public_federation_config(public_config_path)?;
+    let runtime_config = configured_federation_runtime(settings)?;
+    let public_config = runtime_config.public_config();
     validate_federation_threshold_startup_policy(
-        &public_config,
+        public_config,
         federation.allow_development_payment_observation_policy,
     )?;
-    validate_federated_bdk_startup(settings, &public_config)?;
+    validate_federated_bdk_startup(settings, public_config)?;
     #[cfg(feature = "federation-bark")]
-    validate_federated_bark_startup(settings, &public_config)?;
-    warn_federated_wallet_startup_risks(federation, &public_config);
-    validate_federation_setup_method_startup_policy(&public_config)?;
+    validate_federated_bark_startup(settings, public_config)?;
+    warn_federated_wallet_startup_risks(federation, public_config);
+    validate_federation_setup_method_startup_policy(public_config)?;
     validate_federation_payment_observation_startup_policy(
-        &public_config,
+        public_config,
         federation.allow_development_payment_observation_policy,
     )?;
-    validate_private_federation_config_file(private_config_path)?;
-    let private_config: MemberConfigPrivate =
-        read_federation_json(private_config_path, "private federation config")?;
-    let runtime_config = FederationRuntimeConfig::new(public_config, private_config)
-        .context("invalid federation runtime config")?;
 
     tracing::info!(
         "Loaded federation {} as member {} using AlephBFT consensus",
@@ -1357,6 +1346,42 @@ fn configure_federation(
     );
 
     Ok(mint_builder.with_federation_config(runtime_config))
+}
+
+#[cfg(feature = "federation")]
+fn configured_federation_runtime(settings: &config::Settings) -> Result<FederationRuntimeConfig> {
+    let federation = settings
+        .federation
+        .as_ref()
+        .ok_or_else(|| anyhow!("federation settings are missing"))?;
+    if federation.dkg.enabled {
+        if federation.public_config_path.is_some() || federation.private_config_path.is_some() {
+            bail!(
+                "certified DKG startup uses federation.setup_config_path, not raw public/private federation config paths"
+            );
+        }
+        let setup_config_path = federation.setup_config_path.as_deref().ok_or_else(|| {
+            anyhow!("federation.setup_config_path must be set when DKG is enabled")
+        })?;
+        let handoff = federation_setup_command::load_certified_dkg_handoff(setup_config_path)?;
+        return FederationRuntimeConfig::new(handoff.public_config, handoff.private_config)
+            .context("invalid manifest-derived federation runtime config");
+    }
+    if federation.setup_config_path.is_some() {
+        bail!("federation.setup_config_path is only valid while certified DKG is enabled");
+    }
+    let public_config_path = federation.public_config_path.as_deref().ok_or_else(|| {
+        anyhow!("federation.public_config_path must be set when federation is enabled")
+    })?;
+    let private_config_path = federation.private_config_path.as_deref().ok_or_else(|| {
+        anyhow!("federation.private_config_path must be set when federation is enabled")
+    })?;
+    let public_config = read_public_federation_config(public_config_path)?;
+    validate_private_federation_config_file(private_config_path)?;
+    let private_config: MemberConfigPrivate =
+        read_federation_json(private_config_path, "private federation config")?;
+    FederationRuntimeConfig::new(public_config, private_config)
+        .context("invalid federation runtime config")
 }
 
 #[cfg(feature = "federation-bark")]
@@ -1942,24 +1967,14 @@ fn federation_dkg_auto_start_config(
     if !federation.enabled {
         bail!("federation.dkg.enabled requires federation.enabled=true");
     }
-
-    let ceremony_id = federation
-        .dkg
-        .ceremony_id
-        .as_deref()
-        .ok_or_else(|| anyhow!("federation.dkg.ceremony_id must be set when DKG is enabled"))?
-        .parse::<FederationDkgCeremonyId>()
-        .context("invalid federation DKG ceremony ID")?;
-    if let Some(replaces_ceremony_id) = federation.dkg.replaces_ceremony_id.as_deref() {
-        let replaces_ceremony_id = replaces_ceremony_id
-            .parse::<FederationDkgCeremonyId>()
-            .context("invalid replaced federation DKG ceremony ID")?;
-        if replaces_ceremony_id == ceremony_id {
-            bail!("federation.dkg.replaces_ceremony_id must differ from ceremony_id");
-        }
+    if federation.dkg.ceremony_id.is_some()
+        || federation.dkg.replaces_ceremony_id.is_some()
+        || !federation.dkg.amounts.is_empty()
+    {
+        bail!(
+            "raw federation.dkg ceremony, replacement, and keyset fields are forbidden; the certified setup manifest is authoritative"
+        );
     }
-    let unit = cdk::nuts::CurrencyUnit::from_str(&federation.dkg.unit)
-        .with_context(|| format!("invalid federation DKG unit {}", federation.dkg.unit))?;
     if federation.dkg.max_ticks == 0 {
         bail!("federation.dkg.max_ticks must be greater than zero");
     }
@@ -1975,45 +1990,28 @@ fn federation_dkg_auto_start_config(
     if federation.dkg.member_request_refill_ms < 10 {
         bail!("federation.dkg.member_request_refill_ms must be at least 10");
     }
-    let amounts = federation
-        .dkg
-        .amounts
-        .iter()
-        .copied()
-        .map(cdk::Amount::from)
-        .collect::<std::collections::BTreeSet<_>>();
-    if amounts.len() != federation.dkg.amounts.len() {
-        bail!("federation.dkg.amounts must not contain duplicates");
-    }
-    let keyset_spec = FederationDkgKeysetSpec::new(
-        unit,
-        federation.dkg.active,
-        federation.dkg.input_fee_ppk,
-        federation.dkg.expiry,
-        amounts,
-    )
-    .map_err(|err| anyhow!("invalid federation DKG keyset policy: {err}"))?;
-    let secret_share_transport = if federation.dkg.allow_insecure_localhost {
-        cdk_axum::FederationDkgSecretShareTransportPolicy::AllowInsecureLocalhost
-    } else {
-        cdk_axum::FederationDkgSecretShareTransportPolicy::RequireHttps
+    let setup_config_path = federation
+        .setup_config_path
+        .as_deref()
+        .ok_or_else(|| anyhow!("federation.setup_config_path must be set when DKG is enabled"))?;
+    let handoff = federation_setup_command::load_certified_dkg_handoff(setup_config_path)?;
+    let driver = cdk_axum::FederationDkgDriverRunConfig {
+        max_ticks: federation.dkg.max_ticks,
+        retry_delay: std::time::Duration::from_millis(federation.dkg.retry_delay_ms),
+        ceremony_timeout: std::time::Duration::from_secs(federation.dkg.ceremony_timeout_secs),
+        secret_share_transport: cdk_axum::FederationDkgSecretShareTransportPolicy::RequireHttps,
+        member_request_burst: federation.dkg.member_request_burst,
+        member_request_refill_interval: std::time::Duration::from_millis(
+            federation.dkg.member_request_refill_ms,
+        ),
     };
-
-    Ok(Some(cdk_axum::FederationDkgAutoStartConfig {
-        ceremony_id,
-        root_key_epoch: 1,
-        keyset_spec,
-        driver: cdk_axum::FederationDkgDriverRunConfig {
-            max_ticks: federation.dkg.max_ticks,
-            retry_delay: std::time::Duration::from_millis(federation.dkg.retry_delay_ms),
-            ceremony_timeout: std::time::Duration::from_secs(federation.dkg.ceremony_timeout_secs),
-            secret_share_transport,
-            member_request_burst: federation.dkg.member_request_burst,
-            member_request_refill_interval: std::time::Duration::from_millis(
-                federation.dkg.member_request_refill_ms,
-            ),
-        },
-    }))
+    cdk_axum::FederationDkgAutoStartConfig::from_manifest(
+        &handoff.manifest,
+        handoff.url_policy,
+        driver,
+    )
+    .map(Some)
+    .map_err(anyhow::Error::from)
 }
 
 #[cfg(feature = "federation")]
@@ -2028,48 +2026,23 @@ async fn reconcile_federation_dkg_ceremony(
         .federation
         .as_ref()
         .expect("enabled DKG config includes federation settings");
-    let public_config_path = federation.public_config_path.as_deref().ok_or_else(|| {
-        anyhow!("federation.public_config_path must be set when federation is enabled")
-    })?;
-    let private_config_path = federation.private_config_path.as_deref().ok_or_else(|| {
-        anyhow!("federation.private_config_path must be set when federation is enabled")
-    })?;
-    let public_config = read_public_federation_config(public_config_path)?;
+    let runtime_config = configured_federation_runtime(settings)?;
     validate_federation_threshold_startup_policy(
-        &public_config,
+        runtime_config.public_config(),
         federation.allow_development_payment_observation_policy,
     )?;
-    let private_config: MemberConfigPrivate =
-        read_federation_json(private_config_path, "private federation config")?;
-    let runtime_config = FederationRuntimeConfig::new(public_config, private_config)
-        .context("invalid federation runtime config for DKG lifecycle")?;
-    let replaces_ceremony_id = federation
-        .dkg
-        .replaces_ceremony_id
-        .as_deref()
-        .map(str::parse::<FederationDkgCeremonyId>)
-        .transpose()
-        .context("invalid replaced federation DKG ceremony ID")?;
     let desired = FederationDkgCeremonyRecord::active(
         runtime_config.federation_id(),
-        start_config.ceremony_id,
+        runtime_config.public_config().setup_authorization,
+        start_config.ceremony_id(),
         runtime_config.member_id(),
-        start_config.keyset_spec,
-        replaces_ceremony_id,
+        start_config.keyset_spec().clone(),
+        None,
     );
     let records = localstore
         .get_federation_dkg_ceremonies()
         .await
         .context("failed to read federation DKG ceremony lifecycle")?;
-    let terminal = records
-        .iter()
-        .filter(|record| record.replacement_ceremony_id.is_none())
-        .filter(|record| record.state != FederationDkgCeremonyState::Aborted)
-        .collect::<Vec<_>>();
-    if terminal.len() > 1 {
-        bail!("multiple unreplaced federation DKG ceremony lifecycle records are durable");
-    }
-
     if let Some(existing) = records
         .iter()
         .find(|record| record.ceremony_id == desired.ceremony_id)
@@ -2093,59 +2066,15 @@ async fn reconcile_federation_dkg_ceremony(
         return Ok(());
     }
 
-    match terminal.first().copied() {
-        Some(existing) if existing.state == FederationDkgCeremonyState::Complete => {
-            bail!(
-                "completed federation DKG ceremony {} cannot be aborted; use the key-rotation workflow",
-                existing.ceremony_id
-            )
-        }
-        Some(existing) => {
-            if desired.replaces_ceremony_id != Some(existing.ceremony_id) {
-                bail!(
-                    "unfinished federation DKG ceremony {} is active; set federation.dkg.replaces_ceremony_id to replace it explicitly",
-                    existing.ceremony_id
-                );
-            }
-            let aborted = existing.aborted_by(desired.ceremony_id)?;
-            let mut tx = localstore.begin_transaction().await?;
-            tx.transition_federation_dkg_ceremony(existing, &aborted)
-                .await?;
-            tx.add_federation_dkg_ceremony(&desired).await?;
-            tx.commit().await?;
-        }
-        None => {
-            match desired.replaces_ceremony_id {
-                Some(predecessor_id) => match records
-                    .iter()
-                    .find(|record| record.ceremony_id == predecessor_id)
-                {
-                    Some(predecessor) => {
-                    if predecessor.state != FederationDkgCeremonyState::Aborted
-                        || predecessor.replacement_ceremony_id != Some(desired.ceremony_id)
-                    {
-                        bail!(
-                            "federation DKG predecessor {} is not durably aborted by replacement {}",
-                            predecessor_id,
-                            desired.ceremony_id
-                        );
-                    }
-                    }
-                    None if !records.is_empty() => bail!(
-                        "federation DKG predecessor {predecessor_id} is absent from non-empty local lifecycle history"
-                    ),
-                    None => {}
-                },
-                None if !records.is_empty() => bail!(
-                    "a new federation DKG ceremony must name its predecessor when local lifecycle history is non-empty"
-                ),
-                None => {}
-            }
-            let mut tx = localstore.begin_transaction().await?;
-            tx.add_federation_dkg_ceremony(&desired).await?;
-            tx.commit().await?;
-        }
+    if !records.is_empty() {
+        bail!(
+            "local DKG lifecycle belongs to a different certified manifest; initial setup replacement requires a new setup ID and independent state"
+        );
     }
+
+    let mut tx = localstore.begin_transaction().await?;
+    tx.add_federation_dkg_ceremony(&desired).await?;
+    tx.commit().await?;
 
     Ok(())
 }
@@ -4831,6 +4760,7 @@ engine = "sqlite"
             federation: Some(config::Federation {
                 enabled: true,
                 allow_development_payment_observation_policy: false,
+                setup_config_path: None,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
                 restore_manifest_path: None,
@@ -4885,6 +4815,7 @@ engine = "sqlite"
             federation: Some(config::Federation {
                 enabled: true,
                 allow_development_payment_observation_policy: true,
+                setup_config_path: None,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
                 restore_manifest_path: None,
@@ -4934,6 +4865,7 @@ engine = "sqlite"
             federation: Some(config::Federation {
                 enabled: true,
                 allow_development_payment_observation_policy: false,
+                setup_config_path: None,
                 public_config_path: None,
                 private_config_path: None,
                 restore_manifest_path: None,
@@ -5209,6 +5141,7 @@ engine = "sqlite"
             federation: Some(config::Federation {
                 enabled: true,
                 allow_development_payment_observation_policy: false,
+                setup_config_path: None,
                 public_config_path: None,
                 private_config_path: None,
                 restore_manifest_path: None,
@@ -5238,7 +5171,7 @@ engine = "sqlite"
 
     #[cfg(feature = "federation")]
     #[test]
-    fn federation_dkg_auto_start_config_maps_mintd_settings() {
+    fn federation_dkg_auto_start_rejects_raw_shared_inputs() {
         let ceremony_id = "11".repeat(32);
         let settings = config::Settings {
             federation: Some(config::Federation {
@@ -5264,201 +5197,49 @@ engine = "sqlite"
             ..Default::default()
         };
 
-        let config = federation_dkg_auto_start_config(&settings)
-            .expect("valid DKG settings")
-            .expect("enabled DKG config");
-
-        assert_eq!(config.ceremony_id.to_string(), ceremony_id);
-        assert_eq!(config.keyset_spec.unit, cdk::nuts::CurrencyUnit::Sat);
-        assert_eq!(config.keyset_spec.input_fee_ppk, 7);
-        assert_eq!(config.keyset_spec.final_expiry, Some(1_900_000_000));
-        assert_eq!(
-            config.keyset_spec.amounts,
-            [1_u64, 2, 4].into_iter().map(cdk::Amount::from).collect()
-        );
-        assert_eq!(config.driver.max_ticks, 17);
-        assert_eq!(
-            config.driver.retry_delay,
-            std::time::Duration::from_millis(23)
-        );
-        assert_eq!(
-            config.driver.ceremony_timeout,
-            std::time::Duration::from_secs(31)
-        );
-        assert_eq!(config.driver.member_request_burst, 11);
-        assert_eq!(
-            config.driver.member_request_refill_interval,
-            std::time::Duration::from_millis(29)
-        );
-        assert_eq!(
-            config.driver.secret_share_transport,
-            cdk_axum::FederationDkgSecretShareTransportPolicy::AllowInsecureLocalhost
-        );
+        let error = federation_dkg_auto_start_config(&settings)
+            .expect_err("raw ceremony and keyset inputs must not start production DKG");
+        assert!(error.to_string().contains("certified setup manifest"));
     }
 
     #[cfg(all(feature = "federation", feature = "sqlite"))]
     #[tokio::test]
-    async fn federation_dkg_lifecycle_requires_explicit_atomic_replacement() {
-        let (mut bundle, member_id) = two_member_trusted_dealer_bundle();
-        bundle.public_config.keysets.clear();
-        bundle.public_config.setup_transcript = None;
-        let private_config = bundle
-            .private_configs
-            .get_mut(&member_id)
-            .expect("private member config");
-        private_config.keyset_secret_shares.clear();
-        private_config.setup_transcript_hash = None;
-        bundle
-            .public_config
-            .validate()
-            .expect("setup public config");
-        private_config
-            .validate_against_public(&bundle.public_config)
-            .expect("setup private config");
-        let (public_config_path, private_config_path) = write_federation_config_fixture(
-            "dkg_lifecycle",
-            serde_json::to_string(&bundle.public_config).expect("public config JSON"),
-            serde_json::to_string(private_config).expect("private config JSON"),
-        );
-        let first_id = "31".repeat(32);
-        let second_id = "32".repeat(32);
-        let mut settings = config::Settings {
+    async fn federation_dkg_replacement_requires_a_new_certified_manifest() {
+        let settings = config::Settings {
             federation: Some(config::Federation {
                 enabled: true,
-                public_config_path: Some(public_config_path.clone()),
-                private_config_path: Some(private_config_path.clone()),
+                setup_config_path: Some(PathBuf::from("unused-setup-config.json")),
                 dkg: config::FederationDkg {
                     enabled: true,
-                    ceremony_id: Some(first_id.clone()),
+                    ceremony_id: Some("31".repeat(32)),
+                    replaces_ceremony_id: Some("30".repeat(32)),
                     amounts: vec![1],
-                    allow_insecure_localhost: true,
                     ..config::FederationDkg::default()
                 },
                 ..config::Federation::default()
             }),
             ..config::Settings::default()
         };
-        let localstore: DynMintDatabase =
-            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint DB"));
-
-        reconcile_federation_dkg_ceremony(&settings, &localstore)
-            .await
-            .expect("register first ceremony");
-        reconcile_federation_dkg_ceremony(&settings, &localstore)
-            .await
-            .expect("resume first ceremony idempotently");
-        let first = localstore
-            .get_federation_dkg_ceremonies()
-            .await
-            .expect("first lifecycle");
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].state, FederationDkgCeremonyState::Active);
-
-        let dkg = &mut settings
-            .federation
-            .as_mut()
-            .expect("federation settings")
-            .dkg;
-        dkg.ceremony_id = Some(second_id.clone());
-        let err = reconcile_federation_dkg_ceremony(&settings, &localstore)
-            .await
-            .expect_err("implicit replacement must fail");
-        assert!(err.to_string().contains("replaces_ceremony_id"));
-        assert_eq!(
-            localstore
-                .get_federation_dkg_ceremonies()
-                .await
-                .expect("unchanged lifecycle"),
-            first
-        );
-
-        settings
-            .federation
-            .as_mut()
-            .expect("federation settings")
-            .dkg
-            .replaces_ceremony_id = Some(first_id);
-        reconcile_federation_dkg_ceremony(&settings, &localstore)
-            .await
-            .expect("explicit replacement");
-        reconcile_federation_dkg_ceremony(&settings, &localstore)
-            .await
-            .expect("replacement restart is idempotent");
-        let records = localstore
-            .get_federation_dkg_ceremonies()
-            .await
-            .expect("replacement lifecycle");
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0].state, FederationDkgCeremonyState::Aborted);
-        assert_eq!(records[1].state, FederationDkgCeremonyState::Active);
-        assert_eq!(
-            records[0].replacement_ceremony_id,
-            Some(records[1].ceremony_id)
-        );
-        assert_eq!(
-            records[1].replaces_ceremony_id,
-            Some(records[0].ceremony_id)
-        );
-
-        let completed = records[1].completed().expect("completed replacement");
-        let mut tx = localstore
-            .begin_transaction()
-            .await
-            .expect("begin completion");
-        tx.transition_federation_dkg_ceremony(&records[1], &completed)
-            .await
-            .expect("complete replacement");
-        tx.commit().await.expect("commit completion");
-        let dkg = &mut settings
-            .federation
-            .as_mut()
-            .expect("federation settings")
-            .dkg;
-        dkg.ceremony_id = Some("33".repeat(32));
-        dkg.replaces_ceremony_id = Some(second_id);
-        let err = reconcile_federation_dkg_ceremony(&settings, &localstore)
-            .await
-            .expect_err("completed ceremony cannot be aborted");
-        assert!(err.to_string().contains("key-rotation workflow"));
-
-        let fresh_localstore: DynMintDatabase = Arc::new(
+        let localstore: DynMintDatabase = Arc::new(
             cdk_sqlite::mint::memory::empty()
                 .await
-                .expect("fresh mint DB"),
-        );
-        let dkg = &mut settings
-            .federation
-            .as_mut()
-            .expect("federation settings")
-            .dkg;
-        dkg.ceremony_id = Some("34".repeat(32));
-        dkg.replaces_ceremony_id = Some("30".repeat(32));
-        reconcile_federation_dkg_ceremony(&settings, &fresh_localstore)
-            .await
-            .expect("fresh roster member records declared predecessor");
-        let fresh_records = fresh_localstore
-            .get_federation_dkg_ceremonies()
-            .await
-            .expect("fresh lifecycle");
-        assert_eq!(fresh_records.len(), 1);
-        assert_eq!(
-            fresh_records[0].replaces_ceremony_id,
-            Some(FederationDkgCeremonyId::from_bytes([0x30; 32]))
+                .expect("mint database"),
         );
 
-        let _ = fs::remove_file(public_config_path);
-        let _ = fs::remove_file(private_config_path);
+        let error = reconcile_federation_dkg_ceremony(&settings, &localstore)
+            .await
+            .expect_err("raw replacement inputs must not start production DKG");
+        assert!(error.to_string().contains("certified setup manifest"));
     }
 
     #[cfg(feature = "federation")]
     #[test]
-    fn federation_dkg_auto_start_requires_enabled_federation_and_ceremony_id() {
+    fn federation_dkg_auto_start_requires_enabled_federation_and_manifest() {
         let settings = config::Settings {
             federation: Some(config::Federation {
                 enabled: false,
                 dkg: config::FederationDkg {
                     enabled: true,
-                    amounts: vec![1],
                     ..config::FederationDkg::default()
                 },
                 ..config::Federation::default()
@@ -5475,7 +5256,6 @@ engine = "sqlite"
                 enabled: true,
                 dkg: config::FederationDkg {
                     enabled: true,
-                    amounts: vec![1],
                     ..config::FederationDkg::default()
                 },
                 ..config::Federation::default()
@@ -5483,22 +5263,19 @@ engine = "sqlite"
             ..Default::default()
         };
         assert!(federation_dkg_auto_start_config(&settings)
-            .expect_err("DKG requires ceremony ID")
+            .expect_err("DKG requires a certified manifest")
             .to_string()
-            .contains("ceremony_id"));
+            .contains("setup_config_path"));
     }
 
     #[cfg(feature = "federation")]
     #[test]
     fn federation_dkg_auto_start_rejects_unbounded_or_ambiguous_policy() {
-        let ceremony_id = Some("22".repeat(32));
         for (label, dkg, expected) in [
             (
                 "zero ticks",
                 config::FederationDkg {
                     enabled: true,
-                    ceremony_id: ceremony_id.clone(),
-                    amounts: vec![1],
                     max_ticks: 0,
                     ..config::FederationDkg::default()
                 },
@@ -5508,8 +5285,6 @@ engine = "sqlite"
                 "zero retry delay",
                 config::FederationDkg {
                     enabled: true,
-                    ceremony_id: ceremony_id.clone(),
-                    amounts: vec![1],
                     retry_delay_ms: 0,
                     ..config::FederationDkg::default()
                 },
@@ -5519,8 +5294,6 @@ engine = "sqlite"
                 "zero member request burst",
                 config::FederationDkg {
                     enabled: true,
-                    ceremony_id: ceremony_id.clone(),
-                    amounts: vec![1],
                     member_request_burst: 0,
                     ..config::FederationDkg::default()
                 },
@@ -5530,8 +5303,6 @@ engine = "sqlite"
                 "zero ceremony timeout",
                 config::FederationDkg {
                     enabled: true,
-                    ceremony_id: ceremony_id.clone(),
-                    amounts: vec![1],
                     ceremony_timeout_secs: 0,
                     ..config::FederationDkg::default()
                 },
@@ -5541,8 +5312,6 @@ engine = "sqlite"
                 "excessive member request burst",
                 config::FederationDkg {
                     enabled: true,
-                    ceremony_id: ceremony_id.clone(),
-                    amounts: vec![1],
                     member_request_burst: 65,
                     ..config::FederationDkg::default()
                 },
@@ -5552,32 +5321,10 @@ engine = "sqlite"
                 "member request refill below minimum",
                 config::FederationDkg {
                     enabled: true,
-                    ceremony_id: ceremony_id.clone(),
-                    amounts: vec![1],
                     member_request_refill_ms: 9,
                     ..config::FederationDkg::default()
                 },
                 "member_request_refill_ms",
-            ),
-            (
-                "duplicate amounts",
-                config::FederationDkg {
-                    enabled: true,
-                    ceremony_id: ceremony_id.clone(),
-                    amounts: vec![1, 1],
-                    ..config::FederationDkg::default()
-                },
-                "must not contain duplicates",
-            ),
-            (
-                "too many amounts",
-                config::FederationDkg {
-                    enabled: true,
-                    ceremony_id: ceremony_id.clone(),
-                    amounts: (1..=65).collect(),
-                    ..config::FederationDkg::default()
-                },
-                "amount limit exceeded",
             ),
         ] {
             let settings = config::Settings {
@@ -5626,6 +5373,7 @@ engine = "sqlite"
             federation: Some(config::Federation {
                 enabled: true,
                 allow_development_payment_observation_policy: false,
+                setup_config_path: None,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
                 restore_manifest_path: None,
@@ -5676,6 +5424,7 @@ engine = "sqlite"
             federation: Some(config::Federation {
                 enabled: true,
                 allow_development_payment_observation_policy: false,
+                setup_config_path: None,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
                 restore_manifest_path: None,
@@ -5702,6 +5451,7 @@ engine = "sqlite"
             federation: Some(config::Federation {
                 enabled: true,
                 allow_development_payment_observation_policy: true,
+                setup_config_path: None,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
                 restore_manifest_path: None,
@@ -5751,6 +5501,7 @@ engine = "sqlite"
             federation: Some(config::Federation {
                 enabled: true,
                 allow_development_payment_observation_policy: true,
+                setup_config_path: None,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
                 restore_manifest_path: None,
@@ -5787,6 +5538,7 @@ engine = "sqlite"
             federation: Some(config::Federation {
                 enabled: true,
                 allow_development_payment_observation_policy: false,
+                setup_config_path: None,
                 public_config_path: None,
                 private_config_path: None,
                 restore_manifest_path: None,
@@ -5884,6 +5636,7 @@ engine = "sqlite"
                 federation: Some(config::Federation {
                     enabled: true,
                     allow_development_payment_observation_policy: true,
+                    setup_config_path: None,
                     public_config_path: Some(public_config_path.clone()),
                     private_config_path: Some(private_config_path.clone()),
                     restore_manifest_path: None,

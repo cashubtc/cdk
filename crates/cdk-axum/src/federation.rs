@@ -111,9 +111,8 @@ use self::dkg_driver::{
 };
 pub(crate) use self::dkg_driver::{frost_storage_key, spawn_federation_dkg_driver};
 pub use self::dkg_driver::{
-    run_federation_dkg_driver, FederationDkgAutoStartConfig, FederationDkgDriverRunConfig,
-    FederationDkgDriverRunOutcome, FederationDkgDriverTickOutcome,
-    FederationDkgSecretShareTransportPolicy,
+    FederationDkgAutoStartConfig, FederationDkgDriverRunConfig, FederationDkgDriverRunOutcome,
+    FederationDkgDriverTickOutcome, FederationDkgSecretShareTransportPolicy,
 };
 use self::dkg_routes::{
     post_dkg_activation, post_dkg_commitment, post_dkg_readiness, post_dkg_reveal,
@@ -328,8 +327,8 @@ pub(crate) fn verify_checkpoint_quorum_with_metrics(
     result
 }
 
-pub(crate) fn create_federation_router() -> Router<MintState> {
-    let dkg_router = Router::new()
+pub(crate) fn create_federation_dkg_router() -> Router<MintState> {
+    Router::new()
         .route("/dkg/readiness", post(post_dkg_readiness))
         .route("/dkg/commitments", post(post_dkg_commitment))
         .route("/dkg/reveals", post(post_dkg_reveal))
@@ -345,7 +344,11 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
             post(post_dkg_transcript_signature),
         )
         .route("/dkg/activations", post(post_dkg_activation))
-        .layer(DefaultBodyLimit::max(FEDERATION_MAX_DKG_REQUEST_BODY_BYTES));
+        .layer(DefaultBodyLimit::max(FEDERATION_MAX_DKG_REQUEST_BODY_BYTES))
+}
+
+pub(crate) fn create_federation_router() -> Router<MintState> {
+    let dkg_router = create_federation_dkg_router();
     let frost_signing_router = Router::new()
         .route(
             "/frost/signing/commitments",

@@ -555,6 +555,12 @@ async fn ordinary_http_client_drives_three_independent_operator_stores_to_certif
     member_two_join.expect("member two HTTP join");
     member_three_join.expect("member three HTTP join");
 
+    for config_path in [&creator_config, &member_two_config, &member_three_config] {
+        let error = load_certified_dkg_handoff(config_path)
+            .expect_err("DKG must not start before a complete manifest is persisted");
+        assert!(error.to_string().contains("after certification"));
+    }
+
     let proposal = propose_setup(creator_db.as_ref(), &creator_config, now)
         .await
         .expect("publish proposal");
@@ -613,6 +619,13 @@ async fn ordinary_http_client_drives_three_independent_operator_stores_to_certif
             .coordinator_phase,
         cdk_common::federation::FederationSetupCoordinatorPhase::Certified
     );
+    assert_eq!(
+        setup_status(&creator_config)
+            .await
+            .expect("creator status")
+            .coordinator_phase,
+        cdk_common::federation::FederationSetupCoordinatorPhase::Certified
+    );
     for (database, config_path) in [
         (&member_two_db, &member_two_config),
         (&member_three_db, &member_three_config),
@@ -634,10 +647,73 @@ async fn ordinary_http_client_drives_three_independent_operator_stores_to_certif
             .expect("member manifest exists");
         assert_eq!(manifest.proposal.proposal_hash, proposal.proposal_hash);
     }
-
     let _ = shutdown.send(());
     server.await.expect("setup server task");
     service.shutdown().await;
+
+    let databases: Vec<cdk_common::database::DynMintDatabase> = vec![
+        creator_db.clone(),
+        Arc::new(member_two_db),
+        Arc::new(member_three_db),
+    ];
+    let handoffs = [&creator_config, &member_two_config, &member_three_config]
+        .into_iter()
+        .map(|config_path| {
+            load_certified_dkg_handoff(config_path).expect("certified manifest DKG handoff")
+        })
+        .collect::<Vec<_>>();
+    for (handoff, database) in handoffs.iter().zip(&databases) {
+        assert_eq!(
+            handoff.manifest.proposal.proposal_hash,
+            proposal.proposal_hash
+        );
+        assert_eq!(
+            handoff.public_config.setup_authorization,
+            handoffs[0].public_config.setup_authorization
+        );
+        assert_eq!(handoff.public_config, handoffs[0].public_config);
+        assert_eq!(
+            handoff.private_config.member_id,
+            handoff
+                .public_config
+                .member(handoff.private_config.member_id)
+                .expect("local member in certified roster")
+                .member_id
+        );
+        let auto_start = cdk_axum::FederationDkgAutoStartConfig::from_manifest(
+            &handoff.manifest,
+            handoff.url_policy,
+            cdk_axum::FederationDkgDriverRunConfig::default(),
+        )
+        .expect("manifest-derived DKG auto-start");
+        assert_eq!(
+            auto_start.setup_authorization(),
+            handoff.public_config.setup_authorization
+        );
+        assert_eq!(
+            auto_start.ceremony_id(),
+            handoff.manifest.ceremony_id().expect("manifest ceremony")
+        );
+        assert_eq!(auto_start.keyset_spec(), &create_spec().keysets[0]);
+        assert_eq!(
+            auto_start.root_key_epoch(),
+            handoff.manifest.frost_policy().root_key_epoch
+        );
+        register_manifest_dkg_ceremony(database, handoff, &auto_start)
+            .await
+            .expect("manifest-derived lifecycle registration");
+        let records = database
+            .get_federation_dkg_ceremonies()
+            .await
+            .expect("DKG lifecycle records");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].member_id, handoff.private_config.member_id);
+        assert_eq!(records[0].ceremony_id, auto_start.ceremony_id());
+        assert_eq!(
+            records[0].setup_authorization,
+            auto_start.setup_authorization()
+        );
+    }
 }
 
 #[cfg(unix)]

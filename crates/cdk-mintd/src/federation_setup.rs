@@ -966,6 +966,7 @@ fn write_dkg_setup_route_probe_requests(
                 *sender_id,
                 FederationDkgTranscriptSignatureRequest::new(
                     final_public_config.federation_id,
+                    final_public_config.setup_authorization,
                     *sender_id,
                     transcript_hash,
                     signature,
@@ -1277,6 +1278,7 @@ fn dkg_probe_reveal(
         .collect();
     Ok(FederationDkgParticipantCommitmentReveal {
         federation_id: public_config.federation_id,
+        setup_authorization: public_config.setup_authorization,
         ceremony_id,
         member_id,
         keyset_spec: keyset_spec.clone(),
@@ -1307,6 +1309,7 @@ fn dkg_probe_secret_share_request(
         .collect::<Result<BTreeMap<_, _>>>()?;
     Ok(FederationDkgSecretShareRequest::new(
         public_config.federation_id,
+        public_config.setup_authorization,
         ceremony_id,
         sender_id,
         receiver_id,

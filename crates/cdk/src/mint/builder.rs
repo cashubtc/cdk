@@ -1379,6 +1379,7 @@ mod tests {
             .map(|private_config| {
                 FederationDkgTranscriptSignatureRequest::new(
                     final_public_config.federation_id,
+                    final_public_config.setup_authorization,
                     private_config.member_id,
                     transcript_hash,
                     FederationDkgTranscriptSignature::sign(transcript_hash, private_config)
@@ -1680,6 +1681,10 @@ mod tests {
             .clone();
         let old = FederationDkgCeremonyRecord::active(
             fixture.setup_runtime_config.federation_id(),
+            fixture
+                .setup_runtime_config
+                .public_config()
+                .setup_authorization,
             old_ceremony_id,
             fixture.setup_runtime_config.member_id(),
             keyset_spec.clone(),
@@ -1690,6 +1695,10 @@ mod tests {
             .expect("aborted lifecycle");
         let replacement = FederationDkgCeremonyRecord::active(
             fixture.setup_runtime_config.federation_id(),
+            fixture
+                .setup_runtime_config
+                .public_config()
+                .setup_authorization,
             replacement_ceremony_id,
             fixture.setup_runtime_config.member_id(),
             keyset_spec,

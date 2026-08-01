@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     FederationConfig, FederationDkgCeremonyId, FederationDkgMemberKeysetShare, FederationError,
-    FederationId, MemberId, Result,
+    FederationId, FederationSetupAuthorizationHash, MemberId, Result,
 };
 
 /// Versioned federation metadata bound into every FROST DKG message.
@@ -21,6 +21,8 @@ pub struct FederationFrostDkgContext {
     pub federation_id: FederationId,
     /// Shared dual-DKG ceremony identifier.
     pub ceremony_id: FederationDkgCeremonyId,
+    /// Certified setup authorization shared with the BLS DKG.
+    pub setup_authorization: FederationSetupAuthorizationHash,
     /// Monotonic application-neutral FROST root epoch.
     pub root_key_epoch: u64,
     /// Protocol version for CDK's canonical FROST DKG conversion.
@@ -44,8 +46,9 @@ impl FederationFrostDkgContext {
         let context = Self {
             federation_id: config.federation_id,
             ceremony_id,
+            setup_authorization: config.setup_authorization,
             root_key_epoch,
-            protocol_version: 1,
+            protocol_version: 2,
             ciphersuite: "secp256k1_sha256_tr_v1".to_string(),
             threshold: config.threshold_params.signature_threshold,
             participants: config.members.keys().copied().collect(),
@@ -56,7 +59,7 @@ impl FederationFrostDkgContext {
 
     /// Validate and convert to the application-neutral crypto boundary.
     pub fn to_frost_context(&self) -> Result<DkgContext> {
-        if self.protocol_version != 1 || self.ciphersuite != "secp256k1_sha256_tr_v1" {
+        if self.protocol_version != 2 || self.ciphersuite != "secp256k1_sha256_tr_v1" {
             return Err(FederationError::DkgTranscriptMismatch {
                 reason: "unsupported FROST DKG protocol or ciphersuite".to_string(),
             });
@@ -77,6 +80,7 @@ impl FederationFrostDkgContext {
     /// Validate exact roster and threshold equality against public federation config.
     pub fn validate_against(&self, config: &FederationConfig) -> Result<()> {
         if self.federation_id != config.federation_id
+            || self.setup_authorization != config.setup_authorization
             || self.threshold != config.threshold_params.signature_threshold
             || self.participants != config.members.keys().copied().collect()
         {
@@ -366,6 +370,8 @@ impl FederationDualDkgResult {
     /// Validate that BLS and FROST results belong to the same member, roster, and ceremony.
     pub fn validate(&self, config: &FederationConfig) -> Result<RootPublicPackage> {
         if self.bls.federation_id != config.federation_id
+            || self.bls.setup_authorization != config.setup_authorization
+            || self.frost.context.setup_authorization != config.setup_authorization
             || self.bls.member_id != self.frost.member_id
             || self.bls.public_ceremony.ceremony_id() != self.frost.context.ceremony_id
         {

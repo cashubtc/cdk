@@ -454,6 +454,7 @@ impl FederationDkgDriverRecords {
         let transcript_signature = matching_signatures.get(&local_member).copied().unwrap_or(
             FederationDkgTranscriptSignatureRequest::new(
                 final_public_config.federation_id,
+                final_public_config.setup_authorization,
                 local_member,
                 transcript_hash,
                 FederationDkgTranscriptSignature::sign_no_aux_rand(
@@ -919,6 +920,7 @@ mod tests {
             .map(|private_config| {
                 FederationDkgTranscriptSignatureRequest::new(
                     public_config.federation_id,
+                    public_config.setup_authorization,
                     private_config.member_id,
                     transcript_hash,
                     FederationDkgTranscriptSignature::sign_no_aux_rand(

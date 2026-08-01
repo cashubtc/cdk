@@ -179,6 +179,7 @@ fn dkg_reveal(
 ) -> FederationDkgParticipantCommitmentReveal {
     FederationDkgParticipantCommitmentReveal {
         federation_id: public_config.federation_id,
+        setup_authorization: public_config.setup_authorization,
         ceremony_id: dkg_ceremony_id(),
         member_id,
         keyset_spec: FederationDkgKeysetSpec::new(
@@ -312,6 +313,7 @@ fn dkg_secret_share_request(
 ) -> FederationDkgSecretShareRequest {
     FederationDkgSecretShareRequest::new(
         public_config.federation_id,
+        public_config.setup_authorization,
         dkg_ceremony_id(),
         sender,
         receiver,
@@ -367,6 +369,7 @@ fn dkg_transcript_signature_request(
         .expect("transcript signature");
     FederationDkgTranscriptSignatureRequest::new(
         public_config.federation_id,
+        public_config.setup_authorization,
         private_config.member_id,
         transcript_hash,
         signature,
@@ -3641,6 +3644,7 @@ where
     let spec = dkg_reveal(&dkg_public_config(), member_id(1), 11).keyset_spec;
     let first = FederationDkgCeremonyRecord::active(
         dkg_public_config().federation_id,
+        dkg_public_config().setup_authorization,
         first_id,
         member_id(1),
         spec.clone(),
@@ -3648,6 +3652,7 @@ where
     );
     let second = FederationDkgCeremonyRecord::active(
         dkg_public_config().federation_id,
+        dkg_public_config().setup_authorization,
         second_id,
         member_id(1),
         spec,
@@ -4080,8 +4085,9 @@ where
     let application_id =
         FederationFrostApplicationId::from_bytes([42; 32]).expect("application id");
     let root = FederationFrostRootPublicConfig {
-        version: 1,
+        version: 2,
         federation_id: public_config.federation_id,
+        setup_authorization: public_config.setup_authorization,
         ceremony_id: dkg_ceremony_id(),
         root_key_epoch: 1,
         dkg_protocol_version: 1,

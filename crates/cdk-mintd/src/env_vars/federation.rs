@@ -6,6 +6,7 @@ use anyhow::{anyhow, Result};
 use crate::config::Federation;
 
 pub const ENV_FEDERATION_ENABLED: &str = "CDK_MINTD_FEDERATION_ENABLED";
+pub const ENV_FEDERATION_SETUP_CONFIG_PATH: &str = "CDK_MINTD_FEDERATION_SETUP_CONFIG_PATH";
 pub const ENV_FEDERATION_PUBLIC_CONFIG_PATH: &str = "CDK_MINTD_FEDERATION_PUBLIC_CONFIG_PATH";
 pub const ENV_FEDERATION_PRIVATE_CONFIG_PATH: &str = "CDK_MINTD_FEDERATION_PRIVATE_CONFIG_PATH";
 pub const ENV_FEDERATION_RESTORE_MANIFEST_PATH: &str = "CDK_MINTD_FEDERATION_RESTORE_MANIFEST_PATH";
@@ -56,6 +57,10 @@ impl Federation {
     pub fn from_env(mut self) -> Result<Self> {
         if let Ok(enabled_str) = env::var(ENV_FEDERATION_ENABLED) {
             self.enabled = enabled_str.parse::<bool>().unwrap_or(false);
+        }
+
+        if let Ok(path) = env::var(ENV_FEDERATION_SETUP_CONFIG_PATH) {
+            self.setup_config_path = Some(PathBuf::from(path));
         }
 
         if let Ok(path) = env::var(ENV_FEDERATION_PUBLIC_CONFIG_PATH) {
@@ -224,6 +229,7 @@ mod tests {
 
     fn clear_federation_env() {
         env::remove_var(ENV_FEDERATION_ENABLED);
+        env::remove_var(ENV_FEDERATION_SETUP_CONFIG_PATH);
         env::remove_var(ENV_FEDERATION_PUBLIC_CONFIG_PATH);
         env::remove_var(ENV_FEDERATION_PRIVATE_CONFIG_PATH);
         env::remove_var(ENV_FEDERATION_RESTORE_MANIFEST_PATH);
@@ -255,6 +261,7 @@ mod tests {
         let _guard = env_lock();
         clear_federation_env();
         env::set_var(ENV_FEDERATION_ENABLED, "true");
+        env::set_var(ENV_FEDERATION_SETUP_CONFIG_PATH, "/tmp/setup.json");
         env::set_var(ENV_FEDERATION_PUBLIC_CONFIG_PATH, "/tmp/public-fed.json");
         env::set_var(ENV_FEDERATION_PRIVATE_CONFIG_PATH, "/tmp/private-fed.json");
         env::set_var(
@@ -267,6 +274,10 @@ mod tests {
             .expect("federation env config");
 
         assert!(config.enabled);
+        assert_eq!(
+            config.setup_config_path,
+            Some(PathBuf::from("/tmp/setup.json"))
+        );
         assert_eq!(
             config.public_config_path,
             Some(PathBuf::from("/tmp/public-fed.json"))

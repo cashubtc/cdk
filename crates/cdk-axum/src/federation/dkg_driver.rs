@@ -13,8 +13,8 @@ use cdk::federation::{
     FederationFrostDkgConfirmationRequest, FederationFrostDkgContext, FederationFrostDkgLocalPhase,
     FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
     FederationFrostDkgRound2Request, FederationFrostRootPrivateConfig,
-    FederationFrostRootPublicConfig, FederationFrostRootRecord, MemberId,
-    ValidatedFederationDkgParticipantState,
+    FederationFrostRootPublicConfig, FederationFrostRootRecord, FederationSetupManifest,
+    FederationSetupUrlPolicy, MemberId, ValidatedFederationDkgParticipantState,
 };
 use cdk_frost::rand_core::OsRng;
 use cdk_frost::{
@@ -102,23 +102,96 @@ impl Default for FederationDkgDriverRunConfig {
 /// Complete operator input needed to start or resume one DKG ceremony.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederationDkgAutoStartConfig {
+    /// Certified setup authorization required by every DKG artifact.
+    pub(crate) setup_authorization: cdk::federation::FederationSetupAuthorizationHash,
     /// Unique ceremony ID shared by every configured member.
-    pub ceremony_id: FederationDkgCeremonyId,
+    pub(crate) ceremony_id: FederationDkgCeremonyId,
     /// Application-neutral FROST root epoch produced alongside the BLS keyset.
-    pub root_key_epoch: u64,
+    pub(crate) root_key_epoch: u64,
     /// Exact aggregate keyset policy every participant must commit to.
-    pub keyset_spec: FederationDkgKeysetSpec,
+    pub(crate) keyset_spec: FederationDkgKeysetSpec,
     /// Bounded retry and confidential-transport policy.
-    pub driver: FederationDkgDriverRunConfig,
+    pub(crate) driver: FederationDkgDriverRunConfig,
 }
 
 impl FederationDkgAutoStartConfig {
+    /// Derive all shared DKG inputs from one validated unanimous setup manifest.
+    pub fn from_manifest(
+        manifest: &FederationSetupManifest,
+        url_policy: FederationSetupUrlPolicy,
+        mut driver: FederationDkgDriverRunConfig,
+    ) -> Result<Self, cdk::Error> {
+        manifest.validate(url_policy)?;
+        let keyset_spec = match manifest.keyset_specs() {
+            [keyset_spec] => keyset_spec.clone(),
+            keysets => {
+                return Err(cdk::Error::Custom(format!(
+                    "initial DKG handoff requires exactly one BLS keyset specification, found {}",
+                    keysets.len()
+                )))
+            }
+        };
+        driver.secret_share_transport = match url_policy {
+            FederationSetupUrlPolicy::RequireHttps => {
+                FederationDkgSecretShareTransportPolicy::RequireHttps
+            }
+            FederationSetupUrlPolicy::AllowInsecureLocalhost => {
+                FederationDkgSecretShareTransportPolicy::AllowInsecureLocalhost
+            }
+        };
+        driver.validate()?;
+        Ok(Self {
+            setup_authorization: manifest.setup_authorization_hash()?,
+            ceremony_id: manifest.ceremony_id()?,
+            root_key_epoch: manifest.frost_policy().root_key_epoch,
+            keyset_spec,
+            driver,
+        })
+    }
+
+    /// Return the manifest-derived setup authorization.
+    #[must_use]
+    pub const fn setup_authorization(&self) -> cdk::federation::FederationSetupAuthorizationHash {
+        self.setup_authorization
+    }
+
+    /// Return the manifest-derived ceremony identifier.
+    #[must_use]
+    pub const fn ceremony_id(&self) -> FederationDkgCeremonyId {
+        self.ceremony_id
+    }
+
+    /// Return the manifest-derived FROST root epoch.
+    #[must_use]
+    pub const fn root_key_epoch(&self) -> u64 {
+        self.root_key_epoch
+    }
+
+    /// Return the exact manifest-derived BLS keyset policy.
+    #[must_use]
+    pub const fn keyset_spec(&self) -> &FederationDkgKeysetSpec {
+        &self.keyset_spec
+    }
+
+    /// Return the machine-local bounded driver policy.
+    #[must_use]
+    pub const fn driver(&self) -> FederationDkgDriverRunConfig {
+        self.driver
+    }
+
     /// Validate setup-mode and transport requirements before spawning the driver.
     pub fn validate_for_public_config(
         &self,
         public_config: &FederationConfig,
     ) -> Result<(), cdk::Error> {
         public_config.validate()?;
+        if self.setup_authorization != public_config.setup_authorization {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "DKG auto-start setup authorization does not match the public config"
+                    .to_string(),
+            }
+            .into());
+        }
         if !public_config.keysets.is_empty() || public_config.setup_transcript.is_some() {
             return Err(FederationError::DkgTranscriptMismatch {
                 reason: "live DKG start requires a public setup config without finalized keysets or transcript"
@@ -1346,7 +1419,7 @@ async fn plan_federation_dkg_records(
 }
 
 /// Run a bounded number of idempotent DKG ticks with the default HTTP transport.
-pub async fn run_federation_dkg_driver(
+pub(crate) async fn run_federation_dkg_driver(
     state: &MintState,
     ceremony_id: FederationDkgCeremonyId,
     keyset_spec: FederationDkgKeysetSpec,
@@ -1374,6 +1447,7 @@ pub async fn run_federation_dkg_driver(
     if federation_dkg_readiness_required(state, ceremony_id).await? {
         let readiness = FederationDkgReadinessRequest::new(
             public_config.federation_id,
+            public_config.setup_authorization,
             ceremony_id,
             keyset_spec.clone(),
         );
@@ -1837,6 +1911,7 @@ mod tests {
         )
         .expect("setup config");
         let config = FederationDkgAutoStartConfig {
+            setup_authorization: public_config.setup_authorization,
             ceremony_id: FederationDkgCeremonyId::from_bytes([7; 32]),
             root_key_epoch: 1,
             keyset_spec: FederationDkgKeysetSpec::new(

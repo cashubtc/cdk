@@ -11,8 +11,8 @@ pub(super) fn attach_address_application(
     runtime: &mut FederationRuntimeConfig,
 ) -> FederationFrostApplicationId {
     let verification_share = [
-        2, 121, 190, 102, 126, 249, 220, 187, 172, 85, 160, 98, 149, 206, 135, 11, 7, 2, 155,
-        252, 219, 45, 206, 40, 217, 89, 242, 129, 91, 22, 248, 23, 152,
+        2, 121, 190, 102, 126, 249, 220, 187, 172, 85, 160, 98, 149, 206, 135, 11, 7, 2, 155, 252,
+        219, 45, 206, 40, 217, 89, 242, 129, 91, 22, 248, 23, 152,
     ];
     let participant_mapping = runtime
         .public_config
@@ -49,16 +49,14 @@ pub(super) fn attach_address_application(
     canonical_public_package.extend_from_slice(&verification_share);
     canonical_public_package.extend_from_slice(&[5; 32]);
     let root = FederationFrostRootPublicConfig {
-        version: 1,
+        version: 2,
         federation_id: runtime.public_config.federation_id,
+        setup_authorization: runtime.public_config.setup_authorization,
         ceremony_id: FederationDkgCeremonyId::from_bytes([6; 32]),
         root_key_epoch: 1,
         dkg_protocol_version: 1,
         ciphersuite_version: 1,
-        threshold: runtime
-            .public_config
-            .threshold_params
-            .signature_threshold,
+        threshold: runtime.public_config.threshold_params.signature_threshold,
         participant_mapping,
         verification_shares,
         untweaked_group_key: verification_share,

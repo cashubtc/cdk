@@ -29,11 +29,12 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use super::{
     append_bytes, FederationAddressKeychain, FederationBarkFrostAuthorization,
     FederationCdkOnchainFrostAuthorization, FederationConfig, FederationDkgCeremonyId,
-    FederationError, FederationFrostRootRecord, FederationId, MemberId, Result,
+    FederationError, FederationFrostRootRecord, FederationId, FederationSetupAuthorizationHash,
+    MemberId, Result,
 };
 use crate::Amount;
 
-const ROOT_CONFIG_VERSION: u16 = 1;
+const ROOT_CONFIG_VERSION: u16 = 2;
 const ROOT_PRIVATE_CONFIG_VERSION: u16 = 1;
 const APPLICATION_CONFIG_VERSION: u16 = 1;
 const WALLET_CONFIG_VERSION: u16 = 1;
@@ -124,6 +125,8 @@ pub struct FederationFrostRootPublicConfig {
     pub version: u16,
     /// Owning federation.
     pub federation_id: FederationId,
+    /// Certified setup authorization that permitted the root DKG.
+    pub setup_authorization: FederationSetupAuthorizationHash,
     /// Ceremony that produced this root.
     pub ceremony_id: FederationDkgCeremonyId,
     /// Root key epoch.
@@ -163,6 +166,7 @@ impl FederationFrostRootPublicConfig {
         let config = Self {
             version: ROOT_CONFIG_VERSION,
             federation_id: federation.federation_id,
+            setup_authorization: federation.setup_authorization,
             ceremony_id: record.context.ceremony_id,
             root_key_epoch: public.epoch().get(),
             dkg_protocol_version: public.dkg_protocol_version(),
@@ -224,6 +228,9 @@ impl FederationFrostRootPublicConfig {
         }
         if self.federation_id != federation.federation_id {
             return Err(invalid_config("root config federation id mismatch"));
+        }
+        if self.setup_authorization != federation.setup_authorization {
+            return Err(invalid_config("root config setup authorization mismatch"));
         }
         if self.root_key_epoch == 0
             || self.threshold != federation.threshold_params.signature_threshold
