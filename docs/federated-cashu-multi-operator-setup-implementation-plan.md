@@ -625,9 +625,11 @@ compatibility migration chain, and regenerate development databases.
   members to proceed concurrently after manifest certification. The deployment
   orchestration may wait for shared protocol gates, but it must not serialize
   members' DKG computation or drive DKG rounds member by member.
-- Add a multi-host runbook covering TLS, endpoint reachability, system service
-  setup, encrypted backups, approval review, activation, and failed-ceremony
-  replacement.
+- Add a multi-operator runbook that works on one or multiple hosts and covers
+  TLS, endpoint reachability, system service setup, encrypted backups, approval
+  review, activation, and failed-ceremony replacement. For the cost-constrained
+  Nocean drill, use one server with a distinct public mint DNS subdomain and a
+  distinct private federation DNS subdomain for every member.
 - Do not add a second deployment-specific bootstrap protocol.
 
 The wallet crates, wallet database, public Cashu routes, mint business logic,
@@ -644,8 +646,11 @@ conventional commit. Finish with a real Nocean deployment based on
 `scripts/deploy_nocean_federation.sh`: use independent per-operator tmux
 sessions and state, exercise the ordinary public CLI setup workflow, and prove
 that every member enters DKG independently and concurrently without centralized
-private configuration or member-by-member orchestration. A new deployment
-script may be added for the invitation-based CLI flow.
+private configuration or member-by-member orchestration. One Nocean server with
+distinct public and private DNS subdomains per member is the accepted deployment
+topology for this setup milestone; keep true multi-machine verification as a
+separate future parent-plan production gate. A new deployment script may be
+added for the invitation-based CLI flow.
 
 ## Milestone sequence
 
@@ -1238,16 +1243,15 @@ and passed with all features. The complete production `federation,sqlite`
 formatting and shell syntax checks pass, and strict all-feature `cdk-mintd`
 Clippy passes with only the already-recorded dependency allowances.
 
-### Milestone 9 — Real multi-host deployment drill
+### Milestone 9 — Real Nocean one-server multi-operator deployment drill
 
 - [x] Add or update a Nocean deployment script, using
   `scripts/deploy_nocean_federation.sh` as the build, transfer, and health-check
   reference, that drives only the new invitation-based setup CLI.
-- [ ] Deploy at least five members on the Nocean servers with real HTTPS
-  endpoints and identities independently generated inside their respective
-  operator environments. Where multiple members temporarily share a physical
-  test host, keep them in independent tmux sessions with separate state and do
-  not count that topology alone as proof of separate-machine behavior.
+- [x] Deploy five members on one Nocean server with real HTTPS public mint and
+  private federation DNS subdomains, identities independently generated inside
+  separate operator environments, and one named tmux session and state
+  directory per member.
 - [x] In those tmux sessions, execute the ordinary operator sequence: creator
   setup and invitation export; independent joins; proposal review and
   publication; one approval per operator; concurrent DKG; final-config review;
@@ -1268,11 +1272,13 @@ and wallet smoke tests using only the public CLI workflow, and publishes a
 redacted drill report with exact code revision, topology, tmux session layout,
 TLS model, commands, durations, resource measurements, failures, recovery, and
 remaining limits. The report must distinguish a multi-machine run from any
-single-machine isolated-session rehearsal. This closes only the multi-host
-setup gate; it does not waive the parent plan's independent security,
-payment-backend, or real-funds gates.
+single-machine isolated-session deployment. The one-server topology is accepted
+for this cost-constrained setup milestone, but must not be cited as evidence for
+the parent plan's true multi-host production gate. This closes only the
+multi-operator setup deployment gate; it does not waive the parent plan's
+independent multi-host, security, payment-backend, or real-funds gates.
 
-**Progress:** in progress. The deployment tooling is implemented as
+**Progress:** complete. The deployment tooling is implemented as
 `scripts/deploy_nocean_multi_operator_federation.sh` with two deliberately
 operator-local helpers. It accepts exactly five SSH operator environments,
 checksum-verifies the Linux binaries, creates a protected directory and named
@@ -1286,17 +1292,17 @@ restart, public-config comparison, resource sampling, and redacted-report
 checks required by this milestone.
 
 The topology preflight hashes (but neither logs nor records) the remote machine
-identity and defaults to requiring five unique machines before any build,
-upload, session stop, or remote write. On 2026-08-01 the configured Nocean
-access exposed five public TLS names but only one reachable SSH machine, with
-no SSH fan-out or container-cluster worker topology. The strict preflight
-therefore aborted as designed with `1 < 5` before mutating the deployment.
-Setting `REQUIRE_UNIQUE_MACHINES=1` permits the requested five-session isolated
-rehearsal on that machine, but the generated report must call it a single-host
-rehearsal and cannot close the multi-host checkbox or gate. Shell syntax,
-executable-mode, help-surface, whitespace, and credential/PII scans pass for
-all three new scripts. The live isolated-session drill and a real five-machine
-run remain outstanding. The first rehearsal invocation stopped during the
+identity. It initially required five unique machines before any build, upload,
+session stop, or remote write. On 2026-08-01 the configured Nocean access
+exposed five public TLS names but only one reachable SSH machine, with no SSH
+fan-out or container-cluster worker topology. That strict preflight aborted as
+designed with `1 < 5` before mutating the deployment. After the one-server scope
+was accepted, the driver default changed to `REQUIRE_UNIQUE_MACHINES=1` for the
+five-session single-server deployment. The topology remains explicitly
+classified as single-host, and setting `REQUIRE_UNIQUE_MACHINES=5` retains the
+strict mode for the parent plan's future production verification. Shell syntax,
+executable-mode, help-surface, whitespace, and credential/PII scans pass for all
+three new scripts. The first deployment invocation stopped during the
 local container build, before upload or remote mutation, because Cargo resolves
 the optional Bark workspace path even in the fakewallet feature set. The new
 driver now validates and mounts that sibling checkout read-only, matching the
@@ -1368,7 +1374,7 @@ bounded attempts plus SSH keepalives. Protocol actions are deliberately not
 blindly retried by that transport wrapper, preserving their explicit replay and
 acknowledgement semantics.
 
-The committed-source rehearsal at revision `5d4381051` then passed in `239s`,
+The committed-source deployment at revision `5d4381051` then passed in `239s`,
 including a `19s` concurrent DKG. All five ordinary operator transcripts,
 coordinator removal, explicit activations, strict runtime checks, read-only
 wallet smoke, one-member outage/catch-up, coordinated restart, and local
@@ -1381,12 +1387,20 @@ healthy public HTTPS routes, and `5/5` strict ready/converged statuses. The
 redacted evidence and bounded failure history are published in
 `docs/federated-cashu-nocean-multi-operator-drill.md`.
 
-This completes every same-host rehearsal item but not the physical deployment
-item or gate. Only one unique Nocean machine is reachable through the supplied
-access. The second checklist item remains open, and the report explicitly
-refuses to classify this run as multi-host. A closing run needs five reachable
-operator SSH environments with the already-supported TLS routing; no setup or
-DKG protocol change is needed.
+This completes the deployment item and multi-operator setup gate under the
+accepted one-server scope. The report remains explicit that the run is not
+multi-host evidence and therefore does not close the parent plan's independent
+multi-machine production gate. The driver retains strict five-machine mode for
+that future extension; no setup or DKG protocol change is needed.
+
+The scope-closure recheck on 2026-08-01 found all five public mint DNS
+subdomains healthy, all five strict federation runtime statuses ready and
+converged, five independent operator tmux sessions, and the wallet tmux session
+still running on the Nocean server. All five private federation DNS subdomains
+completed TLS routing; their setup-only status route correctly remained absent
+after setup activation. Deployment-script syntax, help text, whitespace, and
+credential/PII scans passed after making the accepted single-server topology
+the default while retaining opt-in strict five-machine validation.
 
 ## Verification matrix
 
@@ -1404,7 +1418,7 @@ At minimum, implementation must cover:
 | DKG handoff | Manifest required, cross-setup rejection, full existing DKG regression suite |
 | Activation | All final confirmations, local-only authority, atomic idempotent restart |
 | Feature isolation | Standalone builds/tests and federation-disabled HTTP/config rejection |
-| Deployment | Same-host process matrix plus the CLI-driven Nocean independent-session and real multi-host drills |
+| Deployment | Same-host process matrix plus a CLI-driven Nocean one-server drill with independent sessions, state, and public/private DNS subdomains; true multi-host evidence remains a separate parent-plan gate |
 
 Normal verification for touched milestones includes:
 
@@ -1494,5 +1508,6 @@ This plan is complete only when:
   unchanged, and federation-disabled builds acquire no setup surface;
 - obsolete undeployed setup formats and parallel production entry points are
   removed rather than supported indefinitely; and
-- the CLI-driven Nocean drill, real multi-host evidence, and the parent plan's
-  remaining release gates are reported independently and accurately.
+- the CLI-driven one-server Nocean drill is complete, while true multi-host
+  evidence and the parent plan's remaining release gates are reported
+  independently and accurately.

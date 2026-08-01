@@ -18,7 +18,7 @@ PORT_START="${PORT_START:-21885}"
 PROMETHEUS_PORT_START="${PROMETHEUS_PORT_START:-21985}"
 SESSION_PREFIX="${SESSION_PREFIX:-cdk-fed-operator}"
 WALLET_SESSION="${WALLET_SESSION:-cdk-fed-wallet}"
-REQUIRE_UNIQUE_MACHINES="${REQUIRE_UNIQUE_MACHINES:-5}"
+REQUIRE_UNIQUE_MACHINES="${REQUIRE_UNIQUE_MACHINES:-1}"
 STOP_LEGACY_SESSION="${STOP_LEGACY_SESSION:-0}"
 STATUS_TIMEOUT_SECS="${STATUS_TIMEOUT_SECS:-1800}"
 STATUS_POLL_SECS="${STATUS_POLL_SECS:-3}"
@@ -56,15 +56,15 @@ Usage:
   OPERATOR_HOSTS_CSV=host1,host2,host3,host4,host5 \
     scripts/deploy_nocean_multi_operator_federation.sh
 
-The default host list repeats the existing `nocean` alias. It is intentionally
-rejected by the default REQUIRE_UNIQUE_MACHINES=5 gate. To run a clearly labeled
-single-host isolated-session rehearsal, set REQUIRE_UNIQUE_MACHINES=1 and, when
-the legacy deployment owns the public ports, STOP_LEGACY_SESSION=1.
+The default host list repeats the existing `nocean` alias for the accepted
+single-server, five-operator topology. When the legacy deployment owns the
+public ports, set STOP_LEGACY_SESSION=1. For a strict future multi-machine
+production drill, supply five SSH aliases and set REQUIRE_UNIQUE_MACHINES=5.
 
 Important overrides:
   OPERATOR_HOSTS_CSV       Exactly five comma-separated SSH aliases.
   REMOTE_ROOT              Safe relative root created on every operator host.
-  REQUIRE_UNIQUE_MACHINES  Minimum distinct /etc/machine-id values (default 5).
+  REQUIRE_UNIQUE_MACHINES  Minimum distinct /etc/machine-id values (default 1).
   STOP_LEGACY_SESSION      Stop cdk-federation before taking its public ports.
   PUBLIC_BASE_DOMAIN       Preconfigured public TLS base domain.
   FEDERATION_DOMAIN_PREFIX Private federation TLS prefix (default cdk-fed).
@@ -404,7 +404,7 @@ machine_topology() {
     if ((unique_machine_count == MEMBERS)); then
         topology_class="five-machine"
     elif ((unique_machine_count == 1)); then
-        topology_class="single-host-isolated-session-rehearsal"
+        topology_class="single-host-five-operator"
     else
         topology_class="partial-multi-host"
     fi
@@ -529,9 +529,9 @@ write_report() {
         source_dirty=true
     fi
     if [[ "$topology_class" == "five-machine" ]]; then
-        remaining_limit="none for the multi-host setup gate"
+        remaining_limit="none for the separate parent-plan multi-host gate"
     else
-        remaining_limit="only one physical Nocean host was reachable; this run is an isolated-session rehearsal and does not close the multi-host gate"
+        remaining_limit="accepted for the multi-operator setup milestone; not evidence for the separate parent-plan multi-host gate"
     fi
     total_seconds=$((SECONDS - drill_started_at))
     mkdir -p "$(dirname "$REPORT_FILE")"

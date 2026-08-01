@@ -2,14 +2,16 @@
 
 ## Result
 
-The 2026-08-01 invitation-based setup rehearsal passed on source revision
+The 2026-08-01 invitation-based setup deployment passed on source revision
 `5d4381051d32a5d8e50bef76cae69b213fa72949`.
 
-This was a **single-host isolated-session rehearsal**, not a multi-machine run.
-The configured Nocean access exposed one unique machine identity. The strict
-deployment default requires five and aborts before build or mutation when that
-requirement is not met. This run used the explicit one-machine rehearsal
-override and therefore does not close the multi-host gate.
+This was a **single-host, five-operator deployment**, not a multi-machine run.
+It is the accepted cost-constrained topology for the current federation-setup
+milestone: one Nocean server, five independent operator environments, and
+separate public mint and private federation DNS subdomains for every member.
+The strict deployment mode still requires five unique machines for a future
+parent-plan production run. This result closes the multi-operator setup
+deployment milestone, but it does not close that separate multi-host gate.
 
 No invitation, credential, private key, private config, machine identity,
 server address, operator path, wallet seed, or generated deployment artifact is
@@ -104,11 +106,13 @@ Every failed attempt stopped before the next unsafe boundary. Where identity
 state existed, it was moved into that operator's local protected `aborted`
 archive rather than deleted or shared.
 
-## Remaining limit
+## Future multi-host extension
 
 The setup UX, identity isolation, concurrency, restart, and backup behavior are
-verified on Nocean, but only one physical machine was reachable. A closing run
-still needs five supplied SSH operator environments (or at minimum a genuinely
-multi-machine topology) with the same public/private TLS routing. The driver
-already rejects a false multi-host claim and accepts exactly five SSH aliases,
-so no protocol or deployment-code change is required for that rerun.
+verified on the accepted one-server Nocean topology. This is not evidence of
+machine-level fault or administrative independence. The parent plan's future
+multi-host production gate still needs five supplied SSH operator environments,
+or another genuinely multi-machine topology, with the same public/private TLS
+routing. The driver already rejects a false multi-host claim in strict mode and
+accepts exactly five SSH aliases, so no protocol or deployment-code change is
+required for that extension.
