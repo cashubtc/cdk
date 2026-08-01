@@ -1300,7 +1300,15 @@ run remain outstanding. The first rehearsal invocation stopped during the
 local container build, before upload or remote mutation, because Cargo resolves
 the optional Bark workspace path even in the fakewallet feature set. The new
 driver now validates and mounts that sibling checkout read-only, matching the
-established Nocean build path.
+established Nocean build path. The next invocation built and checksum-installed
+both release binaries, then stopped the legacy session, but exposed a tmux
+initialization race: a short-lived version command could exit before
+`remain-on-exit` was applied. Three empty operator sessions survived and two
+did not; a remote audit confirmed that no ceremony directory or identity state
+had been created. Session initialization now starts a stable idle operator pane
+before applying tmux policy, and reruns reuse only checksum-matching binaries
+while refusing to overwrite any operator root that already contains ceremony
+state.
 
 ## Verification matrix
 

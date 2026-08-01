@@ -345,10 +345,17 @@ session_init() {
         die "operator tmux session already exists"
     fi
     local command
-    printf -v command 'cd %q && exec %q --version' "$OPERATOR_ROOT" "$MINTD"
+    printf -v command 'cd %q && exec bash scripts/nocean_federation_operator.sh idle' \
+        "$OPERATOR_ROOT"
     tmux new-session -d -s "$TMUX_SESSION" -n operator -c "$OPERATOR_ROOT" "$command"
     tmux set-option -t "$TMUX_SESSION" remain-on-exit on
     tmux select-pane -t "$TMUX_SESSION:operator.0" -T "operator-$MEMBER_ID"
+}
+
+idle() {
+    while true; do
+        sleep 3600
+    done
 }
 
 session_run_wait() {
@@ -465,6 +472,7 @@ session_layout() {
 validate_environment
 case "${1:-}" in
     validate) ;;
+    idle) idle ;;
     session-init) session_init ;;
     session-run-wait) session_run_wait "${2:?label required}" "${3:?action required}" "${4:-}" ;;
     service-start) service_start "${2:?label required}" "${3:?mode required}" ;;
@@ -477,5 +485,5 @@ case "${1:-}" in
     runtime-status) runtime_status ;;
     service-metrics) service_metrics ;;
     session-layout) session_layout ;;
-    *) die "usage: $0 {validate|session-init|session-run-wait|service-start|service-stop|status-json|proposal-hash|review-proposal-hash|public-config-hash|runtime-status|service-metrics|session-layout}" ;;
+    *) die "usage: $0 {validate|idle|session-init|session-run-wait|service-start|service-stop|status-json|proposal-hash|review-proposal-hash|public-config-hash|runtime-status|service-metrics|session-layout}" ;;
 esac

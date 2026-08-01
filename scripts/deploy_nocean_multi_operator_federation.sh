@@ -313,20 +313,42 @@ install_operators() {
     for member in $(seq 1 "$MEMBERS"); do
         host="$(member_host "$member")"
         dir="$(operator_dir "$member")"
-        printf -v command 'mkdir -p %q %q && chmod 700 %q' "$dir/bin" "$dir/scripts" "$dir"
+        printf -v command \
+            'test ! -d %q || { echo "error: operator ceremony state already exists" >&2; exit 1; }; mkdir -p %q %q && chmod 700 %q' \
+            "$dir/ceremonies" "$dir/bin" "$dir/scripts" "$dir"
         ssh "${SSH_OPTIONS[@]}" "$host" "$command"
         env_file="$STAGING_DIR/operator-$member.env"
         write_operator_env "$member" "$env_file"
-        scp -q "${SSH_OPTIONS[@]}" "$mintd" "$host:$dir/bin/cdk-mintd.upload"
-        scp -q "${SSH_OPTIONS[@]}" "$cli" "$host:$dir/bin/cdk-cli.upload"
+        printf -v command \
+            'test -x %q && test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q' \
+            "$dir/bin/cdk-mintd" "$dir/bin/cdk-mintd" "$mintd_hash"
+        if ! ssh "${SSH_OPTIONS[@]}" "$host" "$command"; then
+            scp -q "${SSH_OPTIONS[@]}" "$mintd" "$host:$dir/bin/cdk-mintd.upload"
+            printf -v command \
+                'test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q && chmod 755 %q && mv %q %q' \
+                "$dir/bin/cdk-mintd.upload" "$mintd_hash" \
+                "$dir/bin/cdk-mintd.upload" "$dir/bin/cdk-mintd.upload" "$dir/bin/cdk-mintd"
+            ssh "${SSH_OPTIONS[@]}" "$host" "$command"
+        fi
+        printf -v command \
+            'test -x %q && test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q' \
+            "$dir/bin/cdk-cli" "$dir/bin/cdk-cli" "$cli_hash"
+        if ! ssh "${SSH_OPTIONS[@]}" "$host" "$command"; then
+            scp -q "${SSH_OPTIONS[@]}" "$cli" "$host:$dir/bin/cdk-cli.upload"
+            printf -v command \
+                'test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q && chmod 755 %q && mv %q %q' \
+                "$dir/bin/cdk-cli.upload" "$cli_hash" \
+                "$dir/bin/cdk-cli.upload" "$dir/bin/cdk-cli.upload" "$dir/bin/cdk-cli"
+            ssh "${SSH_OPTIONS[@]}" "$host" "$command"
+        fi
         scp -q "${SSH_OPTIONS[@]}" "$OPERATOR_SCRIPT" \
             "$host:$dir/scripts/nocean_federation_operator.sh.upload"
         scp -q "${SSH_OPTIONS[@]}" "$WALLET_SCRIPT" \
             "$host:$dir/scripts/nocean_federation_wallet_smoke.sh.upload"
         scp -q "${SSH_OPTIONS[@]}" "$env_file" "$host:$dir/operator.env.upload"
         printf -v command \
-            'set -eu; cd %q; test "$(sha256sum bin/cdk-mintd.upload | awk '\''{print $1}'\'')" = %q; test "$(sha256sum bin/cdk-cli.upload | awk '\''{print $1}'\'')" = %q; chmod 755 bin/cdk-mintd.upload bin/cdk-cli.upload scripts/*.upload; chmod 600 operator.env.upload; mv bin/cdk-mintd.upload bin/cdk-mintd; mv bin/cdk-cli.upload bin/cdk-cli; mv scripts/nocean_federation_operator.sh.upload scripts/nocean_federation_operator.sh; mv scripts/nocean_federation_wallet_smoke.sh.upload scripts/nocean_federation_wallet_smoke.sh; mv operator.env.upload operator.env' \
-            "$dir" "$mintd_hash" "$cli_hash"
+            'set -eu; cd %q; chmod 755 scripts/*.upload; chmod 600 operator.env.upload; mv scripts/nocean_federation_operator.sh.upload scripts/nocean_federation_operator.sh; mv scripts/nocean_federation_wallet_smoke.sh.upload scripts/nocean_federation_wallet_smoke.sh; mv operator.env.upload operator.env' \
+            "$dir"
         ssh "${SSH_OPTIONS[@]}" "$host" "$command"
         remote_operator "$member" validate
     done
