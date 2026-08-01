@@ -229,8 +229,10 @@ pub(crate) async fn run_setup_command(
                 ceremony_timeout: std::time::Duration::from_secs(args.dkg_ceremony_timeout_seconds),
                 ..cdk_axum::FederationDkgDriverRunConfig::default()
             };
-            let transport = crate::federation_setup_server_transport(cli_args).await?;
-            serve_setup_coordinator(&args.config, args.listen, driver, transport).await?;
+            let (transport, http_enabled) =
+                crate::federation_setup_server_transport(cli_args).await?;
+            serve_setup_coordinator(&args.config, args.listen, driver, transport, http_enabled)
+                .await?;
         }
         cli::FederationSetupCommand::Status(args) => {
             let coordinator =
@@ -359,11 +361,12 @@ async fn serve_setup_coordinator(
     listen: std::net::SocketAddr,
     driver: cdk_axum::FederationDkgDriverRunConfig,
     transport: cdk_axum::FederationTransport,
+    http_enabled: bool,
 ) -> Result<()> {
     let now_unix = current_unix_time()?;
     let (config, secrets) = load_local_state(config_path, now_unix)?;
     if config.manifest_path().exists() {
-        return serve_certified_dkg(config_path, listen, driver, transport).await;
+        return serve_certified_dkg(config_path, listen, driver, transport, http_enabled).await;
     }
     let draft = config
         .coordinator
@@ -390,11 +393,20 @@ async fn serve_setup_coordinator(
         .context("failed to initialize setup coordinator service")?,
     );
     let router = cdk_axum::create_federation_setup_router(service.clone());
-    let listener = tokio::net::TcpListener::bind(listen)
-        .await
-        .context("failed to bind setup-only coordinator listener")?;
+    let listener = if http_enabled {
+        Some(
+            tokio::net::TcpListener::bind(listen)
+                .await
+                .context("failed to bind setup-only coordinator listener")?,
+        )
+    } else {
+        None
+    };
     println!("setup_id: {}", config.setup_id);
-    println!("setup_only_listen: {listen}");
+    match http_enabled {
+        true => println!("setup_only_listen: {listen}"),
+        false => println!("setup_only_listen: disabled"),
+    }
     let result =
         serve_setup_router(listener, router, transport, "setup-only coordinator server").await;
     service.shutdown().await;
@@ -407,6 +419,7 @@ async fn serve_certified_dkg(
     listen: std::net::SocketAddr,
     driver: cdk_axum::FederationDkgDriverRunConfig,
     transport: cdk_axum::FederationTransport,
+    http_enabled: bool,
 ) -> Result<()> {
     let handoff = load_certified_dkg_handoff(config_path)?;
     let database = Arc::new(
@@ -433,34 +446,45 @@ async fn serve_certified_dkg(
     )
     .await
     .context("failed to create setup-only DKG router")?;
-    let listener = tokio::net::TcpListener::bind(listen)
-        .await
-        .context("failed to bind setup-only DKG listener")?;
+    let listener = if http_enabled {
+        Some(
+            tokio::net::TcpListener::bind(listen)
+                .await
+                .context("failed to bind setup-only DKG listener")?,
+        )
+    } else {
+        None
+    };
     println!("setup_id: {}", handoff.manifest.proposal.body.setup_id);
     println!("member_id: {member_id}");
     println!("ceremony_id: {ceremony_id}");
-    println!("dkg_only_listen: {listen}");
+    match http_enabled {
+        true => println!("dkg_only_listen: {listen}"),
+        false => println!("dkg_only_listen: disabled"),
+    }
     serve_setup_router(listener, router, transport, "setup-only DKG server").await
 }
 
 #[cfg(feature = "sqlite")]
 async fn serve_setup_router(
-    listener: tokio::net::TcpListener,
+    listener: Option<tokio::net::TcpListener>,
     router: axum::Router,
     transport: cdk_axum::FederationTransport,
     context: &'static str,
 ) -> Result<()> {
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-    let http_router = router.clone();
-    let mut http_task = tokio::spawn(async move {
-        axum::serve(
-            listener,
-            http_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .with_graceful_shutdown(async move {
-            let _ = shutdown_rx.recv().await;
+    let mut http_task = listener.map(|listener| {
+        let http_router = router.clone();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                http_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.recv().await;
+            })
+            .await
         })
-        .await
     });
 
     #[cfg(feature = "iroh")]
@@ -471,42 +495,57 @@ async fn serve_setup_router(
     let _ = (transport, router);
 
     #[cfg(feature = "iroh")]
-    let early_exit = match iroh_server.as_ref() {
-        Some(server) => {
+    let early_exit = match (http_task.as_mut(), iroh_server.as_ref()) {
+        (Some(http_task), Some(server)) => {
             tokio::select! {
                 signal = tokio::signal::ctrl_c() => {
                     signal.context("setup listener shutdown signal failed")?;
                     None
                 }
-                result = &mut http_task => Some(result.context("setup HTTP listener task failed")?.context(context)),
+                result = http_task => Some(result.context("setup HTTP listener task failed")?.context(context)),
                 () = server.finished() => Some(Err(anyhow!("{context} Iroh listener exited unexpectedly"))),
             }
         }
-        None => {
+        (Some(http_task), None) => {
             tokio::select! {
                 signal = tokio::signal::ctrl_c() => {
                     signal.context("setup listener shutdown signal failed")?;
                     None
                 }
-                result = &mut http_task => Some(result.context("setup HTTP listener task failed")?.context(context)),
+                result = http_task => Some(result.context("setup HTTP listener task failed")?.context(context)),
             }
         }
+        (None, Some(server)) => {
+            tokio::select! {
+                signal = tokio::signal::ctrl_c() => {
+                    signal.context("setup listener shutdown signal failed")?;
+                    None
+                }
+                () = server.finished() => Some(Err(anyhow!("{context} Iroh listener exited unexpectedly"))),
+            }
+        }
+        (None, None) => Some(Err(anyhow!("{context} has no enabled listener"))),
     };
     #[cfg(not(feature = "iroh"))]
-    let early_exit = tokio::select! {
-        signal = tokio::signal::ctrl_c() => {
-            signal.context("setup listener shutdown signal failed")?;
-            None
-        }
-        result = &mut http_task => Some(result.context("setup HTTP listener task failed")?.context(context)),
+    let early_exit = match http_task.as_mut() {
+        Some(http_task) => tokio::select! {
+            signal = tokio::signal::ctrl_c() => {
+                signal.context("setup listener shutdown signal failed")?;
+                None
+            }
+            result = http_task => Some(result.context("setup HTTP listener task failed")?.context(context)),
+        },
+        None => Some(Err(anyhow!("{context} has no enabled listener"))),
     };
 
     let _ = shutdown_tx.send(());
-    if !http_task.is_finished() {
-        http_task
-            .await
-            .context("setup HTTP listener task failed")?
-            .context(context)?;
+    if let Some(http_task) = http_task {
+        if !http_task.is_finished() {
+            http_task
+                .await
+                .context("setup HTTP listener task failed")?
+                .context(context)?;
+        }
     }
     #[cfg(feature = "iroh")]
     if let Some(server) = iroh_server {

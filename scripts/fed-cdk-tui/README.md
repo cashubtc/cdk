@@ -6,7 +6,8 @@ CDK wallet library; it does not invoke `cdk-cli` in the background.
 
 The interface provides:
 
-- federation import from any member URL, `federation-public.json`, or a
+- federation import over HTTPS or Iroh from any member URL,
+  `federation-public.json`, or a
   `cashufed` invite;
 - BOLT11 and on-chain mint and melt flows, gated by the methods advertised by
   the federation;
@@ -15,13 +16,14 @@ The interface provides:
 - a transaction history view fed by the wallet database, including unpaid and
   pending mint/melt quotes with manual check and mint/melt actions;
 - independent `/v1/info` and `/v1/keysets` probes for every member;
-- live HTTP status, latency, success rate, response volume, active keysets,
+- live transport status, latency, success rate, response volume, active keysets,
   endpoint identity, and federation metadata verification;
 - a scrollable request activity feed and per-member latency sparkline;
 - in-TUI leave/rejoin and primary-member switching without restarting;
 - terminal paste and system clipboard support.
 
-The health dashboard observes the public wallet-facing REST API. A public
+The health dashboard observes the public wallet-facing REST API over the
+configured HTTPS or Iroh transport. A public
 wallet cannot read the federation's authenticated private AlephBFT status, so
 `READY` means that the member is reachable and advertises the expected member
 ID, federation ID, config digest, and keysets. It is not a claim that the member
@@ -55,6 +57,9 @@ target/release/fed-cdk-tui \
   --mint-url https://mint.example.com
 
 target/release/fed-cdk-tui \
+  --mint-url iroh://endpoint-id
+
+target/release/fed-cdk-tui \
   --federation-config ./federation-public.json
 
 target/release/fed-cdk-tui \
@@ -70,6 +75,17 @@ to join a different federation.
 Member operations use the deployment-tested 90-second request, fallback, and
 quote-status timeouts so a slow consensus round does not create rapid quote
 fallback churn.
+
+An Iroh URL uses N0 discovery and an ephemeral client identity. Discovery,
+wallet requests, WebSockets, and dashboard probes share one Iroh endpoint and
+connection pool. To verify an all-Iroh federation without opening the terminal
+interface:
+
+```bash
+target/release/fed-cdk-tui check --mint-url iroh://endpoint-id
+```
+
+The check rejects a roster containing any non-Iroh public mint URL.
 
 ## Connect To A Federation
 

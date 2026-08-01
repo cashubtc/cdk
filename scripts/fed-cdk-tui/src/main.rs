@@ -57,6 +57,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Verify non-interactive wallet discovery through an Iroh member URL.
+    Check {
+        /// Iroh member URL used to discover and validate the federation.
+        #[arg(long)]
+        mint_url: MintUrl,
+    },
     /// Permanently delete this wallet's seed, database, config, and activity data.
     Reset {
         /// Skip the interactive confirmation.
@@ -97,8 +103,10 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
 
-    if let Some(Command::Reset { yes }) = cli.command {
-        return reset_wallet(&data_dir, yes);
+    match cli.command {
+        Some(Command::Check { mint_url }) => return check_iroh_federation(mint_url).await,
+        Some(Command::Reset { yes }) => return reset_wallet(&data_dir, yes),
+        None => {}
     }
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -123,6 +131,39 @@ async fn main() -> Result<()> {
     };
 
     run_tui(data_dir, runtime).await
+}
+
+async fn check_iroh_federation(mint_url: MintUrl) -> Result<()> {
+    if !mint_url.to_string().starts_with("iroh://") {
+        bail!("check requires an iroh:// mint URL");
+    }
+    let directory = tempfile::Builder::new()
+        .prefix("fed-cdk-tui-check-")
+        .tempdir()?;
+    let runtime =
+        WalletRuntime::join(directory.path(), JoinSource::MintUrl(mint_url.clone())).await?;
+    let public_config = runtime.public_config();
+    let all_members_use_iroh = public_config
+        .members
+        .values()
+        .all(|member| member.public_mint_url.to_string().starts_with("iroh://"));
+    if !all_members_use_iroh {
+        bail!("federation roster contains a non-Iroh public mint URL");
+    }
+    let available_balance = runtime.wallet().total_balance().await?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "result": "passed",
+            "entrypoint": mint_url,
+            "federation_id": runtime.federation_id(),
+            "members": public_config.members.len(),
+            "all_public_mint_urls_iroh": true,
+            "wallet_transport": "iroh",
+            "available_balance_sat": u64::from(available_balance)
+        })
+    );
+    Ok(())
 }
 
 fn default_data_dir() -> PathBuf {
@@ -191,6 +232,7 @@ async fn run_tui(data_dir: PathBuf, runtime: Option<Arc<WalletRuntime>>) -> Resu
         let generation = monitor_generation.fetch_add(1, Ordering::Relaxed) + 1;
         spawn_member_monitors(
             runtime.public_config(),
+            runtime.transport(),
             event_tx.clone(),
             generation,
             monitor_generation.clone(),
@@ -238,6 +280,7 @@ async fn run_tui(data_dir: PathBuf, runtime: Option<Arc<WalletRuntime>>) -> Resu
                                 monitor_generation.fetch_add(1, Ordering::Relaxed) + 1;
                             spawn_member_monitors(
                                 runtime.public_config(),
+                                runtime.transport(),
                                 event_tx.clone(),
                                 generation,
                                 monitor_generation.clone(),
@@ -257,6 +300,7 @@ async fn run_tui(data_dir: PathBuf, runtime: Option<Arc<WalletRuntime>>) -> Resu
                                 monitor_generation.fetch_add(1, Ordering::Relaxed) + 1;
                             spawn_member_monitors(
                                 runtime.public_config(),
+                                runtime.transport(),
                                 event_tx.clone(),
                                 generation,
                                 monitor_generation.clone(),

@@ -10,9 +10,7 @@ ENV_FILE="$CLIENT_ROOT/operator.env"
 }
 # shellcheck disable=SC1090
 source "$ENV_FILE"
-CLI="$CLIENT_ROOT/bin/cdk-cli"
-MINTD="$CLIENT_ROOT/bin/cdk-mintd"
-PUBLIC_CONFIG="$CLIENT_ROOT/ceremonies/active/setup-state/activated/federation-public.json"
+TUI="$CLIENT_ROOT/bin/fed-cdk-tui"
 WALLET_DIR="$CLIENT_ROOT/wallet-smoke"
 SESSION="${WALLET_SESSION:?WALLET_SESSION is required}"
 MINT_URL="${PUBLIC_MINT_URL:?PUBLIC_MINT_URL is required}"
@@ -25,49 +23,51 @@ die() {
 
 validate() {
     local command
-    for command in grep jq sed tail tmux; do
+    for command in jq sed tmux; do
         command -v "$command" >/dev/null 2>&1 \
             || die "required command not found: $command"
     done
-    [[ -x "$CLI" && -x "$MINTD" ]] || die "wallet smoke binaries are missing"
-    [[ -f "$PUBLIC_CONFIG" ]] || die "activated public federation config is missing"
+    [[ -x "$TUI" ]] || die "Iroh TUI wallet binary is missing"
     [[ "$SESSION" =~ ^[A-Za-z0-9._-]+$ ]] || die "wallet session name is invalid"
-    [[ "$MINT_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
-        || die "wallet smoke requires a credential-free HTTPS mint URL"
+    [[ "$MINT_URL" =~ ^iroh://[a-z0-9]+$ ]] \
+        || die "wallet smoke requires a canonical Iroh mint URL"
     [[ "$ACTION_TIMEOUT_SECS" =~ ^[1-9][0-9]*$ ]] \
         || die "ACTION_TIMEOUT_SECS must be positive"
 }
 
-wallet_cli() {
-    "$CLI" --work-dir "$WALLET_DIR" --non-interactive "$@"
+tui_check() {
+    local mint_url="$1"
+    "$TUI" check --mint-url "$mint_url"
 }
 
 initial_smoke() {
-    [[ ! -e "$WALLET_DIR" ]] || die "wallet smoke directory already exists"
     mkdir -p "$WALLET_DIR"
-    wallet_cli federation add \
-        --public-config "$PUBLIC_CONFIG" \
-        --member-request-timeout-secs 60 \
-        --member-fallback-timeout-secs 60 \
-        --quote-status-member-timeout-secs 60 \
-        >"$WALLET_DIR/federation-add.log"
-    wallet_cli mint-info "$MINT_URL" >"$WALLET_DIR/mint-info.log"
-    wallet_cli --unit sat balance >"$WALLET_DIR/balance.log"
-    if [[ -s "$WALLET_DIR/balance.log" ]] \
-        && ! grep -Eq '(^|[^0-9])0([^0-9]|$)' "$WALLET_DIR/balance.log"; then
-        die "new federation wallet did not report an empty balance"
-    fi
+    tui_check "$MINT_URL" >"$WALLET_DIR/iroh-check.json"
+    jq -e '.result == "passed" and .wallet_transport == "iroh" and
+        .all_public_mint_urls_iroh == true and .available_balance_sat == 0' \
+        "$WALLET_DIR/iroh-check.json" >/dev/null \
+        || die "TUI Iroh wallet check did not return the expected federation result"
     jq -n \
-        '{result: "passed", federation_import: true, threshold_mint_info: true, empty_balance: true, paid_operation: false}' \
+        '{result: "passed", federation_import_over_iroh: true, threshold_mint_info_over_iroh: true, empty_balance: true, paid_operation: false}' \
         >"$WALLET_DIR/smoke-report.json"
 }
 
 offline_operation() {
     [[ -d "$WALLET_DIR" ]] || die "initial wallet smoke has not run"
-    wallet_cli mint-info "$MINT_URL" >"$WALLET_DIR/offline-member-mint-info.log"
-    wallet_cli --unit sat balance >"$WALLET_DIR/offline-member-balance.log"
-    jq -n '{result: "passed", threshold_read_with_one_member_offline: true}' \
+    tui_check "$MINT_URL" >"$WALLET_DIR/offline-member-iroh-check.json"
+    jq -e '.result == "passed" and .wallet_transport == "iroh"' \
+        "$WALLET_DIR/offline-member-iroh-check.json" >/dev/null \
+        || die "TUI Iroh wallet check failed with one member offline"
+    jq -n '{result: "passed", threshold_read_with_one_member_offline_over_iroh: true}' \
         >"$WALLET_DIR/offline-operation-report.json"
+}
+
+probe_url() {
+    local mint_url="$1" label="$2"
+    [[ "$mint_url" =~ ^iroh://[a-z0-9]+$ ]] || die "probe URL is not canonical Iroh"
+    [[ "$label" =~ ^[A-Za-z0-9._-]+$ ]] || die "probe label is invalid"
+    mkdir -p "$WALLET_DIR/probes"
+    tui_check "$mint_url" >"$WALLET_DIR/probes/$label.json"
 }
 
 run_action() {
@@ -122,5 +122,6 @@ validate
 case "${1:-}" in
     session-run-wait) session_run_wait "${2:?action required}" ;;
     run-action) run_action "${2:?action required}" ;;
-    *) die "usage: $0 {session-run-wait|run-action}" ;;
+    probe-url) probe_url "${2:?mint URL required}" "${3:?label required}" ;;
+    *) die "usage: $0 {session-run-wait|run-action|probe-url}" ;;
 esac

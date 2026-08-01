@@ -3,13 +3,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use cdk::mint_url::MintUrl;
 use cdk::nuts::MintInfo;
+use cdk::wallet::HttpTransport;
 use cdk_common::federation::{FederationConfig, MemberId};
-use reqwest::Client;
+use cdk_http_client::HttpError;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::app::AppEvent;
+use crate::wallet::WalletTransport;
 
 #[derive(Debug, Clone)]
 pub struct MemberProbe {
@@ -43,6 +46,7 @@ struct HttpObservation {
 
 pub fn spawn_member_monitors(
     config: FederationConfig,
+    transport: WalletTransport,
     tx: mpsc::UnboundedSender<AppEvent>,
     generation: u64,
     current_generation: Arc<AtomicU64>,
@@ -52,29 +56,12 @@ pub fn spawn_member_monitors(
         .config_digest_for_validated_config()
         .map(|digest| digest.to_string())
         .unwrap_or_default();
-    let client = match Client::builder()
-        .connect_timeout(Duration::from_secs(4))
-        .timeout(Duration::from_secs(8))
-        .user_agent("fed-cdk-tui/0.1")
-        .build()
-    {
-        Ok(client) => client,
-        Err(err) => {
-            tx.send(AppEvent::BackgroundError(format!(
-                "could not create telemetry client: {err}"
-            )))
-            .ok();
-            return;
-        }
-    };
-
     for (offset, (member_id, member)) in config.members.into_iter().enumerate() {
-        let client = client.clone();
+        let transport = transport.clone();
         let tx = tx.clone();
         let federation_id = expected_federation_id.clone();
         let config_digest = expected_digest.clone();
         let current_generation = current_generation.clone();
-        let url = member.public_mint_url.to_string();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis((offset as u64) * 120)).await;
             let mut interval = tokio::time::interval(Duration::from_secs(5));
@@ -85,9 +72,9 @@ pub fn spawn_member_monitors(
                     return;
                 }
                 let probe = probe_member(
-                    &client,
+                    &transport,
                     member_id,
-                    &url,
+                    &member.public_mint_url,
                     &federation_id,
                     &config_digest,
                     generation,
@@ -102,17 +89,38 @@ pub fn spawn_member_monitors(
 }
 
 async fn probe_member(
-    client: &Client,
+    transport: &WalletTransport,
     member_id: MemberId,
-    base_url: &str,
+    base_url: &MintUrl,
     expected_federation_id: &str,
     expected_digest: &str,
     generation: u64,
 ) -> MemberProbe {
-    let base_url = base_url.trim_end_matches('/');
-    let info_url = format!("{base_url}/v1/info");
-    let keysets_url = format!("{base_url}/v1/keysets");
-    let (info, keysets) = tokio::join!(fetch(client, &info_url), fetch(client, &keysets_url));
+    let base_url_string = base_url.to_string();
+    let info_url = base_url.join_paths(&["v1", "info"]);
+    let keysets_url = base_url.join_paths(&["v1", "keysets"]);
+    let (info, keysets) = match (info_url, keysets_url) {
+        (Ok(info_url), Ok(keysets_url)) => {
+            tokio::join!(fetch(transport, info_url), fetch(transport, keysets_url))
+        }
+        (Err(err), _) | (_, Err(err)) => {
+            let observation = HttpObservation {
+                status: None,
+                latency_ms: 0,
+                bytes: Vec::new(),
+                error: Some(err.to_string()),
+            };
+            (
+                observation,
+                HttpObservation {
+                    status: None,
+                    latency_ms: 0,
+                    bytes: Vec::new(),
+                    error: Some(err.to_string()),
+                },
+            )
+        }
+    };
 
     let info_json = serde_json::from_slice::<Value>(&info.bytes).ok();
     let mint_info = serde_json::from_slice::<MintInfo>(&info.bytes).ok();
@@ -164,7 +172,7 @@ async fn probe_member(
     MemberProbe {
         generation,
         member_id,
-        member_url: base_url.to_string(),
+        member_url: base_url_string,
         success: status_success && metadata_matches,
         metadata_matches,
         status: info.status,
@@ -225,16 +233,16 @@ fn advertised_melt_methods(info: &MintInfo) -> Vec<String> {
         .collect()
 }
 
-async fn fetch(client: &Client, url: &str) -> HttpObservation {
+async fn fetch(transport: &WalletTransport, url: url::Url) -> HttpObservation {
     let started = Instant::now();
-    match client.get(url).send().await {
-        Ok(response) => {
-            let status = response.status().as_u16();
+    match tokio::time::timeout(Duration::from_secs(8), transport.http_get_raw(url, None)).await {
+        Ok(Ok(response)) => {
+            let status = response.status();
             match response.bytes().await {
                 Ok(bytes) => HttpObservation {
                     status: Some(status),
                     latency_ms: elapsed_ms(started),
-                    bytes: bytes.to_vec(),
+                    bytes,
                     error: (!(200..300).contains(&status)).then(|| format!("HTTP {status}")),
                 },
                 Err(err) => HttpObservation {
@@ -245,11 +253,20 @@ async fn fetch(client: &Client, url: &str) -> HttpObservation {
                 },
             }
         }
-        Err(err) => HttpObservation {
-            status: err.status().map(|status| status.as_u16()),
+        Ok(Err(err)) => HttpObservation {
+            status: match err {
+                HttpError::Status { status, .. } => Some(status),
+                _ => None,
+            },
             latency_ms: elapsed_ms(started),
             bytes: Vec::new(),
             error: Some(err.to_string()),
+        },
+        Err(_) => HttpObservation {
+            status: None,
+            latency_ms: elapsed_ms(started),
+            bytes: Vec::new(),
+            error: Some("request timed out".to_string()),
         },
     }
 }

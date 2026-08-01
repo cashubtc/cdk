@@ -1198,6 +1198,35 @@ The completion-audit regression rerun passed:
   Bark path dependency emits two existing warnings outside this repository,
   but the CDK targets pass their strict lint gates.
 
+### Post-completion wallet-entrypoint and setup-listener follow-up
+
+The Nocean deployment originally kept HTTPS public wallet URLs even though
+all private federation traffic used Iroh. A later all-Iroh deployment
+follow-up closes that product-level gap:
+
+- `FederatedMintConnector` accepts one caller-owned transport when it builds
+  member connectors from a validated public configuration. Applications can
+  therefore share one Iroh node and connection pool across discovery, wallet
+  requests, WebSockets, authentication, and member monitoring.
+- `scripts/fed-cdk-tui` enables CDK's current Iroh feature, discovers a
+  federation directly from `iroh://<endpoint-id>`, and uses that same shared
+  transport for all member calls. Its non-interactive `check` command rejects
+  any roster containing a non-Iroh public URL.
+- `federation setup serve` now honors `[info].http_enabled = false` for both
+  the enrollment coordinator and certified DKG phases. It no longer binds the
+  CLI's loopback TCP address in Iroh-only mode.
+- The Nocean driver advertises the same persistent Iroh endpoint for public
+  wallet and private federation routes, keeps HTTP disabled throughout setup,
+  DKG, and runtime, starts all five DKG services concurrently, checks every
+  public member with the Iroh-enabled TUI, and fails if a configured TCP mint
+  port is reachable.
+
+The focused local regression passes 98 wallet federation tests, all 26 TUI
+tests, strict TUI Clippy, the exact mintd deployment-feature compile check,
+and the setup-command tests. A fresh one-server Nocean deployment is the final
+gate for this follow-up; record its revision and timings in the Nocean
+evidence after it completes.
+
 ## Verification matrix
 
 ### Transport selection

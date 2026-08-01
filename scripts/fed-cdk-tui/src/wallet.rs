@@ -19,13 +19,14 @@ use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintInfo, PaymentMethod};
 use cdk::wallet::types::SendKind;
 use cdk::wallet::{
-    FederatedMintConnector, FederatedMintConnectorConfig, ReceiveOptions, SendOptions, Wallet,
-    WalletBuilder,
+    FederatedMintConnector, FederatedMintConnectorConfig, HttpTransport, ReceiveOptions,
+    SendOptions, Wallet, WalletBuilder,
 };
 use cdk::{Amount, StreamExt};
 use cdk_common::federation::{FederationConfig, FederationInvite};
+use cdk_http_client::Async;
+use cdk_iroh::IrohTransport;
 use cdk_sqlite::WalletSqliteDatabase;
-use reqwest::redirect::Policy;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -36,6 +37,8 @@ const CONFIG_VERSION: u16 = 1;
 const CONFIG_FILE: &str = "federation.json";
 const SEED_FILE: &str = "seed";
 const DATABASE_FILE: &str = "wallet.sqlite";
+
+pub type WalletTransport = IrohTransport<Async>;
 
 #[derive(Debug, Clone)]
 pub enum JoinSource {
@@ -70,6 +73,7 @@ pub struct WalletRuntime {
     stored: StoredFederation,
     payment_capabilities: PaymentCapabilities,
     data_dir: PathBuf,
+    transport: WalletTransport,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -116,12 +120,15 @@ impl WalletRuntime {
         let stored: StoredFederation = serde_json::from_str(&encoded)
             .with_context(|| format!("could not parse {}", config_path.display()))?;
         stored.validate()?;
-        Self::build(data_dir, stored).await.map(Some)
+        Self::build(data_dir, stored, WalletTransport::default())
+            .await
+            .map(Some)
     }
 
     pub async fn join(data_dir: &Path, source: JoinSource) -> Result<Self> {
         fs::create_dir_all(data_dir)?;
         secure_directory(data_dir)?;
+        let transport = WalletTransport::default();
 
         let (public_config, discovery_mint_url) = match source {
             JoinSource::ConfigPath(path) => {
@@ -133,7 +140,7 @@ impl WalletRuntime {
             }
             JoinSource::Invite(invite) => (FederationInvite::from_str(&invite)?.config, None),
             JoinSource::MintUrl(mint_url) => {
-                let public_config = discover_public_config(&mint_url).await?;
+                let public_config = discover_public_config(&mint_url, &transport).await?;
                 (public_config, Some(mint_url))
             }
         };
@@ -157,12 +164,16 @@ impl WalletRuntime {
         };
         stored.validate()?;
 
-        let runtime = Self::build(data_dir, stored.clone()).await?;
+        let runtime = Self::build(data_dir, stored.clone(), transport).await?;
         persist_config(data_dir, &stored)?;
         Ok(runtime)
     }
 
-    async fn build(data_dir: &Path, stored: StoredFederation) -> Result<Self> {
+    async fn build(
+        data_dir: &Path,
+        stored: StoredFederation,
+        transport: WalletTransport,
+    ) -> Result<Self> {
         let seed = load_or_create_seed(data_dir)?;
         let database = WalletSqliteDatabase::new(data_dir.join(DATABASE_FILE)).await?;
         let localstore: Arc<dyn WalletDatabase<cdk_database::Error> + Send + Sync> =
@@ -184,10 +195,12 @@ impl WalletRuntime {
             mint_quote_visibility_retry_delay: Duration::from_millis(100),
             ..FederatedMintConnectorConfig::default()
         };
-        let connector = FederatedMintConnector::from_validated_public_config_urls_with_config(
-            stored.public_config.clone(),
-            connector_config,
-        )?;
+        let connector =
+            FederatedMintConnector::from_validated_public_config_urls_with_transport_and_config(
+                stored.public_config.clone(),
+                transport.clone(),
+                connector_config,
+            )?;
         let wallet = WalletBuilder::new()
             .mint_url(stored.local_mint_url.clone())
             .unit(CurrencyUnit::Sat)
@@ -204,12 +217,13 @@ impl WalletRuntime {
             stored,
             payment_capabilities,
             data_dir: data_dir.to_path_buf(),
+            transport,
         })
     }
 
     pub async fn switch_primary(&self, new_local_mint_url: MintUrl) -> Result<Self> {
         let stored = self.stored.with_primary(new_local_mint_url)?;
-        let runtime = Self::build(&self.data_dir, stored.clone()).await?;
+        let runtime = Self::build(&self.data_dir, stored.clone(), self.transport.clone()).await?;
         persist_config(&self.data_dir, &stored)?;
         Ok(runtime)
     }
@@ -233,32 +247,33 @@ impl WalletRuntime {
     pub fn payment_capabilities(&self) -> PaymentCapabilities {
         self.payment_capabilities
     }
+
+    pub fn transport(&self) -> WalletTransport {
+        self.transport.clone()
+    }
 }
 
-async fn discover_public_config(mint_url: &MintUrl) -> Result<FederationConfig> {
-    let client = reqwest::Client::builder()
-        .redirect(Policy::none())
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .build()?;
+async fn discover_public_config(
+    mint_url: &MintUrl,
+    transport: &WalletTransport,
+) -> Result<FederationConfig> {
     let config_url = mint_url.join_paths(&["federation", "v1", "config"])?;
-    let public_config: FederationConfig = fetch_json(&client, &config_url).await?;
+    let public_config: FederationConfig = fetch_json(transport, config_url).await?;
     let info_url = mint_url.join_paths(&["v1", "info"])?;
-    let mint_info: MintInfo = fetch_json(&client, &info_url).await?;
+    let mint_info: MintInfo = fetch_json(transport, info_url).await?;
     validate_discovered_public_config(mint_url, public_config, &mint_info)
 }
 
-async fn fetch_json<T>(client: &reqwest::Client, url: &reqwest::Url) -> Result<T>
+async fn fetch_json<T>(transport: &WalletTransport, url: url::Url) -> Result<T>
 where
     T: DeserializeOwned,
 {
-    let response = client
-        .get(url.as_str())
-        .send()
+    let response = transport
+        .http_get_raw(url.clone(), None)
         .await
         .with_context(|| format!("could not fetch {url}"))?;
     let status = response.status();
-    if !status.is_success() {
+    if !response.is_success() {
         bail!("GET {url} returned HTTP {status}");
     }
     response

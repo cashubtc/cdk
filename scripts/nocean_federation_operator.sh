@@ -21,6 +21,7 @@ source "$ENV_FILE"
 : "${THRESHOLD:?THRESHOLD is required}"
 : "${NETWORK:?NETWORK is required}"
 : "${PUBLIC_MINT_URL:?PUBLIC_MINT_URL is required}"
+: "${HTTP_ENABLED:?HTTP_ENABLED is required}"
 : "${FEDERATION_API_URL:?FEDERATION_API_URL is required}"
 : "${COORDINATOR_URL:?COORDINATOR_URL is required}"
 : "${LISTEN_ADDR:?LISTEN_ADDR is required}"
@@ -64,12 +65,19 @@ validate_environment() {
     ((THRESHOLD <= MEMBERS)) || die "THRESHOLD exceeds member count"
     [[ "$NETWORK" =~ ^(bitcoin|testnet|signet|regtest)$ ]] \
         || die "NETWORK is unsupported"
-    [[ "$PUBLIC_MINT_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
-        || die "PUBLIC_MINT_URL must be a credential-free HTTPS URL"
+    [[ "$HTTP_ENABLED" == "true" || "$HTTP_ENABLED" == "false" ]] \
+        || die "HTTP_ENABLED must be true or false"
     [[ "$FEDERATION_API_URL" =~ ^iroh://[a-z0-9]+$ ]] \
         || die "FEDERATION_API_URL must be a canonical Iroh endpoint URL"
     [[ "$COORDINATOR_URL" =~ ^iroh://[a-z0-9]+$ ]] \
         || die "COORDINATOR_URL must be a canonical Iroh endpoint URL"
+    if [[ "$HTTP_ENABLED" == "false" ]]; then
+        [[ "$PUBLIC_MINT_URL" == "$FEDERATION_API_URL" ]] \
+            || die "an Iroh-only public mint URL must equal its federation endpoint"
+    else
+        [[ "$PUBLIC_MINT_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
+            || die "HTTP public mint URL must be credential-free HTTPS"
+    fi
     [[ "$ESPLORA_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
         || die "ESPLORA_URL must be a credential-free HTTPS URL"
     [[ "$CHAIN_SOURCE_ID" =~ ^[A-Za-z0-9._-]+$ ]] \
@@ -130,7 +138,7 @@ generate_runtime_config() {
     cat >"$RUNTIME_CONFIG" <<EOF
 [info]
 url = "$PUBLIC_MINT_URL"
-http_enabled = true
+http_enabled = $HTTP_ENABLED
 listen_host = "127.0.0.1"
 listen_port = $LISTEN_PORT
 seed = "$seed"
@@ -489,6 +497,15 @@ runtime_status() {
         --require-no-invalid-operation-alerts
 }
 
+http_listener_disabled() {
+    [[ "$HTTP_ENABLED" == "false" ]] \
+        || die "HTTP listener check requires HTTP_ENABLED=false"
+    if curl --silent --output /dev/null --max-time 2 --noproxy '*' \
+        "http://$LISTEN_ADDR/v1/info"; then
+        die "configured HTTP listener is unexpectedly reachable"
+    fi
+}
+
 service_metrics() {
     local pid sample
     tmux has-session -t "$TMUX_SESSION" 2>/dev/null || die "operator tmux session is missing"
@@ -519,7 +536,8 @@ case "${1:-}" in
     review-proposal-hash) review_proposal_hash "${2:?label required}" ;;
     public-config-hash) public_config_hash ;;
     runtime-status) runtime_status ;;
+    http-listener-disabled) http_listener_disabled ;;
     service-metrics) service_metrics ;;
     session-layout) session_layout ;;
-    *) die "usage: $0 {validate|idle|session-init|session-run-wait|service-start|service-stop|service-stopped|status-json|proposal-hash|review-proposal-hash|public-config-hash|runtime-status|service-metrics|session-layout}" ;;
+    *) die "usage: $0 {validate|idle|session-init|session-run-wait|service-start|service-stop|service-stopped|status-json|proposal-hash|review-proposal-hash|public-config-hash|runtime-status|http-listener-disabled|service-metrics|session-layout}" ;;
 esac

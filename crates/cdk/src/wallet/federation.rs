@@ -21,7 +21,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use futures::FutureExt;
 
 use super::performance::{record_wallet_performance_stage, WalletPerformanceStage};
-use super::{AuthWallet, HttpClient, MintConnector};
+use super::{AuthWallet, BaseHttpClient, HttpClient, HttpTransport, MintConnector};
 use crate::nuts::nut01::{
     aggregate_blind_signature_shares, batch_verify_blind_signature_shares,
     verify_blind_signature_share, BlsBlindSignatureShare,
@@ -347,6 +347,44 @@ impl FederatedMintConnector {
                     Arc::new(
                         HttpClient::new(member.public_mint_url.clone(), None)
                             .with_preserved_error_responses(),
+                    ) as Arc<dyn MintConnector + Send + Sync>,
+                )
+            })
+            .collect();
+        Self::new_with_validated_config_and_member_cache(
+            public_config,
+            member_connectors,
+            config,
+            true,
+        )
+    }
+
+    /// Create a wallet connector from validated member URLs and one shared transport.
+    ///
+    /// Applications that configure a runtime-owned transport should use this
+    /// constructor so discovery, member requests, authentication, and WebSocket
+    /// connections reuse the same transport resources.
+    pub fn from_validated_public_config_urls_with_transport_and_config<T>(
+        public_config: FederationConfig,
+        transport: T,
+        config: FederatedMintConnectorConfig,
+    ) -> Result<Self, Error>
+    where
+        T: HttpTransport + 'static,
+    {
+        let member_connectors = public_config
+            .members
+            .iter()
+            .map(|(member_id, member)| {
+                (
+                    *member_id,
+                    Arc::new(
+                        BaseHttpClient::with_transport(
+                            member.public_mint_url.clone(),
+                            transport.clone(),
+                            None,
+                        )
+                        .with_preserved_error_responses(),
                     ) as Arc<dyn MintConnector + Send + Sync>,
                 )
             })

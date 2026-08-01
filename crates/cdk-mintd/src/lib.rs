@@ -184,20 +184,21 @@ async fn federation_setup_transport(args: &CLIArgs) -> Result<cdk_axum::Federati
 #[cfg(feature = "federation")]
 async fn federation_setup_server_transport(
     args: &CLIArgs,
-) -> Result<cdk_axum::FederationTransport> {
+) -> Result<(cdk_axum::FederationTransport, bool)> {
     #[cfg(feature = "iroh")]
     {
         let (work_dir, settings) = federation_transport_settings(args).await?;
         let runtime = iroh_runtime::initialize(&settings, &work_dir).await?;
-        Ok(match runtime {
+        let transport = match runtime {
             Some(runtime) => cdk_axum::federation_transport_with_iroh_node(runtime.node),
             None => cdk_axum::default_federation_transport(),
-        })
+        };
+        Ok((transport, settings.info.http_enabled))
     }
     #[cfg(not(feature = "iroh"))]
     {
         let _ = args;
-        Ok(cdk_axum::default_federation_transport())
+        Ok((cdk_axum::default_federation_transport(), true))
     }
 }
 

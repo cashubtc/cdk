@@ -8,6 +8,7 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 OPERATOR_HOSTS_CSV="${OPERATOR_HOSTS_CSV:-nocean,nocean,nocean,nocean,nocean}"
 REMOTE_ROOT="${REMOTE_ROOT:-cdk-federation-iroh-multi-operator}"
 PUBLIC_BASE_DOMAIN="${PUBLIC_BASE_DOMAIN:-nocean.xyz}"
+PUBLIC_TRANSPORT="${PUBLIC_TRANSPORT:-iroh}"
 NETWORK="${NETWORK:-signet}"
 ESPLORA_URL="${ESPLORA_URL:-https://esplora.signet.2nd.dev/}"
 CHAIN_SOURCE_ID="${CHAIN_SOURCE_ID:-2nddev-signet-esplora}"
@@ -51,9 +52,9 @@ usage() {
     cat <<'EOF'
 Deploy and exercise the invitation-based five-operator federation setup UX on
 one Nocean server. Every operator uses a separate protected directory and named
-tmux session. Public mint traffic keeps the five HTTPS DNS subdomains; setup,
-DKG, consensus, checkpoint, catch-up, and operator traffic use persistent Iroh
-endpoints. Identities and private configuration are generated only inside each
+tmux session. Public wallet traffic, setup, DKG, consensus, checkpoint,
+catch-up, and operator traffic all use persistent Iroh endpoints. HTTP is
+disabled. Identities and private configuration are generated only inside each
 operator environment. All DKG services start concurrently.
 
 Usage:
@@ -73,7 +74,7 @@ Important overrides:
   STOP_PRIOR_MULTI_OPERATOR_SESSIONS
                             Stop PRIOR_SESSION_PREFIX-op-1..5 before startup.
   PRIOR_SESSION_PREFIX     Previous operator session prefix to stop.
-  PUBLIC_BASE_DOMAIN       Preconfigured public TLS base domain.
+  PUBLIC_TRANSPORT         Must be iroh for this all-Iroh drill.
   BARK_REPO_ROOT           Sibling checkout needed for Cargo path resolution.
   REPORT_FILE              Local redacted JSON drill report.
 EOF
@@ -122,7 +123,11 @@ operator_dir() {
 }
 
 public_mint_url() {
-    printf 'https://cdk-%s.%s' "$1" "$PUBLIC_BASE_DOMAIN"
+    if [[ "$PUBLIC_TRANSPORT" == "iroh" ]]; then
+        federation_api_url "$1"
+    else
+        printf 'https://cdk-%s.%s' "$1" "$PUBLIC_BASE_DOMAIN"
+    fi
 }
 
 federation_api_url() {
@@ -217,20 +222,19 @@ service_all() {
     ((failed == 0)) || die "one or more operator services failed to $verb"
 }
 
-wait_for_https() {
-    local url="$1" expectation="$2" deadline code
+wait_for_public_member() {
+    local member="$1" expectation="$2" deadline
     deadline=$((SECONDS + STATUS_TIMEOUT_SECS))
     while ((SECONDS < deadline)); do
-        code="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "$url" || true)"
-        if [[ "$expectation" == "ready" && ("$code" == "200" || "$code" == "401") ]]; then
-            return 0
-        fi
-        if [[ "$expectation" == "down" && "$code" != "200" && "$code" != "401" ]]; then
+        if remote_wallet 1 probe-url "$(public_mint_url "$member")" "$member" \
+            >/dev/null 2>&1; then
+            [[ "$expectation" == "ready" ]] && return 0
+        elif [[ "$expectation" == "down" ]]; then
             return 0
         fi
         sleep "$STATUS_POLL_SECS"
     done
-    die "HTTPS endpoint did not become $expectation before the timeout"
+    die "Iroh public member $member did not become $expectation before the timeout"
 }
 
 wait_for_setup_service() {
@@ -246,17 +250,15 @@ wait_for_setup_service() {
 }
 
 wait_for_public_runtime() {
-    local deadline member ready code
+    local deadline member ready
     deadline=$((SECONDS + STATUS_TIMEOUT_SECS))
     while ((SECONDS < deadline)); do
         ready=0
         for member in $(seq 1 "$MEMBERS"); do
-            code="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 8 \
-                "$(public_mint_url "$member")/v1/info" || true)"
-            [[ "$code" == "200" ]] || continue
-            code="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 8 \
-                "$(public_mint_url "$member")/federation/v1/config" || true)"
-            [[ "$code" == "200" ]] && ready=$((ready + 1))
+            if remote_wallet 1 probe-url "$(public_mint_url "$member")" "$member" \
+                >/dev/null 2>&1; then
+                ready=$((ready + 1))
+            fi
         done
         if ((ready == MEMBERS)); then
             return 0
@@ -301,6 +303,11 @@ write_operator_env() {
         printf 'ESPLORA_URL=%q\n' "$ESPLORA_URL"
         printf 'CHAIN_SOURCE_ID=%q\n' "$CHAIN_SOURCE_ID"
         printf 'PUBLIC_MINT_URL=%q\n' "$(public_mint_url "$member")"
+        if [[ "$PUBLIC_TRANSPORT" == "iroh" ]]; then
+            printf 'HTTP_ENABLED=false\n'
+        else
+            printf 'HTTP_ENABLED=true\n'
+        fi
         printf 'FEDERATION_API_URL=%q\n' "$(federation_api_url "$member")"
         printf 'COORDINATOR_URL=%q\n' "$(federation_api_url 1)"
         printf 'LISTEN_ADDR=%q\n' "127.0.0.1:$listen_port"
@@ -341,18 +348,24 @@ build_linux_binaries() {
                 --features sqlite,info-page,federation,iroh,prometheus
             cargo build --locked --release -p cdk-cli \
                 --no-default-features --features federation
+            cargo build --locked --release \
+                --manifest-path scripts/fed-cdk-tui/Cargo.toml
             "$CARGO_TARGET_DIR/release/cdk-mintd" federation setup create --help >/dev/null
             "$CARGO_TARGET_DIR/release/cdk-cli" federation add --help >/dev/null
+            "$CARGO_TARGET_DIR/release/fed-cdk-tui" check --help >/dev/null
         '
 }
 
 install_operators() {
     local mintd="$BUILD_TARGET_DIR/release/cdk-mintd"
     local cli="$BUILD_TARGET_DIR/release/cdk-cli"
-    local mintd_hash cli_hash member host dir env_file command iroh_url
-    [[ -x "$mintd" && -x "$cli" ]] || die "Linux build did not produce both binaries"
+    local tui="$BUILD_TARGET_DIR/release/fed-cdk-tui"
+    local mintd_hash cli_hash tui_hash member host dir env_file command iroh_url
+    [[ -x "$mintd" && -x "$cli" && -x "$tui" ]] \
+        || die "Linux build did not produce every required binary"
     mintd_hash="$(sha256_file "$mintd")"
     cli_hash="$(sha256_file "$cli")"
+    tui_hash="$(sha256_file "$tui")"
     for member in $(seq 1 "$MEMBERS"); do
         host="$(member_host "$member")"
         dir="$(operator_dir "$member")"
@@ -370,6 +383,20 @@ install_operators() {
                 "$dir/bin/cdk-mintd.upload" "$mintd_hash" \
                 "$dir/bin/cdk-mintd.upload" "$dir/bin/cdk-mintd.upload" "$dir/bin/cdk-mintd"
             ssh "${SSH_OPTIONS[@]}" "$host" "$command"
+        fi
+        if ((member == 1)); then
+            printf -v command \
+                'test -x %q && test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q' \
+                "$dir/bin/fed-cdk-tui" "$dir/bin/fed-cdk-tui" "$tui_hash"
+            if ! ssh "${SSH_OPTIONS[@]}" "$host" "$command"; then
+                scp_retry "$tui" "$host:$dir/bin/fed-cdk-tui.upload"
+                printf -v command \
+                    'test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q && chmod 755 %q && mv %q %q' \
+                    "$dir/bin/fed-cdk-tui.upload" "$tui_hash" \
+                    "$dir/bin/fed-cdk-tui.upload" "$dir/bin/fed-cdk-tui.upload" \
+                    "$dir/bin/fed-cdk-tui"
+                ssh "${SSH_OPTIONS[@]}" "$host" "$command"
+            fi
         fi
         printf -v command \
             'set -eu; cd %q; mkdir -p work; chmod 700 work; bin/cdk-mintd --work-dir work iroh init' \
@@ -525,12 +552,27 @@ verify_public_config() {
     setup_authorization="$(jq -r '.setup_authorization' "$public_copy")"
     [[ -n "$setup_authorization" && "$setup_authorization" != "null" ]] \
         || die "public config has no setup authorization"
+    jq -e '.members | to_entries | all(
+        .value.public_mint_url | startswith("iroh://")
+    )' "$public_copy" >/dev/null \
+        || die "public config contains a non-Iroh wallet URL"
+    jq -e '.members | to_entries | all(
+        .value.public_mint_url == .value.federation_api_url
+    )' "$public_copy" >/dev/null \
+        || die "public and private member routes do not use the same Iroh endpoint"
 }
 
 verify_runtime_consensus() {
     local member
     for member in $(seq 1 "$MEMBERS"); do
         remote_operator "$member" runtime-status >/dev/null
+    done
+}
+
+verify_http_listeners_disabled() {
+    local member
+    for member in $(seq 1 "$MEMBERS"); do
+        remote_operator "$member" http-listener-disabled
     done
 }
 
@@ -552,6 +594,10 @@ write_report() {
     local revision source_dirty remaining_limit total_seconds
     revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
     if [[ -z "$(git -C "$REPO_ROOT" status --porcelain -- \
+        crates/cdk-mintd/src/federation_setup_command.rs \
+        crates/cdk-mintd/src/lib.rs \
+        crates/cdk/src/wallet/federation.rs \
+        scripts/fed-cdk-tui \
         scripts/deploy_nocean_multi_operator_federation.sh \
         scripts/nocean_federation_operator.sh \
         scripts/nocean_federation_wallet_smoke.sh)" ]]; then
@@ -573,7 +619,7 @@ write_report() {
         --argjson members "$MEMBERS" \
         --argjson threshold "$THRESHOLD" \
         --argjson unique_machines "$unique_machine_count" \
-        --arg tls_model "public HTTPS DNS reverse proxy; private federation and setup over authenticated Iroh N0" \
+        --arg tls_model "public wallet, setup, DKG, and private federation traffic over authenticated Iroh N0; HTTP disabled" \
         --arg proposal_hash "$proposal_hash" \
         --arg manifest_hash "$manifest_hash" \
         --arg setup_authorization "$setup_authorization" \
@@ -599,6 +645,10 @@ write_report() {
                 independent_operator_directories: true,
                 independent_operator_tmux_sessions: true,
                 tls_model: $tls_model,
+                public_wallet_transport: "iroh",
+                public_http_enabled: false,
+                setup_and_dkg_http_enabled: false,
+                configured_tcp_listener_absence_verified: true,
                 private_federation_transport: "iroh",
                 private_https_or_dns_required: false
             },
@@ -629,8 +679,8 @@ write_report() {
                 encrypted_operator_local_backup_restore: true
             },
             wallet_smoke: {
-                federation_import: true,
-                threshold_mint_info: true,
+                federation_import_over_iroh: true,
+                threshold_mint_info_over_iroh: true,
                 empty_balance: true,
                 paid_operation: false
             },
@@ -680,6 +730,8 @@ done
 [[ "/$REMOTE_ROOT/" != *"/../"* ]] || die "REMOTE_ROOT must not contain '..'"
 [[ "$PUBLIC_BASE_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] \
     || die "PUBLIC_BASE_DOMAIN contains unsupported characters"
+[[ "$PUBLIC_TRANSPORT" == "iroh" ]] \
+    || die "PUBLIC_TRANSPORT must be iroh for the all-Iroh deployment"
 [[ "$SESSION_PREFIX" =~ ^[A-Za-z0-9._-]+$ ]] || die "SESSION_PREFIX is invalid"
 [[ "$WALLET_SESSION" =~ ^[A-Za-z0-9._-]+$ ]] || die "WALLET_SESSION is invalid"
 [[ "$PRIOR_SESSION_PREFIX" =~ ^[A-Za-z0-9._-]+$ ]] \
@@ -708,6 +760,7 @@ printf 'Exercising incomplete pre-certification setup...\n'
 run_operator_action 1 failed create
 remote_operator 1 service-start failed setup
 wait_for_setup_service 1 failed
+remote_operator 1 http-listener-disabled
 for member in 2 3 4; do
     transfer_invitation failed "$member"
 done
@@ -720,6 +773,7 @@ printf 'Running the ordinary five-operator setup transcript...\n'
 run_operator_action 1 active create
 remote_operator 1 service-start active setup
 wait_for_setup_service 1 active
+remote_operator 1 http-listener-disabled
 for member in 2 3 4 5; do
     transfer_invitation active "$member"
 done
@@ -765,6 +819,7 @@ done
 sample_dkg_resources
 collect_dkg_evidence
 dkg_seconds=$((SECONDS - dkg_started_at))
+verify_http_listeners_disabled
 
 printf 'Activating identical final configs locally and starting runtimes...\n'
 service_all stop
@@ -773,13 +828,14 @@ verify_public_config
 service_all start active runtime
 wait_for_public_runtime
 verify_runtime_consensus
+verify_http_listeners_disabled
 
 printf 'Running the normal federation wallet smoke in its own tmux session...\n'
 remote_wallet 1 session-run-wait smoke
 
 printf 'Exercising a one-member outage and catch-up...\n'
 remote_operator 5 service-stop
-wait_for_https "$(public_mint_url 5)/v1/info" down
+wait_for_public_member 5 down
 remote_wallet 1 session-run-wait offline-operation
 remote_operator 5 service-start active runtime
 deadline=$((SECONDS + STATUS_TIMEOUT_SECS))
