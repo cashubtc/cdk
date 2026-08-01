@@ -21,6 +21,10 @@ headers and bodies, supervised shutdown, redacted errors, tracing, and
 bounded-cardinality metrics. The outbound pool is also bounded and reclaims
 closed entries before admitting a new peer key.
 
+Default hybrid client transports lazily share one process-wide ephemeral Iroh
+endpoint and connection pool. Backend runtimes that own a persistent identity
+should construct one `IrohNode` and pass clones through `IrohTransport::with_node`.
+
 For ticket-only local operation, construct a server node, export its standard
 ticket, and install the ticket in the client configuration:
 

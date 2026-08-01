@@ -21,14 +21,24 @@ use crate::wallet::{AuthMintConnector, AuthWallet};
 use crate::OidcClient;
 
 pub mod http_client;
+#[cfg(all(test, feature = "iroh", not(target_arch = "wasm32")))]
+mod iroh_tests;
 pub mod transport;
 
 use transport::RateLimitedTransport;
 pub use transport::{RateLimitConfig, RateLimiterManager, TokenBucket};
 
-/// Auth HTTP Client with async transport
+/// Auth HTTP Client with hybrid HTTP(S)/Iroh transport.
+#[cfg(all(feature = "iroh", not(target_arch = "wasm32")))]
+pub type AuthHttpClient = http_client::AuthHttpClient<transport::IrohTransport<transport::Async>>;
+/// Auth HTTP Client with async HTTP(S) transport.
+#[cfg(not(all(feature = "iroh", not(target_arch = "wasm32"))))]
 pub type AuthHttpClient = http_client::AuthHttpClient<transport::Async>;
-/// Default Http Client with async transport (non-Tor)
+/// Default HTTP client with hybrid HTTP(S)/Iroh transport.
+#[cfg(all(feature = "iroh", not(target_arch = "wasm32")))]
+pub type HttpClient = http_client::HttpClient<transport::IrohTransport<transport::Async>>;
+/// Default HTTP client with async HTTP(S) transport (non-Tor).
+#[cfg(not(all(feature = "iroh", not(target_arch = "wasm32"))))]
 pub type HttpClient = http_client::HttpClient<transport::Async>;
 /// Rate-limited HTTP Client with async transport
 pub type RateLimitedHttpClient = http_client::HttpClient<RateLimitedTransport<transport::Async>>;

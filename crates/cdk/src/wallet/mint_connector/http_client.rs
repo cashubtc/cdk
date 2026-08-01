@@ -1247,7 +1247,6 @@ mod tests {
             Ok(())
         }
 
-        #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
         async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, HttpError> {
             Ok(vec![])
         }

@@ -1,6 +1,6 @@
 //! Hybrid CDK transport with explicit URL-scheme dispatch.
 
-use std::{fmt, sync::Arc};
+use std::fmt;
 
 use async_trait::async_trait;
 use cashu::nuts::nut22::AuthToken;
@@ -11,22 +11,28 @@ use url::Url;
 
 use crate::{client::decode_json, Error, IrohClient, IrohConfig, IrohNode};
 
+static DEFAULT_NODE: OnceCell<IrohNode> = OnceCell::const_new();
+
+#[derive(Clone)]
+enum NodeSource {
+    ProcessDefault,
+    Runtime(IrohNode),
+}
+
 /// Hybrid transport which delegates HTTP(S) unchanged and routes only `iroh` URLs to Iroh.
 #[derive(Clone)]
 pub struct IrohTransport<H = cdk_http_client::Async> {
     inner: H,
-    node: Arc<OnceCell<IrohNode>>,
+    node: NodeSource,
     default_config: IrohConfig,
 }
 
 impl<H> IrohTransport<H> {
     /// Creates a hybrid transport from a runtime-owned Iroh node and HTTP transport.
     pub fn with_node(node: IrohNode, inner: H) -> Self {
-        let cell = OnceCell::new();
-        let _ = cell.set(node);
         Self {
             inner,
-            node: Arc::new(cell),
+            node: NodeSource::Runtime(node),
             default_config: IrohConfig::default(),
         }
     }
@@ -37,11 +43,14 @@ impl<H> IrohTransport<H> {
     }
 
     async fn iroh_client(&self) -> Result<IrohClient, Error> {
-        let node = self
-            .node
-            .get_or_try_init(|| IrohNode::ephemeral(self.default_config.clone()))
-            .await?;
-        Ok(IrohClient::new(node.clone()))
+        let node = match &self.node {
+            NodeSource::ProcessDefault => DEFAULT_NODE
+                .get_or_try_init(|| IrohNode::ephemeral(self.default_config.clone()))
+                .await?
+                .clone(),
+            NodeSource::Runtime(node) => node.clone(),
+        };
+        Ok(IrohClient::new(node))
     }
 }
 
@@ -52,7 +61,7 @@ where
     fn default() -> Self {
         Self {
             inner: H::default(),
-            node: Arc::new(OnceCell::new()),
+            node: NodeSource::ProcessDefault,
             default_config: IrohConfig::default(),
         }
     }
@@ -65,7 +74,20 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("IrohTransport")
             .field("inner", &self.inner)
-            .field("iroh_endpoint_initialized", &self.node.initialized())
+            .field(
+                "iroh_endpoint_source",
+                &match self.node {
+                    NodeSource::ProcessDefault => "process-default",
+                    NodeSource::Runtime(_) => "runtime",
+                },
+            )
+            .field(
+                "iroh_endpoint_initialized",
+                &match self.node {
+                    NodeSource::ProcessDefault => DEFAULT_NODE.initialized(),
+                    NodeSource::Runtime(_) => true,
+                },
+            )
             .field("default_config", &self.default_config)
             .finish()
     }
@@ -234,5 +256,24 @@ where
             }
             .into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn default_transports_share_one_process_endpoint() {
+        let first = IrohTransport::<cdk_http_client::Async>::default();
+        let second = IrohTransport::<cdk_http_client::Async>::default();
+
+        let first_client = first.iroh_client().await.expect("first default endpoint");
+        let second_client = second.iroh_client().await.expect("second default endpoint");
+
+        assert_eq!(
+            first_client.node().endpoint_id(),
+            second_client.node().endpoint_id()
+        );
     }
 }

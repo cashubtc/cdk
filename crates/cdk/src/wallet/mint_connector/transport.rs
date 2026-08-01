@@ -231,3 +231,5 @@ mod persistence_tests {
         assert!(start.elapsed() < Duration::from_millis(100));
     }
 }
+#[cfg(all(feature = "iroh", not(target_arch = "wasm32")))]
+pub use cdk_iroh::IrohTransport;

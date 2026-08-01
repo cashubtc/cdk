@@ -774,20 +774,80 @@ not claimed by this standalone milestone. They remain assigned to Milestones
 
 ### Milestone 2 — transparent wallet integration
 
-- [ ] Add feature propagation and the hybrid default wallet transport alias.
-- [ ] Preserve `iroh` in the NUT-17 URL scheme switch.
+- [x] Add feature propagation and the hybrid default wallet transport alias.
+- [x] Preserve `iroh` in the NUT-17 URL scheme switch.
 - [x] Add the generic native WebSocket stream constructor to
   `cdk-http-client`.
-- [ ] Prove one wallet instance can use an HTTPS mint and an Iroh mint in the
+- [x] Prove one wallet application can use an HTTPS mint and an Iroh mint in the
   same process.
-- [ ] Run one reusable `MintConnector` conformance suite unchanged against
+- [x] Run one reusable `MintConnector` conformance suite unchanged against
   HTTP and Iroh, covering every existing connector method and payment-method
   variant, including batch operations, auth, custom methods, NUT-19 retries,
   and NUT-17 subscriptions. Do not maintain a second Iroh endpoint list.
-- [ ] Prove an Iroh connection error does not attempt HTTPS fallback.
+- [x] Prove an Iroh connection error does not attempt HTTPS fallback.
 
 **Gate:** No production endpoint method changes, and a test-only future route
 is reachable automatically through the bridge.
+
+**Progress:** complete in the Milestone 2 commit. The native `cdk/iroh`
+feature selects `HttpClient<IrohTransport<Async>>` and the matching auth alias;
+without that feature the aliases remain exactly `HttpClient<Async>`. The
+hybrid transport now has one process-shared lazy default client endpoint, so
+ordinary independently constructed wallet connectors do not create separate
+random identities or pools. Runtime-owned nodes remain injectable and are
+clone-shared explicitly. Browser/WASM builds reject `iroh` clearly, while a
+wallet build without the feature resolves no Iroh packages. `iroh` and `tor`
+compile together and the explicit Tor aliases remain independent.
+
+CDK's `Wallet` type is intentionally bound to one mint URL. The original
+"one wallet instance" checklist wording is therefore clarified above to the
+actual invariant: one wallet application and one hybrid transport runtime can
+serve ordinary mint-bound connectors for HTTPS and Iroh concurrently, without
+different connector APIs or types. The test uses one clone-shared hybrid
+transport for both mint URLs.
+
+NUT-17 URL construction is now one fallible helper: `https` becomes `wss`,
+`http` becomes `ws`, `iroh` remains `iroh`, and every other scheme returns
+`NotSupported`. The existing subscription state machine and polling fallback
+are unchanged. The generic caller-stream WebSocket wrapper remains the only
+shared HTTP-client addition.
+
+One reusable conformance runner executes the existing generic `HttpClient<T>`
+against HTTPS dispatch and live in-process Iroh using the same synthetic Axum
+router. It covers every `MintConnector` and auth-connector method, Bolt11,
+Bolt12, onchain, and custom mint/melt variants, quote status, batch check and
+batch mint, auth headers, NUT-19 retry, OIDC construction, LNURL and DNS
+delegation, NUT-17 WebSocket framing, and wallet auth state. HTTPS behavior is
+tested at the generic dispatch boundary with a fixture inner transport that
+forwards to the loopback router; TLS behavior itself remains owned by the
+unchanged existing HTTP transport. A path present only in the fixture router
+works over Iroh, proving there is no second endpoint table. Closing a ticketed
+endpoint before a request produces an Iroh error and zero inner HTTPS requests.
+
+Verification evidence:
+
+- `cargo test -p cdk --no-default-features --features wallet,iroh --lib
+  --offline` passes all 335 tests, including the shared HTTPS/Iroh connector
+  conformance runner and NUT-17 scheme policy;
+- the unchanged default `cargo test -p cdk --lib --offline` passes all 542
+  tests;
+- `cargo test -p cdk-iroh --offline` passes two unit tests, three bridge tests,
+  nine transport conformance tests, and doc tests; the added unit test proves
+  independent defaults share one process endpoint;
+- strict Clippy passes for the changed production libraries and the Iroh
+  wallet tests. The test-target command needs a narrow allowance for the
+  pre-existing `manual_is_multiple_of` warning in `cdk-sql-common` on the newer
+  host Clippy; this milestone does not modify that unrelated crate;
+- `cargo check -p cdk --no-default-features --features wallet,iroh,tor
+  --offline` passes;
+- `cargo tree -p cdk --no-default-features --features wallet` contains no Iroh
+  package;
+- an official Linux Rust 1.91 container passes the native Iroh-enabled wallet
+  check with the locked dependency graph; and
+- after installing only the WASM standard library and `clang` in that
+  disposable container, the feature-disabled `wasm32-unknown-unknown` wallet
+  check passes. Enabling `iroh` on the same target fails at CDK's explicit
+  compile-time policy message, before CDK attempts to compile Iroh code.
 
 ### Milestone 3 — mint listener and operator configuration
 

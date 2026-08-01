@@ -12,11 +12,18 @@ The core implementation of the Cashu protocol for building wallets and mints. It
 
 The following crate feature flags are available:
 
-| Feature     | Default | Description                        |
-|-------------|:-------:|------------------------------------|
-| `wallet`    |   Yes   | Enable cashu wallet features       |
-| `mint`      |   Yes   | Enable cashu mint wallet features  |
-| `auth`      |   Yes   | Enable blind and clear auth  |
+| Feature      | Default | Description                                      |
+|--------------|:-------:|--------------------------------------------------|
+| `wallet`     |   Yes   | Enable Cashu wallet features                     |
+| `mint`       |   Yes   | Enable Cashu mint features                       |
+| `nostr`      |   Yes   | Enable Nostr wallet integration                  |
+| `bip353`     |   Yes   | Enable BIP-353 DNS resolution                    |
+| `npubcash`   |    No   | Enable npub.cash integration                     |
+| `nwc`        |    No   | Enable Nostr Wallet Connect                      |
+| `tor`        |    No   | Enable the explicit native Tor wallet client     |
+| `iroh`       |    No   | Enable native hybrid HTTP(S)/Iroh wallet routing |
+| `prometheus` |    No   | Enable Prometheus metrics                        |
+| `federation` |    No   | Enable federation support                        |
 
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
@@ -117,20 +124,14 @@ See more examples in the [examples](./examples) folder.
 
 ## Minimum Supported Rust Version (MSRV)
 
-The `cdk` library should always compile with any combination of features on Rust **1.75.0**.
+The workspace MSRV is Rust **1.91.0**. The optional native `iroh` feature uses
+the current stable Iroh 1.0 API and is not available on browser/WASM targets.
 
-To build and test with the MSRV you will need to pin the below dependency versions:
+`Cargo.lock` and `Cargo.lock.msrv` are kept byte-identical. Verify the checked-in
+dependency graph with:
 
 ```shell
-    cargo update -p async-compression --precise 0.4.3
-    cargo update -p zstd-sys --precise 2.0.8+zstd.1.5.5
-    cargo update -p flate2 --precise 1.0.35
-    cargo update -p home --precise 0.5.5
-    cargo update -p zerofrom --precise 0.1.5
-    cargo update -p half --precise 2.4.1
-    cargo update -p url --precise 2.5.2
-    # For wasm32-unknown-unknown target
-    cargo update -p triomphe --precise 0.1.11
+cargo check --workspace --all-targets --locked
 ```
 
 ## License

@@ -5,6 +5,10 @@
 #[cfg(all(target_arch = "wasm32", feature = "tor"))]
 compile_error!("The 'tor' feature is not supported on wasm32 targets (browser). Disable the 'tor' feature or use a non-wasm32 target.");
 
+// Iroh does not currently support CDK's browser/WASM target.
+#[cfg(all(target_arch = "wasm32", feature = "iroh"))]
+compile_error!("The 'iroh' feature is not supported on wasm32 targets (browser). Disable the 'iroh' feature or use a native target.");
+
 pub mod cdk_database {
     //! CDK Database
     pub use cdk_common::database::Error;
