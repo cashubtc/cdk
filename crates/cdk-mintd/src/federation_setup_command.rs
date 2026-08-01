@@ -5,6 +5,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 #[cfg(feature = "sqlite")]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "sqlite")]
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -28,7 +30,10 @@ use cdk_common::federation::{
     FEDERATION_SETUP_MAX_INVITATION_LIFETIME_SECS, FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
 };
 #[cfg(feature = "sqlite")]
-use cdk_common::federation::{FederationDkgCeremonyRecord, FederationDkgCeremonyState};
+use cdk_common::federation::{
+    FederationConfigDigest, FederationDkgCeremonyRecord, FederationDkgCeremonyState,
+    FederationDkgFinalizedMemberConfig, FederationSetupActivation,
+};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::SecretKey;
 #[cfg(feature = "sqlite")]
@@ -41,10 +46,18 @@ use crate::federation_files::{
     write_private_text_file,
 };
 
-const LOCAL_SETUP_CONFIG_VERSION: u16 = 2;
+const LOCAL_SETUP_CONFIG_VERSION: u16 = 3;
 const LOCAL_SETUP_SECRETS_FILE: &str = "federation-setup-secrets.json";
 const LOCAL_SETUP_MANIFEST_FILE: &str = "federation-setup-manifest.json";
 const LOCAL_SETUP_INVITATION_DIRECTORY: &str = "invitations";
+const LOCAL_SETUP_ACTIVATION_DIRECTORY: &str = "activated";
+#[cfg(feature = "sqlite")]
+const FINAL_PUBLIC_CONFIG_FILE: &str = "federation-public.json";
+#[cfg(feature = "sqlite")]
+const FINAL_PRIVATE_CONFIG_FILE: &str = "federation-private.json";
+
+#[cfg(feature = "sqlite")]
+static FINAL_CONFIG_EXPORT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "sqlite")]
 pub(crate) async fn run_setup_command(args: &cli::FederationSetupArgs) -> Result<()> {
@@ -214,24 +227,15 @@ pub(crate) async fn run_setup_command(args: &cli::FederationSetupArgs) -> Result
             let status = setup_status(&args.config).await?;
             match args.json {
                 true => println!("{}", serde_json::to_string_pretty(&status)?),
-                false => {
-                    println!("setup_id: {}", status.setup_id);
-                    println!(
-                        "phase: {}",
-                        coordinator_phase_label(status.coordinator_phase)
-                    );
-                    println!(
-                        "enrollments: {}/{}",
-                        status.enrolled_members.len(),
-                        status.member_count
-                    );
-                    println!(
-                        "approvals: {}/{}",
-                        status.approved_members.len(),
-                        status.member_count
-                    );
-                }
+                false => print_setup_status(&status),
             }
+        }
+        cli::FederationSetupCommand::Activate(args) => {
+            eprintln!(
+                "Before using real funds, create and verify an encrypted backup of this member's setup state, database, and activated private config."
+            );
+            let result = activate_setup(&args.config, current_unix_time()?).await?;
+            print_activation_result(&result);
         }
     }
     Ok(())
@@ -341,16 +345,7 @@ async fn serve_certified_dkg(config_path: &Path, listen: std::net::SocketAddr) -
             .await
             .context("failed to open certified DKG database")?,
     );
-    let runtime_config = cdk::mint::FederationRuntimeConfig::new(
-        handoff.public_config.clone(),
-        handoff.private_config.clone(),
-    )
-    .context("invalid certified DKG runtime config")?;
-    let mint = cdk::mint::MintBuilder::new(database.clone())
-        .with_federation_config(runtime_config)
-        .build_with_seed(database.clone(), &handoff.runtime_seed)
-        .await
-        .context("failed to build setup-only DKG member")?;
+    let mint = build_certified_dkg_mint(database.clone(), &handoff).await?;
     let driver = cdk_axum::FederationDkgDriverRunConfig {
         max_ticks: 1_200,
         retry_delay: std::time::Duration::from_millis(250),
@@ -391,6 +386,40 @@ async fn serve_certified_dkg(config_path: &Path, listen: std::net::SocketAddr) -
 }
 
 #[cfg(feature = "sqlite")]
+async fn build_certified_dkg_mint(
+    database: Arc<cdk_sqlite::MintSqliteDatabase>,
+    handoff: &FederationSetupDkgHandoff,
+) -> Result<cdk::mint::Mint> {
+    let runtime_config = cdk::mint::FederationRuntimeConfig::new(
+        handoff.public_config.clone(),
+        handoff.private_config.clone(),
+    )
+    .context("invalid certified DKG runtime config")?;
+    let [keyset_spec] = handoff.manifest.keyset_specs() else {
+        bail!("setup-only DKG requires exactly one manifest keyset policy");
+    };
+    let mut builder = cdk::mint::MintBuilder::new(database).with_federation_config(runtime_config);
+    builder
+        .configure_unit(
+            keyset_spec.unit.clone(),
+            cdk::mint::UnitConfig {
+                amounts: keyset_spec.amounts.iter().copied().map(u64::from).collect(),
+                input_fee_ppk: keyset_spec.input_fee_ppk,
+            },
+        )
+        .context("failed to configure isolated setup-only signatory")?;
+    let isolated_keystore = Arc::new(
+        cdk_sqlite::mint::memory::empty()
+            .await
+            .context("failed to create isolated setup-only keystore")?,
+    );
+    builder
+        .build_with_seed(isolated_keystore, &handoff.runtime_seed)
+        .await
+        .context("failed to build setup-only DKG member")
+}
+
+#[cfg(feature = "sqlite")]
 async fn register_manifest_dkg_ceremony(
     database: &cdk_common::database::DynMintDatabase,
     handoff: &FederationSetupDkgHandoff,
@@ -427,13 +456,27 @@ async fn register_manifest_dkg_ceremony(
                 "certified DKG lifecycle does not match the local manifest, identity, or keyset policy"
             );
         }
-        return Ok(());
+        return ensure_setup_dkg_running(database, handoff.manifest.proposal.body.setup_id).await;
     }
     if !records.is_empty() {
         bail!(
             "local DKG lifecycle belongs to a different certified manifest; start the new setup with independent state"
         );
     }
+    let session = database
+        .get_federation_setup_session(handoff.manifest.proposal.body.setup_id)
+        .await
+        .context("failed to read certified setup lifecycle")?
+        .ok_or_else(|| anyhow!("certified setup lifecycle is missing"))?;
+    if session.participant_phase != FederationSetupParticipantPhase::Certified {
+        bail!("new certified DKG can start only from the certified setup phase");
+    }
+    let running = session
+        .with_participant_phase(
+            FederationSetupParticipantPhase::DkgRunning,
+            current_unix_time()?,
+        )
+        .context("failed to start local DKG lifecycle")?;
     let mut transaction = database
         .begin_transaction()
         .await
@@ -443,70 +486,725 @@ async fn register_manifest_dkg_ceremony(
         .await
         .context("failed to register certified DKG lifecycle")?;
     transaction
+        .transition_federation_setup_session(&session, &running)
+        .await
+        .context("failed to persist local DKG lifecycle")?;
+    transaction
         .commit()
         .await
         .context("failed to commit certified DKG lifecycle")
 }
 
 #[cfg(feature = "sqlite")]
-async fn setup_status(config_path: &Path) -> Result<cdk_common::federation::FederationSetupStatus> {
+async fn ensure_setup_dkg_running(
+    database: &cdk_common::database::DynMintDatabase,
+    setup_id: FederationSetupId,
+) -> Result<()> {
+    let session = database
+        .get_federation_setup_session(setup_id)
+        .await
+        .context("failed to read resumed setup lifecycle")?
+        .ok_or_else(|| anyhow!("resumed setup lifecycle is missing"))?;
+    match session.participant_phase {
+        FederationSetupParticipantPhase::Certified => {
+            let running = session
+                .with_participant_phase(
+                    FederationSetupParticipantPhase::DkgRunning,
+                    current_unix_time()?,
+                )
+                .context("failed to resume local DKG lifecycle")?;
+            let mut transaction = database
+                .begin_transaction()
+                .await
+                .context("failed to begin resumed DKG lifecycle transaction")?;
+            transaction
+                .transition_federation_setup_session(&session, &running)
+                .await
+                .context("failed to persist resumed DKG lifecycle")?;
+            transaction
+                .commit()
+                .await
+                .context("failed to commit resumed DKG lifecycle")
+        }
+        FederationSetupParticipantPhase::DkgRunning
+        | FederationSetupParticipantPhase::ReadyToActivate
+        | FederationSetupParticipantPhase::Activated => Ok(()),
+        _ => bail!("persisted DKG lifecycle conflicts with the local setup phase"),
+    }
+}
+
+#[cfg(feature = "sqlite")]
+async fn setup_status(config_path: &Path) -> Result<FederationSetupCommandStatus> {
     let now_unix = current_unix_time()?;
     let (config, secrets) = load_local_state(config_path, now_unix)?;
-    let database = cdk_sqlite::MintSqliteDatabase::new(config.database_path().to_path_buf())
+    let database = Arc::new(
+        cdk_sqlite::MintSqliteDatabase::new(config.database_path().to_path_buf())
+            .await
+            .context("failed to open federation setup database")?,
+    );
+    let manifest = database
+        .get_federation_setup_manifest(config.setup_id)
         .await
-        .context("failed to open federation setup database")?;
-    match config.local_role {
-        FederationSetupLocalRole::Coordinator { .. } => {
-            let draft = config
-                .coordinator
-                .as_ref()
-                .ok_or_else(|| anyhow!("local coordinator policy is missing"))?;
-            let coordinator_secret_key = secrets
-                .coordinator_secret_key
-                .clone()
-                .ok_or_else(|| anyhow!("protected setup coordinator identity is missing"))?;
-            if let Some(manifest) = database
-                .get_federation_setup_manifest(config.setup_id)
-                .await
-                .context("failed to load the local certified setup manifest")?
-            {
-                validate_and_persist_manifest_file(&config, &secrets, &manifest)?;
+        .context("failed to load the local certified setup manifest")?;
+    let bootstrap_status = if let Some(manifest) = manifest.as_ref() {
+        persist_local_manifest(database.as_ref(), &config, &secrets, manifest, now_unix).await?;
+        None
+    } else {
+        match config.local_role {
+            FederationSetupLocalRole::Coordinator { .. } => {
+                let draft = config
+                    .coordinator
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("local coordinator policy is missing"))?;
+                let coordinator_secret_key = secrets
+                    .coordinator_secret_key
+                    .clone()
+                    .ok_or_else(|| anyhow!("protected setup coordinator identity is missing"))?;
+                let dyn_database: cdk_common::database::DynMintDatabase = database.clone();
+                let service = cdk_axum::FederationSetupCoordinatorService::new(
+                    dyn_database,
+                    config.setup_id,
+                    draft.threshold_params.member_count,
+                    coordinator_secret_key,
+                    config.url_policy,
+                    cdk_axum::FederationSetupCoordinatorServiceConfig::default(),
+                )
+                .context("failed to initialize local setup status reader")?;
+                Some(
+                    service
+                        .local_status()
+                        .await
+                        .context("failed to read local setup status")?,
+                )
             }
-            let database: cdk_common::database::DynMintDatabase = Arc::new(database);
-            let service = cdk_axum::FederationSetupCoordinatorService::new(
-                database,
-                config.setup_id,
-                draft.threshold_params.member_count,
-                coordinator_secret_key,
-                config.url_policy,
-                cdk_axum::FederationSetupCoordinatorServiceConfig::default(),
-            )
-            .context("failed to initialize local setup status reader")?;
-            service
-                .local_status()
-                .await
-                .context("failed to read local setup status")
-        }
-        FederationSetupLocalRole::Member { .. } => {
-            let invitation = secrets
-                .invitation
-                .as_ref()
-                .ok_or_else(|| anyhow!("protected joining invitation is missing"))?;
-            let client = cdk_axum::FederationSetupHttpClient::default();
-            let status = client
-                .status(invitation)
-                .await
-                .context("failed to fetch authenticated setup status")?;
-            if status.manifest_hash.is_some() {
-                let manifest = client
-                    .manifest(invitation)
+            FederationSetupLocalRole::Member { .. } => {
+                let invitation = secrets
+                    .invitation
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("protected joining invitation is missing"))?;
+                let client = cdk_axum::FederationSetupHttpClient::default();
+                let status = client
+                    .status(invitation)
                     .await
-                    .context("failed to fetch authenticated certified manifest")?;
-                persist_local_manifest(&database, &config, &secrets, &manifest, now_unix).await?;
+                    .context("failed to fetch authenticated setup status")?;
+                if status.manifest_hash.is_some() {
+                    let manifest = client
+                        .manifest(invitation)
+                        .await
+                        .context("failed to fetch authenticated certified manifest")?;
+                    persist_local_manifest(
+                        database.as_ref(),
+                        &config,
+                        &secrets,
+                        &manifest,
+                        now_unix,
+                    )
+                    .await?;
+                }
+                Some(status)
             }
-            Ok(status)
+        }
+    };
+    build_setup_command_status(database, &config, bootstrap_status, now_unix).await
+}
+
+#[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct FederationSetupCommandStatus {
+    version: u16,
+    setup_id: FederationSetupId,
+    member_id: MemberId,
+    participant_phase: String,
+    coordinator_phase: Option<String>,
+    member_count: u16,
+    enrolled_members: Vec<MemberId>,
+    missing_enrollments: Vec<MemberId>,
+    approved_members: Vec<MemberId>,
+    missing_approvals: Vec<MemberId>,
+    proposal_hash: Option<String>,
+    manifest_hash: Option<String>,
+    dkg: Option<crate::federation_dkg_status::FederationSetupDkgProgress>,
+    activation: Option<FederationSetupActivation>,
+}
+
+#[cfg(feature = "sqlite")]
+async fn build_setup_command_status(
+    database: Arc<cdk_sqlite::MintSqliteDatabase>,
+    config: &FederationSetupLocalConfig,
+    bootstrap_status: Option<cdk_common::federation::FederationSetupStatus>,
+    now_unix: u64,
+) -> Result<FederationSetupCommandStatus> {
+    let manifest = database
+        .get_federation_setup_manifest(config.setup_id)
+        .await
+        .context("failed to read certified manifest for local status")?;
+    let (member_count, enrolled_members, approved_members, proposal_hash, manifest_hash) =
+        match (manifest.as_ref(), bootstrap_status) {
+            (Some(manifest), _) => (
+                manifest.proposal.body.threshold_params.member_count,
+                manifest.proposal.body.enrollments.keys().copied().collect(),
+                manifest.approvals.keys().copied().collect(),
+                Some(manifest.proposal.proposal_hash.to_string()),
+                Some(manifest.manifest_hash.to_string()),
+            ),
+            (None, Some(status)) => (
+                status.member_count,
+                status.enrolled_members,
+                status.approved_members,
+                status.proposal_hash.map(|hash| hash.to_string()),
+                status.manifest_hash.map(|hash| hash.to_string()),
+            ),
+            (None, None) => bail!("setup status has neither bootstrap status nor a manifest"),
+        };
+    let dkg = match manifest.as_ref() {
+        Some(_) => {
+            let handoff = load_certified_dkg_handoff_from_state(config, current_unix_time()?)?;
+            let dyn_database: cdk_common::database::DynMintDatabase = database.clone();
+            let records =
+                crate::federation_dkg_status::read_database_records_from_database(&dyn_database)
+                    .await?;
+            let mut progress = records.progress(&handoff.public_config, &handoff.private_config);
+            if progress.finalized_ready {
+                let mut finalized = records
+                    .finalized_member_config(&handoff.public_config, &handoff.private_config)?;
+                crate::federation_dkg_status::attach_manifest_frost_applications(
+                    &mut finalized,
+                    records.frost_roots()?,
+                    &handoff.manifest,
+                )?;
+                validate_manifest_finalized_config(&handoff, &finalized)?;
+                progress.final_config_digest = Some(
+                    finalized
+                        .public_config
+                        .config_digest_for_validated_config()?
+                        .to_string(),
+                );
+            }
+            Some(progress)
+        }
+        None => None,
+    };
+    let mut session = require_local_session(database.as_ref(), config).await?;
+    if dkg
+        .as_ref()
+        .is_some_and(|progress| progress.finalized_ready)
+        && session.participant_phase == FederationSetupParticipantPhase::DkgRunning
+    {
+        let ready = session
+            .with_participant_phase(FederationSetupParticipantPhase::ReadyToActivate, now_unix)
+            .context("failed to advance completed DKG lifecycle")?;
+        let mut transaction = Database::begin_transaction(database.as_ref())
+            .await
+            .context("failed to begin DKG-ready setup transaction")?;
+        transaction
+            .transition_federation_setup_session(&session, &ready)
+            .await
+            .context("failed to persist DKG-ready setup phase")?;
+        transaction
+            .commit()
+            .await
+            .context("failed to commit DKG-ready setup phase")?;
+        session = ready;
+    }
+    let activation = database
+        .get_federation_setup_activations(config.setup_id)
+        .await
+        .context("failed to read local setup activation")?
+        .into_iter()
+        .find(|activation| activation.member_id == config.local_role.member_id());
+    let all_members = (1..=member_count)
+        .map(|member| MemberId::new(member).context("invalid setup status member ID"))
+        .collect::<Result<Vec<_>>>()?;
+    let missing_enrollments = all_members
+        .iter()
+        .filter(|member| !enrolled_members.contains(member))
+        .copied()
+        .collect();
+    let missing_approvals = all_members
+        .iter()
+        .filter(|member| !approved_members.contains(member))
+        .copied()
+        .collect();
+    Ok(FederationSetupCommandStatus {
+        version: 1,
+        setup_id: config.setup_id,
+        member_id: config.local_role.member_id(),
+        participant_phase: participant_phase_label(session.participant_phase).to_string(),
+        coordinator_phase: session
+            .coordinator_phase
+            .map(coordinator_phase_label)
+            .map(str::to_string),
+        member_count,
+        enrolled_members,
+        missing_enrollments,
+        approved_members,
+        missing_approvals,
+        proposal_hash,
+        manifest_hash,
+        dkg,
+        activation,
+    })
+}
+
+#[cfg(feature = "sqlite")]
+fn print_setup_status(status: &FederationSetupCommandStatus) {
+    println!("setup_id: {}", status.setup_id);
+    println!("member_id: {}", status.member_id);
+    println!("participant_phase: {}", status.participant_phase);
+    if let Some(phase) = status.coordinator_phase.as_deref() {
+        println!("coordinator_phase: {phase}");
+    }
+    println!(
+        "enrollments: {}/{} missing={}",
+        status.enrolled_members.len(),
+        status.member_count,
+        display_setup_members(&status.missing_enrollments)
+    );
+    println!(
+        "approvals: {}/{} missing={}",
+        status.approved_members.len(),
+        status.member_count,
+        display_setup_members(&status.missing_approvals)
+    );
+    if let Some(dkg) = status.dkg.as_ref() {
+        println!(
+            "dkg_phase: {} commitments={} reveals={} shares={} transcript_signatures={} final_confirmations={}/{} frost_roots={} finalized_ready={}",
+            dkg.phase,
+            dkg.commitments,
+            dkg.reveals,
+            dkg.secret_share_contributions,
+            dkg.transcript_signatures,
+            dkg.final_config_confirmations,
+            status.member_count,
+            dkg.frost_root_public_configs,
+            dkg.finalized_ready
+        );
+        if let Some(digest) = dkg.final_config_digest.as_deref() {
+            println!("final_config_digest: {digest}");
         }
     }
+    println!("activated: {}", status.activation.is_some());
+}
+
+#[cfg(feature = "sqlite")]
+fn display_setup_members(members: &[MemberId]) -> String {
+    match members {
+        [] => "none".to_string(),
+        members => members
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+    }
+}
+
+#[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FederationSetupActivationResult {
+    setup_id: FederationSetupId,
+    member_id: MemberId,
+    federation_id: cdk_common::federation::FederationId,
+    final_config_digest: FederationConfigDigest,
+    public_config_path: PathBuf,
+    private_config_path: PathBuf,
+}
+
+#[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FinalConfigExportFault {
+    None,
+    #[cfg(test)]
+    FailPublicWrite,
+}
+
+#[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SetupActivationFault {
+    None,
+    #[cfg(test)]
+    BeforeDatabaseCommit,
+}
+
+#[cfg(feature = "sqlite")]
+async fn activate_setup(
+    config_path: &Path,
+    now_unix: u64,
+) -> Result<FederationSetupActivationResult> {
+    activate_setup_with_faults(
+        config_path,
+        now_unix,
+        FinalConfigExportFault::None,
+        SetupActivationFault::None,
+    )
+    .await
+}
+
+#[cfg(feature = "sqlite")]
+async fn activate_setup_with_faults(
+    config_path: &Path,
+    now_unix: u64,
+    export_fault: FinalConfigExportFault,
+    activation_fault: SetupActivationFault,
+) -> Result<FederationSetupActivationResult> {
+    let config = read_local_config(config_path)?;
+    let handoff = load_certified_dkg_handoff_from_state(&config, now_unix)?;
+    let database = Arc::new(
+        cdk_sqlite::MintSqliteDatabase::new(config.database_path().to_path_buf())
+            .await
+            .context("failed to open setup database for activation")?,
+    );
+    let dyn_database: cdk_common::database::DynMintDatabase = database.clone();
+    let records =
+        crate::federation_dkg_status::read_database_records_from_database(&dyn_database).await?;
+    let progress = records.progress(&handoff.public_config, &handoff.private_config);
+    if !progress.finalized_ready {
+        bail!(
+            "federation setup cannot activate before DKG and all final-config confirmations are complete"
+        );
+    }
+    let mut finalized = records
+        .finalized_member_config(&handoff.public_config, &handoff.private_config)
+        .context("failed to assemble confirmed final federation config")?;
+    crate::federation_dkg_status::attach_manifest_frost_applications(
+        &mut finalized,
+        records.frost_roots()?,
+        &handoff.manifest,
+    )
+    .context("failed to attach the manifest-authorized FROST applications")?;
+    validate_manifest_finalized_config(&handoff, &finalized)?;
+    let final_config_digest = finalized
+        .public_config
+        .config_digest_for_validated_config()
+        .context("failed to digest final federation config")?;
+    let (public_config_path, private_config_path) =
+        publish_final_config_pair(config.activation_dir(), &finalized, export_fault).await?;
+
+    let existing = database
+        .get_federation_setup_activations(config.setup_id)
+        .await
+        .context("failed to read existing local activation")?
+        .into_iter()
+        .find(|activation| activation.member_id == config.local_role.member_id());
+    if let Some(existing) = existing {
+        validate_existing_activation(&existing, &handoff, final_config_digest)?;
+        let session = require_local_session(database.as_ref(), &config).await?;
+        if session.participant_phase != FederationSetupParticipantPhase::Activated {
+            bail!("durable setup activation conflicts with the local lifecycle");
+        }
+        return Ok(FederationSetupActivationResult {
+            setup_id: existing.setup_id,
+            member_id: existing.member_id,
+            federation_id: existing.federation_id,
+            final_config_digest: existing.final_config_digest,
+            public_config_path,
+            private_config_path,
+        });
+    }
+
+    let mut session = require_local_session(database.as_ref(), &config).await?;
+    if session.participant_phase == FederationSetupParticipantPhase::DkgRunning {
+        let ready = session
+            .with_participant_phase(FederationSetupParticipantPhase::ReadyToActivate, now_unix)
+            .context("failed to advance final setup lifecycle")?;
+        let mut transaction = Database::begin_transaction(database.as_ref())
+            .await
+            .context("failed to begin ready-to-activate transaction")?;
+        transaction
+            .transition_federation_setup_session(&session, &ready)
+            .await
+            .context("failed to persist ready-to-activate phase")?;
+        transaction
+            .commit()
+            .await
+            .context("failed to commit ready-to-activate phase")?;
+        session = ready;
+    }
+    if session.participant_phase != FederationSetupParticipantPhase::ReadyToActivate {
+        bail!("local setup lifecycle is not ready for explicit activation");
+    }
+    let activation = FederationSetupActivation {
+        version: cdk_common::federation::FEDERATION_SETUP_PROTOCOL_VERSION,
+        setup_id: config.setup_id,
+        member_id: config.local_role.member_id(),
+        manifest_hash: handoff.manifest.manifest_hash,
+        setup_authorization: handoff.public_config.setup_authorization,
+        federation_id: finalized.public_config.federation_id,
+        final_config_digest,
+        activated_at_unix: now_unix,
+    };
+    let activated = session
+        .with_participant_phase(FederationSetupParticipantPhase::Activated, now_unix)
+        .context("failed to construct local activation lifecycle")?;
+    let mut transaction = Database::begin_transaction(database.as_ref())
+        .await
+        .context("failed to begin local activation transaction")?;
+    transaction
+        .activate_federation_setup(&session, &activated, &activation)
+        .await
+        .context("failed to persist local setup activation")?;
+    #[cfg(test)]
+    if activation_fault == SetupActivationFault::BeforeDatabaseCommit {
+        transaction
+            .rollback()
+            .await
+            .context("failed to roll back interrupted activation")?;
+        bail!("simulated interruption before activation commit");
+    }
+    #[cfg(not(test))]
+    let _ = activation_fault;
+    transaction
+        .commit()
+        .await
+        .context("failed to commit local setup activation")?;
+    Ok(FederationSetupActivationResult {
+        setup_id: activation.setup_id,
+        member_id: activation.member_id,
+        federation_id: activation.federation_id,
+        final_config_digest: activation.final_config_digest,
+        public_config_path,
+        private_config_path,
+    })
+}
+
+#[cfg(feature = "sqlite")]
+fn validate_manifest_finalized_config(
+    handoff: &FederationSetupDkgHandoff,
+    finalized: &FederationDkgFinalizedMemberConfig,
+) -> Result<()> {
+    finalized.public_config.validate()?;
+    finalized
+        .private_config
+        .validate_against_public(&finalized.public_config)?;
+    if finalized.private_config.member_id != handoff.private_config.member_id
+        || finalized.public_config.setup_authorization != handoff.public_config.setup_authorization
+    {
+        bail!("final federation config does not match the certified local setup identity");
+    }
+    let mut setup = finalized.public_config.clone();
+    setup.keysets.clear();
+    setup.setup_transcript = None;
+    setup.frost_wallet = None;
+    if setup != handoff.public_config {
+        bail!("final federation config does not extend the certified manifest config");
+    }
+    let transcript = finalized
+        .public_config
+        .setup_transcript
+        .as_ref()
+        .ok_or_else(|| anyhow!("final federation config is missing its DKG transcript"))?;
+    let expected_ceremony = handoff
+        .manifest
+        .ceremony_id()
+        .context("invalid manifest-derived ceremony ID")?;
+    if !transcript
+        .payload
+        .ceremonies
+        .iter()
+        .any(|ceremony| ceremony.ceremony_id() == expected_ceremony)
+    {
+        bail!("final federation transcript omits the manifest-derived ceremony");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn validate_existing_activation(
+    activation: &FederationSetupActivation,
+    handoff: &FederationSetupDkgHandoff,
+    final_config_digest: FederationConfigDigest,
+) -> Result<()> {
+    activation.validate()?;
+    if activation.setup_id != handoff.manifest.proposal.body.setup_id
+        || activation.member_id != handoff.private_config.member_id
+        || activation.manifest_hash != handoff.manifest.manifest_hash
+        || activation.setup_authorization != handoff.public_config.setup_authorization
+        || activation.federation_id != handoff.public_config.federation_id
+        || activation.final_config_digest != final_config_digest
+    {
+        bail!("durable local activation does not match the exact finalized setup config");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn publish_final_config_pair(
+    activation_dir: &Path,
+    finalized: &FederationDkgFinalizedMemberConfig,
+    fault: FinalConfigExportFault,
+) -> Result<(PathBuf, PathBuf)> {
+    #[cfg(not(test))]
+    let _ = fault;
+    if activation_dir.exists() {
+        validate_activation_directory(activation_dir)?;
+        validate_published_final_config_pair(activation_dir, finalized)?;
+        return Ok((
+            activation_dir.join(FINAL_PUBLIC_CONFIG_FILE),
+            activation_dir.join(FINAL_PRIVATE_CONFIG_FILE),
+        ));
+    }
+    let parent = activation_dir
+        .parent()
+        .ok_or_else(|| anyhow!("activated config directory has no parent"))?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create {}", parent.display()))?;
+    let directory_name = activation_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("activated");
+    let staging_dir = parent.join(format!(
+        ".{directory_name}.{}.{}.tmp",
+        std::process::id(),
+        FINAL_CONFIG_EXPORT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&staging_dir)
+        .with_context(|| format!("failed to create {}", staging_dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::set_permissions(&staging_dir, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("failed to protect {}", staging_dir.display()))?;
+    }
+    let public_path = staging_dir.join(FINAL_PUBLIC_CONFIG_FILE);
+    let private_path = staging_dir.join(FINAL_PRIVATE_CONFIG_FILE);
+    let public_config = finalized.public_config.clone();
+    let private_config = finalized.private_config.clone();
+    let public_task = tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        if fault == FinalConfigExportFault::FailPublicWrite {
+            bail!("simulated final public-config export failure");
+        }
+        crate::federation_dkg_status::write_final_config_file(
+            &public_path,
+            &public_config,
+            false,
+            false,
+        )
+    });
+    let private_task = tokio::task::spawn_blocking(move || {
+        crate::federation_dkg_status::write_final_config_file(
+            &private_path,
+            &private_config,
+            false,
+            true,
+        )
+    });
+    let export_result = tokio::try_join!(public_task, private_task);
+    match export_result {
+        Ok((Ok(()), Ok(()))) => {}
+        Ok((public, private)) => {
+            let _ = std::fs::remove_dir_all(&staging_dir);
+            public.context("failed to export final public config")?;
+            private.context("failed to export final private config")?;
+        }
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&staging_dir);
+            return Err(error).context("final config export task failed");
+        }
+    }
+    if let Err(error) = validate_published_final_config_pair(&staging_dir, finalized) {
+        let _ = std::fs::remove_dir_all(&staging_dir);
+        return Err(error).context("staged final federation config validation failed");
+    }
+    sync_directory(&staging_dir)?;
+    match std::fs::rename(&staging_dir, activation_dir) {
+        Ok(()) => sync_directory(parent)?,
+        Err(error) if activation_dir.exists() => {
+            let _ = std::fs::remove_dir_all(&staging_dir);
+            validate_activation_directory(activation_dir)?;
+            validate_published_final_config_pair(activation_dir, finalized).with_context(|| {
+                format!("concurrent final config publication failed after {error}")
+            })?;
+        }
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&staging_dir);
+            return Err(error).with_context(|| {
+                format!("failed to atomically publish {}", activation_dir.display())
+            });
+        }
+    }
+    validate_activation_directory(activation_dir)?;
+    validate_published_final_config_pair(activation_dir, finalized)?;
+    Ok((
+        activation_dir.join(FINAL_PUBLIC_CONFIG_FILE),
+        activation_dir.join(FINAL_PRIVATE_CONFIG_FILE),
+    ))
+}
+
+#[cfg(feature = "sqlite")]
+fn validate_published_final_config_pair(
+    directory: &Path,
+    finalized: &FederationDkgFinalizedMemberConfig,
+) -> Result<()> {
+    let public_path = directory.join(FINAL_PUBLIC_CONFIG_FILE);
+    let private_path = directory.join(FINAL_PRIVATE_CONFIG_FILE);
+    let public_metadata = std::fs::symlink_metadata(&public_path)
+        .with_context(|| format!("failed to inspect {}", public_path.display()))?;
+    if public_metadata.file_type().is_symlink() || !public_metadata.file_type().is_file() {
+        bail!("activated public federation config must be a regular non-symlink file");
+    }
+    let public: FederationConfig =
+        crate::read_federation_json(&public_path, "activated public federation config")?;
+    let private: MemberConfigPrivate =
+        read_private_json_file(&private_path, "activated private federation config")?;
+    public.validate()?;
+    private.validate_against_public(&public)?;
+    if public != finalized.public_config || private != finalized.private_config {
+        bail!("activated federation config files do not match the exact finalized DKG output");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn sync_directory(directory: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(directory)
+            .with_context(|| format!("failed to open {} for sync", directory.display()))?
+            .sync_all()
+            .with_context(|| format!("failed to sync {}", directory.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = directory;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn validate_activation_directory(directory: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(directory)
+        .with_context(|| format!("failed to inspect {}", directory.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        bail!("activated federation config path must be a regular non-symlink directory");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if metadata.permissions().mode() & 0o077 != 0 {
+            bail!("activated federation config directory allows group or other access");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn print_activation_result(result: &FederationSetupActivationResult) {
+    print!("{}", activation_service_manager_output(result));
+}
+
+#[cfg(feature = "sqlite")]
+fn activation_service_manager_output(result: &FederationSetupActivationResult) -> String {
+    format!(
+        "activated=true\nsetup_id={}\nmember_id={}\nfederation_id={}\nfinal_config_digest={}\nfederation_public_config_path={}\nfederation_private_config_path={}\nfederation_setup_config_path=unset\nfederation_dkg_enabled=false\nservice_restart_required=true\n",
+        result.setup_id,
+        result.member_id,
+        result.federation_id,
+        result.final_config_digest,
+        result.public_config_path.display(),
+        result.private_config_path.display(),
+    )
 }
 
 #[cfg(feature = "sqlite")]
@@ -531,6 +1229,31 @@ where
     {
         if existing != *manifest {
             bail!("local setup is already certified by a different manifest");
+        }
+        let session = require_local_session(database, config).await?;
+        if session.participant_phase == FederationSetupParticipantPhase::Approved {
+            let certified = session
+                .with_participant_phase(FederationSetupParticipantPhase::Certified, now_unix)
+                .context("manifest certification is not legal in the current setup phase")?;
+            let mut transaction = Database::begin_transaction(database)
+                .await
+                .context("failed to begin local manifest replay transaction")?;
+            transaction
+                .store_federation_setup_manifest(&session, &certified, manifest)
+                .await
+                .context("failed to certify the local manifest replay")?;
+            transaction
+                .commit()
+                .await
+                .context("failed to commit the local manifest replay")?;
+        } else if !matches!(
+            session.participant_phase,
+            FederationSetupParticipantPhase::Certified
+                | FederationSetupParticipantPhase::DkgRunning
+                | FederationSetupParticipantPhase::ReadyToActivate
+                | FederationSetupParticipantPhase::Activated
+        ) {
+            bail!("certified manifest conflicts with the local setup lifecycle");
         }
         validate_and_persist_manifest_file(config, secrets, manifest)?;
         return Ok(());
@@ -611,6 +1334,21 @@ const fn coordinator_phase_label(
 }
 
 #[cfg(feature = "sqlite")]
+const fn participant_phase_label(phase: FederationSetupParticipantPhase) -> &'static str {
+    match phase {
+        FederationSetupParticipantPhase::IdentityCreated => "identity_created",
+        FederationSetupParticipantPhase::Enrolled => "enrolled",
+        FederationSetupParticipantPhase::ProposalReviewed => "proposal_reviewed",
+        FederationSetupParticipantPhase::Approved => "approved",
+        FederationSetupParticipantPhase::Certified => "certified",
+        FederationSetupParticipantPhase::DkgRunning => "dkg_running",
+        FederationSetupParticipantPhase::ReadyToActivate => "ready_to_activate",
+        FederationSetupParticipantPhase::Activated => "activated",
+        FederationSetupParticipantPhase::Aborted => "aborted",
+    }
+}
+
+#[cfg(feature = "sqlite")]
 fn parse_mint_url(value: &str, label: &str) -> Result<MintUrl> {
     MintUrl::from_str(value).with_context(|| format!("invalid {label}"))
 }
@@ -676,6 +1414,7 @@ pub(crate) struct FederationSetupLocalConfig {
     database_path: PathBuf,
     secrets_path: PathBuf,
     manifest_path: PathBuf,
+    activation_dir: PathBuf,
     url_policy: FederationSetupUrlPolicy,
     coordinator: Option<FederationSetupCoordinatorDraft>,
 }
@@ -691,6 +1430,11 @@ impl FederationSetupLocalConfig {
 
     pub(crate) fn manifest_path(&self) -> &Path {
         &self.manifest_path
+    }
+
+    #[cfg(feature = "sqlite")]
+    fn activation_dir(&self) -> &Path {
+        &self.activation_dir
     }
 
     fn validate(&self) -> Result<()> {
@@ -958,6 +1702,7 @@ where
         database_path: database_path.to_path_buf(),
         secrets_path: secrets_path.clone(),
         manifest_path,
+        activation_dir: state_directory.join(LOCAL_SETUP_ACTIVATION_DIRECTORY),
         url_policy: spec.url_policy,
         coordinator: Some(draft.clone()),
     };
@@ -1035,6 +1780,7 @@ where
         database_path: database_path.to_path_buf(),
         secrets_path: secrets_path.clone(),
         manifest_path,
+        activation_dir: state_directory.join(LOCAL_SETUP_ACTIVATION_DIRECTORY),
         url_policy,
         coordinator: None,
     };
@@ -1442,16 +2188,23 @@ pub(crate) struct FederationSetupDkgHandoff {
 /// Load and fully validate the locally persisted unanimous setup certificate.
 pub(crate) fn load_certified_dkg_handoff(config_path: &Path) -> Result<FederationSetupDkgHandoff> {
     let config = read_local_config(config_path)?;
+    load_certified_dkg_handoff_from_state(&config, current_unix_time()?)
+}
+
+fn load_certified_dkg_handoff_from_state(
+    config: &FederationSetupLocalConfig,
+    now_unix: u64,
+) -> Result<FederationSetupDkgHandoff> {
     let secrets: FederationSetupLocalSecrets =
         read_private_json_file(&config.secrets_path, "federation setup secrets")?;
-    secrets.validate(&config, current_unix_time()?)?;
+    secrets.validate(config, now_unix)?;
     let manifest: FederationSetupManifest =
         read_private_json_file(config.manifest_path(), "certified setup manifest")
             .context("run `cdk-mintd federation setup status` after certification before DKG")?;
     manifest
         .validate(config.url_policy)
         .context("invalid certified setup manifest")?;
-    validate_proposal_for_local_state(&manifest.proposal, &config, &secrets)?;
+    validate_proposal_for_local_state(&manifest.proposal, config, &secrets)?;
     match manifest.keyset_specs() {
         [_] => {}
         keysets => bail!(
@@ -1743,6 +2496,7 @@ fn local_config_matches(
         && existing.database_path == expected.database_path
         && existing.secrets_path == expected.secrets_path
         && existing.manifest_path == expected.manifest_path
+        && existing.activation_dir == expected.activation_dir
         && existing.url_policy == expected.url_policy
         && existing.coordinator == expected.coordinator
 }

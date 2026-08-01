@@ -17,6 +17,12 @@ use cdk_common::federation::{
     FederationFrostRootPublicConfig, FederationFrostWalletConfig,
     FederationOnchainConfirmationPolicy, MemberConfigPrivate, MemberId,
 };
+#[cfg(feature = "sqlite")]
+use cdk_common::federation::{FederationSetupFrostApplication, FederationSetupManifest};
+#[cfg(feature = "sqlite")]
+use cdk_common::nuts::nut01::PublicKey;
+#[cfg(feature = "sqlite")]
+use serde::Serialize;
 
 use crate::cli::{CLIArgs, FederationDkgStatusArgs};
 
@@ -248,6 +254,61 @@ fn parse_bitcoin_network(value: &str, application: &str) -> Result<bitcoin::Netw
     }
 }
 
+#[cfg(feature = "sqlite")]
+pub(crate) fn attach_manifest_frost_applications(
+    finalized: &mut FederationDkgFinalizedMemberConfig,
+    frost_roots: &[FederationFrostRootPublicConfig],
+    manifest: &FederationSetupManifest,
+) -> Result<()> {
+    manifest.validate(cdk_common::federation::FederationSetupUrlPolicy::AllowInsecureLocalhost)?;
+    let mut cdk_application = None;
+    let mut bark_application = None;
+    for application in &manifest.frost_policy().applications {
+        match application {
+            FederationSetupFrostApplication::CdkOnchain {
+                application_key_epoch,
+                confirmation_policy_version,
+                minimum_confirmations,
+                fee_policy_version,
+            } => {
+                if *confirmation_policy_version != 1 {
+                    bail!("unsupported manifest CDK confirmation policy version");
+                }
+                cdk_application = Some(FrostCdkBootstrap {
+                    network: manifest.proposal.body.network.bitcoin_network(),
+                    minimum_confirmations: *minimum_confirmations,
+                    fee_policy_version: *fee_policy_version,
+                    application_key_epoch: *application_key_epoch,
+                });
+            }
+            FederationSetupFrostApplication::Bark {
+                application_key_epoch,
+                network,
+                ark_server_public_key,
+                policy,
+            } => {
+                let PublicKey::Secp256k1(ark_server_public_key) = ark_server_public_key.as_ref()
+                else {
+                    bail!("manifest Ark server identity is not secp256k1");
+                };
+                bark_application = Some(FrostBarkBootstrap {
+                    network: network.bitcoin_network(),
+                    ark_server_public_key: *ark_server_public_key,
+                    application_key_epoch: *application_key_epoch,
+                    policy: policy.clone(),
+                });
+            }
+        }
+    }
+    let cdk_application = cdk_application
+        .ok_or_else(|| anyhow::anyhow!("manifest omits the required CDK FROST application"))?;
+    attach_initial_frost_cdk_wallet(finalized, frost_roots, cdk_application)?;
+    if let Some(bark_application) = bark_application {
+        attach_initial_frost_bark_application(finalized, bark_application)?;
+    }
+    Ok(())
+}
+
 fn attach_initial_frost_cdk_wallet(
     finalized: &mut FederationDkgFinalizedMemberConfig,
     frost_roots: &[FederationFrostRootPublicConfig],
@@ -319,7 +380,7 @@ fn attach_initial_frost_bark_application(
     Ok(())
 }
 
-fn finalized_member_config(
+pub(crate) fn finalized_member_config(
     public_config: &FederationConfig,
     private_config: &MemberConfigPrivate,
     keyset_shares: &[FederationDkgMemberKeysetShare],
@@ -389,7 +450,12 @@ fn write_finalized_member_config(
     Ok((public_path, private_path))
 }
 
-fn write_final_config_file<T>(path: &Path, value: &T, force: bool, private: bool) -> Result<()>
+pub(crate) fn write_final_config_file<T>(
+    path: &Path,
+    value: &T,
+    force: bool,
+    private: bool,
+) -> Result<()>
 where
     T: serde::Serialize + ?Sized,
 {
@@ -445,6 +511,12 @@ async fn read_database_records(cli_args: &CLIArgs) -> Result<DkgCompletionRecord
         .await
         .context("failed to open mint database for federation DKG status")?;
 
+    read_database_records_from_database(&db).await
+}
+
+pub(crate) async fn read_database_records_from_database(
+    db: &cdk_common::database::DynMintDatabase,
+) -> Result<DkgCompletionRecords> {
     Ok(DkgCompletionRecords {
         participant_states: db
             .get_federation_dkg_participant_states()
@@ -521,7 +593,7 @@ fn apply_database_env_overrides(settings: &mut crate::config::Settings) -> Resul
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct DkgCompletionRecords {
+pub(crate) struct DkgCompletionRecords {
     participant_states: Vec<FederationDkgParticipantState>,
     commitments: Vec<FederationDkgParticipantCommitment>,
     reveals: Vec<FederationDkgParticipantCommitmentReveal>,
@@ -581,6 +653,154 @@ impl DkgCompletionRecords {
             .retain(|root| root.ceremony_id == ceremony_id);
         Ok(selected)
     }
+
+    #[cfg(feature = "sqlite")]
+    pub(crate) fn finalized_member_config(
+        &self,
+        public_config: &FederationConfig,
+        private_config: &MemberConfigPrivate,
+    ) -> Result<FederationDkgFinalizedMemberConfig> {
+        let current = self.records_for_current_ceremony()?;
+        finalized_member_config(
+            public_config,
+            private_config,
+            &current.keyset_shares,
+            &current.transcript_signatures,
+            &current.activations,
+        )
+    }
+
+    #[cfg(feature = "sqlite")]
+    pub(crate) fn frost_roots(&self) -> Result<&[FederationFrostRootPublicConfig]> {
+        if self.ceremonies.is_empty() {
+            return Ok(&self.frost_roots);
+        }
+        let current = self
+            .ceremonies
+            .iter()
+            .filter(|record| record.replacement_ceremony_id.is_none())
+            .filter(|record| record.state != FederationDkgCeremonyState::Aborted)
+            .collect::<Vec<_>>();
+        let [current] = current.as_slice() else {
+            bail!("exactly one current DKG ceremony is required for finalization");
+        };
+        if self
+            .frost_roots
+            .iter()
+            .any(|root| root.ceremony_id != current.ceremony_id)
+        {
+            bail!("persisted FROST roots include a different DKG ceremony");
+        }
+        Ok(&self.frost_roots)
+    }
+
+    #[cfg(feature = "sqlite")]
+    pub(crate) fn progress(
+        &self,
+        public_config: &FederationConfig,
+        private_config: &MemberConfigPrivate,
+    ) -> FederationSetupDkgProgress {
+        let summary = DkgSetupRecordSummary::from_records(self, public_config, private_config);
+        let current = self.records_for_current_ceremony();
+        let confirmed_members = current
+            .as_ref()
+            .map(|records| {
+                records
+                    .activations
+                    .iter()
+                    .map(|activation| activation.signer)
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let confirmation_digests = current
+            .as_ref()
+            .map(|records| {
+                records
+                    .activations
+                    .iter()
+                    .map(|activation| activation.final_config_digest.to_string())
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        let dkg_confirmation_digest = match confirmation_digests.len() {
+            1 => confirmation_digests.iter().next().cloned(),
+            _ => None,
+        };
+        let (finalized_ready, transcript_hash, error) = match current.and_then(|records| {
+            let finalized = finalized_member_config(
+                public_config,
+                private_config,
+                &records.keyset_shares,
+                &records.transcript_signatures,
+                &records.activations,
+            )?;
+            let transcript_hash = finalized
+                .public_config
+                .setup_transcript
+                .as_ref()
+                .map(|transcript| transcript.transcript_hash.to_string());
+            Ok(transcript_hash)
+        }) {
+            Ok(transcript_hash) => (true, transcript_hash, None),
+            Err(err) => (
+                false,
+                None,
+                Some(redact_federation_operator_message(&err.to_string())),
+            ),
+        };
+        let error = if confirmation_digests.len() > 1 {
+            Some("conflicting durable DKG final-config confirmation digests".to_string())
+        } else {
+            error
+        };
+        let phase = summary.driver_phase.map(dkg_driver_phase_label).unwrap_or(
+            if summary.driver_error.is_some() {
+                "invalid"
+            } else {
+                "not_started"
+            },
+        );
+        FederationSetupDkgProgress {
+            phase: phase.to_string(),
+            participant_states: summary.participant_states,
+            commitments: summary.commitments,
+            reveals: summary.reveals,
+            secret_share_contributions: summary.secret_share_contributions,
+            keyset_shares: summary.keyset_shares,
+            transcript_signatures: summary.transcript_signatures,
+            final_config_confirmations: summary.activations,
+            frost_root_public_configs: summary.frost_root_public_configs,
+            confirmed_members,
+            finalized_ready,
+            dkg_confirmation_digest,
+            final_config_digest: None,
+            transcript_hash,
+            error: summary.driver_error.or(error),
+        }
+    }
+}
+
+/// Stable, secret-free local setup view derived from durable DKG records.
+#[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct FederationSetupDkgProgress {
+    pub(crate) phase: String,
+    pub(crate) participant_states: usize,
+    pub(crate) commitments: usize,
+    pub(crate) reveals: usize,
+    pub(crate) secret_share_contributions: usize,
+    pub(crate) keyset_shares: usize,
+    pub(crate) transcript_signatures: usize,
+    pub(crate) final_config_confirmations: usize,
+    pub(crate) frost_root_public_configs: usize,
+    pub(crate) confirmed_members: Vec<MemberId>,
+    pub(crate) finalized_ready: bool,
+    pub(crate) dkg_confirmation_digest: Option<String>,
+    pub(crate) final_config_digest: Option<String>,
+    pub(crate) transcript_hash: Option<String>,
+    pub(crate) error: Option<String>,
 }
 
 fn merge_dkg_records(

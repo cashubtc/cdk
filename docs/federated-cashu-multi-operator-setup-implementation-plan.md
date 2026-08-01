@@ -1,13 +1,15 @@
 # Federated Cashu multi-operator setup implementation plan
 
-> **Status — Milestone 5 complete, 2026-08-01:** The pure setup domain,
+> **Status — Milestone 6 complete, 2026-08-01:** The pure setup domain,
 > durable SQLite/PostgreSQL state, protected local identities and invitations,
 > immutable proposal review, exact-hash approval fence, and bounded setup-only
 > coordinator HTTP service and authenticated client are implemented and
 > verified. DKG now starts only from a locally persisted certified manifest,
 > all BLS/FROST artifacts bind its setup authorization, and member drivers run
-> independently and concurrently. Milestone 6's finalization and explicit
-> activation UX is next.
+> independently and concurrently. Setup status now derives DKG progress from
+> the existing durable records, final config publication is atomic and locally
+> validated, and activation is an explicit idempotent operator action.
+> Milestone 7's removal of the parallel experimental setup paths is next.
 > This document
 > defines the implementation sequence for replacing CDK's file-mediated
 > federation enrollment and roster assembly with an authenticated, restartable
@@ -1036,20 +1038,73 @@ cases.
 
 ### Milestone 6 — Finalization and explicit activation UX
 
-- [ ] Surface existing DKG progress through setup status without duplicating
+- [x] Surface existing DKG progress through setup status without duplicating
   DKG state.
-- [ ] Export public/private final configs concurrently with bounded local jobs,
+- [x] Export public/private final configs concurrently with bounded local jobs,
   then validate every local output against the certified manifest and final
   transcript.
-- [ ] Implement atomic, idempotent local activation and stable service-manager
+- [x] Implement atomic, idempotent local activation and stable service-manager
   output.
-- [ ] Require explicit local activation and remove any setup coordinator
+- [x] Require explicit local activation and remove any setup coordinator
   ability to finalize or restart a remote member.
-- [ ] Add encrypted-backup guidance before real-funds activation.
+- [x] Add encrypted-backup guidance before real-funds activation.
 
 **Tests:** restart before every setup and DKG phase, activation before ready,
 double activation, final-config mismatch, partial export failure, interrupted
 activation transaction, and restart into the exact activated config.
+
+**Completed:** `federation setup status` now returns one stable local read model
+covering setup lifecycle, missing enrollment/approval slots, live DKG phase and
+bounded record counts, confirmed members, the DKG-confirmed BLS digest, the
+complete BLS-plus-FROST final digest, and local activation. After a manifest is
+persisted this status is entirely local and continues to work after the setup
+coordinator is stopped; it reads the existing DKG and FROST tables and stores
+no duplicate progress state. Registering the manifest-derived ceremony now
+atomically advances the participant lifecycle to `dkg_running`, and observing
+complete signed records advances it to `ready_to_activate`.
+
+`federation setup activate --config ...` assembles the final BLS config only
+after every existing DKG activation confirmation is valid, attaches the exact
+manifest-authorized FROST root and applications, revalidates the final public
+and member-private pair against the certificate and transcript, and publishes
+both files through two bounded local jobs into a protected staging directory.
+The complete pair is re-read and validated before one atomic directory rename.
+The secret-free final digest reference and `activated` lifecycle transition are
+then committed in one database transaction. A crash between the filesystem
+rename and database transaction leaves a validated but inactive pair; exact
+replay revalidates it and completes activation. Partial staging output is never
+published, conflicting existing output fails closed, and an exact second
+activation returns the original durable result. Stable key-value stdout tells
+a service manager to use the final public/private paths, unset the setup config,
+disable DKG, and perform a local restart. There is still no HTTP create,
+finalize, activate, or restart route.
+
+The setup-only mint uses an isolated in-memory placeholder signatory because
+the general `Mint` constructor requires an active signatory keyset. Its seed is
+member-local, it never enters the durable mint key store, and the setup router
+still exposes only authenticated DKG routes. Local config format version 3
+adds the fixed activated-config directory without compatibility reads. The
+activation command prints encrypted-backup guidance to stderr before any
+real-funds handoff while keeping stdout stable for service managers.
+
+**Evidence:** the ordinary three-operator HTTP workflow now retires the setup
+coordinator, starts three manifest-derived DKG routers concurrently against
+separate SQLite stores and identities, completes BLS plus FROST, reports local
+readiness, rejects pre-DKG activation, recovers an interrupted activation
+transaction and a partial concurrent export, returns identical double-
+activation output, and restarts into one identical public config plus each
+member's protected private config. The focused finalization/status suite passes
+`19` tests, including atomic-pair mismatch and partial-export cases; the setup
+CLI parser includes the local `activate` command. The all-feature `cdk-mintd`
+check, workspace all-target check, federation-plus-PostgreSQL/no-SQLite feature
+check, targeted formatting, and strict `cdk-mintd` Clippy with only recorded
+pre-existing lint allowances pass. The serial normal-feature suite passes the
+M6 workflow and `227` of `229` total tests; the two remaining startup tests use
+trusted-dealer fixtures without enabling `federation-test-utils` and are now
+correctly rejected by the pre-existing production trusted-dealer guard. Their
+fixture regeneration/removal belongs to Milestone 7. The all-feature CLI parser
+also remains subject to its pre-existing SQLCipher `--password` requirement,
+so the setup parser is verified with the normal `federation` feature profile.
 
 ### Milestone 7 — Remove parallel experimental setup paths
 

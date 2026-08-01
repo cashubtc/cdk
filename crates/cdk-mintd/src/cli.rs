@@ -411,6 +411,8 @@ pub enum FederationSetupCommand {
     Serve(FederationSetupServeArgs),
     /// Show authenticated setup progress and persist a ready manifest.
     Status(FederationSetupStatusArgs),
+    /// Validate, publish, and explicitly activate this member's final config.
+    Activate(FederationSetupActivateArgs),
 }
 
 #[cfg(feature = "federation")]
@@ -571,6 +573,14 @@ pub struct FederationSetupStatusArgs {
     /// Print the stable machine-readable status document.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub json: bool,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationSetupActivateArgs {
+    /// Protected local setup config path.
+    #[arg(long)]
+    pub config: PathBuf,
 }
 
 #[cfg(feature = "federation")]
@@ -1212,6 +1222,15 @@ mod tests {
             "--json",
         ])
         .expect("setup status command parses");
+        CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "setup",
+            "activate",
+            "--config",
+            "operator/setup.json",
+        ])
+        .expect("local setup activation command parses");
         CLIArgs::try_parse_from([
             "cdk-mintd",
             "federation",

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use cdk_common::database::mint::Database;
+use cdk_common::database::mint::{Database, FederationDkgDatabase, FederationFrostWalletDatabase};
 use cdk_common::database::MintFederationSetupDatabase;
 use cdk_common::federation::{
     FederationCheckpointPolicy, FederationDkgKeysetSpec, FederationPaymentObservationPolicy,
@@ -443,6 +443,33 @@ async fn ordinary_http_client_drives_three_independent_operator_stores_to_certif
         .await
         .expect("setup listener");
     let coordinator_address = listener.local_addr().expect("setup address");
+    let creator_dkg_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("creator DKG listener");
+    let member_two_dkg_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("member two DKG listener");
+    let member_three_dkg_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("member three DKG listener");
+    let creator_dkg_url = format!(
+        "http://{}",
+        creator_dkg_listener
+            .local_addr()
+            .expect("creator DKG address")
+    );
+    let member_two_dkg_url = format!(
+        "http://{}",
+        member_two_dkg_listener
+            .local_addr()
+            .expect("member two DKG address")
+    );
+    let member_three_dkg_url = format!(
+        "http://{}",
+        member_three_dkg_listener
+            .local_addr()
+            .expect("member three DKG address")
+    );
     let now = current_unix_time().expect("current time");
     let root = TempDir::new().expect("test directory");
     let creator_dir = root.path().join("creator");
@@ -461,6 +488,7 @@ async fn ordinary_http_client_drives_three_independent_operator_stores_to_certif
     );
     let mut spec = create_spec();
     spec.coordinator_url = mint_url(&format!("http://{coordinator_address}"));
+    spec.federation_api_url = mint_url(&creator_dkg_url);
     let created = create_setup(
         creator_db.as_ref(),
         &creator_config,
@@ -535,7 +563,7 @@ async fn ordinary_http_client_drives_three_independent_operator_stores_to_certif
             &member_two_db_path,
             member_two_invitation,
             mint_url("http://127.0.0.1:8412"),
-            mint_url("http://127.0.0.1:8512"),
+            mint_url(&member_two_dkg_url),
             URL_POLICY,
             now,
         ),
@@ -547,7 +575,7 @@ async fn ordinary_http_client_drives_three_independent_operator_stores_to_certif
             &member_three_db_path,
             member_three_invitation,
             mint_url("http://127.0.0.1:8413"),
-            mint_url("http://127.0.0.1:8513"),
+            mint_url(&member_three_dkg_url),
             URL_POLICY,
             now,
         )
@@ -611,20 +639,20 @@ async fn ordinary_http_client_drives_three_independent_operator_stores_to_certif
         member_two_status
             .expect("member two status")
             .coordinator_phase,
-        cdk_common::federation::FederationSetupCoordinatorPhase::Certified
+        None
     );
     assert_eq!(
         member_three_status
             .expect("member three status")
             .coordinator_phase,
-        cdk_common::federation::FederationSetupCoordinatorPhase::Certified
+        None
     );
     assert_eq!(
         setup_status(&creator_config)
             .await
             .expect("creator status")
             .coordinator_phase,
-        cdk_common::federation::FederationSetupCoordinatorPhase::Certified
+        Some("certified".to_string())
     );
     for (database, config_path) in [
         (&member_two_db, &member_two_config),
@@ -651,7 +679,7 @@ async fn ordinary_http_client_drives_three_independent_operator_stores_to_certif
     server.await.expect("setup server task");
     service.shutdown().await;
 
-    let databases: Vec<cdk_common::database::DynMintDatabase> = vec![
+    let databases: Vec<Arc<MintSqliteDatabase>> = vec![
         creator_db.clone(),
         Arc::new(member_two_db),
         Arc::new(member_three_db),
@@ -662,7 +690,19 @@ async fn ordinary_http_client_drives_three_independent_operator_stores_to_certif
             load_certified_dkg_handoff(config_path).expect("certified manifest DKG handoff")
         })
         .collect::<Vec<_>>();
+
+    for config_path in [&creator_config, &member_two_config, &member_three_config] {
+        let error = activate_setup(config_path, now)
+            .await
+            .expect_err("activation must fail before DKG is complete");
+        assert!(error.to_string().contains("cannot activate before DKG"));
+        let config = read_local_config(config_path).expect("pre-DKG local config");
+        assert!(!config.activation_dir().exists());
+    }
+
+    let mut routers = Vec::new();
     for (handoff, database) in handoffs.iter().zip(&databases) {
+        let dynamic_database: cdk_common::database::DynMintDatabase = database.clone();
         assert_eq!(
             handoff.manifest.proposal.proposal_hash,
             proposal.proposal_hash
@@ -699,7 +739,7 @@ async fn ordinary_http_client_drives_three_independent_operator_stores_to_certif
             auto_start.root_key_epoch(),
             handoff.manifest.frost_policy().root_key_epoch
         );
-        register_manifest_dkg_ceremony(database, handoff, &auto_start)
+        register_manifest_dkg_ceremony(&dynamic_database, handoff, &auto_start)
             .await
             .expect("manifest-derived lifecycle registration");
         let records = database
@@ -713,6 +753,206 @@ async fn ordinary_http_client_drives_three_independent_operator_stores_to_certif
             records[0].setup_authorization,
             auto_start.setup_authorization()
         );
+        let session = database
+            .get_federation_setup_session(created.setup_id)
+            .await
+            .expect("running setup session")
+            .expect("running setup session exists");
+        assert_eq!(
+            session.participant_phase,
+            FederationSetupParticipantPhase::DkgRunning
+        );
+        let mint = build_certified_dkg_mint(database.clone(), handoff)
+            .await
+            .expect("setup-only DKG mint");
+        routers.push(
+            cdk_axum::create_federation_dkg_setup_router(
+                Arc::new(mint),
+                cdk_axum::FederationPeerSyncConfig::default(),
+                cdk_axum::FederationDkgAutoStartConfig::from_manifest(
+                    &handoff.manifest,
+                    handoff.url_policy,
+                    cdk_axum::FederationDkgDriverRunConfig {
+                        max_ticks: 2_000,
+                        retry_delay: std::time::Duration::from_millis(10),
+                        ..cdk_axum::FederationDkgDriverRunConfig::default()
+                    },
+                )
+                .expect("manifest DKG auto-start"),
+            )
+            .await
+            .expect("setup-only DKG router"),
+        );
+    }
+
+    let listeners = [
+        creator_dkg_listener,
+        member_two_dkg_listener,
+        member_three_dkg_listener,
+    ];
+    let mut dkg_shutdown_senders = Vec::new();
+    let mut dkg_servers = Vec::new();
+    for (listener, router) in listeners.into_iter().zip(routers) {
+        let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+        dkg_shutdown_senders.push(shutdown_sender);
+        dkg_servers.push(tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_receiver.await;
+                })
+                .await
+                .expect("DKG server");
+        }));
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let mut all_ready = true;
+            for database in &databases {
+                let ceremonies = database
+                    .get_federation_dkg_ceremonies()
+                    .await
+                    .expect("DKG ceremonies while polling");
+                let activations = database
+                    .get_federation_dkg_activations()
+                    .await
+                    .expect("DKG activations while polling");
+                let frost_roots = database
+                    .get_federation_frost_root_public_configs()
+                    .await
+                    .expect("FROST roots while polling");
+                all_ready &= ceremonies
+                    .iter()
+                    .any(|record| record.state == FederationDkgCeremonyState::Complete)
+                    && activations.len() == 3
+                    && frost_roots.len() == 1;
+            }
+            if all_ready {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("concurrent manifest-derived DKG completion");
+
+    let (creator_status, member_two_status, member_three_status) = tokio::join!(
+        setup_status(&creator_config),
+        setup_status(&member_two_config),
+        setup_status(&member_three_config)
+    );
+    for status in [creator_status, member_two_status, member_three_status] {
+        let status = status.expect("post-DKG setup status");
+        assert_eq!(status.participant_phase, "ready_to_activate");
+        assert!(status.dkg.expect("DKG progress").finalized_ready);
+        assert!(status.activation.is_none());
+    }
+    let activation_now = current_unix_time().expect("activation time") + 1;
+
+    activate_setup_with_faults(
+        &member_two_config,
+        activation_now,
+        FinalConfigExportFault::None,
+        SetupActivationFault::BeforeDatabaseCommit,
+    )
+    .await
+    .expect_err("interrupted activation transaction");
+    assert!(databases[1]
+        .get_federation_setup_activations(created.setup_id)
+        .await
+        .expect("member two interrupted activations")
+        .is_empty());
+    assert_eq!(
+        databases[1]
+            .get_federation_setup_session(created.setup_id)
+            .await
+            .expect("member two interrupted session")
+            .expect("member two interrupted session exists")
+            .participant_phase,
+        FederationSetupParticipantPhase::ReadyToActivate
+    );
+
+    activate_setup_with_faults(
+        &member_three_config,
+        activation_now,
+        FinalConfigExportFault::FailPublicWrite,
+        SetupActivationFault::None,
+    )
+    .await
+    .expect_err("partial final-config export");
+    assert!(!read_local_config(&member_three_config)
+        .expect("member three config")
+        .activation_dir()
+        .exists());
+
+    let creator_activation = activate_setup(&creator_config, activation_now)
+        .await
+        .expect("creator activation");
+    let creator_replay = activate_setup(&creator_config, activation_now + 1)
+        .await
+        .expect("idempotent creator activation replay");
+    assert_eq!(creator_activation, creator_replay);
+    let service_output = activation_service_manager_output(&creator_activation);
+    assert!(service_output.starts_with("activated=true\nsetup_id="));
+    assert!(service_output.contains("\nfederation_setup_config_path=unset\n"));
+    assert!(service_output.ends_with("service_restart_required=true\n"));
+    let (member_two_activation, member_three_activation) = tokio::join!(
+        activate_setup(&member_two_config, activation_now),
+        activate_setup(&member_three_config, activation_now)
+    );
+    let member_two_activation = member_two_activation.expect("member two activation recovery");
+    let member_three_activation =
+        member_three_activation.expect("member three partial-export recovery");
+    assert_eq!(
+        creator_activation.final_config_digest,
+        member_two_activation.final_config_digest
+    );
+    assert_eq!(
+        creator_activation.final_config_digest,
+        member_three_activation.final_config_digest
+    );
+    let creator_public: FederationConfig = crate::read_federation_json(
+        &creator_activation.public_config_path,
+        "restarted creator public config",
+    )
+    .expect("restarted creator public config");
+    let member_two_public: FederationConfig = crate::read_federation_json(
+        &member_two_activation.public_config_path,
+        "restarted member two public config",
+    )
+    .expect("restarted member two public config");
+    let member_three_public: FederationConfig = crate::read_federation_json(
+        &member_three_activation.public_config_path,
+        "restarted member three public config",
+    )
+    .expect("restarted member three public config");
+    assert_eq!(creator_public, member_two_public);
+    assert_eq!(creator_public, member_three_public);
+    for (database, config_path) in
+        databases
+            .iter()
+            .zip([&creator_config, &member_two_config, &member_three_config])
+    {
+        let status = setup_status(config_path)
+            .await
+            .expect("restarted activated setup status");
+        assert_eq!(status.participant_phase, "activated");
+        assert!(status.activation.is_some());
+        assert_eq!(
+            database
+                .get_federation_setup_activations(created.setup_id)
+                .await
+                .expect("durable activation after restart")
+                .len(),
+            1
+        );
+    }
+
+    for sender in dkg_shutdown_senders {
+        let _ = sender.send(());
+    }
+    for server in dkg_servers {
+        server.await.expect("DKG server task");
     }
 }
 

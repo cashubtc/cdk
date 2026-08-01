@@ -643,6 +643,75 @@ fn finalized_dkg_configs_are_exported_with_overwrite_protection() {
     let _ = std::fs::remove_dir_all(&output_dir);
 }
 
+#[tokio::test]
+async fn activated_config_pair_is_atomic_idempotent_and_rejects_mismatch() {
+    let fixture = dkg_completion_fixture(member_id(2));
+    let finalized = FederationDkgFinalizedMemberConfig::from_records(
+        &fixture.setup_public_config,
+        &fixture.setup_private_config,
+        std::slice::from_ref(&fixture.keyset_share),
+        &fixture.transcript_signatures,
+    )
+    .expect("finalized member config");
+    let root = tempfile::TempDir::new().expect("activation directory");
+    let activation_dir = root.path().join("activated");
+
+    let first = crate::federation_setup_command::publish_final_config_pair(
+        &activation_dir,
+        &finalized,
+        crate::federation_setup_command::FinalConfigExportFault::None,
+    )
+    .await
+    .expect("atomic config pair publication");
+    let second = crate::federation_setup_command::publish_final_config_pair(
+        &activation_dir,
+        &finalized,
+        crate::federation_setup_command::FinalConfigExportFault::None,
+    )
+    .await
+    .expect("idempotent config pair publication");
+    assert_eq!(first, second);
+
+    write_final_config_file(&first.0, &fixture.setup_public_config, true, false)
+        .expect("replace public config with mismatched valid setup config");
+    crate::federation_setup_command::publish_final_config_pair(
+        &activation_dir,
+        &finalized,
+        crate::federation_setup_command::FinalConfigExportFault::None,
+    )
+    .await
+    .expect_err("mismatched activated config must fail closed");
+}
+
+#[tokio::test]
+async fn partial_activated_config_export_is_not_published() {
+    let fixture = dkg_completion_fixture(member_id(1));
+    let finalized = FederationDkgFinalizedMemberConfig::from_records(
+        &fixture.setup_public_config,
+        &fixture.setup_private_config,
+        std::slice::from_ref(&fixture.keyset_share),
+        &fixture.transcript_signatures,
+    )
+    .expect("finalized member config");
+    let root = tempfile::TempDir::new().expect("activation directory");
+    let activation_dir = root.path().join("activated");
+
+    crate::federation_setup_command::publish_final_config_pair(
+        &activation_dir,
+        &finalized,
+        crate::federation_setup_command::FinalConfigExportFault::FailPublicWrite,
+    )
+    .await
+    .expect_err("partial export must fail");
+    assert!(!activation_dir.exists());
+    assert_eq!(
+        std::fs::read_dir(root.path())
+            .expect("activation parent")
+            .count(),
+        0
+    );
+}
+
 #[test]
 fn completed_dual_dkg_bootstraps_one_cdk_onchain_application() {
     let fixture = dkg_completion_fixture(member_id(2));
