@@ -21,7 +21,7 @@ use cdk_frost::{
     advance_dkg, finish_dkg, start_dkg, CanonicalRootKeyPackage, DkgRound1Package, DkgRound1Secret,
     DkgRound2Secret, EncryptedSecret, SecretEncryptionKey,
 };
-use cdk_http_client::{Async, HttpError, Transport};
+use cdk_http_client::{HttpError, Transport};
 use futures::future::join_all;
 use futures::{stream, StreamExt};
 use sha2::{Digest, Sha256};
@@ -55,9 +55,9 @@ impl FrostDkgPhase {
 /// Confidentiality policy for dealer-free DKG secret-share delivery.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FederationDkgSecretShareTransportPolicy {
-    /// Require HTTPS for every configured federation member endpoint.
+    /// Require HTTPS or Iroh for every configured federation member endpoint.
     #[default]
-    RequireHttps,
+    RequireSecureTransport,
     /// Permit plain HTTP only for explicit loopback development endpoints.
     AllowInsecureLocalhost,
 }
@@ -92,7 +92,7 @@ impl Default for FederationDkgDriverRunConfig {
             max_ticks: 64,
             retry_delay: Duration::from_secs(1),
             ceremony_timeout: Duration::from_secs(600),
-            secret_share_transport: FederationDkgSecretShareTransportPolicy::RequireHttps,
+            secret_share_transport: FederationDkgSecretShareTransportPolicy::RequireSecureTransport,
             member_request_burst: 16,
             member_request_refill_interval: Duration::from_millis(250),
         }
@@ -132,8 +132,8 @@ impl FederationDkgAutoStartConfig {
             }
         };
         driver.secret_share_transport = match url_policy {
-            FederationSetupUrlPolicy::RequireHttps => {
-                FederationDkgSecretShareTransportPolicy::RequireHttps
+            FederationSetupUrlPolicy::RequireSecureTransport => {
+                FederationDkgSecretShareTransportPolicy::RequireSecureTransport
             }
             FederationSetupUrlPolicy::AllowInsecureLocalhost => {
                 FederationDkgSecretShareTransportPolicy::AllowInsecureLocalhost
@@ -1438,7 +1438,7 @@ pub(crate) async fn run_federation_dkg_driver(
         driver_config.secret_share_transport,
     )?;
     let client = FederationRestPeerClient::new_with_validated_config(
-        Async::default(),
+        state.federation.transport.clone(),
         &public_config,
         private_config,
         sync_config,
@@ -1639,7 +1639,7 @@ fn validate_federation_dkg_secret_share_transport(
         let url = url::Url::parse(&member.federation_api_url.to_string())
             .map_err(|err| cdk::Error::Custom(err.to_string()))?;
         let accepted = match url.scheme() {
-            "https" => true,
+            "https" | "iroh" => true,
             "http" if policy == FederationDkgSecretShareTransportPolicy::AllowInsecureLocalhost => {
                 is_loopback_url(&url)
             }
@@ -1647,7 +1647,7 @@ fn validate_federation_dkg_secret_share_transport(
         };
         if !accepted {
             return Err(cdk::Error::Custom(format!(
-                "federation DKG secret-share transport for member {} requires HTTPS; plain HTTP is allowed only for explicit loopback development mode",
+                "federation DKG secret-share transport for member {} requires HTTPS or Iroh; plain HTTP is allowed only for explicit loopback development mode",
                 member.member_id
             )));
         }
@@ -2182,7 +2182,7 @@ mod tests {
     }
 
     #[test]
-    fn secret_share_transport_requires_https_or_explicit_loopback() {
+    fn secret_share_transport_requires_secure_scheme_or_explicit_loopback() {
         let https = url::Url::parse("https://member.example.com").expect("HTTPS URL");
         let loopback_v4 = url::Url::parse("http://127.0.0.1:8080").expect("IPv4 URL");
         let loopback_v6 = url::Url::parse("http://[::1]:8080").expect("IPv6 URL");
@@ -2200,15 +2200,23 @@ mod tests {
     fn auto_start_transport_policy_fails_closed_before_ceremony() {
         let (https, require_https) = auto_start_config(
             "https://member.example.com",
-            FederationDkgSecretShareTransportPolicy::RequireHttps,
+            FederationDkgSecretShareTransportPolicy::RequireSecureTransport,
         );
         require_https
             .validate_for_public_config(&https)
             .expect("HTTPS is accepted");
 
+        let (iroh, require_secure) = auto_start_config(
+            "iroh://member-endpoint",
+            FederationDkgSecretShareTransportPolicy::RequireSecureTransport,
+        );
+        require_secure
+            .validate_for_public_config(&iroh)
+            .expect("Iroh is accepted");
+
         let (loopback, require_https) = auto_start_config(
             "http://127.0.0.1:8080",
-            FederationDkgSecretShareTransportPolicy::RequireHttps,
+            FederationDkgSecretShareTransportPolicy::RequireSecureTransport,
         );
         assert!(require_https.validate_for_public_config(&loopback).is_err());
         let (_, allow_loopback) = auto_start_config(

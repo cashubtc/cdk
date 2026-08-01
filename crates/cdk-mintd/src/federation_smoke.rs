@@ -27,7 +27,7 @@ use cdk_common::wallet::{
     MeltQuote as WalletMeltQuote, MeltSagaState, WalletSaga, WalletSagaState,
 };
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
-use cdk_http_client::{Async, Transport};
+use cdk_http_client::Transport;
 use futures::stream::{FuturesUnordered, StreamExt};
 
 use crate::cli::{FederationSmokeOperationsArgs, FederationSmokeScenario};
@@ -997,7 +997,7 @@ async fn submit_terminal_melt_payment_observation(
     );
     let sequence = initial_smoke_sequence().saturating_add(1);
     submit_smoke_operation(
-        &Async::default(),
+        &cdk_axum::default_federation_transport(),
         public_config,
         &private_config,
         target_member,
@@ -1114,7 +1114,7 @@ async fn wait_for_ready_members_after_consensus(
     let mut last_ready = 0usize;
     for _ in 0..args.quote_retries {
         match query_local_statuses_prevalidated(
-            Async::default(),
+            cdk_axum::default_federation_transport(),
             public_config,
             &private_config,
             &[],
@@ -1210,7 +1210,7 @@ async fn submit_smoke_operation_to_expected_members(
     let operation_id = envelope.operation_id()?;
     let required = required_member_observations(public_config, member_expectation);
     let sequence_base = initial_smoke_sequence().saturating_add(1);
-    let transport = Async::default();
+    let transport = cdk_axum::default_federation_transport();
     let mut submissions = FuturesUnordered::new();
     for (index, member) in public_config.members.values().enumerate() {
         let sequence_offset =

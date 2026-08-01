@@ -6,9 +6,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
 OPERATOR_HOSTS_CSV="${OPERATOR_HOSTS_CSV:-nocean,nocean,nocean,nocean,nocean}"
-REMOTE_ROOT="${REMOTE_ROOT:-cdk-federation-multi-operator}"
+REMOTE_ROOT="${REMOTE_ROOT:-cdk-federation-iroh-multi-operator}"
 PUBLIC_BASE_DOMAIN="${PUBLIC_BASE_DOMAIN:-nocean.xyz}"
-FEDERATION_DOMAIN_PREFIX="${FEDERATION_DOMAIN_PREFIX:-cdk-fed}"
 NETWORK="${NETWORK:-signet}"
 ESPLORA_URL="${ESPLORA_URL:-https://esplora.signet.2nd.dev/}"
 CHAIN_SOURCE_ID="${CHAIN_SOURCE_ID:-2nddev-signet-esplora}"
@@ -16,10 +15,12 @@ MEMBERS=5
 THRESHOLD="${THRESHOLD:-3}"
 PORT_START="${PORT_START:-21885}"
 PROMETHEUS_PORT_START="${PROMETHEUS_PORT_START:-21985}"
-SESSION_PREFIX="${SESSION_PREFIX:-cdk-fed-operator}"
-WALLET_SESSION="${WALLET_SESSION:-cdk-fed-wallet}"
+SESSION_PREFIX="${SESSION_PREFIX:-cdk-iroh-fed-operator}"
+WALLET_SESSION="${WALLET_SESSION:-cdk-iroh-fed-wallet}"
 REQUIRE_UNIQUE_MACHINES="${REQUIRE_UNIQUE_MACHINES:-1}"
 STOP_LEGACY_SESSION="${STOP_LEGACY_SESSION:-0}"
+STOP_PRIOR_MULTI_OPERATOR_SESSIONS="${STOP_PRIOR_MULTI_OPERATOR_SESSIONS:-0}"
+PRIOR_SESSION_PREFIX="${PRIOR_SESSION_PREFIX:-cdk-fed-operator}"
 STATUS_TIMEOUT_SECS="${STATUS_TIMEOUT_SECS:-1800}"
 STATUS_POLL_SECS="${STATUS_POLL_SECS:-3}"
 ACTION_TIMEOUT_SECS="${ACTION_TIMEOUT_SECS:-300}"
@@ -41,6 +42,7 @@ SSH_OPTIONS=(
     -o ServerAliveCountMax=4
 )
 HOSTS=()
+IROH_URLS=()
 STAGING_DIR=""
 MAX_DKG_TOTAL_RSS_KB=0
 MAX_DKG_MEMBER_RSS_KB=0
@@ -48,9 +50,11 @@ MAX_DKG_MEMBER_RSS_KB=0
 usage() {
     cat <<'EOF'
 Deploy and exercise the invitation-based five-operator federation setup UX on
-Nocean. Every operator uses a separate SSH environment, protected directory,
-and named tmux session. Identities and private configuration are generated only
-inside those sessions. All DKG services start concurrently.
+one Nocean server. Every operator uses a separate protected directory and named
+tmux session. Public mint traffic keeps the five HTTPS DNS subdomains; setup,
+DKG, consensus, checkpoint, catch-up, and operator traffic use persistent Iroh
+endpoints. Identities and private configuration are generated only inside each
+operator environment. All DKG services start concurrently.
 
 Usage:
   OPERATOR_HOSTS_CSV=host1,host2,host3,host4,host5 \
@@ -66,8 +70,10 @@ Important overrides:
   REMOTE_ROOT              Safe relative root created on every operator host.
   REQUIRE_UNIQUE_MACHINES  Minimum distinct /etc/machine-id values (default 1).
   STOP_LEGACY_SESSION      Stop cdk-federation before taking its public ports.
+  STOP_PRIOR_MULTI_OPERATOR_SESSIONS
+                            Stop PRIOR_SESSION_PREFIX-op-1..5 before startup.
+  PRIOR_SESSION_PREFIX     Previous operator session prefix to stop.
   PUBLIC_BASE_DOMAIN       Preconfigured public TLS base domain.
-  FEDERATION_DOMAIN_PREFIX Private federation TLS prefix (default cdk-fed).
   BARK_REPO_ROOT           Sibling checkout needed for Cargo path resolution.
   REPORT_FILE              Local redacted JSON drill report.
 EOF
@@ -120,7 +126,7 @@ public_mint_url() {
 }
 
 federation_api_url() {
-    printf 'https://%s-%s.%s' "$FEDERATION_DOMAIN_PREFIX" "$1" "$PUBLIC_BASE_DOMAIN"
+    printf '%s' "${IROH_URLS[$(($1 - 1))]}"
 }
 
 append_shell_word() {
@@ -227,6 +233,18 @@ wait_for_https() {
     die "HTTPS endpoint did not become $expectation before the timeout"
 }
 
+wait_for_setup_service() {
+    local member="$1" label="$2" deadline
+    deadline=$((SECONDS + STATUS_TIMEOUT_SECS))
+    while ((SECONDS < deadline)); do
+        if remote_operator "$member" status-json "$label" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep "$STATUS_POLL_SECS"
+    done
+    die "authenticated Iroh setup service did not become ready before the timeout"
+}
+
 wait_for_public_runtime() {
     local deadline member ready code
     deadline=$((SECONDS + STATUS_TIMEOUT_SECS))
@@ -320,7 +338,7 @@ build_linux_binaries() {
             export CARGO_TARGET_DIR=/work/target/linux-x86_64
             cargo build --locked --release -p cdk-mintd \
                 --no-default-features \
-                --features sqlite,info-page,federation,prometheus
+                --features sqlite,info-page,federation,iroh,prometheus
             cargo build --locked --release -p cdk-cli \
                 --no-default-features --features federation
             "$CARGO_TARGET_DIR/release/cdk-mintd" federation setup create --help >/dev/null
@@ -331,7 +349,7 @@ build_linux_binaries() {
 install_operators() {
     local mintd="$BUILD_TARGET_DIR/release/cdk-mintd"
     local cli="$BUILD_TARGET_DIR/release/cdk-cli"
-    local mintd_hash cli_hash member host dir env_file command
+    local mintd_hash cli_hash member host dir env_file command iroh_url
     [[ -x "$mintd" && -x "$cli" ]] || die "Linux build did not produce both binaries"
     mintd_hash="$(sha256_file "$mintd")"
     cli_hash="$(sha256_file "$cli")"
@@ -342,8 +360,6 @@ install_operators() {
             'test ! -d %q || { echo "error: operator ceremony state already exists" >&2; exit 1; }; mkdir -p %q %q && chmod 700 %q' \
             "$dir/ceremonies" "$dir/bin" "$dir/scripts" "$dir"
         ssh "${SSH_OPTIONS[@]}" "$host" "$command"
-        env_file="$STAGING_DIR/operator-$member.env"
-        write_operator_env "$member" "$env_file"
         printf -v command \
             'test -x %q && test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q' \
             "$dir/bin/cdk-mintd" "$dir/bin/cdk-mintd" "$mintd_hash"
@@ -355,6 +371,15 @@ install_operators() {
                 "$dir/bin/cdk-mintd.upload" "$dir/bin/cdk-mintd.upload" "$dir/bin/cdk-mintd"
             ssh "${SSH_OPTIONS[@]}" "$host" "$command"
         fi
+        printf -v command \
+            'set -eu; cd %q; mkdir -p work; chmod 700 work; bin/cdk-mintd --work-dir work iroh init' \
+            "$dir"
+        iroh_url="$(ssh "${SSH_OPTIONS[@]}" "$host" "$command")"
+        [[ "$iroh_url" =~ ^iroh://[a-z0-9]+$ ]] \
+            || die "operator $member returned an invalid Iroh endpoint URL"
+        IROH_URLS[$((member - 1))]="$iroh_url"
+        env_file="$STAGING_DIR/operator-$member.env"
+        write_operator_env "$member" "$env_file"
         printf -v command \
             'test -x %q && test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q' \
             "$dir/bin/cdk-cli" "$dir/bin/cdk-cli" "$cli_hash"
@@ -415,6 +440,12 @@ initialize_sessions() {
     if [[ "$STOP_LEGACY_SESSION" == "1" ]]; then
         for member in $(seq 1 "$MEMBERS"); do
             remote_simple "$member" 'tmux kill-session -t cdk-federation 2>/dev/null || true'
+        done
+    fi
+    if [[ "$STOP_PRIOR_MULTI_OPERATOR_SESSIONS" == "1" ]]; then
+        for member in $(seq 1 "$MEMBERS"); do
+            remote_simple "$member" \
+                "tmux kill-session -t $PRIOR_SESSION_PREFIX-op-$member 2>/dev/null || true"
         done
     fi
     for member in $(seq 1 "$MEMBERS"); do
@@ -542,7 +573,7 @@ write_report() {
         --argjson members "$MEMBERS" \
         --argjson threshold "$THRESHOLD" \
         --argjson unique_machines "$unique_machine_count" \
-        --arg tls_model "public HTTPS reverse proxy to operator-local loopback services" \
+        --arg tls_model "public HTTPS DNS reverse proxy; private federation and setup over authenticated Iroh N0" \
         --arg proposal_hash "$proposal_hash" \
         --arg manifest_hash "$manifest_hash" \
         --arg setup_authorization "$setup_authorization" \
@@ -567,7 +598,9 @@ write_report() {
                 unique_machines: $unique_machines,
                 independent_operator_directories: true,
                 independent_operator_tmux_sessions: true,
-                tls_model: $tls_model
+                tls_model: $tls_model,
+                private_federation_transport: "iroh",
+                private_https_or_dns_required: false
             },
             ordinary_cli_transcript: [
                 "setup create", "setup join", "setup propose", "setup review",
@@ -640,16 +673,18 @@ done
     || die "REQUIRE_UNIQUE_MACHINES exceeds member count"
 [[ "$STOP_LEGACY_SESSION" == "0" || "$STOP_LEGACY_SESSION" == "1" ]] \
     || die "STOP_LEGACY_SESSION must be 0 or 1"
+[[ "$STOP_PRIOR_MULTI_OPERATOR_SESSIONS" == "0" || "$STOP_PRIOR_MULTI_OPERATOR_SESSIONS" == "1" ]] \
+    || die "STOP_PRIOR_MULTI_OPERATOR_SESSIONS must be 0 or 1"
 [[ "$REMOTE_ROOT" =~ ^[A-Za-z0-9._/-]+$ && "$REMOTE_ROOT" != /* ]] \
     || die "REMOTE_ROOT must be a safe relative path"
 [[ "/$REMOTE_ROOT/" != *"/../"* ]] || die "REMOTE_ROOT must not contain '..'"
 [[ "$PUBLIC_BASE_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] \
     || die "PUBLIC_BASE_DOMAIN contains unsupported characters"
-[[ "$FEDERATION_DOMAIN_PREFIX" =~ ^[A-Za-z0-9-]+$ ]] \
-    || die "FEDERATION_DOMAIN_PREFIX contains unsupported characters"
 [[ "$SESSION_PREFIX" =~ ^[A-Za-z0-9._-]+$ ]] || die "SESSION_PREFIX is invalid"
 [[ "$WALLET_SESSION" =~ ^[A-Za-z0-9._-]+$ ]] || die "WALLET_SESSION is invalid"
-[[ "$NETWORK" == "signet" ]] || die "the Nocean HTTPS drill currently requires NETWORK=signet"
+[[ "$PRIOR_SESSION_PREFIX" =~ ^[A-Za-z0-9._-]+$ ]] \
+    || die "PRIOR_SESSION_PREFIX is invalid"
+[[ "$NETWORK" == "signet" ]] || die "the Nocean Iroh drill currently requires NETWORK=signet"
 
 IFS=',' read -r -a HOSTS <<<"$OPERATOR_HOSTS_CSV"
 [[ "${#HOSTS[@]}" == "$MEMBERS" ]] || die "OPERATOR_HOSTS_CSV must contain exactly five aliases"
@@ -672,7 +707,7 @@ initialize_sessions
 printf 'Exercising incomplete pre-certification setup...\n'
 run_operator_action 1 failed create
 remote_operator 1 service-start failed setup
-wait_for_https "$(federation_api_url 1)/federation/setup/v1/status" ready
+wait_for_setup_service 1 failed
 for member in 2 3 4; do
     transfer_invitation failed "$member"
 done
@@ -684,7 +719,7 @@ remote_operator 1 service-stop
 printf 'Running the ordinary five-operator setup transcript...\n'
 run_operator_action 1 active create
 remote_operator 1 service-start active setup
-wait_for_https "$(federation_api_url 1)/federation/setup/v1/status" ready
+wait_for_setup_service 1 active
 for member in 2 3 4 5; do
     transfer_invitation active "$member"
 done
@@ -706,7 +741,7 @@ failed_setup_replaced=true
 
 printf 'Removing the coordinator after certification, then starting every DKG member concurrently...\n'
 remote_operator 1 service-stop
-wait_for_https "$(federation_api_url 1)/federation/setup/v1/status" down
+remote_operator 1 service-stopped
 coordinator_loss_after_certification=true
 dkg_started_at="$SECONDS"
 service_all start active setup

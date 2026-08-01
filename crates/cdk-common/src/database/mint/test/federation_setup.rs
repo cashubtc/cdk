@@ -22,7 +22,7 @@ use crate::nuts::nut01::SecretKey;
 use crate::{Amount, CurrencyUnit};
 
 const NOW_UNIX: u64 = 1_900_000_000;
-const URL_POLICY: FederationSetupUrlPolicy = FederationSetupUrlPolicy::RequireHttps;
+const URL_POLICY: FederationSetupUrlPolicy = FederationSetupUrlPolicy::RequireSecureTransport;
 
 struct SetupFixture {
     session: FederationSetupSession,

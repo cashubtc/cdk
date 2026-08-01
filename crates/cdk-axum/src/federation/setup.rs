@@ -9,8 +9,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
 use axum::error_handling::HandleErrorLayer;
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Json, State};
-use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, FromRequestParts, Json, State};
+use axum::http::{header, request::Parts, HeaderMap, HeaderValue, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -219,7 +219,7 @@ pub struct FederationSetupCoordinatorService {
     url_policy: FederationSetupUrlPolicy,
     config: FederationSetupCoordinatorServiceConfig,
     global_admission: Arc<Semaphore>,
-    source_admission: Mutex<BTreeMap<IpAddr, Weak<Semaphore>>>,
+    source_admission: Mutex<BTreeMap<SetupRequestSource, Weak<Semaphore>>>,
     invitation_admission: Mutex<BTreeMap<FederationSetupInvitationId, Weak<Semaphore>>>,
     approval_admission: Arc<Semaphore>,
     shutting_down: AtomicBool,
@@ -283,7 +283,7 @@ impl FederationSetupCoordinatorService {
 
     async fn run_owned<T, F, Fut>(
         self: Arc<Self>,
-        source: IpAddr,
+        source: SetupRequestSource,
         invitation_id: FederationSetupInvitationId,
         operation: F,
     ) -> Result<T, FederationSetupHttpError>
@@ -329,7 +329,7 @@ impl FederationSetupCoordinatorService {
 
     async fn try_admit(
         &self,
-        source: IpAddr,
+        source: SetupRequestSource,
         invitation_id: FederationSetupInvitationId,
     ) -> Result<SetupAdmission, FederationSetupHttpError> {
         let global = self
@@ -689,6 +689,34 @@ impl FederationSetupCoordinatorService {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SetupRequestSource {
+    Ip(IpAddr),
+    #[cfg(feature = "iroh")]
+    Iroh(cdk_iroh::EndpointId),
+}
+
+impl<S> FromRequestParts<S> for SetupRequestSource
+where
+    S: Send + Sync,
+{
+    type Rejection = FederationSetupHttpError;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        if let Some(ConnectInfo(source)) = parts.extensions.get::<ConnectInfo<SocketAddr>>() {
+            return Ok(Self::Ip(source.ip()));
+        }
+        #[cfg(feature = "iroh")]
+        if let Some(connection) = parts.extensions.get::<cdk_iroh::IrohConnectionInfo>() {
+            return Ok(Self::Iroh(connection.remote_endpoint_id));
+        }
+        Err(FederationSetupHttpError::new(
+            FederationSetupHttpErrorCode::InvalidRequest,
+            "setup connection identity is unavailable",
+        ))
+    }
+}
+
 struct ActiveTaskGuard {
     service: Arc<FederationSetupCoordinatorService>,
 }
@@ -755,7 +783,7 @@ async fn handle_setup_timeout(error: BoxError) -> FederationSetupHttpError {
 
 async fn post_enrollment(
     State(service): State<Arc<FederationSetupCoordinatorService>>,
-    ConnectInfo(source): ConnectInfo<SocketAddr>,
+    source: SetupRequestSource,
     headers: HeaderMap,
     Json(enrollment): Json<FederationSetupEnrollment>,
 ) -> Result<Response, FederationSetupHttpError> {
@@ -763,7 +791,7 @@ async fn post_enrollment(
     let invitation_id = invitation.invitation_id;
     let response = service
         .clone()
-        .run_owned(source.ip(), invitation_id, move |service| async move {
+        .run_owned(source, invitation_id, move |service| async move {
             let authenticated = service.authenticate(invitation, false).await?;
             let enrollment = service.enroll(authenticated, enrollment).await?;
             let acknowledgement = FederationSetupEnrollmentAcknowledgement::sign(
@@ -785,14 +813,14 @@ async fn post_enrollment(
 
 async fn get_proposal(
     State(service): State<Arc<FederationSetupCoordinatorService>>,
-    ConnectInfo(source): ConnectInfo<SocketAddr>,
+    source: SetupRequestSource,
     headers: HeaderMap,
 ) -> Result<Response, FederationSetupHttpError> {
     let (invitation, correlation_nonce) = request_authorization(&headers)?;
     let invitation_id = invitation.invitation_id;
     let response = service
         .clone()
-        .run_owned(source.ip(), invitation_id, move |service| async move {
+        .run_owned(source, invitation_id, move |service| async move {
             service.authenticate(invitation, true).await?;
             let proposal = service.proposal().await?;
             sign_response(
@@ -808,7 +836,7 @@ async fn get_proposal(
 
 async fn post_approval(
     State(service): State<Arc<FederationSetupCoordinatorService>>,
-    ConnectInfo(source): ConnectInfo<SocketAddr>,
+    source: SetupRequestSource,
     headers: HeaderMap,
     Json(approval): Json<FederationSetupApproval>,
 ) -> Result<Response, FederationSetupHttpError> {
@@ -816,7 +844,7 @@ async fn post_approval(
     let invitation_id = invitation.invitation_id;
     let response = service
         .clone()
-        .run_owned(source.ip(), invitation_id, move |service| async move {
+        .run_owned(source, invitation_id, move |service| async move {
             let authenticated = service.authenticate(invitation, true).await?;
             let approval = service.approve(authenticated, approval).await?;
             sign_response(
@@ -832,14 +860,14 @@ async fn post_approval(
 
 async fn get_manifest(
     State(service): State<Arc<FederationSetupCoordinatorService>>,
-    ConnectInfo(source): ConnectInfo<SocketAddr>,
+    source: SetupRequestSource,
     headers: HeaderMap,
 ) -> Result<Response, FederationSetupHttpError> {
     let (invitation, correlation_nonce) = request_authorization(&headers)?;
     let invitation_id = invitation.invitation_id;
     let response = service
         .clone()
-        .run_owned(source.ip(), invitation_id, move |service| async move {
+        .run_owned(source, invitation_id, move |service| async move {
             service.authenticate(invitation, true).await?;
             let manifest = service.manifest().await?;
             sign_response(
@@ -855,14 +883,14 @@ async fn get_manifest(
 
 async fn get_status(
     State(service): State<Arc<FederationSetupCoordinatorService>>,
-    ConnectInfo(source): ConnectInfo<SocketAddr>,
+    source: SetupRequestSource,
     headers: HeaderMap,
 ) -> Result<Response, FederationSetupHttpError> {
     let (invitation, correlation_nonce) = request_authorization(&headers)?;
     let invitation_id = invitation.invitation_id;
     let response = service
         .clone()
-        .run_owned(source.ip(), invitation_id, move |service| async move {
+        .run_owned(source, invitation_id, move |service| async move {
             service.authenticate(invitation, true).await?;
             let status = service.status().await?;
             sign_response(
@@ -983,10 +1011,38 @@ fn current_unix_time() -> Result<u64, FederationSetupHttpError> {
         .map_err(|_| FederationSetupHttpError::storage())
 }
 
+#[cfg(feature = "iroh")]
+fn setup_iroh_headers(
+    authorization: &str,
+    nonce: FederationSetupCorrelationNonce,
+    json: bool,
+) -> Result<Vec<(axum::http::HeaderName, axum::http::HeaderValue)>, HttpError> {
+    let authorization = axum::http::HeaderValue::from_str(authorization)
+        .map_err(|_| HttpError::Other("invalid setup authorization header".to_string()))?;
+    let nonce = axum::http::HeaderValue::from_str(&nonce.to_string())
+        .map_err(|_| HttpError::Other("invalid setup correlation header".to_string()))?;
+    let mut headers = vec![
+        (axum::http::header::AUTHORIZATION, authorization),
+        (
+            axum::http::HeaderName::from_static(FEDERATION_SETUP_CORRELATION_HEADER),
+            nonce,
+        ),
+    ];
+    if json {
+        headers.push((
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/json"),
+        ));
+    }
+    Ok(headers)
+}
+
 /// Authenticated, no-redirect client for the setup-only coordinator API.
 #[derive(Debug, Clone)]
 pub struct FederationSetupHttpClient {
     client: HttpClient,
+    #[cfg(feature = "iroh")]
+    iroh_client: Option<cdk_iroh::IrohClient>,
     request_deadline: Duration,
     retry_attempts: usize,
 }
@@ -998,6 +1054,8 @@ impl Default for FederationSetupHttpClient {
                 .no_redirects()
                 .build()
                 .expect("default no-redirect setup client"),
+            #[cfg(feature = "iroh")]
+            iroh_client: None,
             request_deadline: Duration::from_secs(7),
             retry_attempts: 3,
         }
@@ -1005,6 +1063,15 @@ impl Default for FederationSetupHttpClient {
 }
 
 impl FederationSetupHttpClient {
+    /// Create an authenticated setup client backed by the mint-owned Iroh node.
+    #[cfg(feature = "iroh")]
+    #[must_use]
+    pub fn with_iroh_node(node: cdk_iroh::IrohNode) -> Self {
+        Self {
+            iroh_client: Some(cdk_iroh::IrohClient::new(node)),
+            ..Self::default()
+        }
+    }
     /// Enroll an invitation's exact signed member record.
     pub async fn enroll(
         &self,
@@ -1195,14 +1262,8 @@ impl FederationSetupHttpClient {
                 .to_invitation_code()
                 .map_err(FederationSetupHttpError::from_federation)?
         );
-        self.retry_request(|| {
-            self.client
-                .get(url.as_str())
-                .header(header::AUTHORIZATION.as_str(), &authorization)
-                .header(FEDERATION_SETUP_CORRELATION_HEADER, nonce.to_string())
-                .send_bounded(max_response_bytes)
-        })
-        .await
+        self.retry_request(|| self.get_once(url.clone(), &authorization, nonce, max_response_bytes))
+            .await
     }
 
     async fn post<P, T>(
@@ -1224,15 +1285,87 @@ impl FederationSetupHttpClient {
                 .to_invitation_code()
                 .map_err(FederationSetupHttpError::from_federation)?
         );
+        let body = serde_json::to_vec(payload).map_err(|_| {
+            FederationSetupHttpError::new(
+                FederationSetupHttpErrorCode::InvalidRequest,
+                "setup request serialization failed",
+            )
+        })?;
         self.retry_request(|| {
-            self.client
-                .post(url.as_str())
-                .header(header::AUTHORIZATION.as_str(), &authorization)
-                .header(FEDERATION_SETUP_CORRELATION_HEADER, nonce.to_string())
-                .json(payload)
-                .send_bounded(max_response_bytes)
+            self.post_once(
+                url.clone(),
+                &authorization,
+                nonce,
+                body.clone(),
+                max_response_bytes,
+            )
         })
         .await
+    }
+
+    async fn get_once(
+        &self,
+        url: Url,
+        authorization: &str,
+        nonce: FederationSetupCorrelationNonce,
+        max_response_bytes: usize,
+    ) -> Result<cdk_http_client::RawResponse, HttpError> {
+        #[cfg(feature = "iroh")]
+        if url.scheme() == "iroh" {
+            let client = self.iroh_client.as_ref().ok_or_else(|| {
+                HttpError::Other("setup Iroh endpoint is not initialized".to_string())
+            })?;
+            return client
+                .request_raw(
+                    axum::http::Method::GET,
+                    url,
+                    &setup_iroh_headers(authorization, nonce, false)?,
+                    bytes::Bytes::new(),
+                    max_response_bytes,
+                )
+                .await
+                .map_err(HttpError::from);
+        }
+        self.client
+            .get(url.as_str())
+            .header(header::AUTHORIZATION.as_str(), authorization)
+            .header(FEDERATION_SETUP_CORRELATION_HEADER, nonce.to_string())
+            .send_bounded(max_response_bytes)
+            .await
+    }
+
+    async fn post_once(
+        &self,
+        url: Url,
+        authorization: &str,
+        nonce: FederationSetupCorrelationNonce,
+        body: Vec<u8>,
+        max_response_bytes: usize,
+    ) -> Result<cdk_http_client::RawResponse, HttpError> {
+        #[cfg(feature = "iroh")]
+        if url.scheme() == "iroh" {
+            let client = self.iroh_client.as_ref().ok_or_else(|| {
+                HttpError::Other("setup Iroh endpoint is not initialized".to_string())
+            })?;
+            return client
+                .request_raw(
+                    axum::http::Method::POST,
+                    url,
+                    &setup_iroh_headers(authorization, nonce, true)?,
+                    bytes::Bytes::from(body),
+                    max_response_bytes,
+                )
+                .await
+                .map_err(HttpError::from);
+        }
+        let payload: serde_json::Value = serde_json::from_slice(&body)?;
+        self.client
+            .post(url.as_str())
+            .header(header::AUTHORIZATION.as_str(), authorization)
+            .header(FEDERATION_SETUP_CORRELATION_HEADER, nonce.to_string())
+            .json(&payload)
+            .send_bounded(max_response_bytes)
+            .await
     }
 
     async fn retry_request<T, F, Fut>(&self, mut request: F) -> Result<T, FederationSetupHttpError>
@@ -1316,7 +1449,7 @@ fn url_policy_for(invitation: &FederationSetupInvitation) -> FederationSetupUrlP
         .starts_with("http://")
     {
         true => FederationSetupUrlPolicy::AllowInsecureLocalhost,
-        false => FederationSetupUrlPolicy::RequireHttps,
+        false => FederationSetupUrlPolicy::RequireSecureTransport,
     }
 }
 
@@ -1564,6 +1697,36 @@ mod tests {
         fixture.stop().await;
     }
 
+    #[cfg(feature = "iroh")]
+    #[tokio::test]
+    async fn setup_client_preserves_authenticated_headers_over_iroh() {
+        let fixture = setup_http_fixture(FederationSetupCoordinatorServiceConfig::default()).await;
+        let server_node = cdk_iroh::IrohNode::ephemeral(cdk_iroh::IrohConfig::static_only())
+            .await
+            .expect("setup Iroh server node");
+        let client_node = cdk_iroh::IrohNode::ephemeral(
+            cdk_iroh::IrohConfig::static_only().with_ticket(server_node.endpoint_ticket()),
+        )
+        .await
+        .expect("setup Iroh client node");
+        let server = cdk_iroh::IrohServer::start(
+            server_node.clone(),
+            create_federation_setup_router(fixture.service.clone()),
+        );
+        let mut invitation = fixture.invitation(2).clone();
+        invitation.coordinator_url = mint_url(&format!("iroh://{}", server_node.endpoint_id()));
+        let client = FederationSetupHttpClient::with_iroh_node(client_node);
+
+        let accepted = client
+            .enroll(&invitation, fixture.enrollment(2))
+            .await
+            .expect("authenticated setup enrollment over Iroh");
+        assert_eq!(accepted, *fixture.enrollment(2));
+
+        server.shutdown().await.expect("setup Iroh shutdown");
+        fixture.stop().await;
+    }
+
     #[tokio::test]
     async fn real_http_limits_expiry_storage_failure_and_no_store_errors() {
         let fixture = setup_http_fixture(FederationSetupCoordinatorServiceConfig::default()).await;
@@ -1750,7 +1913,7 @@ mod tests {
             let invitation_id = FederationSetupInvitationId::from_bytes([marker; 32]);
             let admission = fixture
                 .service
-                .try_admit(source, invitation_id)
+                .try_admit(SetupRequestSource::Ip(source), invitation_id)
                 .await
                 .expect("inactive admission key");
             drop(admission);

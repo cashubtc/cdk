@@ -1,6 +1,6 @@
 //! Hybrid CDK transport with explicit URL-scheme dispatch.
 
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use cashu::nuts::nut22::AuthToken;
@@ -15,7 +15,7 @@ static DEFAULT_NODE: OnceCell<IrohNode> = OnceCell::const_new();
 
 #[derive(Clone)]
 enum NodeSource {
-    ProcessDefault,
+    ProcessDefault(Arc<IrohConfig>),
     Runtime(IrohNode),
 }
 
@@ -24,7 +24,6 @@ enum NodeSource {
 pub struct IrohTransport<H = cdk_http_client::Async> {
     inner: H,
     node: NodeSource,
-    default_config: IrohConfig,
 }
 
 impl<H> IrohTransport<H> {
@@ -33,7 +32,6 @@ impl<H> IrohTransport<H> {
         Self {
             inner,
             node: NodeSource::Runtime(node),
-            default_config: IrohConfig::default(),
         }
     }
 
@@ -42,10 +40,19 @@ impl<H> IrohTransport<H> {
         &self.inner
     }
 
+    /// Returns the explicitly runtime-owned node, if this transport has one.
+    #[must_use]
+    pub fn runtime_node(&self) -> Option<IrohNode> {
+        match &self.node {
+            NodeSource::ProcessDefault(_) => None,
+            NodeSource::Runtime(node) => Some(node.clone()),
+        }
+    }
+
     async fn iroh_client(&self) -> Result<IrohClient, Error> {
         let node = match &self.node {
-            NodeSource::ProcessDefault => DEFAULT_NODE
-                .get_or_try_init(|| IrohNode::ephemeral(self.default_config.clone()))
+            NodeSource::ProcessDefault(config) => DEFAULT_NODE
+                .get_or_try_init(|| IrohNode::ephemeral(config.as_ref().clone()))
                 .await?
                 .clone(),
             NodeSource::Runtime(node) => node.clone(),
@@ -61,8 +68,7 @@ where
     fn default() -> Self {
         Self {
             inner: H::default(),
-            node: NodeSource::ProcessDefault,
-            default_config: IrohConfig::default(),
+            node: NodeSource::ProcessDefault(Arc::new(IrohConfig::default())),
         }
     }
 }
@@ -72,23 +78,27 @@ where
     H: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let default_config = match &self.node {
+            NodeSource::ProcessDefault(config) => Some(config.as_ref()),
+            NodeSource::Runtime(_) => None,
+        };
         f.debug_struct("IrohTransport")
             .field("inner", &self.inner)
             .field(
                 "iroh_endpoint_source",
                 &match self.node {
-                    NodeSource::ProcessDefault => "process-default",
+                    NodeSource::ProcessDefault(_) => "process-default",
                     NodeSource::Runtime(_) => "runtime",
                 },
             )
             .field(
                 "iroh_endpoint_initialized",
                 &match self.node {
-                    NodeSource::ProcessDefault => DEFAULT_NODE.initialized(),
+                    NodeSource::ProcessDefault(_) => DEFAULT_NODE.initialized(),
                     NodeSource::Runtime(_) => true,
                 },
             )
-            .field("default_config", &self.default_config)
+            .field("default_config", &default_config)
             .finish()
     }
 }

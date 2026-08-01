@@ -19,7 +19,7 @@ use cdk::federation::{
     FEDERATION_MAX_ONCHAIN_BATCH_INTENTS, FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS,
 };
 use cdk_common::bitcoin::{Amount, FeeRate};
-use cdk_http_client::{Async, Transport};
+use cdk_http_client::Transport;
 
 use crate::MintState;
 
@@ -793,7 +793,7 @@ impl FederationWalletLivenessWorker {
         let sync_config = state.federation.peer_sync_config.unwrap_or_default();
         tokio::spawn(async move {
             let client = match FederationRestPeerClient::new_with_validated_config(
-                Async::default(),
+                state.federation.transport.clone(),
                 &public_config,
                 private_config,
                 sync_config,

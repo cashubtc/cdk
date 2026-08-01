@@ -4,7 +4,6 @@ use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
     FederationConfig, FederationMaterializedStateRowFingerprint, MemberConfigPrivate, MemberId,
 };
-use cdk_http_client::Async;
 
 use crate::cli::{CLIArgs, FederationCompareDigestsArgs};
 use crate::federation_status::{
@@ -29,7 +28,7 @@ pub(crate) async fn run_compare_digests_command(
     // Run this exact comparison only after quiescing writes so every signed response
     // represents one stable verification point rather than an in-flight transition.
     let statuses = query_local_statuses_with_materialized_rows(
-        Async::default(),
+        crate::federation_operator_transport(cli_args).await?,
         &public_config,
         &private_config,
         &args.members,

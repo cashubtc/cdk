@@ -69,6 +69,7 @@ mod setup;
 mod status_routes;
 mod sync_config;
 mod sync_loop;
+mod transport;
 mod wallet_liveness;
 pub(crate) mod wallet_operation_publisher;
 
@@ -155,6 +156,9 @@ pub(crate) use self::sync_loop::spawn_federation_peer_sync_loop_with_config;
 use self::sync_loop::{
     run_federation_peer_sync_round, run_federation_peer_sync_round_with_backoff,
 };
+#[cfg(feature = "iroh")]
+pub use self::transport::federation_transport_with_iroh_node;
+pub use self::transport::{default_federation_transport, FederationTransport};
 pub(crate) use self::wallet_liveness::FederationWalletLivenessWorker;
 #[cfg(test)]
 use cdk::federation::{
@@ -163,7 +167,7 @@ use cdk::federation::{
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalCatchUpRequest,
     FederationMaterializedStateRow, FederationPeerStatusRequest,
 };
-#[cfg(test)]
+#[cfg(all(test, not(feature = "iroh")))]
 use cdk_http_client::Transport;
 #[cfg(test)]
 use tokio::time::{self, Duration};

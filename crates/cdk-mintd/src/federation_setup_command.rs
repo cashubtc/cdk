@@ -62,7 +62,10 @@ const FINAL_PRIVATE_CONFIG_FILE: &str = "federation-private.json";
 static FINAL_CONFIG_EXPORT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "sqlite")]
-pub(crate) async fn run_setup_command(args: &cli::FederationSetupArgs) -> Result<()> {
+pub(crate) async fn run_setup_command(
+    cli_args: &cli::CLIArgs,
+    args: &cli::FederationSetupArgs,
+) -> Result<()> {
     match &args.command {
         cli::FederationSetupCommand::Create(args) => {
             let thresholds = ThresholdParams::with_bft_consensus(args.members, args.threshold)
@@ -134,6 +137,8 @@ pub(crate) async fn run_setup_command(args: &cli::FederationSetupArgs) -> Result
             println!("invitation_file: {}", args.output.display());
         }
         cli::FederationSetupCommand::Join(args) => {
+            let coordinator =
+                HttpSetupCoordinator::new(crate::federation_setup_transport(cli_args).await?);
             let invitation =
                 read_private_text_file(&args.invitation_file, "federation setup invitation")?
                     .trim()
@@ -144,7 +149,7 @@ pub(crate) async fn run_setup_command(args: &cli::FederationSetupArgs) -> Result
                 .context("failed to open federation setup database")?;
             let enrollment = join_setup(
                 &db,
-                &HttpSetupCoordinator::default(),
+                &coordinator,
                 &args.config,
                 &args.state_dir,
                 &args.database,
@@ -181,13 +186,11 @@ pub(crate) async fn run_setup_command(args: &cli::FederationSetupArgs) -> Result
                     review_local_proposal(&db, &args.config, proposal, current_unix_time()?).await?
                 }
                 FederationSetupLocalRole::Member { .. } => {
-                    fetch_and_review_proposal(
-                        &db,
-                        &HttpSetupCoordinator::default(),
-                        &args.config,
-                        current_unix_time()?,
-                    )
-                    .await?
+                    let coordinator = HttpSetupCoordinator::new(
+                        crate::federation_setup_transport(cli_args).await?,
+                    );
+                    fetch_and_review_proposal(&db, &coordinator, &args.config, current_unix_time()?)
+                        .await?
                 }
             };
             match args.json {
@@ -196,20 +199,16 @@ pub(crate) async fn run_setup_command(args: &cli::FederationSetupArgs) -> Result
             }
         }
         cli::FederationSetupCommand::Approve(args) => {
+            let coordinator =
+                HttpSetupCoordinator::new(crate::federation_setup_transport(cli_args).await?);
             let config = read_local_config(&args.config)?;
             let db = cdk_sqlite::MintSqliteDatabase::new(config.database_path().to_path_buf())
                 .await
                 .context("failed to open federation setup database")?;
             let hash = FederationSetupProposalHash::from_str(&args.proposal_hash)
                 .context("invalid exact proposal hash")?;
-            let approval = approve_setup(
-                &db,
-                &HttpSetupCoordinator::default(),
-                &args.config,
-                hash,
-                current_unix_time()?,
-            )
-            .await?;
+            let approval =
+                approve_setup(&db, &coordinator, &args.config, hash, current_unix_time()?).await?;
             println!("approved_proposal_hash: {}", approval.proposal_hash);
         }
         cli::FederationSetupCommand::Serve(args) => {
@@ -225,10 +224,13 @@ pub(crate) async fn run_setup_command(args: &cli::FederationSetupArgs) -> Result
                 ceremony_timeout: std::time::Duration::from_secs(args.dkg_ceremony_timeout_seconds),
                 ..cdk_axum::FederationDkgDriverRunConfig::default()
             };
-            serve_setup_coordinator(&args.config, args.listen, driver).await?;
+            let transport = crate::federation_setup_server_transport(cli_args).await?;
+            serve_setup_coordinator(&args.config, args.listen, driver, transport).await?;
         }
         cli::FederationSetupCommand::Status(args) => {
-            let status = setup_status(&args.config).await?;
+            let coordinator =
+                HttpSetupCoordinator::new(crate::federation_setup_transport(cli_args).await?);
+            let status = setup_status_with_client(&args.config, &coordinator.0).await?;
             match args.json {
                 true => println!("{}", serde_json::to_string_pretty(&status)?),
                 false => print_setup_status(&status),
@@ -287,13 +289,28 @@ fn setup_frost_policy(
 }
 
 #[cfg(not(feature = "sqlite"))]
-pub(crate) async fn run_setup_command(_args: &cli::FederationSetupArgs) -> Result<()> {
+pub(crate) async fn run_setup_command(
+    _cli_args: &cli::CLIArgs,
+    _args: &cli::FederationSetupArgs,
+) -> Result<()> {
     bail!("federation setup commands currently require the `sqlite` feature")
 }
 
 #[cfg(feature = "sqlite")]
 #[derive(Debug, Default)]
 struct HttpSetupCoordinator(cdk_axum::FederationSetupHttpClient);
+
+#[cfg(feature = "sqlite")]
+impl HttpSetupCoordinator {
+    fn new(transport: cdk_axum::FederationTransport) -> Self {
+        #[cfg(feature = "iroh")]
+        if let Some(node) = transport.runtime_node() {
+            return Self(cdk_axum::FederationSetupHttpClient::with_iroh_node(node));
+        }
+        let _ = transport;
+        Self::default()
+    }
+}
 
 #[cfg(feature = "sqlite")]
 #[async_trait]
@@ -336,11 +353,12 @@ async fn serve_setup_coordinator(
     config_path: &Path,
     listen: std::net::SocketAddr,
     driver: cdk_axum::FederationDkgDriverRunConfig,
+    transport: cdk_axum::FederationTransport,
 ) -> Result<()> {
     let now_unix = current_unix_time()?;
     let (config, secrets) = load_local_state(config_path, now_unix)?;
     if config.manifest_path().exists() {
-        return serve_certified_dkg(config_path, listen, driver).await;
+        return serve_certified_dkg(config_path, listen, driver, transport).await;
     }
     let draft = config
         .coordinator
@@ -372,16 +390,8 @@ async fn serve_setup_coordinator(
         .context("failed to bind setup-only coordinator listener")?;
     println!("setup_id: {}", config.setup_id);
     println!("setup_only_listen: {listen}");
-    let server = axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(async {
-        if let Err(error) = tokio::signal::ctrl_c().await {
-            tracing::warn!("setup coordinator shutdown signal failed: {error}");
-        }
-    });
-    let result = server.await.context("setup-only coordinator server failed");
+    let result =
+        serve_setup_router(listener, router, transport, "setup-only coordinator server").await;
     service.shutdown().await;
     result
 }
@@ -391,6 +401,7 @@ async fn serve_certified_dkg(
     config_path: &Path,
     listen: std::net::SocketAddr,
     driver: cdk_axum::FederationDkgDriverRunConfig,
+    transport: cdk_axum::FederationTransport,
 ) -> Result<()> {
     let handoff = load_certified_dkg_handoff(config_path)?;
     let database = Arc::new(
@@ -409,10 +420,11 @@ async fn serve_certified_dkg(
     let ceremony_id = auto_start.ceremony_id();
     let mint_database: cdk_common::database::DynMintDatabase = database.clone();
     register_manifest_dkg_ceremony(&mint_database, &handoff, &auto_start).await?;
-    let router = cdk_axum::create_federation_dkg_setup_router(
+    let router = cdk_axum::create_federation_dkg_setup_router_with_transport(
         Arc::new(mint),
         cdk_axum::FederationPeerSyncConfig::default(),
         auto_start,
+        transport.clone(),
     )
     .await
     .context("failed to create setup-only DKG router")?;
@@ -423,14 +435,85 @@ async fn serve_certified_dkg(
     println!("member_id: {member_id}");
     println!("ceremony_id: {ceremony_id}");
     println!("dkg_only_listen: {listen}");
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async {
-            if let Err(error) = tokio::signal::ctrl_c().await {
-                tracing::warn!("setup DKG shutdown signal failed: {error}");
-            }
+    serve_setup_router(listener, router, transport, "setup-only DKG server").await
+}
+
+#[cfg(feature = "sqlite")]
+async fn serve_setup_router(
+    listener: tokio::net::TcpListener,
+    router: axum::Router,
+    transport: cdk_axum::FederationTransport,
+    context: &'static str,
+) -> Result<()> {
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+    let http_router = router.clone();
+    let mut http_task = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            http_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.recv().await;
         })
         .await
-        .context("setup-only DKG server failed")
+    });
+
+    #[cfg(feature = "iroh")]
+    let iroh_server = transport
+        .runtime_node()
+        .map(|node| cdk_iroh::IrohServer::start(node, router));
+    #[cfg(not(feature = "iroh"))]
+    let _ = (transport, router);
+
+    #[cfg(feature = "iroh")]
+    let early_exit = match iroh_server.as_ref() {
+        Some(server) => {
+            tokio::select! {
+                signal = tokio::signal::ctrl_c() => {
+                    signal.context("setup listener shutdown signal failed")?;
+                    None
+                }
+                result = &mut http_task => Some(result.context("setup HTTP listener task failed")?.context(context)),
+                () = server.finished() => Some(Err(anyhow!("{context} Iroh listener exited unexpectedly"))),
+            }
+        }
+        None => {
+            tokio::select! {
+                signal = tokio::signal::ctrl_c() => {
+                    signal.context("setup listener shutdown signal failed")?;
+                    None
+                }
+                result = &mut http_task => Some(result.context("setup HTTP listener task failed")?.context(context)),
+            }
+        }
+    };
+    #[cfg(not(feature = "iroh"))]
+    let early_exit = tokio::select! {
+        signal = tokio::signal::ctrl_c() => {
+            signal.context("setup listener shutdown signal failed")?;
+            None
+        }
+        result = &mut http_task => Some(result.context("setup HTTP listener task failed")?.context(context)),
+    };
+
+    let _ = shutdown_tx.send(());
+    if !http_task.is_finished() {
+        http_task
+            .await
+            .context("setup HTTP listener task failed")?
+            .context(context)?;
+    }
+    #[cfg(feature = "iroh")]
+    if let Some(server) = iroh_server {
+        server
+            .shutdown()
+            .await
+            .context("setup Iroh shutdown failed")?;
+    }
+    match early_exit {
+        Some(result) => result,
+        None => Ok(()),
+    }
 }
 
 #[cfg(feature = "sqlite")]
@@ -582,7 +665,16 @@ async fn ensure_setup_dkg_running(
 }
 
 #[cfg(feature = "sqlite")]
+#[cfg(test)]
 async fn setup_status(config_path: &Path) -> Result<FederationSetupCommandStatus> {
+    setup_status_with_client(config_path, &cdk_axum::FederationSetupHttpClient::default()).await
+}
+
+#[cfg(feature = "sqlite")]
+async fn setup_status_with_client(
+    config_path: &Path,
+    client: &cdk_axum::FederationSetupHttpClient,
+) -> Result<FederationSetupCommandStatus> {
     let now_unix = current_unix_time()?;
     let (config, secrets) = load_local_state(config_path, now_unix)?;
     let database = Arc::new(
@@ -630,7 +722,6 @@ async fn setup_status(config_path: &Path) -> Result<FederationSetupCommandStatus
                     .invitation
                     .as_ref()
                     .ok_or_else(|| anyhow!("protected joining invitation is missing"))?;
-                let client = cdk_axum::FederationSetupHttpClient::default();
                 let status = client
                     .status(invitation)
                     .await
@@ -1362,7 +1453,7 @@ fn setup_network(network: cli::FederationSetupNetworkArg) -> FederationSetupBitc
 fn setup_url_policy(allow_insecure_localhost: bool) -> FederationSetupUrlPolicy {
     match allow_insecure_localhost {
         true => FederationSetupUrlPolicy::AllowInsecureLocalhost,
-        false => FederationSetupUrlPolicy::RequireHttps,
+        false => FederationSetupUrlPolicy::RequireSecureTransport,
     }
 }
 
@@ -2580,8 +2671,10 @@ fn invitation_record_matches_immutable(
 fn validate_setup_url(url: &MintUrl, policy: FederationSetupUrlPolicy) -> Result<()> {
     let parsed = url::Url::parse(&url.to_string()).context("invalid setup URL")?;
     match policy {
-        FederationSetupUrlPolicy::RequireHttps if parsed.scheme() != "https" => {
-            bail!("production setup URLs must use HTTPS")
+        FederationSetupUrlPolicy::RequireSecureTransport
+            if !matches!(parsed.scheme(), "https" | "iroh") =>
+        {
+            bail!("production setup URLs must use HTTPS or Iroh")
         }
         FederationSetupUrlPolicy::AllowInsecureLocalhost
             if parsed.scheme() == "http"
@@ -2594,7 +2687,9 @@ fn validate_setup_url(url: &MintUrl, policy: FederationSetupUrlPolicy) -> Result
             bail!("insecure setup URLs are allowed only for localhost")
         }
         FederationSetupUrlPolicy::AllowInsecureLocalhost if parsed.scheme() == "http" => {}
-        _ if parsed.scheme() != "https" => bail!("unsupported setup URL scheme"),
+        _ if !matches!(parsed.scheme(), "https" | "iroh") => {
+            bail!("unsupported setup URL scheme")
+        }
         _ => {}
     }
     Ok(())
@@ -2603,7 +2698,7 @@ fn validate_setup_url(url: &MintUrl, policy: FederationSetupUrlPolicy) -> Result
 fn url_policy_for_url(url: &MintUrl) -> FederationSetupUrlPolicy {
     match url.to_string().starts_with("http://") {
         true => FederationSetupUrlPolicy::AllowInsecureLocalhost,
-        false => FederationSetupUrlPolicy::RequireHttps,
+        false => FederationSetupUrlPolicy::RequireSecureTransport,
     }
 }
 

@@ -3304,6 +3304,7 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
         mint: Arc::clone(&mint),
         cache: Arc::new(crate::cache::HttpCache::default()),
         federation: crate::federation::FederationNodeRuntime {
+            transport: crate::default_federation_transport(),
             mint: Some(mint),
             consensus: Some(Arc::new(tokio::sync::Mutex::new(consensus))),
             peer_sync_config: Some(FederationPeerSyncConfig::default()),

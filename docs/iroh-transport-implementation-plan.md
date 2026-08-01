@@ -556,9 +556,10 @@ run through the same test harness.
 
 ## MSRV and dependency gate
 
-CDK declares Rust 1.85.0. As of this plan, current `iroh` 1.0.3 declares Rust
-1.91. This is a release-policy decision, not a detail to discover after the
-transport is written.
+At the start of this plan CDK declared Rust 1.85.0, while current `iroh` 1.0.3
+declared Rust 1.91. This was a release-policy decision, not a detail to
+discover after the transport was written. Milestone 0 resolved it by raising
+the CDK workspace MSRV to Rust 1.91.0.
 
 Milestone 0 must produce a small dependency report covering:
 
@@ -926,22 +927,70 @@ Verification evidence:
 
 ### Milestone 4 — heterogeneous federation and DKG
 
-- [ ] Land the HTTP-only shared federation transport-injection refactor.
-- [ ] Use the hybrid transport for every federation runtime and operator
+- [x] Land the HTTP-only shared federation transport-injection refactor.
+- [x] Use the hybrid transport for every federation runtime and operator
   client.
-- [ ] Accept `iroh` in setup, enrollment, mintd, and DKG secure URL policies.
-- [ ] Allow one Iroh endpoint to be both the public and federation base URL.
-- [ ] Add exact roster URL/endpoint-ID startup validation.
+- [x] Accept `iroh` in setup, enrollment, mintd, and DKG secure URL policies.
+- [x] Allow one Iroh endpoint to be both the public and federation base URL.
+- [x] Add exact roster URL/endpoint-ID startup validation.
 - [ ] Run a mixed HTTPS/Iroh federation through normal operation, restart, and
   catch-up.
 - [ ] Run an all-Iroh federation through setup, DKG, FROST, AlephBFT,
   checkpoint, wallet, and recovery flows.
-- [ ] Confirm signed request and replay rejection tests are byte-for-byte
+- [x] Confirm signed request and replay rejection tests are byte-for-byte
   transport independent.
-- [ ] Include Bark transport coverage when that feature is enabled.
+- [x] Include Bark transport coverage when that feature is enabled.
 
 **Gate:** No DKG, FROST, consensus, checkpoint, catch-up, or Bark state-machine
 source branches on transport scheme.
+
+**Progress:** the integration and local protocol coverage are complete; the
+Nocean deployment gate is in progress. `FederationTransport` is constructed
+once and cloned through setup, DKG, FROST signing, AlephBFT, peer sync,
+checkpoint/catch-up, wallet liveness, Bark, and every operator client. URL
+scheme dispatch remains below `FederationRestPeerClient`; none of those state
+machines branches on transport scheme.
+
+The mint runtime owns one protected persistent endpoint for serving and
+dialing. Setup and operator CLI processes deliberately use short-lived
+ephemeral dialing endpoints with the same discovery/ticket policy so they do
+not claim the live service identity or bind address. Startup separately loads
+the protected endpoint ID and checks the activated roster before any operator
+request. N0 discovery needs no tickets; static/custom discovery requires the
+exact set of remote roster tickets and rejects missing, duplicate, extraneous,
+cross-member duplicate, and local-key-mismatch configurations. Setup clients
+skip activated-roster validation because those files do not exist before DKG;
+the setup server and activated runtime still own the protected identity.
+
+Local verification evidence:
+
+- `cargo test -p cdk-common --features federation --test
+  federation_setup_domain --offline` passes all 12 secure-URL/setup policy
+  tests;
+- `RUST_MIN_STACK=8388608 cargo test -p cdk-mintd --features
+  federation,iroh --lib --offline -- --test-threads=1` passes all 222 tests,
+  while the HTTP-only federation build passes all 212 and default mintd passes
+  all 55;
+- `RUST_MIN_STACK=8388608 cargo test -p cdk-axum --features
+  federation-bark,iroh --lib --offline -- --test-threads=1` passes 576 tests
+  with three manual benchmarks ignored. This includes mixed live dialing,
+  all-Iroh signed DKG and replay rejection, FROST, AlephBFT, checkpoint,
+  catch-up, restart, wallet-liveness, and Bark coverage;
+- without the explicit 8 MiB test-thread stack, one pre-existing deep AlephBFT
+  harness case overflows its test thread in both HTTP-only and Iroh feature
+  builds. The case passes at 8 MiB and this is recorded as test-harness stack
+  sensitivity rather than a transport assertion failure; and
+- the focused operator-identity test proves a CLI client uses a different
+  ephemeral endpoint and neither overwrites nor claims the persistent endpoint
+  ticket/key, while exact roster tests continue to bind the advertised local
+  URL to that protected key.
+
+The remaining Milestone 4 proof is the one-server Nocean drill requested for
+the available infrastructure: five independent protected directories and tmux
+operator sessions, five existing public HTTPS DNS subdomains, five persistent
+Iroh federation endpoints, and all user-entered setup/DKG/runtime steps over
+Iroh N0. This exercises operational isolation on one machine; it does not
+claim five-machine fault-domain independence.
 
 ### Milestone 5 — hardening and release evidence
 

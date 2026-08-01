@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use super::runtime_components::FederationRuntimeComponents;
-use super::FederationPeerSyncConfig;
+use super::{FederationPeerSyncConfig, FederationTransport};
 #[cfg(test)]
 use crate::FederationSyncHandle;
 use crate::{
@@ -28,6 +28,7 @@ use cdk::mint::Mint;
 #[derive(Clone)]
 #[allow(missing_debug_implementations)]
 pub(crate) struct FederationNodeRuntime {
+    pub(crate) transport: FederationTransport,
     pub(crate) mint: Option<Arc<Mint>>,
     pub(crate) consensus: Option<FederationConsensusHandle>,
     pub(crate) peer_sync_config: Option<FederationPeerSyncConfig>,
@@ -325,6 +326,7 @@ impl FederationNodeRuntime {
     #[cfg(test)]
     pub(crate) fn disabled() -> Self {
         Self {
+            transport: super::default_federation_transport(),
             mint: None,
             consensus: None,
             peer_sync_config: None,

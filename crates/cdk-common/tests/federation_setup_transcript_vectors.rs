@@ -237,7 +237,7 @@ fn build_production_vector(expected: &ExpectedVector) -> ExpectedVector {
     let coordinator_identity =
         FederationSetupCoordinatorPublicKey::new(coordinator_secret.public_key())
             .expect("coordinator fixture identity");
-    let url_policy = FederationSetupUrlPolicy::RequireHttps;
+    let url_policy = FederationSetupUrlPolicy::RequireSecureTransport;
     let slug = expected.name.replace("-of-", "of");
     let coordinator_url =
         MintUrl::from_str(&format!("https://setup.{slug}.example")).expect("coordinator URL");

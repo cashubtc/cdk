@@ -4,7 +4,7 @@ use cdk_common::federation::{
     FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberId,
     FEDERATION_REST_API_VERSION,
 };
-use cdk_http_client::{Async, Transport};
+use cdk_http_client::Transport;
 
 use crate::cli::{CLIArgs, FederationCheckpointAuditArgs};
 
@@ -42,7 +42,10 @@ pub(crate) async fn run_checkpoint_audit_command(
             .federation_api_url
             .join_paths(&["federation", "v1", "checkpoints", "audit"])?;
     let response: FederationCheckpointAuditResponse =
-        Async::default().http_post(url, None, &request).await?;
+        crate::federation_operator_transport(cli_args)
+            .await?
+            .http_post(url, None, &request)
+            .await?;
     if response.version != FEDERATION_REST_API_VERSION
         || response.federation_id != public_config.federation_id
         || response.member_id != member_id

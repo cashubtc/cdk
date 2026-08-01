@@ -55,14 +55,16 @@ mod custom_handlers;
 mod custom_router;
 #[cfg(feature = "federation")]
 mod federation;
+#[cfg(all(feature = "federation", feature = "iroh"))]
+pub use self::federation::federation_transport_with_iroh_node;
 #[cfg(feature = "federation")]
 pub use self::federation::{
-    create_federation_setup_router, FederationDkgAutoStartConfig, FederationDkgDriverRunConfig,
-    FederationDkgDriverRunOutcome, FederationDkgDriverTickOutcome,
+    create_federation_setup_router, default_federation_transport, FederationDkgAutoStartConfig,
+    FederationDkgDriverRunConfig, FederationDkgDriverRunOutcome, FederationDkgDriverTickOutcome,
     FederationDkgSecretShareTransportPolicy, FederationPeerSyncConfig,
     FederationPeerSyncConfigError, FederationSetupCoordinatorService,
     FederationSetupCoordinatorServiceConfig, FederationSetupHttpClient, FederationSetupHttpError,
-    FederationSetupHttpErrorCode,
+    FederationSetupHttpErrorCode, FederationTransport,
 };
 mod router_handlers;
 mod ws;
@@ -2434,6 +2436,23 @@ pub async fn create_federation_dkg_setup_router(
     federation_peer_sync_config: FederationPeerSyncConfig,
     federation_dkg_config: FederationDkgAutoStartConfig,
 ) -> Result<Router> {
+    create_federation_dkg_setup_router_with_transport(
+        mint,
+        federation_peer_sync_config,
+        federation_dkg_config,
+        default_federation_transport(),
+    )
+    .await
+}
+
+/// Create the isolated setup DKG runtime with an injected federation transport.
+#[cfg(feature = "federation")]
+pub async fn create_federation_dkg_setup_router_with_transport(
+    mint: Arc<Mint>,
+    federation_peer_sync_config: FederationPeerSyncConfig,
+    federation_dkg_config: FederationDkgAutoStartConfig,
+    federation_transport: FederationTransport,
+) -> Result<Router> {
     federation_peer_sync_config.validate()?;
     create_mint_router_with_custom_cache_inner(
         mint,
@@ -2447,6 +2466,7 @@ pub async fn create_federation_dkg_setup_router(
         #[cfg(feature = "federation-bark")]
         None,
         true,
+        federation_transport,
         #[cfg(test)]
         false,
     )
@@ -2465,6 +2485,32 @@ pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallet(
     federation_dkg_config: Option<FederationDkgAutoStartConfig>,
     federation_bdk_config: Option<FederatedBdkLocalConfig>,
 ) -> Result<Router> {
+    create_mint_router_with_custom_cache_and_federation_dkg_and_wallet_with_transport(
+        mint,
+        cache,
+        custom_methods,
+        enable_info_page,
+        federation_peer_sync_config,
+        federation_dkg_config,
+        federation_bdk_config,
+        default_federation_transport(),
+    )
+    .await
+}
+
+/// Create a federation mint router with an injected shared outbound transport.
+#[cfg(feature = "federation")]
+#[allow(unused_mut, unused_variables)]
+pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallet_with_transport(
+    mint: Arc<Mint>,
+    cache: HttpCache,
+    custom_methods: Vec<String>,
+    enable_info_page: bool,
+    federation_peer_sync_config: FederationPeerSyncConfig,
+    federation_dkg_config: Option<FederationDkgAutoStartConfig>,
+    federation_bdk_config: Option<FederatedBdkLocalConfig>,
+    federation_transport: FederationTransport,
+) -> Result<Router> {
     federation_peer_sync_config.validate()?;
     create_mint_router_with_custom_cache_inner(
         mint,
@@ -2478,6 +2524,7 @@ pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallet(
         #[cfg(feature = "federation-bark")]
         None,
         false,
+        federation_transport,
         #[cfg(test)]
         false,
     )
@@ -2497,6 +2544,34 @@ pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallets
     federation_bdk_config: Option<FederatedBdkLocalConfig>,
     federation_bark_config: Option<cdk_bark::FederatedBarkLocalConfig>,
 ) -> Result<Router> {
+    create_mint_router_with_custom_cache_and_federation_dkg_and_wallets_with_transport(
+        mint,
+        cache,
+        custom_methods,
+        enable_info_page,
+        federation_peer_sync_config,
+        federation_dkg_config,
+        federation_bdk_config,
+        federation_bark_config,
+        default_federation_transport(),
+    )
+    .await
+}
+
+/// Create a federation mint router with both wallets and one shared outbound transport.
+#[cfg(all(feature = "federation", feature = "federation-bark"))]
+#[allow(unused_mut, unused_variables)]
+pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallets_with_transport(
+    mint: Arc<Mint>,
+    cache: HttpCache,
+    custom_methods: Vec<String>,
+    enable_info_page: bool,
+    federation_peer_sync_config: FederationPeerSyncConfig,
+    federation_dkg_config: Option<FederationDkgAutoStartConfig>,
+    federation_bdk_config: Option<FederatedBdkLocalConfig>,
+    federation_bark_config: Option<cdk_bark::FederatedBarkLocalConfig>,
+    federation_transport: FederationTransport,
+) -> Result<Router> {
     federation_peer_sync_config.validate()?;
     create_mint_router_with_custom_cache_inner(
         mint,
@@ -2509,6 +2584,7 @@ pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallets
         federation_bdk_config,
         federation_bark_config,
         false,
+        federation_transport,
         #[cfg(test)]
         false,
     )
@@ -2536,6 +2612,7 @@ pub(crate) async fn create_mint_router_without_federation_peer_sync(
         #[cfg(feature = "federation-bark")]
         None,
         false,
+        default_federation_transport(),
         true,
     )
     .await
@@ -2555,6 +2632,7 @@ async fn create_mint_router_with_custom_cache_inner(
         cdk_bark::FederatedBarkLocalConfig,
     >,
     #[cfg(feature = "federation")] federation_setup_only: bool,
+    #[cfg(feature = "federation")] federation_transport: FederationTransport,
     #[cfg(all(test, feature = "federation"))] federation_local_finality_test: bool,
 ) -> Result<Router> {
     #[cfg(all(feature = "federation", feature = "prometheus"))]
@@ -2563,6 +2641,7 @@ async fn create_mint_router_with_custom_cache_inner(
     let federation_runtime_state = create_federation_runtime_state_with_wallet(
         &mint,
         federation_peer_sync_config,
+        federation_transport.clone(),
         federation_bdk_config,
         #[cfg(feature = "federation-bark")]
         federation_bark_config,
@@ -2590,6 +2669,7 @@ async fn create_mint_router_with_custom_cache_inner(
         cache: Arc::new(cache),
         #[cfg(feature = "federation")]
         federation: federation::FederationNodeRuntime {
+            transport: federation_transport,
             mint: federation_consensus.as_ref().map(|_| Arc::clone(&mint)),
             consensus: federation_consensus.clone(),
             peer_sync_config: federation_consensus
@@ -2998,6 +3078,7 @@ struct FederationRuntimeState {
 async fn create_federation_runtime_state_with_wallet(
     mint: &Arc<Mint>,
     _peer_sync_config: FederationPeerSyncConfig,
+    _federation_transport: FederationTransport,
     local_wallet_config: Option<FederatedBdkLocalConfig>,
     #[cfg(feature = "federation-bark")] local_bark_config: Option<
         cdk_bark::FederatedBarkLocalConfig,
@@ -3060,7 +3141,7 @@ async fn create_federation_runtime_state_with_wallet(
                 application.derived_public_package(config.public_config(), &wallet.root)?;
             let peer_client =
                 federation::peer_client::FederationRestPeerClient::new_with_validated_config(
-                    cdk_http_client::Async::default(),
+                    _federation_transport.clone(),
                     config.public_config(),
                     config.private_config().clone(),
                     _peer_sync_config,
@@ -3948,6 +4029,7 @@ async fn create_federation_runtime_state(
     let state = create_federation_runtime_state_with_wallet(
         mint,
         FederationPeerSyncConfig::default(),
+        default_federation_transport(),
         None,
         #[cfg(feature = "federation-bark")]
         None,

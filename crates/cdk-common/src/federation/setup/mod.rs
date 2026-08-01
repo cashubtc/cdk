@@ -407,9 +407,9 @@ impl<'de> Deserialize<'de> for FederationSetupSignature {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FederationSetupUrlPolicy {
-    /// Require credential-free HTTPS URLs.
+    /// Require credential-free HTTPS or endpoint-identified Iroh URLs.
     #[default]
-    RequireHttps,
+    RequireSecureTransport,
     /// Also allow credential-free HTTP URLs whose host is loopback.
     AllowInsecureLocalhost,
 }
@@ -605,7 +605,7 @@ impl FederationSetupInvitation {
         let validation_time = self.expires_at_unix.saturating_sub(1);
         let url_policy = match self.coordinator_url.to_string().starts_with("http://") {
             true => FederationSetupUrlPolicy::AllowInsecureLocalhost,
-            false => FederationSetupUrlPolicy::RequireHttps,
+            false => FederationSetupUrlPolicy::RequireSecureTransport,
         };
         self.validate(validation_time, url_policy)?;
         let public = self.canonical_public_bytes()?;
@@ -706,7 +706,7 @@ impl FromStr for FederationSetupInvitation {
             .starts_with("http://")
         {
             true => FederationSetupUrlPolicy::AllowInsecureLocalhost,
-            false => FederationSetupUrlPolicy::RequireHttps,
+            false => FederationSetupUrlPolicy::RequireSecureTransport,
         };
         invitation.validate(validation_time, url_policy)?;
         Ok(invitation)
@@ -842,9 +842,11 @@ impl FederationSetupEnrollment {
         self.supported_versions.validate()?;
         validate_setup_url(&self.public_mint_url, url_policy, "public mint")?;
         validate_setup_url(&self.federation_api_url, url_policy, "federation API")?;
-        if self.public_mint_url == self.federation_api_url {
+        if self.public_mint_url == self.federation_api_url
+            && !is_iroh_setup_url(&self.public_mint_url)
+        {
             return Err(invalid(
-                "public mint and federation API URLs must be distinct",
+                "public mint and federation API URLs must be distinct unless both use the same Iroh endpoint",
             ));
         }
         if !matches!(self.identity_public_key, PublicKey::Secp256k1(_)) {
@@ -1202,7 +1204,7 @@ impl FederationSetupProposalBody {
             });
         }
 
-        let mut urls = BTreeSet::new();
+        let mut urls = BTreeMap::new();
         let mut identities = BTreeSet::new();
         let mut invitation_ids = BTreeSet::new();
         for expected in 1..=self.threshold_params.member_count {
@@ -1224,8 +1226,10 @@ impl FederationSetupProposalBody {
                 enrollment.public_mint_url.to_string(),
                 enrollment.federation_api_url.to_string(),
             ] {
-                if !urls.insert(url) {
-                    return Err(invalid("proposal contains a duplicate member URL"));
+                match urls.insert(url.clone(), member_id) {
+                    Some(owner) if owner == member_id && url.starts_with("iroh://") => {}
+                    Some(_) => return Err(invalid("proposal contains a duplicate member URL")),
+                    None => {}
                 }
             }
             if !identities.insert(enrollment.identity_public_key.to_bytes()) {
@@ -1842,6 +1846,7 @@ fn validate_setup_url(
     }
     match parsed.scheme() {
         "https" => Ok(()),
+        "iroh" if parsed.port().is_none() => Ok(()),
         "http" if policy == FederationSetupUrlPolicy::AllowInsecureLocalhost => {
             match parsed.host() {
                 Some(Host::Domain(host)) if host.eq_ignore_ascii_case("localhost") => Ok(()),
@@ -1852,8 +1857,14 @@ fn validate_setup_url(
                 ))),
             }
         }
-        _ => Err(invalid(format!("{context} URL must use HTTPS"))),
+        _ => Err(invalid(format!("{context} URL must use HTTPS or Iroh"))),
     }
+}
+
+fn is_iroh_setup_url(value: &MintUrl) -> bool {
+    Url::parse(&value.to_string())
+        .ok()
+        .is_some_and(|url| url.scheme() == "iroh")
 }
 
 fn validate_setup_version(component: &'static str, found: u16) -> Result<()> {

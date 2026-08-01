@@ -148,7 +148,7 @@ impl DkgDriverTestFederation {
                 &member.state,
                 &member.client,
                 &member.participant,
-                FederationDkgSecretShareTransportPolicy::RequireHttps,
+                FederationDkgSecretShareTransportPolicy::RequireSecureTransport,
                 &mut delivery_tracker,
             )
             .await
@@ -398,7 +398,7 @@ async fn dkg_cannot_complete_while_one_configured_member_withholds() {
                 &member.state,
                 &member.client,
                 &member.participant,
-                FederationDkgSecretShareTransportPolicy::RequireHttps,
+                FederationDkgSecretShareTransportPolicy::RequireSecureTransport,
                 &mut delivery_tracker,
             )
             .await
@@ -439,7 +439,7 @@ async fn dkg_mid_ceremony_member_loss_aborts_others_with_timeout_naming_missing_
                 &member.state,
                 &member.client,
                 &member.participant,
-                FederationDkgSecretShareTransportPolicy::RequireHttps,
+                FederationDkgSecretShareTransportPolicy::RequireSecureTransport,
                 &mut delivery_tracker,
             )
             .await
@@ -604,7 +604,7 @@ async fn dkg_driver_restarts_safely_at_every_durable_phase() {
                     &member.state,
                     &member.client,
                     &member.participant,
-                    FederationDkgSecretShareTransportPolicy::RequireHttps,
+                    FederationDkgSecretShareTransportPolicy::RequireSecureTransport,
                     &mut delivery_tracker,
                 )
                 .await
@@ -1004,7 +1004,7 @@ async fn dkg_driver_times_out_one_slow_member_without_blocking_fast_members() {
             &member.state,
             &member.client,
             &member.participant,
-            FederationDkgSecretShareTransportPolicy::RequireHttps,
+            FederationDkgSecretShareTransportPolicy::RequireSecureTransport,
             &mut delivery_tracker,
         )
         .await
@@ -1067,7 +1067,7 @@ async fn dkg_driver_attempts_all_members_and_resumes_after_partition_and_restart
         &federation.members[0].state,
         &federation.members[0].client,
         &federation.members[0].participant,
-        FederationDkgSecretShareTransportPolicy::RequireHttps,
+        FederationDkgSecretShareTransportPolicy::RequireSecureTransport,
         &mut first_delivery_tracker,
     )
     .await
@@ -1086,7 +1086,7 @@ async fn dkg_driver_attempts_all_members_and_resumes_after_partition_and_restart
                 &member.state,
                 &member.client,
                 &member.participant,
-                FederationDkgSecretShareTransportPolicy::RequireHttps,
+                FederationDkgSecretShareTransportPolicy::RequireSecureTransport,
                 &mut delivery_tracker,
             )
             .await

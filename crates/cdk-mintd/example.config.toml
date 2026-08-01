@@ -29,7 +29,10 @@ mnemonic = "env:CDK_MINTD_MNEMONIC"
 # bind_addr = "0.0.0.0:8092" # optional UDP bind
 # secret_key_file = "/protected/path/endpoint-secret" # default: <work-dir>/iroh/endpoint-secret
 # endpoint_ticket_file = "/protected/path/endpoint-ticket" # default: <work-dir>/iroh/endpoint-ticket
-# static_tickets = ["endpoint...ticket..."] # imported out-of-band peer reachability
+# For a federation using static/custom discovery, list exactly one current
+# ticket for every remote Iroh endpoint in the activated roster. Do not include
+# the local endpoint or endpoints outside that roster. N0 requires no tickets.
+# static_tickets = ["endpoint...ticket..."]
 # relay_urls = ["https://relay.example"] # required only for custom discovery
 #
 # [iroh.timeouts]

@@ -10,7 +10,7 @@ use cdk_common::federation::{
     FederationWalletTransactionRequest, FederationWalletTransactionStatus, MemberConfigPrivate,
     MemberConfigPublic, MemberId,
 };
-use cdk_http_client::{Async, Transport};
+use cdk_http_client::Transport;
 
 use crate::cli::{CLIArgs, FederationWalletRebroadcastArgs, FederationWalletTransactionArgs};
 
@@ -26,8 +26,9 @@ pub(crate) async fn run_transaction_status_command(
     )?;
     let member = target_member(&public_config, &private_config, args.member)?;
     let proposal_id = parse_proposal_id(&args.proposal_id)?;
+    let transport = crate::federation_operator_transport(cli_args).await?;
     let status = query_transaction_status(
-        &Async::default(),
+        &transport,
         &public_config,
         &private_config,
         &member,
@@ -51,8 +52,9 @@ pub(crate) async fn run_rebroadcast_command(
     )?;
     let member = target_member(&public_config, &private_config, args.member)?;
     let proposal_id = parse_proposal_id(&args.proposal_id)?;
+    let transport = crate::federation_operator_transport(cli_args).await?;
     let response = request_rebroadcast(
-        &Async::default(),
+        &transport,
         &public_config,
         &private_config,
         &member,

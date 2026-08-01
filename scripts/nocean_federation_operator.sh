@@ -66,10 +66,10 @@ validate_environment() {
         || die "NETWORK is unsupported"
     [[ "$PUBLIC_MINT_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
         || die "PUBLIC_MINT_URL must be a credential-free HTTPS URL"
-    [[ "$FEDERATION_API_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
-        || die "FEDERATION_API_URL must be a credential-free HTTPS URL"
-    [[ "$COORDINATOR_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
-        || die "COORDINATOR_URL must be a credential-free HTTPS URL"
+    [[ "$FEDERATION_API_URL" =~ ^iroh://[a-z0-9]+$ ]] \
+        || die "FEDERATION_API_URL must be a canonical Iroh endpoint URL"
+    [[ "$COORDINATOR_URL" =~ ^iroh://[a-z0-9]+$ ]] \
+        || die "COORDINATOR_URL must be a canonical Iroh endpoint URL"
     [[ "$ESPLORA_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
         || die "ESPLORA_URL must be a credential-free HTTPS URL"
     [[ "$CHAIN_SOURCE_ID" =~ ^[A-Za-z0-9._-]+$ ]] \
@@ -130,10 +130,15 @@ generate_runtime_config() {
     cat >"$RUNTIME_CONFIG" <<EOF
 [info]
 url = "$PUBLIC_MINT_URL"
+http_enabled = true
 listen_host = "127.0.0.1"
 listen_port = $LISTEN_PORT
 seed = "$seed"
 enable_info_page = true
+
+[iroh]
+enabled = true
+discovery = "n0"
 
 [info.http_cache]
 backend = "memory"
@@ -200,16 +205,18 @@ EOF
     chmod 600 "$RUNTIME_CONFIG"
 }
 
+mintd_configured() {
+    "$MINTD" --work-dir "$WORK_DIR" --config "$RUNTIME_CONFIG" "$@"
+}
+
 action_create() {
     local label="$1" dir
     ((MEMBER_ID == 1)) || die "only member 1 can create a ceremony"
     dir="$(ceremony_dir "$label")"
     [[ ! -e "$dir" ]] || die "ceremony directory already exists"
     mkdir -p "$dir"
-    if [[ "$label" == "active" ]]; then
-        generate_runtime_config
-    fi
-    "$MINTD" federation setup create \
+    generate_runtime_config
+    mintd_configured federation setup create \
         --config "$(setup_config "$label")" \
         --state-dir "$(setup_state_dir "$label")" \
         --database "$(setup_database "$label")" \
@@ -228,10 +235,8 @@ action_join() {
     ((MEMBER_ID > 1)) || die "the creator cannot join its own ceremony"
     dir="$(ceremony_dir "$label")"
     [[ -f "$(invitation_file "$label")" ]] || die "protected invitation input is missing"
-    if [[ "$label" == "active" ]]; then
-        generate_runtime_config
-    fi
-    "$MINTD" federation setup join \
+    generate_runtime_config
+    mintd_configured federation setup join \
         --invitation-file "$(invitation_file "$label")" \
         --config "$(setup_config "$label")" \
         --state-dir "$(setup_state_dir "$label")" \
@@ -244,7 +249,7 @@ action_join() {
 action_propose() {
     local label="$1" dir
     dir="$(ceremony_dir "$label")"
-    "$MINTD" federation setup propose \
+    mintd_configured federation setup propose \
         --config "$(setup_config "$label")" \
         >"$dir/propose.log"
 }
@@ -252,7 +257,7 @@ action_propose() {
 action_propose_expect_failure() {
     local label="$1" dir
     dir="$(ceremony_dir "$label")"
-    if "$MINTD" federation setup propose \
+    if mintd_configured federation setup propose \
         --config "$(setup_config "$label")" \
         >"$dir/expected-propose-failure.log" 2>&1; then
         die "incomplete setup unexpectedly produced a proposal"
@@ -262,7 +267,7 @@ action_propose_expect_failure() {
 action_review() {
     local label="$1" dir
     dir="$(ceremony_dir "$label")"
-    "$MINTD" federation setup review \
+    mintd_configured federation setup review \
         --config "$(setup_config "$label")" \
         --json >"$dir/review.json"
 }
@@ -271,7 +276,7 @@ action_approve() {
     local label="$1" proposal_hash="$2" dir
     [[ "$proposal_hash" =~ ^[0-9a-f]{64}$ ]] || die "proposal hash is invalid"
     dir="$(ceremony_dir "$label")"
-    "$MINTD" federation setup approve \
+    mintd_configured federation setup approve \
         --config "$(setup_config "$label")" \
         --proposal-hash "$proposal_hash" \
         >"$dir/approve.log"
@@ -280,7 +285,7 @@ action_approve() {
 action_certified_status() {
     local label="$1" dir
     dir="$(ceremony_dir "$label")"
-    "$MINTD" federation setup status \
+    mintd_configured federation setup status \
         --config "$(setup_config "$label")" \
         --json >"$dir/certified-status.json"
     [[ "$(jq -r '.participant_phase' "$dir/certified-status.json")" == "certified" ]] \
@@ -291,7 +296,7 @@ action_activate() {
     local label="$1" dir
     [[ "$label" == "active" ]] || die "only the active ceremony can be activated"
     dir="$(ceremony_dir "$label")"
-    "$MINTD" federation setup activate \
+    mintd_configured federation setup activate \
         --config "$(setup_config "$label")" \
         >"$dir/activation.env" \
         2>"$dir/activation-guidance.log"
@@ -413,8 +418,9 @@ service_start() {
     case "$mode" in
         setup)
             printf -v command \
-                'cd %q && exec env RUST_LOG=info %q federation setup serve --config %q --listen %q --dkg-max-ticks %q --dkg-retry-delay-ms %q --dkg-ceremony-timeout-seconds %q >>%q 2>&1' \
-                "$OPERATOR_ROOT" "$MINTD" "$(setup_config "$label")" "$LISTEN_ADDR" \
+                'cd %q && exec env RUST_LOG=info %q --work-dir %q --config %q federation setup serve --config %q --listen %q --dkg-max-ticks %q --dkg-retry-delay-ms %q --dkg-ceremony-timeout-seconds %q >>%q 2>&1' \
+                "$OPERATOR_ROOT" "$MINTD" "$WORK_DIR" "$RUNTIME_CONFIG" \
+                "$(setup_config "$label")" "$LISTEN_ADDR" \
                 "$DKG_MAX_TICKS" "$DKG_RETRY_DELAY_MS" "$DKG_CEREMONY_TIMEOUT_SECONDS" \
                 "$(ceremony_dir "$label")/setup-service.log"
             ;;
@@ -441,10 +447,17 @@ service_stop() {
     fi
 }
 
+service_stopped() {
+    tmux has-session -t "$TMUX_SESSION" 2>/dev/null || die "operator tmux session is missing"
+    if tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' | grep -Fxq service; then
+        die "operator service window is still running"
+    fi
+}
+
 status_json() {
     local label="$1"
     validate_label "$label"
-    "$MINTD" federation setup status --config "$(setup_config "$label")" --json
+    mintd_configured federation setup status --config "$(setup_config "$label")" --json
 }
 
 public_config_hash() {
@@ -465,7 +478,7 @@ review_proposal_hash() {
 }
 
 runtime_status() {
-    "$MINTD" federation status \
+    mintd_configured federation status \
         --public-config "$(activated_public_config)" \
         --private-config "$(activated_private_config)" \
         --require-ready \
@@ -499,6 +512,7 @@ case "${1:-}" in
     session-run-wait) session_run_wait "${2:?label required}" "${3:?action required}" "${4:-}" ;;
     service-start) service_start "${2:?label required}" "${3:?mode required}" ;;
     service-stop) service_stop ;;
+    service-stopped) service_stopped ;;
     run-action) run_action "${2:?label required}" "${3:?action required}" "${4:-}" ;;
     status-json) status_json "${2:?label required}" ;;
     proposal-hash) proposal_hash "${2:?label required}" ;;
@@ -507,5 +521,5 @@ case "${1:-}" in
     runtime-status) runtime_status ;;
     service-metrics) service_metrics ;;
     session-layout) session_layout ;;
-    *) die "usage: $0 {validate|idle|session-init|session-run-wait|service-start|service-stop|status-json|proposal-hash|review-proposal-hash|public-config-hash|runtime-status|service-metrics|session-layout}" ;;
+    *) die "usage: $0 {validate|idle|session-init|session-run-wait|service-start|service-stop|service-stopped|status-json|proposal-hash|review-proposal-hash|public-config-hash|runtime-status|service-metrics|session-layout}" ;;
 esac

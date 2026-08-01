@@ -151,6 +151,73 @@ const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION")
 const DEFAULT_BATCH_MINT_SIZE: u64 = 100;
 const REQUEST_BODY_LIMIT_BYTES: usize = 1_048_576;
 
+#[cfg(feature = "federation")]
+async fn federation_operator_transport(args: &CLIArgs) -> Result<cdk_axum::FederationTransport> {
+    #[cfg(feature = "iroh")]
+    {
+        let (work_dir, settings) = federation_transport_settings(args).await?;
+        let endpoint_id = iroh_runtime::protected_endpoint_id(&settings, &work_dir)?;
+        iroh_runtime::validate_federation_roster_endpoint(&settings, endpoint_id)?;
+        return federation_client_transport(&settings).await;
+    }
+    #[cfg(not(feature = "iroh"))]
+    {
+        let _ = args;
+        Ok(cdk_axum::default_federation_transport())
+    }
+}
+
+#[cfg(feature = "federation")]
+async fn federation_setup_transport(args: &CLIArgs) -> Result<cdk_axum::FederationTransport> {
+    #[cfg(feature = "iroh")]
+    {
+        let (_, settings) = federation_transport_settings(args).await?;
+        return federation_client_transport(&settings).await;
+    }
+    #[cfg(not(feature = "iroh"))]
+    {
+        let _ = args;
+        Ok(cdk_axum::default_federation_transport())
+    }
+}
+
+#[cfg(feature = "federation")]
+async fn federation_setup_server_transport(
+    args: &CLIArgs,
+) -> Result<cdk_axum::FederationTransport> {
+    #[cfg(feature = "iroh")]
+    {
+        let (work_dir, settings) = federation_transport_settings(args).await?;
+        let runtime = iroh_runtime::initialize(&settings, &work_dir).await?;
+        return Ok(match runtime {
+            Some(runtime) => cdk_axum::federation_transport_with_iroh_node(runtime.node),
+            None => cdk_axum::default_federation_transport(),
+        });
+    }
+    #[cfg(not(feature = "iroh"))]
+    {
+        let _ = args;
+        Ok(cdk_axum::default_federation_transport())
+    }
+}
+
+#[cfg(all(feature = "federation", feature = "iroh"))]
+async fn federation_transport_settings(args: &CLIArgs) -> Result<(PathBuf, config::Settings)> {
+    let work_dir = get_work_directory(args).await?;
+    let settings = load_settings(&work_dir, args.config.clone())?;
+    Ok((work_dir, settings))
+}
+
+#[cfg(all(feature = "federation", feature = "iroh"))]
+async fn federation_client_transport(
+    settings: &config::Settings,
+) -> Result<cdk_axum::FederationTransport> {
+    Ok(match iroh_runtime::initialize_client(settings).await? {
+        Some(node) => cdk_axum::federation_transport_with_iroh_node(node),
+        None => cdk_axum::default_federation_transport(),
+    })
+}
+
 /// Run a one-shot CLI subcommand, returning true when no mint daemon should be started.
 pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
     #[cfg(not(any(feature = "federation", feature = "iroh")))]
@@ -177,7 +244,7 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                     federation_inspect::run_inspect_command(args, inspect)?;
                 }
                 cli::FederationCommand::Setup(setup) => {
-                    federation_setup_command::run_setup_command(setup).await?;
+                    federation_setup_command::run_setup_command(args, setup).await?;
                 }
                 #[cfg(feature = "fakewallet")]
                 cli::FederationCommand::FakeInvoice(fake_invoice) => {
@@ -1389,6 +1456,27 @@ fn configured_federation_runtime(settings: &config::Settings) -> Result<Federati
         .context("invalid federation runtime config")
 }
 
+#[cfg(all(feature = "federation", not(feature = "iroh")))]
+fn validate_federation_transport_build(settings: &config::Settings) -> Result<()> {
+    let Some(federation) = settings.federation.as_ref().filter(|value| value.enabled) else {
+        return Ok(());
+    };
+    let _ = federation;
+    let runtime = configured_federation_runtime(settings)?;
+    for member in runtime.public_config().members.values() {
+        if [&member.public_mint_url, &member.federation_api_url]
+            .iter()
+            .any(|url| url.to_string().starts_with("iroh://"))
+        {
+            bail!(
+                "federation member {} advertises Iroh but this mintd build has no Iroh support",
+                member.member_id
+            );
+        }
+    }
+    Ok(())
+}
+
 #[cfg(feature = "federation-bark")]
 fn validate_federated_bark_startup(
     settings: &config::Settings,
@@ -1996,7 +2084,8 @@ fn federation_dkg_auto_start_config(
         max_ticks: federation.dkg.max_ticks,
         retry_delay: std::time::Duration::from_millis(federation.dkg.retry_delay_ms),
         ceremony_timeout: std::time::Duration::from_secs(federation.dkg.ceremony_timeout_secs),
-        secret_share_transport: cdk_axum::FederationDkgSecretShareTransportPolicy::RequireHttps,
+        secret_share_transport:
+            cdk_axum::FederationDkgSecretShareTransportPolicy::RequireSecureTransport,
         member_request_burst: federation.dkg.member_request_burst,
         member_request_refill_interval: std::time::Duration::from_millis(
             federation.dkg.member_request_refill_ms,
@@ -3385,15 +3474,52 @@ impl PreparedMintd {
             }
         }
 
-        #[cfg(feature = "federation")]
-        let v1_service = cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg_and_wallet(
-            Arc::clone(&mint),
-            cache,
-            custom_methods,
-            settings.info.enable_info_page.unwrap_or(true),
-            federation_peer_sync_config(settings),
-            federation_dkg_auto_start_config(settings)?,
-            federation_bdk_local_config(settings, work_dir)?,
+    #[cfg(all(feature = "federation", feature = "federation-bark"))]
+    let v1_service = cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg_and_wallets_with_transport(
+        Arc::clone(&mint),
+        cache,
+        custom_methods,
+        settings.info.enable_info_page.unwrap_or(true),
+        federation_peer_sync_config(settings),
+        federation_dkg_auto_start_config(settings)?,
+        federation_bdk_local_config(settings, work_dir)?,
+        federation_bark_local_config(
+            settings,
+            work_dir,
+            mint.federation_config()
+                .ok_or_else(|| anyhow!("federated Bark requires active federation runtime"))?,
+        )?,
+        federation_transport,
+    )
+    .await?;
+    #[cfg(all(feature = "federation", not(feature = "federation-bark")))]
+    let v1_service = cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg_and_wallet_with_transport(
+        Arc::clone(&mint),
+        cache,
+        custom_methods,
+        settings.info.enable_info_page.unwrap_or(true),
+        federation_peer_sync_config(settings),
+        federation_dkg_auto_start_config(settings)?,
+        federation_bdk_local_config(settings, work_dir)?,
+        federation_transport,
+    )
+    .await?;
+    #[cfg(not(feature = "federation"))]
+    let v1_service = cdk_axum::create_mint_router_with_custom_cache(
+        Arc::clone(&mint),
+        cache,
+        custom_methods,
+        settings.info.enable_info_page.unwrap_or(true),
+    )
+    .await?;
+
+    let mut mint_service = Router::new()
+        .merge(v1_service)
+        .layer(DefaultBodyLimit::max(REQUEST_BODY_LIMIT_BYTES))
+        .layer(
+            ServiceBuilder::new()
+                .layer(RequestDecompressionLayer::new())
+                .layer(CompressionLayer::new()),
         )
         .await?;
         #[cfg(not(feature = "federation"))]
@@ -4079,6 +4205,24 @@ mod tests {
         cdk_common::federation::TrustedDealerConfigBundle,
         cdk_common::federation::MemberId,
     ) {
+        two_member_trusted_dealer_bundle_with_urls(
+            "https://mint1.example.com",
+            "https://fed1.example.com",
+            "https://mint2.example.com",
+            "https://fed2.example.com",
+        )
+    }
+
+    #[cfg(all(feature = "federation", feature = "sqlite"))]
+    fn two_member_trusted_dealer_bundle_with_urls(
+        local_public_url: &str,
+        local_federation_url: &str,
+        peer_public_url: &str,
+        peer_federation_url: &str,
+    ) -> (
+        cdk_common::federation::TrustedDealerConfigBundle,
+        cdk_common::federation::MemberId,
+    ) {
         use std::collections::BTreeMap;
         use std::str::FromStr;
 
@@ -4093,15 +4237,15 @@ mod tests {
         let member_id = MemberId::new(1).expect("member id");
         let member = TrustedDealerMember::new(
             member_id,
-            MintUrl::from_str("https://mint1.example.com").expect("public mint url"),
-            MintUrl::from_str("https://fed1.example.com").expect("federation api url"),
+            MintUrl::from_str(local_public_url).expect("public mint url"),
+            MintUrl::from_str(local_federation_url).expect("federation api url"),
             SecretKey::from_slice(&[1; 32]).expect("identity secret"),
         );
         let peer_id = MemberId::new(2).expect("peer id");
         let peer = TrustedDealerMember::new(
             peer_id,
-            MintUrl::from_str("https://mint2.example.com").expect("peer public mint url"),
-            MintUrl::from_str("https://fed2.example.com").expect("peer federation api url"),
+            MintUrl::from_str(peer_public_url).expect("peer public mint url"),
+            MintUrl::from_str(peer_federation_url).expect("peer federation api url"),
             SecretKey::from_slice(&[2; 32]).expect("peer identity secret"),
         );
         let keyset = TrustedDealerKeysetSpec::new(
@@ -4897,6 +5041,113 @@ engine = "sqlite"
         let runtime_config = builder.federation_config().expect("runtime config");
         assert_eq!(runtime_config.member_id(), member_id);
 
+        let _ = fs::remove_file(public_config_path);
+        let _ = fs::remove_file(private_config_path);
+    }
+
+    #[cfg(all(feature = "federation", feature = "iroh", feature = "sqlite"))]
+    #[tokio::test]
+    async fn iroh_roster_validation_binds_local_identity_and_static_peer_tickets() {
+        let local_node = cdk_iroh::IrohNode::ephemeral(cdk_iroh::IrohConfig::static_only())
+            .await
+            .expect("local Iroh node");
+        let remote_node = cdk_iroh::IrohNode::ephemeral(cdk_iroh::IrohConfig::static_only())
+            .await
+            .expect("remote Iroh node");
+        let local_url = format!("iroh://{}", local_node.endpoint_id());
+        let remote_url = format!("iroh://{}", remote_node.endpoint_id());
+        let (bundle, member_id) = two_member_trusted_dealer_bundle_with_urls(
+            &local_url,
+            &local_url,
+            "https://mint2.example.com",
+            &remote_url,
+        );
+        let (public_config_path, private_config_path) = write_federation_config_fixture(
+            "iroh_roster",
+            serde_json::to_string(&bundle.public_config).expect("public config JSON"),
+            serde_json::to_string(
+                bundle
+                    .private_configs
+                    .get(&member_id)
+                    .expect("private config"),
+            )
+            .expect("private config JSON"),
+        );
+        let mut iroh = config::Iroh {
+            enabled: true,
+            discovery: config::IrohDiscovery::Static,
+            bind_addr: Some("127.0.0.1:0".parse().expect("bind address")),
+            ..config::Iroh::default()
+        };
+        let settings = |iroh: config::Iroh| config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                public_config_path: Some(public_config_path.clone()),
+                private_config_path: Some(private_config_path.clone()),
+                ..config::Federation::default()
+            }),
+            iroh: Some(iroh),
+            ..config::Settings::default()
+        };
+        let runtime = iroh_runtime::MintdIrohRuntime {
+            node: local_node.clone(),
+        };
+
+        let missing =
+            iroh_runtime::validate_federation_roster(&settings(iroh.clone()), Some(&runtime))
+                .expect_err("static discovery requires the remote roster ticket");
+        assert!(missing.to_string().contains("missing endpoint tickets"));
+
+        iroh.static_tickets
+            .push(remote_node.endpoint_ticket().to_string());
+        iroh_runtime::validate_federation_roster(&settings(iroh.clone()), Some(&runtime))
+            .expect("matching local endpoint and exact remote ticket");
+
+        let mut duplicate_ticket = iroh.clone();
+        duplicate_ticket
+            .static_tickets
+            .push(remote_node.endpoint_ticket().to_string());
+        let duplicate =
+            iroh_runtime::validate_federation_roster(&settings(duplicate_ticket), Some(&runtime))
+                .expect_err("duplicate static tickets must fail closed");
+        assert!(duplicate.to_string().contains("duplicate endpoint ticket"));
+
+        let mismatched_endpoint = cdk_iroh::SecretKey::generate().public();
+        let mismatched_url = format!("iroh://{mismatched_endpoint}");
+        let (mismatched_bundle, mismatched_member_id) = two_member_trusted_dealer_bundle_with_urls(
+            &mismatched_url,
+            &mismatched_url,
+            "https://mint2.example.com",
+            &remote_url,
+        );
+        fs::write(
+            &public_config_path,
+            serde_json::to_string(&mismatched_bundle.public_config)
+                .expect("mismatched public config JSON"),
+        )
+        .expect("mismatched public config should be written");
+        fs::write(
+            &private_config_path,
+            serde_json::to_string(
+                mismatched_bundle
+                    .private_configs
+                    .get(&mismatched_member_id)
+                    .expect("mismatched private config"),
+            )
+            .expect("mismatched private config JSON"),
+        )
+        .expect("mismatched private config should be written");
+        let mismatch = iroh_runtime::validate_federation_roster(&settings(iroh), Some(&runtime))
+            .expect_err("the local Iroh URL must bind to the protected endpoint key");
+        assert!(
+            mismatch
+                .to_string()
+                .contains("does not match the protected mint endpoint key"),
+            "unexpected mismatch error: {mismatch:#}"
+        );
+
+        local_node.close().await;
+        remote_node.close().await;
         let _ = fs::remove_file(public_config_path);
         let _ = fs::remove_file(private_config_path);
     }

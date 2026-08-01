@@ -1,3 +1,5 @@
+#[cfg(feature = "federation")]
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
@@ -71,6 +73,36 @@ pub(crate) async fn initialize(
     Ok(Some(MintdIrohRuntime { node }))
 }
 
+/// Creates a short-lived dialing endpoint without claiming the mint's protected identity.
+pub(crate) async fn initialize_client(settings: &Settings) -> Result<Option<IrohNode>> {
+    let Some(iroh) = settings.iroh.as_ref().filter(|iroh| iroh.enabled) else {
+        return Ok(None);
+    };
+    let mut config = transport_config(iroh)?;
+    config.bind_addr = None;
+    let node = IrohNode::ephemeral(config)
+        .await
+        .context("failed to initialize ephemeral Iroh client endpoint")?;
+    Ok(Some(node))
+}
+
+/// Returns the endpoint ID protected by this mint's configured secret key.
+pub(crate) fn protected_endpoint_id(
+    settings: &Settings,
+    work_dir: &Path,
+) -> Result<Option<EndpointId>> {
+    let Some(iroh) = settings.iroh.as_ref().filter(|iroh| iroh.enabled) else {
+        return Ok(None);
+    };
+    let key_path = secret_key_path(iroh, work_dir);
+    let secret_key = load_or_generate_secret_key(
+        &key_path,
+        iroh.generate_secret_key,
+        iroh.secret_key_file.is_none(),
+    )?;
+    Ok(Some(secret_key.public()))
+}
+
 pub(crate) fn initialize_endpoint_identity(
     work_dir: &Path,
     explicit_key_path: Option<&Path>,
@@ -98,6 +130,95 @@ pub(crate) fn validate_listener_selection(settings: &Settings) -> Result<()> {
     }
     if !settings.info.http_enabled && public_scheme.as_deref() != Some("iroh") {
         bail!("Iroh-only operation requires an iroh public mint URL");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "federation")]
+pub(crate) fn validate_federation_roster(
+    settings: &Settings,
+    runtime: Option<&MintdIrohRuntime>,
+) -> Result<()> {
+    validate_federation_roster_endpoint(settings, runtime.map(|runtime| runtime.node.endpoint_id()))
+}
+
+#[cfg(feature = "federation")]
+pub(crate) fn validate_federation_roster_endpoint(
+    settings: &Settings,
+    local_endpoint_id: Option<EndpointId>,
+) -> Result<()> {
+    let Some(_) = settings.federation.as_ref().filter(|value| value.enabled) else {
+        return Ok(());
+    };
+    let configured = crate::configured_federation_runtime(settings)?;
+    let public = configured.public_config();
+    let local_member = configured.member_id();
+    let mut owners = BTreeMap::<EndpointId, cdk::federation::MemberId>::new();
+    let mut remote_endpoints = BTreeSet::new();
+
+    for member in public.members.values() {
+        for value in [&member.public_mint_url, &member.federation_api_url] {
+            let Some(endpoint_id) = parse_configured_iroh_endpoint(&value.to_string())? else {
+                continue;
+            };
+            let protected_endpoint_id = local_endpoint_id.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "federation member {} advertises Iroh but the mint Iroh runtime is disabled",
+                    member.member_id
+                )
+            })?;
+            if member.member_id == local_member && endpoint_id != protected_endpoint_id {
+                bail!(
+                    "local federation member {} advertises an Iroh endpoint that does not match the protected mint endpoint key",
+                    local_member
+                );
+            }
+            match owners.insert(endpoint_id, member.member_id) {
+                Some(owner) if owner != member.member_id => {
+                    bail!(
+                        "federation members {} and {} advertise the same Iroh endpoint ID",
+                        owner,
+                        member.member_id
+                    )
+                }
+                Some(_) | None => {}
+            }
+            if member.member_id != local_member {
+                remote_endpoints.insert(endpoint_id);
+            }
+        }
+    }
+
+    if remote_endpoints.is_empty() {
+        return Ok(());
+    }
+    let iroh = settings
+        .iroh
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("federation Iroh settings are missing"))?;
+    if matches!(iroh.discovery, IrohDiscovery::N0) {
+        return Ok(());
+    }
+    let mut ticket_endpoints = BTreeSet::new();
+    for ticket in &iroh.static_tickets {
+        let endpoint = EndpointTicket::from_str(ticket)
+            .map(|ticket| ticket.endpoint_addr().id)
+            .context("invalid configured Iroh endpoint ticket")?;
+        if !ticket_endpoints.insert(endpoint) {
+            bail!("static/custom Iroh discovery contains a duplicate endpoint ticket");
+        }
+    }
+    let missing = remote_endpoints.difference(&ticket_endpoints).count();
+    if missing != 0 {
+        bail!(
+            "static/custom Iroh discovery is missing endpoint tickets for {missing} remote federation endpoint(s)"
+        );
+    }
+    let unexpected = ticket_endpoints.difference(&remote_endpoints).count();
+    if unexpected != 0 {
+        bail!(
+            "static/custom Iroh discovery contains {unexpected} endpoint ticket(s) outside the remote federation roster"
+        );
     }
     Ok(())
 }
@@ -174,11 +295,21 @@ fn nonzero_duration(seconds: u64, label: &str) -> Result<Duration> {
 }
 
 fn validate_configured_iroh_url(value: &str, expected: EndpointId) -> Result<()> {
-    let Ok(url) = Url::parse(value) else {
+    let Some(configured) = parse_configured_iroh_endpoint(value)? else {
         return Ok(());
     };
+    if configured != expected {
+        bail!("configured Iroh URL endpoint ID does not match the protected mint endpoint key");
+    }
+    Ok(())
+}
+
+fn parse_configured_iroh_endpoint(value: &str) -> Result<Option<EndpointId>> {
+    let Ok(url) = Url::parse(value) else {
+        return Ok(None);
+    };
     if url.scheme() != "iroh" {
-        return Ok(());
+        return Ok(None);
     }
     if !url.username().is_empty()
         || url.password().is_some()
@@ -193,10 +324,7 @@ fn validate_configured_iroh_url(value: &str, expected: EndpointId) -> Result<()>
         .ok_or_else(|| anyhow::anyhow!("configured Iroh URL has no endpoint ID"))?;
     let configured = EndpointId::from_str(host)
         .context("configured Iroh URL contains an invalid endpoint ID")?;
-    if configured != expected {
-        bail!("configured Iroh URL endpoint ID does not match the protected mint endpoint key");
-    }
-    Ok(())
+    Ok(Some(configured))
 }
 
 fn secret_key_path(iroh: &Iroh, work_dir: &Path) -> PathBuf {
@@ -493,5 +621,34 @@ mod tests {
             .expect("enabled endpoint");
         assert_eq!(restarted.node.endpoint_id(), endpoint);
         restarted.node.close().await;
+    }
+
+    #[tokio::test]
+    async fn operator_client_does_not_claim_the_protected_endpoint_identity() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let mut settings = Settings::default();
+        settings.iroh = Some(enabled_static());
+        let protected = protected_endpoint_id(&settings, directory.path())
+            .expect("protected endpoint ID")
+            .expect("enabled endpoint");
+
+        let client = initialize_client(&settings)
+            .await
+            .expect("ephemeral client")
+            .expect("enabled client");
+        assert_ne!(client.endpoint_id(), protected);
+        assert!(!directory
+            .path()
+            .join(DEFAULT_IROH_DIRECTORY)
+            .join(DEFAULT_ENDPOINT_TICKET_FILE)
+            .exists());
+        client.close().await;
+
+        assert_eq!(
+            protected_endpoint_id(&settings, directory.path())
+                .expect("reloaded endpoint ID")
+                .expect("enabled endpoint"),
+            protected
+        );
     }
 }

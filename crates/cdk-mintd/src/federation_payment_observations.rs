@@ -4,7 +4,6 @@ use cdk_common::federation::{
     FederationPaymentObservationReportStatus, FederationPaymentObservationReportSummary,
     MemberConfigPrivate,
 };
-use cdk_http_client::Async;
 
 use crate::cli::{
     CLIArgs, FederationPaymentObservationContextArg, FederationPaymentObservationsArgs,
@@ -29,7 +28,7 @@ pub(crate) async fn run_payment_observations_command(
     let private_config: MemberConfigPrivate =
         crate::read_federation_json(&private_config_path, "private federation config")?;
     let statuses = query_local_statuses(
-        Async::default(),
+        crate::federation_operator_transport(cli_args).await?,
         &public_config,
         &private_config,
         &args.members,

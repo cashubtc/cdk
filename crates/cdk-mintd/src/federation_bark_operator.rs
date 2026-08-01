@@ -9,7 +9,7 @@ use cdk_common::federation::{
     FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic,
     MemberId, FEDERATION_REST_API_VERSION,
 };
-use cdk_http_client::{Async, Transport};
+use cdk_http_client::Transport;
 
 use crate::cli::{CLIArgs, FederationBarkReconcileArgs, FederationBarkRetryArgs};
 
@@ -35,8 +35,10 @@ pub(crate) async fn run_reconcile_command(
     let url = member
         .federation_api_url
         .join_paths(&["federation", "v1", "bark", "reconcile"])?;
-    let response: FederationBarkReconcileResponse =
-        Async::default().http_post(url, None, &request).await?;
+    let response: FederationBarkReconcileResponse = crate::federation_operator_transport(cli_args)
+        .await?
+        .http_post(url, None, &request)
+        .await?;
     if response.version != FEDERATION_REST_API_VERSION {
         bail!("member returned an unsupported Bark reconcile response version");
     }
@@ -80,8 +82,10 @@ pub(crate) async fn run_retry_command(
         member
             .federation_api_url
             .join_paths(&["federation", "v1", "bark", "actions", "retry"])?;
-    let response: FederationBarkRetryResponse =
-        Async::default().http_post(url, None, &request).await?;
+    let response: FederationBarkRetryResponse = crate::federation_operator_transport(cli_args)
+        .await?
+        .http_post(url, None, &request)
+        .await?;
     if response.version != FEDERATION_REST_API_VERSION || response.action_id != action_id {
         bail!("member returned a mismatched Bark retry response");
     }

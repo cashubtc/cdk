@@ -27,14 +27,14 @@ use super::{admit_private_request, federation_error_response, federation_runtime
 /// boundary. It contains public verification material but no root share.
 #[derive(Debug)]
 pub(crate) struct FederatedBarkCustodyPeerClient {
-    client: super::peer_client::FederationRestPeerClient<cdk_http_client::Async>,
+    client: super::peer_client::FederationRestPeerClient<super::FederationTransport>,
     public_config: FederationConfig,
     public: DerivedPublicPackage,
 }
 
 impl FederatedBarkCustodyPeerClient {
     pub(crate) fn new(
-        client: super::peer_client::FederationRestPeerClient<cdk_http_client::Async>,
+        client: super::peer_client::FederationRestPeerClient<super::FederationTransport>,
         public_config: FederationConfig,
         public: DerivedPublicPackage,
     ) -> Self {

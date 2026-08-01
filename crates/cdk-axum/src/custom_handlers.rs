@@ -1916,6 +1916,7 @@ mod tests {
             mint: Arc::clone(&mint),
             cache: Arc::new(HttpCache::default()),
             federation: crate::federation::FederationNodeRuntime {
+                transport: crate::default_federation_transport(),
                 mint: Some(mint),
                 consensus: Some(Arc::new(tokio::sync::Mutex::new(consensus))),
                 peer_sync_config: Some(crate::FederationPeerSyncConfig::default()),
@@ -2758,6 +2759,7 @@ mod tests {
             mint: Arc::clone(&mint),
             cache: Arc::new(HttpCache::default()),
             federation: crate::federation::FederationNodeRuntime {
+                transport: crate::default_federation_transport(),
                 mint: is_federated.then(|| Arc::clone(&mint)),
                 consensus: federation_consensus,
                 peer_sync_config: is_federated.then(crate::FederationPeerSyncConfig::default),

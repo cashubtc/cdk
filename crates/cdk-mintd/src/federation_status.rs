@@ -10,7 +10,7 @@ use cdk_common::federation::{
     FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic,
     MemberId, FEDERATION_REST_API_VERSION,
 };
-use cdk_http_client::{Async, Transport};
+use cdk_http_client::Transport;
 
 use crate::cli::{CLIArgs, FederationStatusArgs};
 
@@ -29,7 +29,7 @@ pub(crate) async fn run_status_command(
     let private_config: MemberConfigPrivate =
         crate::read_federation_json(&private_config_path, "private federation config")?;
     let statuses = query_local_statuses(
-        Async::default(),
+        crate::federation_operator_transport(cli_args).await?,
         &public_config,
         &private_config,
         &args.members,

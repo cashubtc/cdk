@@ -8,7 +8,7 @@ use cdk::federation::{
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_TRANSFER_BYTES,
 };
-use cdk_http_client::{Async, Transport};
+use cdk_http_client::Transport;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::time::{self, Instant};
 
@@ -68,7 +68,7 @@ pub(crate) fn spawn_federation_peer_sync_loop_with_config(
     let private_config = config.private_config().clone();
     tokio::spawn(async move {
         let client = match FederationRestPeerClient::new_with_validated_config(
-            Async::default(),
+            state.federation.transport.clone(),
             &public_config,
             private_config,
             sync_config,

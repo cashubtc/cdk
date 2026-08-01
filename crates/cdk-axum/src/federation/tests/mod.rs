@@ -113,3 +113,5 @@ include!("aleph_runtime.rs");
 include!("operations.rs");
 include!("operation_results.rs");
 include!("status.rs");
+#[cfg(feature = "iroh")]
+include!("iroh_transport.rs");

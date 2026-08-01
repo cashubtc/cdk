@@ -13,7 +13,7 @@ use cdk::federation::{
     MemberId,
 };
 use cdk_common::database::DynMintDatabase;
-use cdk_http_client::{Async, Transport};
+use cdk_http_client::Transport;
 use futures::channel::oneshot;
 use futures::future::join_all;
 use futures::FutureExt;
@@ -608,7 +608,7 @@ pub(crate) async fn start_federation_aleph_bft_live_session_with_config(
         state,
         sync_config,
         FederationAlephBftLiveSessionOptions::from_sync_config(pump_config, sync_config),
-        Async::default(),
+        state.federation.transport.clone(),
     )
     .await
 }

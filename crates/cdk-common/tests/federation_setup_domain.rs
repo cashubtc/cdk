@@ -28,7 +28,7 @@ use cdk_common::{Amount, CurrencyUnit};
 const SETUP_ID_BYTES: [u8; 32] = [7; 32];
 const COORDINATOR_SECRET: u16 = 60_000;
 const NOW_UNIX: u64 = 1_900_000_000;
-const URL_POLICY: FederationSetupUrlPolicy = FederationSetupUrlPolicy::RequireHttps;
+const URL_POLICY: FederationSetupUrlPolicy = FederationSetupUrlPolicy::RequireSecureTransport;
 
 #[test]
 fn constructors_canonicalize_keysets_and_manifest_round_trips() {
@@ -198,6 +198,71 @@ fn duplicate_identity_url_member_binding_and_invitation_are_rejected() {
             .expect_err("duplicate invitation must fail"),
         "duplicate invitation ID",
     );
+}
+
+#[test]
+fn secure_setup_policy_accepts_iroh_and_allows_one_shared_member_endpoint() {
+    let shared = mint_url("iroh://member-one-endpoint");
+    FederationSetupEnrollment::sign_no_aux_rand_for_test_vector(
+        setup_id(),
+        FederationSetupInvitationId::from_bytes([1; 32]),
+        member_id(1),
+        shared.clone(),
+        shared,
+        [11; 32],
+        versions(),
+        &secret_key(1),
+        URL_POLICY,
+    )
+    .expect("one Iroh endpoint may serve public and federation routes");
+
+    let mut shared_endpoint_enrollments = enrollments();
+    shared_endpoint_enrollments.insert(
+        member_id(1),
+        signed_enrollment(
+            1,
+            1,
+            1,
+            "iroh://member-one-endpoint",
+            "iroh://member-one-endpoint",
+        ),
+    );
+    proposal_body(
+        shared_endpoint_enrollments,
+        thresholds(),
+        versions(),
+        keysets(),
+    )
+    .expect("proposal permits one member to share its Iroh endpoint");
+
+    let shared_https = mint_url("https://member-one.example");
+    let duplicate_https = FederationSetupEnrollment::sign_no_aux_rand_for_test_vector(
+        setup_id(),
+        FederationSetupInvitationId::from_bytes([1; 32]),
+        member_id(1),
+        shared_https.clone(),
+        shared_https,
+        [11; 32],
+        versions(),
+        &secret_key(1),
+        URL_POLICY,
+    )
+    .expect_err("one HTTPS URL cannot collapse public and private route roles");
+    assert_invalid_setup(duplicate_https, "must be distinct");
+
+    let iroh_with_port = FederationSetupEnrollment::sign_no_aux_rand_for_test_vector(
+        setup_id(),
+        FederationSetupInvitationId::from_bytes([1; 32]),
+        member_id(1),
+        mint_url("iroh://member-one-endpoint:443"),
+        mint_url("iroh://member-one-federation"),
+        [11; 32],
+        versions(),
+        &secret_key(1),
+        URL_POLICY,
+    )
+    .expect_err("Iroh endpoint URLs do not carry TCP ports");
+    assert_invalid_setup(iroh_with_port, "HTTPS or Iroh");
 }
 
 #[test]

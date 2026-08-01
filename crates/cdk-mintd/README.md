@@ -470,6 +470,39 @@ The example config lists every timeout and admission limit. All Iroh fields
 also have `CDK_MINTD_IROH_*` environment forms; comma-separate relay URLs or
 tickets. `CDK_MINTD_HTTP_ENABLED=false` disables the TCP listener.
 
+For an Iroh-backed federation, build mintd with both features and initialize a
+different protected endpoint identity for every member:
+
+```bash
+cargo build -p cdk-mintd --release --features federation,iroh
+cdk-mintd --work-dir /var/lib/cdk-mintd iroh init
+```
+
+Put each printed URL in that member's `federation_api_url` during the ordinary
+`federation setup create` or `join` workflow. A member may use the same Iroh
+URL for its public mint URL and federation API URL. It may instead keep its
+public mint on HTTPS while all setup, DKG, FROST, consensus, checkpoint,
+catch-up, Bark, and operator calls use Iroh.
+
+The long-lived `federation setup serve` process and the activated mint daemon
+own the protected endpoint identity. One-shot setup and operator CLI commands
+use ephemeral dialing identities with the configured discovery policy, so
+they can run while the service endpoint is online without competing for its
+identity or UDP bind address. Pass the runtime configuration and work directory
+as top-level options to those commands:
+
+```bash
+cdk-mintd --work-dir /var/lib/cdk-mintd --config config.toml \
+  federation setup status --config setup.json --json
+```
+
+With `discovery = "n0"`, endpoint IDs are enough and no ticket distribution is
+required. With `static` or `custom` discovery, each activated member must
+configure exactly one current ticket for every remote Iroh endpoint in the
+federation roster. Startup rejects missing, duplicate, or out-of-roster
+tickets, duplicate endpoint IDs across members, and a local roster URL that
+does not match the protected endpoint key.
+
 ### Fake Wallet Custom Payment Methods
 
 The fake wallet backend can advertise custom payment methods for testing NUT-04

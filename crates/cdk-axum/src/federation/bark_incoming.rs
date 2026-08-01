@@ -18,7 +18,6 @@ use cdk::mint::{MintQuoteRequest, MintQuoteResponse, QuoteId};
 use cdk::nuts::CurrencyUnit;
 use cdk::Amount;
 use cdk_frost::rand_core::{OsRng, RngCore};
-use cdk_http_client::Async;
 use sha2::{Digest, Sha256};
 
 use crate::MintState;
@@ -93,7 +92,7 @@ async fn collect_bark_evidence_certificate(
             .member(collector)
             .ok_or(cdk::Error::Internal)?;
         let peer_client = FederationRestPeerClient::new_with_validated_config(
-            Async::default(),
+            state.federation.transport.clone(),
             federation.public_config(),
             federation.private_config().clone(),
             state
@@ -968,7 +967,7 @@ async fn accepted_invoice(
         .cloned()
         .collect::<Vec<MemberConfigPublic>>();
     let peer_client = FederationRestPeerClient::new_with_validated_config(
-        Async::default(),
+        state.federation.transport.clone(),
         federation.public_config(),
         federation.private_config().clone(),
         state
