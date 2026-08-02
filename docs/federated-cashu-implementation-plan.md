@@ -1,6 +1,6 @@
 # Federated Cashu with CDK: implementation plan
 
-> **Current status — 2026-07-29:** The fakewallet development scope is
+> **Current status — 2026-08-02:** The fakewallet development scope is
 > implemented and its cleanup milestones are reconciled in
 > [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md). The federation is **not
 > production-ready**. In particular, bearer proofs still do not authenticate
@@ -21,6 +21,23 @@
 > five-member restart. This closes the requested Nocean paid-backend smoke, not
 > the protocol, adversarial, database-parity, multi-host, or production gates
 > below.
+> That first paid smoke deployed only denomination `1`, which supports a
+> 1,000-sat issuance at the output-count limit but makes larger issuances fail.
+> The deployment tooling now defaults to and verifies all 64 power-of-two
+> denominations. A replacement all-Iroh Nocean ceremony completed setup, DKG,
+> activation, smoke, outage/catch-up, restart, and backup/restore drills with
+> the complete keyset. A local TUI then minted a confirmed 973-sat onchain
+> quote over Iroh. Paid BOLT11 minting and both paid melt paths on this
+> replacement deployment remain open: the external Wavelength payer refunded
+> the BOLT11 payment because its claim-expiry margin was too short, while the
+> TUI's 973-sat balance cannot cover either the BDK melt fee reserve or Bark's
+> 1,000-sat minimum plus fees.
+> Mobile federation bindings and the Android and iOS reference wallets now
+> accept canonical `iroh://<endpoint-id>` mint addresses and use Iroh for
+> federation discovery and requests. Native Android-emulator and iOS-simulator
+> live tests against the replacement Nocean federation both discovered all
+> five members, required threshold three, verified the all-Iroh roster and
+> advertised payment capabilities, and created BOLT11 and onchain mint quotes.
 
 This is a living design, status, and development contract for federated Cashu support in CDK. Treat its safety and architecture rules as constraints, not suggestions. If a requested change conflicts with them, explain the conflict instead of implementing a workaround.
 
@@ -41,6 +58,28 @@ Every safety-critical operation must be ordered, durably journaled, replayable, 
 
 ## Current implementation state
 
+- The reproducible single-host Nocean drill runs each of five operators in an
+  independent tmux session using the same setup CLI steps expected from real
+  operators. DKG and activation are launched concurrently; the protocol does
+  not depend on shell-level serialization. The latest complete-keyset run uses
+  tmux prefix `cdk-all-iroh-bark-full` and records its machine-readable result
+  in `target/nocean-iroh-bark-full-keyset-drill.json`.
+- Nocean payment verification distinguishes transport and quote correctness
+  from completed paid operations. On the replacement deployment, local TUI
+  discovery, health, BOLT11/onchain quote creation, and a paid confirmed
+  onchain mint are proven over Iroh. A 546-sat onchain melt quote also reached
+  the BDK backend but reserved 1,989 sats of fees, and a 500-sat BOLT11 melt was
+  correctly below Bark's 1,000-sat minimum. Fresh funded BOLT11 issuance and
+  completed BOLT11/onchain melts require additional Signet test liquidity and
+  must not be reported as complete until their resulting wallet state is
+  verified.
+- Generated mobile bindings include the Iroh federation connector. Android
+  supplies a platform-safe DNS resolver and all four ABI libraries pass the
+  binding rebuild's 16 KiB alignment check. The iOS Swift package links the
+  Apple networking frameworks required by Iroh. Both apps share strict
+  canonical-Iroh URL validation across add, restore, scan, discovery, and
+  metadata paths; their opt-in native live tests take the endpoint from test
+  configuration instead of embedding a deployment address.
 - Federation setup uses a real dealer-free DKG ceremony with enrollment, roster agreement, identity binding, restartable rounds, transcript signatures, activation, and identical final public configuration export.
   Enrollment and roster assembly are currently file-mediated and assume an
   authenticated out-of-band operator ceremony. The planned signed,
