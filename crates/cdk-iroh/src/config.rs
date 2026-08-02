@@ -48,10 +48,14 @@ pub struct IrohTimeouts {
     pub connect: Duration,
     /// Maximum time spent opening one request stream.
     pub stream_open: Duration,
-    /// Maximum time spent waiting for response headers.
+    /// Maximum time spent waiting for request or response headers.
     pub response_headers: Duration,
-    /// Maximum duration between successive response body frames.
+    /// Maximum duration between successive request or response body frames.
     pub body_progress: Duration,
+    /// Maximum duration of one non-WebSocket HTTP request.
+    pub request: Duration,
+    /// Maximum duration an admitted connection may remain without active streams.
+    pub connection_idle: Duration,
     /// Maximum graceful shutdown drain duration.
     pub shutdown: Duration,
 }
@@ -63,6 +67,8 @@ impl Default for IrohTimeouts {
             stream_open: protocol::STREAM_OPEN_TIMEOUT,
             response_headers: protocol::HEADER_TIMEOUT,
             body_progress: protocol::BODY_PROGRESS_TIMEOUT,
+            request: protocol::REQUEST_TIMEOUT,
+            connection_idle: protocol::CONNECTION_IDLE_TIMEOUT,
             shutdown: protocol::SHUTDOWN_TIMEOUT,
         }
     }
@@ -73,7 +79,7 @@ impl Default for IrohTimeouts {
 pub struct IrohLimits {
     /// Maximum simultaneous incoming Iroh connections.
     pub max_connections: usize,
-    /// Maximum distinct endpoint/ALPN entries retained by the outgoing pool.
+    /// Maximum distinct endpoints retained by the outgoing pool.
     pub max_pooled_connections: usize,
     /// Maximum simultaneous incoming connections from one authenticated peer.
     pub max_connections_per_peer: usize,

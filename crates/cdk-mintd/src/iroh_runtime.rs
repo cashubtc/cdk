@@ -80,9 +80,9 @@ pub(crate) async fn initialize_client(settings: &Settings) -> Result<Option<Iroh
     };
     let mut config = transport_config(iroh)?;
     config.bind_addr = None;
-    let node = IrohNode::ephemeral(config)
+    let node = IrohNode::client(config)
         .await
-        .context("failed to initialize ephemeral Iroh client endpoint")?;
+        .context("failed to initialize outgoing Iroh client endpoint")?;
     Ok(Some(node))
 }
 
@@ -288,6 +288,11 @@ fn transport_config(iroh: &Iroh) -> Result<IrohConfig> {
             "response headers",
         )?,
         body_progress: nonzero_duration(iroh.timeouts.body_progress_seconds, "body progress")?,
+        request: nonzero_duration(iroh.timeouts.request_seconds, "request")?,
+        connection_idle: nonzero_duration(
+            iroh.timeouts.connection_idle_seconds,
+            "connection idle",
+        )?,
         shutdown: nonzero_duration(iroh.timeouts.shutdown_seconds, "shutdown")?,
     };
     let limits = IrohLimits {

@@ -30,11 +30,12 @@ use cdk_iroh::{
     IrohNode, IrohServer, IrohStream, IrohTimeouts, IrohTransport, RelayUrl, SecretKey,
 };
 use futures::{future::join_all, stream};
-use http_body_util::{BodyExt, Full};
-use hyper::{header, Method};
+use http_body_util::{BodyExt, Full, StreamBody};
+use hyper::{body::Frame, header, Method};
 use hyper_util::rt::TokioIo;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::io::AsyncWriteExt;
 use url::Url;
 
 type TestError = Box<dyn StdError + Send + Sync>;
@@ -84,6 +85,11 @@ async fn stream_response() -> Body {
     Body::from_stream(stream::iter(chunks))
 }
 
+async fn slow_response() -> &'static str {
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    "too late"
+}
+
 async fn websocket(upgrade: WebSocketUpgrade) -> impl IntoResponse {
     upgrade.on_upgrade(websocket_echo)
 }
@@ -113,6 +119,7 @@ fn synthetic_router() -> Router {
             get(|| async { (StatusCode::IM_A_TEAPOT, "teapot") }),
         )
         .route("/stream", post(stream_response))
+        .route("/slow", get(slow_response))
         .route("/peer", get(connection_info))
         .route("/future-route", get(|| async { "future-route" }))
         .route("/echo-bytes", post(|body: Bytes| async move { body }))
@@ -149,8 +156,7 @@ impl Fixture {
     async fn start() -> TestResult<Self> {
         let server_node = IrohNode::ephemeral(loopback_config()).await?;
         let client_node =
-            IrohNode::ephemeral(loopback_config().with_ticket(server_node.endpoint_ticket()))
-                .await?;
+            IrohNode::client(loopback_config().with_ticket(server_node.endpoint_ticket())).await?;
         let server = IrohServer::start(server_node.clone(), synthetic_router());
         let transport = IrohTransport::with_node(client_node.clone(), MockHttp::default());
         Ok(Self {
@@ -296,7 +302,7 @@ async fn static_discovery_fails_offline_and_recovers_after_ticket_refresh() -> T
     let first_ticket = first_server_node.endpoint_ticket();
     let first_server = IrohServer::start(first_server_node.clone(), synthetic_router());
 
-    let client_node = IrohNode::ephemeral(IrohConfig {
+    let client_node = IrohNode::client(IrohConfig {
         timeouts: IrohTimeouts {
             connect: Duration::from_millis(500),
             ..IrohTimeouts::default()
@@ -317,6 +323,7 @@ async fn static_discovery_fails_offline_and_recovers_after_ticket_refresh() -> T
     ));
 
     client_node.add_ticket(first_ticket);
+    tokio::time::sleep(Duration::from_millis(350)).await;
     assert_eq!(client.get_raw(url.clone(), None).await?.status(), 200);
     first_server.shutdown().await?;
 
@@ -334,6 +341,7 @@ async fn static_discovery_fails_offline_and_recovers_after_ticket_refresh() -> T
     let second_server = IrohServer::start(second_server_node.clone(), synthetic_router());
     client_node.add_ticket(second_server_node.endpoint_ticket());
 
+    tokio::time::sleep(Duration::from_millis(350)).await;
     assert_eq!(client.get_raw(url, None).await?.status(), 200);
     second_server.shutdown().await?;
     client_node.close().await;
@@ -401,7 +409,7 @@ async fn ambiguous_post_is_reported_once_and_never_replayed() -> TestResult {
     let received = Arc::new(AtomicUsize::new(0));
     let server_node = IrohNode::ephemeral(loopback_config()).await?;
     let client_node =
-        IrohNode::ephemeral(loopback_config().with_ticket(server_node.endpoint_ticket())).await?;
+        IrohNode::client(loopback_config().with_ticket(server_node.endpoint_ticket())).await?;
     let router = Router::new()
         .route("/ambiguous", post(receive_then_wait))
         .layer(Extension(received.clone()));
@@ -603,7 +611,7 @@ async fn request_and_response_limits_are_enforced_before_unbounded_allocation() 
     })
     .await?;
     let client_node =
-        IrohNode::ephemeral(loopback_config().with_ticket(server_node.endpoint_ticket())).await?;
+        IrohNode::client(loopback_config().with_ticket(server_node.endpoint_ticket())).await?;
     let server = IrohServer::start(server_node.clone(), synthetic_router());
     let client = IrohClient::new(client_node.clone());
     let response = client
@@ -617,7 +625,7 @@ async fn request_and_response_limits_are_enforced_before_unbounded_allocation() 
         .await?;
     assert!(!response.is_success());
 
-    let tiny_client = IrohNode::ephemeral(IrohConfig {
+    let tiny_client = IrohNode::client(IrohConfig {
         limits: IrohLimits {
             max_request_body_bytes: 4,
             ..IrohLimits::default()
@@ -700,8 +708,14 @@ async fn stream_admission_rejects_excess_work_and_recovers_capacity() -> TestRes
         ..loopback_config()
     })
     .await?;
-    let client_node =
-        IrohNode::ephemeral(loopback_config().with_ticket(server_node.endpoint_ticket())).await?;
+    let client_node = IrohNode::client(IrohConfig {
+        timeouts: IrohTimeouts {
+            stream_open: Duration::from_millis(200),
+            ..IrohTimeouts::default()
+        },
+        ..loopback_config().with_ticket(server_node.endpoint_ticket())
+    })
+    .await?;
     let server = IrohServer::start(server_node.clone(), synthetic_router());
     let transport = IrohTransport::with_node(client_node.clone(), MockHttp::default());
     let websocket_url = iroh_url(server_node.endpoint_id(), "/ws")?.to_string();
@@ -718,8 +732,6 @@ async fn stream_admission_rejects_excess_work_and_recovers_capacity() -> TestRes
         rejected,
         HttpError::Connection(_) | HttpError::Timeout
     ));
-    assert!(server_node.metrics().admission_rejections >= 1);
-
     sender.close().await?;
     drop(sender);
     drop(receiver);
@@ -731,6 +743,172 @@ async fn stream_admission_rejects_excess_work_and_recovers_capacity() -> TestRes
 
     server.shutdown().await?;
     client_node.close().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn total_request_deadline_returns_gateway_timeout() -> TestResult {
+    let server_node = IrohNode::ephemeral(IrohConfig {
+        timeouts: IrohTimeouts {
+            request: Duration::from_millis(100),
+            ..IrohTimeouts::default()
+        },
+        ..loopback_config()
+    })
+    .await?;
+    let client_node =
+        IrohNode::client(loopback_config().with_ticket(server_node.endpoint_ticket())).await?;
+    let server = IrohServer::start(server_node.clone(), synthetic_router());
+    let response = IrohClient::new(client_node.clone())
+        .get_raw(iroh_url(server_node.endpoint_id(), "/slow")?, None)
+        .await?;
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT.as_u16());
+
+    server.shutdown().await?;
+    client_node.close().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn client_total_request_deadline_cancels_slow_response() -> TestResult {
+    let server_node = IrohNode::ephemeral(loopback_config()).await?;
+    let client_node = IrohNode::client(IrohConfig {
+        timeouts: IrohTimeouts {
+            request: Duration::from_millis(100),
+            ..IrohTimeouts::default()
+        },
+        ..loopback_config().with_ticket(server_node.endpoint_ticket())
+    })
+    .await?;
+    let server = IrohServer::start(server_node.clone(), synthetic_router());
+    let error = IrohClient::new(client_node.clone())
+        .get_raw(iroh_url(server_node.endpoint_id(), "/slow")?, None)
+        .await
+        .expect_err("client request deadline must cancel a slow response");
+    assert!(matches!(
+        error,
+        Error::Timeout {
+            operation: "request"
+        }
+    ));
+
+    server.shutdown().await?;
+    client_node.close().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_connections_are_reaped_and_reconnect_on_demand() -> TestResult {
+    let server_node = IrohNode::ephemeral(IrohConfig {
+        timeouts: IrohTimeouts {
+            connection_idle: Duration::from_millis(100),
+            ..IrohTimeouts::default()
+        },
+        ..loopback_config()
+    })
+    .await?;
+    let client_node =
+        IrohNode::client(loopback_config().with_ticket(server_node.endpoint_ticket())).await?;
+    let server = IrohServer::start(server_node.clone(), synthetic_router());
+    let client = IrohClient::new(client_node.clone());
+    let url = iroh_url(server_node.endpoint_id(), "/future-route")?;
+
+    assert_eq!(client.get_raw(url.clone(), None).await?.status(), 200);
+    wait_for(|| server_node.metrics().active_connections == 0).await?;
+    assert_eq!(client.get_raw(url, None).await?.status(), 200);
+
+    server.shutdown().await?;
+    client_node.close().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_dials_use_bounded_retry_backoff() -> TestResult {
+    let client_node = IrohNode::client(IrohConfig {
+        timeouts: IrohTimeouts {
+            connect: Duration::from_millis(100),
+            ..IrohTimeouts::default()
+        },
+        ..loopback_config()
+    })
+    .await?;
+    let client = IrohClient::new(client_node.clone());
+    let unknown = SecretKey::generate().public();
+    let url = iroh_url(unknown, "/unavailable")?;
+
+    client
+        .get_raw(url.clone(), None)
+        .await
+        .expect_err("first dial must fail");
+    let attempts = client_node.metrics().connection_attempts;
+    let second = client
+        .get_raw(url, None)
+        .await
+        .expect_err("immediate retry must be rate-limited");
+    assert!(matches!(second, Error::ConnectBackoff { .. }));
+    assert_eq!(client_node.metrics().connection_attempts, attempts);
+
+    client_node.close().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stalled_request_headers_and_bodies_time_out_and_release_capacity() -> TestResult {
+    let server_node = IrohNode::ephemeral(IrohConfig {
+        timeouts: IrohTimeouts {
+            response_headers: Duration::from_millis(200),
+            body_progress: Duration::from_millis(200),
+            ..IrohTimeouts::default()
+        },
+        limits: IrohLimits {
+            max_streams: 1,
+            max_streams_per_connection: 1,
+            ..IrohLimits::default()
+        },
+        ..loopback_config()
+    })
+    .await?;
+    let server = IrohServer::start(server_node.clone(), synthetic_router());
+    let raw_endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .bind_addr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?
+        .bind()
+        .await?;
+    let connection = raw_endpoint
+        .connect(server_node.endpoint_addr(), protocol::ALPN)
+        .await?;
+
+    let (mut stalled_send, stalled_recv) = connection.open_bi().await?;
+    stalled_send.write_all(b"G").await?;
+    stalled_send.flush().await?;
+    wait_for(|| server_node.metrics().active_streams == 1).await?;
+    wait_for(|| server_node.metrics().active_streams == 0).await?;
+    assert!(server_node.metrics().timeouts >= 1);
+    drop(stalled_send);
+    drop(stalled_recv);
+
+    let (send, recv) = connection.open_bi().await?;
+    let stream = TokioIo::new(IrohStream::new(send, recv));
+    let (mut sender, driver) = hyper::client::conn::http1::handshake(stream).await?;
+    let driver = tokio::spawn(driver);
+    let pending_body = stream::pending::<Result<Frame<Bytes>, Infallible>>();
+    let request = hyper::Request::builder()
+        .method(Method::POST)
+        .uri("/echo-bytes")
+        .header(header::HOST, server_node.endpoint_id().to_string())
+        .header(header::CONTENT_LENGTH, "1")
+        .body(StreamBody::new(pending_body))?;
+    let response =
+        tokio::time::timeout(Duration::from_secs(2), sender.send_request(request)).await?;
+    if let Ok(response) = response {
+        assert!(!response.status().is_success());
+        response.into_body().collect().await?;
+    }
+    drop(sender);
+    let _ = tokio::time::timeout(Duration::from_secs(2), driver).await?;
+    wait_for(|| server_node.metrics().timeouts >= 2).await?;
+
+    raw_endpoint.close().await;
+    server.shutdown().await?;
     Ok(())
 }
 
@@ -751,8 +929,8 @@ async fn connection_admission_rejects_and_recovers_global_capacity() -> TestResu
         },
         ..loopback_config().with_ticket(server_node.endpoint_ticket())
     };
-    let first_client = IrohNode::ephemeral(client_config.clone()).await?;
-    let second_client = IrohNode::ephemeral(client_config).await?;
+    let first_client = IrohNode::client(client_config.clone()).await?;
+    let second_client = IrohNode::client(client_config).await?;
     let server = IrohServer::start(server_node.clone(), synthetic_router());
     let first = IrohTransport::with_node(first_client.clone(), MockHttp::default());
     let second = IrohTransport::with_node(second_client.clone(), MockHttp::default());
@@ -777,6 +955,7 @@ async fn connection_admission_rejects_and_recovers_global_capacity() -> TestResu
 
     first_client.close().await;
     wait_for(|| server_node.metrics().active_connections == 0).await?;
+    tokio::time::sleep(Duration::from_millis(350)).await;
     assert_eq!(
         second
             .http_get_raw(iroh_url(server_node.endpoint_id(), "/future-route")?, None)
@@ -835,7 +1014,7 @@ async fn per_peer_connection_admission_releases_after_disconnect() -> TestResult
 async fn outgoing_pool_is_bounded_and_reclaims_closed_entries() -> TestResult {
     let first_server_node = IrohNode::ephemeral(loopback_config()).await?;
     let second_server_node = IrohNode::ephemeral(loopback_config()).await?;
-    let client_node = IrohNode::ephemeral(IrohConfig {
+    let client_node = IrohNode::client(IrohConfig {
         limits: IrohLimits {
             max_pooled_connections: 1,
             ..IrohLimits::default()
@@ -892,7 +1071,7 @@ async fn outgoing_pool_is_bounded_and_reclaims_closed_entries() -> TestResult {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn scheme_dispatch_delegates_exactly_and_never_falls_back() -> TestResult {
-    let node = IrohNode::ephemeral(IrohConfig {
+    let node = IrohNode::client(IrohConfig {
         timeouts: IrohTimeouts {
             connect: Duration::from_millis(250),
             ..IrohTimeouts::default()

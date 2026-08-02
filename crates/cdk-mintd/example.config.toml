@@ -40,6 +40,8 @@ mnemonic = "env:CDK_MINTD_MNEMONIC"
 # stream_open_seconds = 10
 # response_headers_seconds = 15
 # body_progress_seconds = 30
+# request_seconds = 60
+# connection_idle_seconds = 300
 # shutdown_seconds = 10
 #
 # [iroh.limits]

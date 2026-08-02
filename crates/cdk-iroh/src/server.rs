@@ -3,11 +3,14 @@
 use std::{
     collections::HashMap,
     error::Error as StdError,
-    fmt, io,
+    fmt,
+    future::Future,
+    io,
     panic::AssertUnwindSafe,
     pin::Pin,
     sync::{atomic::Ordering, Arc, Mutex as StdMutex},
     task::{Context, Poll},
+    time::Duration,
 };
 
 use axum::body::Body;
@@ -18,8 +21,9 @@ use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use iroh::{endpoint::Connection, EndpointId};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    sync::{OwnedSemaphorePermit, Semaphore},
+    sync::{Notify, OwnedSemaphorePermit, Semaphore},
     task::{JoinHandle, JoinSet},
+    time::{Instant, Sleep},
 };
 use tokio_util::sync::CancellationToken;
 use tower::Service;
@@ -153,35 +157,48 @@ where
                     drop(incoming);
                     continue;
                 };
-                let connection = match tokio::time::timeout(node.config().timeouts.connect, incoming).await {
-                    Ok(Ok(connection)) => connection,
-                    Ok(Err(_)) => continue,
-                    Err(_) => {
-                        node.metrics_inner().timeouts.fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    }
-                };
-                let remote_endpoint_id = connection.remote_id();
-                let Some(peer_guard) = peer_admission.try_admit(remote_endpoint_id) else {
-                    node.metrics_inner().admission_rejections.fetch_add(1, Ordering::Relaxed);
-                    connection.close(0_u32.into(), b"peer admission limit");
-                    continue;
-                };
                 let metrics = node.metrics_inner();
-                metrics.active_connections.fetch_add(1, Ordering::Relaxed);
-                connections.spawn(serve_connection(
-                    connection,
-                    service.clone(),
-                    node.endpoint_id().to_string(),
-                    cancellation.clone(),
-                    stream_admission.clone(),
-                    limits.max_streams_per_connection,
-                    limits.max_header_bytes,
-                    limits.max_request_body_bytes,
-                    metrics,
-                    connection_permit,
-                    peer_guard,
-                ));
+                let service = service.clone();
+                let expected_authority = node.endpoint_id().to_string();
+                let cancellation = cancellation.clone();
+                let stream_admission = stream_admission.clone();
+                let peer_admission = peer_admission.clone();
+                let node_timeouts = node.config().timeouts;
+                let handshake_timeout = node_timeouts.connect;
+                connections.spawn(async move {
+                    let connection = match tokio::time::timeout(handshake_timeout, incoming).await {
+                        Ok(Ok(connection)) => connection,
+                        Ok(Err(_)) => return,
+                        Err(_) => {
+                            metrics.timeouts.fetch_add(1, Ordering::Relaxed);
+                            return;
+                        }
+                    };
+                    let remote_endpoint_id = connection.remote_id();
+                    let Some(peer_guard) = peer_admission.try_admit(remote_endpoint_id) else {
+                        metrics.admission_rejections.fetch_add(1, Ordering::Relaxed);
+                        connection.close(0_u32.into(), b"peer admission limit");
+                        return;
+                    };
+                    metrics.active_connections.fetch_add(1, Ordering::Relaxed);
+                    serve_connection(
+                        connection,
+                        service,
+                        expected_authority,
+                        cancellation,
+                        stream_admission,
+                        node_timeouts.response_headers,
+                        node_timeouts.body_progress,
+                        node_timeouts.request,
+                        node_timeouts.connection_idle,
+                        limits.max_header_bytes,
+                        limits.max_request_body_bytes,
+                        metrics,
+                        connection_permit,
+                        peer_guard,
+                    )
+                    .await;
+                });
             }
         }
     }
@@ -201,7 +218,10 @@ async fn serve_connection<S, B>(
     expected_authority: String,
     cancellation: CancellationToken,
     global_stream_admission: Arc<Semaphore>,
-    max_streams_per_connection: usize,
+    header_timeout: Duration,
+    body_progress_timeout: Duration,
+    request_timeout: Duration,
+    connection_idle_timeout: Duration,
     max_header_bytes: usize,
     max_request_body_bytes: usize,
     metrics: Arc<MetricsInner>,
@@ -216,9 +236,10 @@ async fn serve_connection<S, B>(
     B::Error: Into<BoxError>,
 {
     let _activity = ConnectionActivity::new(metrics.clone());
-    let local_stream_admission = Arc::new(Semaphore::new(max_streams_per_connection));
     let remote_endpoint_id = connection.remote_id();
     let mut streams = JoinSet::new();
+    let idle = tokio::time::sleep(connection_idle_timeout);
+    tokio::pin!(idle);
     loop {
         tokio::select! {
             () = cancellation.cancelled() => {
@@ -229,20 +250,33 @@ async fn serve_connection<S, B>(
                 if let Some(Err(_)) = result {
                     tracing::warn!(peer = %remote_endpoint_id.fmt_short(), "Iroh stream task terminated unexpectedly");
                 }
+                if streams.is_empty() {
+                    idle.as_mut().reset(Instant::now() + connection_idle_timeout);
+                }
+            }
+            () = &mut idle, if streams.is_empty() => {
+                tracing::debug!(peer = %remote_endpoint_id.fmt_short(), "closing idle Iroh connection");
+                connection.close(0_u32.into(), b"idle timeout");
+                break;
             }
             stream = connection.accept_bi() => {
                 let Ok((send, recv)) = stream else {
                     break;
                 };
-                let permits = (
-                    global_stream_admission.clone().try_acquire_owned(),
-                    local_stream_admission.clone().try_acquire_owned(),
-                );
-                let (Ok(global_permit), Ok(local_permit)) = permits else {
-                    metrics.admission_rejections.fetch_add(1, Ordering::Relaxed);
-                    drop(send);
-                    drop(recv);
-                    continue;
+                let global_permit = tokio::select! {
+                    permit = global_stream_admission.clone().acquire_owned() => {
+                        let Ok(permit) = permit else {
+                            drop(send);
+                            drop(recv);
+                            break;
+                        };
+                        permit
+                    }
+                    () = cancellation.cancelled() => {
+                        drop(send);
+                        drop(recv);
+                        break;
+                    }
                 };
                 streams.spawn(serve_stream(
                     send,
@@ -251,11 +285,13 @@ async fn serve_connection<S, B>(
                     IrohConnectionInfo { remote_endpoint_id },
                     expected_authority.clone(),
                     cancellation.clone(),
+                    header_timeout,
+                    body_progress_timeout,
+                    request_timeout,
                     max_header_bytes,
                     max_request_body_bytes,
                     metrics.clone(),
                     global_permit,
-                    local_permit,
                 ));
             }
         }
@@ -275,11 +311,13 @@ async fn serve_stream<S, B>(
     connection_info: IrohConnectionInfo,
     expected_authority: String,
     cancellation: CancellationToken,
+    header_timeout: Duration,
+    body_progress_timeout: Duration,
+    request_timeout: Duration,
     max_header_bytes: usize,
     max_request_body_bytes: usize,
     metrics: Arc<MetricsInner>,
     global_permit: OwnedSemaphorePermit,
-    local_permit: OwnedSemaphorePermit,
 ) where
     S: Service<Request<Body>, Response = Response<B>> + Clone + Send + 'static,
     S::Future: Send + 'static,
@@ -292,21 +330,41 @@ async fn serve_stream<S, B>(
         IrohStream::new(send, recv),
         metrics.clone(),
         global_permit,
-        local_permit,
     ));
+    let request_started = Arc::new(Notify::new());
     let service = ConnectionInfoService {
         inner: service,
         connection_info,
         expected_authority,
         max_request_body_bytes,
+        body_progress_timeout,
+        request_timeout,
+        request_started: request_started.clone(),
         metrics: metrics.clone(),
     };
     let service = TowerToHyperService::new(service);
     let mut builder = hyper::server::conn::http1::Builder::new();
     builder.max_buf_size(max_header_bytes);
     let connection = builder.serve_connection(stream, service).with_upgrades();
+    tokio::pin!(connection);
+    let headers = tokio::time::sleep(header_timeout);
+    tokio::pin!(headers);
     tokio::select! {
-        result = connection => {
+        result = &mut connection => {
+            if result.is_err() {
+                tracing::debug!("Iroh HTTP stream ended with a framing error");
+            }
+            return;
+        }
+        () = request_started.notified() => {}
+        () = &mut headers => {
+            metrics.timeouts.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        () = cancellation.cancelled() => return,
+    }
+    tokio::select! {
+        result = &mut connection => {
             if result.is_err() {
                 tracing::debug!("Iroh HTTP stream ended with a framing error");
             }
@@ -320,7 +378,6 @@ struct AdmittedStream {
     inner: IrohStream,
     _activity: StreamActivity,
     _global_permit: OwnedSemaphorePermit,
-    _local_permit: OwnedSemaphorePermit,
 }
 
 impl AdmittedStream {
@@ -328,13 +385,11 @@ impl AdmittedStream {
         inner: IrohStream,
         metrics: Arc<MetricsInner>,
         global_permit: OwnedSemaphorePermit,
-        local_permit: OwnedSemaphorePermit,
     ) -> Self {
         Self {
             inner,
             _activity: StreamActivity::new(metrics),
             _global_permit: global_permit,
-            _local_permit: local_permit,
         }
     }
 }
@@ -373,6 +428,9 @@ struct ConnectionInfoService<S> {
     connection_info: IrohConnectionInfo,
     expected_authority: String,
     max_request_body_bytes: usize,
+    body_progress_timeout: Duration,
+    request_timeout: Duration,
+    request_started: Arc<Notify>,
     metrics: Arc<MetricsInner>,
 }
 
@@ -395,6 +453,7 @@ where
     }
 
     fn call(&mut self, request: Request<Incoming>) -> Self::Future {
+        self.request_started.notify_one();
         let (mut parts, body) = request.into_parts();
         let authority_matches = parts
             .headers
@@ -413,11 +472,23 @@ where
             return Box::pin(async move { Ok(empty_rejection(StatusCode::BAD_REQUEST)) });
         }
         parts.extensions.insert(self.connection_info);
-        let body = Body::new(Limited::new(body, self.max_request_body_bytes));
+        let body = Body::new(Limited::new(
+            ProgressTimeoutBody::new(body, self.body_progress_timeout, self.metrics.clone()),
+            self.max_request_body_bytes,
+        ));
         let future = self.inner.call(Request::from_parts(parts, body));
+        let request_timeout = self.request_timeout;
         let metrics = self.metrics.clone();
         Box::pin(async move {
-            let mut response = future.await?;
+            let mut response = match tokio::time::timeout(request_timeout, future).await {
+                Ok(response) => response?,
+                Err(_) => {
+                    metrics.timeouts.fetch_add(1, Ordering::Relaxed);
+                    metrics.requests.fetch_add(1, Ordering::Relaxed);
+                    metrics.record_status(StatusCode::GATEWAY_TIMEOUT.as_u16());
+                    return Ok(empty_rejection(StatusCode::GATEWAY_TIMEOUT));
+                }
+            };
             metrics.requests.fetch_add(1, Ordering::Relaxed);
             metrics.record_status(response.status().as_u16());
             prepare_response_headers(&mut response);
@@ -425,6 +496,62 @@ where
         })
     }
 }
+
+struct ProgressTimeoutBody {
+    inner: Incoming,
+    timeout: Duration,
+    sleep: Pin<Box<Sleep>>,
+    metrics: Arc<MetricsInner>,
+}
+
+impl ProgressTimeoutBody {
+    fn new(inner: Incoming, timeout: Duration, metrics: Arc<MetricsInner>) -> Self {
+        Self {
+            inner,
+            timeout,
+            sleep: Box::pin(tokio::time::sleep(timeout)),
+            metrics,
+        }
+    }
+}
+
+impl hyper::body::Body for ProgressTimeoutBody {
+    type Data = bytes::Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+        match Pin::new(&mut self.inner).poll_frame(context) {
+            Poll::Ready(Some(Ok(frame))) => {
+                let deadline = Instant::now() + self.timeout;
+                self.sleep.as_mut().reset(deadline);
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(Box::new(error)))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => match self.sleep.as_mut().poll(context) {
+                Poll::Ready(()) => {
+                    self.metrics.timeouts.fetch_add(1, Ordering::Relaxed);
+                    Poll::Ready(Some(Err(Box::new(BodyProgressTimeout))))
+                }
+                Poll::Pending => Poll::Pending,
+            },
+        }
+    }
+}
+
+#[derive(Debug)]
+struct BodyProgressTimeout;
+
+impl fmt::Display for BodyProgressTimeout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Iroh request body progress timed out")
+    }
+}
+
+impl StdError for BodyProgressTimeout {}
 
 fn empty_rejection(status: StatusCode) -> Response<Body> {
     let mut response = Response::new(Body::empty());
@@ -512,7 +639,10 @@ impl PeerAdmission {
     }
 
     fn try_admit(self: &Arc<Self>, peer: EndpointId) -> Option<PeerAdmissionGuard> {
-        let mut counts = self.counts.lock().expect("peer admission mutex poisoned");
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let count = counts.entry(peer).or_default();
         if *count >= self.maximum {
             return None;
@@ -537,7 +667,7 @@ impl Drop for PeerAdmissionGuard {
             .admission
             .counts
             .lock()
-            .expect("peer admission mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let remove = match counts.get_mut(&self.peer) {
             Some(count) => {
                 *count = count.saturating_sub(1);

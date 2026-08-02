@@ -4155,7 +4155,7 @@ mod tests {
             )
             .await
             .expect("Iroh server endpoint");
-            let client = cdk_iroh::IrohNode::ephemeral(
+            let client = cdk_iroh::IrohNode::client(
                 cdk_iroh::IrohConfig::static_only()
                     .with_bind_addr(bind_addr)
                     .with_ticket(server.endpoint_ticket()),

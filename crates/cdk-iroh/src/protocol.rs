@@ -16,9 +16,13 @@ pub const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Maximum duration for opening a bidirectional stream.
 pub const STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
-/// Maximum duration for receiving HTTP headers.
+/// Maximum duration for receiving request or response HTTP headers.
 pub const HEADER_TIMEOUT: Duration = Duration::from_secs(15);
-/// Maximum duration without body progress.
+/// Maximum duration without request or response body progress.
 pub const BODY_PROGRESS_TIMEOUT: Duration = Duration::from_secs(30);
+/// Maximum duration of one non-WebSocket HTTP request.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Maximum duration an admitted connection may remain without active streams.
+pub const CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Maximum graceful shutdown drain duration.
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);

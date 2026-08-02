@@ -189,6 +189,10 @@ pub struct IrohTimeoutConfig {
     pub response_headers_seconds: u64,
     #[serde(default = "default_iroh_body_progress_timeout_seconds")]
     pub body_progress_seconds: u64,
+    #[serde(default = "default_iroh_request_timeout_seconds")]
+    pub request_seconds: u64,
+    #[serde(default = "default_iroh_connection_idle_timeout_seconds")]
+    pub connection_idle_seconds: u64,
     #[serde(default = "default_iroh_shutdown_timeout_seconds")]
     pub shutdown_seconds: u64,
 }
@@ -201,6 +205,8 @@ impl Default for IrohTimeoutConfig {
             stream_open_seconds: default_iroh_stream_open_timeout_seconds(),
             response_headers_seconds: default_iroh_response_headers_timeout_seconds(),
             body_progress_seconds: default_iroh_body_progress_timeout_seconds(),
+            request_seconds: default_iroh_request_timeout_seconds(),
+            connection_idle_seconds: default_iroh_connection_idle_timeout_seconds(),
             shutdown_seconds: default_iroh_shutdown_timeout_seconds(),
         }
     }
@@ -232,6 +238,16 @@ const fn default_iroh_response_headers_timeout_seconds() -> u64 {
 #[cfg(feature = "iroh")]
 const fn default_iroh_body_progress_timeout_seconds() -> u64 {
     30
+}
+
+#[cfg(feature = "iroh")]
+const fn default_iroh_request_timeout_seconds() -> u64 {
+    60
+}
+
+#[cfg(feature = "iroh")]
+const fn default_iroh_connection_idle_timeout_seconds() -> u64 {
+    5 * 60
 }
 
 #[cfg(feature = "iroh")]

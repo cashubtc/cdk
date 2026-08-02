@@ -52,7 +52,7 @@ impl<H> IrohTransport<H> {
     async fn iroh_client(&self) -> Result<IrohClient, Error> {
         let node = match &self.node {
             NodeSource::ProcessDefault(config) => DEFAULT_NODE
-                .get_or_try_init(|| IrohNode::ephemeral(config.as_ref().clone()))
+                .get_or_try_init(|| IrohNode::client(config.as_ref().clone()))
                 .await?
                 .clone(),
             NodeSource::Runtime(node) => node.clone(),

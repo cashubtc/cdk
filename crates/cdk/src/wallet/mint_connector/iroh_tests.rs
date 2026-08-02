@@ -651,7 +651,7 @@ async fn hybrid_wallet_connector_conformance_over_https_and_iroh() {
         .expect("create fixture Iroh server node");
     let server_ticket = server_node.endpoint_ticket();
     let server = IrohServer::start(server_node, router);
-    let client_node = IrohNode::ephemeral(
+    let client_node = IrohNode::client(
         IrohConfig::static_only()
             .with_bind_addr(bind_addr)
             .with_ticket(server_ticket),
@@ -693,7 +693,7 @@ async fn hybrid_wallet_connector_conformance_over_https_and_iroh() {
         .expect("future router-only route over Iroh");
     assert_eq!(future, json!({ "future": true }));
 
-    let dead_node = IrohNode::ephemeral(IrohConfig::static_only().with_bind_addr(bind_addr))
+    let dead_node = IrohNode::client(IrohConfig::static_only().with_bind_addr(bind_addr))
         .await
         .expect("create unavailable Iroh node");
     let dead_id = dead_node.endpoint_id();
