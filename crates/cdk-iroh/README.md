@@ -6,7 +6,7 @@ routes remain in their existing crates.
 
 The crate provides:
 
-- `IrohNode` for ephemeral client or persistent server identities;
+- `IrohNode` with separate outgoing client and listener-capable server roles;
 - N0, operator-provided relay, and static-ticket discovery policies;
 - `IrohClient` for generic bounded HTTP/1.1 and WebSocket transactions;
 - `IrohServer` for serving a final Axum/Tower service with authenticated
@@ -18,12 +18,16 @@ HTTP request or WebSocket uses a separate bidirectional stream, so long-lived
 subscriptions do not serialize ordinary requests. The server has global and
 per-peer connection limits, global and per-connection stream limits, bounded
 headers and bodies, supervised shutdown, redacted errors, tracing, and
-bounded-cardinality metrics. The outbound pool is also bounded and reclaims
-closed entries before admitting a new peer key.
+bounded-cardinality metrics. QUIC enforces the per-connection stream cap. Idle
+server connections are reaped, ordinary HTTP requests have a total deadline,
+and failed outbound dials use bounded exponential backoff with jitter. The
+outbound pool is bounded and promptly evicts closed connections.
 
 Default hybrid client transports lazily share one process-wide ephemeral Iroh
-endpoint and connection pool. Backend runtimes that own a persistent identity
-should construct one `IrohNode` and pass clones through `IrohTransport::with_node`.
+endpoint and connection pool. N0 clients resolve mint addresses and retain relay
+reachability without publishing their own address. Backend runtimes that own a
+persistent identity should construct one `IrohNode` and pass clones through
+`IrohTransport::with_node`.
 
 For ticket-only local operation, construct a server node, export its standard
 ticket, and install the ticket in the client configuration:
@@ -36,7 +40,7 @@ use cdk_iroh::{IrohConfig, IrohNode};
 # async fn example() -> Result<(), cdk_iroh::Error> {
 let bind_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
 let server = IrohNode::ephemeral(IrohConfig::static_only().with_bind_addr(bind_addr)).await?;
-let client = IrohNode::ephemeral(
+let client = IrohNode::client(
     IrohConfig::static_only()
         .with_bind_addr(bind_addr)
         .with_ticket(server.endpoint_ticket()),

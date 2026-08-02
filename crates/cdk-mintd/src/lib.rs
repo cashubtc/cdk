@@ -92,32 +92,6 @@ const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION")
 const DEFAULT_BATCH_MINT_SIZE: u64 = 100;
 const REQUEST_BODY_LIMIT_BYTES: usize = 1_048_576;
 
-/// Run a one-shot CLI subcommand, returning true when no mint daemon should be started.
-pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
-    #[cfg(not(feature = "iroh"))]
-    let _ = args;
-
-    #[cfg(feature = "iroh")]
-    if let Some(command) = &args.command {
-        match command {
-            cli::CliCommand::Iroh(iroh) => match &iroh.command {
-                cli::IrohCommand::Init(init) => {
-                    let work_dir = get_work_directory(args).await?;
-                    let endpoint_id = iroh_runtime::initialize_endpoint_identity(
-                        &work_dir,
-                        init.secret_key_file.as_deref(),
-                    )?;
-                    println!("iroh://{endpoint_id}");
-                }
-            },
-        }
-
-        return Ok(true);
-    }
-
-    Ok(false)
-}
-
 fn extract_supported_payment_methods(mint_info: &cdk::nuts::MintInfo) -> Vec<String> {
     let mut seen = HashSet::new();
     mint_info
@@ -2186,19 +2160,24 @@ pub async fn run_mintd_with_shutdown(
     routers: Vec<Router>,
 ) -> Result<()> {
     #[cfg(feature = "iroh")]
-    let iroh_runtime = iroh_runtime::initialize(settings, work_dir).await?;
+    let mut resolved_settings = settings.clone();
+    #[cfg(not(feature = "iroh"))]
+    let resolved_settings = settings.clone();
+    #[cfg(feature = "iroh")]
+    let iroh_runtime = iroh_runtime::initialize(&mut resolved_settings, work_dir).await?;
     #[cfg(not(feature = "iroh"))]
     {
-        if !settings.info.http_enabled {
+        if !resolved_settings.info.http_enabled {
             bail!("HTTP cannot be disabled because this mintd build has no Iroh listener support");
         }
-        if url::Url::parse(&settings.info.url)
+        if url::Url::parse(&resolved_settings.info.url)
             .ok()
             .is_some_and(|url| url.scheme() == "iroh")
         {
             bail!("an iroh public mint URL requires mintd's iroh feature");
         }
     }
+    let settings = &resolved_settings;
 
     let (localstore, keystore, kv) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
@@ -2311,7 +2290,7 @@ mod tests {
             )
             .await
             .expect("Iroh server endpoint");
-            let client = cdk_iroh::IrohNode::ephemeral(
+            let client = cdk_iroh::IrohNode::client(
                 cdk_iroh::IrohConfig::static_only()
                     .with_bind_addr(bind_addr)
                     .with_ticket(server.endpoint_ticket()),
@@ -2554,8 +2533,6 @@ ln_backend = "fakewallet"
         fs::write(&seed_file, TEST_MNEMONIC).expect("seed file should be written");
 
         let args = CLIArgs {
-            #[cfg(feature = "iroh")]
-            command: None,
             work_dir: None,
             #[cfg(feature = "sqlcipher")]
             password: "test-password".to_string(),

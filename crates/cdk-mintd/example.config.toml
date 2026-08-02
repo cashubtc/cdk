@@ -16,34 +16,15 @@ mnemonic = ""
 # use_keyset_v2 = true
 
 # Optional native Iroh listener. Build cdk-mintd with `--features iroh`.
-# Run `cdk-mintd --work-dir <dir> iroh init` first and use the printed stable
-# `iroh://<endpoint-id>` URL when Iroh is the public mint URL.
+# For Iroh-only operation set `[info].url = "iroh://auto"`; startup replaces
+# it in memory with the stable URL derived from the protected endpoint key.
 # [iroh]
 # enabled = true
-# generate_secret_key = true
 # discovery = "n0" # n0, static, or custom
 # bind_addr = "0.0.0.0:8092" # optional UDP bind
 # secret_key_file = "/protected/path/endpoint-secret" # default: <work-dir>/iroh/endpoint-secret
 # endpoint_ticket_file = "/protected/path/endpoint-ticket" # default: <work-dir>/iroh/endpoint-ticket
-# static_tickets = ["endpoint...ticket..."] # imported out-of-band peer reachability
 # relay_urls = ["https://relay.example"] # required only for custom discovery
-#
-# [iroh.timeouts]
-# connect_seconds = 15
-# stream_open_seconds = 10
-# headers_seconds = 15
-# body_progress_seconds = 30
-# shutdown_seconds = 10
-#
-# [iroh.limits]
-# max_connections = 1024
-# max_pooled_connections = 1024
-# max_connections_per_peer = 8
-# max_streams = 4096
-# max_streams_per_connection = 256
-# max_header_bytes = 65536
-# max_request_body_bytes = 1048576
-# max_response_body_bytes = 16777216
 
 [info.quote_ttl]
 # Prefer explicit fields over inline tables for readability and ease of overrides

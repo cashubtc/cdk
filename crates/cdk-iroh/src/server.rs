@@ -189,7 +189,8 @@ where
                         stream_admission,
                         node_timeouts.headers,
                         node_timeouts.body_progress,
-                        limits.max_streams_per_connection,
+                        node_timeouts.request,
+                        node_timeouts.connection_idle,
                         limits.max_header_bytes,
                         limits.max_request_body_bytes,
                         metrics,
@@ -219,7 +220,8 @@ async fn serve_connection<S, B>(
     global_stream_admission: Arc<Semaphore>,
     header_timeout: Duration,
     body_progress_timeout: Duration,
-    max_streams_per_connection: usize,
+    request_timeout: Duration,
+    connection_idle_timeout: Duration,
     max_header_bytes: usize,
     max_request_body_bytes: usize,
     metrics: Arc<MetricsInner>,
@@ -234,9 +236,10 @@ async fn serve_connection<S, B>(
     B::Error: Into<BoxError>,
 {
     let _activity = ConnectionActivity::new(metrics.clone());
-    let local_stream_admission = Arc::new(Semaphore::new(max_streams_per_connection));
     let remote_endpoint_id = connection.remote_id();
     let mut streams = JoinSet::new();
+    let idle = tokio::time::sleep(connection_idle_timeout);
+    tokio::pin!(idle);
     loop {
         tokio::select! {
             () = cancellation.cancelled() => {
@@ -247,20 +250,33 @@ async fn serve_connection<S, B>(
                 if let Some(Err(_)) = result {
                     tracing::warn!(peer = %remote_endpoint_id.fmt_short(), "Iroh stream task terminated unexpectedly");
                 }
+                if streams.is_empty() {
+                    idle.as_mut().reset(Instant::now() + connection_idle_timeout);
+                }
+            }
+            () = &mut idle, if streams.is_empty() => {
+                tracing::debug!(peer = %remote_endpoint_id.fmt_short(), "closing idle Iroh connection");
+                connection.close(0_u32.into(), b"idle timeout");
+                break;
             }
             stream = connection.accept_bi() => {
                 let Ok((send, recv)) = stream else {
                     break;
                 };
-                let permits = (
-                    global_stream_admission.clone().try_acquire_owned(),
-                    local_stream_admission.clone().try_acquire_owned(),
-                );
-                let (Ok(global_permit), Ok(local_permit)) = permits else {
-                    metrics.admission_rejections.fetch_add(1, Ordering::Relaxed);
-                    drop(send);
-                    drop(recv);
-                    continue;
+                let global_permit = tokio::select! {
+                    permit = global_stream_admission.clone().acquire_owned() => {
+                        let Ok(permit) = permit else {
+                            drop(send);
+                            drop(recv);
+                            break;
+                        };
+                        permit
+                    }
+                    () = cancellation.cancelled() => {
+                        drop(send);
+                        drop(recv);
+                        break;
+                    }
                 };
                 streams.spawn(serve_stream(
                     send,
@@ -271,11 +287,11 @@ async fn serve_connection<S, B>(
                     cancellation.clone(),
                     header_timeout,
                     body_progress_timeout,
+                    request_timeout,
                     max_header_bytes,
                     max_request_body_bytes,
                     metrics.clone(),
                     global_permit,
-                    local_permit,
                 ));
             }
         }
@@ -297,11 +313,11 @@ async fn serve_stream<S, B>(
     cancellation: CancellationToken,
     header_timeout: Duration,
     body_progress_timeout: Duration,
+    request_timeout: Duration,
     max_header_bytes: usize,
     max_request_body_bytes: usize,
     metrics: Arc<MetricsInner>,
     global_permit: OwnedSemaphorePermit,
-    local_permit: OwnedSemaphorePermit,
 ) where
     S: Service<Request<Body>, Response = Response<B>> + Clone + Send + 'static,
     S::Future: Send + 'static,
@@ -314,7 +330,6 @@ async fn serve_stream<S, B>(
         IrohStream::new(send, recv),
         metrics.clone(),
         global_permit,
-        local_permit,
     ));
     let request_started = Arc::new(Notify::new());
     let service = ConnectionInfoService {
@@ -323,6 +338,7 @@ async fn serve_stream<S, B>(
         expected_authority,
         max_request_body_bytes,
         body_progress_timeout,
+        request_timeout,
         request_started: request_started.clone(),
         metrics: metrics.clone(),
     };
@@ -362,7 +378,6 @@ struct AdmittedStream {
     inner: IrohStream,
     _activity: StreamActivity,
     _global_permit: OwnedSemaphorePermit,
-    _local_permit: OwnedSemaphorePermit,
 }
 
 impl AdmittedStream {
@@ -370,13 +385,11 @@ impl AdmittedStream {
         inner: IrohStream,
         metrics: Arc<MetricsInner>,
         global_permit: OwnedSemaphorePermit,
-        local_permit: OwnedSemaphorePermit,
     ) -> Self {
         Self {
             inner,
             _activity: StreamActivity::new(metrics),
             _global_permit: global_permit,
-            _local_permit: local_permit,
         }
     }
 }
@@ -416,6 +429,7 @@ struct ConnectionInfoService<S> {
     expected_authority: String,
     max_request_body_bytes: usize,
     body_progress_timeout: Duration,
+    request_timeout: Duration,
     request_started: Arc<Notify>,
     metrics: Arc<MetricsInner>,
 }
@@ -463,9 +477,18 @@ where
             self.max_request_body_bytes,
         ));
         let future = self.inner.call(Request::from_parts(parts, body));
+        let request_timeout = self.request_timeout;
         let metrics = self.metrics.clone();
         Box::pin(async move {
-            let mut response = future.await?;
+            let mut response = match tokio::time::timeout(request_timeout, future).await {
+                Ok(response) => response?,
+                Err(_) => {
+                    metrics.timeouts.fetch_add(1, Ordering::Relaxed);
+                    metrics.requests.fetch_add(1, Ordering::Relaxed);
+                    metrics.record_status(StatusCode::GATEWAY_TIMEOUT.as_u16());
+                    return Ok(empty_rejection(StatusCode::GATEWAY_TIMEOUT));
+                }
+            };
             metrics.requests.fetch_add(1, Ordering::Relaxed);
             metrics.record_status(response.status().as_u16());
             prepare_response_headers(&mut response);

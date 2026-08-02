@@ -3,13 +3,11 @@ use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use cdk_iroh::{
-    DiscoveryMode, EndpointId, EndpointTicket, IrohConfig, IrohLimits, IrohNode, IrohTimeouts,
-    RelayUrl, SecretKey,
-};
+#[cfg(test)]
+use cdk_iroh::EndpointTicket;
+use cdk_iroh::{DiscoveryMode, EndpointId, IrohConfig, IrohNode, RelayUrl, SecretKey};
 use url::Url;
 use zeroize::Zeroizing;
 
@@ -39,49 +37,38 @@ impl std::fmt::Debug for MintdIrohRuntime {
 }
 
 pub(crate) async fn initialize(
-    settings: &Settings,
+    settings: &mut Settings,
     work_dir: &Path,
 ) -> Result<Option<MintdIrohRuntime>> {
     validate_listener_selection(settings)?;
-    let Some(iroh) = settings.iroh.as_ref().filter(|iroh| iroh.enabled) else {
+    let Some(iroh) = settings.iroh.as_ref().filter(|iroh| iroh.enabled).cloned() else {
         return Ok(None);
     };
 
-    let key_path = secret_key_path(iroh, work_dir);
-    let secret_key = load_or_generate_secret_key(
-        &key_path,
-        iroh.generate_secret_key,
-        iroh.secret_key_file.is_none(),
-    )?;
-    let transport_config = transport_config(iroh)?;
+    let key_path = secret_key_path(&iroh, work_dir);
+    let secret_key = load_or_generate_secret_key(&key_path, iroh.secret_key_file.is_none())?;
+    let transport_config = transport_config(&iroh)?;
     let node = IrohNode::persistent(transport_config, secret_key)
         .await
         .context("failed to initialize persistent Iroh endpoint")?;
 
-    validate_configured_iroh_url(&settings.info.url, node.endpoint_id())?;
-    let ticket_path = endpoint_ticket_path(iroh, work_dir);
+    let endpoint_url = format!("iroh://{}", node.endpoint_id());
+    if settings.info.url == "iroh://auto" {
+        settings.info.url.clone_from(&endpoint_url);
+    } else {
+        validate_configured_iroh_url(&settings.info.url, node.endpoint_id())?;
+    }
+    let ticket_path = endpoint_ticket_path(&iroh, work_dir);
     write_protected_replace(&ticket_path, node.endpoint_ticket().to_string().as_bytes())
         .context("failed to export current Iroh endpoint ticket")?;
 
     tracing::info!(
         endpoint = %node.endpoint_id(),
+        url = %endpoint_url,
         discovery = ?iroh.discovery,
         "persistent Iroh mint endpoint ready"
     );
     Ok(Some(MintdIrohRuntime { node }))
-}
-
-pub(crate) fn initialize_endpoint_identity(
-    work_dir: &Path,
-    explicit_key_path: Option<&Path>,
-) -> Result<EndpointId> {
-    let path = explicit_key_path.map(Path::to_path_buf).unwrap_or_else(|| {
-        work_dir
-            .join(DEFAULT_IROH_DIRECTORY)
-            .join(DEFAULT_SECRET_KEY_FILE)
-    });
-    let secret_key = load_or_generate_secret_key(&path, true, explicit_key_path.is_none())?;
-    Ok(secret_key.public())
 }
 
 pub(crate) fn validate_listener_selection(settings: &Settings) -> Result<()> {
@@ -128,46 +115,11 @@ fn transport_config(iroh: &Iroh) -> Result<IrohConfig> {
             DiscoveryMode::custom(relay_urls)
         }
     };
-    let static_tickets = iroh
-        .static_tickets
-        .iter()
-        .map(|ticket| {
-            EndpointTicket::from_str(ticket).context("invalid configured Iroh endpoint ticket")
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    let timeouts = IrohTimeouts {
-        connect: nonzero_duration(iroh.timeouts.connect_seconds, "connect")?,
-        stream_open: nonzero_duration(iroh.timeouts.stream_open_seconds, "stream open")?,
-        headers: nonzero_duration(iroh.timeouts.headers_seconds, "headers")?,
-        body_progress: nonzero_duration(iroh.timeouts.body_progress_seconds, "body progress")?,
-        shutdown: nonzero_duration(iroh.timeouts.shutdown_seconds, "shutdown")?,
-    };
-    let limits = IrohLimits {
-        max_connections: iroh.limits.max_connections,
-        max_pooled_connections: iroh.limits.max_pooled_connections,
-        max_connections_per_peer: iroh.limits.max_connections_per_peer,
-        max_streams: iroh.limits.max_streams,
-        max_streams_per_connection: iroh.limits.max_streams_per_connection,
-        max_header_bytes: iroh.limits.max_header_bytes,
-        max_request_body_bytes: iroh.limits.max_request_body_bytes,
-        max_response_body_bytes: iroh.limits.max_response_body_bytes,
-    };
-
     Ok(IrohConfig {
         discovery,
-        static_tickets,
         bind_addr: iroh.bind_addr,
-        timeouts,
-        limits,
+        ..IrohConfig::default()
     })
-}
-
-fn nonzero_duration(seconds: u64, label: &str) -> Result<Duration> {
-    if seconds == 0 {
-        bail!("Iroh {label} timeout must be greater than zero");
-    }
-    Ok(Duration::from_secs(seconds))
 }
 
 fn validate_configured_iroh_url(value: &str, expected: EndpointId) -> Result<()> {
@@ -212,11 +164,7 @@ fn endpoint_ticket_path(iroh: &Iroh, work_dir: &Path) -> PathBuf {
     })
 }
 
-fn load_or_generate_secret_key(
-    path: &Path,
-    generate_if_missing: bool,
-    protect_default_parent: bool,
-) -> Result<SecretKey> {
+fn load_or_generate_secret_key(path: &Path, protect_default_parent: bool) -> Result<SecretKey> {
     match read_secret_key(path) {
         Ok(secret_key) => return Ok(secret_key),
         Err(error)
@@ -224,9 +172,6 @@ fn load_or_generate_secret_key(
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|io| io.kind() == ErrorKind::NotFound) => {}
         Err(error) => return Err(error),
-    }
-    if !generate_if_missing {
-        bail!("configured Iroh endpoint secret does not exist");
     }
     create_parent(path, protect_default_parent)?;
     let secret_key = SecretKey::generate();
@@ -368,20 +313,17 @@ mod tests {
         iroh.secret_key_file = Some(PathBuf::from("sensitive-parent/endpoint-secret"));
         iroh.endpoint_ticket_file = Some(PathBuf::from("sensitive-parent/endpoint-ticket"));
         iroh.relay_urls = vec!["https://private-relay.invalid".to_string()];
-        iroh.static_tickets = vec!["secret-ticket-value".to_string()];
         let rendered = format!("{iroh:?}");
         assert!(!rendered.contains("sensitive-parent"));
         assert!(!rendered.contains("private-relay"));
-        assert!(!rendered.contains("secret-ticket-value"));
-        assert!(rendered.contains("static_ticket_count: 1"));
     }
 
     #[test]
     fn persistent_key_is_reloaded_and_protected() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("iroh").join("endpoint-secret");
-        let first = load_or_generate_secret_key(&path, true, true).expect("generate key");
-        let second = load_or_generate_secret_key(&path, true, true).expect("reload key");
+        let first = load_or_generate_secret_key(&path, true).expect("generate key");
+        let second = load_or_generate_secret_key(&path, true).expect("reload key");
         assert_eq!(first.public(), second.public());
         assert_eq!(std::fs::metadata(&path).expect("metadata").len(), 32);
         #[cfg(unix)]
@@ -408,12 +350,11 @@ mod tests {
     }
 
     #[test]
-    fn missing_corrupt_and_weak_keys_fail_closed() {
+    fn corrupt_and_weak_keys_fail_closed() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("endpoint-secret");
-        assert!(load_or_generate_secret_key(&path, false, false).is_err());
         std::fs::write(&path, b"short").expect("corrupt key");
-        assert!(load_or_generate_secret_key(&path, true, false).is_err());
+        assert!(load_or_generate_secret_key(&path, false).is_err());
 
         std::fs::write(&path, [7_u8; 32]).expect("key bytes");
         #[cfg(unix)]
@@ -422,7 +363,7 @@ mod tests {
 
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
                 .expect("weak permissions");
-            assert!(load_or_generate_secret_key(&path, true, false).is_err());
+            assert!(load_or_generate_secret_key(&path, false).is_err());
         }
     }
 
@@ -438,7 +379,7 @@ mod tests {
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))
             .expect("target permissions");
         symlink(&target, &link).expect("key symlink");
-        assert!(load_or_generate_secret_key(&link, true, false).is_err());
+        assert!(load_or_generate_secret_key(&link, false).is_err());
     }
 
     #[test]
@@ -450,6 +391,9 @@ mod tests {
         settings.iroh = Some(enabled_static());
         settings.info.url = "https://mint.invalid".to_string();
         assert!(validate_listener_selection(&settings).is_err());
+
+        settings.info.url = "iroh://auto".to_string();
+        assert!(validate_listener_selection(&settings).is_ok());
 
         let endpoint = SecretKey::generate().public();
         settings.info.url = format!("iroh://{endpoint}");
@@ -464,17 +408,18 @@ mod tests {
     #[tokio::test]
     async fn endpoint_identity_ticket_and_restart_are_stable() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let endpoint = initialize_endpoint_identity(directory.path(), None).expect("identity");
         let mut settings = Settings::default();
         settings.info.http_enabled = false;
-        settings.info.url = format!("iroh://{endpoint}");
+        settings.info.url = "iroh://auto".to_string();
         settings.iroh = Some(enabled_static());
 
-        let first = initialize(&settings, directory.path())
+        let first = initialize(&mut settings, directory.path())
             .await
             .expect("first endpoint")
             .expect("enabled endpoint");
+        let endpoint = first.node.endpoint_id();
         assert_eq!(first.node.endpoint_id(), endpoint);
+        assert_eq!(settings.info.url, format!("iroh://{endpoint}"));
         let ticket_path = directory
             .path()
             .join(DEFAULT_IROH_DIRECTORY)
@@ -484,7 +429,7 @@ mod tests {
         assert_eq!(parsed.endpoint_addr().id, endpoint);
         first.node.close().await;
 
-        let restarted = initialize(&settings, directory.path())
+        let restarted = initialize(&mut settings, directory.path())
             .await
             .expect("restarted endpoint")
             .expect("enabled endpoint");

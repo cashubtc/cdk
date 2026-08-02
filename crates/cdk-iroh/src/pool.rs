@@ -1,47 +1,34 @@
-//! Concurrent connection pool keyed by authenticated peer and ALPN.
+//! Concurrent connection pool keyed by authenticated peer.
 
 use std::{
     collections::HashMap,
-    hash::{Hash, Hasher},
-    sync::{atomic::Ordering, Arc},
+    hash::{DefaultHasher, Hash, Hasher},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use iroh::{endpoint::Connection, Endpoint, EndpointId};
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, time::Instant};
 
-use crate::{address::peer_fingerprint, config::IrohTimeouts, metrics::MetricsInner, Error};
-
-#[derive(Debug, Clone, Eq)]
-struct PoolKey {
-    endpoint_id: EndpointId,
-    alpn: Arc<[u8]>,
-}
-
-impl PartialEq for PoolKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.endpoint_id == other.endpoint_id && self.alpn == other.alpn
-    }
-}
-
-impl Hash for PoolKey {
-    fn hash<H>(&self, state: &mut H)
-    where
-        H: Hasher,
-    {
-        self.endpoint_id.hash(state);
-        self.alpn.hash(state);
-    }
-}
+use crate::{
+    address::peer_fingerprint, config::IrohTimeouts, metrics::MetricsInner, protocol, Error,
+};
 
 #[derive(Debug)]
 struct PoolEntry {
     connection: Option<Connection>,
+    retry_at: Option<Instant>,
+    failures: u32,
+    generation: u64,
 }
 
-/// A clone-shared pool which only serializes duplicate dials for one peer/ALPN.
+/// A clone-shared pool which only serializes duplicate dials for one peer.
 #[derive(Debug, Clone)]
 pub(crate) struct ConnectionPool {
-    entries: Arc<Mutex<HashMap<PoolKey, Arc<Mutex<PoolEntry>>>>>,
+    entries: Arc<Mutex<HashMap<EndpointId, Arc<Mutex<PoolEntry>>>>>,
     timeouts: IrohTimeouts,
     max_entries: usize,
     metrics: Arc<MetricsInner>,
@@ -65,23 +52,19 @@ impl ConnectionPool {
         &self,
         endpoint: &Endpoint,
         endpoint_id: EndpointId,
-        alpn: &[u8],
     ) -> Result<Connection, Error> {
-        let key = PoolKey {
-            endpoint_id,
-            alpn: Arc::from(alpn),
-        };
         let slot = {
             let mut entries = self.entries.lock().await;
-            if !entries.contains_key(&key) {
+            if !entries.contains_key(&endpoint_id) {
+                let now = Instant::now();
                 entries.retain(|_, slot| {
                     let Ok(entry) = slot.try_lock() else {
                         return true;
                     };
-                    entry
-                        .connection
-                        .as_ref()
-                        .is_none_or(|connection| connection.close_reason().is_none())
+                    match &entry.connection {
+                        Some(connection) => connection.close_reason().is_none(),
+                        None => entry.retry_at.is_some_and(|retry_at| retry_at > now),
+                    }
                 });
                 if entries.len() >= self.max_entries {
                     self.metrics
@@ -93,8 +76,15 @@ impl ConnectionPool {
                 }
             }
             entries
-                .entry(key)
-                .or_insert_with(|| Arc::new(Mutex::new(PoolEntry { connection: None })))
+                .entry(endpoint_id)
+                .or_insert_with(|| {
+                    Arc::new(Mutex::new(PoolEntry {
+                        connection: None,
+                        retry_at: None,
+                        failures: 0,
+                        generation: 0,
+                    }))
+                })
                 .clone()
         };
 
@@ -109,75 +99,124 @@ impl ConnectionPool {
         }
 
         entry.connection = None;
+        if entry
+            .retry_at
+            .is_some_and(|retry_at| retry_at > Instant::now())
+        {
+            return Err(Error::ConnectBackoff {
+                peer: peer_fingerprint(endpoint_id),
+            });
+        }
+
         self.metrics
             .connection_attempts
             .fetch_add(1, Ordering::Relaxed);
         tracing::debug!(peer = %endpoint_id.fmt_short(), "dialing Iroh peer");
-        let connection =
-            match tokio::time::timeout(self.timeouts.connect, endpoint.connect(endpoint_id, alpn))
-                .await
-            {
-                Ok(Ok(connection)) => connection,
-                Ok(Err(_)) => {
-                    self.metrics
-                        .connection_failures
-                        .fetch_add(1, Ordering::Relaxed);
-                    let error = Error::Connect {
-                        peer: peer_fingerprint(endpoint_id),
-                    };
-                    drop(entry);
-                    self.remove_if_unshared(endpoint_id, alpn, &slot).await;
-                    return Err(error);
-                }
-                Err(_) => {
-                    self.metrics
-                        .connection_failures
-                        .fetch_add(1, Ordering::Relaxed);
-                    self.metrics.timeouts.fetch_add(1, Ordering::Relaxed);
-                    let error = Error::Timeout {
-                        operation: "connect",
-                    };
-                    drop(entry);
-                    self.remove_if_unshared(endpoint_id, alpn, &slot).await;
-                    return Err(error);
-                }
-            };
+        let connection = match tokio::time::timeout(
+            self.timeouts.connect,
+            endpoint.connect(endpoint_id, protocol::ALPN),
+        )
+        .await
+        {
+            Ok(Ok(connection)) => connection,
+            Ok(Err(_)) => {
+                self.metrics
+                    .connection_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                record_failure(&mut entry, endpoint_id);
+                return Err(Error::Connect {
+                    peer: peer_fingerprint(endpoint_id),
+                });
+            }
+            Err(_) => {
+                self.metrics
+                    .connection_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                self.metrics.timeouts.fetch_add(1, Ordering::Relaxed);
+                record_failure(&mut entry, endpoint_id);
+                return Err(Error::Timeout {
+                    operation: "connect",
+                });
+            }
+        };
+
+        entry.failures = 0;
+        entry.retry_at = None;
+        entry.generation = entry.generation.wrapping_add(1);
+        let generation = entry.generation;
         entry.connection = Some(connection.clone());
+        drop(entry);
+
+        let watched = connection.clone();
+        let pool = self.clone();
+        tokio::spawn(async move {
+            let _ = watched.closed().await;
+            pool.evict_generation(endpoint_id, generation).await;
+        });
         Ok(connection)
     }
 
-    pub(crate) async fn evict(&self, endpoint_id: EndpointId, alpn: &[u8]) {
-        let key = PoolKey {
-            endpoint_id,
-            alpn: Arc::from(alpn),
-        };
+    pub(crate) async fn evict(&self, endpoint_id: EndpointId) {
         let slot = {
             let entries = self.entries.lock().await;
-            entries.get(&key).cloned()
+            entries.get(&endpoint_id).cloned()
         };
         let Some(slot) = slot else {
             return;
         };
         slot.lock().await.connection = None;
-        self.remove_if_unshared(endpoint_id, alpn, &slot).await;
+        self.remove_if_unshared(endpoint_id, &slot).await;
     }
 
-    async fn remove_if_unshared(
-        &self,
-        endpoint_id: EndpointId,
-        alpn: &[u8],
-        slot: &Arc<Mutex<PoolEntry>>,
-    ) {
-        let key = PoolKey {
-            endpoint_id,
-            alpn: Arc::from(alpn),
+    async fn evict_generation(&self, endpoint_id: EndpointId, generation: u64) {
+        let slot = {
+            let entries = self.entries.lock().await;
+            entries.get(&endpoint_id).cloned()
         };
+        let Some(slot) = slot else {
+            return;
+        };
+        let mut entry = slot.lock().await;
+        if entry.generation != generation {
+            return;
+        }
+        entry.connection = None;
+        drop(entry);
+        self.remove_if_unshared(endpoint_id, &slot).await;
+    }
+
+    async fn remove_if_unshared(&self, endpoint_id: EndpointId, slot: &Arc<Mutex<PoolEntry>>) {
         let mut entries = self.entries.lock().await;
         let is_current = entries
-            .get(&key)
+            .get(&endpoint_id)
             .is_some_and(|current| Arc::ptr_eq(current, slot));
         if is_current && Arc::strong_count(slot) == 2 {
-            entries.remove(&key);
+            entries.remove(&endpoint_id);
         }
     }
+}
+
+fn record_failure(entry: &mut PoolEntry, endpoint_id: EndpointId) {
+    entry.failures = entry.failures.saturating_add(1);
+    entry.retry_at = Some(Instant::now() + retry_delay(endpoint_id, entry.failures));
+}
+
+fn retry_delay(endpoint_id: EndpointId, failures: u32) -> Duration {
+    static JITTER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    let exponent = failures.saturating_sub(1).min(7);
+    let base_millis = 250_u64.saturating_mul(1_u64 << exponent).min(30_000);
+    let mut hasher = DefaultHasher::new();
+    endpoint_id.hash(&mut hasher);
+    failures.hash(&mut hasher);
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .hash(&mut hasher);
+    JITTER_SEQUENCE
+        .fetch_add(1, Ordering::Relaxed)
+        .hash(&mut hasher);
+    let jitter = hasher.finish() % (base_millis / 4 + 1);
+    Duration::from_millis(base_millis + jitter)
 }

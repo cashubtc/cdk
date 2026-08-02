@@ -13,11 +13,11 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use serde::{de::DeserializeOwned, Serialize};
-use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 
-use crate::{address::IrohTarget, protocol, Error, IrohNode, IrohStream};
+use crate::{address::IrohTarget, Error, IrohNode, IrohStream};
 
 /// HTTP client backed by one clone-shared Iroh endpoint and connection pool.
 #[derive(Debug, Clone)]
@@ -45,6 +45,33 @@ impl IrohClient {
         body: Bytes,
         max_response_bytes: usize,
     ) -> Result<RawResponse, Error> {
+        match tokio::time::timeout(
+            self.node.config().timeouts.request,
+            self.request_raw_inner(method, url, headers, body, max_response_bytes),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                self.node
+                    .metrics_inner()
+                    .timeouts
+                    .fetch_add(1, Ordering::Relaxed);
+                Err(Error::Timeout {
+                    operation: "request",
+                })
+            }
+        }
+    }
+
+    async fn request_raw_inner(
+        &self,
+        method: Method,
+        url: Url,
+        headers: &[(HeaderName, HeaderValue)],
+        body: Bytes,
+        max_response_bytes: usize,
+    ) -> Result<RawResponse, Error> {
         if headers
             .iter()
             .any(|(name, _)| name == header::HOST || name == header::CONTENT_LENGTH)
@@ -60,41 +87,12 @@ impl IrohClient {
             });
         }
         let target = IrohTarget::parse(&url)?;
-        let connection = self
-            .node
-            .pool()
-            .connect(self.node.endpoint(), target.endpoint_id, protocol::ALPN)
-            .await?;
-        let (send, recv) = match tokio::time::timeout(
-            self.node.config().timeouts.stream_open,
-            connection.open_bi(),
-        )
-        .await
-        {
-            Ok(Ok(stream)) => stream,
-            Ok(Err(_)) => {
-                self.node
-                    .pool()
-                    .evict(target.endpoint_id, protocol::ALPN)
-                    .await;
-                return Err(Error::Stream);
-            }
-            Err(_) => {
-                self.node
-                    .metrics_inner()
-                    .timeouts
-                    .fetch_add(1, Ordering::Relaxed);
-                return Err(Error::Timeout {
-                    operation: "stream open",
-                });
-            }
-        };
-        let stream = TokioIo::new(IrohStream::new(send, recv));
+        let stream = TokioIo::new(self.open_stream(target.endpoint_id).await?);
         let (mut sender, driver) = hyper::client::conn::http1::Builder::new()
             .handshake(stream)
             .await
             .map_err(|_| Error::Http)?;
-        let driver = tokio::spawn(driver);
+        let driver = AbortOnDropHandle::new(tokio::spawn(driver));
 
         let mut builder = Request::builder()
             .method(method)
@@ -140,7 +138,7 @@ impl IrohClient {
         &self,
         response: Response<Incoming>,
         max_response_bytes: usize,
-        driver: JoinHandle<Result<(), hyper::Error>>,
+        driver: AbortOnDropHandle<Result<(), hyper::Error>>,
         sender: hyper::client::conn::http1::SendRequest<Full<Bytes>>,
     ) -> Result<Vec<u8>, Error> {
         if let Some(actual) = response
@@ -210,6 +208,36 @@ impl IrohClient {
             }
         }
         Ok(collected.to_vec())
+    }
+
+    async fn open_stream(&self, endpoint_id: crate::EndpointId) -> Result<IrohStream, Error> {
+        let connection = self
+            .node
+            .pool()
+            .connect(self.node.endpoint(), endpoint_id)
+            .await?;
+        match tokio::time::timeout(
+            self.node.config().timeouts.stream_open,
+            connection.open_bi(),
+        )
+        .await
+        {
+            Ok(Ok((send, recv))) => Ok(IrohStream::new(send, recv)),
+            Ok(Err(_)) => {
+                connection.close(0_u32.into(), b"stream open failed");
+                self.node.pool().evict(endpoint_id).await;
+                Err(Error::Stream)
+            }
+            Err(_) => {
+                self.node
+                    .metrics_inner()
+                    .timeouts
+                    .fetch_add(1, Ordering::Relaxed);
+                Err(Error::Timeout {
+                    operation: "stream open",
+                })
+            }
+        }
     }
 
     /// Sends a GET request and returns status plus bytes.
@@ -294,38 +322,10 @@ impl IrohClient {
 
         let target =
             IrohTarget::parse(url).map_err(|error| WsError::Connection(error.to_string()))?;
-        let connection = self
-            .node
-            .pool()
-            .connect(self.node.endpoint(), target.endpoint_id, protocol::ALPN)
+        let stream = self
+            .open_stream(target.endpoint_id)
             .await
             .map_err(|error| WsError::Connection(error.to_string()))?;
-        let (send, recv) = match tokio::time::timeout(
-            self.node.config().timeouts.stream_open,
-            connection.open_bi(),
-        )
-        .await
-        {
-            Ok(Ok(stream)) => stream,
-            Ok(Err(_)) => {
-                self.node
-                    .pool()
-                    .evict(target.endpoint_id, protocol::ALPN)
-                    .await;
-                return Err(WsError::Connection(
-                    "Iroh request stream failed".to_string(),
-                ));
-            }
-            Err(_) => {
-                self.node
-                    .metrics_inner()
-                    .timeouts
-                    .fetch_add(1, Ordering::Relaxed);
-                return Err(WsError::Connection(
-                    "Iroh stream open timed out".to_string(),
-                ));
-            }
-        };
         let ws_url = format!("ws://{}{}", target.authority, target.request_target);
         let mut request = ws_url
             .into_client_request()
@@ -339,7 +339,7 @@ impl IrohClient {
             };
             request.headers_mut().insert(name, value);
         }
-        let handshake = tokio_tungstenite::client_async(request, IrohStream::new(send, recv));
+        let handshake = tokio_tungstenite::client_async(request, stream);
         let (stream, _) = tokio::time::timeout(self.node.config().timeouts.headers, handshake)
             .await
             .map_err(|_| {

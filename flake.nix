@@ -1527,7 +1527,8 @@
                   cargo update simple_asn1 --precise 0.6.3
                   cargo update cookie_store --precise 0.22.0
                   cargo update serde_with --precise 3.17.0
-                  cargo update time --precise 0.3.44
+                  # plist 1.10 (through Iroh's netdev dependency) requires time >=0.3.47.
+                  cargo update time --precise 0.3.47
                   cargo update unicode-segmentation --precise 1.12.0
                   cargo update idna_adapter --precise 1.2.1
                   cargo update icu_normalizer --precise 2.0.1

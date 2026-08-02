@@ -11,18 +11,6 @@ use tokio::runtime::Runtime;
 fn main() -> Result<()> {
     let rt = Runtime::new()?;
     let args = CLIArgs::parse();
-    match rt.block_on(async { cdk_mintd::run_cli_command(&args).await }) {
-        Ok(true) => {
-            rt.shutdown_background();
-            return Ok(());
-        }
-        Ok(false) => {}
-        Err(err) => {
-            rt.shutdown_background();
-            return Err(err);
-        }
-    }
-
     let rt = Arc::new(rt);
     let rt_clone = Arc::clone(&rt);
     rt.block_on(async {

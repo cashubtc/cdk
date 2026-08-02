@@ -32,6 +32,12 @@ pub enum Error {
         /// Short, bounded peer fingerprint.
         peer: String,
     },
+    /// A recent failed dial is being rate-limited.
+    #[error("Iroh connection retry for peer {peer} is temporarily rate-limited")]
+    ConnectBackoff {
+        /// Short, bounded peer fingerprint.
+        peer: String,
+    },
     /// A transport operation timed out.
     #[error("Iroh {operation} timed out")]
     Timeout {

@@ -184,142 +184,8 @@ pub enum IrohDiscovery {
     Custom,
 }
 
-/// Iroh connection and bridge timeout configuration, in seconds.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg(feature = "iroh")]
-#[serde(deny_unknown_fields)]
-pub struct IrohTimeoutConfig {
-    #[serde(default = "default_iroh_connect_timeout_seconds")]
-    pub connect_seconds: u64,
-    #[serde(default = "default_iroh_stream_open_timeout_seconds")]
-    pub stream_open_seconds: u64,
-    #[serde(default = "default_iroh_headers_timeout_seconds")]
-    pub headers_seconds: u64,
-    #[serde(default = "default_iroh_body_progress_timeout_seconds")]
-    pub body_progress_seconds: u64,
-    #[serde(default = "default_iroh_shutdown_timeout_seconds")]
-    pub shutdown_seconds: u64,
-}
-
-#[cfg(feature = "iroh")]
-impl Default for IrohTimeoutConfig {
-    fn default() -> Self {
-        Self {
-            connect_seconds: default_iroh_connect_timeout_seconds(),
-            stream_open_seconds: default_iroh_stream_open_timeout_seconds(),
-            headers_seconds: default_iroh_headers_timeout_seconds(),
-            body_progress_seconds: default_iroh_body_progress_timeout_seconds(),
-            shutdown_seconds: default_iroh_shutdown_timeout_seconds(),
-        }
-    }
-}
-
-#[cfg(feature = "iroh")]
-const fn default_iroh_connect_timeout_seconds() -> u64 {
-    15
-}
-
-#[cfg(feature = "iroh")]
-const fn default_iroh_stream_open_timeout_seconds() -> u64 {
-    10
-}
-
-#[cfg(feature = "iroh")]
-const fn default_iroh_headers_timeout_seconds() -> u64 {
-    15
-}
-
-#[cfg(feature = "iroh")]
-const fn default_iroh_body_progress_timeout_seconds() -> u64 {
-    30
-}
-
-#[cfg(feature = "iroh")]
-const fn default_iroh_shutdown_timeout_seconds() -> u64 {
-    10
-}
-
-/// Iroh connection, stream, header, and body admission limits.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg(feature = "iroh")]
-#[serde(deny_unknown_fields)]
-pub struct IrohLimitConfig {
-    #[serde(default = "default_iroh_max_connections")]
-    pub max_connections: usize,
-    #[serde(default = "default_iroh_max_pooled_connections")]
-    pub max_pooled_connections: usize,
-    #[serde(default = "default_iroh_max_connections_per_peer")]
-    pub max_connections_per_peer: usize,
-    #[serde(default = "default_iroh_max_streams")]
-    pub max_streams: usize,
-    #[serde(default = "default_iroh_max_streams_per_connection")]
-    pub max_streams_per_connection: usize,
-    #[serde(default = "default_iroh_max_header_bytes")]
-    pub max_header_bytes: usize,
-    #[serde(default = "default_iroh_max_request_body_bytes")]
-    pub max_request_body_bytes: usize,
-    #[serde(default = "default_iroh_max_response_body_bytes")]
-    pub max_response_body_bytes: usize,
-}
-
-#[cfg(feature = "iroh")]
-impl Default for IrohLimitConfig {
-    fn default() -> Self {
-        Self {
-            max_connections: default_iroh_max_connections(),
-            max_pooled_connections: default_iroh_max_pooled_connections(),
-            max_connections_per_peer: default_iroh_max_connections_per_peer(),
-            max_streams: default_iroh_max_streams(),
-            max_streams_per_connection: default_iroh_max_streams_per_connection(),
-            max_header_bytes: default_iroh_max_header_bytes(),
-            max_request_body_bytes: default_iroh_max_request_body_bytes(),
-            max_response_body_bytes: default_iroh_max_response_body_bytes(),
-        }
-    }
-}
-
-#[cfg(feature = "iroh")]
-const fn default_iroh_max_connections() -> usize {
-    1_024
-}
-
-#[cfg(feature = "iroh")]
-const fn default_iroh_max_pooled_connections() -> usize {
-    1_024
-}
-
-#[cfg(feature = "iroh")]
-const fn default_iroh_max_connections_per_peer() -> usize {
-    8
-}
-
-#[cfg(feature = "iroh")]
-const fn default_iroh_max_streams() -> usize {
-    4_096
-}
-
-#[cfg(feature = "iroh")]
-const fn default_iroh_max_streams_per_connection() -> usize {
-    256
-}
-
-#[cfg(feature = "iroh")]
-const fn default_iroh_max_header_bytes() -> usize {
-    64 * 1_024
-}
-
-#[cfg(feature = "iroh")]
-const fn default_iroh_max_request_body_bytes() -> usize {
-    1_024 * 1_024
-}
-
-#[cfg(feature = "iroh")]
-const fn default_iroh_max_response_body_bytes() -> usize {
-    16 * 1_024 * 1_024
-}
-
-/// Optional persistent Iroh listener and shared outbound endpoint configuration.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Optional persistent Iroh listener configuration.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[cfg(feature = "iroh")]
 #[serde(deny_unknown_fields)]
 pub struct Iroh {
@@ -329,41 +195,13 @@ pub struct Iroh {
     pub secret_key_file: Option<PathBuf>,
     /// Protected exported endpoint ticket. Defaults beside the secret key.
     pub endpoint_ticket_file: Option<PathBuf>,
-    /// Generate a protected endpoint secret when it does not exist.
-    #[serde(default = "default_true")]
-    pub generate_secret_key: bool,
     #[serde(default)]
     pub discovery: IrohDiscovery,
     /// Relay URLs used only in `custom` discovery mode.
     #[serde(default)]
     pub relay_urls: Vec<String>,
-    /// Standard `iroh-tickets` endpoint tickets imported out of band.
-    #[serde(default)]
-    pub static_tickets: Vec<String>,
     /// Optional explicit UDP bind address.
     pub bind_addr: Option<SocketAddr>,
-    #[serde(default)]
-    pub timeouts: IrohTimeoutConfig,
-    #[serde(default)]
-    pub limits: IrohLimitConfig,
-}
-
-#[cfg(feature = "iroh")]
-impl Default for Iroh {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            secret_key_file: None,
-            endpoint_ticket_file: None,
-            generate_secret_key: true,
-            discovery: IrohDiscovery::default(),
-            relay_urls: Vec::new(),
-            static_tickets: Vec::new(),
-            bind_addr: None,
-            timeouts: IrohTimeoutConfig::default(),
-            limits: IrohLimitConfig::default(),
-        }
-    }
 }
 
 #[cfg(feature = "iroh")]
@@ -376,13 +214,9 @@ impl fmt::Debug for Iroh {
                 "has_endpoint_ticket_file",
                 &self.endpoint_ticket_file.is_some(),
             )
-            .field("generate_secret_key", &self.generate_secret_key)
             .field("discovery", &self.discovery)
             .field("relay_count", &self.relay_urls.len())
-            .field("static_ticket_count", &self.static_tickets.len())
             .field("has_explicit_bind", &self.bind_addr.is_some())
-            .field("timeouts", &self.timeouts)
-            .field("limits", &self.limits)
             .finish()
     }
 }

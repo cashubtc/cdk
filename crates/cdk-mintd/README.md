@@ -121,26 +121,26 @@ cdk-mintd
 
 ### Iroh listener
 
-Build with the native `iroh` feature, then initialize the persistent endpoint
-identity before choosing the public mint URL:
+Build with the native `iroh` feature. Mintd creates and reloads its persistent
+endpoint identity automatically at startup:
 
 ```bash
 cargo build -p cdk-mintd --release --features iroh
-cdk-mintd --work-dir /var/lib/cdk-mintd iroh init
-# Prints: iroh://<endpoint-id>
+cdk-mintd --work-dir /var/lib/cdk-mintd
+# Logs the resolved iroh://<endpoint-id> URL.
 ```
 
-The command creates or reloads a protected 32-byte endpoint key at
+Startup creates or reloads a protected 32-byte endpoint key at
 `<work-dir>/iroh/endpoint-secret`. Back it up like the mint seed: deleting or
 replacing it changes the endpoint ID and therefore changes every configured
 Iroh URL. Mintd rejects permissive, corrupt, or symlinked key files and rejects
 an `iroh://` public URL whose endpoint ID does not match the key.
 
-For an Iroh-only mint, put the printed URL in `[info]` and disable TCP HTTP:
+For an Iroh-only mint, let startup derive the URL and disable TCP HTTP:
 
 ```toml
 [info]
-url = "iroh://<endpoint-id>"
+url = "iroh://auto"
 http_enabled = false
 
 [iroh]
@@ -154,22 +154,21 @@ listeners serve the same final Axum router. HTTP-only behavior remains the
 default when `[iroh]` is absent or disabled. At least one listener is required.
 
 Mintd atomically exports the endpoint's current standard endpoint ticket to
-`<work-dir>/iroh/endpoint-ticket` on every successful endpoint startup. Copy
-that ticket through an authenticated operator channel and add it to another
-endpoint's `static_tickets` list when using out-of-band bootstrapping. Tickets
+`<work-dir>/iroh/endpoint-ticket` on every successful endpoint startup. Tickets
 contain mutable reachability hints; the stable mint URL contains only the
 endpoint ID.
 
 Discovery choices are explicit:
 
 - `n0` uses Iroh's production N0 discovery and relay preset.
-- `static` disables network discovery and relays; distribute endpoint tickets
-  out of band.
-- `custom` uses only the configured `relay_urls`, plus imported tickets.
+- `static` disables network discovery and relays.
+- `custom` uses only the configured `relay_urls`.
 
-The example config lists every timeout and admission limit. All Iroh fields
-also have `CDK_MINTD_IROH_*` environment forms; comma-separate relay URLs or
-tickets. `CDK_MINTD_HTTP_ENABLED=false` disables the TCP listener.
+Timeouts, request bounds, admission limits, retry backoff, and idle reaping use
+safe transport-library defaults instead of expanding the mintd configuration
+surface. All operator-facing Iroh fields also have `CDK_MINTD_IROH_*`
+environment forms; comma-separate relay URLs.
+`CDK_MINTD_HTTP_ENABLED=false` disables the TCP listener.
 
 ### Fake Wallet Custom Payment Methods
 

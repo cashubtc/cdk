@@ -52,6 +52,10 @@ pub struct IrohTimeouts {
     pub headers: Duration,
     /// Maximum duration between successive request or response body frames.
     pub body_progress: Duration,
+    /// Maximum duration of one non-WebSocket HTTP request.
+    pub request: Duration,
+    /// Maximum duration an admitted connection may remain without active streams.
+    pub connection_idle: Duration,
     /// Maximum graceful shutdown drain duration.
     pub shutdown: Duration,
 }
@@ -63,6 +67,8 @@ impl Default for IrohTimeouts {
             stream_open: protocol::STREAM_OPEN_TIMEOUT,
             headers: protocol::HEADER_TIMEOUT,
             body_progress: protocol::BODY_PROGRESS_TIMEOUT,
+            request: protocol::REQUEST_TIMEOUT,
+            connection_idle: protocol::CONNECTION_IDLE_TIMEOUT,
             shutdown: protocol::SHUTDOWN_TIMEOUT,
         }
     }
