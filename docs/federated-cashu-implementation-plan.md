@@ -13,25 +13,25 @@
 > cleanup commit `a7df24ebb` on 2026-07-29 with its DKG, journal, and wallet
 > state preserved. This is an upgrade-compatibility smoke, not the multi-host or
 > production release validation required below.
-> A separate fresh single-host ceremony on 2026-08-02 completed concurrent
-> threshold-3-of-5 DKG with an all-Iroh, HTTP-disabled roster and real
-> federated-Bark and federated-BDK Signet backends. Updated CLI and interactive
-> TUI wallets issued paid 1,000 sat Bark quotes; the TUI also issued a confirmed
-> 1,000 sat BDK quote and retained a 2,000 sat balance across a coordinated
-> five-member restart. This closes the requested Nocean paid-backend smoke, not
-> the protocol, adversarial, database-parity, multi-host, or production gates
-> below.
-> That first paid smoke deployed only denomination `1`, which supports a
-> 1,000-sat issuance at the output-count limit but makes larger issuances fail.
-> The deployment tooling now defaults to and verifies all 64 power-of-two
-> denominations. A replacement all-Iroh Nocean ceremony completed setup, DKG,
-> activation, smoke, outage/catch-up, restart, and backup/restore drills with
-> the complete keyset. A local TUI then minted a confirmed 973-sat onchain
-> quote over Iroh. Paid BOLT11 minting and both paid melt paths on this
-> replacement deployment remain open: the external Wavelength payer refunded
-> the BOLT11 payment because its claim-expiry margin was too short, while the
-> TUI's 973-sat balance cannot cover either the BDK melt fee reserve or Bark's
-> 1,000-sat minimum plus fees.
+> The canonical single-host Nocean deployment was recreated on 2026-08-02 in
+> `/root/cdk-federation` with one observable `cdk-federation` tmux session,
+> threshold 3-of-5, all 64 power-of-two denominations, HTTP disabled, and real
+> federated-Bark and federated-BDK Signet backends. The deployment used the
+> operator-facing setup CLI for creation, invitation enrollment, independent
+> review and approval, DKG, and activation. Invitation strings embedded the
+> selected Iroh coordinator transport; the harness copied only those opaque
+> protected strings. All five DKG services ran concurrently, with no batches or
+> shell-level serialization.
+> A fresh local interactive TUI discovered all five members over Iroh, minted a
+> real 1,231-sat Bark quote, completed a real 1,000-sat Bark melt with a 25-sat
+> fee reserve, and minted a real 743-sat BDK quote after its Signet transaction
+> confirmed at height 315869. A 330-sat BDK melt quote also reached the live
+> backend and returned a 1,989-sat fee reserve, but the TUI correctly rejected
+> execution because its 949-sat balance was below the required 2,319 sats. The
+> paid BDK melt therefore remains open pending additional Signet test
+> liquidity; it must not be reported as complete until the destination output
+> and resulting wallet state are verified. These Nocean drills do not close the
+> protocol, adversarial, database-parity, multi-host, or production gates below.
 > Mobile federation bindings and the Android and iOS reference wallets now
 > accept canonical `iroh://<endpoint-id>` mint addresses and use Iroh for
 > federation discovery and requests. Native Android-emulator and iOS-simulator
@@ -59,20 +59,20 @@ Every safety-critical operation must be ordered, durably journaled, replayable, 
 ## Current implementation state
 
 - The reproducible single-host Nocean drill runs each of five operators in an
-  independent tmux session using the same setup CLI steps expected from real
-  operators. DKG and activation are launched concurrently; the protocol does
-  not depend on shell-level serialization. The latest complete-keyset run uses
-  tmux prefix `cdk-all-iroh-bark-full` and records its machine-readable result
-  in `target/nocean-iroh-bark-full-keyset-drill.json`.
+  independent pane of the `cdk-federation` tmux session using the same setup
+  CLI steps expected from real operators. It supports Iroh-only operation by
+  default and HTTPS as an explicit alternative. DKG and activation are
+  launched concurrently; the protocol does not depend on shell-level
+  serialization. The canonical deployment lives only in
+  `/root/cdk-federation`.
 - Nocean payment verification distinguishes transport and quote correctness
-  from completed paid operations. On the replacement deployment, local TUI
-  discovery, health, BOLT11/onchain quote creation, and a paid confirmed
-  onchain mint are proven over Iroh. A 546-sat onchain melt quote also reached
-  the BDK backend but reserved 1,989 sats of fees, and a 500-sat BOLT11 melt was
-  correctly below Bark's 1,000-sat minimum. Fresh funded BOLT11 issuance and
-  completed BOLT11/onchain melts require additional Signet test liquidity and
-  must not be reported as complete until their resulting wallet state is
-  verified.
+  from completed paid operations. On the canonical deployment, a local TUI
+  completed paid Bark mint and melt operations and a paid, confirmed BDK mint
+  over Iroh. The BDK melt quote path is also proven through fee selection and
+  local balance enforcement, but the actual melt remains open because the
+  test wallet has 949 sats while the selected 330-sat quote requires a
+  1,989-sat fee reserve. It must not be reported as complete until additional
+  Signet liquidity funds execution and the destination output is verified.
 - Generated mobile bindings include the Iroh federation connector. Android
   supplies a platform-safe DNS resolver and all four ABI libraries pass the
   binding rebuild's 16 KiB alignment check. The iOS Swift package links the
@@ -88,10 +88,15 @@ Every safety-critical operation must be ordered, durably journaled, replayable, 
   the equivalent standalone-wallet probe and now also routes canonical Iroh
   inputs directly to federation discovery. Its production-service test and
   full onboarding XCUITest both add the live Nocean federation successfully.
-- Federation setup uses a real dealer-free DKG ceremony with enrollment, roster agreement, identity binding, restartable rounds, transcript signatures, activation, and identical final public configuration export.
-  Enrollment and roster assembly are currently file-mediated and assume an
-  authenticated out-of-band operator ceremony. The planned signed,
-  multi-operator setup workflow is specified in
+- Federation setup uses a real dealer-free DKG ceremony with invitation-based
+  enrollment, roster agreement, identity binding, independent proposal review
+  and approval, restartable rounds, transcript signatures, activation, and
+  identical final public configuration export. Protected invitation strings
+  carry the selected HTTPS or Iroh coordinator URL and an enrollment
+  capability. Their authenticated out-of-band delivery remains an operator
+  responsibility; after delivery, the setup protocol exchanges enrollment,
+  roster, approval, and DKG data without harness-mediated member data. The
+  multi-operator workflow is specified in
   [`federated-cashu-multi-operator-setup-implementation-plan.md`](federated-cashu-multi-operator-setup-implementation-plan.md).
 - Members run AlephBFT over authenticated private REST. Operations are durably
   journaled and deterministically applied. Sparse scheduled/recovery checkpoint
