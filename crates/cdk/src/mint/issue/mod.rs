@@ -315,6 +315,8 @@ impl Mint {
                         amount: request.amount.map(|a| a.with_unit(unit.clone())),
                         unix_expiry: Some(quote_expiry),
                         extra_json,
+                        quote_id: quote_id.clone(),
+                        pubkey,
                     };
 
                     IncomingPaymentOptions::Custom(Box::new(custom_options))

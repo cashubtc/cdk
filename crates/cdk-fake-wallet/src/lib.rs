@@ -1160,6 +1160,8 @@ mod tests {
                     amount: Some(Amount::new(10, CurrencyUnit::Sat)),
                     unix_expiry: None,
                     extra_json: None,
+                    quote_id: cdk_common::QuoteId::new(),
+                    pubkey: None,
                 },
             )))
             .await

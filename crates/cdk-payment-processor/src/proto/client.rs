@@ -186,6 +186,8 @@ impl MintPayment for PaymentProcessorClient {
                         amount: opts.amount.map(Into::into),
                         unix_expiry: opts.unix_expiry,
                         extra_json: opts.extra_json.clone(),
+                        quote_id: opts.quote_id.to_string(),
+                        pubkey: opts.pubkey.map(|p| p.to_hex()),
                     },
                 )),
             },
