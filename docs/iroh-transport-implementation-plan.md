@@ -1269,8 +1269,22 @@ WebSocket requests only when they exactly match a configured member's canonical
 keeps subscriptions on authenticated Iroh, rejects unlisted or rewritten
 routes, and does not introduce polling as the permanent implementation. The
 focused routing regression, the Iroh-enabled `cdk-cli` compile check, and all 26
-TUI tests pass. A fresh paid Bark quote and BDK on-chain quote remain the live
-Nocean acceptance checks for this follow-up.
+TUI tests pass. After deploying that wallet-side fix, both an updated
+`cdk-cli` wallet and a fresh interactive TUI wallet paid separate 1,000 sat
+Bark Signet invoices. Each reached `PAID`, aggregated threshold shares over
+Iroh, reached `ISSUED`, and showed a 1,000 sat balance without HTTP fallback.
+
+The repeated live payment also exposed a separate AlephBFT admission race. The
+receiver could subtract an envelope's byte length after channel delivery but
+before the sender incremented the shared buffered-byte counter, temporarily
+wrapping it to `usize::MAX` and producing false 256 MiB backpressure. Admission
+now atomically reserves byte budget before making an envelope visible, rolls
+the reservation back when the bounded channel rejects delivery, and performs
+a saturating, invariant-checked release. Nine focused inbound-network tests
+pass, including exact reservation/release and full-channel rollback coverage;
+the exact mintd deployment feature set still compiles. The TUI's federated-BDK
+Signet quote is funded and remains the final live Nocean acceptance check after
+its required confirmation.
 
 ## Verification matrix
 

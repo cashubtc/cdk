@@ -3463,9 +3463,21 @@ Progress checkpoint:
   NUT-17 attempted the ordinary WebSocket client against `iroh://`. The outer
   federation connector now routes an exact configured member `/v1/ws` URL to
   that member's Iroh-aware connector and fails closed for every other URL. The
-  focused regression, Iroh-enabled CLI compile, and all TUI tests pass. A fresh
-  funded Bark issuance and BDK on-chain issuance are still required before this
-  Nocean checkpoint can be counted as paid-operation evidence.
+  focused regression, Iroh-enabled CLI compile, and all TUI tests pass;
+- paid two fresh 1,000 sat Bark Signet invoices after deploying the connector
+  fix. One updated `cdk-cli` wallet and one fresh interactive TUI wallet each
+  observed `PAID`, aggregated threshold signature shares over Iroh, reached
+  `ISSUED`, and retained a 1,000 sat balance. The TUI flow used the ordinary
+  `m` mint dialog and remained visible in its own Nocean tmux session;
+- found an AlephBFT inbound-byte accounting race during the repeated paid
+  flow: delivery could become visible before its byte reservation, letting the
+  receiver temporarily wrap the counter to `usize::MAX` and cause false
+  backpressure. The sender now atomically reserves before channel delivery and
+  rolls back rejected deliveries; the receiver releases with saturation and an
+  explicit invariant alert. All nine focused inbound-network tests pass and
+  the production Nocean mintd feature set compiles. The interactive TUI's
+  federated-BDK Signet quote is funded and awaits its required confirmation
+  before this Nocean checkpoint records both real payment rails.
 
 Compatibility verification executed on 2026-07-20:
 

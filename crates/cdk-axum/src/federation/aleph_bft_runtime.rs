@@ -289,8 +289,20 @@ where
 
     async fn next_event(&mut self) -> Option<D> {
         let envelope = self.incoming.recv().await?;
-        self.buffered_inbound_bytes
-            .fetch_sub(envelope.byte_len, std::sync::atomic::Ordering::Relaxed);
+        let release = self.buffered_inbound_bytes.fetch_update(
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+            |buffered| Some(buffered.saturating_sub(envelope.byte_len)),
+        );
+        if let Ok(buffered) = release {
+            if buffered < envelope.byte_len {
+                tracing::error!(
+                    buffered,
+                    released = envelope.byte_len,
+                    "AlephBFT inbound byte counter violated its reservation invariant"
+                );
+            }
+        }
         Some(envelope.data)
     }
 }

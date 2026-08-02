@@ -186,10 +186,16 @@ where
         }
         let activity_ids = message.consensus_activity_ids();
         let byte_budget = crate::federation_aleph_bft_inbound_byte_budget();
-        let buffered = self
-            .buffered_inbound_bytes
-            .load(std::sync::atomic::Ordering::Relaxed);
-        if buffered.saturating_add(actual) > byte_budget {
+        let reservation = self.buffered_inbound_bytes.fetch_update(
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+            |buffered| {
+                buffered
+                    .checked_add(actual)
+                    .filter(|next| *next <= byte_budget)
+            },
+        );
+        if let Err(buffered) = reservation {
             return Err(cdk::Error::from(
                 cdk::federation::FederationError::AlephBftBackpressure {
                     session_id: self.session_id,
@@ -199,12 +205,14 @@ where
                 },
             ));
         }
-        self.incoming
-            .try_send(CdkAlephBftInboundEnvelope {
-                data: message,
-                byte_len: actual,
-            })
-            .map_err(|err| match err {
+        let send_result = self.incoming.try_send(CdkAlephBftInboundEnvelope {
+            data: message,
+            byte_len: actual,
+        });
+        if let Err(err) = send_result {
+            self.buffered_inbound_bytes
+                .fetch_sub(actual, std::sync::atomic::Ordering::AcqRel);
+            return Err(match err {
                 mpsc::error::TrySendError::Full(_) => {
                     cdk::Error::from(cdk::federation::FederationError::AlephBftBackpressure {
                         session_id: self.session_id,
@@ -214,9 +222,8 @@ where
                 mpsc::error::TrySendError::Closed(_) => {
                     cdk::Error::Custom("AlephBFT network message receiver is closed".to_string())
                 }
-            })?;
-        self.buffered_inbound_bytes
-            .fetch_add(actual, std::sync::atomic::Ordering::Relaxed);
+            });
+        }
         self.mark_new_consensus_activity(activity_ids);
 
         Ok(actual)
@@ -853,6 +860,7 @@ mod tests {
     #[tokio::test]
     async fn inbound_idle_network_message_does_not_mark_activity_hint() {
         let (mut network, handle) = CdkAlephBftNetwork::<IdleNetworkMessage>::new_pair();
+        let buffered_inbound_bytes = handle.buffered_inbound_bytes();
         let activity_hint = CdkAlephBftActivityHint::default();
         let inbound =
             CdkAlephBftNetworkInboundHandle::with_activity_hint(7, &handle, activity_hint.clone());
@@ -865,8 +873,44 @@ mod tests {
             encoded_bytes,
             request.message_bytes().expect("message").len()
         );
+        assert_eq!(
+            buffered_inbound_bytes.load(std::sync::atomic::Ordering::Acquire),
+            encoded_bytes
+        );
         assert_eq!(network.next_event().await, Some(IdleNetworkMessage(42)));
+        assert_eq!(
+            buffered_inbound_bytes.load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
         assert!(!activity_hint.is_active());
+    }
+
+    #[tokio::test]
+    async fn inbound_full_queue_rolls_back_byte_reservation() {
+        let (mut network, handle) =
+            CdkAlephBftNetwork::<IdleNetworkMessage>::new_pair_with_capacity(1);
+        let buffered_inbound_bytes = handle.buffered_inbound_bytes();
+        let inbound = CdkAlephBftNetworkInboundHandle::new(7, &handle);
+        let first =
+            FederationAlephBftNetworkMessageRequest::new(7, IdleNetworkMessage(42).encode());
+        let second =
+            FederationAlephBftNetworkMessageRequest::new(7, IdleNetworkMessage(43).encode());
+
+        let encoded_bytes = inbound.queue_request(&first).expect("first request");
+        let err = inbound
+            .queue_request(&second)
+            .expect_err("full queue must reject the second request");
+
+        assert!(err.to_string().contains("backpressure"));
+        assert_eq!(
+            buffered_inbound_bytes.load(std::sync::atomic::Ordering::Acquire),
+            encoded_bytes
+        );
+        assert_eq!(network.next_event().await, Some(IdleNetworkMessage(42)));
+        assert_eq!(
+            buffered_inbound_bytes.load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
     }
 
     #[tokio::test]
