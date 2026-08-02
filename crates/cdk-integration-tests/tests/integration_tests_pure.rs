@@ -2383,11 +2383,18 @@ struct CustomPaymentProcessor {
     /// Captures the quote_id seen by `get_payment_quote` so tests can assert
     /// the mint propagates it correctly.
     last_quote_id: std::sync::Mutex<Option<cdk_common::QuoteId>>,
+    /// Captures the (quote_id, pubkey) seen by `create_incoming_payment_request`
+    /// so tests can assert the mint propagates them correctly.
+    last_incoming: std::sync::Mutex<Option<(cdk_common::QuoteId, Option<cashu::PublicKey>)>>,
 }
 
 impl CustomPaymentProcessor {
     fn last_quote_id(&self) -> Option<cdk_common::QuoteId> {
         self.last_quote_id.lock().expect("poisoned").clone()
+    }
+
+    fn last_incoming(&self) -> Option<(cdk_common::QuoteId, Option<cashu::PublicKey>)> {
+        self.last_incoming.lock().expect("poisoned").clone()
     }
 }
 
@@ -2407,9 +2414,26 @@ impl MintPayment for CustomPaymentProcessor {
 
     async fn create_incoming_payment_request(
         &self,
-        _options: cdk_common::payment::IncomingPaymentOptions,
+        options: cdk_common::payment::IncomingPaymentOptions,
     ) -> Result<cdk_common::payment::CreateIncomingPaymentResponse, Self::Err> {
-        Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+        match options {
+            cdk_common::payment::IncomingPaymentOptions::Custom(custom) => {
+                // Capture the mint-supplied quote_id and NUT-20 pubkey so the
+                // regression test can assert both are propagated.
+                *self.last_incoming.lock().expect("poisoned") =
+                    Some((custom.quote_id.clone(), custom.pubkey));
+
+                Ok(cdk_common::payment::CreateIncomingPaymentResponse {
+                    request_lookup_id: PaymentIdentifier::CustomId(
+                        "custom-incoming-lookup-id".to_string(),
+                    ),
+                    request: "custom-incoming-request".to_string(),
+                    expiry: custom.unix_expiry,
+                    extra_json: None,
+                })
+            }
+            _ => Err(cdk_common::payment::Error::UnsupportedPaymentOption),
+        }
     }
 
     async fn get_payment_quote(
@@ -2626,6 +2650,73 @@ async fn test_custom_melt_quote_id_propagates_to_payment_processor() {
     assert_eq!(
         seen_by_processor, response_quote_id,
         "the quote_id passed to get_payment_quote must equal the quote_id surfaced to the wallet",
+    );
+}
+
+#[tokio::test]
+async fn test_custom_mint_quote_id_and_pubkey_propagate_to_payment_processor() {
+    setup_tracing();
+
+    let localstore = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("memory db"));
+    let processor = Arc::new(CustomPaymentProcessor::default());
+
+    let mut mint_builder = cdk::mint::MintBuilder::new(localstore.clone());
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Custom("test-custom".to_string()),
+            cdk::mint::MintMeltLimits::new(1, 10_000),
+            processor.clone(),
+        )
+        .await
+        .expect("custom payment processor");
+
+    mint_builder = mint_builder
+        .with_name("mint quote-id propagation test".to_string())
+        .with_description("mint quote-id propagation test".to_string())
+        .with_urls(vec!["https://example-mint".to_string()])
+        .with_limits(2000, 2000);
+
+    let mint = mint_builder
+        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .await
+        .expect("mint build");
+
+    mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000))
+        .await
+        .expect("quote ttl");
+
+    let secret_key = SecretKey::generate();
+    let pubkey = secret_key.public_key();
+
+    let response = mint
+        .get_mint_quote(cdk::mint::MintQuoteRequest::Custom {
+            method: PaymentMethod::Custom("test-custom".to_string()),
+            request: cdk::nuts::MintQuoteCustomRequest {
+                amount: Some(Amount::from(21)),
+                unit: CurrencyUnit::Sat,
+                description: None,
+                pubkey: Some(pubkey),
+                extra: serde_json::Value::Null,
+            },
+        })
+        .await
+        .expect("custom mint quote");
+
+    let response_quote_id = response.quote().clone();
+    let (seen_quote_id, seen_pubkey) = processor
+        .last_incoming()
+        .expect("processor must have received the incoming payment options");
+
+    assert_eq!(
+        seen_quote_id, response_quote_id,
+        "the quote_id passed to create_incoming_payment_request must equal the quote_id surfaced to the wallet",
+    );
+    assert_eq!(
+        seen_pubkey,
+        Some(pubkey),
+        "the NUT-20 pubkey passed to create_incoming_payment_request must equal the one the wallet supplied",
     );
 }
 
