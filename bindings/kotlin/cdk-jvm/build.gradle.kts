@@ -53,9 +53,9 @@ tasks.named<Jar>("sourcesJar") {
 publishing {
     publications {
         create<MavenPublication>("maven") {
-            groupId = project.property("GROUP") as String
+            groupId = project.group as String
             artifactId = "cdk-jvm"
-            version = project.property("VERSION_NAME") as String
+            version = project.version as String
             from(components["java"])
         }
     }

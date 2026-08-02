@@ -32,9 +32,9 @@ afterEvaluate {
         publications {
             create<MavenPublication>("release") {
                 from(components["release"])
-                groupId = project.property("GROUP") as String
+                groupId = project.group as String
                 artifactId = "cdk-android"
-                version = project.property("VERSION_NAME") as String
+                version = project.version as String
             }
         }
     }

@@ -1,0 +1,16 @@
+# JitPack (https://jitpack.io) builds each tagged release of this repository on
+# demand and serves the modules as:
+#   com.github.<owner>.cdk-kotlin:cdk-android:<tag>
+#   com.github.<owner>.cdk-kotlin:cdk-jvm:<tag>
+#   com.github.<owner>.cdk-kotlin:cdk-jvm-natives:<tag>
+# The generated bindings and prebuilt native libraries are committed on every
+# release tag, so no Rust toolchain is needed to build here.
+jdk:
+  - openjdk17
+
+install:
+  # -x test: WalletTest talks to a live test mint over the network.
+  # GROUP/ARTIFACT/VERSION are provided by the JitPack build environment; the
+  # -Pgroup/-Pversion overrides make the published POMs self-consistent under
+  # the com.github coordinates (see root build.gradle.kts).
+  - ./gradlew --no-daemon -x test build publishToMavenLocal -Pgroup="${GROUP}.${ARTIFACT}" -Pversion="${VERSION}"

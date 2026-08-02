@@ -53,6 +53,35 @@ dependencies {
 }
 ```
 
+### JitPack (any tag, including nightlies)
+
+Every release tag — including nightlies that are not on Maven Central — is also
+consumable via [JitPack](https://jitpack.io), which builds the tag on demand
+(the generated bindings and prebuilt native libraries are committed on the tag):
+
+```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories {
+        mavenCentral()
+        maven {
+            url = uri("https://jitpack.io")
+            content { includeGroupByRegex("com\\.github\\..*") }
+        }
+    }
+}
+
+// build.gradle.kts — replace OWNER with the GitHub owner of the cdk-kotlin repo
+dependencies {
+    implementation("com.github.OWNER.cdk-kotlin:cdk-android:TAG")
+    // desktop/JVM: use cdk-jvm plus a runtimeOnly on cdk-jvm-natives
+}
+```
+
+The first request for a tag triggers a JitPack build, so the initial dependency
+resolution can take a few minutes; artifacts are cached and immutable afterwards.
+Build logs are at `https://jitpack.io/com/github/OWNER/cdk-kotlin/TAG/build.log`.
+
 ## Quick Start
 
 ```kotlin
@@ -112,9 +141,12 @@ The `kotlin-publish.yml` workflow (in the CDK monorepo) builds native binaries
 for the supported JVM and Android platforms, syncs sources to `cdk-kotlin`,
 publishes to Maven Central, and creates a tagged GitHub release. The three Maven
 artifacts are uploaded in one direct Central Portal deployment with redundant
-checksum files removed. The following secrets and variables must be configured
-in the **CDK monorepo** repository settings (Settings → Secrets and variables →
-Actions).
+checksum files removed. After the release is created, the workflow also
+pre-warms and verifies the on-demand [JitPack](https://jitpack.io) build of the
+tag (see "JitPack" under Installation), so JitPack availability is covered by CI
+for every release — stable and nightly alike. The following secrets and
+variables must be configured in the **CDK monorepo** repository settings
+(Settings → Secrets and variables → Actions).
 
 ### Secrets
 

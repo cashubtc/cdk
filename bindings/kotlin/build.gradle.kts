@@ -5,8 +5,17 @@ plugins {
     id("com.vanniktech.maven.publish.base") version "0.34.0" apply false
 }
 
-group = property("GROUP") as String
-version = property("VERSION_NAME") as String
+// JitPack builds pass -Pgroup=com.github.<owner>.<repo> and -Pversion=<tag>
+// (see jitpack.yml); Maven Central releases keep the gradle.properties
+// coordinates. The published POMs must use the JitPack coordinates so that
+// inter-module dependencies (cdk-android -> cdk-jvm) resolve for consumers.
+group = providers.gradleProperty("group").orElse(providers.gradleProperty("GROUP")).get()
+version = providers.gradleProperty("version").orElse(providers.gradleProperty("VERSION_NAME")).get()
+
+// GPG credentials only exist in the Central publish workflow. Signing must stay
+// optional so `publishToMavenLocal` works on JitPack and on developer machines.
+val signingConfigured = providers.gradleProperty("signingInMemoryKey").isPresent ||
+    providers.gradleProperty("signing.keyId").isPresent
 
 subprojects {
     group = rootProject.group
@@ -18,7 +27,9 @@ subprojects {
         configure<com.vanniktech.maven.publish.MavenPublishBaseExtension> {
             // Publish all modules as one Central Portal deployment.
             publishToMavenCentral()
-            signAllPublications()
+            if (signingConfigured) {
+                signAllPublications()
+            }
         }
 
         // Gradle creates four checksums for artifacts and their signatures. Central
