@@ -1,6 +1,15 @@
 diff --git a/crates/cdk-ffi/Cargo.toml b/crates/cdk-ffi/Cargo.toml
 --- a/crates/cdk-ffi/Cargo.toml
 +++ b/crates/cdk-ffi/Cargo.toml
+@@ -16,7 +16,8 @@ name = "cdk_ffi"
+ async-trait = { workspace = true }
+ bip39 = { workspace = true }
+ cdk = { workspace = true, default-features = false, features = ["wallet", "nostr"] }
+ cdk-http-client = { workspace = true, features = ["bitreq"] }
++cdk-iroh = { workspace = true }
+ cdk-sqlite = { workspace = true }
+ cdk-postgres = { workspace = true, optional = true }
+ cdk-supabase = { workspace = true, optional = true, features = ["wallet"] }
 @@ -45,8 +45,14 @@ log = "0.4"
  
  
@@ -91,19 +100,18 @@ diff --git a/crates/cdk-ffi/src/types/mint.rs b/crates/cdk-ffi/src/types/mint.rs
 diff --git a/crates/cdk-ffi/src/wallet_repository.rs b/crates/cdk-ffi/src/wallet_repository.rs
 --- a/crates/cdk-ffi/src/wallet_repository.rs
 +++ b/crates/cdk-ffi/src/wallet_repository.rs
-@@ -7,14 +7,31 @@ use bip39::Mnemonic;
+@@ -7,14 +7,30 @@ use bip39::Mnemonic;
  use cdk::wallet::wallet_repository::{
      WalletRepository as CdkWalletRepository, WalletRepositoryBuilder,
  };
-+#[cfg(feature = "federation")]
-+use cdk::wallet::FederatedMintConnector;
 +#[cfg(feature = "federation")]
 +use tokio::sync::RwLock;
  
  use crate::error::FfiError;
 +#[cfg(feature = "federation")]
 +use crate::federation::{
-+    discover_public_config, parse_federation_invite, FederationWalletConfig, FederationWalletInfo,
++    discover_public_config, federation_connector, parse_federation_invite,
++    FederationWalletConfig, FederationWalletInfo,
 +};
  use crate::types::*;
  
@@ -169,7 +177,7 @@ diff --git a/crates/cdk-ffi/src/wallet_repository.rs b/crates/cdk-ffi/src/wallet
          let wallets = self.inner.get_wallets().await;
  
          if let Some(wallet) = wallets.iter().find(|w| w.mint_url == cdk_mint_url) {
-@@ -142,11 +181,30 @@ impl WalletRepository {
+@@ -142,11 +181,29 @@ impl WalletRepository {
      ) -> Result<(), FfiError> {
          let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
  
@@ -184,8 +192,7 @@ diff --git a/crates/cdk-ffi/src/wallet_repository.rs b/crates/cdk-ffi/src/wallet
 +
 +        #[cfg(feature = "federation")]
 +        if let Some(registration) = &registration {
-+            let connector =
-+                FederatedMintConnector::from_public_config_urls(registration.config.clone())?;
++            let connector = federation_connector(registration.config.clone())?;
 +            config = Some(
 +                config
 +                    .unwrap_or_default()
@@ -321,7 +328,7 @@ diff --git a/crates/cdk-ffi/src/wallet_repository.rs b/crates/cdk-ffi/src/wallet
 +            .map(|keyset| keyset.unit.clone())
 +            .collect::<std::collections::BTreeSet<_>>();
 +        for unit in active_units {
-+            let connector = FederatedMintConnector::from_public_config_urls(config.clone())?;
++            let connector = federation_connector(config.clone())?;
 +            let wallet_config = cdk::wallet::wallet_repository::WalletConfig::new()
 +                .with_target_proof_count(target_proof_count)
 +                .with_mint_connector(Arc::new(connector));

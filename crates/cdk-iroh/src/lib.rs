@@ -4,6 +4,8 @@
 //! state machines are served through their existing generic boundaries.
 
 mod address;
+#[cfg(target_os = "android")]
+mod android_dns;
 mod client;
 mod config;
 mod error;

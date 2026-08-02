@@ -54,6 +54,8 @@ impl IrohNode {
                 .relay_mode(RelayMode::custom(relay_urls.clone()))
                 .clear_address_lookup(),
         };
+        #[cfg(target_os = "android")]
+        let builder = builder.dns_resolver(crate::android_dns::system_dns_resolver());
         Self::finish_bind(config, secret_key, lookup, builder).await
     }
 

@@ -26,7 +26,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_urlencoded = "0.7"
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread"] }
 tokio-tungstenite = { workspace = true, features = ["handshake"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tower.workspace = true

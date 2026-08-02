@@ -5,7 +5,10 @@ use std::str::FromStr;
 
 use cdk::federation::{FederationConfig, FederationInvite};
 use cdk::nuts::MintInfo;
-use cdk_http_client::HttpClient;
+use cdk::wallet::{FederatedMintConnector, FederatedMintConnectorConfig};
+use cdk_http_client::{Async, Transport};
+use cdk_iroh::IrohTransport;
+use serde::de::DeserializeOwned;
 
 use crate::error::FfiError;
 use crate::types::{CurrencyUnit, MintUrl};
@@ -101,24 +104,15 @@ pub(crate) fn parse_federation_invite(
 pub(crate) async fn discover_public_config(
     mint_url: &cdk::mint_url::MintUrl,
 ) -> Result<FederationConfig, FfiError> {
-    let client = HttpClient::builder()
-        .no_redirects()
-        .build()
-        .map_err(FfiError::internal)?;
+    let transport = IrohTransport::<Async>::default();
     let config_url = mint_url
         .join_paths(&["federation", "v1", "config"])
         .map_err(FfiError::internal)?;
-    let public_config: FederationConfig = client
-        .fetch(config_url.as_str())
-        .await
-        .map_err(FfiError::internal)?;
+    let public_config: FederationConfig = fetch_json(&transport, config_url).await?;
     let info_url = mint_url
         .join_paths(&["v1", "info"])
         .map_err(FfiError::internal)?;
-    let mint_info: MintInfo = client
-        .fetch(info_url.as_str())
-        .await
-        .map_err(FfiError::internal)?;
+    let mint_info: MintInfo = fetch_json(&transport, info_url).await?;
 
     public_config.validate()?;
     if !public_config.keysets.iter().any(|keyset| keyset.active) {
@@ -152,6 +146,38 @@ pub(crate) async fn discover_public_config(
         config_digest,
     )?;
     Ok(public_config)
+}
+
+pub(crate) fn federation_connector(
+    config: FederationConfig,
+) -> Result<FederatedMintConnector, FfiError> {
+    config.validate()?;
+    FederatedMintConnector::from_validated_public_config_urls_with_transport_and_config(
+        config,
+        IrohTransport::<Async>::default(),
+        FederatedMintConnectorConfig::default(),
+    )
+    .map_err(Into::into)
+}
+
+async fn fetch_json<T>(
+    transport: &IrohTransport<Async>,
+    url: url::Url,
+) -> Result<T, FfiError>
+where
+    T: DeserializeOwned,
+{
+    let response = transport
+        .http_get_raw(url.clone(), None)
+        .await
+        .map_err(FfiError::internal)?;
+    if !response.is_success() {
+        return Err(FfiError::internal(format!(
+            "GET {url} returned HTTP {}",
+            response.status()
+        )));
+    }
+    response.json().await.map_err(FfiError::internal)
 }
 
 /// Decode and validate a federation invite without connecting to its members.
