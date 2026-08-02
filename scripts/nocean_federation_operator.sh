@@ -30,6 +30,10 @@ source "$ENV_FILE"
 : "${TMUX_SESSION:?TMUX_SESSION is required}"
 : "${ESPLORA_URL:?ESPLORA_URL is required}"
 : "${CHAIN_SOURCE_ID:?CHAIN_SOURCE_ID is required}"
+: "${BARK_SERVER_ADDRESS:?BARK_SERVER_ADDRESS is required}"
+: "${BARK_ESPLORA_URL:?BARK_ESPLORA_URL is required}"
+: "${BARK_ARK_SERVER_PUBLIC_KEY:?BARK_ARK_SERVER_PUBLIC_KEY is required}"
+: "${BARK_APPLICATION_KEY_EPOCH:?BARK_APPLICATION_KEY_EPOCH is required}"
 
 MINTD="$OPERATOR_ROOT/bin/cdk-mintd"
 RUNTIME_CONFIG="$OPERATOR_ROOT/runtime-config.toml"
@@ -61,6 +65,7 @@ validate_environment() {
     require_positive DKG_MAX_TICKS "$DKG_MAX_TICKS"
     require_positive DKG_RETRY_DELAY_MS "$DKG_RETRY_DELAY_MS"
     require_positive DKG_CEREMONY_TIMEOUT_SECONDS "$DKG_CEREMONY_TIMEOUT_SECONDS"
+    require_positive BARK_APPLICATION_KEY_EPOCH "$BARK_APPLICATION_KEY_EPOCH"
     ((MEMBER_ID <= MEMBERS)) || die "MEMBER_ID exceeds member count"
     ((THRESHOLD <= MEMBERS)) || die "THRESHOLD exceeds member count"
     [[ "$NETWORK" =~ ^(bitcoin|testnet|signet|regtest)$ ]] \
@@ -80,6 +85,12 @@ validate_environment() {
     fi
     [[ "$ESPLORA_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
         || die "ESPLORA_URL must be a credential-free HTTPS URL"
+    [[ "$BARK_SERVER_ADDRESS" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
+        || die "BARK_SERVER_ADDRESS must be a credential-free HTTPS URL"
+    [[ "$BARK_ESPLORA_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
+        || die "BARK_ESPLORA_URL must be a credential-free HTTPS URL"
+    [[ "$BARK_ARK_SERVER_PUBLIC_KEY" =~ ^0[23][0-9a-fA-F]{64}$ ]] \
+        || die "BARK_ARK_SERVER_PUBLIC_KEY must be a compressed secp256k1 public key"
     [[ "$CHAIN_SOURCE_ID" =~ ^[A-Za-z0-9._-]+$ ]] \
         || die "CHAIN_SOURCE_ID contains unsupported characters"
     [[ "$LISTEN_ADDR" == "127.0.0.1:$LISTEN_PORT" ]] \
@@ -126,15 +137,42 @@ activated_private_config() {
     printf '%s/activated/federation-private.json' "$(setup_state_dir active)"
 }
 
+bark_policy_config() {
+    printf '%s/bark-policy.json' "$(ceremony_dir "$1")"
+}
+
+write_bark_policy() {
+    local label="$1" path
+    path="$(bark_policy_config "$label")"
+    cat >"$path" <<'EOF'
+{
+  "version": 1,
+  "receive_base_fee_sat": 0,
+  "receive_fee_ppm": 0,
+  "maximum_outgoing_base_fee_sat": 20,
+  "maximum_outgoing_fee_ppm": 5000,
+  "minimum_incoming_cltv_delta": 18,
+  "minimum_outgoing_cltv_delta": 18,
+  "refresh_before_expiry_blocks": 72,
+  "emergency_exit_before_expiry_blocks": 18,
+  "receive_secret_retention_days": 30,
+  "receive_anti_dos": "no_proof"
+}
+EOF
+    chmod 600 "$path"
+}
+
 generate_runtime_config() {
     if [[ -f "$RUNTIME_CONFIG" ]]; then
         return
     fi
     [[ ! -e "$RUNTIME_CONFIG" ]] \
         || die "runtime config path exists but is not a regular file"
-    local seed
+    local seed bark_operational_seed bark_receive_secret
     seed="$(openssl rand -hex 32)"
-    mkdir -p "$WORK_DIR"
+    bark_operational_seed="$(openssl rand -hex 64)"
+    bark_receive_secret="$(openssl rand -hex 32)"
+    mkdir -p "$WORK_DIR/frost-protocol"
     cat >"$RUNTIME_CONFIG" <<EOF
 [info]
 url = "$PUBLIC_MINT_URL"
@@ -166,7 +204,7 @@ port = $PROMETHEUS_PORT
 engine = "sqlite"
 
 [ln]
-ln_backend = "none"
+ln_backend = "federated-bark"
 unit = "sat"
 min_mint = 1
 max_mint = 50000000
@@ -179,13 +217,6 @@ min_mint = 1
 max_mint = 50000000
 min_melt = 1
 max_melt = 50000000
-
-[fake_wallet]
-supported_units = ["sat"]
-fee_percent = 0.0
-reserve_fee_min = 1
-min_delay_time = 0
-max_delay_time = 0
 
 [federation]
 enabled = true
@@ -209,6 +240,21 @@ esplora_parallel_requests = 1
 request_timeout_secs = 30
 esplora_max_retries = 3
 sync_interval_secs = 15
+
+[federation.bark]
+enabled = true
+network = "$NETWORK"
+ark_server_public_key = "$BARK_ARK_SERVER_PUBLIC_KEY"
+server_address = "$BARK_SERVER_ADDRESS"
+esplora_url = "$BARK_ESPLORA_URL"
+data_directory = "$WORK_DIR/federation-bark"
+receive_secret_database_path = "$WORK_DIR/federation-bark/receive-secrets.redb"
+frost_protocol_storage_root = "$WORK_DIR/frost-protocol"
+operational_seed_hex = "$bark_operational_seed"
+receive_secret_key_hex = "$bark_receive_secret"
+create_if_missing = true
+automatic_refresh = true
+automatic_emergency_exit = false
 EOF
     chmod 600 "$RUNTIME_CONFIG"
 }
@@ -223,6 +269,7 @@ action_create() {
     dir="$(ceremony_dir "$label")"
     [[ ! -e "$dir" ]] || die "ceremony directory already exists"
     mkdir -p "$dir"
+    write_bark_policy "$label"
     generate_runtime_config
     mintd_configured federation setup create \
         --config "$(setup_config "$label")" \
@@ -235,6 +282,9 @@ action_create() {
         --federation-api-url "$FEDERATION_API_URL" \
         --coordinator-url "$COORDINATOR_URL" \
         --amounts 1 \
+        --frost-bark-ark-server-public-key "$BARK_ARK_SERVER_PUBLIC_KEY" \
+        --frost-bark-application-key-epoch "$BARK_APPLICATION_KEY_EPOCH" \
+        --frost-bark-policy-config "$(bark_policy_config "$label")" \
         >"$dir/create.log"
 }
 

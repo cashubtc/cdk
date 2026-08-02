@@ -18,6 +18,7 @@ redb = ["dep:cdk-redb"]
 tor = ["cdk/tor"]
 npubcash = ["cdk/npubcash"]
 federation = ["cdk/federation", "cdk-common/federation", "cdk-sqlite/federation"]
+iroh = ["cdk/iroh"]
 
 [dependencies]
 anyhow.workspace = true

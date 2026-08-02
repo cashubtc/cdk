@@ -44,11 +44,15 @@ initial_smoke() {
     mkdir -p "$WALLET_DIR"
     tui_check "$MINT_URL" >"$WALLET_DIR/iroh-check.json"
     jq -e '.result == "passed" and .wallet_transport == "iroh" and
-        .all_public_mint_urls_iroh == true and .available_balance_sat == 0' \
+        .all_public_mint_urls_iroh == true and .available_balance_sat == 0 and
+        .payment_capabilities.mint_bolt11 == true and
+        .payment_capabilities.melt_bolt11 == true and
+        .payment_capabilities.mint_onchain == true and
+        .payment_capabilities.melt_onchain == true' \
         "$WALLET_DIR/iroh-check.json" >/dev/null \
         || die "TUI Iroh wallet check did not return the expected federation result"
     jq -n \
-        '{result: "passed", federation_import_over_iroh: true, threshold_mint_info_over_iroh: true, empty_balance: true, paid_operation: false}' \
+        '{result: "passed", federation_import_over_iroh: true, threshold_mint_info_over_iroh: true, empty_balance: true, payment_methods: {bolt11: true, onchain: true}, paid_operation: false}' \
         >"$WALLET_DIR/smoke-report.json"
 }
 

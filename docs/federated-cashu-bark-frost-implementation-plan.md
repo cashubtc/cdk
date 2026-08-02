@@ -24,6 +24,17 @@ release gate remains in Milestone 18.
 > on 2026-07-29 with preserved DKG/database state and strict five-member
 > convergence. That testing deployment does not close Milestone 18.
 
+> **Nocean Iroh follow-up — 2026-08-02:** The multi-operator deployment path
+> now configures federated Bark for BOLT11 together with federated BDK for
+> on-chain payments on Signet. It retains five independent operator
+> directories and tmux sessions on the accepted single Nocean server, carries
+> public wallet and private federation traffic over Iroh with HTTP disabled,
+> starts DKG members concurrently, and generates every Bark operational seed
+> and receive-secret key inside its owning operator environment. The wallet
+> smoke requires all four advertised mint/melt capabilities. This is deployment
+> and interoperability evidence only; it does not by itself close the remaining
+> Milestone 18 production-release gates.
+
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
 Related documents:

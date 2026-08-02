@@ -1237,6 +1237,28 @@ to the deployed public Iroh URL, validated all five Iroh roster entries, and
 loaded the empty wallet balance. The complete clean-build, deployment,
 recovery, restart, and backup drill took 1,219 seconds.
 
+### Bark and BDK Nocean payment-backend follow-up
+
+The next deployment iteration keeps the same all-Iroh, HTTP-disabled setup and
+runtime topology while enabling the two real Signet payment rails together:
+
+- `federated-bdk` is the on-chain backend, using the shared Signet Esplora
+  source and independently generated member-local wallet state;
+- `federated-bark` is the BOLT11 backend, using the accepted Bark application,
+  the public Signet Ark, and independently generated member-local operational
+  and receive-secret material;
+- the mint binary is built with
+  `sqlite,info-page,federation-bark,iroh,prometheus`, while the deployment's
+  `cdk-cli` build enables both `federation` and `iroh`; and
+- the Iroh TUI smoke now fails unless mint and melt advertise both `bolt11` and
+  `onchain` for satoshis.
+
+The one-server Nocean driver still creates five protected operator directories
+and five independently observable tmux sessions, transfers only invitations,
+and starts every DKG participant concurrently. The deployment gate must remain
+open until a fresh ceremony finishes, each Bark runtime reports ready, and a
+real Signet BOLT11 quote is paid and minted through the public Iroh entrypoint.
+
 ## Verification matrix
 
 ### Transport selection

@@ -151,6 +151,7 @@ async fn check_iroh_federation(mint_url: MintUrl) -> Result<()> {
         bail!("federation roster contains a non-Iroh public mint URL");
     }
     let available_balance = runtime.wallet().total_balance().await?;
+    let payment_capabilities = runtime.payment_capabilities();
     println!(
         "{}",
         serde_json::json!({
@@ -160,6 +161,12 @@ async fn check_iroh_federation(mint_url: MintUrl) -> Result<()> {
             "members": public_config.members.len(),
             "all_public_mint_urls_iroh": true,
             "wallet_transport": "iroh",
+            "payment_capabilities": {
+                "mint_bolt11": payment_capabilities.mint_bolt11,
+                "mint_onchain": payment_capabilities.mint_onchain,
+                "melt_bolt11": payment_capabilities.melt_bolt11,
+                "melt_onchain": payment_capabilities.melt_onchain
+            },
             "available_balance_sat": u64::from(available_balance)
         })
     );

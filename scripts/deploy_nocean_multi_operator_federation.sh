@@ -12,6 +12,10 @@ PUBLIC_TRANSPORT="${PUBLIC_TRANSPORT:-iroh}"
 NETWORK="${NETWORK:-signet}"
 ESPLORA_URL="${ESPLORA_URL:-https://esplora.signet.2nd.dev/}"
 CHAIN_SOURCE_ID="${CHAIN_SOURCE_ID:-2nddev-signet-esplora}"
+BARK_SERVER_ADDRESS="${BARK_SERVER_ADDRESS:-https://ark.signet.2nd.dev/}"
+BARK_ESPLORA_URL="${BARK_ESPLORA_URL:-$ESPLORA_URL}"
+BARK_ARK_SERVER_PUBLIC_KEY="${BARK_ARK_SERVER_PUBLIC_KEY:-03244a5a493e5f0c7b2ff513575715c036100ae219e5765ea688eb542a06f85aed}"
+BARK_APPLICATION_KEY_EPOCH="${BARK_APPLICATION_KEY_EPOCH:-1}"
 MEMBERS=5
 THRESHOLD="${THRESHOLD:-3}"
 PORT_START="${PORT_START:-21885}"
@@ -55,7 +59,9 @@ one Nocean server. Every operator uses a separate protected directory and named
 tmux session. Public wallet traffic, setup, DKG, consensus, checkpoint,
 catch-up, and operator traffic all use persistent Iroh endpoints. HTTP is
 disabled. Identities and private configuration are generated only inside each
-operator environment. All DKG services start concurrently.
+operator environment. All DKG services start concurrently. Runtime payments
+use federated BDK on Signet for on-chain and federated Bark on Signet for
+BOLT11.
 
 Usage:
   OPERATOR_HOSTS_CSV=host1,host2,host3,host4,host5 \
@@ -76,6 +82,10 @@ Important overrides:
   PRIOR_SESSION_PREFIX     Previous operator session prefix to stop.
   PUBLIC_TRANSPORT         Must be iroh for this all-Iroh drill.
   BARK_REPO_ROOT           Sibling checkout needed for Cargo path resolution.
+  BARK_SERVER_ADDRESS, BARK_ESPLORA_URL
+                            Public Signet Ark and chain-source endpoints.
+  BARK_ARK_SERVER_PUBLIC_KEY, BARK_APPLICATION_KEY_EPOCH
+                            Accepted Bark application identity.
   REPORT_FILE              Local redacted JSON drill report.
 EOF
 }
@@ -302,6 +312,10 @@ write_operator_env() {
         printf 'NETWORK=%q\n' "$NETWORK"
         printf 'ESPLORA_URL=%q\n' "$ESPLORA_URL"
         printf 'CHAIN_SOURCE_ID=%q\n' "$CHAIN_SOURCE_ID"
+        printf 'BARK_SERVER_ADDRESS=%q\n' "$BARK_SERVER_ADDRESS"
+        printf 'BARK_ESPLORA_URL=%q\n' "$BARK_ESPLORA_URL"
+        printf 'BARK_ARK_SERVER_PUBLIC_KEY=%q\n' "$BARK_ARK_SERVER_PUBLIC_KEY"
+        printf 'BARK_APPLICATION_KEY_EPOCH=%q\n' "$BARK_APPLICATION_KEY_EPOCH"
         printf 'PUBLIC_MINT_URL=%q\n' "$(public_mint_url "$member")"
         if [[ "$PUBLIC_TRANSPORT" == "iroh" ]]; then
             printf 'HTTP_ENABLED=false\n'
@@ -345,9 +359,9 @@ build_linux_binaries() {
             export CARGO_TARGET_DIR=/work/target/linux-x86_64
             cargo build --locked --release -p cdk-mintd \
                 --no-default-features \
-                --features sqlite,info-page,federation,iroh,prometheus
+                --features sqlite,info-page,federation-bark,iroh,prometheus
             cargo build --locked --release -p cdk-cli \
-                --no-default-features --features federation
+                --no-default-features --features federation,iroh
             cargo build --locked --release \
                 --manifest-path scripts/fed-cdk-tui/Cargo.toml
             "$CARGO_TARGET_DIR/release/cdk-mintd" federation setup create --help >/dev/null
@@ -560,6 +574,11 @@ verify_public_config() {
         .value.public_mint_url == .value.federation_api_url
     )' "$public_copy" >/dev/null \
         || die "public and private member routes do not use the same Iroh endpoint"
+    jq -e --arg network "$NETWORK" --arg ark "$BARK_ARK_SERVER_PUBLIC_KEY" \
+        '.frost_wallet.bark_application.network == $network and
+         .frost_wallet.bark_application.ark_server_public_key == $ark' \
+        "$public_copy" >/dev/null \
+        || die "public config does not contain the accepted Bark Signet application"
 }
 
 verify_runtime_consensus() {
@@ -597,6 +616,7 @@ write_report() {
         crates/cdk-mintd/src/federation_setup_command.rs \
         crates/cdk-mintd/src/lib.rs \
         crates/cdk/src/wallet/federation.rs \
+        crates/cdk-cli/Cargo.toml \
         scripts/fed-cdk-tui \
         scripts/deploy_nocean_multi_operator_federation.sh \
         scripts/nocean_federation_operator.sh \
@@ -681,6 +701,7 @@ write_report() {
             wallet_smoke: {
                 federation_import_over_iroh: true,
                 threshold_mint_info_over_iroh: true,
+                advertised_payment_methods: ["bolt11", "onchain"],
                 empty_balance: true,
                 paid_operation: false
             },
@@ -712,7 +733,7 @@ BARK_REPO_ROOT="$(cd -- "$BARK_REPO_ROOT" && pwd)"
 for setting in "$THRESHOLD" "$PORT_START" "$PROMETHEUS_PORT_START" \
     "$REQUIRE_UNIQUE_MACHINES" "$STATUS_TIMEOUT_SECS" "$STATUS_POLL_SECS" \
     "$ACTION_TIMEOUT_SECS" "$DKG_MAX_TICKS" "$DKG_RETRY_DELAY_MS" \
-    "$DKG_CEREMONY_TIMEOUT_SECONDS"; do
+    "$DKG_CEREMONY_TIMEOUT_SECONDS" "$BARK_APPLICATION_KEY_EPOCH"; do
     require_positive numeric_setting "$setting"
 done
 ((THRESHOLD <= MEMBERS)) || die "THRESHOLD exceeds member count"
@@ -737,6 +758,12 @@ done
 [[ "$PRIOR_SESSION_PREFIX" =~ ^[A-Za-z0-9._-]+$ ]] \
     || die "PRIOR_SESSION_PREFIX is invalid"
 [[ "$NETWORK" == "signet" ]] || die "the Nocean Iroh drill currently requires NETWORK=signet"
+[[ "$BARK_SERVER_ADDRESS" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
+    || die "BARK_SERVER_ADDRESS must be a credential-free HTTPS URL"
+[[ "$BARK_ESPLORA_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
+    || die "BARK_ESPLORA_URL must be a credential-free HTTPS URL"
+[[ "$BARK_ARK_SERVER_PUBLIC_KEY" =~ ^0[23][0-9a-fA-F]{64}$ ]] \
+    || die "BARK_ARK_SERVER_PUBLIC_KEY must be a compressed secp256k1 public key"
 
 IFS=',' read -r -a HOSTS <<<"$OPERATOR_HOSTS_CSV"
 [[ "${#HOSTS[@]}" == "$MEMBERS" ]] || die "OPERATOR_HOSTS_CSV must contain exactly five aliases"
