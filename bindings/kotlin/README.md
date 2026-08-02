@@ -141,9 +141,12 @@ The `kotlin-publish.yml` workflow (in the CDK monorepo) builds native binaries
 for the supported JVM and Android platforms, syncs sources to `cdk-kotlin`,
 publishes to Maven Central, and creates a tagged GitHub release. The three Maven
 artifacts are uploaded in one direct Central Portal deployment with redundant
-checksum files removed. The following secrets and variables must be configured
-in the **CDK monorepo** repository settings (Settings → Secrets and variables →
-Actions).
+checksum files removed. After the release is created, the workflow also
+pre-warms and verifies the on-demand [JitPack](https://jitpack.io) build of the
+tag (see "JitPack" under Installation), so JitPack availability is covered by CI
+for every release — stable and nightly alike. The following secrets and
+variables must be configured in the **CDK monorepo** repository settings
+(Settings → Secrets and variables → Actions).
 
 ### Secrets
 

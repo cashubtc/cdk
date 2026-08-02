@@ -500,6 +500,36 @@ jobs:
             --title "Release ${TAG}" \
             "${RELEASE_OPTIONS[@]}"
 
+      - name: Pre-warm and verify the JitPack build
+        env:
+          KOTLIN_REPO: ${{ vars.CDK_KOTLIN_REPO }}
+        run: |
+          set -euo pipefail
+          OWNER="${KOTLIN_REPO%/*}"
+
+          # Trigger the on-demand JitPack build for this tag. The aggregate
+          # module pom builds all submodules (cdk-android, cdk-jvm,
+          # cdk-jvm-natives).
+          curl -sf -o /dev/null --max-time 900 \
+            "https://jitpack.io/com/github/${OWNER}/cdk-kotlin/${TAG}/cdk-kotlin-${TAG}.pom" || true
+
+          # Then watch the build log until it finishes.
+          for attempt in $(seq 1 40); do
+            log=$(curl -sfL "https://jitpack.io/com/github/${OWNER}/cdk-kotlin/${TAG}/build.log" || true)
+            if grep -q "BUILD SUCCESSFUL" <<< "${log}"; then
+              echo "JitPack build succeeded for ${TAG}"
+              exit 0
+            fi
+            if grep -qE "BUILD FAILED|ERROR:" <<< "${log}"; then
+              echo "::error::JitPack build failed for ${TAG} — see https://jitpack.io/com/github/${OWNER}/cdk-kotlin/${TAG}/build.log"
+              exit 1
+            fi
+            sleep 15
+          done
+
+          echo "::error::Timed out waiting for the JitPack build of ${TAG}"
+          exit 1
+
       - name: Merge to default branch
         if: ${{ !inputs.nightly }}
         working-directory: cdk-kotlin
