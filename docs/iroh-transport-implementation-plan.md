@@ -1282,9 +1282,15 @@ now atomically reserves byte budget before making an envelope visible, rolls
 the reservation back when the bounded channel rejects delivery, and performs
 a saturating, invariant-checked release. Nine focused inbound-network tests
 pass, including exact reservation/release and full-channel rollback coverage;
-the exact mintd deployment feature set still compiles. The TUI's federated-BDK
-Signet quote is funded and remains the final live Nocean acceptance check after
-its required confirmation.
+the exact mintd deployment feature set still compiles. The same interactive TUI
+then created a federated-BDK on-chain quote, received a 1,000 sat Signet faucet
+transaction, observed its required confirmation at height 315800, aggregated
+the Cashu shares over Iroh, and increased its available balance from 1,000 to
+2,000 sat. The committed accounting fix was installed on all five members; a
+coordinated restart returned every member to ready, zero-lag status, the public
+Iroh TUI check passed again, and no byte-counter underflow or invariant alert
+appeared after restart. This closes the paid Bark-and-BDK Nocean follow-up, but
+does not convert its single-host topology into multi-host release evidence.
 
 ## Verification matrix
 

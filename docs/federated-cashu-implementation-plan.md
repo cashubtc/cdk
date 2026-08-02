@@ -13,6 +13,14 @@
 > cleanup commit `a7df24ebb` on 2026-07-29 with its DKG, journal, and wallet
 > state preserved. This is an upgrade-compatibility smoke, not the multi-host or
 > production release validation required below.
+> A separate fresh single-host ceremony on 2026-08-02 completed concurrent
+> threshold-3-of-5 DKG with an all-Iroh, HTTP-disabled roster and real
+> federated-Bark and federated-BDK Signet backends. Updated CLI and interactive
+> TUI wallets issued paid 1,000 sat Bark quotes; the TUI also issued a confirmed
+> 1,000 sat BDK quote and retained a 2,000 sat balance across a coordinated
+> five-member restart. This closes the requested Nocean paid-backend smoke, not
+> the protocol, adversarial, database-parity, multi-host, or production gates
+> below.
 
 This is a living design, status, and development contract for federated Cashu support in CDK. Treat its safety and architecture rules as constraints, not suggestions. If a requested change conflicts with them, explain the conflict instead of implementing a workaround.
 

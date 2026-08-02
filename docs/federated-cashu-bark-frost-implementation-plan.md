@@ -3475,9 +3475,16 @@ Progress checkpoint:
   backpressure. The sender now atomically reserves before channel delivery and
   rolls back rejected deliveries; the receiver releases with saturation and an
   explicit invariant alert. All nine focused inbound-network tests pass and
-  the production Nocean mintd feature set compiles. The interactive TUI's
-  federated-BDK Signet quote is funded and awaits its required confirmation
-  before this Nocean checkpoint records both real payment rails.
+  the production Nocean mintd feature set compiles;
+- funded the interactive TUI's federated-BDK quote with a separate 1,000 sat
+  Signet on-chain transaction. After its required confirmation at height
+  315800, the TUI issued another 1,000 sat over Iroh and showed a combined
+  2,000 sat balance. All five members were then upgraded to the committed
+  accounting fix and restarted concurrently; each returned ready and converged
+  with the paid BDK UTXO visible, the public Iroh TUI check passed, and no new
+  byte-counter invariant alert appeared. This is paid single-host Nocean
+  evidence for both configured rails, not completion of Milestone 18's wider
+  adversarial, database-parity, regtest, multi-host, or review gates.
 
 Compatibility verification executed on 2026-07-20:
 

@@ -14,6 +14,16 @@
 > The coordinated Nocean update on 2026-07-29 preserved the finalized DKG and
 > wallet state, but one testing host does not satisfy the remaining release
 > criteria.
+>
+> **Paid Nocean checkpoint — 2026-08-02:** A fresh five-member, threshold-3-of-5
+> federation ran the ordinary setup ceremony with HTTP disabled and every
+> public, setup, DKG, consensus, and wallet route on Iroh. An interactive TUI
+> requested a federated-BDK Signet address, the faucet sent 1,000 sat, all
+> members observed the required confirmation at height 315800, and threshold
+> issuance increased the TUI balance by 1,000 sat. A coordinated restart onto
+> the live-test byte-accounting fix returned all five members to ready,
+> zero-lag status with the UTXO spendable. This closes the requested paid
+> single-host deployment smoke only; the release gates above remain open.
 
 This document is the implementation and release record for a Bitcoin on-chain
 wallet jointly controlled by a CDK mint federation. It is intentionally separate
