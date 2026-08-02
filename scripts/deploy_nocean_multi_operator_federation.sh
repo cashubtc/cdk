@@ -40,6 +40,9 @@ BARK_REPO_ROOT="${BARK_REPO_ROOT:-$REPO_ROOT/../bark-cdk}"
 REPORT_FILE="${REPORT_FILE:-$REPO_ROOT/target/nocean-multi-operator-drill.json}"
 OPERATOR_SCRIPT="$SCRIPT_DIR/nocean_federation_operator.sh"
 WALLET_SCRIPT="$SCRIPT_DIR/nocean_federation_wallet_smoke.sh"
+SSH_IDENTITY_FILE="${SSH_IDENTITY_FILE:-}"
+SSH_KNOWN_HOSTS_FILE="${SSH_KNOWN_HOSTS_FILE:-}"
+SSH_CONTROL_PATH="${SSH_CONTROL_PATH:-}"
 SSH_OPTIONS=(
     -o BatchMode=yes
     -o ConnectTimeout=30
@@ -47,6 +50,25 @@ SSH_OPTIONS=(
     -o ServerAliveInterval=15
     -o ServerAliveCountMax=4
 )
+if [[ -n "$SSH_IDENTITY_FILE" ]]; then
+    SSH_OPTIONS+=(
+        -i "$SSH_IDENTITY_FILE"
+        -o IdentitiesOnly=yes
+    )
+fi
+if [[ -n "$SSH_KNOWN_HOSTS_FILE" ]]; then
+    SSH_OPTIONS+=(
+        -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS_FILE"
+        -o StrictHostKeyChecking=yes
+    )
+fi
+if [[ -n "$SSH_CONTROL_PATH" ]]; then
+    SSH_OPTIONS+=(
+        -o ControlMaster=auto
+        -o ControlPersist=600
+        -o "ControlPath=$SSH_CONTROL_PATH"
+    )
+fi
 HOSTS=()
 IROH_URLS=()
 STAGING_DIR=""
@@ -75,6 +97,10 @@ production drill, supply five SSH aliases and set REQUIRE_UNIQUE_MACHINES=5.
 
 Important overrides:
   OPERATOR_HOSTS_CSV       Exactly five comma-separated SSH aliases.
+  SSH_IDENTITY_FILE        Optional private key used for every SSH/SCP call.
+  SSH_KNOWN_HOSTS_FILE     Optional pinned known-hosts file used for SSH/SCP.
+  SSH_CONTROL_PATH         Optional multiplexing socket path, normally ending
+                           in /%C, used to reuse one SSH connection per host.
   REMOTE_ROOT              Safe relative root created on every operator host.
   REQUIRE_UNIQUE_MACHINES  Minimum distinct /etc/machine-id values (default 1).
   STOP_LEGACY_SESSION      Stop cdk-federation before taking its public ports.
@@ -739,6 +765,20 @@ done
 for file in "$OPERATOR_SCRIPT" "$WALLET_SCRIPT"; do
     [[ -f "$file" ]] || die "required deployment helper is missing"
 done
+if [[ -n "$SSH_IDENTITY_FILE" ]]; then
+    [[ -f "$SSH_IDENTITY_FILE" && -r "$SSH_IDENTITY_FILE" ]] \
+        || die "SSH_IDENTITY_FILE must be a readable private key"
+fi
+if [[ -n "$SSH_KNOWN_HOSTS_FILE" ]]; then
+    [[ -f "$SSH_KNOWN_HOSTS_FILE" && -r "$SSH_KNOWN_HOSTS_FILE" ]] \
+        || die "SSH_KNOWN_HOSTS_FILE must be a readable known-hosts file"
+fi
+if [[ -n "$SSH_CONTROL_PATH" ]]; then
+    [[ "$SSH_CONTROL_PATH" == */* ]] \
+        || die "SSH_CONTROL_PATH must include a parent directory"
+    [[ -d "${SSH_CONTROL_PATH%/*}" && -w "${SSH_CONTROL_PATH%/*}" ]] \
+        || die "SSH_CONTROL_PATH parent must be a writable directory"
+fi
 [[ -f "$BARK_REPO_ROOT/bark/Cargo.toml" ]] \
     || die "BARK_REPO_ROOT must point to the Bark checkout required by Cargo"
 BARK_REPO_ROOT="$(cd -- "$BARK_REPO_ROOT" && pwd)"

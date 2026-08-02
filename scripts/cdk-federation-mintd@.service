@@ -1,0 +1,29 @@
+[Unit]
+Description=CDK Iroh federation mintd member %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/cdk-federation-iroh/operator-%i
+Environment=RUST_LOG=info
+Environment=CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=180
+ExecStart=/home/ubuntu/cdk-federation-iroh/operator-%i/bin/cdk-mintd --work-dir /home/ubuntu/cdk-federation-iroh/operator-%i/work --config /home/ubuntu/cdk-federation-iroh/operator-%i/runtime-config.toml
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

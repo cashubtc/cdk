@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deploy Distributed CDK Federation"
+  short_description: "Deploy CDK federation members over SSH"
+  default_prompt: "Use $deploy-distributed-cdk-federation to deploy and verify a mintd-only Iroh federation across multiple SSH servers."
