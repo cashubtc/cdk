@@ -75,11 +75,9 @@ impl IrohNode {
             (DiscoveryMode::Static, _) => Endpoint::builder(presets::Minimal)
                 .relay_mode(RelayMode::Disabled)
                 .clear_address_lookup(),
-            (DiscoveryMode::Custom { relay_urls }, _) => {
-                Endpoint::builder(presets::Minimal)
-                    .relay_mode(RelayMode::custom(relay_urls.clone()))
-                    .clear_address_lookup()
-            }
+            (DiscoveryMode::Custom { relay_urls }, _) => Endpoint::builder(presets::Minimal)
+                .relay_mode(RelayMode::custom(relay_urls.clone()))
+                .clear_address_lookup(),
         };
         builder = builder.address_lookup(lookup.clone());
         builder = builder.alpns(vec![crate::protocol::ALPN.to_vec()]);
