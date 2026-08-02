@@ -79,7 +79,12 @@ Every safety-critical operation must be ordered, durably journaled, replayable, 
   Apple networking frameworks required by Iroh. Both apps share strict
   canonical-Iroh URL validation across add, restore, scan, discovery, and
   metadata paths; their opt-in native live tests take the endpoint from test
-  configuration instead of embedding a deployment address.
+  configuration instead of embedding a deployment address. A subsequent
+  Android production-UI test exposed that `WalletManager.addMint` still tried
+  to create a standalone HTTP wallet before federation discovery. Canonical
+  Iroh inputs now go directly to federation discovery. Both a deterministic
+  Compose journey that rejects the old ordering and a production-gateway UI
+  journey against the live Nocean federation pass.
 - Federation setup uses a real dealer-free DKG ceremony with enrollment, roster agreement, identity binding, restartable rounds, transcript signatures, activation, and identical final public configuration export.
   Enrollment and roster assembly are currently file-mediated and assume an
   authenticated out-of-band operator ceremony. The planned signed,
