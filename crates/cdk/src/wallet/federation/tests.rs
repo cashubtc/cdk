@@ -29,8 +29,8 @@ use cdk_common::{MintQuoteRequest, MintQuoteResponse, MintResponse, SecretKey};
 use cdk_fake_wallet::{create_fake_invoice, FakeWallet};
 
 use super::{
-    FederatedMintConnector, FederatedMintConnectorConfig, FederationWalletConnector,
-    FEDERATION_CATCH_UP_MAX_RETRIES,
+    member_websocket_url, FederatedMintConnector, FederatedMintConnectorConfig,
+    FederationWalletConnector, FEDERATION_CATCH_UP_MAX_RETRIES,
 };
 use crate::dhke::verify_bls_blind_signature;
 use crate::mint::{FederationRuntimeConfig, Mint, MintBuilder, MintInput, MintMeltLimits};
@@ -1511,6 +1511,40 @@ fn federated_mint_connector_trusted_public_config_urls_skip_full_aggregate_valid
     .expect("trusted local-registry config should skip repeated aggregate validation");
 
     assert_eq!(connector.public_config(), &public_config);
+}
+
+#[test]
+fn federated_mint_connector_routes_only_exact_member_websocket_urls() {
+    let bundle = threshold_bundle();
+    let connector = FederatedMintConnector::from_validated_public_config_urls_with_config(
+        bundle.public_config,
+        FederatedMintConnectorConfig::default(),
+    )
+    .expect("validated federation connector");
+
+    assert_eq!(
+        connector.websocket_member_id("wss://mint1.example.com/v1/ws"),
+        Some(member_id(1))
+    );
+    assert_eq!(
+        connector.websocket_member_id("wss://mint1.example.com/v1/not-ws"),
+        None
+    );
+    assert_eq!(
+        connector.websocket_member_id("wss://unlisted.example.com/v1/ws"),
+        None
+    );
+
+    let iroh_url = MintUrl::from_str(
+        "iroh://2c3188b9f7ecfec6b5c765a71f85221bb6165f7ceaf6cc9fd4d7344b94401fc3",
+    )
+    .expect("Iroh mint URL");
+    assert_eq!(
+        member_websocket_url(&iroh_url)
+            .expect("Iroh WebSocket URL")
+            .as_str(),
+        "iroh://2c3188b9f7ecfec6b5c765a71f85221bb6165f7ceaf6cc9fd4d7344b94401fc3/v1/ws"
+    );
 }
 
 #[tokio::test]

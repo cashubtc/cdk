@@ -1259,6 +1259,19 @@ and starts every DKG participant concurrently. The deployment gate must remain
 open until a fresh ceremony finishes, each Bark runtime reports ready, and a
 real Signet BOLT11 quote is paid and minted through the public Iroh entrypoint.
 
+The fresh five-member ceremony and Bark/BDK readiness checks passed on Nocean,
+but the first paid-wallet attempt exposed a wallet-side NUT-17 routing defect:
+federation REST fan-out used each member's Iroh-aware connector, while the
+outer `FederatedMintConnector` inherited the ordinary WebSocket implementation
+and rejected `iroh://` as an unsupported URL scheme. The connector now accepts
+WebSocket requests only when they exactly match a configured member's canonical
+`/v1/ws` URL and delegates the stream to that member's existing connector. This
+keeps subscriptions on authenticated Iroh, rejects unlisted or rewritten
+routes, and does not introduce polling as the permanent implementation. The
+focused routing regression, the Iroh-enabled `cdk-cli` compile check, and all 26
+TUI tests pass. A fresh paid Bark quote and BDK on-chain quote remain the live
+Nocean acceptance checks for this follow-up.
+
 ## Verification matrix
 
 ### Transport selection

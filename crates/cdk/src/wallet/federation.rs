@@ -45,6 +45,17 @@ use self::validation::{
 const FEDERATION_CATCH_UP_MAX_RETRIES: u16 = 100;
 const FEDERATION_CATCH_UP_RETRY_DELAY: Duration = Duration::from_millis(100);
 
+fn member_websocket_url(mint_url: &crate::mint_url::MintUrl) -> Option<url::Url> {
+    let mut url = mint_url.join_paths(&["v1", "ws"]).ok()?;
+    match url.scheme() {
+        "https" => url.set_scheme("wss").ok()?,
+        "http" => url.set_scheme("ws").ok()?,
+        "iroh" => {}
+        _ => return None,
+    }
+    Some(url)
+}
+
 /// Wallet mint connector that fans out signing requests to federation members.
 ///
 /// The connector preserves the existing wallet-to-mint protocol surface: member
@@ -507,6 +518,17 @@ impl FederatedMintConnector {
             .fanout_concurrency
             .min(self.member_connectors.len())
             .max(1)
+    }
+
+    fn websocket_member_id(&self, requested_url: &str) -> Option<MemberId> {
+        let requested_url = url::Url::parse(requested_url).ok()?;
+        self.public_config
+            .members
+            .iter()
+            .find_map(|(member_id, member)| {
+                (member_websocket_url(&member.public_mint_url).as_ref() == Some(&requested_url))
+                    .then_some(*member_id)
+            })
     }
 
     #[cfg(feature = "prometheus")]
@@ -1980,6 +2002,30 @@ fn validate_melt_quote_response(
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl MintConnector for FederatedMintConnector {
+    async fn connect_websocket(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<
+        (
+            cdk_common::ws_client::WsSender,
+            cdk_common::ws_client::WsReceiver,
+        ),
+        cdk_common::ws_client::WsError,
+    > {
+        let member_id = self.websocket_member_id(url).ok_or_else(|| {
+            cdk_common::ws_client::WsError::Connection(
+                "WebSocket URL is not an exact federation member route".to_string(),
+            )
+        })?;
+        let connector = self.member_connectors.get(&member_id).ok_or_else(|| {
+            cdk_common::ws_client::WsError::Connection(
+                "Federation member connector is unavailable".to_string(),
+            )
+        })?;
+        connector.connect_websocket(url, headers).await
+    }
+
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, Error> {
         let domain = domain.to_string();

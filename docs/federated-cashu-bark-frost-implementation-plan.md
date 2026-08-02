@@ -3453,6 +3453,19 @@ Progress checkpoint:
   existing deterministic apply path;
 - reran the three Bark federation tests, all nine `cdk-bark` tests, the existing
   CDK actor-lease test, and the exact production `cdk-mintd` feature check.
+- deployed a fresh five-member, threshold-3-of-5 federation on one Nocean host
+  with independent operator directories and tmux sessions, HTTP disabled, and
+  public wallet, setup, DKG, consensus, BDK, and Bark traffic configured for
+  Iroh. Concurrent DKG completed and every member reported both BOLT11 and
+  on-chain mint/melt capabilities;
+- traced a failed external-wallet Bark smoke to the federation wallet connector
+  rather than Bark payment execution: quote creation succeeded over Iroh, but
+  NUT-17 attempted the ordinary WebSocket client against `iroh://`. The outer
+  federation connector now routes an exact configured member `/v1/ws` URL to
+  that member's Iroh-aware connector and fails closed for every other URL. The
+  focused regression, Iroh-enabled CLI compile, and all TUI tests pass. A fresh
+  funded Bark issuance and BDK on-chain issuance are still required before this
+  Nocean checkpoint can be counted as paid-operation evidence.
 
 Compatibility verification executed on 2026-07-20:
 
