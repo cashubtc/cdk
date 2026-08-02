@@ -135,7 +135,7 @@ CDK uses Nix flakes to provide reproducible development environments. We offer a
 | **Nightly** | `nix develop .#nightly` | Rust Nightly, **PostgreSQL** | Formatting and experimental features |
 | **Nightly Regtest** | `nix develop .#nightly-regtest` | Nightly + **Full Regtest Stack** | Comprehensive testing on nightly |
 | **Integration** | `nix develop .#integration` | Stable + Regtest Stack + **Docker** | Binding, Auth, and Docker tests |
-| **MSRV** | `nix develop .#msrv` | Rust 1.85.0 (Minimum version) | Ensuring backward compatibility |
+| **MSRV** | `nix develop .#msrv` | Rust 1.91.0 (Minimum version) | Ensuring backward compatibility |
 | **FFI** | `nix develop .#ffi` | Stable + Python 3.11 | Working on UniFFI bindings |
 
 ### PostgreSQL Helpers

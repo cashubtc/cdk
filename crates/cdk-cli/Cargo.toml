@@ -17,6 +17,7 @@ sqlcipher = ["cdk-sqlite/sqlcipher"]
 redb = ["dep:cdk-redb"]
 tor = ["cdk/tor"]
 npubcash = ["cdk/npubcash"]
+iroh = ["cdk/iroh"]
 
 [dependencies]
 anyhow.workspace = true

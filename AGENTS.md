@@ -1,7 +1,7 @@
 # AGENTS.md - Cashu Development Kit (CDK)
 
 Rust workspace (edition 2021) implementing the Cashu e-cash protocol.
-24 crates in `crates/`, stable Rust (see `rust-toolchain.toml`), MSRV 1.85.0.
+27 crates in `crates/`, stable Rust (see `rust-toolchain.toml`), MSRV 1.91.0.
 
 ## Local Development Environment (Regtest)
 

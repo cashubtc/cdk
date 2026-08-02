@@ -484,16 +484,7 @@ async fn stream_client(
 ) -> Result<(), PubsubError> {
     let mut sub_id_to_kind = HashMap::new();
 
-    let mut url = client
-        .mint_url
-        .join_paths(&["v1", "ws"])
-        .expect("Could not join paths");
-
-    if url.scheme() == "https" {
-        url.set_scheme("wss").expect("Could not set scheme");
-    } else {
-        url.set_scheme("ws").expect("Could not set scheme");
-    }
+    let url = websocket_url(&client.mint_url)?;
 
     let mut headers: Vec<(&str, String)> = Vec::new();
 
@@ -631,6 +622,25 @@ async fn stream_client(
     }
 
     Ok(())
+}
+
+pub(crate) fn websocket_url(mint_url: &MintUrl) -> Result<url::Url, PubsubError> {
+    let mut url = mint_url
+        .join_paths(&["v1", "ws"])
+        .map_err(|_| PubsubError::NotSupported)?;
+
+    match url.scheme() {
+        "https" => url
+            .set_scheme("wss")
+            .map_err(|_| PubsubError::NotSupported)?,
+        "http" => url
+            .set_scheme("ws")
+            .map_err(|_| PubsubError::NotSupported)?,
+        "iroh" => {}
+        _ => return Err(PubsubError::NotSupported),
+    }
+
+    Ok(url)
 }
 
 fn map_ws_error(err: WsError) -> PubsubError {

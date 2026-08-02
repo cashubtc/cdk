@@ -21,11 +21,21 @@ use crate::wallet::{AuthMintConnector, AuthWallet};
 use crate::OidcClient;
 
 pub mod http_client;
+#[cfg(all(test, feature = "iroh", not(target_arch = "wasm32")))]
+mod iroh_tests;
 pub mod transport;
 
-/// Auth HTTP Client with async transport
+/// Auth HTTP client with hybrid HTTP(S)/Iroh transport.
+#[cfg(all(feature = "iroh", not(target_arch = "wasm32")))]
+pub type AuthHttpClient = http_client::AuthHttpClient<transport::IrohTransport<transport::Async>>;
+/// Auth HTTP client with async HTTP(S) transport.
+#[cfg(not(all(feature = "iroh", not(target_arch = "wasm32"))))]
 pub type AuthHttpClient = http_client::AuthHttpClient<transport::Async>;
-/// Default Http Client with async transport (non-Tor)
+/// Default HTTP client with hybrid HTTP(S)/Iroh transport.
+#[cfg(all(feature = "iroh", not(target_arch = "wasm32")))]
+pub type HttpClient = http_client::HttpClient<transport::IrohTransport<transport::Async>>;
+/// Default HTTP client with async HTTP(S) transport (non-Tor).
+#[cfg(not(all(feature = "iroh", not(target_arch = "wasm32"))))]
 pub type HttpClient = http_client::HttpClient<transport::Async>;
 /// Tor Auth HTTP Client with async transport (only when `tor` feature is enabled and not on wasm32)
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]

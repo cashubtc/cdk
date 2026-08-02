@@ -1,3 +1,7 @@
+#[cfg(feature = "iroh")]
+use core::fmt;
+#[cfg(feature = "iroh")]
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use bitcoin::hashes::{sha256, Hash};
@@ -50,6 +54,9 @@ pub struct LoggingConfig {
 #[serde(default)]
 pub struct Info {
     pub url: String,
+    /// Whether to expose the ordinary TCP HTTP listener.
+    #[serde(default = "default_true")]
+    pub http_enabled: bool,
     pub listen_host: String,
     pub listen_port: u16,
     /// Overrides mnemonic
@@ -82,6 +89,7 @@ impl Default for Info {
     fn default() -> Self {
         Info {
             url: String::new(),
+            http_enabled: true,
             listen_host: "127.0.0.1".to_string(),
             listen_port: 8091, // Default to port 8091 instead of 0
             seed: None,
@@ -110,6 +118,7 @@ impl std::fmt::Debug for Info {
 
         f.debug_struct("Info")
             .field("url", &self.url)
+            .field("http_enabled", &self.http_enabled)
             .field("listen_host", &self.listen_host)
             .field("listen_port", &self.listen_port)
             .field("mnemonic", &mnemonic_display)
@@ -155,6 +164,227 @@ fn default_signatory_address() -> String {
 
 fn default_signatory_port() -> u16 {
     15060
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Iroh endpoint discovery policy configured by a mint operator.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg(feature = "iroh")]
+#[serde(rename_all = "lowercase")]
+pub enum IrohDiscovery {
+    /// N0's production discovery and relay preset.
+    #[default]
+    N0,
+    /// Only direct addresses imported from endpoint tickets.
+    Static,
+    /// Operator-provided relays plus imported endpoint tickets.
+    Custom,
+}
+
+/// Iroh connection and bridge timeout configuration, in seconds.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg(feature = "iroh")]
+#[serde(deny_unknown_fields)]
+pub struct IrohTimeoutConfig {
+    #[serde(default = "default_iroh_connect_timeout_seconds")]
+    pub connect_seconds: u64,
+    #[serde(default = "default_iroh_stream_open_timeout_seconds")]
+    pub stream_open_seconds: u64,
+    #[serde(default = "default_iroh_headers_timeout_seconds")]
+    pub headers_seconds: u64,
+    #[serde(default = "default_iroh_body_progress_timeout_seconds")]
+    pub body_progress_seconds: u64,
+    #[serde(default = "default_iroh_shutdown_timeout_seconds")]
+    pub shutdown_seconds: u64,
+}
+
+#[cfg(feature = "iroh")]
+impl Default for IrohTimeoutConfig {
+    fn default() -> Self {
+        Self {
+            connect_seconds: default_iroh_connect_timeout_seconds(),
+            stream_open_seconds: default_iroh_stream_open_timeout_seconds(),
+            headers_seconds: default_iroh_headers_timeout_seconds(),
+            body_progress_seconds: default_iroh_body_progress_timeout_seconds(),
+            shutdown_seconds: default_iroh_shutdown_timeout_seconds(),
+        }
+    }
+}
+
+#[cfg(feature = "iroh")]
+const fn default_iroh_connect_timeout_seconds() -> u64 {
+    15
+}
+
+#[cfg(feature = "iroh")]
+const fn default_iroh_stream_open_timeout_seconds() -> u64 {
+    10
+}
+
+#[cfg(feature = "iroh")]
+const fn default_iroh_headers_timeout_seconds() -> u64 {
+    15
+}
+
+#[cfg(feature = "iroh")]
+const fn default_iroh_body_progress_timeout_seconds() -> u64 {
+    30
+}
+
+#[cfg(feature = "iroh")]
+const fn default_iroh_shutdown_timeout_seconds() -> u64 {
+    10
+}
+
+/// Iroh connection, stream, header, and body admission limits.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg(feature = "iroh")]
+#[serde(deny_unknown_fields)]
+pub struct IrohLimitConfig {
+    #[serde(default = "default_iroh_max_connections")]
+    pub max_connections: usize,
+    #[serde(default = "default_iroh_max_pooled_connections")]
+    pub max_pooled_connections: usize,
+    #[serde(default = "default_iroh_max_connections_per_peer")]
+    pub max_connections_per_peer: usize,
+    #[serde(default = "default_iroh_max_streams")]
+    pub max_streams: usize,
+    #[serde(default = "default_iroh_max_streams_per_connection")]
+    pub max_streams_per_connection: usize,
+    #[serde(default = "default_iroh_max_header_bytes")]
+    pub max_header_bytes: usize,
+    #[serde(default = "default_iroh_max_request_body_bytes")]
+    pub max_request_body_bytes: usize,
+    #[serde(default = "default_iroh_max_response_body_bytes")]
+    pub max_response_body_bytes: usize,
+}
+
+#[cfg(feature = "iroh")]
+impl Default for IrohLimitConfig {
+    fn default() -> Self {
+        Self {
+            max_connections: default_iroh_max_connections(),
+            max_pooled_connections: default_iroh_max_pooled_connections(),
+            max_connections_per_peer: default_iroh_max_connections_per_peer(),
+            max_streams: default_iroh_max_streams(),
+            max_streams_per_connection: default_iroh_max_streams_per_connection(),
+            max_header_bytes: default_iroh_max_header_bytes(),
+            max_request_body_bytes: default_iroh_max_request_body_bytes(),
+            max_response_body_bytes: default_iroh_max_response_body_bytes(),
+        }
+    }
+}
+
+#[cfg(feature = "iroh")]
+const fn default_iroh_max_connections() -> usize {
+    1_024
+}
+
+#[cfg(feature = "iroh")]
+const fn default_iroh_max_pooled_connections() -> usize {
+    1_024
+}
+
+#[cfg(feature = "iroh")]
+const fn default_iroh_max_connections_per_peer() -> usize {
+    8
+}
+
+#[cfg(feature = "iroh")]
+const fn default_iroh_max_streams() -> usize {
+    4_096
+}
+
+#[cfg(feature = "iroh")]
+const fn default_iroh_max_streams_per_connection() -> usize {
+    256
+}
+
+#[cfg(feature = "iroh")]
+const fn default_iroh_max_header_bytes() -> usize {
+    64 * 1_024
+}
+
+#[cfg(feature = "iroh")]
+const fn default_iroh_max_request_body_bytes() -> usize {
+    1_024 * 1_024
+}
+
+#[cfg(feature = "iroh")]
+const fn default_iroh_max_response_body_bytes() -> usize {
+    16 * 1_024 * 1_024
+}
+
+/// Optional persistent Iroh listener and shared outbound endpoint configuration.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg(feature = "iroh")]
+#[serde(deny_unknown_fields)]
+pub struct Iroh {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Protected 32-byte endpoint secret. Defaults below the mint work directory.
+    pub secret_key_file: Option<PathBuf>,
+    /// Protected exported endpoint ticket. Defaults beside the secret key.
+    pub endpoint_ticket_file: Option<PathBuf>,
+    /// Generate a protected endpoint secret when it does not exist.
+    #[serde(default = "default_true")]
+    pub generate_secret_key: bool,
+    #[serde(default)]
+    pub discovery: IrohDiscovery,
+    /// Relay URLs used only in `custom` discovery mode.
+    #[serde(default)]
+    pub relay_urls: Vec<String>,
+    /// Standard `iroh-tickets` endpoint tickets imported out of band.
+    #[serde(default)]
+    pub static_tickets: Vec<String>,
+    /// Optional explicit UDP bind address.
+    pub bind_addr: Option<SocketAddr>,
+    #[serde(default)]
+    pub timeouts: IrohTimeoutConfig,
+    #[serde(default)]
+    pub limits: IrohLimitConfig,
+}
+
+#[cfg(feature = "iroh")]
+impl Default for Iroh {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            secret_key_file: None,
+            endpoint_ticket_file: None,
+            generate_secret_key: true,
+            discovery: IrohDiscovery::default(),
+            relay_urls: Vec::new(),
+            static_tickets: Vec::new(),
+            bind_addr: None,
+            timeouts: IrohTimeoutConfig::default(),
+            limits: IrohLimitConfig::default(),
+        }
+    }
+}
+
+#[cfg(feature = "iroh")]
+impl fmt::Debug for Iroh {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Iroh")
+            .field("enabled", &self.enabled)
+            .field("has_secret_key_file", &self.secret_key_file.is_some())
+            .field(
+                "has_endpoint_ticket_file",
+                &self.endpoint_ticket_file.is_some(),
+            )
+            .field("generate_secret_key", &self.generate_secret_key)
+            .field("discovery", &self.discovery)
+            .field("relay_count", &self.relay_urls.len())
+            .field("static_ticket_count", &self.static_tickets.len())
+            .field("has_explicit_bind", &self.bind_addr.is_some())
+            .field("timeouts", &self.timeouts)
+            .field("limits", &self.limits)
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -1073,6 +1303,9 @@ fn default_blind() -> AuthType {
 #[serde(default)]
 pub struct Settings {
     pub info: Info,
+    #[cfg(feature = "iroh")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iroh: Option<Iroh>,
     pub signatory: Option<Signatory>,
     pub mint_info: MintInfo,
     #[serde(default, deserialize_with = "deserialize_ln")]

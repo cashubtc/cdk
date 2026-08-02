@@ -534,7 +534,7 @@ update-msrv-lock:
 
     nix develop --ignore-environment .#msrv --command bash -c '
         cp Cargo.lock Cargo.lock.msrv
-        echo "Copied Cargo.lock to Cargo.lock.msrv (MSRV 1.85.0)"
+        echo "Copied Cargo.lock to Cargo.lock.msrv (MSRV 1.91.0)"
     '
 
     nix develop --ignore-environment .#stable --command bash -c '

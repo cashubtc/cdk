@@ -38,6 +38,8 @@ use cdk_common::database::DynMintDatabase;
 #[cfg(feature = "prometheus")]
 use cdk_common::payment::MetricsMintPayment;
 use cdk_common::payment::MintPayment;
+#[cfg(feature = "iroh")]
+use cdk_iroh::IrohServer;
 #[cfg(feature = "postgres")]
 use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase, PgConfig};
 #[cfg(feature = "sqlite")]
@@ -59,6 +61,8 @@ use tracing_subscriber::EnvFilter;
 pub mod cli;
 pub mod config;
 pub mod env_vars;
+#[cfg(feature = "iroh")]
+mod iroh_runtime;
 pub mod setup;
 
 #[cfg(test)]
@@ -87,6 +91,32 @@ pub(crate) mod test_utils {
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 const DEFAULT_BATCH_MINT_SIZE: u64 = 100;
 const REQUEST_BODY_LIMIT_BYTES: usize = 1_048_576;
+
+/// Run a one-shot CLI subcommand, returning true when no mint daemon should be started.
+pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
+    #[cfg(not(feature = "iroh"))]
+    let _ = args;
+
+    #[cfg(feature = "iroh")]
+    if let Some(command) = &args.command {
+        match command {
+            cli::CliCommand::Iroh(iroh) => match &iroh.command {
+                cli::IrohCommand::Init(init) => {
+                    let work_dir = get_work_directory(args).await?;
+                    let endpoint_id = iroh_runtime::initialize_endpoint_identity(
+                        &work_dir,
+                        init.secret_key_file.as_deref(),
+                    )?;
+                    println!("iroh://{endpoint_id}");
+                }
+            },
+        }
+
+        return Ok(true);
+    }
+
+    Ok(false)
+}
 
 fn extract_supported_payment_methods(mint_info: &cdk::nuts::MintInfo) -> Vec<String> {
     let mut seen = HashSet::new();
@@ -1581,15 +1611,27 @@ async fn build_mint(
     }
 }
 
+struct ServiceComponents {
+    routers: Vec<Router>,
+    auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
+    #[cfg(feature = "iroh")]
+    iroh_runtime: Option<iroh_runtime::MintdIrohRuntime>,
+}
+
 async fn start_services_with_shutdown(
     mint: Arc<cdk::mint::Mint>,
     settings: &config::Settings,
     _work_dir: &Path,
     mint_builder_info: cdk::nuts::MintInfo,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
-    routers: Vec<Router>,
-    auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
+    components: ServiceComponents,
 ) -> Result<()> {
+    let ServiceComponents {
+        routers,
+        auth_localstore,
+        #[cfg(feature = "iroh")]
+        iroh_runtime,
+    } = components;
     let listen_addr = settings.info.listen_host.clone();
     let listen_port = settings.info.listen_port;
     let cache: HttpCache = HttpCache::from_config(settings.info.http_cache.clone()).await?;
@@ -1929,46 +1971,27 @@ async fn start_services_with_shutdown(
         }
     };
 
+    let http_listener = if settings.info.http_enabled {
+        let socket_addr = SocketAddr::from_str(&format!("{listen_addr}:{listen_port}"))?;
+        let listener = tokio::net::TcpListener::bind(socket_addr).await?;
+        tracing::info!("HTTP mint listener ready on {}", listener.local_addr()?);
+        Some(listener)
+    } else {
+        tracing::info!("HTTP mint listener disabled");
+        None
+    };
+
     mint.start().await?;
 
-    let socket_addr = SocketAddr::from_str(&format!("{listen_addr}:{listen_port}"))?;
-
-    let listener = tokio::net::TcpListener::bind(socket_addr).await?;
-
-    tracing::info!("listening on {}", listener.local_addr()?);
-
-    // Create a task to wait for the shutdown signal and broadcast it
-    let shutdown_broadcast_task = {
-        let shutdown_tx = shutdown_tx.clone();
-        tokio::spawn(async move {
-            shutdown_signal.await;
-            tracing::info!("Shutdown signal received, broadcasting to all services");
-            let _ = shutdown_tx.send(());
-        })
-    };
-
-    // Create shutdown future for axum server
-    let mut axum_shutdown_rx = shutdown_tx.subscribe();
-    let axum_shutdown = async move {
-        let _ = axum_shutdown_rx.recv().await;
-    };
-
-    // Wait for axum server to complete with custom shutdown signal
-    let axum_result = axum::serve(listener, mint_service).with_graceful_shutdown(axum_shutdown);
-
-    match axum_result.await {
-        Ok(_) => {
-            tracing::info!("Axum server stopped with okay status");
-        }
-        Err(err) => {
-            tracing::warn!("Axum server stopped with error");
-            tracing::error!("{}", err);
-            bail!("Axum exited with error")
-        }
-    }
-
-    // Wait for the shutdown broadcast task to complete
-    let _ = shutdown_broadcast_task.await;
+    let listener_result = serve_public_listeners(
+        mint_service,
+        http_listener,
+        #[cfg(feature = "iroh")]
+        iroh_runtime.map(|runtime| runtime.node),
+        shutdown_tx.clone(),
+        shutdown_signal,
+    )
+    .await;
 
     // Wait for prometheus server to shutdown if it was started
     #[cfg(feature = "prometheus")]
@@ -1987,7 +2010,116 @@ async fn start_services_with_shutdown(
         }
     }
 
-    Ok(())
+    listener_result
+}
+
+enum PublicListenerExit {
+    Shutdown,
+    Http(std::result::Result<std::io::Result<()>, tokio::task::JoinError>),
+    #[cfg(feature = "iroh")]
+    Iroh,
+}
+
+async fn serve_public_listeners(
+    router: Router,
+    http_listener: Option<tokio::net::TcpListener>,
+    #[cfg(feature = "iroh")] iroh_node: Option<cdk_iroh::IrohNode>,
+    shutdown_tx: tokio::sync::broadcast::Sender<()>,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    let http_router = router.clone();
+    let mut http_task = http_listener.map(|listener| {
+        let mut shutdown_rx = shutdown_tx.subscribe();
+        let shutdown = async move {
+            let _ = shutdown_rx.recv().await;
+        };
+        tokio::spawn(async move {
+            axum::serve(listener, http_router)
+                .with_graceful_shutdown(shutdown)
+                .await
+        })
+    });
+
+    #[cfg(feature = "iroh")]
+    let iroh_server = iroh_node.map(|node| {
+        tracing::info!(endpoint = %node.endpoint_id(), "Iroh mint listener ready");
+        IrohServer::start(node, router)
+    });
+
+    tokio::pin!(shutdown_signal);
+    #[cfg(feature = "iroh")]
+    let exit = match (http_task.as_mut(), iroh_server.as_ref()) {
+        (Some(http), Some(iroh)) => {
+            tokio::select! {
+                () = &mut shutdown_signal => PublicListenerExit::Shutdown,
+                result = http => PublicListenerExit::Http(result),
+                () = iroh.finished() => PublicListenerExit::Iroh,
+            }
+        }
+        (Some(http), None) => {
+            tokio::select! {
+                () = &mut shutdown_signal => PublicListenerExit::Shutdown,
+                result = http => PublicListenerExit::Http(result),
+            }
+        }
+        (None, Some(iroh)) => {
+            tokio::select! {
+                () = &mut shutdown_signal => PublicListenerExit::Shutdown,
+                () = iroh.finished() => PublicListenerExit::Iroh,
+            }
+        }
+        (None, None) => bail!("no public mint listener was initialized"),
+    };
+    #[cfg(not(feature = "iroh"))]
+    let exit = match http_task.as_mut() {
+        Some(http) => {
+            tokio::select! {
+                () = &mut shutdown_signal => PublicListenerExit::Shutdown,
+                result = http => PublicListenerExit::Http(result),
+            }
+        }
+        None => bail!("no public mint listener was initialized"),
+    };
+
+    tracing::info!("stopping public mint listeners");
+    let _ = shutdown_tx.send(());
+
+    #[cfg(feature = "iroh")]
+    let iroh_exited = matches!(&exit, PublicListenerExit::Iroh);
+    let early_http_result = match exit {
+        PublicListenerExit::Http(result) => {
+            http_task = None;
+            Some(result)
+        }
+        _ => None,
+    };
+
+    #[cfg(feature = "iroh")]
+    if let Some(server) = iroh_server {
+        server
+            .shutdown()
+            .await
+            .context("Iroh mint listener did not shut down cleanly")?;
+    }
+
+    if let Some(task) = http_task {
+        task.await
+            .context("HTTP mint listener task failed")?
+            .context("HTTP mint listener failed while shutting down")?;
+    }
+
+    match early_http_result {
+        Some(Ok(Ok(()))) => bail!("HTTP mint listener exited unexpectedly"),
+        Some(Ok(Err(error))) => Err(error).context("HTTP mint listener failed"),
+        Some(Err(error)) => Err(error).context("HTTP mint listener task failed"),
+        None => {
+            #[cfg(feature = "iroh")]
+            if iroh_exited {
+                bail!("Iroh mint listener exited unexpectedly");
+            }
+            Ok(())
+        }
+    }
 }
 
 async fn shutdown_signal() {
@@ -2053,6 +2185,21 @@ pub async fn run_mintd_with_shutdown(
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     routers: Vec<Router>,
 ) -> Result<()> {
+    #[cfg(feature = "iroh")]
+    let iroh_runtime = iroh_runtime::initialize(settings, work_dir).await?;
+    #[cfg(not(feature = "iroh"))]
+    {
+        if !settings.info.http_enabled {
+            bail!("HTTP cannot be disabled because this mintd build has no Iroh listener support");
+        }
+        if url::Url::parse(&settings.info.url)
+            .ok()
+            .is_some_and(|url| url.scheme() == "iroh")
+        {
+            bail!("an iroh public mint URL requires mintd's iroh feature");
+        }
+    }
+
     let (localstore, keystore, kv) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
     let mint_builder = MintBuilder::new(localstore);
@@ -2102,8 +2249,12 @@ pub async fn run_mintd_with_shutdown(
         work_dir,
         config_mint_info,
         shutdown_signal,
-        routers,
-        auth_localstore,
+        ServiceComponents {
+            routers,
+            auth_localstore,
+            #[cfg(feature = "iroh")]
+            iroh_runtime,
+        },
     )
     .await
 }
@@ -2112,12 +2263,128 @@ pub async fn run_mintd_with_shutdown(
 mod tests {
     use std::fs;
 
+    #[cfg(feature = "iroh")]
+    use axum::{extract::Extension, routing::get};
     use cdk::nuts::{CurrencyUnit, MintMethodSettings, PaymentMethod};
+    #[cfg(feature = "iroh")]
+    use cdk_http_client::Transport;
 
     use super::*;
 
     const TEST_MNEMONIC: &str =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    #[cfg(feature = "iroh")]
+    async fn assert_listener_mode(http_enabled: bool, iroh_enabled: bool) {
+        let shared_state = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let router = Router::new()
+            .route(
+                "/custom-final-route",
+                get(
+                    |Extension(marker): Extension<&'static str>,
+                     Extension(state): Extension<Arc<std::sync::atomic::AtomicUsize>>| async move {
+                        let observation =
+                            state.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                        format!("{marker}:{observation}")
+                    },
+                ),
+            )
+            .layer(Extension(shared_state))
+            .layer(Extension("shared-final-router"));
+        let http_listener = if http_enabled {
+            Some(
+                tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("HTTP listener"),
+            )
+        } else {
+            None
+        };
+        let http_address = http_listener
+            .as_ref()
+            .map(|listener| listener.local_addr().expect("HTTP address"));
+
+        let (iroh_server_node, iroh_client_node) = if iroh_enabled {
+            let bind_addr = "127.0.0.1:0".parse().expect("Iroh bind address");
+            let server = cdk_iroh::IrohNode::ephemeral(
+                cdk_iroh::IrohConfig::static_only().with_bind_addr(bind_addr),
+            )
+            .await
+            .expect("Iroh server endpoint");
+            let client = cdk_iroh::IrohNode::ephemeral(
+                cdk_iroh::IrohConfig::static_only()
+                    .with_bind_addr(bind_addr)
+                    .with_ticket(server.endpoint_ticket()),
+            )
+            .await
+            .expect("Iroh client endpoint");
+            (Some(server), Some(client))
+        } else {
+            (None, None)
+        };
+        let iroh_endpoint = iroh_server_node
+            .as_ref()
+            .map(cdk_iroh::IrohNode::endpoint_id);
+
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let server_task = tokio::spawn(serve_public_listeners(
+            router,
+            http_listener,
+            iroh_server_node,
+            shutdown_tx,
+            async move {
+                let _ = stop_rx.await;
+            },
+        ));
+
+        if let Some(address) = http_address {
+            let response = cdk_http_client::Async::default()
+                .http_get_raw(
+                    format!("http://{address}/custom-final-route")
+                        .parse()
+                        .expect("HTTP URL"),
+                    None,
+                )
+                .await
+                .expect("HTTP custom route");
+            assert_eq!(response.body_lossy(), "shared-final-router:1");
+        }
+        if let (Some(endpoint), Some(client_node)) = (iroh_endpoint, iroh_client_node.as_ref()) {
+            let response = cdk_iroh::IrohClient::new(client_node.clone())
+                .get_raw(
+                    format!("iroh://{endpoint}/custom-final-route")
+                        .parse()
+                        .expect("Iroh URL"),
+                    None,
+                )
+                .await
+                .expect("Iroh custom route");
+            let expected = if http_enabled { 2 } else { 1 };
+            assert_eq!(
+                response.body_lossy(),
+                format!("shared-final-router:{expected}")
+            );
+        }
+
+        stop_tx.send(()).expect("request listener shutdown");
+        tokio::time::timeout(std::time::Duration::from_secs(10), server_task)
+            .await
+            .expect("bounded listener shutdown")
+            .expect("listener task")
+            .expect("clean listener shutdown");
+        if let Some(client_node) = iroh_client_node {
+            client_node.close().await;
+        }
+    }
+
+    #[cfg(feature = "iroh")]
+    #[tokio::test]
+    async fn final_router_supports_http_only_iroh_only_and_dual_listeners() {
+        assert_listener_mode(true, false).await;
+        assert_listener_mode(false, true).await;
+        assert_listener_mode(true, true).await;
+    }
 
     fn temp_seed_file(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("cdk_mintd_{name}_{}", std::process::id()))
@@ -2287,6 +2554,8 @@ ln_backend = "fakewallet"
         fs::write(&seed_file, TEST_MNEMONIC).expect("seed file should be written");
 
         let args = CLIArgs {
+            #[cfg(feature = "iroh")]
+            command: None,
             work_dir: None,
             #[cfg(feature = "sqlcipher")]
             password: "test-password".to_string(),

@@ -141,7 +141,7 @@
         };
 
         # MSRV stable
-        msrv_toolchain = pkgs.rust-bin.stable."1.85.0".default.override {
+        msrv_toolchain = pkgs.rust-bin.stable."1.91.0".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
           extensions = [
             "rustfmt"
@@ -835,11 +835,14 @@
         # ========================================
         msrvChecks = {
           # Core library with all features
-          "cdk-all-features" = "-p cdk --features \"mint,wallet\"";
+          "cdk-all-features" = "-p cdk --features \"mint,wallet,iroh\"";
+
+          # Iroh transport with its current ticket implementation
+          "cdk-iroh" = "-p cdk-iroh";
 
           # Mintd with all backends, databases, and features
           "cdk-mintd-all" =
-            "-p cdk-mintd --no-default-features --features \"cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,redis,management-rpc\"";
+            "-p cdk-mintd --no-default-features --features \"cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,redis,management-rpc,iroh\"";
 
           # Minimal builds to ensure no-default-features works
           "cdk-wallet-only" = "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/bitreq";

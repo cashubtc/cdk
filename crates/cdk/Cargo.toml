@@ -30,6 +30,10 @@ tor = [
     "wallet",
     "cdk-http-client/tor",
 ]
+iroh = [
+    "wallet",
+    "dep:cdk-iroh",
+]
 prometheus = ["dep:cdk-prometheus"]
 
 [dependencies]
@@ -64,6 +68,7 @@ tokio-util.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cdk-http-client = { workspace = true, default-features = false, optional = true }
+cdk-iroh = { workspace = true, optional = true }
 tokio = { workspace = true, features = [
     "rt-multi-thread",
     "time",
@@ -183,6 +188,7 @@ name = "revoke_send"
 required-features = ["wallet"]
 
 [dev-dependencies]
+axum.workspace = true
 rand.workspace = true
 cdk-sqlite.workspace = true
 cdk-fake-wallet.workspace = true
