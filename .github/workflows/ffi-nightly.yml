@@ -79,11 +79,10 @@ jobs:
               exit 1
             fi
 
-            nightly_notes=$(gh release list \
-              --repo "${repo}" \
-              --limit 100 \
-              --json body,tagName \
-              --jq '.[] | select(.tagName | contains("-nightly.")) | .body')
+            # gh release list has no "body" field; fetch release notes via the API.
+            nightly_notes=$(gh api --paginate "repos/${repo}/releases" \
+              --jq '.[] | select(.tag_name | contains("-nightly.")) | .body' \
+              || true)
 
             if grep -Fq "${SOURCE_SHA}" <<< "${nightly_notes}"; then
               echo "${binding}=false" >> "$GITHUB_OUTPUT"
