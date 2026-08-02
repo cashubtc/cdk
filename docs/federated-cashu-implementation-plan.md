@@ -84,7 +84,10 @@ Every safety-critical operation must be ordered, durably journaled, replayable, 
   to create a standalone HTTP wallet before federation discovery. Canonical
   Iroh inputs now go directly to federation discovery. Both a deterministic
   Compose journey that rejects the old ordering and a production-gateway UI
-  journey against the live Nocean federation pass.
+  journey against the live Nocean federation pass. The iOS `MintService` had
+  the equivalent standalone-wallet probe and now also routes canonical Iroh
+  inputs directly to federation discovery. Its production-service test and
+  full onboarding XCUITest both add the live Nocean federation successfully.
 - Federation setup uses a real dealer-free DKG ceremony with enrollment, roster agreement, identity binding, restartable rounds, transcript signatures, activation, and identical final public configuration export.
   Enrollment and roster assembly are currently file-mediated and assume an
   authenticated out-of-band operator ceremony. The planned signed,
