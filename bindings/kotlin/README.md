@@ -53,6 +53,35 @@ dependencies {
 }
 ```
 
+### JitPack (any tag, including nightlies)
+
+Every release tag — including nightlies that are not on Maven Central — is also
+consumable via [JitPack](https://jitpack.io), which builds the tag on demand
+(the generated bindings and prebuilt native libraries are committed on the tag):
+
+```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories {
+        mavenCentral()
+        maven {
+            url = uri("https://jitpack.io")
+            content { includeGroupByRegex("com\\.github\\..*") }
+        }
+    }
+}
+
+// build.gradle.kts — replace OWNER with the GitHub owner of the cdk-kotlin repo
+dependencies {
+    implementation("com.github.OWNER.cdk-kotlin:cdk-android:TAG")
+    // desktop/JVM: use cdk-jvm plus a runtimeOnly on cdk-jvm-natives
+}
+```
+
+The first request for a tag triggers a JitPack build, so the initial dependency
+resolution can take a few minutes; artifacts are cached and immutable afterwards.
+Build logs are at `https://jitpack.io/com/github/OWNER/cdk-kotlin/TAG/build.log`.
+
 ## Quick Start
 
 ```kotlin

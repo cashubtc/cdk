@@ -5,11 +5,8 @@ plugins {
 
 // Keep all desktop native libraries in one JAR. JNA selects the matching
 // platform directory at runtime, so separate Maven coordinates are unnecessary.
-val nativesJar = tasks.register<Jar>("nativesJar") {
-    archiveBaseName.set("cdk-jvm-natives")
-    from("src/main/resources")
-}
-
+// The default `jar` task already packages src/main/resources as the main
+// artifact — a custom jar would collide with its output file.
 val nativesSourcesJar = tasks.register<Jar>("nativesSourcesJar") {
     archiveBaseName.set("cdk-jvm-natives")
     archiveClassifier.set("sources")
@@ -24,10 +21,10 @@ val nativesJavadocJar = tasks.register<Jar>("nativesJavadocJar") {
 publishing {
     publications {
         create<MavenPublication>("natives") {
-            groupId = project.property("GROUP") as String
+            groupId = project.group as String
             artifactId = "cdk-jvm-natives"
-            version = project.property("VERSION_NAME") as String
-            artifact(nativesJar)
+            version = project.version as String
+            from(components["java"])
             artifact(nativesSourcesJar)
             artifact(nativesJavadocJar)
         }
