@@ -13,6 +13,7 @@ use cdk_http_client::HttpError;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tokio::sync::RwLock;
+use tokio::time::sleep;
 use tracing::instrument;
 use url::Url;
 use web_time::{Duration, Instant};
@@ -32,6 +33,12 @@ use crate::wallet::auth::{AuthMintConnector, AuthWallet};
 use crate::OidcClient;
 
 type Cache = (u64, HashSet<(nut19::Method, nut19::Path)>);
+
+/// Delay before the first retry of a failed request.
+const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
+
+/// Upper bound for the exponential backoff between retries.
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(8);
 
 fn payment_method_path_segment(method: &PaymentMethod) -> Result<&str, Error> {
     match method {
@@ -270,6 +277,7 @@ where
             .unwrap_or_default();
 
         let transport = self.transport.clone();
+        let mut retry_delay = INITIAL_RETRY_DELAY;
         loop {
             let url = match &path {
                 nut19::Path::Swap => self.mint_url.join_paths(&["v1", "swap"])?,
@@ -308,9 +316,15 @@ where
                     // retry request, if possible
                     tracing::error!("Failed http_request {:?}", result.as_ref().err());
 
-                    if retriable_window < started.elapsed() {
+                    let remaining = retriable_window.saturating_sub(started.elapsed());
+                    if remaining.is_zero() {
                         return result;
                     }
+
+                    // Back off before retrying so a struggling mint is not hammered,
+                    // without ever sleeping past the end of the replay window.
+                    sleep(retry_delay.min(remaining)).await;
+                    retry_delay = (retry_delay * 2).min(MAX_RETRY_DELAY);
                 }
                 Err(_) => return result,
                 _ => unreachable!(),
