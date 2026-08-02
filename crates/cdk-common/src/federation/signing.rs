@@ -57,6 +57,11 @@ pub struct FederationAcceptedSigningRequest {
 
 impl FederationAcceptedSigningRequest {
     /// Build a signing capability from an accepted mint, swap, or melt entry.
+    ///
+    /// The public config must already have been validated at the runtime-config
+    /// boundary. This hot path only computes its deterministic digest; repeating
+    /// full validation here would interpolate every aggregate BLS key for every
+    /// signed operation.
     pub fn from_journal_entry(
         public_config: &FederationConfig,
         entry: &FederationJournalEntry,
@@ -101,7 +106,7 @@ impl FederationAcceptedSigningRequest {
             operation_id: entry.operation_id,
             accepted_operation_index: entry.index,
             consensus_evidence: entry.consensus_evidence,
-            config_digest: public_config.config_digest()?,
+            config_digest: public_config.config_digest_for_validated_config()?,
             outputs: outputs.to_vec(),
         })
     }
@@ -259,12 +264,16 @@ impl FederationSignatureShareRecord {
 
 impl MemberConfigPrivate {
     /// Sign only outputs authorized by an accepted federation journal entry.
+    ///
+    /// The public config must already have been validated at the runtime-config
+    /// boundary. The digest comparison still binds the request to the exact
+    /// config, without repeating full aggregate-key validation while signing.
     pub fn sign_accepted_blinded_messages(
         &self,
         public_config: &FederationConfig,
         request: &FederationAcceptedSigningRequest,
     ) -> Result<FederationBlindSignatureShareSet> {
-        let config_digest = public_config.config_digest()?;
+        let config_digest = public_config.config_digest_for_validated_config()?;
         if config_digest != request.config_digest {
             return Err(FederationError::SigningConfigChanged {
                 expected: request.config_digest,

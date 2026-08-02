@@ -539,10 +539,10 @@ orchestrate() {
     done
     touch_marker runtime-start
     printf 'All finalized member runtimes are starting in parallel\n'
-    while true; do
+    until status; do
         sleep 15
-        status || true
     done
+    printf 'All federation members are ready; this pane will retain the signed status snapshot\n'
 }
 
 start_tmux_fresh() {
@@ -606,7 +606,7 @@ start_runtime() {
         tmux select-layout -t "$SESSION:0" tiled >/dev/null
     done
     tmux split-window -t "$SESSION:0" -c "$PWD" \
-        "exec bash scripts/nocean_federation_control.sh status-loop"
+        "exec bash scripts/nocean_federation_control.sh status"
     tmux select-pane -T status
     tmux select-layout -t "$SESSION:0" tiled >/dev/null
 }
@@ -647,8 +647,7 @@ status_loop() {
         clear
         date -u
         status || true
-        wallet_status || true
-        sleep 10
+        sleep 60
     done
 }
 
