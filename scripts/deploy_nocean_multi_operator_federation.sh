@@ -10,6 +10,7 @@ REMOTE_ROOT="${REMOTE_ROOT:-cdk-federation-iroh-multi-operator}"
 PUBLIC_BASE_DOMAIN="${PUBLIC_BASE_DOMAIN:-nocean.xyz}"
 PUBLIC_TRANSPORT="${PUBLIC_TRANSPORT:-iroh}"
 NETWORK="${NETWORK:-signet}"
+FEDERATION_AMOUNTS="${FEDERATION_AMOUNTS:-1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536,131072,262144,524288,1048576,2097152,4194304,8388608,16777216,33554432,67108864,134217728,268435456,536870912,1073741824,2147483648,4294967296,8589934592,17179869184,34359738368,68719476736,137438953472,274877906944,549755813888,1099511627776,2199023255552,4398046511104,8796093022208,17592186044416,35184372088832,70368744177664,140737488355328,281474976710656,562949953421312,1125899906842624,2251799813685248,4503599627370496,9007199254740992,18014398509481984,36028797018963968,72057594037927936,144115188075855872,288230376151711744,576460752303423488,1152921504606846976,2305843009213693952,4611686018427387904,9223372036854775808}"
 ESPLORA_URL="${ESPLORA_URL:-https://esplora.signet.2nd.dev/}"
 CHAIN_SOURCE_ID="${CHAIN_SOURCE_ID:-2nddev-signet-esplora}"
 BARK_SERVER_ADDRESS="${BARK_SERVER_ADDRESS:-https://ark.signet.2nd.dev/}"
@@ -81,6 +82,8 @@ Important overrides:
                             Stop PRIOR_SESSION_PREFIX-op-1..5 before startup.
   PRIOR_SESSION_PREFIX     Previous operator session prefix to stop.
   PUBLIC_TRANSPORT         Must be iroh for this all-Iroh drill.
+  FEDERATION_AMOUNTS       Comma-separated BLS denominations (default: all 64
+                            conventional power-of-two Cashu amounts).
   BARK_REPO_ROOT           Sibling checkout needed for Cargo path resolution.
   BARK_SERVER_ADDRESS, BARK_ESPLORA_URL
                             Public Signet Ark and chain-source endpoints.
@@ -310,6 +313,7 @@ write_operator_env() {
         printf 'MEMBERS=%q\n' "$MEMBERS"
         printf 'THRESHOLD=%q\n' "$THRESHOLD"
         printf 'NETWORK=%q\n' "$NETWORK"
+        printf 'FEDERATION_AMOUNTS=%q\n' "$FEDERATION_AMOUNTS"
         printf 'ESPLORA_URL=%q\n' "$ESPLORA_URL"
         printf 'CHAIN_SOURCE_ID=%q\n' "$CHAIN_SOURCE_ID"
         printf 'BARK_SERVER_ADDRESS=%q\n' "$BARK_SERVER_ADDRESS"
@@ -574,6 +578,11 @@ verify_public_config() {
         .value.public_mint_url == .value.federation_api_url
     )' "$public_copy" >/dev/null \
         || die "public and private member routes do not use the same Iroh endpoint"
+    jq -e --arg amounts "$FEDERATION_AMOUNTS" '
+        ($amounts | split(",") | sort) ==
+        (.keysets[0].aggregate_keys | keys | sort)
+    ' "$public_copy" >/dev/null \
+        || die "public config does not contain the requested BLS denominations"
     jq -e --arg network "$NETWORK" --arg ark "$BARK_ARK_SERVER_PUBLIC_KEY" \
         '.frost_wallet.bark_application.network == $network and
          .frost_wallet.bark_application.ark_server_public_key == $ark' \
@@ -610,7 +619,7 @@ record_session_layouts() {
 }
 
 write_report() {
-    local revision source_dirty remaining_limit total_seconds
+    local revision source_dirty remaining_limit total_seconds federation_amount_count
     revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
     if [[ -z "$(git -C "$REPO_ROOT" status --porcelain -- \
         crates/cdk-mintd/src/federation_setup_command.rs \
@@ -631,6 +640,7 @@ write_report() {
         remaining_limit="accepted for the multi-operator setup milestone; not evidence for the separate parent-plan multi-host gate"
     fi
     total_seconds=$((SECONDS - drill_started_at))
+    federation_amount_count="$(awk -F, '{ print NF }' <<<"$FEDERATION_AMOUNTS")"
     mkdir -p "$(dirname "$REPORT_FILE")"
     jq -n \
         --arg revision "$revision" \
@@ -639,6 +649,7 @@ write_report() {
         --argjson members "$MEMBERS" \
         --argjson threshold "$THRESHOLD" \
         --argjson unique_machines "$unique_machine_count" \
+        --argjson federation_amount_count "$federation_amount_count" \
         --arg tls_model "public wallet, setup, DKG, and private federation traffic over authenticated Iroh N0; HTTP disabled" \
         --arg proposal_hash "$proposal_hash" \
         --arg manifest_hash "$manifest_hash" \
@@ -661,6 +672,7 @@ write_report() {
                 classification: $topology,
                 members: $members,
                 threshold: $threshold,
+                keyset_denominations: $federation_amount_count,
                 unique_machines: $unique_machines,
                 independent_operator_directories: true,
                 independent_operator_tmux_sessions: true,
@@ -758,6 +770,8 @@ done
 [[ "$PRIOR_SESSION_PREFIX" =~ ^[A-Za-z0-9._-]+$ ]] \
     || die "PRIOR_SESSION_PREFIX is invalid"
 [[ "$NETWORK" == "signet" ]] || die "the Nocean Iroh drill currently requires NETWORK=signet"
+[[ "$FEDERATION_AMOUNTS" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] \
+    || die "FEDERATION_AMOUNTS must be a comma-separated list of positive integers"
 [[ "$BARK_SERVER_ADDRESS" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
     || die "BARK_SERVER_ADDRESS must be a credential-free HTTPS URL"
 [[ "$BARK_ESPLORA_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \

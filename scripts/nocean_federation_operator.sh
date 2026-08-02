@@ -20,6 +20,7 @@ source "$ENV_FILE"
 : "${MEMBERS:?MEMBERS is required}"
 : "${THRESHOLD:?THRESHOLD is required}"
 : "${NETWORK:?NETWORK is required}"
+: "${FEDERATION_AMOUNTS:?FEDERATION_AMOUNTS is required}"
 : "${PUBLIC_MINT_URL:?PUBLIC_MINT_URL is required}"
 : "${HTTP_ENABLED:?HTTP_ENABLED is required}"
 : "${FEDERATION_API_URL:?FEDERATION_API_URL is required}"
@@ -70,6 +71,8 @@ validate_environment() {
     ((THRESHOLD <= MEMBERS)) || die "THRESHOLD exceeds member count"
     [[ "$NETWORK" =~ ^(bitcoin|testnet|signet|regtest)$ ]] \
         || die "NETWORK is unsupported"
+    [[ "$FEDERATION_AMOUNTS" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] \
+        || die "FEDERATION_AMOUNTS must be a comma-separated list of positive integers"
     [[ "$HTTP_ENABLED" == "true" || "$HTTP_ENABLED" == "false" ]] \
         || die "HTTP_ENABLED must be true or false"
     [[ "$FEDERATION_API_URL" =~ ^iroh://[a-z0-9]+$ ]] \
@@ -281,7 +284,7 @@ action_create() {
         --public-mint-url "$PUBLIC_MINT_URL" \
         --federation-api-url "$FEDERATION_API_URL" \
         --coordinator-url "$COORDINATOR_URL" \
-        --amounts 1 \
+        --amounts "$FEDERATION_AMOUNTS" \
         --frost-bark-ark-server-public-key "$BARK_ARK_SERVER_PUBLIC_KEY" \
         --frost-bark-application-key-epoch "$BARK_APPLICATION_KEY_EPOCH" \
         --frost-bark-policy-config "$(bark_policy_config "$label")" \
