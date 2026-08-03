@@ -12,14 +12,10 @@ service QuoteService {
     rpc UpdateMintQuoteState(UpdateMintQuoteStateRequest) returns (UpdateMintQuoteStateResponse) {}
 }
 
-// State of a mint quote, as defined by NUT-04.
-//
-// The mint derives this from the amounts recorded against a quote rather than
-// storing it directly: a quote with no payments is UNPAID, one with more paid
-// than issued is PAID, and one with everything issued is ISSUED.
+// State of a mint quote, as defined by NUT-04. The mint derives it from the
+// amounts recorded against the quote rather than storing it.
 enum MintQuoteState {
-    // Never sent by the mint; rejected with gRPC status INVALID_ARGUMENT when
-    // received.
+    // Never sent by the mint; rejected with gRPC status INVALID_ARGUMENT.
     MINT_QUOTE_STATE_UNSPECIFIED = 0;
     // No payment has been recorded for the quote.
     MINT_QUOTE_STATE_UNPAID = 1;
@@ -63,21 +59,11 @@ message UpdateMintQuoteStateRequest {
     // with gRPC status INVALID_ARGUMENT.
     string quote_id = 1;
     // State to move the quote to. Only MINT_QUOTE_STATE_PAID is supported;
-    // any other value fails with gRPC status INVALID_ARGUMENT.
-    //
-    // MINT_QUOTE_STATE_UNPAID cannot be set because payments are recorded
-    // append-only and the mint has no way to retract one.
-    // MINT_QUOTE_STATE_ISSUED cannot be set because the mint would have to
-    // record an issuance with no blind signatures behind it, leaving the
-    // wallet unable to ever mint against the quote.
-    //
-    // Marking a quote paid records a payment derived from the quote's payment
-    // request lookup id, as though the payment backend had reported it. For
-    // payment methods that accept more than one payment per quote (such as
-    // bolt12 offers or onchain addresses) a payment the backend reports later
-    // carries a different id and is recorded in addition to this one, so the
-    // quote ends up paid twice. A quote with no fixed amount that has not been
-    // paid yet has no amount to record and fails with gRPC status INTERNAL.
+    // any other value fails with gRPC status INVALID_ARGUMENT. Marking a
+    // quote paid records a payment against it as the backend would: methods
+    // taking more than one payment (bolt12, onchain) can end up paid twice,
+    // and an unpaid quote with no fixed amount has no amount to record and
+    // fails with gRPC status INTERNAL.
     MintQuoteState state = 2;
 }
 
