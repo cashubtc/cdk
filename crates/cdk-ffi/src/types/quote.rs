@@ -98,6 +98,27 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
     }
 }
 
+/// FFI-compatible quote for a maximum cross-mint Lightning transfer.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct CrossMintTransferQuote {
+    /// Quote used to receive the Lightning payment at the destination mint.
+    pub mint_quote: MintQuote,
+    /// Quote used to pay the destination invoice from the source mint.
+    pub melt_quote: MeltQuote,
+    /// Input fee for spending all currently unspent source proofs.
+    pub input_fee: Amount,
+}
+
+impl From<cdk::wallet::CrossMintTransferQuote> for CrossMintTransferQuote {
+    fn from(quote: cdk::wallet::CrossMintTransferQuote) -> Self {
+        Self {
+            mint_quote: quote.mint_quote.into(),
+            melt_quote: quote.melt_quote.into(),
+            input_fee: quote.input_fee.into(),
+        }
+    }
+}
+
 /// Get total amount for a mint quote (amount paid)
 #[uniffi::export]
 pub fn mint_quote_total_amount(quote: &MintQuote) -> Result<Amount, FfiError> {

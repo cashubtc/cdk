@@ -13,8 +13,8 @@ use cdk_common::nuts::{
 };
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::{
-    MeltQuote, MintQuote, ReceiveOptions, Restored, SendOptions, Transaction, TransactionDirection,
-    TransactionId, Wallet as WalletTrait,
+    CrossMintTransferQuote, MeltQuote, MintQuote, ReceiveOptions, Restored, SendOptions,
+    Transaction, TransactionDirection, TransactionId, Wallet as WalletTrait,
 };
 use cdk_common::{Amount, PublicKey, SecretKey};
 use tracing::instrument;
@@ -34,6 +34,7 @@ impl WalletTrait for super::Wallet {
     type KeySetInfo = cdk_common::KeySet;
     type MintQuote = MintQuote;
     type MeltQuote = MeltQuote;
+    type CrossMintTransferQuote = CrossMintTransferQuote;
     type PaymentMethod = PaymentMethod;
     type MeltOptions = MeltOptions;
     type OperationId = Uuid;
@@ -136,6 +137,14 @@ impl WalletTrait for super::Wallet {
         extra: Option<String>,
     ) -> Result<MeltQuote, Self::Error> {
         self.melt_quote(method, request, options, extra).await
+    }
+
+    #[instrument(skip_all)]
+    async fn cross_mint_transfer_quote_max(
+        &self,
+        target_wallet: &Self,
+    ) -> Result<CrossMintTransferQuote, Self::Error> {
+        self.cross_mint_transfer_quote_max(target_wallet).await
     }
 
     #[instrument(skip(self))]

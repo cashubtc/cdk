@@ -1,8 +1,12 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use anyhow::{bail, Result};
+use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
-use cdk::wallet::WalletRepository;
+use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
+use cdk::nuts::PaymentMethod;
+use cdk::wallet::{MeltConfirmOptions, WalletRepository};
 use cdk::Amount;
 use cdk_common::wallet::WalletKey;
 use clap::Args;
@@ -140,26 +144,67 @@ pub async fn transfer(
             source_balance, unit, source_mint_url, target_mint_url
         );
 
-        // Send all from source
-        let prepared = source_wallet
-            .prepare_send(source_balance, Default::default())
-            .await?;
-        let token = prepared.confirm(None).await?;
+        let mut source_balance_after = source_balance;
+        let mut received = Amount::ZERO;
+        let mut completed_transfers = 0_u64;
 
-        // Receive at target
-        let received = target_wallet
-            .receive(&token.to_string(), Default::default())
-            .await?;
+        loop {
+            let quote = match source_wallet
+                .cross_mint_transfer_quote_max(&target_wallet)
+                .await
+            {
+                Ok(quote) => quote,
+                Err(cdk::Error::InsufficientFunds) if completed_transfers > 0 => break,
+                Err(error) => return Err(error.into()),
+            };
+            let source_proofs = source_wallet.get_unspent_proofs().await?;
+            let prepared = source_wallet
+                .prepare_melt_proofs(&quote.melt_quote.id, source_proofs, HashMap::new())
+                .await?;
+            prepared
+                .confirm_with_options(MeltConfirmOptions::skip_swap())
+                .await?;
+            let received_proofs = target_wallet
+                .mint(&quote.mint_quote.id, SplitTarget::default(), None)
+                .await?;
+            received = received
+                .checked_add(received_proofs.total_amount()?)
+                .ok_or(cdk::Error::AmountOverflow)?;
 
-        let source_balance_after = source_wallet.total_balance().await?;
+            let next_source_balance = source_wallet.total_balance().await?;
+            if next_source_balance >= source_balance_after {
+                bail!(
+                    "Full-balance transfer made no progress; source balance remains {} {}",
+                    next_source_balance,
+                    unit
+                );
+            }
+
+            source_balance_after = next_source_balance;
+            completed_transfers += 1;
+
+            if source_balance_after == Amount::ZERO {
+                break;
+            }
+        }
+
         let target_balance_after = target_wallet.total_balance().await?;
+        let amount_sent = source_balance
+            .checked_sub(source_balance_after)
+            .unwrap_or(Amount::ZERO);
 
         println!("\nTransfer completed successfully!");
-        println!("Amount sent: {} {}", source_balance, unit);
+        println!("Amount sent: {} {}", amount_sent, unit);
         println!("Amount received: {} {}", received, unit);
-        let fees_paid = source_balance - received;
+        let fees_paid = amount_sent.checked_sub(received).unwrap_or(Amount::ZERO);
         if fees_paid > Amount::ZERO {
             println!("Fees paid: {} {}", fees_paid, unit);
+        }
+        if source_balance_after > Amount::ZERO {
+            println!(
+                "Remaining balance below transfer limits: {} {}",
+                source_balance_after, unit
+            );
         }
         println!("\nUpdated balances:");
         println!(
@@ -194,24 +239,41 @@ pub async fn transfer(
             amount, unit, source_mint_url, target_mint_url
         );
 
-        // Send from source
+        let mint_quote = target_wallet
+            .mint_quote(
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                Some(amount),
+                None,
+                None,
+            )
+            .await?;
+        let melt_quote = source_wallet
+            .melt_quote(
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                &mint_quote.request,
+                None,
+                None,
+            )
+            .await?;
         let prepared = source_wallet
-            .prepare_send(amount, Default::default())
+            .prepare_melt(&melt_quote.id, HashMap::new())
             .await?;
-        let token = prepared.confirm(None).await?;
-
-        // Receive at target
-        let received = target_wallet
-            .receive(&token.to_string(), Default::default())
+        prepared.confirm().await?;
+        let received_proofs = target_wallet
+            .mint(&mint_quote.id, SplitTarget::default(), None)
             .await?;
+        let received = received_proofs.total_amount()?;
 
         let source_balance_after = source_wallet.total_balance().await?;
         let target_balance_after = target_wallet.total_balance().await?;
+        let amount_sent = source_balance
+            .checked_sub(source_balance_after)
+            .unwrap_or(Amount::ZERO);
 
         println!("\nTransfer completed successfully!");
-        println!("Amount sent: {} {}", amount, unit);
+        println!("Amount sent: {} {}", amount_sent, unit);
         println!("Amount received: {} {}", received, unit);
-        let fees_paid = amount - received;
+        let fees_paid = amount_sent.checked_sub(received).unwrap_or(Amount::ZERO);
         if fees_paid > Amount::ZERO {
             println!("Fees paid: {} {}", fees_paid, unit);
         }
