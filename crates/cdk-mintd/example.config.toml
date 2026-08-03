@@ -1,6 +1,8 @@
 
 [info]
 url = "https://mint.thesimplekid.dev/"
+# Keep the ordinary TCP HTTP listener enabled. Set false only when [iroh] is enabled.
+http_enabled = true
 listen_host = "127.0.0.1"
 listen_port = 8085
 mnemonic = ""
@@ -12,6 +14,17 @@ mnemonic = ""
 # false = Force downgrade to V1 (Version00).
 # If unset (default), existing keysets are preserved, but new ones use V2.
 # use_keyset_v2 = true
+
+# Optional native Iroh listener. Build cdk-mintd with `--features iroh`.
+# For Iroh-only operation set `[info].url = "iroh://auto"`; startup replaces
+# it in memory with the stable URL derived from the protected endpoint key.
+# [iroh]
+# enabled = true
+# discovery = "n0" # n0, static, or custom
+# bind_addr = "0.0.0.0:8092" # optional UDP bind
+# secret_key_file = "/protected/path/endpoint-secret" # default: <work-dir>/iroh/endpoint-secret
+# endpoint_ticket_file = "/protected/path/endpoint-ticket" # default: <work-dir>/iroh/endpoint-ticket
+# relay_urls = ["https://relay.example"] # required only for custom discovery
 
 [info.quote_ttl]
 # Prefer explicit fields over inline tables for readability and ease of overrides

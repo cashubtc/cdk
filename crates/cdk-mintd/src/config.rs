@@ -1,3 +1,7 @@
+#[cfg(feature = "iroh")]
+use core::fmt;
+#[cfg(feature = "iroh")]
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use bitcoin::hashes::{sha256, Hash};
@@ -50,6 +54,9 @@ pub struct LoggingConfig {
 #[serde(default)]
 pub struct Info {
     pub url: String,
+    /// Whether to expose the ordinary TCP HTTP listener.
+    #[serde(default = "default_true")]
+    pub http_enabled: bool,
     pub listen_host: String,
     pub listen_port: u16,
     /// Overrides mnemonic
@@ -82,6 +89,7 @@ impl Default for Info {
     fn default() -> Self {
         Info {
             url: String::new(),
+            http_enabled: true,
             listen_host: "127.0.0.1".to_string(),
             listen_port: 8091, // Default to port 8091 instead of 0
             seed: None,
@@ -110,6 +118,7 @@ impl std::fmt::Debug for Info {
 
         f.debug_struct("Info")
             .field("url", &self.url)
+            .field("http_enabled", &self.http_enabled)
             .field("listen_host", &self.listen_host)
             .field("listen_port", &self.listen_port)
             .field("mnemonic", &mnemonic_display)
@@ -155,6 +164,61 @@ fn default_signatory_address() -> String {
 
 fn default_signatory_port() -> u16 {
     15060
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Iroh endpoint discovery policy configured by a mint operator.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg(feature = "iroh")]
+#[serde(rename_all = "lowercase")]
+pub enum IrohDiscovery {
+    /// N0's production discovery and relay preset.
+    #[default]
+    N0,
+    /// Only direct addresses imported from endpoint tickets.
+    Static,
+    /// Operator-provided relays plus imported endpoint tickets.
+    Custom,
+}
+
+/// Optional persistent Iroh listener configuration.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[cfg(feature = "iroh")]
+#[serde(deny_unknown_fields)]
+pub struct Iroh {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Protected 32-byte endpoint secret. Defaults below the mint work directory.
+    pub secret_key_file: Option<PathBuf>,
+    /// Protected exported endpoint ticket. Defaults beside the secret key.
+    pub endpoint_ticket_file: Option<PathBuf>,
+    #[serde(default)]
+    pub discovery: IrohDiscovery,
+    /// Relay URLs used only in `custom` discovery mode.
+    #[serde(default)]
+    pub relay_urls: Vec<String>,
+    /// Optional explicit UDP bind address.
+    pub bind_addr: Option<SocketAddr>,
+}
+
+#[cfg(feature = "iroh")]
+impl fmt::Debug for Iroh {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Iroh")
+            .field("enabled", &self.enabled)
+            .field("has_secret_key_file", &self.secret_key_file.is_some())
+            .field(
+                "has_endpoint_ticket_file",
+                &self.endpoint_ticket_file.is_some(),
+            )
+            .field("discovery", &self.discovery)
+            .field("relay_count", &self.relay_urls.len())
+            .field("has_explicit_bind", &self.bind_addr.is_some())
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -1073,6 +1137,9 @@ fn default_blind() -> AuthType {
 #[serde(default)]
 pub struct Settings {
     pub info: Info,
+    #[cfg(feature = "iroh")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iroh: Option<Iroh>,
     pub signatory: Option<Signatory>,
     pub mint_info: MintInfo,
     #[serde(default, deserialize_with = "deserialize_ln")]

@@ -28,6 +28,7 @@ sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
 redis = ["cdk-axum/redis"]
 prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-axum/prometheus"]
 info-page = ["cdk-axum/info-page"]
+iroh = ["dep:cdk-iroh"]
 
 [dependencies]
 anyhow.workspace = true
@@ -37,6 +38,7 @@ cdk = { workspace = true, features = [
     "mint",
 ] }
 cdk-http-client = { workspace = true, features = ["bitreq"] }
+cdk-iroh = { workspace = true, optional = true }
 cdk-sqlite = { workspace = true, features = [
     "mint"
 ], optional = true  }
@@ -64,6 +66,8 @@ futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 bip39.workspace = true
+url.workspace = true
+zeroize = "1"
 tower-http = { workspace = true, features = ["compression-full", "decompression-full"] }
 tower.workspace = true
 lightning-invoice.workspace = true
@@ -71,5 +75,8 @@ home.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3"
 
 [build-dependencies]

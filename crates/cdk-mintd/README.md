@@ -15,6 +15,7 @@ Cashu mint daemon implementation for the Cashu Development Kit (CDK). This binar
 - **Lightning Network Integration**: Support for CLN, LND, LNbits, LDK Node, and test backends
 - **Authentication**: Optional user authentication with OpenID Connect
 - **Management RPC**: gRPC interface for mint management
+- **Iroh Transport**: Optional domain-free native listener beside or instead of HTTP
 - **Docker Support**: Ready-to-use Docker configurations
 
 ## Lightning Backend Documentation
@@ -117,6 +118,57 @@ export CDK_MINTD_LN_BACKEND=fakewallet
 export CDK_MINTD_DATABASE=sqlite
 cdk-mintd
 ```
+
+### Iroh listener
+
+Build with the native `iroh` feature. Mintd creates and reloads its persistent
+endpoint identity automatically at startup:
+
+```bash
+cargo build -p cdk-mintd --release --features iroh
+cdk-mintd --work-dir /var/lib/cdk-mintd
+# Logs the resolved iroh://<endpoint-id> URL.
+```
+
+Startup creates or reloads a protected 32-byte endpoint key at
+`<work-dir>/iroh/endpoint-secret`. Back it up like the mint seed: deleting or
+replacing it changes the endpoint ID and therefore changes every configured
+Iroh URL. Mintd rejects permissive, corrupt, or symlinked key files and rejects
+an `iroh://` public URL whose endpoint ID does not match the key.
+
+For an Iroh-only mint, let startup derive the URL and disable TCP HTTP:
+
+```toml
+[info]
+url = "iroh://auto"
+http_enabled = false
+
+[iroh]
+enabled = true
+discovery = "n0"
+```
+
+No DNS name, public TCP bind, reverse proxy, or HTTPS certificate is used in
+this mode. For dual-listener operation, leave `http_enabled = true`; both
+listeners serve the same final Axum router. HTTP-only behavior remains the
+default when `[iroh]` is absent or disabled. At least one listener is required.
+
+Mintd atomically exports the endpoint's current standard endpoint ticket to
+`<work-dir>/iroh/endpoint-ticket` on every successful endpoint startup. Tickets
+contain mutable reachability hints; the stable mint URL contains only the
+endpoint ID.
+
+Discovery choices are explicit:
+
+- `n0` uses Iroh's production N0 discovery and relay preset.
+- `static` disables network discovery and relays.
+- `custom` uses only the configured `relay_urls`.
+
+Timeouts, request bounds, admission limits, retry backoff, and idle reaping use
+safe transport-library defaults instead of expanding the mintd configuration
+surface. All operator-facing Iroh fields also have `CDK_MINTD_IROH_*`
+environment forms; comma-separate relay URLs.
+`CDK_MINTD_HTTP_ENABLED=false` disables the TCP listener.
 
 ### Fake Wallet Custom Payment Methods
 

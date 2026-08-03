@@ -3,3 +3,5 @@
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub use cdk_http_client::TorAsync;
 pub use cdk_http_client::{Async, Transport};
+#[cfg(all(feature = "iroh", not(target_arch = "wasm32")))]
+pub use cdk_iroh::IrohTransport;

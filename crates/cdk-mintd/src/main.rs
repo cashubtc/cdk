@@ -9,17 +9,16 @@ use clap::Parser;
 use tokio::runtime::Runtime;
 
 fn main() -> Result<()> {
-    let rt = Arc::new(Runtime::new()?);
-
+    let rt = Runtime::new()?;
+    let args = CLIArgs::parse();
+    let rt = Arc::new(rt);
     let rt_clone = Arc::clone(&rt);
-
     rt.block_on(async {
-        let args = CLIArgs::parse();
         let work_dir = get_work_directory(&args).await?;
         let settings = load_settings_from_args(&work_dir, &args)?;
 
         #[cfg(feature = "sqlcipher")]
-        let password = Some(CLIArgs::parse().password);
+        let password = Some(args.password.clone());
 
         #[cfg(not(feature = "sqlcipher"))]
         let password = None;
