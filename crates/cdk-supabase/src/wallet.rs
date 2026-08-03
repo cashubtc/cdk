@@ -1991,41 +1991,43 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         ys: Vec<PublicKey>,
         operation_id: &uuid::Uuid,
     ) -> Result<(), DatabaseError> {
-        let op_id_str = operation_id.to_string();
-        for y in &ys {
-            let y_hex = hex::encode(y.to_bytes());
-
-            // Update proof state to Reserved with operation_id atomically by filtering on state=Unspent
-            let update = serde_json::json!({
-                "state": State::Reserved.to_string(),
-                "used_by_operation": op_id_str,
-            });
-
-            // We filter on state=Unspent to ensure we only reserve proofs that are currently available.
-            // This prevents race conditions where two operations try to reserve the same proof.
-            let patch_path = format!(
-                "rest/v1/proof?y=eq.{}&state=eq.{}",
-                url_encode(&y_hex),
-                url_encode(&State::Unspent.to_string())
-            );
-
-            let (status, response_text) = self.patch_request(&patch_path, &update).await?;
-
-            if !status.is_success() {
-                return Err(DatabaseError::Internal(format!(
-                    "reserve_proofs: update failed: HTTP {} - {}",
-                    status, response_text
-                )));
-            }
-
-            // PostgREST returns 204 No Content for success.
-            // If the proof was already reserved or spent, the PATCH will succeed (HTTP 204)
-            // but no rows will be updated. We check if the proof is actually reserved.
-            let reserved_proofs = self.get_reserved_proofs(operation_id).await?;
-            if !reserved_proofs.iter().any(|p| p.y == *y) {
-                return Err(DatabaseError::ProofNotUnspent);
-            }
+        if ys.is_empty() {
+            return Ok(());
         }
+
+        let op_id_str = operation_id.to_string();
+        let update = serde_json::json!({
+            "state": State::Reserved.to_string(),
+            "used_by_operation": op_id_str,
+        });
+
+        // Filtering on state=Unspent keeps two operations from reserving the
+        // same proof, and a single PATCH keeps the whole set in one statement.
+        let y_list: Vec<String> = ys.iter().map(|y| hex::encode(y.to_bytes())).collect();
+        let patch_path = format!(
+            "rest/v1/proof?y=in.({})&state=eq.{}",
+            y_list.join(","),
+            url_encode(&State::Unspent.to_string())
+        );
+
+        let (status, response_text) = self.patch_request(&patch_path, &update).await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "reserve_proofs: update failed: HTTP {} - {}",
+                status, response_text
+            )));
+        }
+
+        // PostgREST returns 204 No Content whether or not any row matched, so
+        // read back what was reserved. If some proof was not unspent, undo the
+        // partial reservation rather than leaving it behind.
+        let reserved_proofs = self.get_reserved_proofs(operation_id).await?;
+        if !ys.iter().all(|y| reserved_proofs.iter().any(|p| p.y == *y)) {
+            self.release_proofs(operation_id).await?;
+            return Err(DatabaseError::ProofNotUnspent);
+        }
+
         Ok(())
     }
 

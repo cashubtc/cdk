@@ -1571,23 +1571,33 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
 
-        for y in ys {
-            let rows_affected = query(
-                r#"
-                UPDATE proof
-                SET state = 'RESERVED', used_by_operation = :operation_id
-                WHERE y = :y AND state = 'UNSPENT'
-                "#,
-            )?
-            .bind("y", y.to_bytes().to_vec())
-            .bind("operation_id", operation_id.to_string())
-            .execute(&*conn)
-            .await?;
-
-            if rows_affected == 0 {
-                return Err(database::Error::ProofNotUnspent);
-            }
+        if ys.is_empty() {
+            return Ok(());
         }
+
+        let expected = ys.len();
+        let tx = ConnectionWithTransaction::new(conn).await?;
+
+        let rows_affected = query(
+            r#"
+            UPDATE proof
+            SET state = 'RESERVED', used_by_operation = :operation_id
+            WHERE y IN (:ys) AND state = 'UNSPENT'
+            "#,
+        )?
+        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
+        .bind("operation_id", operation_id.to_string())
+        .execute(&tx)
+        .await?;
+
+        // Reserving is all-or-nothing: a partial match must not leave some of
+        // the proofs reserved.
+        if rows_affected != expected {
+            tx.rollback().await?;
+            return Err(database::Error::ProofNotUnspent);
+        }
+
+        tx.commit().await?;
 
         Ok(())
     }

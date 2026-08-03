@@ -1526,6 +1526,47 @@ where
     assert!(result.is_err());
 }
 
+/// Test that a failed reservation leaves no proof reserved
+pub async fn reserve_proofs_is_atomic<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let proof_info_1 = test_proof_info(keyset_id, 100, mint_url.clone());
+    let proof_info_2 = test_proof_info(keyset_id, 200, mint_url.clone());
+
+    db.update_proofs(vec![proof_info_1.clone(), proof_info_2.clone()], vec![])
+        .await
+        .unwrap();
+
+    let operation_id_1 = uuid::Uuid::new_v4();
+    db.reserve_proofs(vec![proof_info_1.y], &operation_id_1)
+        .await
+        .unwrap();
+
+    // The unspent proof comes first so a non-atomic implementation reserves it
+    // before hitting the already-reserved one.
+    let operation_id_2 = uuid::Uuid::new_v4();
+    let result = db
+        .reserve_proofs(vec![proof_info_2.y, proof_info_1.y], &operation_id_2)
+        .await;
+    assert!(result.is_err());
+
+    assert!(db
+        .get_reserved_proofs(&operation_id_2)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let unspent = db
+        .get_proofs(None, None, Some(vec![State::Unspent]), None)
+        .await
+        .unwrap();
+    assert_eq!(unspent.len(), 1);
+    assert_eq!(unspent[0].y, proof_info_2.y);
+}
+
 /// Unit test that is expected to be passed for a correct wallet database implementation
 #[macro_export]
 macro_rules! wallet_db_test {
@@ -1575,7 +1616,8 @@ macro_rules! wallet_db_test {
             reserve_proofs,
             release_proofs,
             get_reserved_proofs,
-            reserve_proofs_already_reserved
+            reserve_proofs_already_reserved,
+            reserve_proofs_is_atomic
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {
