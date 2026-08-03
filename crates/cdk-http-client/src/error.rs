@@ -33,6 +33,18 @@ pub enum HttpError {
     Other(String),
 }
 
+impl HttpError {
+    /// Return whether this error is eligible for NUT-19 request replay.
+    ///
+    /// Only ambiguous transport failures are eligible. HTTP status responses
+    /// are never eligible because NUT-19 caches successful responses only; a
+    /// failed status therefore does not prove that replaying a side-effecting
+    /// request is safe.
+    pub fn is_replay_safe(&self) -> bool {
+        matches!(self, Self::Connection(_) | Self::Timeout)
+    }
+}
+
 #[cfg(all(
     feature = "bitreq",
     not(feature = "reqwest"),
@@ -138,5 +150,22 @@ mod tests {
             }
             _ => panic!("Expected HttpError::Serialization"),
         }
+    }
+
+    #[test]
+    fn test_replay_safe_error_classification() {
+        assert!(HttpError::Connection("reset".to_string()).is_replay_safe());
+        assert!(HttpError::Timeout.is_replay_safe());
+
+        for status in [400, 408, 429, 500, 503] {
+            assert!(!HttpError::Status {
+                status,
+                message: "request failed".to_string(),
+            }
+            .is_replay_safe());
+        }
+
+        assert!(!HttpError::Serialization("bad JSON".to_string()).is_replay_safe());
+        assert!(!HttpError::Other("attestation failed".to_string()).is_replay_safe());
     }
 }
