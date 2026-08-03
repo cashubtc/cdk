@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test native.test.mjs",
+    "test:api": "node --test output-data-creator.test.mjs",
+    "test:adapter": "node --experimental-strip-types --test cashu-ts-adapter.test.mjs",
+    "test:root": "node --experimental-strip-types --test root-entry.test.mjs",
+    "test:unit": "node --experimental-strip-types --test root-entry.test.mjs adapter.test.mjs",
+    "test:all": "node --experimental-strip-types --test native.test.mjs output-data-creator.test.mjs cashu-ts-adapter.test.mjs root-entry.test.mjs adapter.test.mjs"
+  },
+  "devDependencies": {
+    "koffi": "^2.9.0"
+  }
+}

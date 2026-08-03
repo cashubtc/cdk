@@ -5,6 +5,7 @@ members = [
     "bindings/swift/rust",
     "bindings/kotlin/rust",
     "bindings/go/rust",
+    "bindings/react-native/rust",
 ]
 exclude = [
     "fuzz",
