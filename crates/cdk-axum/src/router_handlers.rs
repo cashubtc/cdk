@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
-    CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MintInfo,
+    AuthToken, CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MintInfo,
     RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
@@ -129,16 +129,33 @@ pub(crate) async fn ws_handler(
     State(state): State<MintState>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, Response> {
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Get, RoutePath::Ws),
-        )
-        .await
-        .map_err(into_response)?;
+    let endpoint = ProtectedEndpoint::new(Method::Get, RoutePath::Ws);
+    let token: Option<AuthToken> = auth.into();
 
-    Ok(ws.on_upgrade(|ws| main_websocket(ws, state)))
+    // A browser WebSocket cannot set the `Blind-auth` header, so a header-less
+    // upgrade to a protected endpoint is allowed and deferred to the in-band
+    // NUT-22 `authenticate` command instead of being rejected here.
+    let authenticated = match state
+        .mint
+        .is_protected(&endpoint)
+        .await
+        .map_err(into_response)?
+    {
+        None => true,
+        Some(_) => match token {
+            Some(token) => {
+                state
+                    .mint
+                    .verify_auth(Some(token), &endpoint)
+                    .await
+                    .map_err(into_response)?;
+                true
+            }
+            None => false,
+        },
+    };
+
+    Ok(ws.on_upgrade(move |ws| main_websocket(ws, state, authenticated)))
 }
 
 /// Check whether a proof is spent already or is pending in a transaction
