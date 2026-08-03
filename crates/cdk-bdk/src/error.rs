@@ -1,5 +1,6 @@
 //! CDK BDK onchain backend errors
 
+use cdk_common::CurrencyUnit;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -41,6 +42,22 @@ pub enum Error {
     /// Amount conversion error
     #[error("Amount conversion error: {0}")]
     AmountConversion(#[from] cdk_common::amount::Error),
+
+    /// A typed amount does not match the payment unit supplied to the backend.
+    #[error("Amount unit {actual} does not match payment unit {expected}")]
+    AmountUnitMismatch {
+        /// Unit supplied to the payment backend.
+        expected: CurrencyUnit,
+        /// Unit carried by the typed amount.
+        actual: CurrencyUnit,
+    },
+
+    /// An onchain payment amount cannot be represented as whole satoshis.
+    #[error("Onchain payment amount {amount_msat} msat is not a whole number of satoshis")]
+    FractionalSatoshiAmount {
+        /// Requested payment amount in millisatoshis.
+        amount_msat: u64,
+    },
 
     /// Database error
     #[error("Database error: {0}")]
