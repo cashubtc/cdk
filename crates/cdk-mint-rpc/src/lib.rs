@@ -24,3 +24,11 @@ pub type InterceptedKeysetServiceClient = keyset::keyset_service_client::KeysetS
         cdk_common::grpc::VersionInterceptor,
     >,
 >;
+
+/// Type alias for QuoteServiceClient with the version header interceptor over a Channel
+pub type InterceptedQuoteServiceClient = quote::quote_service_client::QuoteServiceClient<
+    tonic::codegen::InterceptedService<
+        tonic::transport::Channel,
+        cdk_common::grpc::VersionInterceptor,
+    >,
+>;
