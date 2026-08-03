@@ -7,6 +7,7 @@ use cdk_common::grpc::{VersionInterceptor, VERSION_HEADER};
 use cdk_mint_rpc::cdk_mint_client::CdkMintClient;
 use cdk_mint_rpc::keyset::keyset_service_client::KeysetServiceClient;
 use cdk_mint_rpc::mint_rpc_cli::subcommands;
+use cdk_mint_rpc::quote::quote_service_client::QuoteServiceClient;
 use cdk_mint_rpc::GetInfoRequest;
 use clap::{Parser, Subcommand};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
@@ -101,8 +102,9 @@ enum Commands {
     UpdateQuoteTtl(subcommands::UpdateQuoteTtlCommand),
     /// Get quote ttl
     GetQuoteTtl,
-    /// Update Nut04 quote
-    UpdateNut04QuoteState(subcommands::UpdateNut04QuoteCommand),
+    /// Update mint quote state
+    #[command(alias = "update-nut04-quote-state")]
+    UpdateMintQuoteState(subcommands::UpdateMintQuoteStateCommand),
     /// Rotate next keyset
     RotateNextKeyset(subcommands::RotateNextKeysetCommand),
 }
@@ -230,13 +232,16 @@ async fn main() -> Result<()> {
             subcommands::update_nut05(&mut client, &sub_command_args).await?;
         }
         Commands::GetQuoteTtl => {
-            subcommands::get_quote_ttl(&mut client).await?;
+            let mut quote_client = QuoteServiceClient::with_interceptor(channel, interceptor);
+            subcommands::get_quote_ttl(&mut quote_client).await?;
         }
         Commands::UpdateQuoteTtl(sub_command_args) => {
-            subcommands::update_quote_ttl(&mut client, &sub_command_args).await?;
+            let mut quote_client = QuoteServiceClient::with_interceptor(channel, interceptor);
+            subcommands::update_quote_ttl(&mut quote_client, &sub_command_args).await?;
         }
-        Commands::UpdateNut04QuoteState(sub_command_args) => {
-            subcommands::update_nut04_quote_state(&mut client, &sub_command_args).await?;
+        Commands::UpdateMintQuoteState(sub_command_args) => {
+            let mut quote_client = QuoteServiceClient::with_interceptor(channel, interceptor);
+            subcommands::update_mint_quote_state(&mut quote_client, &sub_command_args).await?;
         }
         Commands::RotateNextKeyset(sub_command_args) => {
             let mut keyset_client = KeysetServiceClient::with_interceptor(channel, interceptor);

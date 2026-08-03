@@ -7,6 +7,11 @@ pub mod keyset {
     tonic::include_proto!("cdk_mint_keyset_v1");
 }
 
+/// Quote administration service
+pub mod quote {
+    tonic::include_proto!("cdk_mint_quote_v1");
+}
+
 mod server;
 
 /// Protocol version for gRPC Mint RPC communication
