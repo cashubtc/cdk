@@ -1033,8 +1033,9 @@ mod tests {
     use std::sync::Arc;
 
     use bip39::Mnemonic;
-    use cdk::mint::{MintBuilder, MintMeltLimits};
-    use cdk::nuts::{CurrencyUnit, PaymentMethod};
+    use cdk::amount::SplitTarget;
+    use cdk::mint::{MintBuilder, MintInput, MintMeltLimits};
+    use cdk::nuts::{CurrencyUnit, MintRequest, PaymentMethod, PreMintSecrets};
     use cdk::types::QuoteTTL;
     use cdk_common::nut00::KnownMethod;
     use cdk_common::MintQuoteBolt11Request;
@@ -1191,7 +1192,6 @@ mod tests {
         .await
         .unwrap();
 
-        // The response carries the settings in effect after the update
         let response = response.into_inner();
         assert_eq!(response.mint_ttl, 60);
         assert_eq!(response.melt_ttl, 10000);
@@ -1224,6 +1224,42 @@ mod tests {
         response.quote().to_string()
     }
 
+    /// Issues the full paid amount of a quote, leaving it in the issued state
+    async fn issue_test_mint_quote(server: &MintRPCServer, quote_id: &str, amount: u64) {
+        let keyset_id = *server
+            .mint
+            .get_active_keysets()
+            .get(&CurrencyUnit::Sat)
+            .unwrap();
+        let keys = server
+            .mint
+            .keyset_pubkeys(&keyset_id)
+            .unwrap()
+            .keysets
+            .first()
+            .unwrap()
+            .keys
+            .clone();
+        let fees: (u64, Vec<u64>) = (0, keys.iter().map(|a| a.0.to_u64()).collect());
+        let premint = PreMintSecrets::random(
+            keyset_id,
+            Amount::from(amount),
+            &SplitTarget::None,
+            &fees.into(),
+        )
+        .unwrap();
+
+        server
+            .mint
+            .process_mint_request(MintInput::Single(MintRequest {
+                quote: quote_id.parse().unwrap(),
+                outputs: premint.blinded_messages().to_vec(),
+                signature: None,
+            }))
+            .await
+            .unwrap();
+    }
+
     /// Returns the amount recorded as paid against a quote
     async fn amount_paid(server: &MintRPCServer, quote_id: &str) -> u64 {
         server
@@ -1239,8 +1275,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_quote_service_update_mint_quote_state_marks_quote_paid() {
-        // A delay the fake backend will never reach, so the only payment
-        // recorded against the quote is the one this test forces
         let server = create_test_rpc_server_with_payment_delay(3600).await;
         let quote_id = create_test_mint_quote(&server, 100).await;
 
@@ -1282,19 +1316,59 @@ mod tests {
             assert_eq!(response.state(), crate::quote::MintQuoteState::Paid);
         }
 
-        // The second call derives the same payment id as the first, so the
-        // quote keeps a single payment rather than being credited twice
         assert_eq!(amount_paid(&server, &quote_id).await, 100);
+    }
+
+    #[tokio::test]
+    async fn test_quote_service_update_mint_quote_state_reports_state_of_issued_quote() {
+        let server = create_test_rpc_server_with_payment_delay(3600).await;
+        let quote_id = create_test_mint_quote(&server, 32).await;
+
+        QuoteService::update_mint_quote_state(
+            &server,
+            Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                quote_id: quote_id.clone(),
+                state: crate::quote::MintQuoteState::Paid.into(),
+            }),
+        )
+        .await
+        .unwrap();
+        issue_test_mint_quote(&server, &quote_id, 32).await;
+
+        // The request asks for Paid; an already-issued quote stays Issued
+        let response = QuoteService::update_mint_quote_state(
+            &server,
+            Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                quote_id: quote_id.clone(),
+                state: crate::quote::MintQuoteState::Paid.into(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert_eq!(response.state(), crate::quote::MintQuoteState::Issued);
+        assert_eq!(amount_paid(&server, &quote_id).await, 32);
     }
 
     #[tokio::test]
     async fn test_quote_service_update_mint_quote_state_rejects_unsupported_states() {
         let server = create_test_rpc_server().await;
 
-        for state in [
-            crate::quote::MintQuoteState::Unpaid,
-            crate::quote::MintQuoteState::Issued,
-            crate::quote::MintQuoteState::Unspecified,
+        // An unsupported state is rejected before the quote is looked up
+        for (state, expected) in [
+            (
+                crate::quote::MintQuoteState::Unpaid,
+                "Cannot unpay a quote: payments cannot be retracted",
+            ),
+            (
+                crate::quote::MintQuoteState::Issued,
+                "Cannot issue a quote: no signatures would back the issuance",
+            ),
+            (
+                crate::quote::MintQuoteState::Unspecified,
+                "Quote state is required",
+            ),
         ] {
             let status = QuoteService::update_mint_quote_state(
                 &server,
@@ -1307,6 +1381,11 @@ mod tests {
             .unwrap_err();
 
             assert_eq!(status.code(), tonic::Code::InvalidArgument);
+            assert_eq!(
+                status.message(),
+                expected,
+                "unexpected rejection for {state:?}"
+            );
         }
     }
 
@@ -1325,6 +1404,7 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(status.message(), "Could not find quote");
     }
 
     #[tokio::test]
