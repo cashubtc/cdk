@@ -10,11 +10,13 @@ use cdk_common::nut00::KnownMethod;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::DynMintPayment;
+use cdk_common::pub_sub::{Bus, LocalDelivery};
 use cdk_common::{nut21, nut22};
 use cdk_signatory::signatory::{RotateKeyArguments, Signatory};
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
+use super::subscription::{MintPubSubBusBuilder, MintPubSubSpec};
 use super::Nuts;
 use crate::amount::Amount;
 use crate::cdk_database;
@@ -75,6 +77,7 @@ pub struct MintBuilder {
     max_inputs: usize,
     max_outputs: usize,
     max_batch_size: Option<u64>,
+    pubsub_bus_builder: Option<MintPubSubBusBuilder>,
 }
 
 impl std::fmt::Debug for MintBuilder {
@@ -118,7 +121,23 @@ impl MintBuilder {
             max_inputs: 1000,
             max_outputs: 1000,
             max_batch_size: None,
+            pubsub_bus_builder: None,
         }
+    }
+
+    /// Install a cross-instance pub/sub bus for NUT-17 notifications.
+    ///
+    /// By default the mint keeps notifications in-process, so a WebSocket
+    /// subscriber only receives events published by the instance it is
+    /// connected to. Provide a builder (for example the Postgres
+    /// `LISTEN`/`NOTIFY` bus) to distribute events across instances sharing a
+    /// database.
+    pub fn with_pubsub_bus<F>(mut self, build_bus: F) -> Self
+    where
+        F: FnOnce(LocalDelivery<MintPubSubSpec>) -> Arc<dyn Bus<MintPubSubSpec>> + Send + 'static,
+    {
+        self.pubsub_bus_builder = Some(Box::new(build_bus));
+        self
     }
 
     /// Set use keyset v2
@@ -702,24 +721,27 @@ impl MintBuilder {
                 tx.commit().await?;
             }
 
-            return Mint::new_with_auth(
+            return Mint::new_internal(
                 self.mint_info,
                 signatory,
                 self.localstore,
-                auth_localstore,
+                Some(auth_localstore),
                 self.payment_processors,
                 self.max_inputs,
                 self.max_outputs,
+                self.pubsub_bus_builder,
             )
             .await;
         }
-        Mint::new(
+        Mint::new_internal(
             self.mint_info,
             signatory,
             self.localstore,
+            None,
             self.payment_processors,
             self.max_inputs,
             self.max_outputs,
+            self.pubsub_bus_builder,
         )
         .await
     }

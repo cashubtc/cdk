@@ -36,6 +36,7 @@ paste.workspace = true
 
 [dev-dependencies]
 cdk-common = { workspace = true, features = ["test"] }
+cdk-sql-common = { workspace = true, features = ["test"] }
 
 [lints]
 workspace = true

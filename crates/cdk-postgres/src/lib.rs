@@ -16,10 +16,15 @@ use native_tls::TlsConnector;
 use postgres_native_tls::MakeTlsConnector;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
-use tokio_postgres::{connect, Client, Error as PgError, NoTls};
+use tokio_postgres::{Client, Error as PgError, NoTls};
 
+pub mod bus;
+mod connection;
 mod db;
 mod value;
+
+pub use bus::{PostgresBus, PostgresBusConnector};
+use connection::{connect_and_drive, AwaitDrive};
 
 #[derive(Debug)]
 /// Postgres connection pool
@@ -176,6 +181,16 @@ impl PgConfig {
         }
     }
 
+    /// Connection URL.
+    pub(crate) fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Resolved TLS mode.
+    pub(crate) fn tls(&self) -> SslMode {
+        self.tls.clone()
+    }
+
     /// strip schema from the connection string
     fn strip_schema(input: &str) -> (Option<String>, String) {
         let mut schema: Option<String> = None;
@@ -257,68 +272,29 @@ impl PostgresConnection {
         }
 
         tokio::spawn(async move {
-            match config.tls {
-                SslMode::NoTls(tls) => {
-                    let (client, connection) = match connect(&config.url, tls).await {
-                        Ok((client, connection)) => (client, connection),
-                        Err(err) => {
-                            *error_clone.lock().await =
-                                Some(cdk_common::database::Error::Database(Box::new(err)));
-                            stale.store(true, std::sync::atomic::Ordering::Release);
-                            notify_clone.notify_waiters();
-                            return;
-                        }
-                    };
-
-                    let stale_for_spawn = stale.clone();
-                    tokio::spawn(async move {
-                        let _ = connection.await;
-                        stale_for_spawn.store(true, std::sync::atomic::Ordering::Release);
-                    });
-
-                    if let Some(schema) = config.schema.as_ref() {
-                        if let Err(err) = select_schema(&client, schema).await {
-                            *error_clone.lock().await = Some(err);
-                            stale.store(true, std::sync::atomic::Ordering::Release);
-                            notify_clone.notify_waiters();
-                            return;
-                        }
+            let (client, _driver) =
+                match connect_and_drive(&config, AwaitDrive::new(stale.clone())).await {
+                    Ok(pair) => pair,
+                    Err(err) => {
+                        *error_clone.lock().await =
+                            Some(cdk_common::database::Error::Database(Box::new(err)));
+                        stale.store(true, std::sync::atomic::Ordering::Release);
+                        notify_clone.notify_waiters();
+                        return;
                     }
+                };
 
-                    let _ = result_clone.set(client);
+            if let Some(schema) = config.schema.as_ref() {
+                if let Err(err) = select_schema(&client, schema).await {
+                    *error_clone.lock().await = Some(err);
+                    stale.store(true, std::sync::atomic::Ordering::Release);
                     notify_clone.notify_waiters();
-                }
-                SslMode::NativeTls(tls) => {
-                    let (client, connection) = match connect(&config.url, tls).await {
-                        Ok((client, connection)) => (client, connection),
-                        Err(err) => {
-                            *error_clone.lock().await =
-                                Some(cdk_common::database::Error::Database(Box::new(err)));
-                            stale.store(true, std::sync::atomic::Ordering::Release);
-                            notify_clone.notify_waiters();
-                            return;
-                        }
-                    };
-
-                    let stale_for_spawn = stale.clone();
-                    tokio::spawn(async move {
-                        let _ = connection.await;
-                        stale_for_spawn.store(true, std::sync::atomic::Ordering::Release);
-                    });
-
-                    if let Some(schema) = config.schema.as_ref() {
-                        if let Err(err) = select_schema(&client, schema).await {
-                            *error_clone.lock().await = Some(err);
-                            stale.store(true, std::sync::atomic::Ordering::Release);
-                            notify_clone.notify_waiters();
-                            return;
-                        }
-                    }
-
-                    let _ = result_clone.set(client);
-                    notify_clone.notify_waiters();
+                    return;
                 }
             }
+
+            let _ = result_clone.set(client);
+            notify_clone.notify_waiters();
         });
 
         Self {
@@ -426,6 +402,29 @@ mod test {
     }
 
     mint_db_test!(provide_mint_db);
+
+    /// Store factory for the shared cross-instance SQL bus suite. Uses the same
+    /// per-test schema isolation as `provide_mint_db`; the two logical instances
+    /// the suite builds share this one pool (and thus one schema).
+    async fn provide_sql_bus_store(
+        test_id: String,
+    ) -> std::sync::Arc<cdk_sql_common::pool::Pool<PgConnectionPool>> {
+        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .unwrap_or(
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned(),
+            );
+
+        let db_url = format!("{db_url} schema={test_id}");
+
+        MintPgDatabase::new(db_url.as_str())
+            .await
+            .expect("database")
+            .pool()
+    }
+
+    cdk_sql_common::sql_bus_test!(provide_sql_bus_store);
 
     async fn provide_wallet_db(test_id: String) -> WalletPgDatabase {
         let db_url = std::env::var("CDK_MINTD_DATABASE_URL")

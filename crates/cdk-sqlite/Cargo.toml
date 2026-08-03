@@ -35,6 +35,7 @@ paste.workspace = true
 
 [dev-dependencies]
 cdk-common = { workspace = true, features = ["test"] }
+cdk-sql-common = { workspace = true, features = ["test"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { workspace = true, features = ["js"] }
