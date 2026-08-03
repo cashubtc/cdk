@@ -162,6 +162,33 @@ impl WalletRepository {
         Ok(())
     }
 
+    /// Get the wallet for a mint URL and unit, creating it if it does not exist
+    ///
+    /// Unlike `create_wallet`, an existing wallet is returned untouched: its
+    /// configuration is not replaced.
+    pub async fn get_or_create_wallet(
+        &self,
+        mint_url: MintUrl,
+        unit: CurrencyUnit,
+        target_proof_count: Option<u32>,
+    ) -> Result<Arc<crate::wallet::Wallet>, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+
+        let config = target_proof_count.map(|count| {
+            cdk::wallet::wallet_repository::WalletConfig::new()
+                .with_target_proof_count(count as usize)
+        });
+
+        let wallet = self
+            .inner
+            .get_or_create_wallet(cdk_mint_url, unit.into(), config)
+            .await?;
+
+        Ok(Arc::new(crate::wallet::Wallet::from_inner(Arc::new(
+            wallet,
+        ))))
+    }
+
     /// Remove mint from WalletRepository
     pub async fn remove_wallet(
         &self,
@@ -302,5 +329,115 @@ impl From<cdk::wallet::TokenData> for TokenData {
             unit: data.unit.into(),
             redeem_fee: data.redeem_fee.map(Into::into),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::custom_wallet_store;
+    use crate::sqlite::WalletSqliteDatabase;
+
+    const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    fn test_repository() -> WalletRepository {
+        let db = WalletSqliteDatabase::new_in_memory().expect("in-memory wallet db should open");
+        WalletRepository::new(MNEMONIC.to_string(), custom_wallet_store(db))
+            .expect("repository should be created")
+    }
+
+    fn mint_url() -> MintUrl {
+        MintUrl::new("https://mint.example.com".to_string()).expect("valid mint url")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_or_create_wallet_creates_a_missing_wallet() {
+        let repo = test_repository();
+
+        let wallet = repo
+            .get_or_create_wallet(mint_url(), CurrencyUnit::Sat, None)
+            .await
+            .expect("wallet should be created");
+
+        assert_eq!(wallet.mint_url(), mint_url());
+        assert_eq!(wallet.unit(), CurrencyUnit::Sat);
+        assert!(repo.get_wallet(mint_url(), CurrencyUnit::Sat).await.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_or_create_wallet_returns_the_existing_wallet() {
+        let repo = test_repository();
+
+        repo.create_wallet(mint_url(), Some(CurrencyUnit::Sat), Some(5))
+            .await
+            .expect("wallet should be created");
+
+        let wallet = repo
+            .get_or_create_wallet(mint_url(), CurrencyUnit::Sat, Some(99))
+            .await
+            .expect("wallet should be returned");
+
+        assert_eq!(wallet.inner().target_proof_count, 5);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_or_create_wallet_is_keyed_by_unit() {
+        let repo = test_repository();
+
+        let sat = repo
+            .get_or_create_wallet(mint_url(), CurrencyUnit::Sat, None)
+            .await
+            .expect("sat wallet should be created");
+        let usd = repo
+            .get_or_create_wallet(mint_url(), CurrencyUnit::Usd, None)
+            .await
+            .expect("usd wallet should be created");
+
+        assert_eq!(sat.unit(), CurrencyUnit::Sat);
+        assert_eq!(usd.unit(), CurrencyUnit::Usd);
+        assert!(repo.get_wallet(mint_url(), CurrencyUnit::Sat).await.is_ok());
+        assert!(repo.get_wallet(mint_url(), CurrencyUnit::Usd).await.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_or_create_wallet_converges_under_concurrency() {
+        let repo = Arc::new(test_repository());
+
+        let calls = (1..=8u32).map(|target_proof_count| {
+            let repo = repo.clone();
+            tokio::spawn(async move {
+                repo.get_or_create_wallet(mint_url(), CurrencyUnit::Sat, Some(target_proof_count))
+                    .await
+                    .expect("wallet should be created")
+            })
+        });
+
+        let mut counts = Vec::new();
+        for call in calls {
+            let wallet = call.await.expect("task should not panic");
+            counts.push(wallet.inner().target_proof_count);
+        }
+
+        // Whichever caller built the wallet, every other caller must observe
+        // that same one rather than a wallet of its own.
+        assert!(
+            counts.windows(2).all(|pair| pair[0] == pair[1]),
+            "{counts:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_or_create_wallet_rejects_an_invalid_mint_url() {
+        let repo = test_repository();
+
+        // Bindings can build the record directly, bypassing `MintUrl::new`.
+        let invalid = MintUrl {
+            url: "not a url".to_string(),
+        };
+
+        assert!(repo
+            .get_or_create_wallet(invalid, CurrencyUnit::Sat, None)
+            .await
+            .is_err());
     }
 }

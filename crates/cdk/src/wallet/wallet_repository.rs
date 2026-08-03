@@ -388,21 +388,43 @@ impl WalletRepository {
 
         let mut wallets = Vec::new();
         for unit in supported_units {
-            // Skip if wallet already exists for this unit
-            if self.has_wallet(&mint_url, unit).await {
-                if let Ok(existing) = self.get_wallet(&mint_url, unit).await {
-                    wallets.push(existing);
-                }
-                continue;
-            }
-
             let wallet = self
-                .create_wallet(mint_url.clone(), unit.clone(), config.clone())
+                .get_or_create_wallet(mint_url.clone(), unit.clone(), config.clone())
                 .await?;
             wallets.push(wallet);
         }
 
         Ok(wallets)
+    }
+
+    /// Return the wallet for a mint and unit, creating it if it does not exist yet.
+    ///
+    /// An existing wallet is returned untouched. Use [`Self::create_wallet`] to
+    /// replace it with a new configuration.
+    ///
+    /// The write lock is held across the lookup and the insert so that concurrent
+    /// callers for the same mint and unit all observe the same wallet instead of
+    /// each building one and the last writer winning.
+    #[instrument(skip(self))]
+    pub async fn get_or_create_wallet(
+        &self,
+        mint_url: MintUrl,
+        unit: CurrencyUnit,
+        config: Option<WalletConfig>,
+    ) -> Result<Wallet, Error> {
+        let key = WalletKey::new(mint_url.clone(), unit.clone());
+        let mut wallets = self.wallets.write().await;
+
+        if let Some(existing) = wallets.get(&key) {
+            return Ok(existing.clone());
+        }
+
+        let wallet = self
+            .create_wallet_internal(mint_url, unit, config.as_ref())
+            .await?;
+        wallets.insert(key, wallet.clone());
+
+        Ok(wallet)
     }
 
     /// Update configuration for an existing mint and unit
@@ -714,18 +736,8 @@ impl WalletRepository {
                 .unwrap_or_else(|| vec![CurrencyUnit::Sat]);
 
             for unit in units {
-                let key = WalletKey::new(mint_url.clone(), unit.clone());
-                // Skip if wallet already exists
-                if self.wallets.read().await.contains_key(&key) {
-                    continue;
-                }
-
-                let wallet = self
-                    .create_wallet_internal(mint_url.clone(), unit, None)
+                self.get_or_create_wallet(mint_url.clone(), unit, None)
                     .await?;
-
-                let mut wallets = self.wallets.write().await;
-                wallets.insert(key, wallet);
             }
         }
 
@@ -1139,6 +1151,46 @@ mod tests {
         assert!(repo.has_wallet(&mint_url, &CurrencyUnit::Sat).await);
         let retrieved = repo.get_wallet(&mint_url, &CurrencyUnit::Sat).await;
         assert!(retrieved.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_get_or_create_wallet_keeps_the_existing_wallet() {
+        let repo = create_test_repository().await;
+        let mint_url: MintUrl = "https://mint.example.com".parse().unwrap();
+
+        repo.create_wallet(
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            Some(WalletConfig::new().with_target_proof_count(5)),
+        )
+        .await
+        .expect("Failed to create wallet");
+
+        let wallet = repo
+            .get_or_create_wallet(
+                mint_url.clone(),
+                CurrencyUnit::Sat,
+                Some(WalletConfig::new().with_target_proof_count(99)),
+            )
+            .await
+            .expect("Failed to get wallet");
+
+        assert_eq!(wallet.target_proof_count, 5);
+    }
+
+    #[tokio::test]
+    async fn test_get_or_create_wallet_creates_a_missing_wallet() {
+        let repo = create_test_repository().await;
+        let mint_url: MintUrl = "https://mint.example.com".parse().unwrap();
+
+        let wallet = repo
+            .get_or_create_wallet(mint_url.clone(), CurrencyUnit::Sat, None)
+            .await
+            .expect("Failed to create wallet");
+
+        assert_eq!(wallet.mint_url, mint_url);
+        assert_eq!(wallet.unit, CurrencyUnit::Sat);
+        assert!(repo.has_wallet(&mint_url, &CurrencyUnit::Sat).await);
     }
 
     #[tokio::test]
