@@ -42,7 +42,9 @@ mod blind_signature;
 #[cfg(feature = "nostr")]
 mod nostr_backup;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
-pub use mint_connector::{TorAuthHttpClient, TorHttpClient};
+pub use mint_connector::{
+    RateLimitedTorAuthHttpClient, RateLimitedTorHttpClient, TorAuthHttpClient, TorHttpClient,
+};
 mod balance;
 mod builder;
 mod issue;
@@ -87,6 +89,7 @@ pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::{
     AuthHttpClient, HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector,
+    RateLimitConfig, TokenBucket,
 };
 pub use mint_metadata_cache::MintMetadata;
 #[cfg(feature = "nostr")]
@@ -140,6 +143,14 @@ pub struct Wallet {
     seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
+    /// Handle to the shared client-side rate limiter, when the wallet paces any
+    /// of the clients it builds.
+    ///
+    /// `None` when rate limiting was disabled, or when a custom client replaced
+    /// the transport and no rate-limited auth client remains. Cloning the bucket
+    /// shares one budget, so this reconfigures the same limiter the transport
+    /// paces through.
+    rate_limit: Option<TokenBucket>,
 }
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -278,6 +289,33 @@ impl Wallet {
             .seed(seed)
             .target_proof_count(target_proof_count.unwrap_or(3))
             .build()
+    }
+
+    /// Replace the client-side rate-limit configuration at runtime.
+    ///
+    /// Affects the shared budget of every client the wallet paces: the main
+    /// client, and the blind-auth client when the wallet was built from a CAT. It
+    /// is a no-op when the wallet paces nothing, either because rate limiting was
+    /// disabled ([`WalletBuilder::without_rate_limiting`]) or because a custom
+    /// client ([`WalletBuilder::client`]/[`WalletBuilder::shared_client`])
+    /// replaced the main transport and no rate-limited auth client remains. With
+    /// a custom main client plus a CAT it reconfigures only the blind-auth
+    /// client's pacing.
+    pub fn set_rate_limiting_config(&self, config: RateLimitConfig) {
+        if let Some(bucket) = &self.rate_limit {
+            bucket.set_config(config);
+        }
+    }
+
+    /// Disable client-side rate limiting at runtime.
+    ///
+    /// Affects the same clients as [`Wallet::set_rate_limiting_config`]: a no-op
+    /// when the wallet paces nothing, and with a custom main client plus a CAT it
+    /// disables only the blind-auth client's pacing.
+    pub fn disable_rate_limiting(&self) {
+        if let Some(bucket) = &self.rate_limit {
+            bucket.set_enabled(false);
+        }
     }
 
     /// Subscribe to events

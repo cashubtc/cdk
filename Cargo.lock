@@ -1355,6 +1355,7 @@ dependencies = [
  "criterion",
  "futures",
  "getrandom 0.2.17",
+ "gloo-timers",
  "jsonwebtoken",
  "lightning",
  "lightning-invoice",
