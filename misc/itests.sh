@@ -2,6 +2,10 @@
 
 source "$(dirname "$0")/itest_helpers.sh"
 
+# Extract the pre-built nextest archive (if CDK_ITEST_ARCHIVE is set) once and
+# put its harness binaries (start_regtest, start_fake_mint, ...) on PATH.
+prepare_nextest_archive || echo "WARNING: nextest archive extraction failed; falling back to nix/cargo binaries" >&2
+
 kill_regtest_processes_by_work_dir() {
     if [ -z "${CDK_ITESTS_DIR:-}" ] || ! command -v pgrep >/dev/null 2>&1; then
         return

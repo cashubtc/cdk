@@ -272,3 +272,47 @@ just regtest
 ```
 
 This environment provides everything needed for CDK development and testing in a single, easy-to-use interface! 🎉
+
+## Nextest archive caching and downloads
+
+Integration tests can run from a pre-built nextest archive (`CDK_ITEST_ARCHIVE`,
+usually the `.#itest-archive` Nix build) instead of compiling with cargo.
+
+**Where downloads come from:**
+
+- `cache.nixos.org` — nixpkgs binaries for the `#regtest` shell (bitcoind,
+  clightning, lnd, postgres, ...). A new `flake.lock` rev means a new closure.
+- `static.rust-lang.org` — the Rust toolchain (via rust-overlay). Fixed-output
+  fetch; never served by any binary cache.
+- `https://cache.cashudevkit.org` — self-hosted attic binary cache (unlimited
+  storage). CI pushes `.#deps`, `.#deps-msrv`, the per-revision check
+  derivations, the itest-archive, and the harness binaries here (steps gated
+  on the `ATTIC_TOKEN` secret and `ATTIC_CACHE` repo
+  variable). Pushes happen on `main` and same-repo PRs; fork PRs are skipped
+  (forks never receive secrets, and the push steps are additionally guarded).
+  Requires the cache's signing public key in
+  `nixConfig.extra-trusted-public-keys` (see `flake.nix`).
+- To push artifacts for a LOCAL revision (e.g. an unpushed commit you want to
+  A/B test): `attic login cashudevkit https://cache.cashudevkit.org <token>`
+  once, then `just cache-push` (the attic cache name defaults to
+  `cashudevkit`; override with `ATTIC_CACHE`). Afterwards any
+  machine can substitute that rev instead of compiling it.
+- `https://cashudevkit.cachix.org` — legacy 5 GB cachix cache. Only populated
+  for revisions CI has built; per-revision archives evict each other quickly
+  at this size, so prefer the attic cache. Local commits miss both caches and
+  compile locally.
+- `github.com` — flake input tarballs (nixpkgs, crane, rust-overlay, ...).
+
+**Cache behavior:**
+
+- The archive is extracted exactly once per archive into
+  `${CDK_NEXTEST_EXTRACT_ROOT:-$TMPDIR/cdk-nextest-extract}/<key>` and reused
+  by every `run_test`/`run_bin*` call (nextest's `--archive-file` mode would
+  otherwise re-extract ~19 GB per invocation). Delete stale subdirectories to
+  reclaim disk.
+- The extracted archive also provides the `start_regtest`, `start_fake_mint`,
+  `start_fake_auth_mint`, and `start_regtest_mints` binaries (added to `PATH`),
+  so harness binaries and tests always come from the same revision.
+- `nix develop 'git+file://...?rev=X#regtest'` at a rev CI has not built
+  compiles the harness binaries locally; prefer revs from `main` (Cachix-hit)
+  or reuse an already-built archive via `CDK_ITEST_ARCHIVE`.
