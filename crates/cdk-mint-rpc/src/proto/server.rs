@@ -1037,6 +1037,7 @@ mod tests {
     use cdk::nuts::{CurrencyUnit, PaymentMethod};
     use cdk::types::QuoteTTL;
     use cdk_common::nut00::KnownMethod;
+    use cdk_common::MintQuoteBolt11Request;
     use cdk_fake_wallet::FakeWallet;
     use tonic::Request;
 
@@ -1048,6 +1049,15 @@ mod tests {
     const UNKNOWN_QUOTE_ID: &str = "019820ab-cdef-7000-8000-000000000000";
 
     async fn create_test_rpc_server() -> MintRPCServer {
+        create_test_rpc_server_with_payment_delay(2).await
+    }
+
+    /// Builds a test server whose fake payment backend waits `payment_delay`
+    /// seconds before reporting a quote paid
+    ///
+    /// Tests that drive quote state themselves pass a delay long enough that
+    /// the backend never reports a payment of its own.
+    async fn create_test_rpc_server_with_payment_delay(payment_delay: u64) -> MintRPCServer {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
 
         let mut mint_builder = MintBuilder::new(db.clone());
@@ -1061,7 +1071,7 @@ mod tests {
             fee_reserve,
             HashMap::default(),
             HashSet::default(),
-            2,
+            payment_delay,
             CurrencyUnit::Sat,
         );
 
@@ -1193,6 +1203,88 @@ mod tests {
                 .into_inner();
         assert_eq!(persisted.mint_ttl, 60);
         assert_eq!(persisted.melt_ttl, 10000);
+    }
+
+    /// Creates a bolt11 mint quote for `amount` sats and returns its id
+    async fn create_test_mint_quote(server: &MintRPCServer, amount: u64) -> String {
+        let response = server
+            .mint
+            .get_mint_quote(
+                MintQuoteBolt11Request {
+                    amount: amount.into(),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                }
+                .into(),
+            )
+            .await
+            .unwrap();
+
+        response.quote().to_string()
+    }
+
+    /// Returns the amount recorded as paid against a quote
+    async fn amount_paid(server: &MintRPCServer, quote_id: &str) -> u64 {
+        server
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id.parse().unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .amount_paid()
+            .value()
+    }
+
+    #[tokio::test]
+    async fn test_quote_service_update_mint_quote_state_marks_quote_paid() {
+        // A delay the fake backend will never reach, so the only payment
+        // recorded against the quote is the one this test forces
+        let server = create_test_rpc_server_with_payment_delay(3600).await;
+        let quote_id = create_test_mint_quote(&server, 100).await;
+
+        assert_eq!(amount_paid(&server, &quote_id).await, 0);
+
+        let response = QuoteService::update_mint_quote_state(
+            &server,
+            Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                quote_id: quote_id.clone(),
+                state: crate::quote::MintQuoteState::Paid.into(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert_eq!(response.quote_id, quote_id);
+        assert_eq!(response.state(), crate::quote::MintQuoteState::Paid);
+        assert_eq!(amount_paid(&server, &quote_id).await, 100);
+    }
+
+    #[tokio::test]
+    async fn test_quote_service_update_mint_quote_state_paid_twice_pays_once() {
+        let server = create_test_rpc_server_with_payment_delay(3600).await;
+        let quote_id = create_test_mint_quote(&server, 100).await;
+
+        for _ in 0..2 {
+            let response = QuoteService::update_mint_quote_state(
+                &server,
+                Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                    quote_id: quote_id.clone(),
+                    state: crate::quote::MintQuoteState::Paid.into(),
+                }),
+            )
+            .await
+            .unwrap()
+            .into_inner();
+
+            assert_eq!(response.state(), crate::quote::MintQuoteState::Paid);
+        }
+
+        // The second call derives the same payment id as the first, so the
+        // quote keeps a single payment rather than being credited twice
+        assert_eq!(amount_paid(&server, &quote_id).await, 100);
     }
 
     #[tokio::test]
