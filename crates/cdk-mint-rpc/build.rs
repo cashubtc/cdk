@@ -14,7 +14,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute(".", "#[allow(missing_docs)]")
         .field_attribute(".", "#[allow(missing_docs)]")
         .compile_protos(
-            &["src/proto/cdk-mint-rpc.proto", "src/proto/keyset.proto"],
+            &[
+                "src/proto/cdk-mint-rpc.proto",
+                "src/proto/keyset.proto",
+                "src/proto/quote.proto",
+            ],
             &["src/proto"],
         )?;
 
