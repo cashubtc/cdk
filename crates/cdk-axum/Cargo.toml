@@ -27,7 +27,7 @@ cdk-common.workspace = true
 cdk-http-client = { workspace = true, features = ["bitreq"] }
 tokio.workspace = true
 tracing.workspace = true
-futures.workspace = true
+futures = { workspace = true, features = ["std"] }
 cdk-prometheus = { workspace = true , optional = true}
 moka = { version = "0.12.10", features = ["future"] }
 serde_json.workspace = true

@@ -33,10 +33,12 @@ use ln_regtest::ln_client::{ClnClient, LightningClient, LndClient};
 use crate::init_regtest::get_cln_dir;
 
 pub mod cli;
+pub mod direct_connection;
 pub mod init_auth_mint;
 pub mod init_pure_tests;
 pub mod init_regtest;
 pub mod ln_regtest;
+pub mod mint_connector_test;
 pub mod shared;
 
 /// Generate standard keyset amounts as powers of 2
