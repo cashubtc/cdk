@@ -56,6 +56,14 @@ message CustomIncomingPaymentOptions {
   // Extra payment-method-specific fields as JSON string
   // These fields are flattened into the JSON representation on the client side
   optional string extra_json = 4;
+  // (field 5 is left free for the in-flight method-name addition, PR #2275)
+  // The mint's quote_id for this mint quote. Required. Custom backends that
+  // need a mint-side correlation key at quote-creation time should key their
+  // records on this value, as the onchain backend does.
+  string quote_id = 6;
+  // NUT-20 locking pubkey of the quote (hex), present when the wallet
+  // requested a locked quote.
+  optional string pubkey = 7;
 }
 message Bolt12IncomingPaymentOptions {
   optional string description = 1;
