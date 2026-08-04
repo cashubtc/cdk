@@ -793,9 +793,6 @@ pub struct FakeWalletKeysetRotation {
     /// Keyset version: "v1" (Version00) or "v2" (Version01)
     #[serde(default = "default_keyset_version")]
     pub version: String,
-    /// If true, the keyset will be created with a past expiry (expired)
-    #[serde(default)]
-    pub expired: bool,
 }
 
 #[cfg(feature = "fakewallet")]

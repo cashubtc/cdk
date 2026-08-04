@@ -1442,6 +1442,7 @@ mod tests {
     use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::MeltQuoteBolt11Request;
     use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
+    use cdk_common::util::unix_time;
     use cdk_common::PaymentMethod;
     use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
     use cdk_signatory::db_signatory::DbSignatory;
@@ -2109,7 +2110,7 @@ mod tests {
         };
         let mint = create_mint(config).await;
 
-        let expiry: u64 = 1_000_000;
+        let expiry = unix_time() + 1_000_000;
         let keyset_info = mint
             .rotate_keyset(CurrencyUnit::default(), vec![1], 0, true, Some(expiry))
             .await
@@ -2126,6 +2127,42 @@ mod tests {
             .get_keyset_info(&keyset_info.id)
             .expect("keyset should be found");
         assert_eq!(stored.final_expiry, Some(expiry));
+    }
+
+    #[tokio::test]
+    async fn mint_mod_rotate_keyset_rejects_non_future_expiry() {
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+        let keysets_before = mint.keysets();
+        let expiry = unix_time();
+
+        let result = mint
+            .rotate_keyset(CurrencyUnit::default(), vec![1], 0, true, Some(expiry))
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(Error::InvalidKeysetExpiry {
+                    expiry: invalid_expiry,
+                    current_time,
+                }) if invalid_expiry == expiry && current_time >= expiry
+            ),
+            "expected InvalidKeysetExpiry error, got: {:?}",
+            result
+        );
+        assert_eq!(
+            mint.keysets().keysets,
+            keysets_before.keysets,
+            "invalid rotation must not change the mint keysets"
+        );
     }
 
     #[tokio::test]

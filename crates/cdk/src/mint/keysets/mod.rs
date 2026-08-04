@@ -1,4 +1,4 @@
-use cdk_signatory::signatory::RotateKeyArguments;
+use cdk_signatory::signatory::{KeysetExpiry, RotateKeyArguments};
 use tracing::instrument;
 
 use super::{
@@ -79,20 +79,18 @@ impl Mint {
         use_keyset_v2: bool,
         final_expiry: Option<u64>,
     ) -> Result<MintKeySetInfo, Error> {
-        let result = self
-            .signatory
-            .rotate_keyset(RotateKeyArguments {
-                unit,
-                amounts,
-                input_fee_ppk,
-                keyset_id_type: if use_keyset_v2 {
-                    cdk_common::nut02::KeySetVersion::Version01
-                } else {
-                    cdk_common::nut02::KeySetVersion::Version00
-                },
-                final_expiry,
-            })
-            .await?;
+        let args = RotateKeyArguments {
+            unit,
+            amounts,
+            input_fee_ppk,
+            keyset_id_type: if use_keyset_v2 {
+                cdk_common::nut02::KeySetVersion::Version01
+            } else {
+                cdk_common::nut02::KeySetVersion::Version00
+            },
+            final_expiry: final_expiry.map(KeysetExpiry::new).transpose()?,
+        };
+        let result = self.signatory.rotate_keyset(args).await?;
 
         // Read the freshest snapshot and store it under the shared lock. The
         // subscription drain task writes the same ArcSwap; serializing the
