@@ -262,7 +262,8 @@ test_status=$?
 
 if [ "$LN_BACKEND" = "CLN" ]; then
     echo "Running bolt12 tests for CLN backend"
-    run_test bolt12
+    # The tests share CLN nodes, which rate-limit concurrent onion messages.
+    run_test bolt12 -- --test-threads 1
     bolt12_test_status=$?
     
     # Exit with non-zero status if either test failed
