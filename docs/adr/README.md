@@ -11,3 +11,4 @@ than editing an old one.
 | [0003](0003-signatory-database-persistence-only.md) | Signatory database as persistence only | Accepted |
 | [0004](0004-signatory-multi-instance-sharing.md) | Multiple signatory instances sharing one database | Accepted |
 | [0005](0005-binding-repos-carry-artifacts-only.md) | Binding repositories carry build artifacts, not sources | Accepted |
+| [0006](0006-mint-server-transport-seam.md) | Server-side MintServer trait as a transport-agnostic RPC seam | Proposed |
