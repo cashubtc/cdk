@@ -499,6 +499,12 @@ pub trait SignaturesDatabase {
         quote_id: &QuoteId,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
 
+    /// Get [`BlindSignature`]s and [`BlindedMessage`] for quote
+    async fn get_blind_signatures_and_secret_for_quote(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Vec<(BlindSignature, PublicKey)>, Self::Err>;
+
     /// Get total amount issued by keyset id
     async fn get_total_issued(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
 

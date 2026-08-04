@@ -6,8 +6,11 @@ use cdk_common::{BlindSignature, BlindedMessage, Error, Proof};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
-use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
+use crate::signatory::{
+    ReconstructDleqArguments, RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets,
+};
 
+#[allow(clippy::large_enum_variant)]
 enum Request {
     BlindSign(
         (
@@ -22,6 +25,12 @@ enum Request {
         (
             RotateKeyArguments,
             oneshot::Sender<Result<SignatoryKeySet, Error>>,
+        ),
+    ),
+    ReconstructDleq(
+        (
+            ReconstructDleqArguments,
+            oneshot::Sender<Result<BlindSignature, Error>>,
         ),
     ),
 }
@@ -95,6 +104,12 @@ impl Service {
                         tracing::error!("Error sending response: {:?}", err);
                     }
                 }
+                Request::ReconstructDleq((args, response)) => {
+                    let output = handler.reconstruct_dleq(args).await;
+                    if let Err(err) = response.send(output) {
+                        tracing::error!("Error sending response: {:?}", err);
+                    }
+                }
             }
         }
     }
@@ -158,6 +173,21 @@ impl Signatory for Service {
         let (tx, rx) = oneshot::channel();
         self.pipeline
             .send(Request::RotateKeyset((args, tx)))
+            .await
+            .map_err(|e| Error::SendError(e.to_string()))?;
+
+        rx.await.map_err(|e| Error::RecvError(e.to_string()))?
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn reconstruct_dleq(
+        &self,
+        args: ReconstructDleqArguments,
+    ) -> Result<BlindSignature, Error> {
+        let (tx, rx) = oneshot::channel();
+
+        self.pipeline
+            .send(Request::ReconstructDleq((args, tx)))
             .await
             .map_err(|e| Error::SendError(e.to_string()))?;
 

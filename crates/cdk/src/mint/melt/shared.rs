@@ -14,7 +14,7 @@ use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, Proofs, S
 use cdk_common::{Amount, CurrencyUnit, Error, PublicKey, QuoteId};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
-use cdk_signatory::signatory::SignatoryKeySet;
+use cdk_signatory::signatory::{ReconstructDleqArguments, SignatoryKeySet};
 
 use crate::mint::subscription::PubSubManager;
 use crate::mint::MeltQuote;
@@ -678,8 +678,28 @@ pub async fn finalize_melt_quote(
                 tx.rollback().await?;
             }
 
-            let sigs = db.get_blind_signatures_for_quote(&quote.id).await?;
-            return Ok(if sigs.is_empty() { None } else { Some(sigs) });
+            let sigs_and_secrets = db
+                .get_blind_signatures_and_secret_for_quote(&quote.id)
+                .await?;
+
+            if sigs_and_secrets.is_empty() {
+                return Ok(None);
+            }
+
+            let mut sigs: Vec<BlindSignature> = Vec::with_capacity(sigs_and_secrets.len());
+
+            for (blind_signature, blind_secret) in sigs_and_secrets.iter() {
+                let dleq = mint
+                    .signatory
+                    .reconstruct_dleq(ReconstructDleqArguments {
+                        blind_signature: blind_signature.clone(),
+                        blind_secret: *blind_secret,
+                    })
+                    .await?;
+                sigs.push(dleq);
+            }
+
+            return Ok(Some(sigs));
         }
     };
 
