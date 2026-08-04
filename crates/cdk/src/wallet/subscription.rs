@@ -21,14 +21,14 @@ use cdk_common::pub_sub::remote_consumer::{
 };
 use cdk_common::pub_sub::{Error as PubsubError, Spec, Subscriber};
 use cdk_common::subscription::WalletParams;
-use cdk_common::ws_client::WsError;
-use cdk_common::{CheckStateRequest, Method, PaymentMethod, RoutePath};
+use cdk_common::{CheckStateRequest, PaymentMethod};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::event::MintEvent;
 use crate::mint_url::MintUrl;
 use crate::wallet::MintConnector;
+use crate::Error;
 
 /// Notification Payload
 pub type NotificationPayload = crate::nuts::NotificationPayload<String>;
@@ -476,6 +476,20 @@ impl Transport for SubscriptionClient {
     }
 }
 
+/// Classify an `open_stream` failure for the remote-consumer loop.
+///
+/// `PubsubError::NotSupported` permanently latches the consumer to polling, so
+/// reserve it for a transport that fundamentally cannot stream (the trait's
+/// default `open_stream`). A failed dial is transient: returning any other error
+/// keeps streaming enabled and lets the consumer retry with backoff while it
+/// polls in the meantime.
+fn map_open_stream_error(err: Error) -> PubsubError {
+    match err {
+        Error::StreamingNotSupported => PubsubError::NotSupported,
+        other => PubsubError::InternalStr(other.to_string()),
+    }
+}
+
 async fn stream_client(
     client: &SubscriptionClient,
     mut ctrl: mpsc::Receiver<StreamCtrl<MintSubTopics>>,
@@ -484,60 +498,15 @@ async fn stream_client(
 ) -> Result<(), PubsubError> {
     let mut sub_id_to_kind = HashMap::new();
 
-    let mut url = client
-        .mint_url
-        .join_paths(&["v1", "ws"])
-        .expect("Could not join paths");
+    // `open_stream` builds the ws URL and auth headers and dials; the connector
+    // owns those details now.
+    tracing::debug!("Opening stream to {}", client.mint_url);
+    let (mut sender, mut receiver) = client.http_client.open_stream().await.map_err(|err| {
+        tracing::error!("Error opening stream: {err:?}");
+        map_open_stream_error(err)
+    })?;
 
-    if url.scheme() == "https" {
-        url.set_scheme("wss").expect("Could not set scheme");
-    } else {
-        url.set_scheme("ws").expect("Could not set scheme");
-    }
-
-    let mut headers: Vec<(&str, String)> = Vec::new();
-
-    {
-        let auth_wallet = client.http_client.get_auth_wallet().await;
-        let token = match auth_wallet.as_ref() {
-            Some(auth_wallet) => {
-                let endpoint = cdk_common::ProtectedEndpoint::new(Method::Get, RoutePath::Ws);
-                match auth_wallet.get_auth_for_request(&endpoint).await {
-                    Ok(token) => token,
-                    Err(err) => {
-                        tracing::warn!("Failed to get auth token: {:?}", err);
-                        None
-                    }
-                }
-            }
-            None => None,
-        };
-
-        if let Some(auth_token) = token {
-            let header_key = match &auth_token {
-                cdk_common::AuthToken::ClearAuth(_) => "Clear-auth",
-                cdk_common::AuthToken::BlindAuth(_) => "Blind-auth",
-            };
-
-            let header_value = auth_token.to_string();
-            headers.push((header_key, header_value));
-        }
-    }
-
-    let url_str = url.to_string();
-    let header_refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
-
-    tracing::debug!("Connecting to {}", url);
-    let (mut sender, mut receiver) = client
-        .http_client
-        .connect_websocket(&url_str, &header_refs)
-        .await
-        .map_err(|err| {
-            tracing::error!("Error connecting: {err:?}");
-            map_ws_error(err)
-        })?;
-
-    tracing::debug!("Connected to {}", url);
+    tracing::debug!("Stream open to {}", client.mint_url);
 
     for (name, index) in topics {
         let kind = SubscriptionClient::subscription_kind(&index);
@@ -631,13 +600,6 @@ async fn stream_client(
     }
 
     Ok(())
-}
-
-fn map_ws_error(err: WsError) -> PubsubError {
-    match err {
-        WsError::Connection(_) => PubsubError::NotSupported,
-        other => PubsubError::InternalStr(other.to_string()),
-    }
 }
 
 #[cfg(test)]
@@ -818,5 +780,19 @@ mod tests {
         let err = decode_notification_payload(&Kind::Bolt12MintQuote, payload).unwrap_err();
 
         assert!(matches!(err, PubsubError::ParsingError(_)));
+    }
+
+    /// Only a transport with no streaming capability latches the consumer to
+    /// poll-only; a failed dial stays transient so streaming is retried.
+    #[test]
+    fn open_stream_error_classification() {
+        assert!(matches!(
+            map_open_stream_error(Error::StreamingNotSupported),
+            PubsubError::NotSupported
+        ));
+        assert!(matches!(
+            map_open_stream_error(Error::Custom("connect failed".to_string())),
+            PubsubError::InternalStr(_)
+        ));
     }
 }

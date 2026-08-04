@@ -37,7 +37,9 @@ mod ln;
 mod melt;
 mod proofs;
 mod saga_recovery;
+mod server;
 mod start_up_check;
+mod stream;
 mod subscription;
 mod swap;
 mod verification;
@@ -47,6 +49,7 @@ pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
 pub use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 pub use issue::MintInput;
 pub use melt::PendingMelt;
+pub use server::MintServer;
 pub use verification::Verification;
 
 const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";

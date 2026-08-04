@@ -74,9 +74,18 @@ pub(crate) fn should_fail_for(operation: &str) -> bool {
 /// }
 /// ```
 pub async fn create_test_mint() -> Result<Mint, Error> {
+    create_test_mint_with_limits(1000, 1000).await
+}
+
+/// Like [`create_test_mint`] but with explicit swap input/output limits, for
+/// tests that need to assert behavior is independent of those limits.
+pub async fn create_test_mint_with_limits(
+    max_inputs: usize,
+    max_outputs: usize,
+) -> Result<Mint, Error> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
 
-    let mut mint_builder = MintBuilder::new(db.clone());
+    let mut mint_builder = MintBuilder::new(db.clone()).with_limits(max_inputs, max_outputs);
 
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
