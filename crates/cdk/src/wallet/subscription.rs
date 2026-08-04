@@ -20,15 +20,16 @@ use cdk_common::pub_sub::remote_consumer::{
     Consumer, InternalRelay, RemoteActiveConsumer, StreamCtrl, SubscribeMessage, Transport,
 };
 use cdk_common::pub_sub::{Error as PubsubError, Spec, Subscriber};
+use cdk_common::stream_channel::StreamError;
 use cdk_common::subscription::WalletParams;
-use cdk_common::ws_client::WsError;
-use cdk_common::{CheckStateRequest, Method, PaymentMethod, RoutePath};
+use cdk_common::{CheckStateRequest, PaymentMethod};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::event::MintEvent;
 use crate::mint_url::MintUrl;
 use crate::wallet::MintConnector;
+use crate::Error;
 
 /// Notification Payload
 pub type NotificationPayload = crate::nuts::NotificationPayload<String>;
@@ -471,6 +472,26 @@ fn new_subscription_id() -> String {
     Uuid::now_v7().to_string()
 }
 
+/// Classify an `open_stream` failure for the remote-consumer loop.
+///
+/// `NotSupported` and `Terminal` both latch the consumer to polling, so reserve
+/// them for a transport that cannot stream at all and for a dial that failed
+/// permanently. Any other error keeps streaming enabled and lets the consumer
+/// retry with backoff while it polls in the meantime.
+fn map_open_stream_error(err: Error) -> PubsubError {
+    match err {
+        Error::StreamingNotSupported => PubsubError::NotSupported,
+        Error::StreamingTerminal(message) => PubsubError::Terminal(message),
+        other => PubsubError::InternalStr(other.to_string()),
+    }
+}
+
+/// A send or receive failure on an open stream is transient: the consumer
+/// reconnects with backoff.
+fn map_stream_error(err: StreamError) -> PubsubError {
+    PubsubError::InternalStr(err.to_string())
+}
+
 async fn stream_client(
     client: &SubscriptionClient,
     mut ctrl: mpsc::Receiver<StreamCtrl<MintSubTopics>>,
@@ -480,60 +501,15 @@ async fn stream_client(
     let mut sub_id_to_kind = HashMap::new();
     let mut pending_requests = HashMap::new();
 
-    let mut url = client
-        .mint_url
-        .join_paths(&["v1", "ws"])
-        .expect("Could not join paths");
+    // `open_stream` builds the ws URL and auth headers and dials; the connector
+    // owns those details now.
+    tracing::debug!("Opening stream to {}", client.mint_url);
+    let (mut sender, mut receiver) = client.http_client.open_stream().await.map_err(|err| {
+        tracing::error!("Error opening stream: {err:?}");
+        map_open_stream_error(err)
+    })?;
 
-    if url.scheme() == "https" {
-        url.set_scheme("wss").expect("Could not set scheme");
-    } else {
-        url.set_scheme("ws").expect("Could not set scheme");
-    }
-
-    let mut headers: Vec<(&str, String)> = Vec::new();
-
-    {
-        let auth_wallet = client.http_client.get_auth_wallet().await;
-        let token = match auth_wallet.as_ref() {
-            Some(auth_wallet) => {
-                let endpoint = cdk_common::ProtectedEndpoint::new(Method::Get, RoutePath::Ws);
-                match auth_wallet.get_auth_for_request(&endpoint).await {
-                    Ok(token) => token,
-                    Err(err) => {
-                        tracing::warn!("Failed to get auth token: {:?}", err);
-                        None
-                    }
-                }
-            }
-            None => None,
-        };
-
-        if let Some(auth_token) = token {
-            let header_key = match &auth_token {
-                cdk_common::AuthToken::ClearAuth(_) => "Clear-auth",
-                cdk_common::AuthToken::BlindAuth(_) => "Blind-auth",
-            };
-
-            let header_value = auth_token.to_string();
-            headers.push((header_key, header_value));
-        }
-    }
-
-    let url_str = url.to_string();
-    let header_refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
-
-    tracing::debug!("Connecting to {}", url);
-    let (mut sender, mut receiver) = client
-        .http_client
-        .connect_websocket(&url_str, &header_refs)
-        .await
-        .map_err(|err| {
-            tracing::error!("Error connecting: {err:?}");
-            map_ws_error(err)
-        })?;
-
-    tracing::debug!("Connected to {}", url);
+    tracing::debug!("Stream open to {}", client.mint_url);
 
     for (name, index) in topics {
         let kind = SubscriptionClient::subscription_kind(&index);
@@ -544,7 +520,7 @@ async fn stream_client(
         };
 
         sub_id_to_kind.insert(name.clone(), kind);
-        sender.send(req).await.map_err(map_ws_error)?;
+        sender.send(req).await.map_err(map_stream_error)?;
         pending_requests.insert(request_id, PendingRequest::Subscribe { sub_id: name });
     }
 
@@ -560,7 +536,7 @@ async fn stream_client(
                             continue;
                         };
                         sub_id_to_kind.insert(msg.0.clone(), kind);
-                        sender.send(req).await.map_err(map_ws_error)?;
+                        sender.send(req).await.map_err(map_stream_error)?;
                         pending_requests.insert(
                             request_id,
                             PendingRequest::Subscribe { sub_id: msg.0 },
@@ -573,7 +549,7 @@ async fn stream_client(
                         } else {
                             continue;
                         };
-                        sender.send(req).await.map_err(map_ws_error)?;
+                        sender.send(req).await.map_err(map_stream_error)?;
                         pending_requests.insert(
                             request_id,
                             PendingRequest::Unsubscribe { sub_id: msg },
@@ -594,7 +570,7 @@ async fn stream_client(
                         if let Err(err) = sender.close().await {
                             tracing::error!("Closing error {err:?}");
                         }
-                        return Err(map_ws_error(err));
+                        return Err(map_stream_error(err));
                     }
                     None => {
                         return Err(PubsubError::InternalStr(
@@ -712,14 +688,6 @@ fn decode_notification_payload_for_stream(
     }
 }
 
-fn map_ws_error(err: WsError) -> PubsubError {
-    match err {
-        WsError::Transient(message) => PubsubError::InternalStr(message),
-        WsError::NotSupported(_) => PubsubError::NotSupported,
-        WsError::Terminal(message) => PubsubError::Terminal(message),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -757,24 +725,10 @@ mod tests {
     }
 
     #[test]
-    fn transient_websocket_failure_keeps_streaming_enabled() {
-        let error = map_ws_error(WsError::Transient("temporary disconnect".to_string()));
+    fn stream_failure_keeps_streaming_enabled() {
+        let error = map_stream_error(StreamError::Receive("temporary disconnect".to_string()));
 
         assert!(matches!(error, PubsubError::InternalStr(_)));
-    }
-
-    #[test]
-    fn unsupported_websocket_failure_disables_streaming() {
-        let error = map_ws_error(WsError::NotSupported("404".to_string()));
-
-        assert!(matches!(error, PubsubError::NotSupported));
-    }
-
-    #[test]
-    fn terminal_websocket_failure_disables_streaming() {
-        let error = map_ws_error(WsError::Terminal("attestation failed".to_string()));
-
-        assert!(matches!(error, PubsubError::Terminal(_)));
     }
 
     #[test]
@@ -974,5 +928,24 @@ mod tests {
             payload,
         )
         .is_err());
+    }
+
+    /// A transport with no streaming capability, or one that failed
+    /// permanently, latches the consumer to poll-only; any other failed dial
+    /// stays transient so streaming is retried.
+    #[test]
+    fn open_stream_error_classification() {
+        assert!(matches!(
+            map_open_stream_error(Error::StreamingNotSupported),
+            PubsubError::NotSupported
+        ));
+        assert!(matches!(
+            map_open_stream_error(Error::StreamingTerminal("attestation failed".to_string())),
+            PubsubError::Terminal(_)
+        ));
+        assert!(matches!(
+            map_open_stream_error(Error::Custom("connect failed".to_string())),
+            PubsubError::InternalStr(_)
+        ));
     }
 }
