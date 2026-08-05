@@ -75,6 +75,11 @@ pub struct MintBuilder {
     max_inputs: usize,
     max_outputs: usize,
     max_batch_size: Option<u64>,
+    /// Interval at which the built signatory reloads keysets from the shared
+    /// database. `None` (the default) disables the reload for a single-instance
+    /// deployment that owns its database; set an interval only to run several
+    /// mints/signatories against one shared database.
+    keyset_refresh_interval: Option<std::time::Duration>,
 }
 
 impl std::fmt::Debug for MintBuilder {
@@ -118,12 +123,24 @@ impl MintBuilder {
             max_inputs: 1000,
             max_outputs: 1000,
             max_batch_size: None,
+            keyset_refresh_interval: None,
         }
     }
 
     /// Set use keyset v2
     pub fn with_keyset_v2(mut self, use_keyset_v2: Option<bool>) -> Self {
         self.use_keyset_v2 = use_keyset_v2;
+        self
+    }
+
+    /// Set how often the built signatory reloads keysets from the shared
+    /// database. `None` (the default) disables the reload: a single mint owns
+    /// its database and needs no polling. Set an interval only to run several
+    /// mints/signatories against one shared database, so each picks up peers'
+    /// rotations without a restart. [`cdk_signatory::db_signatory::DEFAULT_KEYSET_REFRESH`]
+    /// is the standard cadence.
+    pub fn with_keyset_refresh_interval(mut self, interval: Option<std::time::Duration>) -> Self {
+        self.keyset_refresh_interval = interval;
         self
     }
 
@@ -730,17 +747,23 @@ impl MintBuilder {
         keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
         seed: &[u8],
     ) -> Result<Mint, Error> {
-        let in_memory_signatory = cdk_signatory::db_signatory::DbSignatory::new(
-            keystore,
-            seed,
-            self.supported_units.clone(),
-            self.custom_paths.clone(),
-        )
-        .await?;
+        let in_memory_signatory = Arc::new(
+            cdk_signatory::db_signatory::DbSignatory::new(
+                keystore,
+                seed,
+                self.supported_units.clone(),
+                self.custom_paths.clone(),
+            )
+            .await?,
+        );
 
-        let signatory = Arc::new(cdk_signatory::embedded::Service::new(Arc::new(
-            in_memory_signatory,
-        )));
+        // Off by default: a single mint owns its database. When an interval is
+        // configured, periodically reload keysets from the shared database so
+        // multiple mints/signatories can run active/active, a rotation by any
+        // instance is picked up on the next refresh without a restart.
+        in_memory_signatory.spawn_keyset_refresh(self.keyset_refresh_interval);
+
+        let signatory = Arc::new(cdk_signatory::embedded::Service::new(in_memory_signatory));
 
         self.build_with_signatory(signatory).await
     }

@@ -45,6 +45,7 @@ readme = "README.md"
 
 [workspace.dependencies]
 anyhow = "1"
+arc-swap = { version = "1.7.1", default-features = false }
 async-trait = "0.1"
 axum = { version = "0.8.1", features = ["ws"] }
 bitcoin = { version = "0.32.2", features = ["base64", "serde", "rand", "rand-std"] }

@@ -16,6 +16,7 @@ sqlcipher = ["cdk-sqlite/sqlcipher"]
 grpc = ["dep:tonic", "tokio/full", "dep:tonic-prost", "dep:tonic-prost-build", "dep:prost"]
 
 [dependencies]
+arc-swap.workspace = true
 async-trait.workspace = true
 bitcoin.workspace = true
 cdk-common = { workspace = true, default-features = false, features = [

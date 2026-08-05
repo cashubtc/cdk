@@ -131,6 +131,32 @@ pub trait KeysDatabaseTransaction<'a, Error>: DbTransactionFinalizer<Err = Error
 
     /// Add [`MintKeySetInfo`]
     async fn add_keyset_info(&mut self, keyset: MintKeySetInfo) -> Result<(), Error>;
+
+    /// Allocate the next derivation-path index for a unit.
+    ///
+    /// Returns `max(derivation_path_index) + 1` for the unit (1 when the unit
+    /// has no keysets yet). Backends where several processes may write
+    /// concurrently take a cross-process lock here, held until the transaction
+    /// commits, so two signatory instances rotating the same unit cannot
+    /// allocate the same index and derive divergent keysets. This is the
+    /// authoritative index source; callers must not compute it from
+    /// process-local state.
+    async fn next_derivation_index(&mut self, unit: &CurrencyUnit) -> Result<u32, Error>;
+
+    /// Read a unit's keyset infos inside the transaction, under the same
+    /// per-unit lock [`next_derivation_index`](Self::next_derivation_index)
+    /// takes.
+    ///
+    /// Boot-time reactivation uses this to pick a unit's highest-index keyset
+    /// and reassign the active pointer as one atomic step. Reading outside the
+    /// transaction (the plain [`KeysDatabase::get_keyset_infos`]) would let a
+    /// peer rotation commit a higher keyset in the gap, after which the booting
+    /// instance would reactivate the older one it read. Holding the lock across
+    /// the read and the reassignment closes that window.
+    async fn get_keyset_infos_by_unit(
+        &mut self,
+        unit: &CurrencyUnit,
+    ) -> Result<Vec<MintKeySetInfo>, Error>;
 }
 
 /// Mint Keys Database trait
@@ -155,6 +181,17 @@ pub trait KeysDatabase {
 
     /// Get [`MintKeySetInfo`]s
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
+
+    /// An opaque epoch for the current keyset set.
+    ///
+    /// It must change whenever the set changes, both when a keyset is added and
+    /// when the active pointer is reassigned. Callers only compare it for
+    /// equality to decide whether to reload their in-memory view, so an epoch
+    /// that misses reactivations would leave peers serving a stale active
+    /// keyset. The storage decides how to compute it cheaply (e.g. a counter
+    /// bumped inside every keyset-writing transaction); there is deliberately no
+    /// default, since a count-based fallback would not move on reactivation.
+    async fn keysets_epoch(&self) -> Result<u64, Self::Err>;
 }
 
 /// Mint Quote Database writer trait
