@@ -10,7 +10,7 @@ use cdk::nuts::PaymentMethod;
 use crate::custom_handlers::{
     cache_post_batch_mint, cache_post_melt_custom, cache_post_mint_custom,
     get_check_melt_custom_quote, get_check_mint_custom_quote, post_batch_check_mint_quote,
-    post_melt_custom_quote, post_mint_custom_quote, post_mint_quote_by_pubkey,
+    post_melt_custom_quote, post_mint_custom_quote,
 };
 use crate::MintState;
 
