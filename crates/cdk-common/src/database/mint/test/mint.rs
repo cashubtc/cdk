@@ -1097,6 +1097,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
+        0,
         vec![],
         vec![],
         None,

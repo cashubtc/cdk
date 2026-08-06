@@ -761,7 +761,7 @@ pub async fn post_mint_quote_by_pubkey(
         })?;
 
     let signatures = request
-        .pubkeys_signatures
+        .pubkey_signatures
         .iter()
         .map(|s| s.parse())
         .collect::<Result<_, _>>()
