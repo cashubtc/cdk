@@ -48,9 +48,19 @@ cleanup() {
 
     # Remove the temporary directory
     if [ ! -z "$CDK_ITESTS_DIR" ]; then
-        rm -rf "$CDK_ITESTS_DIR"
-        echo "Temp directory removed: $CDK_ITESTS_DIR"
+        if [ "$CREATED_ITESTS_DIR" = "1" ]; then
+            option="y"
+        else
+            sleep 1 # To prevent text wrap with another process logs
+            read -r -p "Delete directory $CDK_ITESTS_DIR and all content? (y/N) " option
+        fi
+
+        if [[ "${option,,}"  == "y" ]]; then
+            rm -rf -- "$CDK_ITESTS_DIR"
+            echo "Temp directory removed: $CDK_ITESTS_DIR"
+        fi
     fi
+
 
     # Unset all environment variables
     unset CDK_ITESTS_DIR
@@ -96,8 +106,16 @@ fi
 # Parse command line arguments
 CDK_MINTD_DATABASE=${1:-"sqlite"}  # Default to sqlite if not specified
 
-# Create a temporary directory
-export CDK_ITESTS_DIR=$(mktemp -d)
+export CREATED_ITESTS_DIR=0
+if [ -n "${3:-}" ]; then
+    mkdir -p "$3"
+    export CDK_ITESTS_DIR="$(realpath "$3")"
+else
+    # Default will create a temporary directory
+    export CDK_ITESTS_DIR=$(mktemp -d)
+    export CREATED_ITESTS_DIR=1
+fi
+
 export CDK_ITESTS_MINT_ADDR="${2:-127.0.0.1}" # Default to localhost if not specified
 export CDK_ITESTS_MINT_PORT_0=8085
 export CDK_ITESTS_MINT_PORT_1=8087
