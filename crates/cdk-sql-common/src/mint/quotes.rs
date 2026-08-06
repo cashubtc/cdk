@@ -1408,7 +1408,6 @@ where
                 amount_paid,
                 amount_issued,
                 updated_at,
-                last_checked,
                 payment_method,
                 request_lookup_id_kind,
                 extra_json
