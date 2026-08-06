@@ -96,8 +96,14 @@ fi
 # Parse command line arguments
 CDK_MINTD_DATABASE=${1:-"sqlite"}  # Default to sqlite if not specified
 
-# Create a temporary directory
-export CDK_ITESTS_DIR=$(mktemp -d)
+if [ -n "${3:-}" ]; then
+    mkdir -p "$3"
+    export CDK_ITESTS_DIR="$(realpath "$3")"
+else
+    # Default will create a temporary directory
+    export CDK_ITESTS_DIR=$(mktemp -d)
+fi
+
 export CDK_ITESTS_MINT_ADDR="${2:-127.0.0.1}" # Default to localhost if not specified
 export CDK_ITESTS_MINT_PORT_0=8085
 export CDK_ITESTS_MINT_PORT_1=8087
