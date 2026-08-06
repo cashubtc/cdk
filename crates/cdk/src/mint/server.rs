@@ -102,10 +102,9 @@ pub trait MintServer: Send + Sync {
     /// The stream carries opaque `String` messages; the content (a NUT-17
     /// subscription session or anything else) is layered on top and is not the
     /// server's concern. The returned halves are the server's end of a duplex
-    /// whose peer a transport connects to a client. The default is unsupported.
-    async fn open_stream(&self) -> Result<(StreamTx, StreamRx), Error> {
-        Err(Error::StreamingNotSupported)
-    }
+    /// whose peer a transport connects to a client. Implementations without
+    /// streaming support should return [`Error::StreamingNotSupported`].
+    async fn open_stream(&self) -> Result<(StreamTx, StreamRx), Error>;
 }
 
 /// Implements the generic [`MintServer`] (wire types, `String` quote IDs) for a
