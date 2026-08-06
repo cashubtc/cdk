@@ -728,19 +728,21 @@ pub async fn cache_post_batch_mint(
     Ok(result)
 }
 
-/// Generic handler for get mint quotes by pubkey
-#[instrument(skip_all, fields(method = ?method))]
+/// Handler for mint quote lookup by public key (NUT-XX)
+///
+/// Method-agnostic: a pubkey may hold quotes across several payment methods and they are all
+/// returned together.
+#[instrument(skip_all)]
 pub async fn post_mint_quote_by_pubkey(
     auth: AuthHeader,
     State(state): State<MintState>,
-    Path(method): Path<String>,
     Json(payload): Json<Value>,
 ) -> Result<Response, Response> {
     state
         .mint
         .verify_auth(
             auth.into(),
-            &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuote(method.clone())),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteByPubkey),
         )
         .await
         .map_err(into_response)?;
