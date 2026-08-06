@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
-use bitcoin::hashes::sha256::Hash as Sha256Hash;
-use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
 use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
+use cdk_common::nutxx::{mint_quote_lookup_msg_to_sign, MAX_LOOKUP_PUBKEYS};
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions, CustomIncomingPaymentOptions,
     IncomingPaymentOptions, OnchainIncomingPaymentOptions, WaitPaymentResponse,
@@ -418,11 +417,14 @@ impl Mint {
         result
     }
 
-    /// Retrieves mint quotes with pubkey from the database
+    /// Retrieves the mint quotes locked to a set of NUT-20 public keys [NUT-XX]
+    ///
+    /// Every pubkey must be accompanied by a signature proving control of the corresponding
+    /// private key; the request is rejected outright unless all of them verify.
     ///
     /// # Returns
-    /// * `Vec<MintQuote>` - List of mint quotes filtered by pubkeys
-    /// * `Error` if database access fails
+    /// * `Vec<MintQuoteResponse<QuoteId>>` - quotes locked to the requested pubkeys
+    /// * `Error` if any signature is missing or invalid, or database access fails
     #[instrument(skip_all)]
     pub async fn get_mint_quote_by_pubkey(
         &self,
@@ -432,29 +434,30 @@ impl Mint {
         #[cfg(feature = "prometheus")]
         let metrics = super::MintMetricGuard::new("mint_quotes_by_pubkeys");
 
-        pubkeys.len().ne(&signatures.len()).then(|| {
-            tracing::error!("Signatures must be the same length of publickeys");
-            Error::SignatureMissingOrInvalid
-        });
+        // Anonymous callers reach this before any signature is checked, so bound the work a
+        // single request can ask for.
+        ensure_cdk!(
+            pubkeys.len() <= MAX_LOOKUP_PUBKEYS,
+            Error::BatchSizeExceeded {
+                actual: pubkeys.len(),
+                max: MAX_LOOKUP_PUBKEYS,
+            }
+        );
 
-        let mint_pubkey = self
-            .mint_info()
-            .await?
-            .pubkey
-            .ok_or(Error::MissingPubkey)?
-            .to_hex();
+        // NUT-XX: "The mint MUST reject the request unless every signature is valid." Checking
+        // the lengths match is what makes the zip below cover every pubkey.
+        ensure_cdk!(
+            pubkeys.len() == signatures.len(),
+            Error::SignatureMissingOrInvalid
+        );
+
+        let mint_pubkey = self.mint_info().await?.pubkey.ok_or(Error::MissingPubkey)?;
 
         for (pubkey, signature) in pubkeys.iter().zip(signatures.iter()) {
-            let pubkey_hex = pubkey.to_hex();
+            // `verify` hashes its argument, so it takes the pre-image rather than the digest.
+            let msg = mint_quote_lookup_msg_to_sign(&mint_pubkey, pubkey);
 
-            let mut preimage = Vec::with_capacity(24 + mint_pubkey.len() + pubkey_hex.len());
-            preimage.extend_from_slice(b"Cashu_MintQuoteLookup_v1");
-            preimage.extend_from_slice(mint_pubkey.as_bytes());
-            preimage.extend_from_slice(pubkey_hex.as_bytes());
-
-            let hash = Sha256Hash::hash(&preimage).to_byte_array();
-
-            pubkey.verify(&hash, signature).map_err(|e| {
+            pubkey.verify(&msg, signature).map_err(|e| {
                 tracing::error!("Failed to validate signature: {}", e);
                 Error::SignatureMissingOrInvalid
             })?;
