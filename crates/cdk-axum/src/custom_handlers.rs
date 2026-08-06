@@ -13,7 +13,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::mint::QuoteId;
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
-use cdk::nuts::nutxx::MintQuoteByPubkeyRequest;
+use cdk::nuts::nutxx::{MintQuoteByPubkeyRequest, MintQuoteByPubkeyResponse};
 use cdk::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, MeltOnchainRequest, MeltQuoteBolt11Request,
     MeltQuoteBolt12Request, MeltQuoteCustomRequest, MeltQuoteOnchainRequest,
@@ -21,6 +21,7 @@ use cdk::nuts::{
     MintQuoteBolt12Response, MintQuoteCustomRequest, MintQuoteOnchainRequest,
     MintQuoteOnchainResponse, MintRequest, MintResponse, PaymentMethod,
 };
+use cdk::MintQuoteResponse;
 use cdk::{MeltQuoteCreateResponse, MeltQuoteResponse};
 use serde_json::Value;
 use tracing::instrument;
@@ -728,15 +729,30 @@ pub async fn cache_post_batch_mint(
     Ok(result)
 }
 
+/// Flatten a `MintQuoteResponse` to the NUT-04 quote object that goes on the wire.
+///
+/// `MintQuoteResponse` is an externally tagged enum, so serialising it directly would wrap
+/// each quote in a `{"Bolt11": …}` envelope that no NUT describes.
+fn mint_quote_response_to_value(
+    response: MintQuoteResponse<QuoteId>,
+) -> Result<Value, serde_json::Error> {
+    match response {
+        MintQuoteResponse::Bolt11(r) => serde_json::to_value(r),
+        MintQuoteResponse::Bolt12(r) => serde_json::to_value(r),
+        MintQuoteResponse::Onchain(r) => serde_json::to_value(r),
+        MintQuoteResponse::Custom { response, .. } => serde_json::to_value(response),
+    }
+}
+
 /// Handler for mint quote lookup by public key (NUT-XX)
 ///
 /// Method-agnostic: a pubkey may hold quotes across several payment methods and they are all
-/// returned together.
+/// returned together, each in its own NUT-04 response format.
 #[instrument(skip_all)]
 pub async fn post_mint_quote_by_pubkey(
     auth: AuthHeader,
     State(state): State<MintState>,
-    Json(payload): Json<Value>,
+    Json(request): Json<MintQuoteByPubkeyRequest>,
 ) -> Result<Response, Response> {
     state
         .mint
@@ -747,38 +763,22 @@ pub async fn post_mint_quote_by_pubkey(
         .await
         .map_err(into_response)?;
 
-    let request: MintQuoteByPubkeyRequest = serde_json::from_value(payload).map_err(|e| {
-        tracing::error!("Failed to parse request: {}", e);
-        into_response(cdk::Error::InvalidPaymentRequest)
-    })?;
-
-    let pubkeys = request
-        .pubkeys
-        .iter()
-        .map(|s| s.parse())
-        .collect::<Result<_, _>>()
-        .map_err(|e| {
-            tracing::error!("Invalid Public Key: {}", e);
-            into_response(cdk::Error::InvalidPaymentRequest)
-        })?;
-
-    let signatures = request
-        .pubkey_signatures
-        .iter()
-        .map(|s| s.parse())
-        .collect::<Result<_, _>>()
-        .map_err(|e| {
-            tracing::error!("Invalid Signature: {}", e);
-            into_response(cdk::Error::SignatureMissingOrInvalid)
-        })?;
-
-    let response = state
+    let quotes = state
         .mint
-        .get_mint_quote_by_pubkey(pubkeys, signatures)
+        .get_mint_quote_by_pubkey(request.pubkeys, request.pubkey_signatures)
         .await
         .map_err(into_response)?;
 
-    Ok(Json(response).into_response())
+    let quotes = quotes
+        .into_iter()
+        .map(mint_quote_response_to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| {
+            tracing::error!("Failed to serialize mint quotes: {}", e);
+            into_response(cdk::Error::Internal)
+        })?;
+
+    Ok(Json(MintQuoteByPubkeyResponse { quotes }).into_response())
 }
 
 #[cfg(test)]
