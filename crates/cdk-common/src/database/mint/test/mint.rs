@@ -1095,10 +1095,11 @@ where
 
     let secret_key = SecretKey::generate();
     let pubkey = secret_key.public_key();
+    let other_pubkey = SecretKey::generate().public_key();
 
     let mint_quote = MintQuote::new(
         None,
-        "".to_owned(),
+        unique_string(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
@@ -1114,17 +1115,57 @@ where
         None,
     );
 
-    // Add quote
+    // A second quote locked to a different pubkey, which must never be returned below.
+    let other_quote = MintQuote::new(
+        None,
+        unique_string(),
+        cashu::CurrencyUnit::Sat,
+        None,
+        0,
+        PaymentIdentifier::CustomId(unique_string()),
+        Some(other_pubkey),
+        Amount::new(100, cashu::CurrencyUnit::Sat),
+        Amount::new(0, cashu::CurrencyUnit::Sat),
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        0,
+        0,
+        vec![],
+        vec![],
+        None,
+    );
+
+    // Add quotes
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_mint_quote(mint_quote.clone()).await.unwrap();
+    tx.add_mint_quote(other_quote.clone()).await.unwrap();
     tx.commit().await.unwrap();
 
     let retrieved = db.get_mint_quotes_by_pubkey(&[pubkey]).await.unwrap();
-    assert!(!retrieved.is_empty());
-    let retrieved = retrieved.first().unwrap();
-    assert_eq!(retrieved.id, mint_quote.id);
-    assert!(retrieved.pubkey.is_some());
-    assert_eq!(retrieved.pubkey, Some(pubkey));
+    assert_eq!(retrieved.len(), 1);
+    let quote = retrieved.first().unwrap();
+    assert_eq!(quote.id, mint_quote.id);
+    assert_eq!(quote.pubkey, Some(pubkey));
+
+    // Only the requested pubkey's quotes come back.
+    assert!(!retrieved.iter().any(|q| q.id == other_quote.id));
+
+    // Both pubkeys at once returns both quotes.
+    let both = db
+        .get_mint_quotes_by_pubkey(&[pubkey, other_pubkey])
+        .await
+        .unwrap();
+    assert_eq!(both.len(), 2);
+
+    // An unknown pubkey returns nothing rather than erroring.
+    let unknown = SecretKey::generate().public_key();
+    assert!(db
+        .get_mint_quotes_by_pubkey(&[unknown])
+        .await
+        .unwrap()
+        .is_empty());
+
+    // An empty request is not an error.
+    assert!(db.get_mint_quotes_by_pubkey(&[]).await.unwrap().is_empty());
 }
 
 /// Test deleting blinded messages
