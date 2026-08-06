@@ -21,8 +21,8 @@ format_list() {
   if [ -z "$items" ]; then
     echo "- None"
   else
-    echo "$items" | while IFS=$'\t' read -r number title url; do
-      echo "- [#$number]($url) - $title"
+    echo "$items" | while IFS=$'\t' read -r number title url author; do
+      echo "- [#$number]($url) - $title by @$author"
     done
   fi
 }
@@ -50,7 +50,7 @@ filter_all_types() {
       combined_regex+="^$type|"
     fi
     filtered=$(echo "$prs" | jq -r --arg regex "$regex" '
-      .[] | select(.title | ltrimstr(" ") | rtrimstr(" ") | test($regex; "i")) | [.number, .title, .url] | @tsv
+      .[] | select(.title | ltrimstr(" ") | rtrimstr(" ") | test($regex; "i")) | [.number, .title, .url, .author.login] | @tsv
     ')
     if [[ -n "$filtered" ]]; then
       result+="$filtered"$'\n'
@@ -65,10 +65,10 @@ filter_all_types() {
   )
 
   other=$(echo "$prs" | jq -r --arg combined_regex "$combined_regex" --arg exclude_regex "$exclude_regex" '
-  .[] | select((.title | ltrimstr(" ") | rtrimstr(" ") | test($combined_regex; "i") | not) and (.title | ltrimstr(" ") | rtrimstr(" ") | test($exclude_regex; "i") | not)) | [.number, .title, .url] | @tsv
+  .[] | select((.title | ltrimstr(" ") | rtrimstr(" ") | test($combined_regex; "i") | not) and (.title | ltrimstr(" ") | rtrimstr(" ") | test($exclude_regex; "i") | not)) | [.number, .title, .url, .author.login] | @tsv
   ')
   # other=$(echo "$prs" | jq -r --arg combined_regex "$combined_regex" '
-  #   .[] | select(.title | test($combined_regex; "i") | not) | [.number, .title, .url] | @tsv
+  #   .[] | select(.title | test($combined_regex; "i") | not) | [.number, .title, .url, .author.login] | @tsv
   # ')
 
   if [[ -n "$other" ]]; then
@@ -83,11 +83,11 @@ MERGED_PRS=$(gh pr list \
   --repo "$REPO" \
   --state merged \
   --search "merged:>=$SINCE_DATE" \
-  --json number,title,url \
+  --json number,title,url,author \
   2>/dev/null || echo "")
 
 MERGED_PRS_FILTERED=$(filter_all_types "$MERGED_PRS")
-BACKPORT_PRS=$(echo "$MERGED_PRS" | jq -r '.[] | select(.title | test("^\\[Backport"; "i")) | [.number, .title, .url] | @tsv')
+BACKPORT_PRS=$(echo "$MERGED_PRS" | jq -r '.[] | select(.title | test("^\\[Backport"; "i")) | [.number, .title, .url, .author.login] | @tsv')
 
 # Fetch recently active PRs (updated in last week, but not newly created)
 echo "Fetching recently active PRs..."
@@ -95,7 +95,7 @@ RECENTLY_ACTIVE_PRS=$(gh pr list \
   --repo "$REPO" \
   --state open \
   --search "updated:>=$SINCE_DATE -created:>=$SINCE_DATE" \
-  --json number,title,url \
+  --json number,title,url,author \
   2>/dev/null || echo "")
 
 RECENTLY_ACTIVE_PRS_FILTERED=$(filter_all_types "$RECENTLY_ACTIVE_PRS")
@@ -106,7 +106,7 @@ NEW_PRS=$(gh pr list \
   --repo "$REPO" \
   --state open \
   --search "created:>=$SINCE_DATE" \
-  --json number,title,url \
+  --json number,title,url,author \
   2>/dev/null || echo "")
 
 NEW_PRS_FILTERED=$(filter_all_types "$NEW_PRS")
@@ -117,8 +117,8 @@ NEW_ISSUES=$(gh issue list \
   --repo "$REPO" \
   --state open \
   --search "created:>=$SINCE_DATE" \
-  --json number,title,url \
-  --jq '.[] | [.number, .title, .url] | @tsv' \
+  --json number,title,url,author \
+  --jq '.[] | [.number, .title, .url, .author.login] | @tsv' \
   2>/dev/null || echo "")
 
 # Fetch discussion items (labeled with meeting-discussion)
@@ -127,16 +127,16 @@ DISCUSSION_PRS=$(gh pr list \
   --repo "$REPO" \
   --state open \
   --label "meeting-discussion" \
-  --json number,title,url \
-  --jq '.[] | [.number, .title, .url] | @tsv' \
+  --json number,title,url,author \
+  --jq '.[] | [.number, .title, .url, .author.login] | @tsv' \
   2>/dev/null || echo "")
 
 DISCUSSION_ISSUES=$(gh issue list \
   --repo "$REPO" \
   --state open \
   --label "meeting-discussion" \
-  --json number,title,url \
-  --jq '.[] | [.number, .title, .url] | @tsv' \
+  --json number,title,url,author \
+  --jq '.[] | [.number, .title, .url, .author.login] | @tsv' \
   2>/dev/null || echo "")
 
 # Combine discussion items (PRs and issues)
@@ -147,8 +147,8 @@ MERGED_NUTS=$(gh pr list \
   --repo cashubtc/nuts \
   --state merged \
   --search "merged:>=$SINCE_DATE" \
-  --json number,title,url \
-  --jq '.[] | [.number, .title, .url] | @tsv' \
+  --json number,title,url,author \
+  --jq '.[] | [.number, .title, .url, .author.login] | @tsv' \
   2>/dev/null || echo "")
 
 # Generate markdown
