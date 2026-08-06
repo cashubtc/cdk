@@ -10,6 +10,7 @@ use cdk_common::{
     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
     MintQuoteOnchainResponse, MintQuoteRequest, MintQuoteResponse, ProtectedEndpoint, RoutePath,
 };
+use cdk_http_client::ws::WsError;
 use cdk_http_client::HttpError;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -40,6 +41,20 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 /// Upper bound for the exponential backoff between retries.
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(8);
+
+/// Classify a websocket dial failure. A server that answered the upgrade with a
+/// permanent HTTP status (no NUT-17 endpoint) becomes `StreamingNotSupported`
+/// so the subscription layer latches to poll fallback; anything else stays a
+/// transient `Custom` error and is retried.
+fn ws_error_to_error(e: WsError) -> Error {
+    match e {
+        WsError::Unsupported(status) => {
+            tracing::debug!("mint has no websocket endpoint (HTTP {status}); using poll fallback");
+            Error::StreamingNotSupported
+        }
+        other => Error::Custom(format!("open_stream connect failed: {other}")),
+    }
+}
 
 fn payment_method_path_segment(method: &PaymentMethod) -> Result<&str, Error> {
     match method {
@@ -948,7 +963,7 @@ where
             .transport
             .ws_connect(&url_str, &header_refs)
             .await
-            .map_err(|e| Error::Custom(format!("open_stream connect failed: {e}")))?;
+            .map_err(ws_error_to_error)?;
 
         Ok(cdk_common::stream_channel::from_ws(sender, receiver))
     }
@@ -1574,5 +1589,22 @@ mod tests {
             get_urls.lock().expect("lock").is_empty(),
             "invalid LNURL callback must be rejected before transport"
         );
+    }
+
+    #[test]
+    fn ws_unsupported_maps_to_streaming_not_supported() {
+        // Latches the poll fallback so a mint without /v1/ws is not re-dialed forever.
+        assert!(matches!(
+            ws_error_to_error(WsError::Unsupported(404)),
+            Error::StreamingNotSupported
+        ));
+    }
+
+    #[test]
+    fn ws_connection_error_stays_transient() {
+        assert!(matches!(
+            ws_error_to_error(WsError::Connection("boom".to_string())),
+            Error::Custom(_)
+        ));
     }
 }

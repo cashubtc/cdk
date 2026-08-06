@@ -119,7 +119,10 @@ pub async fn connect(
     });
     ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
 
-    // onerror — send error and signal open failure if still pending
+    // onerror — send error and signal open failure if still pending.
+    // The browser WebSocket API never exposes the rejecting HTTP status, so
+    // WASM cannot distinguish a "no ws endpoint" (WsError::Unsupported) from a
+    // transient failure the way native.rs does; it always reports Connection.
     let open_tx_err = Rc::clone(&open_tx);
     let msg_tx_err: mpsc::UnboundedSender<Result<String, WsError>> = msg_tx.clone();
     let onerror = Closure::<dyn FnMut(ErrorEvent)>::new(move |_e: ErrorEvent| {
