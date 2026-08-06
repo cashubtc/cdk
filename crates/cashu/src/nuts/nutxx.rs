@@ -2,6 +2,7 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/get-quotes-by-pubkeys/xx.md>
 
+use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Serialize};
 
 use super::PublicKey;
@@ -18,10 +19,20 @@ pub const MAX_LOOKUP_PUBKEYS: usize = 50;
 /// Mint quote by pubkey request [NUT-XX]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MintQuoteByPubkeyRequest {
-    /// Pubkeys
-    pub pubkeys: Vec<String>,
-    /// Signatures
-    pub pubkey_signatures: Vec<String>,
+    /// NUT-20 public keys to look up quotes for
+    pub pubkeys: Vec<PublicKey>,
+    /// Schnorr signatures, in the same order as `pubkeys`
+    pub pubkey_signatures: Vec<Signature>,
+}
+
+/// Mint quote by pubkey response [NUT-XX]
+///
+/// Generic over the quote representation so the mint can answer with its own response type
+/// without this crate depending on the unified `MintQuoteResponse` enum in `cdk-common`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MintQuoteByPubkeyResponse<T> {
+    /// Quotes locked to the requested pubkeys, in [NUT-04] response format
+    pub quotes: Vec<T>,
 }
 
 /// Build the message a wallet signs to prove control of `pubkey`.
@@ -75,12 +86,10 @@ mod tests {
         );
     }
 
-    /// The signed message is the pre-image, not its digest: `sign`/`verify` hash internally.
+    /// A signature produced over the pre-image verifies, and one bound to a different mint
+    /// does not — this is what stops a signature being replayed at another mint.
     #[test]
-    fn test_signature_covers_a_single_hash() {
-        use bitcoin::hashes::sha256::Hash as Sha256Hash;
-        use bitcoin::hashes::Hash;
-
+    fn test_sign_and_verify_is_mint_bound() {
         let (mint_pubkey, _) = fixed_keys();
         let secret_key = SecretKey::generate();
         let pubkey = secret_key.public_key();
@@ -89,7 +98,59 @@ mod tests {
         let signature = secret_key.sign(&msg).unwrap();
         assert!(pubkey.verify(&msg, &signature).is_ok());
 
-        let digest = Sha256Hash::hash(&msg).to_byte_array();
-        assert!(pubkey.verify(&digest, &signature).is_err());
+        let other_mint = SecretKey::generate().public_key();
+        let other_msg = mint_quote_lookup_msg_to_sign(&other_mint, &pubkey);
+        assert!(pubkey.verify(&other_msg, &signature).is_err());
+    }
+
+    /// A signature is bound to the pubkey it authorises, so one pubkey's signature cannot be
+    /// used to read another pubkey's quotes.
+    #[test]
+    fn test_signature_is_bound_to_pubkey() {
+        let (mint_pubkey, _) = fixed_keys();
+        let secret_key = SecretKey::generate();
+        let victim = SecretKey::generate().public_key();
+
+        let msg = mint_quote_lookup_msg_to_sign(&mint_pubkey, &secret_key.public_key());
+        let signature = secret_key.sign(&msg).unwrap();
+
+        let victim_msg = mint_quote_lookup_msg_to_sign(&mint_pubkey, &victim);
+        assert!(victim.verify(&victim_msg, &signature).is_err());
+    }
+
+    /// The wire format is hex strings, per the NUT.
+    #[test]
+    fn test_request_wire_format() {
+        let (mint_pubkey, _) = fixed_keys();
+        let secret_key = SecretKey::generate();
+        let pubkey = secret_key.public_key();
+        let msg = mint_quote_lookup_msg_to_sign(&mint_pubkey, &pubkey);
+        let signature = secret_key.sign(&msg).unwrap();
+
+        let json = serde_json::to_string(&MintQuoteByPubkeyRequest {
+            pubkeys: vec![pubkey],
+            pubkey_signatures: vec![signature],
+        })
+        .unwrap();
+
+        assert!(json.contains(&pubkey.to_hex()));
+        assert!(json.contains(&signature.to_string()));
+
+        let request: MintQuoteByPubkeyRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(request.pubkeys, vec![pubkey]);
+        assert_eq!(request.pubkey_signatures, vec![signature]);
+    }
+
+    /// The response envelope is an object with a `quotes` array, not a bare array.
+    #[test]
+    fn test_response_wire_format() {
+        let response = MintQuoteByPubkeyResponse {
+            quotes: vec![serde_json::json!({"quote": "abc", "method": "bolt11"})],
+        };
+
+        assert_eq!(
+            serde_json::to_value(&response).unwrap(),
+            serde_json::json!({"quotes": [{"quote": "abc", "method": "bolt11"}]})
+        );
     }
 }

@@ -511,6 +511,8 @@ pub struct Nuts {
     pub nut22: Option<BlindAuthSettings>,
     /// NUT29 Settings - Batch minting
     pub nut29: Nut29Settings,
+    /// NUTXX Settings - Mint quote lookup by pubkey
+    pub nutxx_supported: bool,
     /// Supported currency units for minting
     pub mint_units: Vec<CurrencyUnit>,
     /// Supported currency units for melting
@@ -544,6 +546,7 @@ impl From<cdk::nuts::Nuts> for Nuts {
             nut21: nuts.nut21.map(Into::into),
             nut22: nuts.nut22.map(Into::into),
             nut29: nuts.nut29.into(),
+            nutxx_supported: nuts.nutxx.supported,
             mint_units,
             melt_units,
         }
@@ -587,6 +590,9 @@ impl TryFrom<Nuts> for cdk::nuts::Nuts {
             nut21: n.nut21.map(|s| s.try_into()).transpose()?,
             nut22: n.nut22.map(|s| s.try_into()).transpose()?,
             nut29: n.nut29.into(),
+            nutxx: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nutxx_supported,
+            },
         })
     }
 }
@@ -764,6 +770,7 @@ mod tests {
                 )],
             }),
             nut29: Default::default(),
+            nutxx: Default::default(),
         }
     }
 
@@ -904,6 +911,7 @@ mod tests {
             nut21: None,
             nut22: None,
             nut29: Default::default(),
+            nutxx: Default::default(),
         };
 
         let ffi_nuts: Nuts = cdk_nuts.into();
@@ -936,6 +944,7 @@ mod tests {
             nut21: None,
             nut22: None,
             nut29: Default::default(),
+            nutxx_supported: false,
             mint_units: vec![],
             melt_units: vec![],
         };
@@ -1099,6 +1108,7 @@ mod tests {
                     }],
                 }),
                 nut29: Nut29Settings::default(),
+                nutxx_supported: false,
                 mint_units: vec![],
                 melt_units: vec![],
             },
