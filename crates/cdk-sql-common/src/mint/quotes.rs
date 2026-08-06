@@ -1322,6 +1322,7 @@ where
                 created_time,
                 amount_paid,
                 amount_issued,
+                updated_at,
                 payment_method,
                 request_lookup_id_kind,
                 extra_json
