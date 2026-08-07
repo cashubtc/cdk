@@ -29,6 +29,7 @@ use cdk::ws::{WsMethodRequest, WsRequest};
 use cdk::{Amount, Mint};
 use cdk_common::{MeltQuoteCreateResponse, MeltQuoteRequest, MintQuoteRequest, MintQuoteResponse};
 use cdk_fake_wallet::create_fake_invoice;
+use tokio::time::timeout;
 
 use crate::init_pure_tests::create_and_start_in_memory_test_mint;
 
@@ -385,6 +386,19 @@ pub async fn open_stream_subscribe<C: MintConnector + Sync>(conn: C) {
     assert!(
         reply.contains(sub_id),
         "reply should name the subscription: {reply}"
+    );
+
+    // A graceful `close()` must reach the mint (over WebSocket this is a Close
+    // frame), so the mint closes its side and the receive half ends. `tx` is
+    // kept alive on purpose: without a real close the only signal would be TCP
+    // EOF on drop, so a regressed no-op close would hang here instead of ending.
+    tx.close().await.expect("close stream");
+    let closed = timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .expect("mint should close the stream after a graceful close");
+    assert!(
+        closed.is_none(),
+        "receive half should end once the stream is closed, got: {closed:?}"
     );
 }
 

@@ -125,16 +125,7 @@ pub fn from_ws(
     sender: crate::ws_client::WsSender,
     receiver: crate::ws_client::WsReceiver,
 ) -> (StreamTx, StreamRx) {
-    let tx = StreamTx::new(futures::sink::unfold(
-        sender,
-        |mut sender, message: String| async move {
-            sender
-                .send(message)
-                .await
-                .map_err(|e| StreamError::Send(e.to_string()))?;
-            Ok::<_, StreamError>(sender)
-        },
-    ));
+    let tx = StreamTx::new(sender.sink_map_err(|e| StreamError::Send(e.to_string())));
     let rx = StreamRx::new(futures::stream::unfold(
         receiver,
         |mut receiver| async move {

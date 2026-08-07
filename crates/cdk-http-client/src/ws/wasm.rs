@@ -1,9 +1,11 @@
 //! WASM WebSocket implementation using web-sys + wasm-bindgen
 
 use std::cell::RefCell;
+use std::pin::Pin;
 use std::rc::Rc;
+use std::task::{Context, Poll};
 
-use futures::StreamExt;
+use futures::{Sink, StreamExt};
 use futures_channel::{mpsc, oneshot};
 use wasm_bindgen::prelude::*;
 use web_sys::{BinaryType, CloseEvent, ErrorEvent, MessageEvent, WebSocket};
@@ -52,19 +54,32 @@ impl Drop for WsReceiver {
     }
 }
 
-impl WsSender {
-    /// Send a text message over the WebSocket
-    pub async fn send(&mut self, text: String) -> Result<(), WsError> {
+// A `Sink<String>` rather than inherent send/close methods so a boxed adapter
+// (`stream_channel::from_ws`) forwards `poll_close` to `WebSocket::close`, which
+// tells the browser to send a `Close` frame to the mint.
+impl Sink<String> for WsSender {
+    type Error = WsError;
+
+    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), WsError>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: String) -> Result<(), WsError> {
         self.ws
-            .send_with_str(&text)
+            .send_with_str(&item)
             .map_err(|e| WsError::Send(format!("{:?}", e)))
     }
 
-    /// Send a close frame
-    pub async fn close(&mut self) -> Result<(), WsError> {
-        self.ws
-            .close()
-            .map_err(|e| WsError::Send(format!("{:?}", e)))
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), WsError>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), WsError>> {
+        Poll::Ready(
+            self.ws
+                .close()
+                .map_err(|e| WsError::Send(format!("{:?}", e))),
+        )
     }
 }
 
