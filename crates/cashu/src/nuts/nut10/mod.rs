@@ -247,6 +247,55 @@ pub(crate) fn get_pubkeys_and_required_sigs(
 
 use super::Proofs;
 
+/// Domain-separation tag for the NUT-11 v1 SIG_ALL message (P2PK and HTLC).
+const SIG_ALL_SIG_DOMAIN_TAG: &[u8] = b"Cashu_SigAllSig_v1";
+
+/// NUT-11 v1 SIG_ALL message: domain-separated, length-framed bytes.
+///
+/// Commits to the quote id (empty for swaps), each input's secret and C, then
+/// each output's amount (minimal big-endian bytes) and B_.
+pub(crate) fn sig_all_msg_to_sign_v1(
+    quote_id: Option<&str>,
+    inputs: &Proofs,
+    outputs: &[super::BlindedMessage],
+) -> Vec<u8> {
+    use super::nut20::{amount_to_minimal_bytes, append_len_prefixed};
+
+    let mut msg = Vec::new();
+    msg.extend_from_slice(SIG_ALL_SIG_DOMAIN_TAG);
+    append_len_prefixed(&mut msg, quote_id.unwrap_or("").as_bytes());
+    for proof in inputs {
+        append_len_prefixed(&mut msg, proof.secret.to_string().as_bytes());
+        append_len_prefixed(&mut msg, &proof.c.to_bytes());
+    }
+    for output in outputs {
+        append_len_prefixed(&mut msg, &amount_to_minimal_bytes(output.amount));
+        append_len_prefixed(&mut msg, &output.blinded_secret.to_bytes());
+    }
+    msg
+}
+
+/// SIG_ALL message as verified by cdk < 0.14.0: secrets then B_ hex strings.
+///
+/// Kept so upgraded mints keep accepting witnesses from older wallets.
+pub(crate) fn sig_all_msg_to_sign_legacy(
+    quote_id: Option<&str>,
+    inputs: &Proofs,
+    outputs: &[super::BlindedMessage],
+) -> String {
+    let mut msg = String::new();
+    for proof in inputs {
+        msg.push_str(&proof.secret.to_string());
+    }
+    for output in outputs {
+        msg.push_str(&output.blinded_secret.to_hex());
+    }
+    if let Some(quote_id) = quote_id {
+        msg.push_str(quote_id);
+    }
+    msg
+}
+
 /// Trait for requests that spend proofs (SwapRequest, MeltRequest)
 pub trait SpendingConditionVerification {
     /// Get the input proofs
@@ -258,6 +307,33 @@ pub trait SpendingConditionVerification {
     /// For swap: input secrets + output blinded messages
     /// For melt: input secrets + quote/payment request
     fn sig_all_msg_to_sign(&self) -> String;
+
+    /// Construct the NUT-11 v1 (length-framed) SIG_ALL message to sign
+    fn sig_all_msg_to_sign_v1(&self) -> Vec<u8>;
+
+    /// Construct the pre-0.14 SIG_ALL message (secrets then B_ values)
+    fn sig_all_msg_to_sign_legacy(&self) -> String;
+
+    /// SIG_ALL message formats accepted during verification, newest first.
+    ///
+    /// Signatures that do not verify under any format are ignored; only unique
+    /// pubkeys with valid signatures count towards thresholds (NUT-11). The
+    /// legacy format is signed for older mints but never accepted here: it
+    /// does not commit to input C values or output amounts.
+    fn sig_all_msgs_to_verify(&self) -> Vec<Vec<u8>> {
+        vec![
+            self.sig_all_msg_to_sign_v1(),
+            self.sig_all_msg_to_sign().into_bytes(),
+        ]
+    }
+
+    /// SIG_ALL messages a wallet signs: every accepted format plus legacy,
+    /// so the request also verifies on not-yet-upgraded mints.
+    fn sig_all_msgs_to_sign(&self) -> Vec<Vec<u8>> {
+        let mut msgs = self.sig_all_msgs_to_verify();
+        msgs.push(self.sig_all_msg_to_sign_legacy().into_bytes());
+        msgs
+    }
 
     /// Check if at least one proof in the set has SIG_ALL flag set
     ///
@@ -372,12 +448,13 @@ pub trait SpendingConditionVerification {
             Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
 
         // Dispatch based on secret kind
+        let msgs_to_verify = self.sig_all_msgs_to_verify();
         match first_secret.kind() {
             Kind::P2PK => {
-                nut11::verify_sig_all_p2pk(first_input, self.sig_all_msg_to_sign())?;
+                nut11::verify_sig_all_p2pk(first_input, &msgs_to_verify)?;
             }
             Kind::HTLC => {
-                nut14::verify_sig_all_htlc(first_input, self.sig_all_msg_to_sign())?;
+                nut14::verify_sig_all_htlc(first_input, &msgs_to_verify)?;
             }
         }
 
@@ -442,6 +519,14 @@ mod tests {
 
         fn sig_all_msg_to_sign(&self) -> String {
             "test message".to_string()
+        }
+
+        fn sig_all_msg_to_sign_v1(&self) -> Vec<u8> {
+            sig_all_msg_to_sign_v1(None, &self.inputs, &[])
+        }
+
+        fn sig_all_msg_to_sign_legacy(&self) -> String {
+            sig_all_msg_to_sign_legacy(None, &self.inputs, &[])
         }
     }
 
