@@ -471,6 +471,7 @@ mod tests {
             c: SecretKey::generate().public_key(),
             keyset_id: Id::from_str("00deadbeef123456").unwrap(),
             dleq: None,
+            metadata: None,
         };
         let promises = vec![promise];
         let rs = vec![SecretKey::generate(), SecretKey::generate()]; // Different length
@@ -513,6 +514,7 @@ mod tests {
             c: signature,
             keyset_id: Id::from_str("00deadbeef123456").unwrap(),
             dleq: None,
+            metadata: None,
         };
 
         let promises = vec![promise.clone(), promise.clone()];

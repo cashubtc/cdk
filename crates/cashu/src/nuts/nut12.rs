@@ -213,6 +213,7 @@ impl BlindSignature {
                 blinded_message,
                 mint_secretkey,
             )?),
+            metadata: None,
         })
     }
 
@@ -466,6 +467,7 @@ mod tests {
             keyset_id: Id::from_str("00882760bfa2eb41").unwrap(),
             c: blinded_signature,
             dleq: None,
+            metadata: None,
         };
 
         // Initially, DLEQ should be None

@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::{env, fs};
 
@@ -32,6 +33,18 @@ use uuid::Uuid;
 pub struct DirectMintConnection {
     pub mint: Mint,
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
+    advertise_nut342: bool,
+    restore_requests: AtomicU64,
+    restore_blinded_messages: AtomicU64,
+}
+
+/// Counters collected from restore requests made through a direct mint connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestoreMetrics {
+    /// Number of NUT-09 restore requests.
+    pub requests: u64,
+    /// Total blinded messages sent across all restore requests.
+    pub blinded_messages: u64,
 }
 
 impl DirectMintConnection {
@@ -39,6 +52,23 @@ impl DirectMintConnection {
         Self {
             mint,
             auth_wallet: Arc::new(RwLock::new(None)),
+            advertise_nut342: true,
+            restore_requests: AtomicU64::new(0),
+            restore_blinded_messages: AtomicU64::new(0),
+        }
+    }
+
+    /// Override whether this connection advertises NUT-342 to its wallet.
+    pub fn with_nut342_advertisement(mut self, supported: bool) -> Self {
+        self.advertise_nut342 = supported;
+        self
+    }
+
+    /// Return restore request counters collected by this connection.
+    pub fn restore_metrics(&self) -> RestoreMetrics {
+        RestoreMetrics {
+            requests: self.restore_requests.load(Ordering::Relaxed),
+            blinded_messages: self.restore_blinded_messages.load(Ordering::Relaxed),
         }
     }
 }
@@ -352,7 +382,9 @@ impl MintConnector for DirectMintConnection {
     }
 
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
-        Ok(self.mint.mint_info().await?.clone().time(unix_time()))
+        let mut mint_info = self.mint.mint_info().await?.clone().time(unix_time());
+        mint_info.nuts.nut342.supported = self.advertise_nut342;
+        Ok(mint_info)
     }
 
     async fn post_check_state(
@@ -363,6 +395,9 @@ impl MintConnector for DirectMintConnection {
     }
 
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
+        self.restore_requests.fetch_add(1, Ordering::Relaxed);
+        self.restore_blinded_messages
+            .fetch_add(request.outputs.len() as u64, Ordering::Relaxed);
         self.mint.restore(request).await
     }
 
@@ -582,7 +617,22 @@ pub async fn create_test_wallet_for_mint(mint: Mint) -> Result<Wallet> {
 ///
 /// Useful for restore tests where two wallets must share the same seed.
 pub async fn create_test_wallet_for_mint_with_seed(mint: Mint, seed: [u8; 64]) -> Result<Wallet> {
-    let connector = DirectMintConnection::new(mint.clone());
+    Ok(
+        create_instrumented_test_wallet_for_mint_with_seed(mint, seed, true)
+            .await?
+            .0,
+    )
+}
+
+/// Create a test wallet and return its instrumented direct mint connection.
+pub async fn create_instrumented_test_wallet_for_mint_with_seed(
+    mint: Mint,
+    seed: [u8; 64],
+    advertise_nut342: bool,
+) -> Result<(Wallet, Arc<DirectMintConnection>)> {
+    let connector = Arc::new(
+        DirectMintConnection::new(mint.clone()).with_nut342_advertisement(advertise_nut342),
+    );
 
     let mint_info = mint.mint_info().await?;
     let mint_url = mint_info
@@ -630,10 +680,10 @@ pub async fn create_test_wallet_for_mint_with_seed(mint: Mint, seed: [u8; 64]) -
         .unit(unit)
         .localstore(localstore)
         .seed(seed)
-        .client(connector)
+        .shared_client(connector.clone())
         .build()?;
 
-    Ok(wallet)
+    Ok((wallet, connector))
 }
 
 /// Creates a mint quote for the given amount and checks its state in a loop. Returns when

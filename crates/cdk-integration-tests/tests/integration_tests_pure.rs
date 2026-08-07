@@ -15,7 +15,7 @@ use std::hash::RandomState;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bip39::Mnemonic;
 use cashu::amount::SplitTarget;
@@ -2312,6 +2312,178 @@ async fn test_restore_after_keyset_rotation() {
         Amount::from(total),
         "Restore should recover proofs from both active and inactive keysets"
     );
+}
+
+/// Exercises NUT-342 recovery across mint, swap, send, receive, and proof-state checks.
+#[tokio::test]
+async fn test_nut342_dynamic_gap_wallet_recovery() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+    let wallet = create_test_wallet_for_mint_with_seed(mint.clone(), seed)
+        .await
+        .expect("Failed to create source wallet");
+    let recipient = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create recipient wallet");
+
+    assert!(wallet.load_mint_info().await.unwrap().nuts.nut342.supported);
+    fund_wallet(wallet.clone(), 64, None)
+        .await
+        .expect("Failed to fund source wallet");
+    assert!(wallet
+        .localstore
+        .get_proofs(
+            Some(wallet.mint_url.clone()),
+            Some(wallet.unit.clone()),
+            Some(vec![State::Unspent]),
+            None,
+        )
+        .await
+        .unwrap()
+        .iter()
+        .all(|proof| proof.derivation_index.is_some()));
+
+    let prepared = wallet
+        .prepare_send(Amount::from(40), SendOptions::default())
+        .await
+        .expect("Failed to prepare send");
+    let token = prepared
+        .confirm(None)
+        .await
+        .expect("Failed to confirm send");
+    recipient
+        .receive(&token.to_string(), ReceiveOptions::default())
+        .await
+        .expect("Failed to spend sent proofs at recipient");
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(24));
+
+    let restored_wallet = create_test_wallet_for_mint_with_seed(mint, seed)
+        .await
+        .expect("Failed to create restored wallet");
+    let restored = restored_wallet
+        .restore()
+        .await
+        .expect("NUT-342 restore failed");
+
+    assert_eq!(restored.unspent, Amount::from(24));
+    assert_eq!(
+        restored_wallet.total_balance().await.unwrap(),
+        Amount::from(24)
+    );
+    assert!(restored.spent > Amount::ZERO);
+    assert!(restored_wallet
+        .localstore
+        .get_proofs(
+            Some(restored_wallet.mint_url.clone()),
+            Some(restored_wallet.unit.clone()),
+            Some(vec![State::Unspent, State::Pending]),
+            None,
+        )
+        .await
+        .unwrap()
+        .iter()
+        .all(|proof| proof.derivation_index.is_some()));
+}
+
+/// Compares legacy NUT-13 scanning with NUT-342 bisected recovery over the same histories.
+#[tokio::test]
+#[ignore = "long-horizon NUT-342 recovery benchmark"]
+async fn benchmark_legacy_vs_bisected_recovery() {
+    let mut target_indices = std::env::var("CDK_RECOVERY_BENCH_TARGET_INDICES")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .filter_map(|value| value.trim().parse().ok())
+                .collect::<Vec<u32>>()
+        })
+        .filter(|values| !values.is_empty())
+        .unwrap_or_else(|| vec![1_000, 5_000, 10_000]);
+    target_indices.sort_unstable();
+    target_indices.dedup();
+
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create benchmark mint");
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+    let source = create_test_wallet_for_mint_with_seed(mint.clone(), seed)
+        .await
+        .expect("Failed to create benchmark source wallet");
+
+    fund_wallet(source.clone(), 8_191, None)
+        .await
+        .expect("Failed to fund benchmark wallet");
+    let keyset_id = source.active_keyset().await.unwrap().id;
+    let mut derived = source
+        .localstore
+        .increment_keyset_counter(&keyset_id, 0)
+        .await
+        .unwrap();
+
+    for target_index in target_indices {
+        while derived < target_index {
+            let proofs = source.get_unspent_proofs().await.unwrap();
+            source
+                .swap(None, SplitTarget::default(), proofs, None, false, false)
+                .await
+                .expect("Failed to extend benchmark history");
+            derived = source
+                .localstore
+                .increment_keyset_counter(&keyset_id, 0)
+                .await
+                .unwrap();
+        }
+
+        let expected_balance = source.total_balance().await.unwrap();
+        let expected_proof_count = source.get_unspent_proofs().await.unwrap().len();
+
+        let (legacy_wallet, legacy_connection) =
+            create_instrumented_test_wallet_for_mint_with_seed(mint.clone(), seed, false)
+                .await
+                .expect("Failed to create legacy recovery wallet");
+        let legacy_started = Instant::now();
+        let legacy_restored = legacy_wallet
+            .restore()
+            .await
+            .expect("Legacy restore failed");
+        let legacy_elapsed = legacy_started.elapsed();
+        let legacy_metrics = legacy_connection.restore_metrics();
+        let legacy_proofs = legacy_wallet.get_unspent_proofs().await.unwrap().len();
+
+        let (bisected_wallet, bisected_connection) =
+            create_instrumented_test_wallet_for_mint_with_seed(mint.clone(), seed, true)
+                .await
+                .expect("Failed to create bisected recovery wallet");
+        let bisected_started = Instant::now();
+        let bisected_restored = bisected_wallet
+            .restore()
+            .await
+            .expect("Bisected restore failed");
+        let bisected_elapsed = bisected_started.elapsed();
+        let bisected_metrics = bisected_connection.restore_metrics();
+        let bisected_proofs = bisected_wallet.get_unspent_proofs().await.unwrap().len();
+
+        assert_eq!(legacy_restored.unspent, expected_balance);
+        assert_eq!(bisected_restored.unspent, expected_balance);
+        assert_eq!(legacy_proofs, expected_proof_count);
+        assert_eq!(bisected_proofs, expected_proof_count);
+
+        println!(
+            "derived={derived} strategy=legacy requests={} blinded_messages={} elapsed_us={} proofs_recovered={legacy_proofs}",
+            legacy_metrics.requests,
+            legacy_metrics.blinded_messages,
+            legacy_elapsed.as_micros()
+        );
+        println!(
+            "derived={derived} strategy=bisected requests={} blinded_messages={} elapsed_us={} proofs_recovered={bisected_proofs}",
+            bisected_metrics.requests,
+            bisected_metrics.blinded_messages,
+            bisected_elapsed.as_micros()
+        );
+    }
 }
 
 #[derive(Debug, Default)]

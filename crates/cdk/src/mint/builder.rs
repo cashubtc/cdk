@@ -99,6 +99,7 @@ impl MintBuilder {
                 .nut12(true)
                 .nut14(true)
                 .nut20(true)
+                .nut342(true)
                 .nut29(cdk_common::nut29::Settings::default()),
             ..Default::default()
         };

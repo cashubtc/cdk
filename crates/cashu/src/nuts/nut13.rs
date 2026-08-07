@@ -118,6 +118,28 @@ impl SecretKey {
 }
 
 impl PreMintSecrets {
+    /// Attach encrypted NUT-342 dynamic-gap hints to deterministic outputs.
+    pub fn add_nut342_metadata(
+        &mut self,
+        start_counter: u32,
+        first_active: Option<u32>,
+    ) -> Result<(), super::nut342::Error> {
+        let first_active = first_active.or(Some(start_counter));
+        for (offset, pre_mint) in self.secrets.iter_mut().enumerate() {
+            let current_index = start_counter.saturating_add(offset as u32);
+            let d_gap = first_active
+                .map(|first| current_index.saturating_sub(first))
+                .unwrap_or(0);
+            let value = super::nut342::encrypt_d_gap(d_gap, &pre_mint.r)?;
+            pre_mint
+                .blinded_message
+                .metadata
+                .get_or_insert_default()
+                .insert("342".to_owned(), value);
+        }
+        Ok(())
+    }
+
     /// Generate blinded messages from predetermined secrets and blindings
     /// factor
     #[instrument(skip(seed))]
@@ -146,6 +168,7 @@ impl PreMintSecrets {
                 secret: secret.clone(),
                 r,
                 amount,
+                derivation_index: Some(counter),
             };
 
             pre_mint_secrets.secrets.push(pre_mint);
@@ -182,6 +205,7 @@ impl PreMintSecrets {
                 secret: secret.clone(),
                 r,
                 amount,
+                derivation_index: Some(counter),
             };
 
             pre_mint_secrets.secrets.push(pre_mint);
@@ -213,6 +237,7 @@ impl PreMintSecrets {
                 secret: secret.clone(),
                 r,
                 amount: Amount::ZERO,
+                derivation_index: Some(i),
             };
 
             pre_mint_secrets.secrets.push(pre_mint);
@@ -565,6 +590,28 @@ mod tests {
             let counter = start_count + i as u32;
             let expected_secret = Secret::from_seed(&seed, keyset_id, counter).unwrap();
             assert_eq!(pre_mint.secret, expected_secret);
+        }
+    }
+
+    #[test]
+    fn nut342_metadata_covers_existing_and_new_outputs() {
+        let seed = [7_u8; 64];
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let mut secrets = PreMintSecrets::restore_batch(keyset_id, &seed, 10, 13).unwrap();
+        secrets.add_nut342_metadata(10, Some(4)).unwrap();
+
+        for (offset, pre_mint) in secrets.secrets.iter().enumerate() {
+            let encrypted = pre_mint
+                .blinded_message
+                .metadata
+                .as_ref()
+                .unwrap()
+                .get("342")
+                .unwrap();
+            assert_eq!(
+                crate::nuts::nut342::decrypt_d_gap(encrypted, &pre_mint.r).unwrap(),
+                6 + offset as u32
+            );
         }
     }
 }

@@ -236,6 +236,120 @@ impl From<WalletSubscription> for WalletParams {
 pub use cdk_common::wallet::Restored;
 
 impl Wallet {
+    async fn nut342_recovery_window(&self, keyset_id: Id) -> Result<Option<(u32, u32)>, Error> {
+        if !self.load_mint_info().await?.nuts.nut342.supported {
+            return Ok(None);
+        }
+
+        let has_signature = |counter: u32| async move {
+            let premint = PreMintSecrets::restore_batch(
+                keyset_id,
+                &self.seed,
+                counter,
+                counter.saturating_add(1),
+            )?;
+            let response = self
+                .client
+                .post_restore(RestoreRequest {
+                    outputs: premint.blinded_messages(),
+                })
+                .await?;
+            Ok::<_, Error>((!response.signatures.is_empty(), premint, response))
+        };
+
+        if !has_signature(0).await?.0 {
+            return Ok(None);
+        }
+
+        let mut low = 0_u32;
+        let mut high = u32::MAX;
+        while low < high {
+            let midpoint = low + (high - low) / 2 + 1;
+            if has_signature(midpoint).await?.0 {
+                low = midpoint;
+            } else {
+                high = midpoint - 1;
+            }
+        }
+
+        let (_, premint, response) = has_signature(low).await?;
+        let Some(encrypted_gap) = response
+            .signatures
+            .first()
+            .and_then(|signature| signature.metadata.as_ref())
+            .and_then(|metadata| metadata.get("342"))
+        else {
+            return Ok(None);
+        };
+        let r = &premint
+            .secrets
+            .first()
+            .ok_or_else(|| Error::InvalidMintResponse("missing recovery secret".to_owned()))?
+            .r;
+        let d_gap = crate::nuts::nut342::decrypt_d_gap(encrypted_gap, r)
+            .map_err(|err| Error::InvalidMintResponse(err.to_string()))?;
+        Ok(Some((low.saturating_sub(d_gap), low.saturating_add(1))))
+    }
+
+    async fn add_nut342_metadata(
+        &self,
+        keyset_id: Id,
+        start_counter: u32,
+        premint_secrets: &mut PreMintSecrets,
+    ) -> Result<(), Error> {
+        if premint_secrets.is_empty() || !self.load_mint_info().await?.nuts.nut342.supported {
+            return Ok(());
+        }
+
+        let mut active_proofs = self
+            .localstore
+            .get_proofs(
+                Some(self.mint_url.clone()),
+                Some(self.unit.clone()),
+                Some(vec![
+                    State::Unspent,
+                    State::Pending,
+                    State::Reserved,
+                    State::PendingSpent,
+                ]),
+                None,
+            )
+            .await?
+            .into_iter()
+            .filter(|proof| proof.proof.keyset_id == keyset_id)
+            .collect::<Vec<_>>();
+
+        if active_proofs
+            .iter()
+            .any(|proof| proof.derivation_index.is_none())
+        {
+            let mut changed = false;
+            for counter in 0..start_counter {
+                let secret = cdk_common::secret::Secret::from_seed(&self.seed, keyset_id, counter)?;
+                for proof in active_proofs.iter_mut().filter(|proof| {
+                    proof.derivation_index.is_none() && proof.proof.secret == secret
+                }) {
+                    proof.derivation_index = Some(counter);
+                    changed = true;
+                }
+            }
+            if changed {
+                self.localstore
+                    .update_proofs(active_proofs.clone(), vec![])
+                    .await?;
+            }
+        }
+
+        let first_active = active_proofs
+            .iter()
+            .filter_map(|proof| proof.derivation_index)
+            .min();
+
+        premint_secrets
+            .add_nut342_metadata(start_counter, first_active)
+            .map_err(|err| Error::Custom(err.to_string()))
+    }
+
     /// Create new [`Wallet`] using the builder pattern
     /// # Synopsis
     /// ```rust
@@ -583,8 +697,8 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn restore_with_opts(&self, opts: NUT13Options) -> Result<Restored, Error> {
         let opts = NUT13Options::new(opts.batch_size, opts.max_gap)?;
-        let batch_size = opts.batch_size;
-        let max_gap = opts.max_gap;
+        let default_batch_size = opts.batch_size;
+        let default_max_gap = opts.max_gap;
 
         // Check that mint is in store of mints
         if self
@@ -602,8 +716,12 @@ impl Wallet {
 
         for keyset in keysets {
             let keys = self.keyset(keyset.id).await?.keys;
+            let recovery_window = self.nut342_recovery_window(keyset.id).await?;
+            let (mut start_counter, batch_size, max_gap) = match recovery_window {
+                Some((start, end)) => (start, end.saturating_sub(start).max(1), 1),
+                None => (0, default_batch_size, default_max_gap),
+            };
             let mut empty_batch: u32 = 0;
-            let mut start_counter: u32 = 0;
             // Track the highest counter value that had a signature
             let mut highest_counter: Option<u32> = None;
 
@@ -696,9 +814,15 @@ impl Wallet {
                 let (unspent_proofs, updated_restored) = proofs
                     .into_iter()
                     .zip(states)
-                    .filter_map(|(p, state)| {
+                    .enumerate()
+                    .filter_map(|(index, (p, state))| {
                         ProofInfo::new(p, self.mint_url.clone(), state.state, keyset.unit.clone())
                             .ok()
+                            .map(|proof_info| {
+                                proof_info.with_derivation_index(
+                                    start_counter + matched_secrets[index].0 as u32,
+                                )
+                            })
                     })
                     .try_fold(
                         (Vec::new(), restored_result),
@@ -1135,18 +1259,21 @@ mod tests {
             secret: secret1.clone(),
             r: r1.clone(),
             amount: Amount::from(1),
+            derivation_index: None,
         };
         let premint2 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
             secret: secret2.clone(),
             r: r2.clone(),
             amount: Amount::from(2),
+            derivation_index: None,
         };
         let premint3 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
             secret: secret3.clone(),
             r: r3.clone(),
             amount: Amount::from(4),
+            derivation_index: None,
         };
 
         let premint_secrets = PreMintSecrets {
@@ -1160,18 +1287,21 @@ mod tests {
             keyset_id,
             c: blinded1, // Using blinded as placeholder for signature
             dleq: None,
+            metadata: None,
         };
         let sig2 = BlindSignature {
             amount: Amount::from(2),
             keyset_id,
             c: blinded2,
             dleq: None,
+            metadata: None,
         };
         let sig3 = BlindSignature {
             amount: Amount::from(4),
             keyset_id,
             c: blinded3,
             dleq: None,
+            metadata: None,
         };
 
         // Response in same order as request
@@ -1233,18 +1363,21 @@ mod tests {
             secret: secret1.clone(),
             r: r1.clone(),
             amount: Amount::from(1),
+            derivation_index: None,
         };
         let premint2 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
             secret: secret2.clone(),
             r: r2.clone(),
             amount: Amount::from(2),
+            derivation_index: None,
         };
         let premint3 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
             secret: secret3.clone(),
             r: r3.clone(),
             amount: Amount::from(4),
+            derivation_index: None,
         };
 
         let premint_secrets = PreMintSecrets {
@@ -1257,18 +1390,21 @@ mod tests {
             keyset_id,
             c: blinded1,
             dleq: None,
+            metadata: None,
         };
         let sig2 = BlindSignature {
             amount: Amount::from(2),
             keyset_id,
             c: blinded2,
             dleq: None,
+            metadata: None,
         };
         let sig3 = BlindSignature {
             amount: Amount::from(4),
             keyset_id,
             c: blinded3,
             dleq: None,
+            metadata: None,
         };
 
         // Response in REVERSED order (simulating out-of-order response from mint)
@@ -1331,18 +1467,21 @@ mod tests {
             secret: secret1.clone(),
             r: r1.clone(),
             amount: Amount::from(1),
+            derivation_index: None,
         };
         let premint2 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
             secret: secret2.clone(),
             r: r2.clone(),
             amount: Amount::from(2),
+            derivation_index: None,
         };
         let premint3 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
             secret: secret3.clone(),
             r: r3.clone(),
             amount: Amount::from(4),
+            derivation_index: None,
         };
 
         let premint_secrets = PreMintSecrets {
@@ -1355,12 +1494,14 @@ mod tests {
             keyset_id,
             c: blinded1,
             dleq: None,
+            metadata: None,
         };
         let sig3 = BlindSignature {
             amount: Amount::from(4),
             keyset_id,
             c: blinded3,
             dleq: None,
+            metadata: None,
         };
 
         // Response only has signatures for premint1 and premint3 (gap at premint2)

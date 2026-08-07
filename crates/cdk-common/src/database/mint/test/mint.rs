@@ -507,6 +507,7 @@ where
         keyset_id,
         amount: Amount::from(100u64),
         witness: None,
+        metadata: None,
     };
     let blinded_messages = vec![blinded_message];
 
@@ -560,6 +561,7 @@ where
         keyset_id,
         amount: Amount::from(100u64),
         witness: None,
+        metadata: None,
     };
     let blinded_messages = vec![blinded_message.clone()];
 
@@ -571,6 +573,7 @@ where
         keyset_id,
         c,
         dleq: None,
+        metadata: None,
     };
     let blinded_secrets = vec![blinded_message.blinded_secret];
     tx.add_blind_signatures(&blinded_secrets, &[blind_sig], Some(quote_id1))
@@ -616,6 +619,7 @@ where
         keyset_id,
         amount: Amount::from(100u64),
         witness: None,
+        metadata: None,
     };
     let blinded_messages = vec![blinded_message];
 
@@ -679,6 +683,7 @@ where
         keyset_id,
         amount: Amount::from(100u64),
         witness: None,
+        metadata: None,
     };
     let blinded_messages = vec![blinded_message];
 
@@ -1091,6 +1096,7 @@ where
         keyset_id,
         amount: Amount::from(100u64),
         witness: None,
+        metadata: None,
     };
 
     let blinded_message2 = cashu::BlindedMessage {
@@ -1098,6 +1104,7 @@ where
         keyset_id,
         amount: Amount::from(200u64),
         witness: None,
+        metadata: None,
     };
 
     let blinded_messages = vec![blinded_message1.clone(), blinded_message2.clone()];
@@ -1505,6 +1512,7 @@ where
         keyset_id,
         c: SecretKey::generate().public_key(),
         dleq: None,
+        metadata: None,
     };
 
     // Add blind signature

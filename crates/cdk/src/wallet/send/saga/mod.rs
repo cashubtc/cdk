@@ -79,7 +79,7 @@ use crate::amount::SplitTarget;
 use crate::fees::calculate_fee;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut11::{enforce_sig_flag, SigFlag};
-use crate::nuts::{Proofs, State, Token};
+use crate::nuts::{Proof, Proofs, State, Token};
 use crate::wallet::saga::{
     add_compensation, execute_compensations, new_compensations, Compensations,
     RevertProofReservation,
@@ -184,6 +184,7 @@ struct InputFeeCoverageContext<'a> {
     send_amounts: &'a [Amount],
     force_swap: bool,
     is_exact_or_offline: bool,
+    derivation_indices: &'a HashMap<Proof, u32>,
 }
 
 fn ensure_selected_proofs_cover_input_fees(
@@ -225,12 +226,13 @@ fn ensure_selected_proofs_cover_input_fees(
         let shortfall = (context.amount + context.send_fee)
             .checked_sub(selected_net)
             .unwrap_or(Amount::ZERO);
-        let additional = Wallet::select_proofs(
+        let additional = Wallet::select_proofs_with_derivation_indices(
             shortfall,
             remaining_proofs.clone(),
             context.active_keyset_ids,
             context.keyset_fees,
             false,
+            context.derivation_indices,
         )?;
 
         if additional.is_empty() {
@@ -525,12 +527,14 @@ impl<'a> SendSaga<'a, Initial> {
                 .any(crate::wallet::util::is_p2pk_locked);
 
         let proof_pool = available_proofs.clone();
-        let mut selected_proofs = Wallet::select_proofs(
+        let derivation_indices = self.wallet.unspent_proof_derivation_indices().await?;
+        let mut selected_proofs = Wallet::select_proofs_with_derivation_indices(
             selection_amount,
             available_proofs,
             &active_keyset_ids,
             &keyset_fees,
             opts.include_fee || force_swap,
+            &derivation_indices,
         )?;
 
         let send_fee = if opts.include_fee {
@@ -554,6 +558,7 @@ impl<'a> SendSaga<'a, Initial> {
                     send_amounts: &send_amounts.0,
                     force_swap,
                     is_exact_or_offline,
+                    derivation_indices: &derivation_indices,
                 },
             )?;
         }
@@ -1175,6 +1180,7 @@ impl std::fmt::Debug for SendSaga<'_, Prepared> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use cdk_common::amount::KeysetFeeAndAmounts;
@@ -1620,6 +1626,7 @@ mod tests {
                 send_amounts: &send_amounts,
                 force_swap: true,
                 is_exact_or_offline: false,
+                derivation_indices: &HashMap::new(),
             },
         )
         .unwrap();
@@ -1654,6 +1661,7 @@ mod tests {
                 send_amounts: &send_amounts,
                 force_swap: true,
                 is_exact_or_offline: false,
+                derivation_indices: &HashMap::new(),
             },
         )
         .expect_err("selected proofs cannot cover input fees without extra proofs");
@@ -1684,6 +1692,7 @@ mod tests {
                 send_amounts: &send_amounts,
                 force_swap: false,
                 is_exact_or_offline: false,
+                derivation_indices: &HashMap::new(),
             },
         )
         .unwrap();

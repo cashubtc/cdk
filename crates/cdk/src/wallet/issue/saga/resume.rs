@@ -406,8 +406,18 @@ impl Wallet {
 
             let proof_infos: Vec<ProofInfo> = proofs
                 .into_iter()
-                .map(|p| {
-                    ProofInfo::new(p, self.mint_url.clone(), State::Unspent, self.unit.clone())
+                .zip(&premint_secrets.secrets)
+                .map(|(p, premint)| {
+                    let proof_info = ProofInfo::new(
+                        p,
+                        self.mint_url.clone(),
+                        State::Unspent,
+                        self.unit.clone(),
+                    )?;
+                    Ok::<_, Error>(match premint.derivation_index {
+                        Some(index) => proof_info.with_derivation_index(index),
+                        None => proof_info,
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
@@ -536,7 +546,15 @@ impl Wallet {
 
         let proof_infos: Vec<ProofInfo> = proofs
             .into_iter()
-            .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Unspent, self.unit.clone()))
+            .zip(&premint_secrets.secrets)
+            .map(|(p, premint)| {
+                let proof_info =
+                    ProofInfo::new(p, self.mint_url.clone(), State::Unspent, self.unit.clone())?;
+                Ok::<_, Error>(match premint.derivation_index {
+                    Some(index) => proof_info.with_derivation_index(index),
+                    None => proof_info,
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Some(proof_infos))

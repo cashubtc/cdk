@@ -1,5 +1,6 @@
 //! Blind signature tests
 
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use cashu::{Amount, BlindSignature, Id, SecretKey};
@@ -25,6 +26,10 @@ where
         keyset_id,
         c: SecretKey::generate().public_key(),
         dleq: None,
+        metadata: Some(BTreeMap::from([(
+            "342".to_owned(),
+            "0000000000000000000000000000000000000000".to_owned(),
+        )])),
     };
 
     let sig2 = BlindSignature {
@@ -32,6 +37,7 @@ where
         keyset_id,
         c: SecretKey::generate().public_key(),
         dleq: None,
+        metadata: None,
     };
 
     let signatures = vec![sig1.clone(), sig2.clone()];
@@ -53,6 +59,7 @@ where
     let retrieved_sig2 = retrieved[1].as_ref().unwrap();
     assert_eq!(retrieved_sig1.amount, sig1.amount);
     assert_eq!(retrieved_sig1.c, sig1.c);
+    assert_eq!(retrieved_sig1.metadata, sig1.metadata);
     assert_eq!(retrieved_sig2.amount, sig2.amount);
     assert_eq!(retrieved_sig2.c, sig2.c);
 }
@@ -72,6 +79,7 @@ where
         keyset_id: keyset_id1,
         c: SecretKey::generate().public_key(),
         dleq: None,
+        metadata: None,
     };
 
     // Create signatures for keyset 2
@@ -81,6 +89,7 @@ where
         keyset_id: keyset_id2,
         c: SecretKey::generate().public_key(),
         dleq: None,
+        metadata: None,
     };
 
     // Add both signatures
@@ -126,6 +135,7 @@ where
         keyset_id,
         c: SecretKey::generate().public_key(),
         dleq: None,
+        metadata: None,
     };
 
     let sig2 = BlindSignature {
@@ -133,6 +143,7 @@ where
         keyset_id,
         c: SecretKey::generate().public_key(),
         dleq: None,
+        metadata: None,
     };
 
     // Create signature for quote 2
@@ -142,6 +153,7 @@ where
         keyset_id,
         c: SecretKey::generate().public_key(),
         dleq: None,
+        metadata: None,
     };
 
     // Add signatures with different quote ids
@@ -194,6 +206,7 @@ where
         keyset_id,
         c: SecretKey::generate().public_key(),
         dleq: None,
+        metadata: None,
     };
 
     let sig2 = BlindSignature {
@@ -201,6 +214,7 @@ where
         keyset_id,
         c: SecretKey::generate().public_key(),
         dleq: None,
+        metadata: None,
     };
 
     let sig3 = BlindSignature {
@@ -208,6 +222,7 @@ where
         keyset_id,
         c: SecretKey::generate().public_key(),
         dleq: None,
+        metadata: None,
     };
 
     // Add signatures
@@ -257,6 +272,7 @@ where
         keyset_id,
         c: SecretKey::generate().public_key(),
         dleq: None,
+        metadata: None,
     };
 
     // Add signature first time

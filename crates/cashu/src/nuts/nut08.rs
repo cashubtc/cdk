@@ -60,6 +60,7 @@ mod tests {
             )
             .unwrap(),
             dleq: None,
+            metadata: None,
         }
     }
 
