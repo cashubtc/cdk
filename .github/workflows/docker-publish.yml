@@ -8,6 +8,22 @@ on:
       tag:
         description: 'Tag to build and publish'
         required: true
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Tag to build and publish'
+        type: string
+        required: true
+      ref:
+        description: 'Git ref to checkout. Defaults to the tag.'
+        type: string
+        required: false
+        default: ''
+      nightly:
+        description: 'Build a nightly image and move the nightly tag'
+        type: boolean
+        required: false
+        default: false
 
 env:
   REGISTRY: docker.io
@@ -46,7 +62,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ inputs.ref || inputs.tag || github.ref }}
+
+      - name: Validate nightly tag
+        if: ${{ inputs.nightly == true }}
+        shell: bash
+        env:
+          NIGHTLY_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${NIGHTLY_TAG}" =~ ^v?[0-9]+[.][0-9]+[.][0-9]+-nightly[.][0-9]{8}[.]g[0-9a-f]{7}$ ]]; then
+            echo "::error::Nightly tag must look like v0.18.0-nightly.20260803.g1a2b3c4; got ${NIGHTLY_TAG}"
+            exit 1
+          fi
 
       - name: Install Nix
         if: ${{ matrix.arch.install_nix }}
@@ -84,7 +112,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-          INPUT_TAG: ${{ github.event.inputs.tag }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           if [[ "$EVENT_NAME" == "release" ]]; then
             RAW_VERSION="$RELEASE_TAG"
@@ -131,7 +159,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-          INPUT_TAG: ${{ github.event.inputs.tag }}
+          INPUT_TAG: ${{ inputs.tag }}
           IS_STABLE: ${{ !github.event.release.prerelease && !contains(github.event.release.tag_name, 'rc') }}
         run: |
           if [[ "$EVENT_NAME" == "release" ]]; then
@@ -163,6 +191,16 @@ jobs:
         run: |
           docker buildx imagetools create \
             -t "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}${{ matrix.variant.tag_suffix }}" \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}${{ matrix.variant.tag_suffix }}-amd64" \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}${{ matrix.variant.tag_suffix }}-arm64"
+
+      - name: Create nightly manifest
+        if: ${{ inputs.nightly == true }}
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          docker buildx imagetools create \
+            -t "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:nightly${{ matrix.variant.tag_suffix }}" \
             "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}${{ matrix.variant.tag_suffix }}-amd64" \
             "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}${{ matrix.variant.tag_suffix }}-arm64"
 
