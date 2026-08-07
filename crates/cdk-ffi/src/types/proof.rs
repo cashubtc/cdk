@@ -17,6 +17,8 @@ pub enum ProofState {
     Spent,
     Reserved,
     PendingSpent,
+    /// Proofs received offline, verified via DLEQ, awaiting final swap
+    PendingReceive,
 }
 
 impl From<CdkState> for ProofState {
@@ -27,6 +29,7 @@ impl From<CdkState> for ProofState {
             CdkState::Spent => ProofState::Spent,
             CdkState::Reserved => ProofState::Reserved,
             CdkState::PendingSpent => ProofState::PendingSpent,
+            CdkState::PendingReceive => ProofState::PendingReceive,
         }
     }
 }
@@ -39,6 +42,7 @@ impl From<ProofState> for CdkState {
             ProofState::Spent => CdkState::Spent,
             ProofState::Reserved => CdkState::Reserved,
             ProofState::PendingSpent => CdkState::PendingSpent,
+            ProofState::PendingReceive => CdkState::PendingReceive,
         }
     }
 }
