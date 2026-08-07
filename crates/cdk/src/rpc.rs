@@ -201,7 +201,7 @@ where
 mod tests {
     use std::str::FromStr;
 
-    use cdk_common::{MintQuoteBolt11Request, MintQuoteRequest};
+    use cdk_common::{MeltQuoteBolt11Request, MintQuoteBolt11Request, MintQuoteRequest};
 
     use super::*;
     use crate::nuts::CurrencyUnit;
@@ -300,8 +300,19 @@ mod tests {
             ep(Method::Post, RoutePath::Mint(m.clone()))
         );
 
-        // `PostMeltQuote` reads its method from the payload the same way
-        // `PostMintQuote` does; the melt route paths below cover the mapping.
+        // Melt: quote (method read from the payload, like the mint quote),
+        // status read, and the melt write, each keyed by method.
+        let melt_quote = MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+            request: "lnbc100n1p5z3a63pp56854ytysg7e5z9fl3w5mgvrlqjfcytnjv8ff5hm5qt6gl6alxesqdqqcqzzsxqyz5vqsp5p0x0dlhn27s63j4emxnk26p7f94u0lyarnfp5yqmac9gzy4ngdss9qxpqysgqne3v0hnzt2lp0hc69xpzckk0cdcar7glvjhq60lsrfe8gejdm8c564prrnsft6ctxxyrewp4jtezrq3gxxqnfjj0f9tw2qs9y0lslmqpfu7et9"
+                .parse()
+                .unwrap(),
+            unit: CurrencyUnit::Sat,
+            options: None,
+        });
+        assert_eq!(
+            PostMeltQuote(melt_quote).protected_endpoint(),
+            ep(Method::Post, RoutePath::MeltQuote(m.clone()))
+        );
         assert_eq!(
             GetMeltQuoteStatus {
                 method: PaymentMethod::BOLT11,
