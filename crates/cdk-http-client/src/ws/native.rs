@@ -1,11 +1,29 @@
 //! Native WebSocket implementation using tokio-tungstenite
 
-use futures::{SinkExt, StreamExt};
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use futures::{Sink, StreamExt};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Error as HandshakeError, Message};
 use tokio_tungstenite::WebSocketStream;
 
 use super::WsError;
+
+/// Map a tungstenite handshake error to a [`WsError`], preserving the "server
+/// permanently has no websocket endpoint" case so the caller can latch to poll
+/// fallback instead of retrying forever. 429 and 5xx are treated as transient
+/// (`Connection`) because they may clear on retry.
+fn map_handshake_error(e: HandshakeError) -> WsError {
+    match e {
+        HandshakeError::Http(resp)
+            if matches!(resp.status().as_u16(), 400 | 404 | 405 | 426 | 501) =>
+        {
+            WsError::Unsupported(resp.status().as_u16())
+        }
+        other => WsError::Connection(other.to_string()),
+    }
+}
 
 /// WebSocket sender half
 pub struct WsSender {
@@ -35,20 +53,33 @@ impl std::fmt::Debug for WsReceiver {
     }
 }
 
-impl WsSender {
-    /// Send a text message over the WebSocket
-    pub async fn send(&mut self, text: String) -> Result<(), WsError> {
-        self.inner
-            .send(Message::Text(text.into()))
-            .await
+// A `Sink<String>` rather than inherent send/close methods so a boxed adapter
+// (`stream_channel::from_ws`) forwards `poll_close` to the underlying
+// `WebSocketStream`, whose close handshake sends a `Close` frame to the mint.
+impl Sink<String> for WsSender {
+    type Error = WsError;
+
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), WsError>> {
+        Pin::new(&mut *self.get_mut().inner)
+            .poll_ready(cx)
             .map_err(|e| WsError::Send(e.to_string()))
     }
 
-    /// Send a close frame
-    pub async fn close(&mut self) -> Result<(), WsError> {
-        self.inner
-            .send(Message::Close(None))
-            .await
+    fn start_send(self: Pin<&mut Self>, item: String) -> Result<(), WsError> {
+        Pin::new(&mut *self.get_mut().inner)
+            .start_send(Message::Text(item.into()))
+            .map_err(|e| WsError::Send(e.to_string()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), WsError>> {
+        Pin::new(&mut *self.get_mut().inner)
+            .poll_flush(cx)
+            .map_err(|e| WsError::Send(e.to_string()))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), WsError>> {
+        Pin::new(&mut *self.get_mut().inner)
+            .poll_close(cx)
             .map_err(|e| WsError::Send(e.to_string()))
     }
 }
@@ -115,7 +146,7 @@ pub async fn connect(
 
     let (ws_stream, _) = tokio_tungstenite::connect_async(request)
         .await
-        .map_err(|e| WsError::Connection(e.to_string()))?;
+        .map_err(map_handshake_error)?;
 
     Ok(from_websocket_stream(ws_stream))
 }
@@ -158,7 +189,49 @@ pub(crate) async fn connect_tor(
     let (ws_stream, _) =
         tokio_tungstenite::client_async_tls_with_config(request, stream, None, None)
             .await
-            .map_err(|e| WsError::Connection(e.to_string()))?;
+            .map_err(map_handshake_error)?;
 
     Ok(from_websocket_stream(ws_stream))
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio_tungstenite::tungstenite::http::Response;
+
+    use super::*;
+
+    fn http_error(status: u16) -> HandshakeError {
+        HandshakeError::Http(Response::builder().status(status).body(None).unwrap())
+    }
+
+    #[test]
+    fn permanent_statuses_map_to_unsupported() {
+        for status in [400, 404, 405, 426, 501] {
+            assert!(
+                matches!(map_handshake_error(http_error(status)), WsError::Unsupported(s) if s == status),
+                "HTTP {status} should latch to Unsupported"
+            );
+        }
+    }
+
+    #[test]
+    fn transient_statuses_stay_connection() {
+        for status in [429, 500, 502, 503] {
+            assert!(
+                matches!(
+                    map_handshake_error(http_error(status)),
+                    WsError::Connection(_)
+                ),
+                "HTTP {status} should retry as a transient Connection error"
+            );
+        }
+    }
+
+    #[test]
+    fn non_http_errors_stay_connection() {
+        assert!(matches!(
+            map_handshake_error(HandshakeError::ConnectionClosed),
+            WsError::Connection(_)
+        ));
+    }
 }

@@ -4,6 +4,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cdk_common::stream_channel::{StreamRx, StreamTx};
 use cdk_common::{
     AuthToken, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
     MintQuoteResponse,
@@ -50,21 +51,6 @@ pub trait MintConnector: Debug {
     /// Create an OIDC client using the same underlying transport when possible.
     fn oidc_client(&self, openid_discovery: String, client_id: Option<String>) -> OidcClient {
         OidcClient::new(openid_discovery, client_id)
-    }
-
-    /// Connect to a WebSocket endpoint using the connector's transport.
-    async fn connect_websocket(
-        &self,
-        url: &str,
-        headers: &[(&str, &str)],
-    ) -> Result<
-        (
-            cdk_common::ws_client::WsSender,
-            cdk_common::ws_client::WsReceiver,
-        ),
-        cdk_common::ws_client::WsError,
-    > {
-        cdk_common::ws_client::connect(url, headers).await
     }
 
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -164,4 +150,15 @@ pub trait MintConnector: Debug {
 
     /// Set auth wallet on client
     async fn set_auth_wallet(&self, wallet: Option<AuthWallet>);
+
+    /// Open a raw bidirectional stream to the mint.
+    ///
+    /// The stream carries opaque `String` messages; the content (a NUT-17
+    /// subscription session or anything else) is layered on top and is not the
+    /// connector's concern. Each transport supplies the stream channel it has
+    /// (a WebSocket for HTTP, a QUIC stream for Iroh, a streaming RPC for gRPC).
+    /// The default is unsupported; a stream-capable connector overrides it.
+    async fn open_stream(&self) -> Result<(StreamTx, StreamRx), Error> {
+        Err(Error::StreamingNotSupported)
+    }
 }

@@ -30,6 +30,9 @@ pub enum Error {
     /// Unsupported unit
     #[error("Unit unsupported")]
     UnsupportedUnit,
+    /// The transport has no streaming capability (no NUT-17 open_stream)
+    #[error("Streaming is not supported by this transport")]
+    StreamingNotSupported,
     /// Payment failed
     #[error("Payment failed")]
     PaymentFailed,

@@ -4,11 +4,13 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 use cdk_common::auth::oidc::{OidcHttpResponse, OidcHttpTransport};
+use cdk_common::stream_channel::{StreamRx, StreamTx};
 use cdk_common::{
     nut19, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, Method,
     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
     MintQuoteOnchainResponse, MintQuoteRequest, MintQuoteResponse, ProtectedEndpoint, RoutePath,
 };
+use cdk_http_client::ws::WsError;
 use cdk_http_client::HttpError;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -39,6 +41,20 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 /// Upper bound for the exponential backoff between retries.
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(8);
+
+/// Classify a websocket dial failure. A server that answered the upgrade with a
+/// permanent HTTP status (no NUT-17 endpoint) becomes `StreamingNotSupported`
+/// so the subscription layer latches to poll fallback; anything else stays a
+/// transient `Custom` error and is retried.
+fn ws_error_to_error(e: WsError) -> Error {
+    match e {
+        WsError::Unsupported(status) => {
+            tracing::debug!("mint has no websocket endpoint (HTTP {status}); using poll fallback");
+            Error::StreamingNotSupported
+        }
+        other => Error::Custom(format!("open_stream connect failed: {other}")),
+    }
+}
 
 fn payment_method_path_segment(method: &PaymentMethod) -> Result<&str, Error> {
     match method {
@@ -391,20 +407,6 @@ where
                 transport: self.transport.clone(),
             }),
         )
-    }
-
-    async fn connect_websocket(
-        &self,
-        url: &str,
-        headers: &[(&str, &str)],
-    ) -> Result<
-        (
-            cdk_common::ws_client::WsSender,
-            cdk_common::ws_client::WsReceiver,
-        ),
-        cdk_common::ws_client::WsError,
-    > {
-        self.transport.ws_connect(url, headers).await
     }
 
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -926,6 +928,44 @@ where
 
     async fn set_auth_wallet(&self, wallet: Option<AuthWallet>) {
         *self.auth_wallet.write().await = wallet;
+    }
+
+    async fn open_stream(&self) -> Result<(StreamTx, StreamRx), Error> {
+        let mut url = self.mint_url.join_paths(&["v1", "ws"])?;
+        if url.scheme() == "https" {
+            let _ = url.set_scheme("wss");
+        } else {
+            let _ = url.set_scheme("ws");
+        }
+
+        let mut headers: Vec<(String, String)> = Vec::new();
+        // WebSocket auth is not specified yet (tracked in cashubtc/nuts#413).
+        // Until the spec lands we attach a token opportunistically and ignore
+        // failures rather than aborting the connection.
+        if let Some(auth_wallet) = self.get_auth_wallet().await {
+            let endpoint = ProtectedEndpoint::new(Method::Get, RoutePath::Ws);
+            if let Ok(Some(token)) = auth_wallet.get_auth_for_request(&endpoint).await {
+                let key = match &token {
+                    AuthToken::ClearAuth(_) => "Clear-auth",
+                    AuthToken::BlindAuth(_) => "Blind-auth",
+                };
+                headers.push((key.to_string(), token.to_string()));
+            }
+        }
+
+        let url_str = url.to_string();
+        let header_refs: Vec<(&str, &str)> = headers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
+        let (sender, receiver) = self
+            .transport
+            .ws_connect(&url_str, &header_refs)
+            .await
+            .map_err(ws_error_to_error)?;
+
+        Ok(cdk_common::stream_channel::from_ws(sender, receiver))
     }
 
     /// Spendable check [NUT-07]
@@ -1549,5 +1589,22 @@ mod tests {
             get_urls.lock().expect("lock").is_empty(),
             "invalid LNURL callback must be rejected before transport"
         );
+    }
+
+    #[test]
+    fn ws_unsupported_maps_to_streaming_not_supported() {
+        // Latches the poll fallback so a mint without /v1/ws is not re-dialed forever.
+        assert!(matches!(
+            ws_error_to_error(WsError::Unsupported(404)),
+            Error::StreamingNotSupported
+        ));
+    }
+
+    #[test]
+    fn ws_connection_error_stays_transient() {
+        assert!(matches!(
+            ws_error_to_error(WsError::Connection("boom".to_string())),
+            Error::Custom(_)
+        ));
     }
 }
