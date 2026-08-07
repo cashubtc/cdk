@@ -12,6 +12,7 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::stream_channel::{StreamRx, StreamTx};
+use cdk_common::task::spawn;
 use cdk_common::{
     MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
     MintQuoteResponse,
@@ -317,7 +318,7 @@ impl MintServer for Mint {
         // unlike the axum bridge there is no `STALL_TIMEOUT` here, so a
         // non-draining in-process consumer would block `serve_stream` on the
         // bounded channel until the client end is dropped.
-        tokio::spawn(async move { mint.serve_stream(mint_tx, mint_rx).await });
+        spawn(async move { mint.serve_stream(mint_tx, mint_rx).await });
         Ok(client_end)
     }
 }
