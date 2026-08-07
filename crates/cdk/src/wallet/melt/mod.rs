@@ -43,8 +43,8 @@ use std::time::Duration;
 
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
-    MeltQuote, MeltSagaState, OperationData, Transaction, TransactionDirection, WalletSaga,
-    WalletSagaState,
+    MeltQuote, MeltSagaState, OperationData, Transaction, TransactionDirection, TransactionStatus,
+    WalletSaga, WalletSagaState,
 };
 use cdk_common::{Error, MeltQuoteState, PaymentMethod, ProofsMethods, State};
 use tracing::instrument;
@@ -352,8 +352,10 @@ impl<'a> PendingMelt<'a> {
                         return WaitStep::Continue(self);
                     }
 
-                    self.saga.handle_failure().await;
-                    WaitStep::Terminal(Err(Error::PaymentFailed))
+                    match self.saga.handle_failure().await {
+                        Ok(()) => WaitStep::Terminal(Err(Error::PaymentFailed)),
+                        Err(error) => WaitStep::Terminal(Err(error)),
+                    }
                 }
             },
             Err(err) => {
@@ -1382,24 +1384,24 @@ impl Wallet {
                     .and_then(|amount| amount.checked_sub(change_total))
                     .ok_or(Error::AmountOverflow)?;
 
-                self.localstore
-                    .add_transaction(Transaction {
-                        mint_url: self.mint_url.clone(),
-                        direction: TransactionDirection::Outgoing,
-                        amount,
-                        fee,
-                        unit: quote.unit.clone(),
-                        ys: pending_proofs.ys()?,
-                        timestamp: unix_time(),
-                        memo: None,
-                        metadata,
-                        quote_id: Some(quote.id.clone()),
-                        payment_request: Some(quote.request.clone()),
-                        payment_proof,
-                        payment_method: Some(quote.payment_method.clone()),
-                        saga_id: Some(operation_id),
-                    })
-                    .await?;
+                self.upsert_transaction(Transaction {
+                    mint_url: self.mint_url.clone(),
+                    direction: TransactionDirection::Outgoing,
+                    amount,
+                    fee,
+                    unit: quote.unit.clone(),
+                    ys: pending_proofs.ys()?,
+                    timestamp: unix_time(),
+                    memo: None,
+                    metadata,
+                    quote_id: Some(quote.id.clone()),
+                    payment_request: Some(quote.request.clone()),
+                    payment_proof,
+                    payment_method: Some(quote.payment_method.clone()),
+                    saga_id: Some(operation_id),
+                    status: TransactionStatus::Completed,
+                })
+                .await?;
             }
         }
         Ok(())

@@ -462,6 +462,7 @@ mod tests {
             payment_proof: None,
             payment_method: None,
             saga_id: Some("not-a-valid-uuid".to_string()),
+            status: TransactionStatus::Completed,
         };
 
         let result: Result<cdk::wallet::types::Transaction, _> = transaction.try_into();
