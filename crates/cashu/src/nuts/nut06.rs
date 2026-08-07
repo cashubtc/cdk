@@ -337,6 +337,12 @@ pub struct Nuts {
     #[serde(rename = "29")]
     #[serde(skip_serializing_if = "nut29::Settings::is_empty")]
     pub nut29: nut29::Settings,
+    /// NUTXX Settings (mint quote lookup by pubkey)
+    ///
+    /// Keyed `XX` until the NUT is assigned a number.
+    #[serde(default)]
+    #[serde(rename = "XX")]
+    pub nutxx: SupportedSettings,
 }
 
 impl Nuts {
@@ -458,6 +464,14 @@ impl Nuts {
     pub fn nut29(self, settings: nut29::Settings) -> Self {
         Self {
             nut29: settings,
+            ..self
+        }
+    }
+
+    /// NutXX settings (mint quote lookup by pubkey)
+    pub fn nutxx(self, supported: bool) -> Self {
+        Self {
+            nutxx: SupportedSettings { supported },
             ..self
         }
     }
