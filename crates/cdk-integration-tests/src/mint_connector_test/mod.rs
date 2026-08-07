@@ -389,20 +389,17 @@ pub async fn open_stream_subscribe<C: MintConnector + Sync>(conn: C) {
     );
 
     // `close()` must reach the mint (over WebSocket this is a Close frame) so the
-    // mint tears its side down and the receive half ends promptly. `tx` is kept
-    // alive on purpose: a regressed no-op close leaves the socket open with no
-    // EOF, so `recv` would block until the timeout instead of ending. The end
-    // signal is terminal but transport-dependent: the in-memory pair yields a
-    // clean `None`, while the WebSocket wallet closes its write half and drops
-    // the socket without draining the mint's echoed Close, surfacing a receive
-    // error. Either is "stream ended"; a further data message would not be.
+    // mint completes the close handshake and the receive half ends cleanly with
+    // `None`. `tx` is kept alive on purpose: a regressed no-op close leaves the
+    // socket open with no EOF, so `recv` would block until the timeout instead
+    // of ending.
     tx.close().await.expect("close stream");
     let ended = timeout(Duration::from_secs(10), rx.recv())
         .await
-        .expect("mint should end the stream after close(), not hang");
+        .expect("mint should close the stream after close(), not hang");
     assert!(
-        !matches!(ended, Some(Ok(_))),
-        "receive half should end after close(), got a message instead: {ended:?}"
+        ended.is_none(),
+        "receive half should end cleanly after close(), got: {ended:?}"
     );
 }
 

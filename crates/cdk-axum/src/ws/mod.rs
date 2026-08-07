@@ -95,13 +95,14 @@ fn bridge(mut socket: WebSocket) -> (StreamTx, StreamRx) {
                             if let Some(CloseFrame { code, reason }) = frame {
                                 tracing::info!("ws-close: code={code:?} reason='{reason}'");
                             }
-                            let _ = socket
-                                .send(Message::Close(Some(CloseFrame {
-                                    code: axum::extract::ws::close_code::NORMAL,
-                                    reason: "bye!".into(),
-                                })))
-                                .await;
-                            // Peer initiated close and we echoed it; nothing owed.
+                            // Reading the peer's Close already queued tungstenite's
+                            // reply; flush it so the peer sees a clean handshake. A
+                            // manual `send(Close)` here would fail with
+                            // `SendAfterClosing` (state is no longer active) and skip
+                            // the flush, dropping the socket with the reply unsent and
+                            // leaving the peer to observe a connection reset.
+                            let _ = socket.flush().await;
+                            // Peer initiated close and we replied; nothing owed.
                             break false;
                         }
                         Some(Err(err)) => {
