@@ -5,7 +5,8 @@
 
 use std::str::FromStr;
 
-use cdk_common::mint::{OperationKind, Saga};
+use cdk_common::mint::{MeltPaymentRequest, OperationKind, Saga};
+use cdk_common::payment::PaymentIdentifier;
 use cdk_common::{PublicKey, QuoteId, State};
 
 use super::{Error, Mint};
@@ -40,6 +41,24 @@ impl Mint {
         Ok(None)
     }
 
+    /// Returns the stable identifier a payment backend receives for this
+    /// quote, including quotes created before that identifier was persisted.
+    fn melt_payment_lookup_id(quote: &MeltQuote) -> PaymentIdentifier {
+        quote
+            .request_lookup_id
+            .clone()
+            .unwrap_or_else(|| match &quote.request {
+                MeltPaymentRequest::Bolt11 { bolt11 } => {
+                    PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref())
+                }
+                MeltPaymentRequest::Bolt12 { .. }
+                | MeltPaymentRequest::Custom { .. }
+                | MeltPaymentRequest::Onchain { .. } => {
+                    PaymentIdentifier::QuoteId(quote.id.clone())
+                }
+            })
+    }
+
     /// Checks the payment status of a melt quote with the LN backend
     ///
     /// This is a helper function used by saga recovery to determine whether to
@@ -48,7 +67,7 @@ impl Mint {
     /// # Returns
     ///
     /// - `Ok(MakePaymentResponse)`: Payment status successfully retrieved from backend
-    /// - `Err(Error)`: Failed to check payment status (backend unavailable, no lookup_id, etc.)
+    /// - `Err(Error)`: Failed to check payment status (for example, backend unavailable)
     pub(super) async fn check_melt_payment_status(
         &self,
         quote: &MeltQuote,
@@ -63,27 +82,20 @@ impl Mint {
             Error::UnsupportedUnit
         })?;
 
-        let lookup_id = quote.request_lookup_id.as_ref().ok_or_else(|| {
-            tracing::warn!(
-                "No lookup_id for melt quote {}, cannot check payment status",
-                quote.id
-            );
-            Error::Internal
-        })?;
+        let lookup_id = Self::melt_payment_lookup_id(quote);
 
         // Check payment status with LN backend
-        let pay_invoice_response =
-            ln_backend
-                .check_outgoing_payment(lookup_id)
-                .await
-                .map_err(|err| {
-                    tracing::error!(
-                        "Failed to check payment status for quote {}: {}",
-                        quote.id,
-                        err
-                    );
-                    Error::Internal
-                })?;
+        let pay_invoice_response = ln_backend
+            .check_outgoing_payment(&lookup_id)
+            .await
+            .map_err(|err| {
+                tracing::error!(
+                    "Failed to check payment status for quote {}: {}",
+                    quote.id,
+                    err
+                );
+                Error::Internal
+            })?;
 
         tracing::info!(
             "Payment status for melt quote {}: {}",
@@ -131,7 +143,18 @@ impl Mint {
         Ok(())
     }
 
-    async fn is_internal_melt_settlement(&self, quote: &MeltQuote, saga: &Saga) -> bool {
+    /// Checks whether this melt quote already settled a mint quote on this same
+    /// mint (internal settlement).
+    ///
+    /// Returns `Ok(true)` only when the mint quote's recorded payments include
+    /// this melt quote id, i.e. the recipient was actually credited by this
+    /// melt. Errors must be treated fail-closed by callers: when internal
+    /// settlement cannot be determined, compensation must not proceed.
+    async fn is_internal_melt_settlement(
+        &self,
+        quote: &MeltQuote,
+        saga: &Saga,
+    ) -> Result<bool, Error> {
         match self
             .localstore
             .get_mint_quote_by_request(&quote.request.to_string())
@@ -139,18 +162,45 @@ impl Mint {
         {
             Ok(Some(mint_quote)) => {
                 let melt_quote_id_str = quote.id.to_string();
-                mint_quote.payment_ids().contains(&&melt_quote_id_str)
+                Ok(mint_quote.payment_ids().contains(&&melt_quote_id_str))
             }
-            Ok(None) => false,
+            Ok(None) => Ok(false),
             Err(e) => {
                 tracing::warn!(
                     "Error checking for internal settlement for saga {}: {}",
                     saga.operation_id,
                     e
                 );
-                false
+                Err(e.into())
             }
         }
+    }
+
+    /// Returns the synthetic paid response for a melt settled on this mint.
+    ///
+    /// Internal settlements do not reach a payment backend, so recovery must
+    /// reconstruct the response needed by the shared finalization path. A
+    /// non-internal melt returns `Ok(None)`; database errors are propagated so
+    /// callers can fail closed according to their recovery context.
+    pub(crate) async fn internal_melt_settlement_response(
+        &self,
+        quote: &MeltQuote,
+        saga: &Saga,
+    ) -> Result<Option<crate::cdk_payment::MakePaymentResponse>, Error> {
+        if !self.is_internal_melt_settlement(quote, saga).await? {
+            return Ok(None);
+        }
+
+        let payment_lookup_id = quote.request_lookup_id.clone().unwrap_or_else(|| {
+            cdk_common::payment::PaymentIdentifier::CustomId(quote.id.to_string())
+        });
+
+        Ok(Some(crate::cdk_payment::MakePaymentResponse {
+            payment_lookup_id,
+            payment_proof: None,
+            status: MeltQuoteState::Paid,
+            total_spent: quote.amount(),
+        }))
     }
 
     async fn recover_legacy_finalizing_saga(
@@ -158,30 +208,13 @@ impl Mint {
         saga: &Saga,
         quote: &MeltQuote,
     ) -> Result<Option<crate::cdk_payment::MakePaymentResponse>, Error> {
-        if self.is_internal_melt_settlement(quote, saga).await {
+        if let Some(payment_response) = self.internal_melt_settlement_response(quote, saga).await? {
             tracing::info!(
                 "Legacy Finalizing saga {} identified as internal settlement",
                 saga.operation_id
             );
 
-            let payment_lookup_id = quote.request_lookup_id.clone().unwrap_or_else(|| {
-                cdk_common::payment::PaymentIdentifier::CustomId(quote.id.to_string())
-            });
-
-            return Ok(Some(crate::cdk_payment::MakePaymentResponse {
-                payment_lookup_id,
-                payment_proof: None,
-                status: MeltQuoteState::Paid,
-                total_spent: quote.amount(),
-            }));
-        }
-
-        if quote.request_lookup_id.is_none() {
-            tracing::error!(
-                "Legacy Finalizing saga {} has no recovery metadata or lookup_id. Manual intervention required.",
-                saga.operation_id
-            );
-            return Ok(None);
+            return Ok(Some(payment_response));
         }
 
         match self.check_melt_payment_status(quote).await {
@@ -362,14 +395,18 @@ impl Mint {
     /// Recover from incomplete melt sagas
     ///
     /// Checks all persisted sagas for melt operations and determines whether to:
-    /// - **Finalize**: If payment was confirmed as PAID on LN backend
-    /// - **Compensate**: If payment was confirmed as UNPAID/FAILED or never sent
-    /// - **Skip**: If payment is PENDING/UNKNOWN (leave for check_pending_melt_quotes)
+    /// - **Finalize**: If payment was confirmed as PAID on the LN backend, the
+    ///   saga already reached `Finalizing`, or the melt settled internally
+    /// - **Compensate**: If the saga is `SetupComplete` (payment never
+    ///   attempted), or the backend confirms `Unpaid`/`Failed`
+    /// - **Skip**: If payment is `Pending`/`Unknown`, or its status cannot be
+    ///   verified
     ///
     /// This recovery handles SetupComplete state which means:
     /// - Proofs were reserved (marked as PENDING)
     /// - Change outputs were added
-    /// - Payment may or may not have been sent
+    /// - Payment was never attempted (the write-ahead marker advances the saga
+    ///   to PaymentAttempted before any dispatch)
     ///
     /// # Critical Bug Fix
     ///
@@ -409,11 +446,6 @@ impl Mint {
                 .localstore
                 .get_proof_ys_by_operation_id(&saga.operation_id)
                 .await?;
-            let blinded_secrets = self
-                .localstore
-                .get_blinded_secrets_by_operation_id(&saga.operation_id)
-                .await?;
-
             // Get quote_id from saga (new field added for efficient lookup)
             let quote_id = match saga.quote_id {
                 Some(ref qid) => qid.clone(),
@@ -490,6 +522,27 @@ impl Mint {
                 }
             };
 
+            // Startup has no live dispatches, but this recovery method is also
+            // callable directly. Serialize it with any in-process melt or
+            // quote check, then refresh the saga state acquired before waiting.
+            let quote_lock = self.melt_quote_lock(&quote_id_parsed).await;
+            let _quote_guard = quote_lock.lock_owned().await;
+            let mut saga_tx = self.localstore.begin_transaction().await?;
+            let Some(saga) = saga_tx.get_saga(&saga.operation_id).await? else {
+                saga_tx.rollback().await?;
+                continue;
+            };
+            saga_tx.rollback().await?;
+
+            let input_ys = self
+                .localstore
+                .get_proof_ys_by_operation_id(&saga.operation_id)
+                .await?;
+            let blinded_secrets = self
+                .localstore
+                .get_blinded_secrets_by_operation_id(&saga.operation_id)
+                .await?;
+
             let mut quote = match self.localstore.get_melt_quote(&quote_id_parsed).await {
                 Ok(Some(q)) => q,
                 Ok(None) => {
@@ -554,9 +607,20 @@ impl Mint {
                                     }
                                 }
                                 None => {
-                                    let Some(payment_response) =
-                                        self.recover_legacy_finalizing_saga(&saga, &quote).await?
-                                    else {
+                                    let Some(payment_response) = (match self
+                                        .recover_legacy_finalizing_saga(&saga, &quote)
+                                        .await
+                                    {
+                                        Ok(payment_response) => payment_response,
+                                        Err(err) => {
+                                            tracing::error!(
+                                                "Failed to recover legacy Finalizing saga {}: {}. Skipping.",
+                                                saga.operation_id,
+                                                err
+                                            );
+                                            continue;
+                                        }
+                                    }) else {
                                         continue;
                                     };
                                     payment_response
@@ -596,36 +660,45 @@ impl Mint {
                         cdk_common::mint::MeltSagaState::PaymentAttempted => {
                             // Payment was attempted - check for internal settlement first, then LN backend
                             tracing::info!(
-                                "Saga {} in PaymentAttempted state - checking for internal or external payment",
-                                saga.operation_id
+                                "Saga {} in {} state - checking for internal or external payment",
+                                saga.operation_id,
+                                state
                             );
 
                             // Check if this was an internal settlement by looking for a mint quote
                             // that was paid by this melt quote
-                            let is_internal_settlement =
-                                self.is_internal_melt_settlement(&quote, &saga).await;
+                            let internal_payment_response = match self
+                                .internal_melt_settlement_response(&quote, &saga)
+                                .await
+                            {
+                                Ok(payment_response) => payment_response,
+                                Err(err) => {
+                                    // Fail closed: if internal settlement cannot be
+                                    // determined, never compensate; retry on the next
+                                    // recovery cycle.
+                                    tracing::error!(
+                                        "Failed to determine internal settlement for saga {}: {}. Leaving pending.",
+                                        saga.operation_id,
+                                        err
+                                    );
+                                    continue;
+                                }
+                            };
 
-                            if is_internal_settlement {
+                            if let Some(payment_response) = internal_payment_response {
                                 // Internal settlement was completed - finalize directly
                                 tracing::info!(
                                     "Saga {} was internal settlement - will finalize directly",
                                     saga.operation_id
                                 );
 
-                                // Get payment info for finalization
-                                let total_spent = quote.amount();
-                                let payment_lookup_id =
-                                    quote.request_lookup_id.clone().unwrap_or_else(|| {
-                                        cdk_common::payment::PaymentIdentifier::CustomId(
-                                            quote.id.to_string(),
-                                        )
-                                    });
+                                let payment_lookup_id = payment_response.payment_lookup_id;
 
                                 if let Err(err) = self
                                     .finalize_paid_melt_quote(
                                         &quote,
-                                        total_spent,
-                                        None, // No preimage for internal settlement
+                                        payment_response.total_spent,
+                                        payment_response.payment_proof,
                                         &payment_lookup_id,
                                         saga.operation_id,
                                     )
@@ -658,18 +731,10 @@ impl Mint {
 
             let should_compensate = if should_compensate {
                 true
-            } else if quote.request_lookup_id.is_none() {
-                // Fallback: No request_lookup_id means payment likely never sent
-                tracing::info!(
-                    "Saga {} for quote {} has no request_lookup_id - payment never sent, will compensate",
-                    saga.operation_id,
-                    quote_id
-                );
-                true
             } else {
                 // Payment was attempted - check LN backend status
                 tracing::info!(
-                    "Saga {} for quote {} has request_lookup_id - checking payment status with LN backend",
+                    "Saga {} for quote {} was attempted - checking payment status with backend",
                     saga.operation_id,
                     quote_id
                 );
@@ -784,6 +849,17 @@ impl Mint {
         &self,
         quote: &mut MeltQuote,
     ) -> Result<(), Error> {
+        let quote_lock = self.melt_quote_lock(&quote.id).await;
+        let _quote_guard = quote_lock.lock_owned().await;
+
+        // The caller may have loaded the quote before waiting for an active
+        // dispatch/finalization. Refresh it after acquiring the guard.
+        *quote = self
+            .localstore
+            .get_melt_quote(&quote.id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
         if quote.state != MeltQuoteState::Pending {
             return Ok(());
         }
@@ -801,6 +877,19 @@ impl Mint {
                 return Ok(());
             }
         };
+
+        if let Some(payment_response) = self.internal_melt_settlement_response(quote, &saga).await?
+        {
+            return super::saga_recovery::process_melt_saga_outcome(
+                &saga,
+                quote,
+                &payment_response,
+                &self.localstore,
+                &self.pubsub_manager,
+                self,
+            )
+            .await;
+        }
 
         let payment_response = self.check_melt_payment_status(quote).await?;
 

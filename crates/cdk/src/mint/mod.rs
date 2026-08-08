@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
@@ -80,6 +80,15 @@ pub struct Mint {
     /// freshest signatory snapshot, then store it" makes the last write always
     /// the newest one, so a stale snapshot can never overwrite a newer one.
     keyset_store_lock: Arc<Mutex<()>>,
+    /// Serializes live melt dispatch and reconciliation for each quote within
+    /// this mint process.
+    ///
+    /// The database remains the source of truth. This guard only closes the
+    /// single-instance window where a status check could observe `Unpaid`,
+    /// compensate the saga, and then let an already-running task dispatch the
+    /// payment. Weak entries avoid retaining every quote id for the lifetime
+    /// of the mint.
+    melt_quote_locks: Arc<Mutex<HashMap<QuoteId, Weak<Mutex<()>>>>>,
     /// Background task management
     task_state: Arc<Mutex<TaskState>>,
     /// Maximum number of inputs allowed per transaction
@@ -216,6 +225,20 @@ impl SupervisedStream for PaymentWaiter {
 }
 
 impl Mint {
+    /// Returns the process-local coordination lock for a melt quote.
+    pub(super) async fn melt_quote_lock(&self, quote_id: &QuoteId) -> Arc<Mutex<()>> {
+        let mut locks = self.melt_quote_locks.lock().await;
+
+        if let Some(lock) = locks.get(quote_id).and_then(Weak::upgrade) {
+            return lock;
+        }
+
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(quote_id.clone(), Arc::downgrade(&lock));
+        lock
+    }
+
     /// Create new [`Mint`] without authentication
     pub async fn new(
         mint_info: MintInfo,
@@ -377,6 +400,7 @@ impl Mint {
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
             keyset_store_lock: Arc::new(Mutex::new(())),
+            melt_quote_locks: Arc::new(Mutex::new(HashMap::new())),
             task_state: Arc::new(Mutex::new(TaskState {
                 keyset_updates: Some(keyset_updates),
                 ..Default::default()
@@ -975,6 +999,9 @@ impl Mint {
         quote_id: &QuoteId,
         payment_response: cdk_common::payment::MakePaymentResponse,
     ) -> Result<(), Error> {
+        let quote_lock = mint.melt_quote_lock(quote_id).await;
+        let _quote_guard = quote_lock.lock_owned().await;
+
         let Some(mut quote) = localstore.get_melt_quote(quote_id).await? else {
             tracing::warn!("Outgoing payment event for unknown quote {}", quote_id);
             return Ok(());
@@ -1037,6 +1064,9 @@ impl Mint {
         pubsub_manager: &Arc<PubSubManager>,
         quote_id: &QuoteId,
     ) -> Result<(), Error> {
+        let quote_lock = mint.melt_quote_lock(quote_id).await;
+        let _quote_guard = quote_lock.lock_owned().await;
+
         let Some(mut quote) = localstore.get_melt_quote(quote_id).await? else {
             tracing::warn!("Outgoing payment event for unknown quote {}", quote_id);
             return Ok(());
@@ -2362,8 +2392,13 @@ mod tests {
         tx.update_melt_quote_state(&mut stored_quote, MeltQuoteState::Paid, None)
             .await
             .unwrap();
-        tx.update_saga(
-            &operation_id,
+        let mut saga = tx
+            .get_saga_for_update(&operation_id)
+            .await
+            .unwrap()
+            .expect("saga should exist");
+        tx.update_acquired_saga(
+            &mut saga,
             SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentAttempted),
         )
         .await

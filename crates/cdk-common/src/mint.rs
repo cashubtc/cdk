@@ -162,7 +162,7 @@ impl FromStr for SwapSagaState {
 pub enum MeltSagaState {
     /// Setup complete (proofs reserved, quote verified)
     SetupComplete,
-    /// Payment attempted to Lightning network (may or may not have succeeded)
+    /// Payment attempted through the configured backend (may or may not have succeeded)
     PaymentAttempted,
     /// TX1 committed (proofs Spent, quote Paid) - change signing + cleanup pending
     Finalizing,

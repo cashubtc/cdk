@@ -99,10 +99,15 @@ pub(crate) fn total_spent_for_quote_unit(
 /// # What This Does
 ///
 /// Within a single database transaction:
-/// 1. Removes input proofs from database
-/// 2. Removes change output blinded messages
-/// 3. Resets quote state from Pending to Unpaid
-/// 4. Deletes melt request tracking record
+/// 1. Locks the quote and saga rows (in that order, matching the
+///    finalization path's lock order)
+/// 2. Verifies the saga still exists and has not advanced to `Finalizing`;
+///    a stale compensation whose saga was already rolled back or superseded
+///    is a no-op, and a saga already being finalized is never rolled back
+/// 3. Removes input proofs from database
+/// 4. Removes change output blinded messages
+/// 5. Resets quote state from Pending to Unpaid
+/// 6. Deletes melt request tracking record
 ///
 /// This restores the database to its pre-melt state, allowing retry.
 ///
@@ -115,7 +120,9 @@ pub(crate) fn total_spent_for_quote_unit(
 ///
 /// # Errors
 ///
-/// Returns database errors if transaction fails
+/// Returns database errors if transaction fails, `Error::PaidQuote` if the
+/// quote is already paid, and `Error::UnknownPaymentState` if the saga has
+/// already advanced to `Finalizing` and must not be rolled back.
 pub async fn rollback_melt_quote(
     db: &DynMintDatabase,
     pubsub: &PubSubManager,
@@ -137,6 +144,41 @@ pub async fn rollback_melt_quote(
     );
 
     let mut tx = db.begin_transaction().await?;
+
+    // Lock the quote first, then the saga: this matches the lock order used by
+    // the finalization path (quote row in its first transaction, saga row in
+    // its second) and avoids a lock-order inversion against it.
+    let quote = tx.get_melt_quote(quote_id).await?;
+
+    // Ownership and state guard: only the saga that still owns this melt may
+    // roll it back. Acquiring the saga locks its row, so a concurrent rollback
+    // that already deleted the row, or a concurrent finalizer that already
+    // committed `Finalizing`, is observed before any setup artifact is removed.
+    match tx.get_saga_for_update(operation_id).await? {
+        None => {
+            tracing::info!(
+                "Skipping rollback for melt quote {} because saga {} no longer exists",
+                quote_id,
+                operation_id
+            );
+            tx.rollback().await?;
+            return Ok(());
+        }
+        Some(saga) => {
+            if matches!(
+                &saga.state,
+                mint_types::SagaStateEnum::Melt(mint_types::MeltSagaState::Finalizing)
+            ) {
+                tracing::warn!(
+                    "Refusing rollback for melt quote {}: saga {} is already Finalizing",
+                    quote_id,
+                    operation_id
+                );
+                tx.rollback().await?;
+                return Err(Error::UnknownPaymentState);
+            }
+        }
+    }
 
     let mut proofs_recovered = false;
 
@@ -161,7 +203,7 @@ pub async fn rollback_melt_quote(
         tx.delete_blinded_messages(blinded_secrets).await?;
     }
 
-    let quote_option = if let Some(mut quote) = tx.get_melt_quote(quote_id).await? {
+    let quote_option = if let Some(mut quote) = quote {
         // Rollback transitions Pending → Unpaid (not Pending → Pending): the input
         // proofs, change outputs, and melt request tracking have all been removed
         // above, so no payment attempt is in flight. Unpaid is the correct
