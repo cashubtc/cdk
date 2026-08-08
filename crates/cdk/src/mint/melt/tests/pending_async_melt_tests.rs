@@ -449,3 +449,218 @@ async fn pending_melt_without_quote_lookup_id_resolves_via_status_check() {
     assert_eq!(stored_quote.state, MeltQuoteState::Paid);
     assert!(stored_quote.request_lookup_id.is_some());
 }
+
+/// Internally-settled melts never touch the backend, so a quote without a
+/// lookup id must still be finalized by on-demand checks rather than waiting
+/// for the next restart.
+#[tokio::test]
+async fn internal_settlement_without_lookup_id_finalizes_on_demand() {
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
+        Arc::new(NoEventPendingBackend::new(usize::MAX, None).with_stripped_quote_lookup_id());
+    let mint = create_pending_test_mint(backend).await.unwrap();
+
+    // A mint quote on THIS mint; its invoice makes the melt below an internal
+    // settlement.
+    let mint_quote_response = mint
+        .get_mint_quote(
+            cdk_common::MintQuoteBolt11Request {
+                amount: Amount::from(4_000),
+                unit: CurrencyUnit::Sat,
+                description: None,
+                pubkey: None,
+            }
+            .into(),
+        )
+        .await
+        .unwrap();
+    let mint_quote = mint
+        .localstore()
+        .get_mint_quote(mint_quote_response.quote())
+        .await
+        .unwrap()
+        .expect("mint quote should exist");
+
+    let melt_quote_response = mint
+        .get_melt_quote(cdk_common::melt::MeltQuoteRequest::Bolt11(
+            MeltQuoteBolt11Request {
+                request: mint_quote.request.to_string().parse().unwrap(),
+                unit: CurrencyUnit::Sat,
+                options: None,
+            },
+        ))
+        .await
+        .unwrap();
+    let quote = mint
+        .localstore()
+        .get_melt_quote(melt_quote_response.quote().expect("single-quote method"))
+        .await
+        .unwrap()
+        .expect("melt quote should exist");
+    assert!(
+        quote.request_lookup_id.is_none(),
+        "test premise: quote persisted without a lookup id"
+    );
+
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+    let saga = crate::mint::melt::melt_saga::MeltSaga::new(
+        Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+    let (payment_saga, _decision) = setup
+        .attempt_internal_settlement(&melt_request)
+        .await
+        .unwrap();
+
+    // Simulate a crash before finalize: mint quote credited, proofs pending.
+    drop(payment_saga);
+    assert_eq!(
+        mint.localstore()
+            .get_mint_quote(mint_quote_response.quote())
+            .await
+            .unwrap()
+            .expect("mint quote should exist")
+            .state(),
+        cdk_common::MintQuoteState::Paid
+    );
+
+    // On-demand check finalizes instead of requiring a restart.
+    let mut quote = mint
+        .localstore()
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    mint.handle_pending_melt_quote(&mut quote).await.unwrap();
+
+    assert_eq!(quote.state, MeltQuoteState::Paid);
+    let states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(
+        states.iter().all(|s| *s == Some(cdk_common::State::Spent)),
+        "internally-settled proofs must be consumed"
+    );
+}
+
+/// Regression test (Loupe #96): startup recovery must NOT return a user's
+/// reserved proofs for a `PaymentAttempted` melt saga whose quote has no
+/// `request_lookup_id`.
+///
+/// Once a saga reaches `PaymentAttempted` the payment may already have
+/// succeeded. bolt12/custom backends create quotes without a lookup id, and a
+/// crash after dispatch but before the handle is persisted leaves the saga
+/// unverifiable. Recovery must keep the quote pending (manual intervention)
+/// rather than compensate.
+#[tokio::test]
+async fn payment_attempted_without_lookup_id_is_not_compensated_at_startup() {
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
+        Arc::new(NoEventPendingBackend::new(usize::MAX, None).with_stripped_quote_lookup_id());
+    let mint = create_pending_test_mint(backend).await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    assert!(
+        quote.request_lookup_id.is_none(),
+        "test premise: quote persisted without a lookup id"
+    );
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+    let saga = crate::mint::melt::melt_saga::MeltSaga::new(
+        Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+    drop(setup);
+
+    let operation_id = mint
+        .localstore()
+        .get_incomplete_sagas(cdk_common::mint::OperationKind::Melt)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("saga should exist")
+        .operation_id;
+
+    // Simulate the payment having been dispatched: the state advances to
+    // PaymentAttempted before make_payment runs, and no lookup id has been
+    // persisted to the quote yet.
+    {
+        let mut tx = mint.localstore().begin_transaction().await.unwrap();
+        let mut saga = tx
+            .get_saga_for_update(&operation_id)
+            .await
+            .unwrap()
+            .expect("saga should exist");
+        tx.update_acquired_saga(
+            &mut saga,
+            cdk_common::mint::SagaStateEnum::Melt(
+                cdk_common::mint::MeltSagaState::PaymentAttempted,
+            ),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // Inputs are reserved (Pending) at the moment of the crash.
+    let states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(states
+        .iter()
+        .all(|s| *s == Some(cdk_common::State::Pending)));
+
+    // Simulate the crash: run startup recovery.
+    mint.recover_from_incomplete_melt_sagas()
+        .await
+        .expect("recovery should succeed");
+
+    // SECURITY: recovery could not verify payment status (no lookup id), so it
+    // must NOT return the proofs; the quote stays pending for manual
+    // intervention.
+    let states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(
+        states
+            .iter()
+            .all(|s| *s == Some(cdk_common::State::Pending)),
+        "unverifiable PaymentAttempted saga must not return the reserved proofs"
+    );
+    let stored_quote = mint
+        .localstore()
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
+}

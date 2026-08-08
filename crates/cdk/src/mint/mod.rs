@@ -2362,8 +2362,13 @@ mod tests {
         tx.update_melt_quote_state(&mut stored_quote, MeltQuoteState::Paid, None)
             .await
             .unwrap();
-        tx.update_saga(
-            &operation_id,
+        let mut saga = tx
+            .get_saga_for_update(&operation_id)
+            .await
+            .unwrap()
+            .expect("saga should exist");
+        tx.update_acquired_saga(
+            &mut saga,
             SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentAttempted),
         )
         .await

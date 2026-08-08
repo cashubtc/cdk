@@ -592,21 +592,6 @@ pub trait SagaTransaction {
     /// Add saga
     async fn add_saga(&mut self, saga: &mint::Saga) -> Result<(), Self::Err>;
 
-    /// Update saga state (only updates state and updated_at fields)
-    async fn update_saga(
-        &mut self,
-        operation_id: &uuid::Uuid,
-        new_state: mint::SagaStateEnum,
-    ) -> Result<(), Self::Err>;
-
-    /// Update saga state and optional finalization metadata.
-    async fn update_saga_with_finalization_data(
-        &mut self,
-        operation_id: &uuid::Uuid,
-        new_state: mint::SagaStateEnum,
-        finalization_data: Option<&mint::MeltFinalizationData>,
-    ) -> Result<(), Self::Err>;
-
     /// Update the state of an acquired saga.
     async fn update_acquired_saga(
         &mut self,
