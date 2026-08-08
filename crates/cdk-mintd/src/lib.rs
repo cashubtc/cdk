@@ -1182,7 +1182,7 @@ async fn configure_lightning_backend(
                         ln_entry.unit.clone(),
                         _runtime.clone(),
                         work_dir,
-                        None,
+                        _kv_store.clone(),
                     )
                     .await?;
 

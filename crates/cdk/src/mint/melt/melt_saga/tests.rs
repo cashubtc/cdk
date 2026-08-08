@@ -23,6 +23,7 @@ use cdk_common::util::unix_time;
 use cdk_common::{
     Amount, CurrencyUnit, MintQuoteBolt11Request, PaymentMethod, ProofsMethods, State,
 };
+use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 
 use crate::mint::melt::melt_saga::{MeltSaga, PaymentOutcome};
 use crate::mint::melt::shared::{finalize_melt_quote, rollback_melt_quote};
@@ -1730,6 +1731,68 @@ async fn test_saga_deleted_after_payment_failure() {
     );
 
     // SUCCESS: Saga properly deleted after direct payment failure!
+}
+
+/// A payment error followed by a Pending backend check must keep proofs reserved.
+///
+/// Dispatch-ambiguous backends use Pending to prevent the live error path from
+/// converting an indeterminate payment to Failed and compensating it.
+#[tokio::test]
+async fn test_payment_error_with_pending_check_does_not_compensate() {
+    let mint = create_test_mint().await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote_with_description(
+        &mint,
+        Amount::from(9_000),
+        FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Unknown,
+            check_payment_state: MeltQuoteState::Pending,
+            pay_err: true,
+            check_err: false,
+        },
+    )
+    .await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup_saga = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+    let operation_id = setup_saga.operation_id;
+    let (payment_saga, decision) = setup_saga
+        .attempt_internal_settlement(&melt_request)
+        .await
+        .unwrap();
+
+    let outcome = payment_saga.make_payment(decision).await.unwrap();
+
+    assert!(matches!(outcome, PaymentOutcome::Pending { .. }));
+    assert_saga_exists(&mint, &operation_id).await;
+    assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
+
+    mint.recover_from_incomplete_melt_sagas()
+        .await
+        .expect("recovery should leave an indeterminate dispatch pending");
+
+    assert_saga_exists(&mint, &operation_id).await;
+    assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
+    let stored_quote = mint
+        .localstore
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .expect("quote should remain persisted");
+    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
 }
 
 // ============================================================================
@@ -3466,19 +3529,24 @@ async fn create_test_melt_quote(
     mint: &crate::mint::Mint,
     amount: Amount,
 ) -> cdk_common::mint::MeltQuote {
-    use cdk_common::melt::MeltQuoteRequest;
-    use cdk_common::nuts::MeltQuoteBolt11Request;
-    use cdk_common::CurrencyUnit;
-    use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
+    create_test_melt_quote_with_description(
+        mint,
+        amount,
+        FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Paid,
+            check_payment_state: MeltQuoteState::Paid,
+            pay_err: false,
+            check_err: false,
+        },
+    )
+    .await
+}
 
-    // Create fake invoice description (controls payment behavior)
-    let fake_description = FakeInvoiceDescription {
-        pay_invoice_state: MeltQuoteState::Paid, // Payment will succeed
-        check_payment_state: MeltQuoteState::Paid, // Check will show paid
-        pay_err: false,                          // No payment error
-        check_err: false,                        // No check error
-    };
-
+async fn create_test_melt_quote_with_description(
+    mint: &crate::mint::Mint,
+    amount: Amount,
+    fake_description: FakeInvoiceDescription,
+) -> cdk_common::mint::MeltQuote {
     // Create valid bolt11 invoice (amount in millisats)
     // Amount is already in millisats, just convert to u64
     let amount_msats: u64 = amount.into();

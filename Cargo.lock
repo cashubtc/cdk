@@ -1575,6 +1575,7 @@ dependencies = [
  "axum",
  "bip39",
  "cdk-common",
+ "cdk-sqlite",
  "futures",
  "ldk-node",
  "maud",

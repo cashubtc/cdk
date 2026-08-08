@@ -733,6 +733,7 @@ fn main() -> Result<()> {
                 addr: [127, 0, 0, 1],
                 port: ldk_node_p2p_port,
             }],
+            std::sync::Arc::new(cdk_sqlite::mint::memory::empty().await?),
         )
         .with_seed(test_mnemonic.clone());
         let cdk_ldk = match node_builder.build() {
@@ -766,6 +767,7 @@ fn main() -> Result<()> {
                         addr: [127, 0, 0, 1],
                         port: ldk_node_p2p_port,
                     }],
+                    std::sync::Arc::new(cdk_sqlite::mint::memory::empty().await?),
                 )
                 .with_seed(test_mnemonic);
 

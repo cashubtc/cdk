@@ -425,7 +425,7 @@ impl LnBackendSetup for config::LdkNode {
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
-        _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_ldk_node::CdkLdkNode> {
         use std::net::SocketAddr;
 
@@ -521,6 +521,8 @@ impl LnBackendSetup for config::LdkNode {
             .map(|addrs| addrs.iter().filter_map(|addr| addr.parse().ok()).collect())
             .unwrap_or_default();
 
+        let kv_store = kv_store.ok_or_else(|| anyhow::anyhow!("LdkNode needs a KV store"))?;
+
         let mut ldk_node_builder = cdk_ldk_node::CdkLdkNodeBuilder::new(
             network,
             chain_source,
@@ -528,6 +530,7 @@ impl LnBackendSetup for config::LdkNode {
             storage_dir_path,
             fee_reserve,
             listen_address,
+            kv_store,
         );
 
         // Only set seed if provided

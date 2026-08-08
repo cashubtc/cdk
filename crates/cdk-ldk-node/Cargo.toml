@@ -32,5 +32,8 @@ serde_urlencoded = "0.7"
 bip39.workspace = true
 web-time.workspace = true
 
+[dev-dependencies]
+cdk-sqlite.workspace = true
+
 [lints]
 workspace = true
