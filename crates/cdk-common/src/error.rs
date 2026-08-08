@@ -645,6 +645,19 @@ mod tests {
         ));
         assert!(max_outputs.is_definitive_failure());
     }
+
+    #[cfg(feature = "mint")]
+    #[test]
+    fn payment_backend_error_response_uses_generic_detail() {
+        const BACKEND_DETAIL: &str = "internal backend detail";
+        let error = Error::Payment(crate::payment::Error::Custom(BACKEND_DETAIL.to_string()));
+
+        let response = ErrorResponse::from(error);
+
+        assert_eq!(response.code, ErrorCode::Unknown(50000));
+        assert_eq!(response.detail, "Payment backend error");
+        assert!(!response.detail.contains(BACKEND_DETAIL));
+    }
 }
 
 impl Error {
@@ -1089,6 +1102,14 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::Unknown(50000),
                 detail: err.to_string(),
             },
+            #[cfg(feature = "mint")]
+            Error::Payment(payment_error) => {
+                tracing::error!(error = %payment_error, "Payment backend error");
+                ErrorResponse {
+                    code: ErrorCode::Unknown(50000),
+                    detail: "Payment backend error".to_string(),
+                }
+            }
 
             // Transaction/amount errors
             Error::SplitValuesGreater => ErrorResponse {
