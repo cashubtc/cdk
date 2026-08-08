@@ -484,7 +484,7 @@ impl fmt::Debug for ReceiveOptions {
         f.debug_struct("ReceiveOptions")
             .field("amount_split_target", &self.amount_split_target)
             .field("p2pk_signing_keys", &"[redacted]")
-            .field("preimages", &self.preimages)
+            .field("preimages", &"[redacted]")
             .field("metadata", &self.metadata)
             .finish()
     }
@@ -1317,6 +1317,7 @@ mod tests {
     fn test_wallet_options_debug_redacts_p2pk_signing_keys() {
         let secret_key = SecretKey::generate();
         let secret_hex = secret_key.to_secret_hex();
+        let preimage = "super_secret_htlc_preimage_xyz";
 
         let send_options = SendOptions {
             p2pk_signing_keys: vec![secret_key.clone()],
@@ -1324,6 +1325,7 @@ mod tests {
         };
         let receive_options = ReceiveOptions {
             p2pk_signing_keys: vec![secret_key],
+            preimages: vec![preimage.to_string()],
             ..Default::default()
         };
 
@@ -1333,6 +1335,7 @@ mod tests {
         assert!(!send_debug.contains(&secret_hex));
         assert!(send_debug.contains("[redacted]"));
         assert!(!receive_debug.contains(&secret_hex));
+        assert!(!receive_debug.contains(preimage));
         assert!(receive_debug.contains("[redacted]"));
     }
 
