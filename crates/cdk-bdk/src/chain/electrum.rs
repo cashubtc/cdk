@@ -7,6 +7,7 @@ use bdk_wallet::bitcoin::Transaction;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
+use crate::chain::logging::url_for_logs;
 use crate::chain::{BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, ElectrumConfig};
 use crate::error::Error;
 use crate::CdkBdk;
@@ -45,7 +46,7 @@ pub(crate) async fn sync_electrum(
     let warn_ms = cdk_bdk.sync_config.lock_hold_warn_ms;
 
     tracing::info!(
-        url = %config.url,
+        url = %url_for_logs(&config.url),
         batch_size = config.batch_size,
         interval_secs = cdk_bdk.sync_interval_secs,
         "Starting Electrum block sync"

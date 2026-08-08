@@ -13,8 +13,8 @@ readme = "README.md"
 [features]
 default = ["bitcoin-rpc", "electrum", "esplora"]
 bitcoin-rpc = ["dep:bdk_bitcoind_rpc"]
-electrum = ["dep:bdk_electrum"]
-esplora = ["dep:bdk_esplora"]
+electrum = ["dep:bdk_electrum", "dep:url"]
+esplora = ["dep:bdk_esplora", "dep:url"]
 
 [dependencies]
 async-trait.workspace = true
@@ -31,6 +31,7 @@ thiserror.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
 serde.workspace = true
 serde_json.workspace = true
+url = { workspace = true, optional = true }
 uuid.workspace = true
 
 [dev-dependencies]

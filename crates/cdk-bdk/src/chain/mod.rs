@@ -4,6 +4,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
 
+#[cfg(any(feature = "electrum", feature = "esplora"))]
+mod logging;
+
 #[cfg(feature = "bitcoin-rpc")]
 pub mod bitcoin_rpc;
 #[cfg(feature = "electrum")]

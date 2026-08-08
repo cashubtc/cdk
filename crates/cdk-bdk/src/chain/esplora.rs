@@ -6,6 +6,7 @@ use bdk_wallet::bitcoin::Transaction;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
+use crate::chain::logging::url_for_logs;
 use crate::chain::{BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, EsploraConfig};
 use crate::error::Error;
 use crate::CdkBdk;
@@ -37,7 +38,7 @@ pub(crate) async fn sync_esplora(
     let mut backoff = initial_backoff;
 
     tracing::info!(
-        url = %url,
+        url = %url_for_logs(url),
         parallel_requests,
         interval_secs = cdk_bdk.sync_interval_secs,
         "Starting Esplora block sync"
