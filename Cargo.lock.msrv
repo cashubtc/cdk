@@ -1579,24 +1579,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cdk-lnbits"
-version = "0.17.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bitcoin 0.32.102",
- "cdk-common",
- "futures",
- "lnbits-rs",
- "rustls",
- "serde_json",
- "thiserror 2.0.19",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
 name = "cdk-lnd"
 version = "0.17.0"
 dependencies = [
@@ -1664,7 +1646,6 @@ dependencies = [
  "cdk-fake-wallet",
  "cdk-http-client",
  "cdk-ldk-node",
- "cdk-lnbits",
  "cdk-lnd",
  "cdk-mint-rpc",
  "cdk-payment-processor",
@@ -4553,26 +4534,6 @@ name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
-
-[[package]]
-name = "lnbits-rs"
-version = "0.9.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb81b6d43bb006d2588cf1b5c7ee83f67505a453c50dc25e74d7c01ece107131"
-dependencies = [
- "anyhow",
- "chrono",
- "futures-util",
- "log",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite 0.26.2",
- "tracing",
- "tungstenite 0.26.2",
- "url",
-]
 
 [[package]]
 name = "lock_api"

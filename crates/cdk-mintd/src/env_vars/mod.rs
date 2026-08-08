@@ -24,8 +24,6 @@ mod fake_wallet;
 mod grpc_processor;
 #[cfg(feature = "ldk-node")]
 mod ldk_node;
-#[cfg(feature = "lnbits")]
-mod lnbits;
 #[cfg(feature = "lnd")]
 mod lnd;
 #[cfg(feature = "management-rpc")]
@@ -52,8 +50,6 @@ pub use grpc_processor::*;
 pub use ldk_node::*;
 pub use limits::*;
 pub use ln::*;
-#[cfg(feature = "lnbits")]
-pub use lnbits::*;
 #[cfg(feature = "lnd")]
 pub use lnd::*;
 #[cfg(feature = "management-rpc")]
@@ -158,16 +154,6 @@ impl Settings {
             }
         }
 
-        #[cfg(feature = "lnbits")]
-        {
-            let lnbits = self.lnbits.clone().unwrap_or_default().from_env();
-            if lnbits.admin_api_key.is_empty() {
-                self.lnbits = None;
-            } else {
-                self.lnbits = Some(lnbits);
-            }
-        }
-
         #[cfg(feature = "fakewallet")]
         {
             // Fake wallet has defaults so it is always Some if feature enabled
@@ -235,8 +221,6 @@ impl Settings {
             match ln.ln_backend {
                 #[cfg(feature = "cln")]
                 LnBackend::Cln => {}
-                #[cfg(feature = "lnbits")]
-                LnBackend::LNbits => {}
                 #[cfg(feature = "fakewallet")]
                 LnBackend::FakeWallet => {}
                 #[cfg(feature = "lnd")]

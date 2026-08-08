@@ -164,8 +164,6 @@ pub enum LnBackend {
     None,
     #[cfg(feature = "cln")]
     Cln,
-    #[cfg(feature = "lnbits")]
-    LNbits,
     #[cfg(feature = "fakewallet")]
     FakeWallet,
     #[cfg(feature = "lnd")]
@@ -183,8 +181,6 @@ impl std::str::FromStr for LnBackend {
         match s.to_lowercase().as_str() {
             #[cfg(feature = "cln")]
             "cln" => Ok(LnBackend::Cln),
-            #[cfg(feature = "lnbits")]
-            "lnbits" => Ok(LnBackend::LNbits),
             #[cfg(feature = "fakewallet")]
             "fakewallet" => Ok(LnBackend::FakeWallet),
             #[cfg(feature = "lnd")]
@@ -557,45 +553,6 @@ fn default_bdk_quote_safety_multiplier() -> f64 {
     1.25
 }
 
-#[cfg(feature = "lnbits")]
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LNbits {
-    pub admin_api_key: String,
-    pub invoice_api_key: String,
-    pub lnbits_api: String,
-    #[serde(default = "default_fee_percent")]
-    pub fee_percent: f32,
-    #[serde(default = "default_reserve_fee_min")]
-    pub reserve_fee_min: Amount,
-}
-
-#[cfg(feature = "lnbits")]
-impl std::fmt::Debug for LNbits {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LNbits")
-            .field("admin_api_key", &"[REDACTED]")
-            .field("invoice_api_key", &"[REDACTED]")
-            .field("lnbits_api", &self.lnbits_api)
-            .field("fee_percent", &self.fee_percent)
-            .field("reserve_fee_min", &self.reserve_fee_min)
-            .finish()
-    }
-}
-
-#[cfg(feature = "lnbits")]
-impl Default for LNbits {
-    fn default() -> Self {
-        Self {
-            admin_api_key: String::new(),
-            invoice_api_key: String::new(),
-            lnbits_api: String::new(),
-            fee_percent: 0.02,
-            reserve_fee_min: 2.into(),
-        }
-    }
-}
-
 #[cfg(feature = "cln")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -873,12 +830,12 @@ impl Default for FakeWallet {
 
 // Helper functions to provide default values
 // Common fee defaults for all backends
-#[cfg(any(feature = "cln", feature = "lnbits", feature = "lnd"))]
+#[cfg(any(feature = "cln", feature = "lnd"))]
 fn default_fee_percent() -> f32 {
     0.02
 }
 
-#[cfg(any(feature = "cln", feature = "lnbits", feature = "lnd"))]
+#[cfg(any(feature = "cln", feature = "lnd"))]
 fn default_reserve_fee_min() -> Amount {
     2.into()
 }
@@ -1083,8 +1040,6 @@ pub struct Settings {
     pub limits: Limits,
     #[cfg(feature = "cln")]
     pub cln: Option<Cln>,
-    #[cfg(feature = "lnbits")]
-    pub lnbits: Option<LNbits>,
     #[cfg(feature = "lnd")]
     pub lnd: Option<Lnd>,
     #[cfg(feature = "ldk-node")]
@@ -2040,9 +1995,6 @@ max_delay_time = 3
         #[cfg(feature = "cln")]
         test_cln_env_config();
 
-        #[cfg(feature = "lnbits")]
-        test_lnbits_env_config();
-
         #[cfg(feature = "fakewallet")]
         test_fakewallet_env_config();
 
@@ -2212,66 +2164,6 @@ max_melt = 500000
         env::remove_var(crate::env_vars::ENV_CLN_BOLT12);
         env::remove_var(crate::env_vars::ENV_CLN_FEE_PERCENT);
         env::remove_var(crate::env_vars::ENV_CLN_RESERVE_FEE_MIN);
-
-        // Cleanup test file
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[cfg(feature = "lnbits")]
-    fn test_lnbits_env_config() {
-        use std::{env, fs};
-
-        // Create a temporary directory for config file
-        let temp_dir = env::temp_dir().join("cdk_test_env_vars_lnbits");
-        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
-        let config_path = temp_dir.join("config.toml");
-
-        // Create a minimal config.toml with backend set but NO [lnbits] section
-        let config_content = r#"
-[ln]
-backend = "lnbits"
-min_mint = 1
-max_mint = 500000
-min_melt = 1
-max_melt = 500000
-"#;
-        fs::write(&config_path, config_content).expect("Failed to write config file");
-
-        // Set environment variables for LNbits configuration
-        env::set_var(crate::env_vars::ENV_LN_BACKEND, "lnbits");
-        env::set_var(crate::env_vars::ENV_LNBITS_ADMIN_API_KEY, "test_admin_key");
-        env::set_var(
-            crate::env_vars::ENV_LNBITS_INVOICE_API_KEY,
-            "test_invoice_key",
-        );
-        env::set_var(
-            crate::env_vars::ENV_LNBITS_API,
-            "https://lnbits.example.com",
-        );
-        env::set_var(crate::env_vars::ENV_LNBITS_FEE_PERCENT, "0.02");
-        env::set_var(crate::env_vars::ENV_LNBITS_RESERVE_FEE_MIN, "5");
-
-        // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::try_new(Some(&config_path)).expect("Failed to load config");
-        settings.from_env().expect("Failed to apply env vars");
-
-        // Verify that settings were populated from env vars
-        assert!(settings.lnbits.is_some());
-        let lnbits_config = settings.lnbits.as_ref().unwrap();
-        assert_eq!(lnbits_config.admin_api_key, "test_admin_key");
-        assert_eq!(lnbits_config.invoice_api_key, "test_invoice_key");
-        assert_eq!(lnbits_config.lnbits_api, "https://lnbits.example.com");
-        assert_eq!(lnbits_config.fee_percent, 0.02);
-        let reserve_fee_u64: u64 = lnbits_config.reserve_fee_min.into();
-        assert_eq!(reserve_fee_u64, 5);
-
-        // Cleanup env vars
-        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
-        env::remove_var(crate::env_vars::ENV_LNBITS_ADMIN_API_KEY);
-        env::remove_var(crate::env_vars::ENV_LNBITS_INVOICE_API_KEY);
-        env::remove_var(crate::env_vars::ENV_LNBITS_API);
-        env::remove_var(crate::env_vars::ENV_LNBITS_FEE_PERCENT);
-        env::remove_var(crate::env_vars::ENV_LNBITS_RESERVE_FEE_MIN);
 
         // Cleanup test file
         let _ = fs::remove_dir_all(&temp_dir);
