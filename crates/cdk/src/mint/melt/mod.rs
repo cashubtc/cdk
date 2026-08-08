@@ -67,6 +67,28 @@ fn pending_melt_status_recheck_interval() -> Duration {
     }
 }
 
+#[derive(Debug)]
+enum PendingMeltReconciliation {
+    Checked,
+    Deferred(PendingMeltReconciliationError),
+}
+
+#[derive(Debug, thiserror::Error)]
+enum PendingMeltReconciliationError {
+    #[error(
+        "payment status unverifiable for quote {quote_id} (saga {operation_id}): \
+         no request lookup id; manual intervention required"
+    )]
+    MissingLookupId {
+        quote_id: QuoteId,
+        operation_id: uuid::Uuid,
+    },
+    #[error("failed to determine internal settlement for quote {quote_id}: {source}")]
+    InternalSettlement { quote_id: QuoteId, source: Error },
+    #[error("failed to reconcile pending melt quote {quote_id} with backend status: {source}")]
+    BackendStatus { quote_id: QuoteId, source: Error },
+}
+
 /// A pending mint melt that can optionally be awaited.
 #[derive(Debug)]
 pub struct PendingMelt {
@@ -148,10 +170,11 @@ impl Mint {
     /// Attempts to resolve a pending melt quote by checking the backend and
     /// running saga outcome processing.
     ///
-    /// Returns `Ok(None)` when reconciliation proceeded normally (whether or
-    /// not the quote moved out of `Pending`). Returns `Ok(Some(err_string))`
-    /// when the backend status check itself failed — the caller may surface
-    /// this message on a subsequent `PendingMeltTimeout` for better diagnostics.
+    /// Returns [`PendingMeltReconciliation::Checked`] when reconciliation
+    /// proceeded normally (whether or not the quote moved out of `Pending`).
+    /// Returns [`PendingMeltReconciliation::Deferred`] when a missing lookup
+    /// ID or status-check failure prevents a safe decision; the caller may
+    /// surface this reason on a subsequent `PendingMeltTimeout`.
     /// Returns `Err` on database errors or on unrecoverable saga processing
     /// failures.
     async fn reconcile_pending_melt_quote(
@@ -159,13 +182,13 @@ impl Mint {
         localstore: &DynMintDatabase,
         pubsub_manager: &Arc<crate::mint::subscription::PubSubManager>,
         quote_id: &QuoteId,
-    ) -> Result<Option<String>, Error> {
+    ) -> Result<PendingMeltReconciliation, Error> {
         let Some(mut quote) = localstore.get_melt_quote(quote_id).await? else {
             return Err(Error::UnknownQuote);
         };
 
         if quote.state != MeltQuoteState::Pending {
-            return Ok(None);
+            return Ok(PendingMeltReconciliation::Checked);
         }
 
         let Some(saga) = localstore.get_melt_saga_by_quote_id(quote_id).await? else {
@@ -173,19 +196,63 @@ impl Mint {
                 "Pending melt quote {} has no saga metadata during reconciliation",
                 quote_id
             );
-            return Ok(None);
+            return Ok(PendingMeltReconciliation::Checked);
         };
+
+        // Without a lookup id the backend cannot be asked about this payment.
+        // Internally-settled melts never touch the backend, so finalize those
+        // on demand; anything else is unverifiable and stays pending until
+        // manual intervention.
+        if quote.request_lookup_id.is_none() {
+            let payment_response = match mint.internal_melt_settlement_response(&quote, &saga).await
+            {
+                Ok(Some(payment_response)) => {
+                    tracing::info!(
+                        "Pending melt quote {} without a lookup id was settled internally; finalizing",
+                        quote_id
+                    );
+                    payment_response
+                }
+                Ok(None) => {
+                    let err = PendingMeltReconciliationError::MissingLookupId {
+                        quote_id: quote_id.clone(),
+                        operation_id: saga.operation_id,
+                    };
+                    tracing::error!("{}", err);
+                    return Ok(PendingMeltReconciliation::Deferred(err));
+                }
+                Err(source) => {
+                    let err = PendingMeltReconciliationError::InternalSettlement {
+                        quote_id: quote_id.clone(),
+                        source,
+                    };
+                    tracing::error!("{}", err);
+                    return Ok(PendingMeltReconciliation::Deferred(err));
+                }
+            };
+
+            crate::mint::saga_recovery::process_melt_saga_outcome(
+                &saga,
+                &mut quote,
+                &payment_response,
+                localstore,
+                pubsub_manager,
+                mint,
+            )
+            .await?;
+
+            return Ok(PendingMeltReconciliation::Checked);
+        }
 
         let payment_response = match mint.check_melt_payment_status(&quote).await {
             Ok(payment_response) => payment_response,
-            Err(err) => {
-                let err_string = err.to_string();
-                tracing::warn!(
-                    "Failed to reconcile pending melt quote {} with backend status: {}",
-                    quote_id,
-                    err_string
-                );
-                return Ok(Some(err_string));
+            Err(source) => {
+                let err = PendingMeltReconciliationError::BackendStatus {
+                    quote_id: quote_id.clone(),
+                    source,
+                };
+                tracing::warn!("{}", err);
+                return Ok(PendingMeltReconciliation::Deferred(err));
             }
         };
 
@@ -199,7 +266,7 @@ impl Mint {
         )
         .await?;
 
-        Ok(None)
+        Ok(PendingMeltReconciliation::Checked)
     }
 
     #[instrument(skip_all)]
@@ -1036,10 +1103,10 @@ impl Mint {
                                         )
                                         .await?
                                         {
-                                            Some(err_string) => {
-                                                last_backend_error = Some(err_string);
+                                            PendingMeltReconciliation::Deferred(err) => {
+                                                last_backend_error = Some(err.to_string());
                                             }
-                                            None => {
+                                            PendingMeltReconciliation::Checked => {
                                                 last_backend_error = None;
                                             }
                                         }

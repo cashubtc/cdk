@@ -534,8 +534,12 @@ impl MeltSaga<SetupComplete> {
 
         // Update saga state to PaymentAttempted BEFORE internal settlement commits
         // This ensures crash recovery knows payment may have occurred
-        tx.update_saga(
-            &self.operation_id,
+        let mut saga = tx
+            .get_saga_for_update(&self.operation_id)
+            .await?
+            .ok_or(Error::Internal)?;
+        tx.update_acquired_saga(
+            &mut saga,
             SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
         )
         .await?;
@@ -710,8 +714,12 @@ impl MeltSaga<SetupComplete> {
         // This ensures crash recovery knows payment may have been attempted
         {
             let mut tx = self.db.begin_transaction().await?;
-            tx.update_saga(
-                &self.operation_id,
+            let mut saga = tx
+                .get_saga_for_update(&self.operation_id)
+                .await?
+                .ok_or(Error::Internal)?;
+            tx.update_acquired_saga(
+                &mut saga,
                 SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
             )
             .await?;
@@ -753,7 +761,7 @@ impl MeltSaga<SetupComplete> {
             self.state_data.quote.unit
         );
 
-        let mut check_response = self.check_payment_state(ln, &pay.payment_lookup_id).await?;
+        let check_response = self.check_payment_state(ln, &pay.payment_lookup_id).await?;
 
         if check_response.status == MeltQuoteState::Paid {
             // Race condition: Payment succeeded during verification
@@ -774,12 +782,9 @@ impl MeltSaga<SetupComplete> {
             return Ok(pay);
         }
 
-        if check_response.status == MeltQuoteState::Unknown {
-            // When the first make payment is an error response
-            // and the follow up is unknown we treat it as a failed payment
-            check_response.status = MeltQuoteState::Failed;
-        }
-
+        // Unknown is indeterminate, not a confirmed failure: keep it as-is so
+        // make_payment parks the melt as pending instead of compensating a
+        // payment that may still settle.
         Ok(check_response)
     }
 
@@ -814,7 +819,7 @@ impl MeltSaga<SetupComplete> {
                 Error::Internal
             })?;
 
-        let mut check_response = self.check_payment_state(ln, lookup_id).await?;
+        let check_response = self.check_payment_state(ln, lookup_id).await?;
 
         tracing::info!(
             "Initial payment attempt for {} errored. Follow up check status: {}",
@@ -822,12 +827,9 @@ impl MeltSaga<SetupComplete> {
             check_response.status
         );
 
-        if check_response.status == MeltQuoteState::Unknown {
-            // When the first make payment is an error response
-            // and the follow up is unknown we treat it as a failed payment
-            check_response.status = MeltQuoteState::Failed;
-        }
-
+        // Unknown is indeterminate, not a confirmed failure: keep it as-is so
+        // make_payment parks the melt as pending instead of compensating a
+        // payment that may still settle.
         Ok(check_response)
     }
 
@@ -982,8 +984,12 @@ impl MeltSaga<PaymentConfirmed> {
                 payment_lookup_id: payment_lookup_id.clone(),
                 payment_proof: payment_proof.clone(),
             };
-            tx.update_saga_with_finalization_data(
-                &self.operation_id,
+            let mut saga = tx
+                .get_saga_for_update(&self.operation_id)
+                .await?
+                .ok_or(Error::Internal)?;
+            tx.update_acquired_saga_with_finalization_data(
+                &mut saga,
                 SagaStateEnum::Melt(MeltSagaState::Finalizing),
                 Some(&finalization_data),
             )

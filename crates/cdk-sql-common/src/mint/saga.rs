@@ -147,62 +147,6 @@ where
         Ok(())
     }
 
-    async fn update_saga(
-        &mut self,
-        operation_id: &uuid::Uuid,
-        new_state: mint::SagaStateEnum,
-    ) -> Result<(), Self::Err> {
-        let current_time = unix_time();
-
-        query(
-            r#"
-            UPDATE saga_state
-            SET state = :state, updated_at = :updated_at
-            WHERE operation_id = :operation_id
-            "#,
-        )?
-        .bind("state", new_state.state())
-        .bind("updated_at", current_time as i64)
-        .bind("operation_id", operation_id.to_string())
-        .execute(&self.inner)
-        .await?;
-
-        Ok(())
-    }
-
-    async fn update_saga_with_finalization_data(
-        &mut self,
-        operation_id: &uuid::Uuid,
-        new_state: mint::SagaStateEnum,
-        finalization_data: Option<&mint::MeltFinalizationData>,
-    ) -> Result<(), Self::Err> {
-        let current_time = unix_time();
-
-        query(
-            r#"
-            UPDATE saga_state
-            SET state = :state, finalization_data = :finalization_data, updated_at = :updated_at
-            WHERE operation_id = :operation_id
-            "#,
-        )?
-        .bind("state", new_state.state())
-        .bind(
-            "finalization_data",
-            finalization_data
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(|e| {
-                    Error::Internal(format!("Failed to serialize melt finalization data: {e}"))
-                })?,
-        )
-        .bind("updated_at", current_time as i64)
-        .bind("operation_id", operation_id.to_string())
-        .execute(&self.inner)
-        .await?;
-
-        Ok(())
-    }
-
     async fn update_acquired_saga(
         &mut self,
         saga: &mut Acquired<mint::Saga>,
