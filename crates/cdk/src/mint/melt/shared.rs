@@ -523,8 +523,8 @@ pub(crate) async fn finalize_melt_core(
         quote.fee_reserve().display_with_unit(),
     );
 
-    // This can only happen on backends where we cannot set the max fee (e.g., LNbits).
-    // LNbits does not allow setting a fee limit, so payments can exceed the fee reserve.
+    // This can happen with external payment processors that cannot set a maximum fee,
+    // allowing payments to exceed the fee reserve.
     debug_assert!(
         net_inputs >= total_spent,
         "Over paid melt quote {}: net_inputs ({}) < total_spent ({}). Payment already complete, finalizing with no change.",

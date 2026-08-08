@@ -12,7 +12,7 @@ Cashu mint daemon implementation for the Cashu Development Kit (CDK). This binar
 ## Features
 
 - **Multiple Database Backends**: SQLite, PostgreSQL, and ReDB
-- **Lightning Network Integration**: Support for CLN, LND, LNbits, LDK Node, and test backends
+- **Lightning Network Integration**: Support for CLN, LND, LDK Node, external payment processors, and test backends
 - **Authentication**: Optional user authentication with OpenID Connect
 - **Management RPC**: gRPC interface for mint management
 - **Docker Support**: Ready-to-use Docker configurations
@@ -23,7 +23,8 @@ For detailed configuration of each Lightning backend, see:
 
 - **[LND](../cdk-lnd/README.md)** - Lightning Network Daemon
 - **[CLN](../cdk-cln/README.md)** - Core Lightning
-- **[LNbits](../cdk-lnbits/README.md)** - LNbits API integration
+
+LNbits is no longer provided as an embedded, first-class backend. Run LNbits integration as an external payment processor and connect it through the `grpc-processor` backend.
 
 ## Installation
 
@@ -236,7 +237,7 @@ url = "postgresql://mint_user:password@localhost:5432/cdk_mint"
 
 ### With Multiple Lightning Backends
 
-A single mint can serve more than one currency unit by configuring a separate backend per unit. Replace the single `[ln]` block with one `[[ln]]` block per backend/unit, and keep the existing per-backend config sections (`[cln]`, `[lnbits]`, etc.) as-is.
+A single mint can serve more than one currency unit by configuring a separate backend per unit. Replace the single `[ln]` block with one `[[ln]]` block per backend/unit, and keep the existing per-backend config sections (such as `[cln]`) as-is.
 
 ```toml
 [[ln]]
@@ -244,16 +245,17 @@ ln_backend = "cln"
 unit = "sat"
 
 [[ln]]
-ln_backend = "lnbits"
+ln_backend = "grpcprocessor"
 unit = "msat"
 
 [cln]
 rpc_path = "/home/bitcoin/.lightning/bitcoin/lightning-rpc"
 
-[lnbits]
-admin_api_key = "..."
-invoice_api_key = "..."
-lnbits_api = "https://lnbits.example.com"
+# An LNbits integration can be provided by an external payment processor.
+[grpc_processor]
+supported_units = ["msat"]
+address = "127.0.0.1"
+port = 50051
 ```
 
 Each `[[ln]]` block carries its own `min_mint`, `max_mint`, `min_melt`, `max_melt` if you want different limits per unit. The configured unit must match the backend's reported unit, except for the supported `sat`/`msat` conversion pair. If two configured backends expose the same `(unit, method)` pair, startup is rejected.
@@ -379,7 +381,7 @@ cdk-mintd --help
 
 - `CDK_MINTD_DATABASE`: Database engine (`sqlite`/`postgres`/`redb`)
 - `CDK_MINTD_DATABASE_URL`: PostgreSQL connection string
-- `CDK_MINTD_LN_BACKEND`: Lightning backend (`cln`/`lnd`/`lnbits`/`ldk-node`/`fakewallet`)
+- `CDK_MINTD_LN_BACKEND`: Lightning backend (`cln`/`lnd`/`ldk-node`/`grpcprocessor`/`fakewallet`)
 - `CDK_MINTD_FAKE_WALLET_CUSTOM_PAYMENT_METHODS`: Comma-separated fake wallet custom methods, optionally scoped as `method:unit`
 - `CDK_MINTD_LISTEN_HOST`: Host to bind to (default: `127.0.0.1`)
 - `CDK_MINTD_LISTEN_PORT`: Port to bind to (default: `8085`)

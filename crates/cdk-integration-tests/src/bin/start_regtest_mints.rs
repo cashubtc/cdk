@@ -464,7 +464,6 @@ fn create_ldk_settings(
             max_melt: 500_000.into(),
         }],
         cln: None,
-        lnbits: None,
         lnd: None,
         ldk_node: Some(ldk_config),
         fake_wallet: None,
