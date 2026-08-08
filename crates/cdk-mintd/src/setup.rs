@@ -16,7 +16,6 @@ use cdk::cdk_database::KVStore;
 use cdk::cdk_payment::MintPayment;
 use cdk::nuts::CurrencyUnit;
 #[cfg(any(
-    feature = "lnbits",
     feature = "cln",
     feature = "lnd",
     feature = "ldk-node",
@@ -92,55 +91,6 @@ impl LnBackendSetup for config::Cln {
         .await?;
 
         Ok(cln)
-    }
-}
-
-#[cfg(feature = "lnbits")]
-#[async_trait]
-impl LnBackendSetup for config::LNbits {
-    async fn setup(
-        &self,
-        _settings: &Settings,
-        _unit: CurrencyUnit,
-        _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
-        _work_dir: &Path,
-        _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
-    ) -> anyhow::Result<cdk_lnbits::LNbits> {
-        use anyhow::bail;
-
-        // Validate required connection fields
-        if self.admin_api_key.is_empty() {
-            bail!("LNbits admin_api_key must be set via config or CDK_MINTD_LNBITS_ADMIN_API_KEY env var");
-        }
-        if self.invoice_api_key.is_empty() {
-            bail!("LNbits invoice_api_key must be set via config or CDK_MINTD_LNBITS_INVOICE_API_KEY env var");
-        }
-        if self.lnbits_api.is_empty() {
-            bail!(
-                "LNbits lnbits_api must be set via config or CDK_MINTD_LNBITS_LNBITS_API env var"
-            );
-        }
-
-        let admin_api_key = &self.admin_api_key;
-        let invoice_api_key = &self.invoice_api_key;
-
-        let fee_reserve = FeeReserve {
-            min_fee_reserve: self.reserve_fee_min,
-            percent_fee_reserve: self.fee_percent,
-        };
-
-        let lnbits = cdk_lnbits::LNbits::new(
-            admin_api_key.clone(),
-            invoice_api_key.clone(),
-            self.lnbits_api.clone(),
-            fee_reserve,
-        )
-        .await?;
-
-        // Use v1 websocket API
-        lnbits.subscribe_ws().await?;
-
-        Ok(lnbits)
     }
 }
 

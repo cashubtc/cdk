@@ -19,7 +19,6 @@ use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::KnownMethod;
 #[cfg(any(
     feature = "cln",
-    feature = "lnbits",
     feature = "lnd",
     feature = "ldk-node",
     feature = "fakewallet",
@@ -409,28 +408,6 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
                 };
                 if cln.rpc_path.as_os_str().is_empty() {
                     bail!("CLN rpc_path must be set via [cln].rpc_path or CDK_MINTD_CLN_RPC_PATH");
-                }
-            }
-            #[cfg(feature = "lnbits")]
-            LnBackend::LNbits => {
-                let default_lnbits;
-                let lnbits = match settings.lnbits.as_ref() {
-                    Some(l) => l,
-                    None => {
-                        default_lnbits = config::LNbits::default();
-                        &default_lnbits
-                    }
-                };
-                if lnbits.admin_api_key.is_empty() {
-                    bail!("LNbits admin_api_key must be set via [lnbits].admin_api_key or CDK_MINTD_LNBITS_ADMIN_API_KEY");
-                }
-                if lnbits.invoice_api_key.is_empty() {
-                    bail!("LNbits invoice_api_key must be set via [lnbits].invoice_api_key or CDK_MINTD_LNBITS_INVOICE_API_KEY");
-                }
-                if lnbits.lnbits_api.is_empty() {
-                    bail!(
-                        "LNbits lnbits_api must be set via [lnbits].lnbits_api or CDK_MINTD_LNBITS_API"
-                    );
                 }
             }
             #[cfg(feature = "lnd")]
@@ -938,26 +915,6 @@ async fn configure_lightning_backend(
                     ln_entry.unit.clone(),
                     mint_melt_limits,
                     Arc::new(cln),
-                )
-                .await?;
-            }
-            #[cfg(feature = "lnbits")]
-            LnBackend::LNbits => {
-                let lnbits_settings = settings.lnbits.clone().ok_or_else(|| {
-                    anyhow!("LNbits backend selected but [lnbits] config section is missing")
-                })?;
-                let lnbits = lnbits_settings
-                    .setup(settings, ln_entry.unit.clone(), None, work_dir, None)
-                    .await?;
-                #[cfg(feature = "prometheus")]
-                let lnbits = MetricsMintPayment::new(lnbits);
-
-                mint_builder = configure_backend_for_unit(
-                    settings,
-                    mint_builder,
-                    ln_entry.unit.clone(),
-                    mint_melt_limits,
-                    Arc::new(lnbits),
                 )
                 .await?;
             }
@@ -2883,9 +2840,6 @@ ln_backend = "fakewallet"
             "CDK_MINTD_AUTH_POSTGRES_MAX_CONNECTIONS",
             "CDK_MINTD_AUTH_POSTGRES_CONNECTION_TIMEOUT_SECONDS",
             "CDK_MINTD_CLN_RPC_PATH",
-            "CDK_MINTD_LNBITS_ADMIN_API_KEY",
-            "CDK_MINTD_LNBITS_INVOICE_API_KEY",
-            "CDK_MINTD_LNBITS_API",
             "CDK_MINTD_LND_ADDRESS",
             "CDK_MINTD_LND_CERT_FILE",
             "CDK_MINTD_LND_MACAROON_FILE",
@@ -3104,26 +3058,6 @@ ln_backend = "cln"
 "#
             ),
             "CLN rpc_path must be set",
-        );
-    }
-
-    #[cfg(feature = "lnbits")]
-    #[test]
-    fn test_load_settings_reports_missing_lnbits_credentials() {
-        assert_load_settings_error(
-            &format!(
-                r#"
-[info]
-mnemonic = "{TEST_MNEMONIC}"
-
-[database]
-engine = "sqlite"
-
-[ln]
-ln_backend = "lnbits"
-"#
-            ),
-            "LNbits admin_api_key must be set",
         );
     }
 
@@ -3610,53 +3544,6 @@ cert_file = "/path/to/tls.cert"
 "#
             ),
             "LND macaroon_file must be set",
-        );
-    }
-
-    #[cfg(feature = "lnbits")]
-    #[test]
-    fn test_load_settings_reports_missing_lnbits_invoice_api_key() {
-        assert_load_settings_error(
-            &format!(
-                r#"
-[info]
-mnemonic = "{TEST_MNEMONIC}"
-
-[database]
-engine = "sqlite"
-
-[ln]
-ln_backend = "lnbits"
-
-[lnbits]
-admin_api_key = "admin123"
-"#
-            ),
-            "LNbits invoice_api_key must be set",
-        );
-    }
-
-    #[cfg(feature = "lnbits")]
-    #[test]
-    fn test_load_settings_reports_missing_lnbits_api_url() {
-        assert_load_settings_error(
-            &format!(
-                r#"
-[info]
-mnemonic = "{TEST_MNEMONIC}"
-
-[database]
-engine = "sqlite"
-
-[ln]
-ln_backend = "lnbits"
-
-[lnbits]
-admin_api_key = "admin123"
-invoice_api_key = "inv123"
-"#
-            ),
-            "LNbits lnbits_api must be set",
         );
     }
 

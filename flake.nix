@@ -537,7 +537,6 @@
                 -p cdk-axum \
                 -p cdk-cln \
                 -p cdk-lnd \
-                -p cdk-lnbits \
                 -p cdk-fake-wallet \
                 -p cdk-mint-rpc \
                 -p cdk-payment-processor \
@@ -794,7 +793,6 @@
             "-p cdk-bdk"
             "-p cdk-cln"
             "-p cdk-lnd"
-            "-p cdk-lnbits"
             "-p cdk-fake-wallet -p cdk-http-client --no-default-features --features cdk-http-client/bitreq"
             "-p cdk-payment-processor"
             "-p cdk-ldk-node"
@@ -813,7 +811,6 @@
 
           "mintd-backends-sqlite" = [
             "-p cdk-mintd --no-default-features --features lnd,sqlite"
-            "-p cdk-mintd --no-default-features --features lnbits,sqlite"
             "-p cdk-mintd --no-default-features --features fakewallet,sqlite"
             "-p cdk-mintd --no-default-features --features grpc-processor,sqlite"
             "-p cdk-mintd --no-default-features --features management-rpc,lnd,sqlite"
@@ -823,7 +820,6 @@
           "mintd-backends-postgres" = [
             "-p cdk-mintd --no-default-features --features cln,postgres"
             "-p cdk-mintd --no-default-features --features lnd,postgres"
-            "-p cdk-mintd --no-default-features --features lnbits,postgres"
             "-p cdk-mintd --no-default-features --features fakewallet,postgres"
             "-p cdk-mintd --no-default-features --features grpc-processor,postgres"
             "-p cdk-mintd --no-default-features --features management-rpc,cln,postgres"
@@ -839,7 +835,7 @@
 
           # Mintd with all backends, databases, and features
           "cdk-mintd-all" =
-            "-p cdk-mintd --no-default-features --features \"cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,redis,management-rpc\"";
+            "-p cdk-mintd --no-default-features --features \"cln,lnd,fakewallet,ldk-node,grpc-processor,sqlite,postgres,redis,management-rpc\"";
 
           # Minimal builds to ensure no-default-features works
           "cdk-wallet-only" = "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/bitreq";

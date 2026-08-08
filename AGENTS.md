@@ -1,7 +1,7 @@
 # AGENTS.md - Cashu Development Kit (CDK)
 
 Rust workspace (edition 2021) implementing the Cashu e-cash protocol.
-24 crates in `crates/`, stable Rust (see `rust-toolchain.toml`), MSRV 1.85.0.
+25 crates in `crates/`, stable Rust (see `rust-toolchain.toml`), MSRV 1.85.0.
 
 ## Local Development Environment (Regtest)
 
@@ -217,7 +217,6 @@ impl fmt::Display for MyType { ... }
 **Lightning backends**
 - `cdk-cln` -- Core Lightning (CLN)
 - `cdk-lnd` -- LND
-- `cdk-lnbits` -- LNBits
 - `cdk-ldk-node` -- LDK Node (embedded Lightning, includes web management UI)
 - `cdk-fake-wallet` -- always-succeeding fake backend for testing
 
@@ -263,7 +262,7 @@ cashu  (protocol types, crypto, NUT specs)
        │    └─ cdk-http-client  (wallet-side)
        ├─ Storage: cdk-sql-common → cdk-sqlite, cdk-postgres
        │           cdk-redb, cdk-supabase
-       └─ Lightning: cdk-cln, cdk-lnd, cdk-lnbits, cdk-ldk-node, cdk-fake-wallet
+       └─ Lightning: cdk-cln, cdk-lnd, cdk-ldk-node, cdk-fake-wallet
 ```
 
 ### Key Files for Common Tasks
