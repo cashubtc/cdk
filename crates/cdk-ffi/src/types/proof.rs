@@ -1,5 +1,6 @@
 //! Proof-related FFI types
 
+use std::fmt;
 use std::str::FromStr;
 
 use cdk::nuts::State as CdkState;
@@ -364,7 +365,7 @@ pub fn encode_conditions(conditions: Conditions) -> Result<String, FfiError> {
 }
 
 /// FFI-compatible Witness
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
 pub enum Witness {
     /// P2PK Witness
     P2PK {
@@ -378,6 +379,25 @@ pub enum Witness {
         /// Optional signatures
         signatures: Option<Vec<String>>,
     },
+}
+
+impl fmt::Debug for Witness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::P2PK { signatures } => f
+                .debug_struct("P2PK")
+                .field("signatures", signatures)
+                .finish(),
+            Self::HTLC {
+                preimage: _,
+                signatures,
+            } => f
+                .debug_struct("HTLC")
+                .field("preimage", &"[REDACTED]")
+                .field("signatures", signatures)
+                .finish(),
+        }
+    }
 }
 
 impl From<cdk::nuts::Witness> for Witness {
@@ -581,4 +601,24 @@ pub fn decode_proof_state_update(json: String) -> Result<ProofStateUpdate, FfiEr
 #[uniffi::export]
 pub fn encode_proof_state_update(update: ProofStateUpdate) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&update)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn htlc_witness_debug_redacts_preimage() {
+        let secret = "htlc-witness-preimage";
+        let witness = Witness::HTLC {
+            preimage: secret.to_string(),
+            signatures: Some(vec!["public-signature".to_string()]),
+        };
+
+        let debug = format!("{witness:?}");
+
+        assert!(debug.contains("public-signature"));
+        assert!(!debug.contains(secret));
+        assert!(debug.contains("preimage: \"[REDACTED]\""));
+    }
 }

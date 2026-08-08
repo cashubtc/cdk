@@ -1,5 +1,6 @@
 //! Payment Request FFI types (NUT-18)
 
+use std::fmt;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -218,7 +219,7 @@ impl PaymentRequest {
 }
 
 /// Parameters for creating a NUT-18 payment request
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct CreateRequestParams {
     /// Optional amount to request (in smallest unit for the currency)
     pub amount: Option<u64>,
@@ -244,6 +245,25 @@ pub struct CreateRequestParams {
     pub mints: Option<Vec<String>>,
     /// Whether the mint list is preferred rather than required
     pub mint_preferred: Option<bool>,
+}
+
+impl fmt::Debug for CreateRequestParams {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CreateRequestParams")
+            .field("amount", &self.amount)
+            .field("unit", &self.unit)
+            .field("description", &self.description)
+            .field("pubkeys", &self.pubkeys)
+            .field("num_sigs", &self.num_sigs)
+            .field("hash", &self.hash)
+            .field("preimage", &self.preimage.as_ref().map(|_| "[REDACTED]"))
+            .field("transport", &self.transport)
+            .field("http_url", &self.http_url)
+            .field("nostr_relays", &self.nostr_relays)
+            .field("mints", &self.mints)
+            .field("mint_preferred", &self.mint_preferred)
+            .finish()
+    }
 }
 
 impl Default for CreateRequestParams {
@@ -430,6 +450,22 @@ impl core::fmt::Display for PaymentRequestPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_request_params_debug_redacts_preimage() {
+        let secret = "htlc-preimage";
+        let params = CreateRequestParams {
+            preimage: Some(secret.to_string()),
+            hash: Some("public-hash".to_string()),
+            ..Default::default()
+        };
+
+        let debug = format!("{params:?}");
+
+        assert!(debug.contains("public-hash"));
+        assert!(!debug.contains(secret));
+        assert!(debug.contains("preimage: Some(\"[REDACTED]\")"));
+    }
 
     #[test]
     fn test_payment_request_payload() {
