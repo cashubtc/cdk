@@ -1,5 +1,6 @@
 //! HTTP Mint client with pluggable transport
 use std::collections::HashSet;
+use std::fmt;
 use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
@@ -81,7 +82,7 @@ where
 }
 
 /// Http Client
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HttpClient<T>
 where
     T: Transport + Send + Sync + 'static,
@@ -90,6 +91,20 @@ where
     mint_url: MintUrl,
     cache_support: Arc<StdRwLock<Cache>>,
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
+}
+
+impl<T> fmt::Debug for HttpClient<T>
+where
+    T: Transport + Send + Sync + 'static,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpClient")
+            .field("transport", &core::any::type_name::<T>())
+            .field("mint_url", &self.mint_url)
+            .field("cache_support", &"[INTERNAL]")
+            .field("auth_wallet", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1275,6 +1290,17 @@ mod tests {
                 .expect("no mock response set");
             Ok(RawResponse::new(200, json.into_bytes()))
         }
+    }
+
+    #[test]
+    fn http_client_debug_does_not_traverse_auth_wallet() {
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, MockTransport::default(), None);
+
+        let debug = format!("{client:?}");
+
+        assert!(debug.contains("https://mint.example.com"));
+        assert!(debug.contains("auth_wallet: \"[REDACTED]\""));
     }
 
     /// Regression test: `post_mint_quote` must send only the

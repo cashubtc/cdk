@@ -3,6 +3,7 @@
 //! Simple container that manages [`Wallet`] instances by mint URL.
 
 use std::collections::BTreeMap;
+use std::fmt;
 #[cfg(feature = "npubcash")]
 use std::str::FromStr;
 use std::sync::Arc;
@@ -46,7 +47,7 @@ pub struct TokenData {
 }
 
 /// Configuration for individual wallets within WalletRepository
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default)]
 pub struct WalletConfig {
     /// Custom mint connector implementation
     pub mint_connector: Option<Arc<dyn super::MintConnector + Send + Sync>>,
@@ -63,6 +64,23 @@ pub struct WalletConfig {
     ///
     /// The default value is 1 hour (3600 seconds).
     pub metadata_cache_ttl: Option<std::time::Duration>,
+}
+
+impl fmt::Debug for WalletConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WalletConfig")
+            .field(
+                "mint_connector",
+                &self.mint_connector.as_ref().map(|_| "[CONFIGURED]"),
+            )
+            .field(
+                "auth_connector",
+                &self.auth_connector.as_ref().map(|_| "[CONFIGURED]"),
+            )
+            .field("target_proof_count", &self.target_proof_count)
+            .field("metadata_cache_ttl", &self.metadata_cache_ttl)
+            .finish()
+    }
 }
 
 impl WalletConfig {
@@ -370,7 +388,7 @@ impl WalletRepository {
     ///
     /// Fetches the mint info to discover all supported currency units and creates
     /// a wallet for each unit with the given configuration. Returns all created wallets.
-    #[instrument(skip(self))]
+    #[instrument(skip(self, config))]
     pub async fn add_wallet_with_config(
         &self,
         mint_url: MintUrl,
@@ -405,7 +423,7 @@ impl WalletRepository {
     /// The write lock is held across the lookup and the insert so that concurrent
     /// callers for the same mint and unit all observe the same wallet instead of
     /// each building one and the last writer winning.
-    #[instrument(skip(self))]
+    #[instrument(skip(self, config))]
     pub async fn get_or_create_wallet(
         &self,
         mint_url: MintUrl,
@@ -430,7 +448,7 @@ impl WalletRepository {
     /// Update configuration for an existing mint and unit
     ///
     /// This re-creates the wallet with the new configuration.
-    #[instrument(skip(self))]
+    #[instrument(skip(self, config))]
     pub async fn set_mint_config(
         &self,
         mint_url: MintUrl,
@@ -443,7 +461,7 @@ impl WalletRepository {
 
     /// Create and add a new wallet for a mint URL and currency unit
     /// Returns the created wallet
-    #[instrument(skip(self))]
+    #[instrument(skip(self, config))]
     pub async fn create_wallet(
         &self,
         mint_url: MintUrl,

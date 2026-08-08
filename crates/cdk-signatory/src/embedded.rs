@@ -67,20 +67,22 @@ impl Service {
             match request {
                 Request::BlindSign((blinded_message, response)) => {
                     let output = handler.blind_sign(blinded_message).await;
-                    if let Err(err) = response.send(output) {
-                        tracing::error!("Error sending response: {:?}", err);
+                    if response.send(output).is_err() {
+                        tracing::error!("Error sending blind-sign response: receiver dropped");
                     }
                 }
                 Request::VerifyProof((proof, response)) => {
                     let output = handler.verify_proofs(proof).await;
-                    if let Err(err) = response.send(output) {
-                        tracing::error!("Error sending response: {:?}", err);
+                    if response.send(output).is_err() {
+                        tracing::error!(
+                            "Error sending proof-verification response: receiver dropped"
+                        );
                     }
                 }
                 Request::Keysets(response) => {
                     let output = handler.keysets().await;
-                    if let Err(err) = response.send(output) {
-                        tracing::error!("Error sending response: {:?}", err);
+                    if response.send(output).is_err() {
+                        tracing::error!("Error sending keysets response: receiver dropped");
                     }
                 }
                 Request::SubscribeKeysets(response) => {
@@ -91,8 +93,8 @@ impl Service {
                 }
                 Request::RotateKeyset((args, response)) => {
                     let output = handler.rotate_keyset(args).await;
-                    if let Err(err) = response.send(output) {
-                        tracing::error!("Error sending response: {:?}", err);
+                    if response.send(output).is_err() {
+                        tracing::error!("Error sending keyset-rotation response: receiver dropped");
                     }
                 }
             }

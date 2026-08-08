@@ -2,6 +2,7 @@
 //!
 //! Implements NIP-98 and JWT authentication
 
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,19 +14,37 @@ use web_time::SystemTime;
 use crate::types::Nip98Response;
 use crate::{Error, Result};
 
-#[derive(Debug)]
 struct CachedToken {
     token: String,
     expires_at: SystemTime,
 }
 
+impl fmt::Debug for CachedToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CachedToken")
+            .field("token", &"[REDACTED]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
 /// JWT authentication provider using NIP-98
-#[derive(Debug)]
 pub struct JwtAuthProvider {
     base_url: String,
     keys: Keys,
     http_client: cdk_common::HttpClient,
     cached_token: Arc<RwLock<Option<CachedToken>>>,
+}
+
+impl fmt::Debug for JwtAuthProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JwtAuthProvider")
+            .field("base_url", &self.base_url)
+            .field("keys", &"[REDACTED]")
+            .field("http_client", &self.http_client)
+            .field("cached_token", &self.cached_token)
+            .finish()
+    }
 }
 
 impl JwtAuthProvider {
@@ -84,7 +103,7 @@ impl JwtAuthProvider {
         let auth_url = format!("{}/api/v2/auth/nip98", self.base_url);
 
         // Create NIP-98 token for authentication
-        let nostr_token = self.create_nip98_token_with_logging(&auth_url)?;
+        let nostr_token = self.create_nip98_token_for_auth(&auth_url)?;
 
         // Send authentication request
         let response = self.send_auth_request(&auth_url, &nostr_token).await?;
@@ -93,15 +112,10 @@ impl JwtAuthProvider {
         self.parse_jwt_response(response).await
     }
 
-    /// Create a NIP-98 token with debug logging
-    fn create_nip98_token_with_logging(&self, auth_url: &str) -> Result<String> {
+    /// Create a NIP-98 token for authentication
+    fn create_nip98_token_for_auth(&self, auth_url: &str) -> Result<String> {
         tracing::debug!("Creating NIP-98 token for URL: {}", auth_url);
-        let nostr_token = self.create_nip98_token(auth_url, "GET")?;
-        tracing::debug!(
-            "NIP-98 token created (first 50 chars): {}",
-            &nostr_token[..50.min(nostr_token.len())]
-        );
-        Ok(nostr_token)
+        self.create_nip98_token(auth_url, "GET")
     }
 
     /// Send the authentication request to the API
@@ -111,10 +125,6 @@ impl JwtAuthProvider {
         nostr_token: &str,
     ) -> Result<cdk_common::RawResponse> {
         tracing::debug!("Sending request to: {}", auth_url);
-        tracing::debug!(
-            "Authorization header: Nostr {}",
-            &nostr_token[..50.min(nostr_token.len())]
-        );
 
         let response = self
             .http_client
@@ -172,7 +182,6 @@ impl JwtAuthProvider {
             .map_err(|e| Error::Nostr(e.to_string()))?;
 
         let json = serde_json::to_string(&event)?;
-        tracing::debug!("NIP-98 event JSON: {}", json);
         let encoded = base64::engine::general_purpose::STANDARD.encode(json);
         tracing::debug!("Base64 encoded token length: {}", encoded.len());
         Ok(encoded)
@@ -209,5 +218,36 @@ impl JwtAuthProvider {
     pub fn get_nip98_auth_header(&self, url: &str, method: &str) -> Result<String> {
         let token = self.create_nip98_token(url, method)?;
         Ok(format!("Nostr {token}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_token_debug_redacts_token() {
+        let secret = "replayable-jwt-token";
+        let token = CachedToken {
+            token: secret.to_string(),
+            expires_at: SystemTime::now(),
+        };
+
+        let debug = format!("{token:?}");
+
+        assert!(!debug.contains(secret));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn auth_provider_debug_redacts_signing_key() {
+        let keys = Keys::generate();
+        let secret = keys.secret_key().to_secret_hex();
+        let provider = JwtAuthProvider::new("https://npub.cash".to_string(), keys);
+
+        let debug = format!("{provider:?}");
+
+        assert!(!debug.contains(&secret));
+        assert!(debug.contains("keys: \"[REDACTED]\""));
     }
 }

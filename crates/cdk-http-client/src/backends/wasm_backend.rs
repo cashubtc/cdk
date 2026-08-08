@@ -1,5 +1,7 @@
 //! WASM fetch-based backend implementation
 
+use core::fmt;
+
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -88,7 +90,6 @@ impl HttpClient {
 }
 
 /// WASM fetch-based RequestBuilder wrapper
-#[derive(Debug)]
 pub struct WasmRequestBuilder {
     method: String,
     url: String,
@@ -98,10 +99,36 @@ pub struct WasmRequestBuilder {
     no_redirects: bool,
 }
 
-#[derive(Debug)]
 enum WasmBody {
     Json(Vec<u8>),
     Form(String),
+}
+
+impl fmt::Debug for WasmBody {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Json(bytes) => f
+                .debug_struct("Json")
+                .field("length", &bytes.len())
+                .finish(),
+            Self::Form(form) => f.debug_struct("Form").field("length", &form.len()).finish(),
+        }
+    }
+}
+
+impl fmt::Debug for WasmRequestBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let header_names: Vec<&str> = self.headers.iter().map(|(name, _)| name.as_str()).collect();
+
+        f.debug_struct("WasmRequestBuilder")
+            .field("method", &self.method)
+            .field("url", &self.url)
+            .field("header_names", &header_names)
+            .field("body", &self.body)
+            .field("has_error", &self.error.is_some())
+            .field("no_redirects", &self.no_redirects)
+            .finish()
+    }
 }
 
 impl WasmRequestBuilder {
@@ -337,5 +364,20 @@ mod tests {
             }
             _ => panic!("Expected HttpError::Proxy"),
         }
+    }
+
+    #[test]
+    fn request_builder_debug_redacts_header_values_and_body() {
+        let header_secret = "replayable-authorization-token";
+        let body_secret = "refresh-token-in-request-body";
+        let request = WasmRequestBuilder::new("POST", "https://mint.example.com", false)
+            .header("Authorization", header_secret)
+            .json(&serde_json::json!({ "refresh_token": body_secret }));
+
+        let debug = format!("{request:?}");
+
+        assert!(debug.contains("Authorization"));
+        assert!(!debug.contains(header_secret));
+        assert!(!debug.contains(body_secret));
     }
 }

@@ -144,18 +144,12 @@ impl Mint {
                         err
                     })?;
             }
-            (AuthRequired::Blind, other) => {
-                tracing::warn!(
-                    "Blind auth required but received different auth type: {:?}",
-                    other
-                );
+            (AuthRequired::Blind, AuthToken::ClearAuth(_)) => {
+                tracing::warn!("Blind auth required but received clear auth");
                 return Err(Error::BlindAuthRequired);
             }
-            (AuthRequired::Clear, other) => {
-                tracing::warn!(
-                    "Clear auth required but received different auth type: {:?}",
-                    other
-                );
+            (AuthRequired::Clear, AuthToken::BlindAuth(_)) => {
+                tracing::warn!("Clear auth required but received blind auth");
                 return Err(Error::ClearAuthRequired);
             }
         }
