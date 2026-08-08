@@ -36,7 +36,7 @@ impl From<secp256k1::SecretKey> for SecretKey {
 
 impl fmt::Display for SecretKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_secret_hex())
+        f.write_str("[REDACTED]")
     }
 }
 
@@ -169,10 +169,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn display_outputs_secret_hex() {
+    fn display_redacts_secret_hex() {
         let hex = "50d7fd7aa2b2fe4607f41f4ce6f8794fc184dd47b8cdfbe4b3d1249aa02d35aa";
         let secret_key = SecretKey::from_hex(hex).unwrap();
 
-        assert_eq!(secret_key.to_string(), hex);
+        assert_eq!(secret_key.to_secret_hex(), hex);
+        assert_eq!(secret_key.to_string(), "[REDACTED]");
     }
 }

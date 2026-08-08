@@ -575,7 +575,16 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(
+        skip(self, transaction),
+        fields(
+            direction = %transaction.direction,
+            amount = %transaction.amount,
+            unit = %transaction.unit,
+            quote_id = ?transaction.quote_id,
+            saga_id = ?transaction.saga_id,
+        )
+    )]
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), database::Error> {
         let id = transaction.id();
         let write_txn = self.db.begin_write().map_err(Error::from)?;

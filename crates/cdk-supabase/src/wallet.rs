@@ -2627,7 +2627,7 @@ impl TryFrom<MintQuote> for MintQuoteTable {
             request: Some(q.request),
             state: q.state.to_string(),
             expiry: q.expiry as i64,
-            secret_key: q.secret_key.map(|k| k.to_string()),
+            secret_key: q.secret_key.map(|key| key.to_secret_hex()),
             payment_method: q.payment_method.to_string(),
             amount_issued: q.amount_issued.to_u64() as i64,
             amount_paid: q.amount_paid.to_u64() as i64,
@@ -3091,6 +3091,35 @@ mod tests {
     use super::*;
     #[cfg(feature = "integration-tests")]
     use crate::Error;
+
+    #[test]
+    fn mint_quote_table_round_trip_preserves_secret_key_hex() {
+        let secret_key = cdk_common::nuts::SecretKey::generate();
+        let secret_hex = secret_key.to_secret_hex();
+        let quote = MintQuote {
+            id: "quote-with-secret-key".to_string(),
+            mint_url: MintUrl::from_str("https://example.com").expect("valid mint URL"),
+            payment_method: cdk_common::PaymentMethod::BOLT11,
+            amount: Some(cdk_common::Amount::from(1)),
+            unit: CurrencyUnit::Sat,
+            request: "lnbc1test".to_string(),
+            state: cdk_common::nuts::MintQuoteState::Unpaid,
+            expiry: 1,
+            secret_key: Some(secret_key.clone()),
+            amount_issued: cdk_common::Amount::ZERO,
+            amount_paid: cdk_common::Amount::ZERO,
+            updated_at: 0,
+            estimated_blocks: None,
+            used_by_operation: None,
+            version: 0,
+        };
+
+        let table = MintQuoteTable::try_from(quote).expect("quote converts to table row");
+        assert_eq!(table.secret_key.as_deref(), Some(secret_hex.as_str()));
+
+        let round_trip: MintQuote = table.try_into().expect("table row converts to quote");
+        assert_eq!(round_trip.secret_key, Some(secret_key));
+    }
     use crate::SupabaseWalletDatabase;
 
     fn extract_schema_versions(schema_sql: &str) -> Vec<u32> {

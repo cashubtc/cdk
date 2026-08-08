@@ -130,15 +130,15 @@ mod tests {
         let retrieved_dleq = retrieved_proof.proof.dleq.as_ref().unwrap();
 
         // Verify DLEQ components match what we stored
-        assert_eq!(retrieved_dleq.e.to_string(), e.to_string());
-        assert_eq!(retrieved_dleq.s.to_string(), s.to_string());
-        assert_eq!(retrieved_dleq.r.to_string(), r.to_string());
+        assert_eq!(retrieved_dleq.e.to_secret_hex(), e.to_secret_hex());
+        assert_eq!(retrieved_dleq.s.to_secret_hex(), s.to_secret_hex());
+        assert_eq!(retrieved_dleq.r.to_secret_hex(), r.to_secret_hex());
     }
 
     #[tokio::test]
     async fn test_mint_quote_payment_method_read_and_write() {
         use cdk_common::mint_url::MintUrl;
-        use cdk_common::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
+        use cdk_common::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod, SecretKey};
         use cdk_common::wallet::MintQuote;
         use cdk_common::Amount;
 
@@ -158,6 +158,7 @@ mod tests {
 
         // Test PaymentMethod variants
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        let quote_signing_key = SecretKey::generate();
         let payment_methods = [
             PaymentMethod::Known(KnownMethod::Bolt11),
             PaymentMethod::Known(KnownMethod::Bolt11),
@@ -173,7 +174,7 @@ mod tests {
                 request: "test_request".to_string(),
                 state: MintQuoteState::Unpaid,
                 expiry: 1000000000,
-                secret_key: None,
+                secret_key: Some(quote_signing_key.clone()),
                 payment_method: payment_method.clone(),
                 amount_issued: Amount::from(0),
                 amount_paid: Amount::from(0),
@@ -189,6 +190,7 @@ mod tests {
             // Retrieve and verify
             let retrieved = db.get_mint_quote(&quote.id).await.unwrap().unwrap();
             assert_eq!(retrieved.payment_method, *payment_method);
+            assert_eq!(retrieved.secret_key, Some(quote_signing_key.clone()));
             assert_eq!(retrieved.amount_issued, Amount::from(0));
             assert_eq!(retrieved.amount_paid, Amount::from(0));
         }

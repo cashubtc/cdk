@@ -874,7 +874,16 @@ where
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(
+        skip(self, transaction),
+        fields(
+            direction = %transaction.direction,
+            amount = %transaction.amount,
+            unit = %transaction.unit,
+            quote_id = ?transaction.quote_id,
+            saga_id = ?transaction.saga_id,
+        )
+    )]
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), database::Error> {
         let conn = self
             .pool
@@ -1216,7 +1225,10 @@ where
             .bind("request", quote.request)
             .bind("state", quote.state.to_string())
             .bind("expiry", quote.expiry as i64)
-            .bind("secret_key", quote.secret_key.map(|p| p.to_string()))
+            .bind(
+                "secret_key",
+                quote.secret_key.map(|key| key.to_secret_hex()),
+            )
             .bind("payment_method", quote.payment_method.to_string())
             .bind("amount_issued", quote.amount_issued.to_i64())
             .bind("amount_paid", quote.amount_paid.to_i64())
