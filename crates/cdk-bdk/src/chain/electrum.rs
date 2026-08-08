@@ -4,10 +4,10 @@ use std::time::Instant;
 use bdk_electrum::electrum_client::{Client, ConfigBuilder, ElectrumApi};
 use bdk_electrum::BdkElectrumClient;
 use bdk_wallet::bitcoin::Transaction;
+use cdk_common::redact::url_for_logs;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
-use crate::chain::logging::url_for_logs;
 use crate::chain::{BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, ElectrumConfig};
 use crate::error::Error;
 use crate::CdkBdk;

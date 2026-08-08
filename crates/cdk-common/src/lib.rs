@@ -41,6 +41,7 @@ pub mod pub_sub;
 /// `Transport` trait it decorates.
 #[cfg(all(feature = "wallet", feature = "http"))]
 pub mod rate_limit;
+pub mod redact;
 #[cfg(feature = "mint")]
 pub mod state;
 pub mod stream;

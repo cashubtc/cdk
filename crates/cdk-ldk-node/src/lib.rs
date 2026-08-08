@@ -2,6 +2,7 @@
 
 #![doc = include_str!("../README.md")]
 
+use std::fmt;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,6 +12,7 @@ use async_trait::async_trait;
 use bip39::Mnemonic;
 use cdk_common::common::FeeReserve;
 use cdk_common::payment::{self, *};
+use cdk_common::redact::url_for_logs;
 use cdk_common::util::{hex, unix_time};
 use cdk_common::{Amount, CurrencyUnit, MeltOptions, MeltQuoteState};
 use futures::{Stream, StreamExt};
@@ -51,8 +53,8 @@ pub struct CdkLdkNode {
     web_addr: Option<SocketAddr>,
 }
 
-impl std::fmt::Debug for CdkLdkNode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for CdkLdkNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CdkLdkNode")
             .field("fee_reserve", &self.fee_reserve)
             .field("web_addr", &self.web_addr)
@@ -63,7 +65,7 @@ impl std::fmt::Debug for CdkLdkNode {
 /// Configuration for connecting to Bitcoin RPC
 ///
 /// Contains the necessary connection parameters for Bitcoin Core RPC interface.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BitcoinRpcConfig {
     /// Bitcoin RPC server hostname or IP address
     pub host: String,
@@ -75,11 +77,22 @@ pub struct BitcoinRpcConfig {
     pub password: String,
 }
 
+impl fmt::Debug for BitcoinRpcConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BitcoinRpcConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// Source of blockchain data for the Lightning node
 ///
 /// Specifies how the node should connect to the Bitcoin network to retrieve
 /// blockchain information and broadcast transactions.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ChainSource {
     /// Use an Esplora server for blockchain data
     ///
@@ -95,11 +108,21 @@ pub enum ChainSource {
     BitcoinRpc(BitcoinRpcConfig),
 }
 
+impl fmt::Debug for ChainSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Esplora(url) => f.debug_tuple("Esplora").field(&url_for_logs(url)).finish(),
+            Self::Electrum(url) => f.debug_tuple("Electrum").field(&url_for_logs(url)).finish(),
+            Self::BitcoinRpc(config) => f.debug_tuple("BitcoinRpc").field(config).finish(),
+        }
+    }
+}
+
 /// Source of Lightning network gossip data
 ///
 /// Specifies how the node should learn about the Lightning Network topology
 /// and routing information.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum GossipSource {
     /// Learn gossip through peer-to-peer connections
     ///
@@ -109,6 +132,18 @@ pub enum GossipSource {
     ///
     /// Contains the URL of the RGS server for compressed gossip data
     RapidGossipSync(String),
+}
+
+impl fmt::Debug for GossipSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::P2P => f.write_str("P2P"),
+            Self::RapidGossipSync(url) => f
+                .debug_tuple("RapidGossipSync")
+                .field(&url_for_logs(url))
+                .finish(),
+        }
+    }
 }
 /// A builder for an [`CdkLdkNode`] instance.
 #[derive(Debug)]
@@ -1162,6 +1197,52 @@ impl Drop for CdkLdkNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bitcoin_rpc_debug_redacts_password() {
+        let source = ChainSource::BitcoinRpc(BitcoinRpcConfig {
+            host: "127.0.0.1".to_string(),
+            port: 8332,
+            user: "rpc-user".to_string(),
+            password: "rpc-password-secret".to_string(),
+        });
+
+        let debug = format!("{source:?}");
+
+        assert!(debug.contains("127.0.0.1"));
+        assert!(debug.contains("rpc-user"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("rpc-password-secret"));
+    }
+
+    #[test]
+    fn chain_source_debug_redacts_url_credentials() {
+        for source in [
+            ChainSource::Esplora("https://esplora-user:esplora-secret@example.com/api".to_string()),
+            ChainSource::Electrum(
+                "ssl://electrum-user:electrum-secret@example.com:50002".to_string(),
+            ),
+        ] {
+            let debug = format!("{source:?}");
+
+            assert!(debug.contains("example.com"));
+            assert!(!debug.contains("-user"));
+            assert!(!debug.contains("-secret"));
+        }
+    }
+
+    #[test]
+    fn gossip_source_debug_redacts_url_credentials() {
+        let source = GossipSource::RapidGossipSync(
+            "https://rgs-user:rgs-secret@example.com/snapshot".to_string(),
+        );
+
+        let debug = format!("{source:?}");
+
+        assert!(debug.contains("https://example.com/snapshot"));
+        assert!(!debug.contains("rgs-user"));
+        assert!(!debug.contains("rgs-secret"));
+    }
 
     fn test_payment_details(status: PaymentStatus, amount_msat: Option<u64>) -> PaymentDetails {
         PaymentDetails {

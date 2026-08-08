@@ -1,8 +1,14 @@
+//! Helpers for formatting potentially sensitive values safely.
+
 use url::Url;
 
 const INVALID_URL_FOR_LOGS: &str = "[INVALID URL]";
 
-pub(super) fn url_for_logs(value: &str) -> String {
+/// Return a URL suitable for logs and `Debug` output by removing userinfo.
+///
+/// Malformed URLs and URL forms whose userinfo cannot be removed are replaced
+/// entirely so the original value cannot leak through a fallback path.
+pub fn url_for_logs(value: &str) -> String {
     let Ok(mut url) = Url::parse(value) else {
         return INVALID_URL_FOR_LOGS.to_owned();
     };
@@ -20,20 +26,17 @@ mod tests {
 
     #[test]
     fn removes_url_credentials() {
-        let url = "https://alice:s3cr3t@example.com:8443/esplora/api?network=main#tip";
+        let url = "https://alice:s3cr3t@example.com:8443/api?network=main#tip";
 
         let logged_url = url_for_logs(url);
 
-        assert_eq!(
-            logged_url,
-            "https://example.com:8443/esplora/api?network=main#tip"
-        );
+        assert_eq!(logged_url, "https://example.com:8443/api?network=main#tip");
         assert!(!logged_url.contains("alice"));
         assert!(!logged_url.contains("s3cr3t"));
     }
 
     #[test]
-    fn removes_credentials_from_electrum_url() {
+    fn removes_credentials_from_custom_scheme() {
         let url = "ssl://alice:s3cr3t@example.com:50002";
 
         assert_eq!(url_for_logs(url), "ssl://example.com:50002");
@@ -48,7 +51,7 @@ mod tests {
 
     #[test]
     fn preserves_url_without_credentials() {
-        let url = "https://example.com/esplora/api";
+        let url = "https://example.com/api";
 
         assert_eq!(url_for_logs(url), url);
     }

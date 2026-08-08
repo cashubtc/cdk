@@ -1,3 +1,5 @@
+#[cfg(any(feature = "bdk", feature = "ldk-node"))]
+use std::fmt;
 use std::path::PathBuf;
 
 use bitcoin::hashes::{sha256, Hash};
@@ -5,6 +7,8 @@ use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
 use cdk_axum::cache;
 use cdk_common::common::QuoteTTL;
+#[cfg(any(feature = "bdk", feature = "ldk-node"))]
+use cdk_common::redact::url_for_logs;
 use config::{Config, ConfigError, File};
 use serde::{Deserialize, Serialize};
 
@@ -344,7 +348,7 @@ impl Default for BatchConfig {
 }
 
 #[cfg(feature = "bdk")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Bdk {
     /// Fee percentage (e.g., 0.02 for 2%)
     #[serde(default = "default_fee_percent")]
@@ -406,6 +410,39 @@ pub struct Bdk {
     /// Wallet sync interval in seconds
     #[serde(default = "default_bdk_sync_interval_secs")]
     pub sync_interval_secs: u64,
+}
+
+#[cfg(feature = "bdk")]
+impl fmt::Debug for Bdk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Bdk")
+            .field("fee_percent", &self.fee_percent)
+            .field("reserve_fee_min", &self.reserve_fee_min)
+            .field("network", &self.network)
+            .field("chain_source_type", &self.chain_source_type)
+            .field(
+                "esplora_url",
+                &self.esplora_url.as_deref().map(url_for_logs),
+            )
+            .field("esplora_parallel_requests", &self.esplora_parallel_requests)
+            .field(
+                "electrum_url",
+                &self.electrum_url.as_deref().map(url_for_logs),
+            )
+            .field("electrum_batch_size", &self.electrum_batch_size)
+            .field("bitcoind_rpc_host", &self.bitcoind_rpc_host)
+            .field("bitcoind_rpc_port", &self.bitcoind_rpc_port)
+            .field("bitcoind_rpc_user", &self.bitcoind_rpc_user)
+            .field("bitcoind_rpc_password", &"[REDACTED]")
+            .field("wallet_rescan_from_height", &self.wallet_rescan_from_height)
+            .field("mnemonic", &"[REDACTED]")
+            .field("batch_config", &self.batch_config)
+            .field("num_confs", &self.num_confs)
+            .field("min_receive_amount_sat", &self.min_receive_amount_sat)
+            .field("min_send_amount_sat", &self.min_send_amount_sat)
+            .field("sync_interval_secs", &self.sync_interval_secs)
+            .finish()
+    }
 }
 
 #[cfg(feature = "bdk")]
@@ -689,15 +726,21 @@ impl Default for LdkNode {
 }
 
 #[cfg(feature = "ldk-node")]
-impl std::fmt::Debug for LdkNode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for LdkNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LdkNode")
             .field("fee_percent", &self.fee_percent)
             .field("reserve_fee_min", &self.reserve_fee_min)
             .field("bitcoin_network", &self.bitcoin_network)
             .field("chain_source_type", &self.chain_source_type)
-            .field("esplora_url", &self.esplora_url)
-            .field("electrum_url", &self.electrum_url)
+            .field(
+                "esplora_url",
+                &self.esplora_url.as_deref().map(url_for_logs),
+            )
+            .field(
+                "electrum_url",
+                &self.electrum_url.as_deref().map(url_for_logs),
+            )
             .field("bitcoind_rpc_host", &self.bitcoind_rpc_host)
             .field("bitcoind_rpc_port", &self.bitcoind_rpc_port)
             .field("bitcoind_rpc_user", &self.bitcoind_rpc_user)
@@ -711,7 +754,7 @@ impl std::fmt::Debug for LdkNode {
                 &self.ldk_node_announce_addresses,
             )
             .field("gossip_source_type", &self.gossip_source_type)
-            .field("rgs_url", &self.rgs_url)
+            .field("rgs_url", &self.rgs_url.as_deref().map(url_for_logs))
             .field("webserver_host", &self.webserver_host)
             .field("webserver_port", &self.webserver_port)
             .field("ldk_node_mnemonic", &"[REDACTED]")
@@ -1329,6 +1372,66 @@ mod tests {
     #[test]
     fn test_bdk_default_electrum_batch_size() {
         assert_eq!(Bdk::default().electrum_batch_size, 5);
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_debug_redacts_secrets_and_url_credentials() {
+        let config = Bdk {
+            network: Some("regtest".to_string()),
+            esplora_url: Some(
+                "https://esplora-user:esplora-secret@example.com/esplora".to_string(),
+            ),
+            electrum_url: Some("ssl://electrum-user:electrum-secret@example.com:50002".to_string()),
+            bitcoind_rpc_password: Some("rpc-password-secret".to_string()),
+            mnemonic: Some("mnemonic-secret-words".to_string()),
+            ..Default::default()
+        };
+
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("regtest"));
+        assert!(debug.contains("https://example.com/esplora"));
+        assert!(debug.contains("ssl://example.com:50002"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("esplora-user"));
+        assert!(!debug.contains("esplora-secret"));
+        assert!(!debug.contains("electrum-user"));
+        assert!(!debug.contains("electrum-secret"));
+        assert!(!debug.contains("rpc-password-secret"));
+        assert!(!debug.contains("mnemonic-secret-words"));
+    }
+
+    #[cfg(feature = "ldk-node")]
+    #[test]
+    fn test_ldk_node_debug_redacts_secrets_and_url_credentials() {
+        let config = LdkNode {
+            bitcoin_network: Some("regtest".to_string()),
+            esplora_url: Some(
+                "https://esplora-user:esplora-secret@example.com/esplora".to_string(),
+            ),
+            electrum_url: Some("ssl://electrum-user:electrum-secret@example.com:50002".to_string()),
+            bitcoind_rpc_password: Some("rpc-password-secret".to_string()),
+            rgs_url: Some("https://rgs-user:rgs-secret@example.com/snapshot".to_string()),
+            ldk_node_mnemonic: Some("mnemonic-secret-words".to_string()),
+            ..Default::default()
+        };
+
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("regtest"));
+        assert!(debug.contains("https://example.com/esplora"));
+        assert!(debug.contains("ssl://example.com:50002"));
+        assert!(debug.contains("https://example.com/snapshot"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("esplora-user"));
+        assert!(!debug.contains("esplora-secret"));
+        assert!(!debug.contains("electrum-user"));
+        assert!(!debug.contains("electrum-secret"));
+        assert!(!debug.contains("rgs-user"));
+        assert!(!debug.contains("rgs-secret"));
+        assert!(!debug.contains("rpc-password-secret"));
+        assert!(!debug.contains("mnemonic-secret-words"));
     }
 
     #[cfg(feature = "bdk")]

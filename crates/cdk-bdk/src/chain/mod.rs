@@ -1,11 +1,11 @@
+use core::fmt;
+
 use bdk_wallet::bitcoin::Transaction;
 use bdk_wallet::chain::BlockId;
+use cdk_common::redact::url_for_logs;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
-
-#[cfg(any(feature = "electrum", feature = "esplora"))]
-mod logging;
 
 #[cfg(feature = "bitcoin-rpc")]
 pub mod bitcoin_rpc;
@@ -15,7 +15,7 @@ pub mod electrum;
 pub mod esplora;
 
 /// Configuration for connecting to Bitcoin RPC
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BitcoinRpcConfig {
     /// Bitcoin RPC server hostname or IP address
     pub host: String,
@@ -33,8 +33,20 @@ pub struct BitcoinRpcConfig {
     pub wallet_rescan_from_height: Option<u32>,
 }
 
+impl fmt::Debug for BitcoinRpcConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BitcoinRpcConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("password", &"[REDACTED]")
+            .field("wallet_rescan_from_height", &self.wallet_rescan_from_height)
+            .finish()
+    }
+}
+
 /// Configuration for connecting to Esplora
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EsploraConfig {
     /// URL of the Esplora server endpoint
     pub url: String,
@@ -42,8 +54,17 @@ pub struct EsploraConfig {
     pub parallel_requests: usize,
 }
 
+impl fmt::Debug for EsploraConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EsploraConfig")
+            .field("url", &url_for_logs(&self.url))
+            .field("parallel_requests", &self.parallel_requests)
+            .finish()
+    }
+}
+
 /// Configuration for connecting to Electrum
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ElectrumConfig {
     /// URL of the Electrum server endpoint
     pub url: String,
@@ -51,8 +72,17 @@ pub struct ElectrumConfig {
     pub batch_size: usize,
 }
 
+impl fmt::Debug for ElectrumConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ElectrumConfig")
+            .field("url", &url_for_logs(&self.url))
+            .field("batch_size", &self.batch_size)
+            .finish()
+    }
+}
+
 /// Source of blockchain data for the BDK wallet
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ChainSource {
     /// Use an Esplora server for blockchain data
     #[cfg(feature = "esplora")]
@@ -63,6 +93,21 @@ pub enum ChainSource {
     /// Use Bitcoin Core RPC for blockchain data
     #[cfg(feature = "bitcoin-rpc")]
     BitcoinRpc(BitcoinRpcConfig),
+}
+
+impl fmt::Debug for ChainSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            #[cfg(feature = "esplora")]
+            Self::Esplora(config) => f.debug_tuple("Esplora").field(config).finish(),
+            #[cfg(feature = "electrum")]
+            Self::Electrum(config) => f.debug_tuple("Electrum").field(config).finish(),
+            #[cfg(feature = "bitcoin-rpc")]
+            Self::BitcoinRpc(config) => f.debug_tuple("BitcoinRpc").field(config).finish(),
+            #[allow(unreachable_patterns)]
+            _ => f.write_str("ChainSource"),
+        }
+    }
 }
 
 /// Classified result of submitting a transaction to a chain backend.
@@ -184,10 +229,60 @@ impl ChainSource {
     }
 }
 
-#[cfg(all(test, feature = "electrum"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(feature = "bitcoin-rpc")]
+    #[test]
+    fn bitcoin_rpc_debug_redacts_password() {
+        let config = BitcoinRpcConfig {
+            host: "127.0.0.1".to_string(),
+            port: 8332,
+            user: "rpc-user".to_string(),
+            password: "rpc-password-secret".to_string(),
+            wallet_rescan_from_height: Some(800_000),
+        };
+
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("127.0.0.1"));
+        assert!(debug.contains("rpc-user"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("rpc-password-secret"));
+    }
+
+    #[cfg(feature = "esplora")]
+    #[test]
+    fn esplora_debug_redacts_url_credentials() {
+        let source = ChainSource::Esplora(EsploraConfig {
+            url: "https://esplora-user:esplora-secret@example.com/api".to_string(),
+            parallel_requests: 4,
+        });
+
+        let debug = format!("{source:?}");
+
+        assert!(debug.contains("https://example.com/api"));
+        assert!(!debug.contains("esplora-user"));
+        assert!(!debug.contains("esplora-secret"));
+    }
+
+    #[cfg(feature = "electrum")]
+    #[test]
+    fn electrum_debug_redacts_url_credentials() {
+        let source = ChainSource::Electrum(ElectrumConfig {
+            url: "ssl://electrum-user:electrum-secret@example.com:50002".to_string(),
+            batch_size: 5,
+        });
+
+        let debug = format!("{source:?}");
+
+        assert!(debug.contains("ssl://example.com:50002"));
+        assert!(!debug.contains("electrum-user"));
+        assert!(!debug.contains("electrum-secret"));
+    }
+
+    #[cfg(feature = "electrum")]
     #[test]
     fn rejects_zero_electrum_batch_size() {
         let chain_source = ChainSource::Electrum(ElectrumConfig {
