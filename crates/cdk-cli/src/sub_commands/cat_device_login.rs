@@ -9,6 +9,7 @@ use clap::Args;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
+use crate::terminal::escape_control;
 use crate::token_storage;
 
 #[derive(Args, Serialize, Deserialize)]
@@ -110,11 +111,16 @@ async fn get_device_code_token(
 
     let interval = device_code_data["interval"].as_u64().unwrap_or(5);
 
-    println!("\nTo login, visit: {verification_uri}");
-    println!("And enter code: {user_code}\n");
+    // These values come from the OIDC provider and may contain control
+    // characters; escape them before printing to the terminal.
+    println!("\nTo login, visit: {}", escape_control(verification_uri));
+    println!("And enter code: {}\n", escape_control(user_code));
 
     if verification_uri_complete != verification_uri {
-        println!("Or visit this URL directly: {verification_uri_complete}\n");
+        println!(
+            "Or visit this URL directly: {}\n",
+            escape_control(verification_uri_complete)
+        );
     }
 
     // Poll for the token

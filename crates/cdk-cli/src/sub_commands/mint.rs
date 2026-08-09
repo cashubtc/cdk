@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use tokio::time::timeout;
 
+use crate::terminal::escape_control;
 use crate::utils::get_or_create_wallet;
 
 #[derive(Args, Serialize, Deserialize)]
@@ -80,7 +81,7 @@ pub async fn mint(
                     quote.expiry
                 );
 
-                println!("Please pay: {}", quote.request);
+                println!("Please pay: {}", escape_control(&quote.request));
 
                 quote
             }
@@ -108,7 +109,7 @@ pub async fn mint(
                     quote.expiry
                 );
 
-                println!("Please pay: {}", quote.request);
+                println!("Please pay: {}", escape_control(&quote.request));
 
                 quote
             }
@@ -119,7 +120,7 @@ pub async fn mint(
                     .await?;
 
                 println!("Quote: id={}, expiry={}", quote.id, quote.expiry);
-                println!("Send sats to: {}", quote.request);
+                println!("Send sats to: {}", escape_control(&quote.request));
 
                 quote
             }
@@ -142,7 +143,7 @@ pub async fn mint(
                     quote.expiry
                 );
 
-                println!("Please pay: {}", quote.request);
+                println!("Please pay: {}", escape_control(&quote.request));
 
                 quote
             }
