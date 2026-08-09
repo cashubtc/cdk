@@ -376,6 +376,7 @@ mod tests {
         .unwrap();
         let pi2 =
             ProofInfo::new(proof2.clone(), mint_url, State::Unspent, CurrencyUnit::Sat).unwrap();
+        let proof_ys = vec![pi1.y, pi2.y];
         db.update_proofs(vec![pi1, pi2], vec![]).await.unwrap();
 
         // Rotate keysets on the mock: A becomes inactive, B becomes active
@@ -428,6 +429,53 @@ mod tests {
                 .all(|o| o.keyset_id == keyset_b_id),
             "second swap attempt should target keyset B"
         );
+
+        let stored = db.get_proofs_by_ys(proof_ys).await.unwrap();
+        assert!(stored.iter().all(|proof| proof.state == State::Reserved));
+        assert!(stored.iter().all(|proof| proof.used_by_operation.is_some()));
+    }
+
+    #[tokio::test]
+    async fn swap_already_signed_error_keeps_inputs_reserved() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        db.add_mint(mint_url.clone(), None).await.unwrap();
+
+        let mock = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock.clone()).await;
+        wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+
+        let proof1 = test_proof(test_keyset_id(), 1);
+        let proof2 = test_proof(test_keyset_id(), 2);
+        let pi1 = ProofInfo::new(
+            proof1.clone(),
+            mint_url.clone(),
+            State::Unspent,
+            CurrencyUnit::Sat,
+        )
+        .unwrap();
+        let pi2 =
+            ProofInfo::new(proof2.clone(), mint_url, State::Unspent, CurrencyUnit::Sat).unwrap();
+        let proof_ys = vec![pi1.y, pi2.y];
+        db.update_proofs(vec![pi1, pi2], vec![]).await.unwrap();
+
+        mock.set_post_swap_response(Err(Error::BlindedMessageAlreadySigned));
+
+        let result = wallet
+            .swap(
+                None,
+                SplitTarget::default(),
+                vec![proof1, proof2],
+                None,
+                false,
+                false,
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::BlindedMessageAlreadySigned)));
+        let stored = db.get_proofs_by_ys(proof_ys).await.unwrap();
+        assert!(stored.iter().all(|proof| proof.state == State::Reserved));
+        assert!(stored.iter().all(|proof| proof.used_by_operation.is_some()));
     }
 
     /// When the mint returns InactiveKeyset but the active keyset hasn't

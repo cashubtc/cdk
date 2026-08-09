@@ -1182,7 +1182,9 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
             // Now update proofs that match the operation_id
             for (y_bytes, mut proof) in all_proofs {
-                if proof.used_by_operation == Some(*operation_id) {
+                if proof.used_by_operation == Some(*operation_id)
+                    && matches!(proof.state, State::Reserved | State::Pending)
+                {
                     proof.state = State::Unspent;
                     proof.used_by_operation = None;
 

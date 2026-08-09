@@ -234,7 +234,11 @@ pub trait WalletDatabase: Send + Sync {
         operation_id: String,
     ) -> Result<(), FfiError>;
 
-    /// Release proofs reserved by an operation
+    /// Release live proofs reserved by an operation.
+    ///
+    /// Implementations must only change Reserved or Pending proofs owned by
+    /// `operation_id`; Spent proofs and proofs owned by another operation must
+    /// be preserved.
     async fn release_proofs(&self, operation_id: String) -> Result<(), FfiError>;
 
     /// Get proofs reserved by an operation

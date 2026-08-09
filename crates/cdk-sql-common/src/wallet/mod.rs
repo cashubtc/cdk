@@ -1615,6 +1615,7 @@ where
             UPDATE proof
             SET state = 'UNSPENT', used_by_operation = NULL
             WHERE used_by_operation = :operation_id
+              AND state IN ('RESERVED', 'PENDING')
             "#,
         )?
         .bind("operation_id", operation_id.to_string())

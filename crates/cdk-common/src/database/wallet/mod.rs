@@ -177,7 +177,11 @@ where
         operation_id: &uuid::Uuid,
     ) -> Result<(), Err>;
 
-    /// Release proofs reserved by an operation
+    /// Release proofs reserved by an operation.
+    ///
+    /// Only proofs owned by `operation_id` in [`State::Reserved`] or
+    /// [`State::Pending`] may be changed to [`State::Unspent`]. Implementations
+    /// must preserve spent proofs and proofs owned by another operation.
     async fn release_proofs(&self, operation_id: &uuid::Uuid) -> Result<(), Err>;
 
     /// Get proofs reserved by an operation

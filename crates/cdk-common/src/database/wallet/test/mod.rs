@@ -1448,6 +1448,34 @@ where
     assert!(reserved.is_empty());
 }
 
+/// Test that releasing an operation never resurrects proofs already marked spent.
+pub async fn release_proofs_preserves_spent<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let proof_info = test_proof_info(keyset_id, 100, mint_url);
+    let proof_y = proof_info.y;
+
+    db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+    let operation_id = uuid::Uuid::new_v4();
+    db.reserve_proofs(vec![proof_y], &operation_id)
+        .await
+        .unwrap();
+    db.update_proofs_state(vec![proof_y], State::Spent)
+        .await
+        .unwrap();
+
+    db.release_proofs(&operation_id).await.unwrap();
+
+    let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].state, State::Spent);
+    assert_eq!(stored[0].used_by_operation, Some(operation_id));
+}
+
 /// Test getting proofs reserved by an operation
 pub async fn get_reserved_proofs<DB>(db: DB)
 where
@@ -1615,6 +1643,7 @@ macro_rules! wallet_db_test {
             get_incomplete_sagas,
             reserve_proofs,
             release_proofs,
+            release_proofs_preserves_spent,
             get_reserved_proofs,
             reserve_proofs_already_reserved,
             reserve_proofs_is_atomic

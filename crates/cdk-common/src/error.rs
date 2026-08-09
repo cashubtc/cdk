@@ -583,7 +583,6 @@ mod tests {
     fn test_is_definitive_failure() {
         // Test definitive failures
         assert!(Error::AmountOverflow.is_definitive_failure());
-        assert!(Error::TokenAlreadySpent.is_definitive_failure());
         assert!(Error::MintingDisabled.is_definitive_failure());
         assert!(Error::MaxInputsExceeded { actual: 2, max: 1 }.is_definitive_failure());
         assert!(Error::MaxOutputsExceeded { actual: 2, max: 1 }.is_definitive_failure());
@@ -599,6 +598,8 @@ mod tests {
         assert!(!Error::Timeout.is_definitive_failure());
         assert!(!Error::Internal.is_definitive_failure());
         assert!(!Error::ConcurrentUpdate.is_definitive_failure());
+        assert!(!Error::BlindedMessageAlreadySigned.is_definitive_failure());
+        assert!(!Error::TokenAlreadySpent.is_definitive_failure());
 
         // Test HTTP server errors (5xx)
         assert!(
@@ -685,7 +686,6 @@ impl Error {
             | Self::PaidQuote
             | Self::MeltingDisabled
             | Self::UnknownKeySet
-            | Self::BlindedMessageAlreadySigned
             | Self::InactiveKeyset
             | Self::ExpiredKeyset
             | Self::TransactionUnbalanced(_, _, _)
@@ -698,7 +698,6 @@ impl Error {
             | Self::MultipleUnits
             | Self::UnitMismatch
             | Self::SigAllUsedInMelt
-            | Self::TokenAlreadySpent
             | Self::P2PKConditionsNotMet(_)
             | Self::DuplicateSignatureError
             | Self::LocktimeNotProvided

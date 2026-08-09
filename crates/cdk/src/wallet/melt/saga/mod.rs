@@ -1212,21 +1212,18 @@ impl<'a> MeltSaga<'a, MeltRequested> {
     /// Handle failed payment - release proofs and clean up.
     async fn handle_failure(&self) {
         let operation_id = self.state_data.operation_id;
-        let final_proofs = &self.state_data.final_proofs;
 
-        if let Ok(all_ys) = final_proofs.ys() {
-            let _ = self
-                .wallet
-                .localstore
-                .update_proofs_state(all_ys, State::Unspent)
-                .await;
-        }
-        let _ = self
+        if let Err(e) = self
             .wallet
-            .localstore
-            .release_melt_quote(&operation_id)
-            .await;
-        let _ = self.wallet.localstore.delete_saga(&operation_id).await;
+            .claim_and_compensate_melt(&operation_id, &[MeltSagaState::MeltRequested])
+            .await
+        {
+            tracing::error!(
+                "Failed to compensate melt operation {} after failure: {}",
+                operation_id,
+                e
+            );
+        }
     }
 }
 
@@ -1271,24 +1268,21 @@ impl<'a> MeltSaga<'a, PaymentPending> {
             final_proofs.total_amount().unwrap_or(Amount::ZERO)
         );
 
-        if let Ok(all_ys) = final_proofs.ys() {
-            if let Err(e) = self
-                .wallet
-                .localstore
-                .update_proofs_state(all_ys, State::Unspent)
-                .await
-            {
-                tracing::error!("Failed to restore proofs for failed melt: {}", e);
-            } else {
-                tracing::info!("Successfully restored proofs to Unspent");
-            }
-        }
-        let _ = self
+        match self
             .wallet
-            .localstore
-            .release_melt_quote(&operation_id)
-            .await;
-        let _ = self.wallet.localstore.delete_saga(&operation_id).await;
+            .claim_and_compensate_melt(
+                &operation_id,
+                &[MeltSagaState::MeltRequested, MeltSagaState::PaymentPending],
+            )
+            .await
+        {
+            Ok(true) => tracing::info!("Successfully restored owned proofs to Unspent"),
+            Ok(false) => tracing::info!(
+                "Skipped stale failure cleanup for melt operation {}",
+                operation_id
+            ),
+            Err(e) => tracing::error!("Failed to restore proofs for failed melt: {}", e),
+        }
     }
 }
 

@@ -2680,6 +2680,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_reconcile_stale_failure_preserves_spent_proof() {
+        let (db, proof_y, operation_id, mock_client, pending) = pending_bolt11_melt(false).await;
+        let quote_id = pending.saga.quote().id.clone();
+
+        db.update_proofs_state(vec![proof_y], State::Spent)
+            .await
+            .unwrap();
+        mock_client.set_melt_quote_status_response(Ok(bolt11_status(
+            &quote_id,
+            MeltQuoteState::Failed,
+            None,
+        )));
+
+        assert!(matches!(
+            pending
+                .reconcile_non_paid_status(MeltQuoteState::Failed)
+                .await,
+            WaitStep::Terminal(Err(Error::PaymentFailed))
+        ));
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored[0].state, State::Spent);
+        assert_eq!(stored[0].used_by_operation, Some(operation_id));
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_stale_failure_preserves_newer_proof_owner() {
+        let (db, proof_y, _operation_id, mock_client, pending) = pending_bolt11_melt(false).await;
+        let quote_id = pending.saga.quote().id.clone();
+        let newer_operation_id = uuid::Uuid::new_v4();
+
+        let mut stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        stored[0].state = State::Reserved;
+        stored[0].used_by_operation = Some(newer_operation_id);
+        db.update_proofs(stored, vec![]).await.unwrap();
+
+        mock_client.set_melt_quote_status_response(Ok(bolt11_status(
+            &quote_id,
+            MeltQuoteState::Failed,
+            None,
+        )));
+
+        assert!(matches!(
+            pending
+                .reconcile_non_paid_status(MeltQuoteState::Failed)
+                .await,
+            WaitStep::Terminal(Err(Error::PaymentFailed))
+        ));
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored[0].state, State::Reserved);
+        assert_eq!(stored[0].used_by_operation, Some(newer_operation_id));
+    }
+
+    #[tokio::test]
     async fn test_reconcile_non_paid_status_http_failed_with_proof_keeps_waiting() {
         let (db, proof_y, operation_id, mock_client, pending) = pending_bolt11_melt(false).await;
         let quote_id = pending.saga.quote().id.clone();
