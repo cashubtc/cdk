@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod amount;
+pub mod cheap_str;
 pub mod dhke;
 pub mod mint_url;
 pub mod nuts;
@@ -10,6 +11,7 @@ pub mod util;
 pub use lightning_invoice::{self, Bolt11Invoice};
 
 pub use self::amount::Amount;
+pub use self::cheap_str::CheapStr;
 pub use self::mint_url::MintUrl;
 pub use self::nuts::*;
 pub use self::util::SECP256K1;

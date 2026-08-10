@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use cdk_common::database::Error;
+use cdk_common::CheapStr;
 use once_cell::sync::Lazy;
 
 use crate::database::DatabaseExecutor;
@@ -52,9 +53,9 @@ impl From<Vec<Value>> for PlaceholderValue {
 #[derive(Debug, Clone)]
 pub enum SqlPart {
     /// Raw SQL statement
-    Raw(Arc<str>),
+    Raw(CheapStr<'static>),
     /// Placeholder
-    Placeholder(Arc<str>, Option<PlaceholderValue>),
+    Placeholder(CheapStr<'static>, Option<PlaceholderValue>),
 }
 
 /// SQL parser error
@@ -194,13 +195,13 @@ pub fn split_sql_parts(input: &str) -> Result<Vec<SqlPart>, SqlParseError> {
     Ok(parts)
 }
 
-type Cache = HashMap<String, (Vec<SqlPart>, Option<Arc<str>>)>;
+type Cache = HashMap<String, (Vec<SqlPart>, Option<CheapStr<'static>>)>;
 
 /// Sql message
 #[derive(Debug, Default)]
 pub struct Statement {
     cache: Arc<RwLock<Cache>>,
-    cached_sql: Option<Arc<str>>,
+    cached_sql: Option<CheapStr<'static>>,
     sql: Option<String>,
     /// The SQL statement
     pub parts: Vec<SqlPart>,

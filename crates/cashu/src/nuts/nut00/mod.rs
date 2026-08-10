@@ -8,7 +8,6 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::string::FromUtf8Error;
-use std::sync::Arc;
 
 #[cfg(feature = "mint")]
 use bitcoin::hashes::Hash as BitcoinHash;
@@ -23,6 +22,7 @@ use super::nut10;
 use crate::amount::FeeAndAmounts;
 #[cfg(feature = "wallet")]
 use crate::amount::SplitTarget;
+use crate::cheap_str::CheapStr;
 #[cfg(feature = "wallet")]
 use crate::dhke::blind_message;
 use crate::dhke::hash_to_curve;
@@ -609,7 +609,7 @@ pub enum CurrencyUnit {
     /// Auth
     Auth,
     /// Custom currency unit
-    Custom(Arc<str>),
+    Custom(CheapStr<'static>),
 }
 
 impl CurrencyUnit {

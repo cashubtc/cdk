@@ -53,11 +53,12 @@ pub mod ws;
 // re-exporting external crates
 pub use bitcoin;
 pub use cashu::amount::{self, Amount};
+pub use cashu::cheap_str::CheapStr;
 pub use cashu::lightning_invoice::{self, Bolt11Invoice};
 pub use cashu::nuts::{self, *};
 #[cfg(feature = "mint")]
 pub use cashu::quote_id::{self, *};
-pub use cashu::{dhke, ensure_cdk, mint_url, secret, util, SECP256K1};
+pub use cashu::{cheap_str, dhke, ensure_cdk, mint_url, secret, util, SECP256K1};
 /// Re-export `cdk-http-client` WebSocket client.
 ///
 /// The `http` feature enables CDK common's HTTP-facing helpers and re-exports,
