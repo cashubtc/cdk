@@ -568,6 +568,16 @@ pub trait SagaTransaction {
         operation_id: &uuid::Uuid,
     ) -> Result<Option<mint::Saga>, Self::Err>;
 
+    /// Get a saga by operation ID and mark it as acquired for mutation.
+    ///
+    /// Implementations must lock the returned row for the lifetime of the
+    /// transaction. Saga mutation methods require this marker so callers
+    /// cannot update a stale snapshot loaded outside the transaction.
+    async fn get_saga_for_update(
+        &mut self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Option<Acquired<mint::Saga>>, Self::Err>;
+
     /// Add saga
     async fn add_saga(&mut self, saga: &mint::Saga) -> Result<(), Self::Err>;
 
@@ -582,6 +592,21 @@ pub trait SagaTransaction {
     async fn update_saga_with_finalization_data(
         &mut self,
         operation_id: &uuid::Uuid,
+        new_state: mint::SagaStateEnum,
+        finalization_data: Option<&mint::MeltFinalizationData>,
+    ) -> Result<(), Self::Err>;
+
+    /// Update the state of an acquired saga.
+    async fn update_acquired_saga(
+        &mut self,
+        saga: &mut Acquired<mint::Saga>,
+        new_state: mint::SagaStateEnum,
+    ) -> Result<(), Self::Err>;
+
+    /// Update an acquired saga state and optional finalization metadata.
+    async fn update_acquired_saga_with_finalization_data(
+        &mut self,
+        saga: &mut Acquired<mint::Saga>,
         new_state: mint::SagaStateEnum,
         finalization_data: Option<&mint::MeltFinalizationData>,
     ) -> Result<(), Self::Err>;
