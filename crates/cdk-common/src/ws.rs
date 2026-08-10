@@ -38,6 +38,11 @@ pub type WsResponse = nut17::ws::WsResponse<SubId>;
 /// Method-specific websocket request
 pub type WsMethodRequest = nut17::ws::WsMethodRequest<SubId>;
 
+/// Request to authenticate a connection (NUT-22)
+pub use nut17::ws::WsAuthenticateRequest;
+/// Response to an authenticate request (NUT-22)
+pub use nut17::ws::WsAuthenticateResponse;
+
 /// Error body for websocket responses
 pub type WsErrorBody = nut17::ws::WsErrorBody;
 
