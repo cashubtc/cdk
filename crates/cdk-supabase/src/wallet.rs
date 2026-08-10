@@ -214,7 +214,7 @@ impl SupabaseWalletDatabase {
     /// This must match the latest `schema_version` value set in the migration files.
     /// When adding new migrations, update this constant and set the same value
     /// in the new migration's `INSERT INTO schema_info` statement.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 8;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 9;
 
     /// Get the full database schema SQL
     ///
@@ -1539,6 +1539,48 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
         Err(DatabaseError::Internal(format!(
             "increment_keyset_counter RPC failed: HTTP {}. Ensure migrations have been run.",
+            status
+        )))
+    }
+
+    async fn increment_derivation_counter(
+        &self,
+        namespace: &str,
+        count: u32,
+    ) -> Result<u32, DatabaseError> {
+        let rpc_body = serde_json::json!({
+            "p_namespace": namespace,
+            "p_increment": count
+        });
+        let url = self.join_url("rest/v1/rpc/increment_derivation_counter")?;
+        let auth_bearer = self.get_auth_bearer().await;
+
+        let res = self
+            .client
+            .post(url)
+            .header("apikey", &self.api_key)
+            .header("Authorization", format!("Bearer {}", auth_bearer))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "return=representation")
+            .json(&rpc_body)
+            .send()
+            .await
+            .map_err(Error::Reqwest)?;
+        let status = res.status();
+        let text = res.text().await.map_err(Error::Reqwest)?;
+
+        if status.is_success() {
+            let new_counter: i64 = serde_json::from_str(&text).map_err(|err| {
+                DatabaseError::Internal(format!(
+                    "Failed to parse derivation counter response: {}",
+                    err
+                ))
+            })?;
+            return u32::try_from(new_counter).map_err(|_| DatabaseError::AmountOverflow);
+        }
+
+        Err(DatabaseError::Internal(format!(
+            "increment_derivation_counter RPC failed: HTTP {}. Ensure migrations have been run.",
             status
         )))
     }
@@ -3196,6 +3238,8 @@ mod tests {
         assert!(schema_sql.contains("CREATE TABLE IF NOT EXISTS schema_info"));
         assert!(schema_sql.contains("CREATE TABLE IF NOT EXISTS p2pk_signing_key"));
         assert!(schema_sql.contains("CREATE TABLE IF NOT EXISTS wallet_encryption_metadata"));
+        assert!(schema_sql.contains("CREATE TABLE IF NOT EXISTS derivation_counter"));
+        assert!(schema_sql.contains("CREATE OR REPLACE FUNCTION increment_derivation_counter"));
         assert_eq!(
             versions.last().copied(),
             Some(SupabaseWalletDatabase::REQUIRED_SCHEMA_VERSION)

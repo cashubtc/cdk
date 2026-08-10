@@ -1020,6 +1020,38 @@ where
         Ok(new_counter)
     }
 
+    #[instrument(skip(self))]
+    async fn increment_derivation_counter(
+        &self,
+        namespace: &str,
+        count: u32,
+    ) -> Result<u32, database::Error> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+
+        let new_counter = query(
+            r#"
+            INSERT INTO derivation_counter (namespace, counter)
+            VALUES (:namespace, :count)
+            ON CONFLICT(namespace) DO UPDATE SET
+                counter = derivation_counter.counter + :count
+            RETURNING counter
+            "#,
+        )?
+        .bind("namespace", namespace.to_owned())
+        .bind("count", count)
+        .pluck(&*conn)
+        .await?
+        .map(|n| Ok::<_, Error>(column_as_number!(n)))
+        .transpose()?
+        .ok_or_else(|| Error::Internal("Derivation counter update returned no value".to_owned()))?;
+
+        Ok(new_counter)
+    }
+
     #[instrument(skip(self, mint_info))]
     async fn add_mint(
         &self,

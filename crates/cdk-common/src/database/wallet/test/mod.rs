@@ -839,6 +839,70 @@ where
     assert_eq!(counter1, 5);
 }
 
+/// Test incrementing a derivation counter.
+pub async fn increment_derivation_counter<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let counter1 = db.increment_derivation_counter("test", 1).await.unwrap();
+    assert_eq!(counter1, 1);
+
+    let counter2 = db.increment_derivation_counter("test", 4).await.unwrap();
+    assert_eq!(counter2, 5);
+}
+
+/// Test that derivation namespaces and NUT-13 keyset counters are independent.
+pub async fn derivation_counters_are_independent<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let keyset_id = test_keyset_id();
+
+    db.increment_keyset_counter(&keyset_id, 7).await.unwrap();
+    db.increment_derivation_counter("first", 3).await.unwrap();
+    db.increment_derivation_counter("second", 5).await.unwrap();
+
+    assert_eq!(db.increment_keyset_counter(&keyset_id, 0).await.unwrap(), 7);
+    assert_eq!(
+        db.increment_derivation_counter("first", 0).await.unwrap(),
+        3
+    );
+    assert_eq!(
+        db.increment_derivation_counter("second", 0).await.unwrap(),
+        5
+    );
+}
+
+/// Test that concurrent derivation counter reservations return unique indexes.
+pub async fn derivation_counter_is_atomic<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + Sync,
+{
+    let (a, b, c, d, e, f, g, h) = tokio::join!(
+        db.increment_derivation_counter("test", 1),
+        db.increment_derivation_counter("test", 1),
+        db.increment_derivation_counter("test", 1),
+        db.increment_derivation_counter("test", 1),
+        db.increment_derivation_counter("test", 1),
+        db.increment_derivation_counter("test", 1),
+        db.increment_derivation_counter("test", 1),
+        db.increment_derivation_counter("test", 1),
+    );
+    let mut counters = vec![
+        a.unwrap(),
+        b.unwrap(),
+        c.unwrap(),
+        d.unwrap(),
+        e.unwrap(),
+        f.unwrap(),
+        g.unwrap(),
+        h.unwrap(),
+    ];
+    counters.sort_unstable();
+
+    assert_eq!(counters, (1..=8).collect::<Vec<_>>());
+}
+
 // =============================================================================
 // Transaction Tests
 // =============================================================================
@@ -1688,6 +1752,9 @@ macro_rules! wallet_db_test {
             get_balance_by_state,
             increment_keyset_counter,
             keyset_counter_isolation,
+            increment_derivation_counter,
+            derivation_counters_are_independent,
+            derivation_counter_is_atomic,
             add_and_get_transaction,
             update_transaction_status,
             same_proofs_in_different_sagas,

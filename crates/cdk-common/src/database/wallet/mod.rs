@@ -115,6 +115,9 @@ where
     /// Atomically increment Keyset counter and return new value
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<u32, Err>;
 
+    /// Atomically increment a namespaced derivation counter and return its new value.
+    async fn increment_derivation_counter(&self, namespace: &str, count: u32) -> Result<u32, Err>;
+
     /// Add Mint to storage
     async fn add_mint(&self, mint_url: MintUrl, mint_info: Option<MintInfo>) -> Result<(), Err>;
 

@@ -110,6 +110,21 @@ pub use wallet_repository::{TokenData, WalletConfig, WalletRepository, WalletRep
 
 use crate::nuts::nut00::ProofsMethods;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum DerivationCounterNamespace {
+    P2pk,
+    Nut20Quote,
+}
+
+impl DerivationCounterNamespace {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::P2pk => "p2pk",
+            Self::Nut20Quote => "nut20_quote",
+        }
+    }
+}
+
 /// CDK Wallet
 ///
 /// The CDK [`Wallet`] is a high level cashu wallet.
@@ -1009,31 +1024,59 @@ impl Wallet {
 
     /// generates and stores public key in database
     pub async fn generate_public_key(&self) -> Result<PublicKey, Error> {
-        let public_keys = self.localstore.list_p2pk_keys().await?;
-
-        let mut last_derivation_index = 0;
-
-        for public_key in public_keys {
-            if public_key.derivation_index >= last_derivation_index {
-                last_derivation_index = public_key.derivation_index + 1;
-            }
-        }
+        let minimum_index = match self.localstore.latest_p2pk().await? {
+            Some(key) => key.derivation_index.checked_add(1).ok_or_else(|| {
+                Error::Custom("P2PK derivation index has been exhausted".to_owned())
+            })?,
+            None => 0,
+        };
+        let derivation_index = self
+            .reserve_derivation_index(DerivationCounterNamespace::P2pk, minimum_index)
+            .await?;
 
         let derivation_path = DerivationPath::from(vec![
             ChildNumber::from_hardened_idx(P2PK_PURPOSE)?,
             ChildNumber::from_hardened_idx(P2PK_ACCOUNT)?,
             ChildNumber::from_hardened_idx(0)?,
             ChildNumber::from_hardened_idx(0)?,
-            ChildNumber::from_normal_idx(last_derivation_index)?,
+            ChildNumber::from_normal_idx(derivation_index)?,
         ]);
 
         let pubkey = p2pk::generate_public_key(&derivation_path, &self.seed).await?;
 
         self.localstore
-            .add_p2pk_key(&pubkey, derivation_path, last_derivation_index)
+            .add_p2pk_key(&pubkey, derivation_path, derivation_index)
             .await?;
 
         Ok(pubkey)
+    }
+
+    pub(crate) async fn reserve_derivation_index(
+        &self,
+        namespace: DerivationCounterNamespace,
+        minimum_index: u32,
+    ) -> Result<u32, Error> {
+        let namespace = namespace.as_str();
+        let current_counter = self
+            .localstore
+            .increment_derivation_counter(namespace, 0)
+            .await?;
+        let catch_up = minimum_index.saturating_sub(current_counter);
+        let reservation_count = catch_up.checked_add(1).ok_or_else(|| {
+            Error::Custom(format!(
+                "Derivation counter namespace `{namespace}` has been exhausted"
+            ))
+        })?;
+        let next_counter = self
+            .localstore
+            .increment_derivation_counter(namespace, reservation_count)
+            .await?;
+
+        next_counter.checked_sub(1).ok_or_else(|| {
+            Error::Custom(format!(
+                "Derivation counter namespace `{namespace}` did not advance after reservation"
+            ))
+        })
     }
 
     /// gets public key by it's hex value

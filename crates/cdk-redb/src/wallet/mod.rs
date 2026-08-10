@@ -46,6 +46,7 @@ const MINT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_
 const PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("proofs");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
+const DERIVATION_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("derivation_counter");
 // <Transaction_id, Transaction>
 const TRANSACTIONS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("transactions");
 // <Saga_id, WalletSaga>
@@ -714,6 +715,34 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             new_counter
         };
         write_txn.commit().map_err(Error::from)?;
+        Ok(new_counter)
+    }
+
+    #[instrument(skip(self))]
+    async fn increment_derivation_counter(
+        &self,
+        namespace: &str,
+        count: u32,
+    ) -> Result<u32, database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        let new_counter = {
+            let mut table = write_txn
+                .open_table(DERIVATION_COUNTER)
+                .map_err(Error::from)?;
+            let current_counter = table
+                .get(namespace)
+                .map_err(Error::from)?
+                .map(|value| value.value())
+                .unwrap_or_default();
+            let new_counter = current_counter
+                .checked_add(count)
+                .ok_or(database::Error::AmountOverflow)?;
+
+            table.insert(namespace, new_counter).map_err(Error::from)?;
+            new_counter
+        };
+        write_txn.commit().map_err(Error::from)?;
+
         Ok(new_counter)
     }
 

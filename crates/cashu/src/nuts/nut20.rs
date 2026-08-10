@@ -2,7 +2,9 @@
 
 use std::str::FromStr;
 
+use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::schnorr::Signature;
+use bitcoin::Network;
 use thiserror::Error;
 
 use super::{BlindedMessage, MintRequest, PublicKey, SecretKey};
@@ -19,9 +21,32 @@ pub enum Error {
     /// Nut01 error
     #[error(transparent)]
     NUT01(#[from] crate::nuts::nut01::Error),
+    /// BIP32 derivation error
+    #[error(transparent)]
+    Bip32(#[from] bitcoin::bip32::Error),
 }
 
 const MINT_QUOTE_SIG_DOMAIN_TAG: &[u8] = b"Cashu_MintQuoteSig_v1";
+const QUOTE_LOCKING_PURPOSE: u32 = 129_373;
+const QUOTE_LOCKING_ACCOUNT: u32 = 20;
+
+/// Derive a deterministic NUT-20 quote-locking key from a wallet seed.
+///
+/// Keys use the BIP32 path `m/129373'/20'/0'/0'/{counter}`, where `counter`
+/// is a non-hardened child index independent from all other wallet counters.
+pub fn derive_quote_locking_key(seed: &[u8; 64], counter: u32) -> Result<SecretKey, Error> {
+    let path = DerivationPath::from(vec![
+        ChildNumber::from_hardened_idx(QUOTE_LOCKING_PURPOSE)?,
+        ChildNumber::from_hardened_idx(QUOTE_LOCKING_ACCOUNT)?,
+        ChildNumber::from_hardened_idx(0)?,
+        ChildNumber::from_hardened_idx(0)?,
+        ChildNumber::from_normal_idx(counter)?,
+    ]);
+    let xpriv = Xpriv::new_master(Network::Bitcoin, seed)?;
+    let derived_key = xpriv.derive_priv(&crate::SECP256K1, &path)?.private_key;
+
+    Ok(derived_key.into())
+}
 
 fn amount_to_minimal_bytes(amount: crate::Amount) -> Vec<u8> {
     let value = u64::from(amount);
@@ -141,8 +166,38 @@ where
 
 #[cfg(test)]
 mod tests {
+    use bip39::Mnemonic;
 
     use super::*;
+
+    #[test]
+    fn quote_locking_key_derivation_matches_test_vectors() {
+        let mnemonic = Mnemonic::from_str(
+            "half depart obvious quality work element tank gorilla view sugar picture humble",
+        )
+        .expect("valid mnemonic");
+        let seed = mnemonic.to_seed_normalized("");
+        let expected = [
+            "03062837166e56114b59a4d1fd3a5a812bf7aadc1dde758428cf943d80acd41539",
+            "02b47d9d41725f5ce6f08c874835cef25376cb1e95f6cb073fef52ca8fd986cf15",
+            "029acbd3a46fd75bc05ba0226d0b4d909b2fb6e96c80544a094a1a3567737e44d3",
+            "0373e4a42fbe0a4e18aadb57cf500b655f2446b4071ee579121d2ed8905bcc49c2",
+            "02b8709bfce17c10f1864f5218844533ae60930d52089669b317d8b5f474eec071",
+        ];
+
+        for (counter, expected_pubkey) in expected.into_iter().enumerate() {
+            let secret_key = derive_quote_locking_key(&seed, counter as u32)
+                .expect("test vector key should derive");
+            assert_eq!(secret_key.public_key().to_hex(), expected_pubkey);
+        }
+    }
+
+    #[test]
+    fn quote_locking_key_derivation_rejects_hardened_counter() {
+        let seed = [0; 64];
+
+        assert!(derive_quote_locking_key(&seed, 1 << 31).is_err());
+    }
 
     #[test]
     fn amount_encoding_is_minimal_big_endian() {
