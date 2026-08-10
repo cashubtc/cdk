@@ -1,9 +1,10 @@
+use cdk_common::database;
 use tracing::instrument;
 
 use super::nut21::ProtectedEndpoint;
 use super::{
     AuthProof, AuthRequired, AuthToken, BlindAuthToken, BlindSignature, BlindedMessage,
-    CurrencyUnit, Error, Mint, State,
+    CurrencyUnit, Error, Mint,
 };
 
 impl Mint {
@@ -181,52 +182,19 @@ impl Mint {
             }
         };
 
-        // Calculate the Y value for the proof
-        let y = proof.y().map_err(|err| {
-            tracing::error!("Failed to calculate Y value for proof: {:?}", err);
-            err
-        })?;
-
         let mut tx = auth_localstore.begin_transaction().await?;
 
-        // Add proof to the database
-        tx.add_proof(proof.clone()).await.map_err(|err| {
-            tracing::error!("Failed to add proof to database: {:?}", err);
-            err
-        })?;
-
-        // Update proof state to spent
-        let state = match tx.update_proof_state(&y, State::Spent).await {
-            Ok(state) => {
-                tracing::debug!(
-                    "Successfully updated proof state to SPENT, previous state: {:?}",
-                    state
-                );
-                state
-            }
-            Err(e) => {
-                tracing::error!("Failed to update proof state: {:?}", e);
-                return Err(e.into());
-            }
-        };
-
-        // Check previous state
-        match state {
-            Some(State::Spent) => {
-                tracing::warn!("Token already spent: {:?}", y);
+        match tx.add_proof(proof).await {
+            Ok(()) => {}
+            Err(database::Error::Duplicate) => {
+                tracing::warn!("Blind auth token has already been spent");
                 return Err(Error::TokenAlreadySpent);
             }
-            Some(State::Pending) => {
-                tracing::warn!("Token is pending: {:?}", y);
-                return Err(Error::TokenPending);
+            Err(err) => {
+                tracing::error!("Failed to spend blind auth proof: {:?}", err);
+                return Err(err.into());
             }
-            Some(other_state) => {
-                tracing::trace!("Token was in state {:?}, now marked as spent", other_state);
-            }
-            None => {
-                tracing::trace!("Token was in state None, now marked as spent");
-            }
-        };
+        }
 
         tx.commit().await?;
 
@@ -264,7 +232,8 @@ mod tests {
     use cdk_common::amount::SplitTarget;
     use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::{Id, PreMintSecrets};
-    use cdk_common::{Amount, CurrencyUnit, PaymentMethod};
+    use cdk_common::secret::Secret;
+    use cdk_common::{Amount, CurrencyUnit, PaymentMethod, SecretKey, State};
     use cdk_fake_wallet::FakeWallet;
 
     use super::*;
@@ -360,6 +329,38 @@ mod tests {
             .expect_err("sat keyset must not sign through auth path");
 
         assert!(matches!(err, Error::BlindAuthFailed));
+    }
+
+    #[tokio::test]
+    async fn duplicate_blind_auth_proof_spend_rejected() {
+        let mint = create_auth_enabled_mint().await;
+        let keyset_id = mint
+            .get_active_keysets()
+            .get(&CurrencyUnit::Auth)
+            .copied()
+            .expect("auth keyset");
+        let proof = AuthProof {
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            dleq: None,
+        };
+        let y = proof.y().expect("proof y");
+
+        mint.check_blind_auth_proof_spendable(proof.clone())
+            .await
+            .expect("first spend");
+        let second = mint.check_blind_auth_proof_spendable(proof).await;
+
+        assert!(matches!(second, Err(Error::TokenAlreadySpent)));
+        let states = mint
+            .auth_localstore
+            .as_ref()
+            .expect("auth database")
+            .get_proofs_states(&[y])
+            .await
+            .expect("proof state");
+        assert_eq!(states, vec![Some(State::Spent)]);
     }
 
     #[tokio::test]

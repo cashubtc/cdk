@@ -20,7 +20,10 @@ pub trait MintAuthTransaction<Error>: DbTransactionFinalizer<Err = Error> {
     /// Add [`MintKeySetInfo`]
     async fn add_keyset_info(&mut self, keyset: MintKeySetInfo) -> Result<(), Error>;
 
-    /// Add spent [`AuthProof`]
+    /// Add a spent [`AuthProof`]
+    ///
+    /// Returns [`Error::Duplicate`](crate::database::Error::Duplicate) if the proof has already
+    /// been added.
     async fn add_proof(&mut self, proof: AuthProof) -> Result<(), Error>;
 
     /// Update [`AuthProof`]s state
