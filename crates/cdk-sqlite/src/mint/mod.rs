@@ -16,9 +16,13 @@ pub type MintSqliteAuthDatabase = SQLMintAuthDatabase<SqliteConnectionManager>;
 #[cfg(test)]
 mod test {
     use std::fs::remove_file;
+    use std::str::FromStr;
+    use std::sync::Arc;
     use std::time::Duration;
 
-    use cdk_common::mint_db_test;
+    use cdk_common::database::{self, MintAuthDatabase};
+    use cdk_common::secret::Secret;
+    use cdk_common::{mint_db_test, AuthProof, Id, SecretKey, State};
     use cdk_sql_common::pool::Pool;
     use cdk_sql_common::stmt::query;
 
@@ -50,6 +54,61 @@ mod test {
         let result = pool.get_timeout(Duration::from_millis(10)).await;
 
         assert!(matches!(result, Err(cdk_sql_common::pool::Error::Timeout)));
+    }
+
+    async fn spend_auth_proof(
+        db: Arc<MintSqliteAuthDatabase>,
+        proof: AuthProof,
+    ) -> Result<(), database::Error> {
+        let mut tx = db.as_ref().begin_transaction().await?;
+        tx.add_proof(proof).await?;
+        tx.commit().await
+    }
+
+    #[tokio::test]
+    async fn concurrent_blind_auth_proof_spend_allows_one_request() {
+        let path = std::env::temp_dir().join(format!(
+            "cdk-blind-auth-replay-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+
+        #[cfg(not(feature = "sqlcipher"))]
+        let db = Arc::new(
+            MintSqliteAuthDatabase::new(&path)
+                .await
+                .expect("auth database"),
+        );
+        #[cfg(feature = "sqlcipher")]
+        let db = Arc::new(
+            MintSqliteAuthDatabase::new((path.clone(), "test".to_owned()))
+                .await
+                .expect("auth database"),
+        );
+
+        let proof = AuthProof {
+            keyset_id: Id::from_str("00916bbf7ef91a36").expect("valid keyset id"),
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            dleq: None,
+        };
+        let y = proof.y().expect("proof y");
+
+        let (first, second) = tokio::join!(
+            spend_auth_proof(db.clone(), proof.clone()),
+            spend_auth_proof(db.clone(), proof)
+        );
+
+        assert!(matches!(
+            (&first, &second),
+            (Ok(()), Err(database::Error::Duplicate)) | (Err(database::Error::Duplicate), Ok(()))
+        ));
+        assert_eq!(
+            db.get_proofs_states(&[y]).await.expect("proof state"),
+            vec![Some(State::Spent)]
+        );
+
+        drop(db);
+        remove_file(path).expect("remove auth database");
     }
 
     #[tokio::test]
