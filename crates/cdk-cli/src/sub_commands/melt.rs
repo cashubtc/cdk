@@ -290,7 +290,7 @@ pub async fn pay(
                 .await?;
 
             println!("Melt quote created:");
-            println!("  Quote ID: {}", quote.id);
+            println!("  Quote ID: {}", escape_control(&quote.id));
             println!("  Amount: {}", quote.amount);
             println!("  Fee Reserve: {}", quote.fee_reserve);
 
@@ -362,7 +362,7 @@ pub async fn pay(
 
             // Display quote info
             println!("Melt quote created:");
-            println!("  Quote ID: {}", quote.id);
+            println!("  Quote ID: {}", escape_control(&quote.id));
             println!("  Amount: {}", quote.amount);
             println!("  Fee Reserve: {}", quote.fee_reserve);
             println!("  State: {}", quote.state);
@@ -422,7 +422,7 @@ pub async fn pay(
 
             // Display quote info
             println!("Melt quote created:");
-            println!("  Quote ID: {}", quote.id);
+            println!("  Quote ID: {}", escape_control(&quote.id));
             println!("  Amount: {}", quote.amount);
             println!("  Fee Reserve: {}", quote.fee_reserve);
             println!("  State: {}", quote.state);
@@ -480,7 +480,7 @@ pub async fn pay(
             let quote = wallet.select_onchain_melt_quote(selected_quote).await?;
 
             println!("Melt quote selected:");
-            println!("  Quote ID: {}", quote.id);
+            println!("  Quote ID: {}", escape_control(&quote.id));
             println!("  Amount: {}", quote.amount);
             println!("  Fee Reserve: {}", quote.fee_reserve);
             println!("  Expiry: {}", quote.expiry);
@@ -615,7 +615,11 @@ async fn pay_mpp(
             )
             .await?;
 
-        println!("  {} - Quote ID: {}", mint_url, quote.id);
+        println!(
+            "  {} - Quote ID: {}",
+            escape_control(&mint_url.to_string()),
+            escape_control(&quote.id)
+        );
         println!("    Amount: {}, Fee: {}", quote.amount, quote.fee_reserve);
         quotes.push((mint_url.clone(), wallet, quote));
     }
@@ -634,7 +638,7 @@ async fn pay_mpp(
 
         println!(
             "  {} - Paid: {}, Fee: {}",
-            mint_url,
+            escape_control(&mint_url.to_string()),
             melted.amount(),
             melted.fee_paid()
         );
@@ -646,8 +650,16 @@ async fn pay_mpp(
         }
     }
 
-    println!("\nTotal paid: {} {}", total_paid, unit);
-    println!("Total fees: {} {}", total_fees, unit);
+    println!(
+        "\nTotal paid: {} {}",
+        total_paid,
+        escape_control(&unit.to_string())
+    );
+    println!(
+        "Total fees: {} {}",
+        total_fees,
+        escape_control(&unit.to_string())
+    );
 
     Ok(())
 }

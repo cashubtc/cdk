@@ -75,7 +75,7 @@ pub async fn mint(
 
                 println!(
                     "Quote: id={}, state={}, amount={}, expiry={}",
-                    quote.id,
+                    escape_control(&quote.id),
                     quote.state,
                     quote.amount.map_or("none".to_string(), |a| a.to_string()),
                     quote.expiry
@@ -104,7 +104,7 @@ pub async fn mint(
 
                 println!(
                     "Quote: id={}, amount={}, expiry={}",
-                    quote.id,
+                    escape_control(&quote.id),
                     quote.amount.map_or("none".to_string(), |a| a.to_string()),
                     quote.expiry
                 );
@@ -119,7 +119,11 @@ pub async fn mint(
                     .mint_quote(payment_method.clone(), amount.map(|a| a.into()), None, None)
                     .await?;
 
-                println!("Quote: id={}, expiry={}", quote.id, quote.expiry);
+                println!(
+                    "Quote: id={}, expiry={}",
+                    escape_control(&quote.id),
+                    quote.expiry
+                );
                 println!("Send sats to: {}", escape_control(&quote.request));
 
                 quote
@@ -138,7 +142,7 @@ pub async fn mint(
 
                 println!(
                     "Quote: id={}, amount={}, expiry={}",
-                    quote.id,
+                    escape_control(&quote.id),
                     quote.amount.map_or("none".to_string(), |a| a.to_string()),
                     quote.expiry
                 );

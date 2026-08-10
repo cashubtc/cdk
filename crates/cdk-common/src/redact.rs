@@ -4,7 +4,8 @@ use url::Url;
 
 const INVALID_URL_FOR_LOGS: &str = "[INVALID URL]";
 
-/// Return a URL suitable for logs and `Debug` output by removing userinfo.
+/// Return a URL suitable for logs and `Debug` output by removing userinfo,
+/// query parameters, and fragments.
 ///
 /// Malformed URLs and URL forms whose userinfo cannot be removed are replaced
 /// entirely so the original value cannot leak through a fallback path.
@@ -16,6 +17,9 @@ pub fn url_for_logs(value: &str) -> String {
     if url.set_password(None).is_err() || url.set_username("").is_err() {
         return INVALID_URL_FOR_LOGS.to_owned();
     }
+
+    url.set_query(None);
+    url.set_fragment(None);
 
     url.to_string()
 }
@@ -30,7 +34,7 @@ mod tests {
 
         let logged_url = url_for_logs(url);
 
-        assert_eq!(logged_url, "https://example.com:8443/api?network=main#tip");
+        assert_eq!(logged_url, "https://example.com:8443/api");
         assert!(!logged_url.contains("alice"));
         assert!(!logged_url.contains("s3cr3t"));
     }
@@ -54,6 +58,17 @@ mod tests {
         let url = "https://example.com/api";
 
         assert_eq!(url_for_logs(url), url);
+    }
+
+    #[test]
+    fn removes_query_parameters_and_fragments() {
+        let url = "https://example.com/api?token=query-secret#fragment-secret";
+
+        let logged_url = url_for_logs(url);
+
+        assert_eq!(logged_url, "https://example.com/api");
+        assert!(!logged_url.contains("query-secret"));
+        assert!(!logged_url.contains("fragment-secret"));
     }
 
     #[test]
