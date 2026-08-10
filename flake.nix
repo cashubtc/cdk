@@ -1372,11 +1372,12 @@
 
         defaultPackage =
           if muslTarget != null then
-            mkStaticPackage {
-              bin = "cdk-mintd";
-              name = "cdk-mintd";
-              cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
-            }
+            mkStaticPackage
+              {
+                bin = "cdk-mintd";
+                name = "cdk-mintd";
+                cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
+              }
           else
             mkDarwinPackage {
               bin = "cdk-mintd";
