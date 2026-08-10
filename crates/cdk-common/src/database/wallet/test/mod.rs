@@ -181,7 +181,14 @@ where
     DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
-    let mint_info = MintInfo::default();
+    let pubkey = crate::nuts::PublicKey::from_hex(
+        "02836c831cfff541ba17fbca32dd0f6a54d06305893cbcb2af0d7143e66a609147",
+    )
+    .unwrap();
+    let mint_info = MintInfo {
+        pubkey: Some(pubkey),
+        ..MintInfo::default()
+    };
 
     // Add mint
     db.add_mint(mint_url.clone(), Some(mint_info.clone()))
@@ -190,7 +197,12 @@ where
 
     // Get mint
     let retrieved = db.get_mint(mint_url.clone()).await.unwrap();
-    assert!(retrieved.is_some());
+    let retrieved = retrieved.expect("mint info should be stored");
+    assert_eq!(
+        retrieved.pubkey,
+        Some(pubkey),
+        "the stored pubkey must survive the database round trip"
+    );
 
     // Get all mints
     let mints = db.get_mints().await.unwrap();
