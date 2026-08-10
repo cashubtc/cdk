@@ -239,12 +239,10 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                 let quote_id = parse_quote_id(&opts.quote_id)?;
                 let pubkey = opts
                     .pubkey
-                    .map(|p| {
-                        PublicKey::from_str(&p).map_err(|_| {
-                            Status::invalid_argument("Invalid pubkey in Custom options")
-                        })
-                    })
-                    .transpose()?;
+                    .as_deref()
+                    .map(PublicKey::from_str)
+                    .transpose()
+                    .map_err(|_| Status::invalid_argument("Invalid pubkey in Custom options"))?;
                 IncomingPaymentOptions::Custom(Box::new(
                     cdk_common::payment::CustomIncomingPaymentOptions {
                         method: "".to_string(),
