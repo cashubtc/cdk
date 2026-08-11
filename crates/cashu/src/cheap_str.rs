@@ -4,6 +4,10 @@
 //! literal, a borrow from a caller-owned buffer, and a refcounted owned string.
 //! All of them compare, order and hash purely by content, so the variant a value
 //! happens to be in is never observable.
+//!
+//! Deserializing always allocates, which keeps `CheapStr<'static>` usable as a
+//! field of a `#[derive(Deserialize)]` type. [`deserialize_borrowed`] is the
+//! opt-in zero-copy path.
 
 use std::borrow::{Borrow, Cow};
 use std::cmp::Ordering;
@@ -232,9 +236,40 @@ impl Serialize for CheapStr<'_> {
     }
 }
 
-struct CheapStrVisitor<'a>(PhantomData<&'a ()>);
+struct OwningVisitor<'a>(PhantomData<&'a ()>);
 
-impl<'de: 'a, 'a> Visitor<'de> for CheapStrVisitor<'a> {
+impl<'de, 'a> Visitor<'de> for OwningVisitor<'a> {
+    type Value = CheapStr<'a>;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a string")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(CheapStr(Inner::Owned(value.into())))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(CheapStr(Inner::Owned(value.into())))
+    }
+}
+
+// Deliberately no `'de: 'a` bound: it would exclude `'a = 'static` for every
+// real deserializer, and `CheapStr<'static>` is the form callers store.
+// Borrowing is opt-in through `deserialize_borrowed` instead, mirroring how
+// serde treats `Cow<'a, str>`.
+impl<'de, 'a> Deserialize<'de> for CheapStr<'a> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(OwningVisitor(PhantomData))
+    }
+}
+
+struct BorrowingVisitor<'a>(PhantomData<&'a ()>);
+
+impl<'de: 'a, 'a> Visitor<'de> for BorrowingVisitor<'a> {
     type Value = CheapStr<'a>;
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -254,13 +289,25 @@ impl<'de: 'a, 'a> Visitor<'de> for CheapStrVisitor<'a> {
     }
 }
 
-impl<'de: 'a, 'a> Deserialize<'de> for CheapStr<'a> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_str(CheapStrVisitor(PhantomData))
-    }
+/// Deserializes without allocating when the input can lend the string.
+///
+/// The [`Deserialize`] impl always allocates so that `CheapStr<'static>` stays
+/// usable. Fields that can tie themselves to the input opt into borrowing here;
+/// `#[serde(borrow)]` is what supplies the `'de: 'a` bound this needs.
+///
+/// ```
+/// # use cashu::CheapStr;
+/// #[derive(serde::Deserialize)]
+/// struct Unit<'a> {
+///     #[serde(borrow, deserialize_with = "cashu::cheap_str::deserialize_borrowed")]
+///     name: CheapStr<'a>,
+/// }
+/// ```
+pub fn deserialize_borrowed<'de: 'a, 'a, D>(deserializer: D) -> Result<CheapStr<'a>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserializer.deserialize_str(BorrowingVisitor(PhantomData))
 }
 
 #[cfg(test)]
@@ -332,11 +379,46 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_borrows_when_the_input_can_lend() {
+    fn deserialize_owns_even_when_the_input_can_lend() {
         let json = String::from(r#""usd""#);
         let decoded: CheapStr<'_> = serde_json::from_str(&json).unwrap();
 
-        assert!(matches!(decoded.0, Inner::Borrowed(_)));
+        assert!(matches!(decoded.0, Inner::Owned(_)));
+    }
+
+    #[test]
+    fn deserialize_borrowed_borrows_when_the_input_can_lend() {
+        #[derive(Deserialize)]
+        struct Wrapper<'a> {
+            #[serde(borrow, deserialize_with = "deserialize_borrowed")]
+            unit: CheapStr<'a>,
+        }
+
+        let json = String::from(r#"{"unit":"usd"}"#);
+        let decoded: Wrapper<'_> = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded.unit, "usd");
+        assert!(matches!(decoded.unit.0, Inner::Borrowed(_)));
+    }
+
+    #[test]
+    fn static_form_is_deserialize_owned() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            unit: CheapStr<'static>,
+        }
+
+        fn assert_de_owned<T: serde::de::DeserializeOwned>() {}
+        assert_de_owned::<CheapStr<'static>>();
+        assert_de_owned::<Wrapper>();
+
+        let json = String::from(r#"{"unit":"usd"}"#);
+        let decoded: Wrapper = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.unit, "usd");
+
+        let bare = String::from(r#""usd""#);
+        let decoded: CheapStr<'static> = serde_json::from_str(&bare).unwrap();
+        assert_eq!(decoded, "usd");
     }
 
     #[test]
