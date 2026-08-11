@@ -428,6 +428,9 @@
               );
               doCheck = false;
               installPhaseCommand = "mkdir -p $out";
+              # These outputs are success markers; no later derivation consumes
+              # their target directories.
+              doInstallCargoArtifacts = false;
             }
           );
 
@@ -743,11 +746,14 @@
         # These run both clippy and unit tests in a single derivation
         # ========================================
         clippyAndTestChecks = {
-          "core-lib" = [
+          "core-cashu" = [
             "-p cashu"
             "-p cashu --no-default-features"
             "-p cashu --no-default-features --features wallet"
             "-p cashu --no-default-features --features mint"
+          ];
+
+          "core-common-http" = [
             "-p cdk-http-client"
             "-p cdk-http-client --no-default-features --features reqwest"
             "-p cdk-common"
@@ -758,13 +764,22 @@
             "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/wallet,cdk-common/http,cdk-http-client/reqwest"
             "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/mint,cdk-common/http,cdk-http-client/bitreq"
             "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/mint,cdk-common/http,cdk-http-client/reqwest"
+          ];
+
+          "core-sdk-baseline" = [
             "-p cdk -p cdk-http-client"
             "-p cdk --no-default-features"
+          ];
+
+          "core-sdk-wallet" = [
             "-p cdk --no-default-features --features bip353"
             "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/bitreq"
             "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/reqwest"
             "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk/tor,cdk-http-client/bitreq"
             "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk/npubcash,cdk-http-client/reqwest"
+          ];
+
+          "core-sdk-mint" = [
             "-p cdk -p cdk-http-client --no-default-features --features cdk/mint,cdk-http-client/bitreq"
             "-p cdk -p cdk-http-client --no-default-features --features cdk/mint,cdk-http-client/reqwest"
           ];
@@ -782,7 +797,6 @@
           ];
 
           "lightning-and-api" = [
-            "-p cdk-http-client"
             "-p cdk-axum"
             "-p cdk-axum --no-default-features"
             "-p cdk-axum --no-default-features --features redis"
