@@ -560,6 +560,8 @@ pub struct MintQuote {
     amount_paid: Amount<CurrencyUnit>,
     /// Amount issued (typed for type safety)
     amount_issued: Amount<CurrencyUnit>,
+    /// Unix timestamp of the most recent payment backend status check.
+    last_checked: u64,
     /// Payment of payment(s) that filled quote
     pub payments: Vec<IncomingPayment>,
     /// Payment Method
@@ -608,6 +610,7 @@ impl MintQuote {
             created_time,
             amount_paid,
             amount_issued,
+            last_checked: 0,
             payment_method,
             payments,
             issuance,
@@ -687,6 +690,16 @@ impl MintQuote {
     #[instrument(skip(self))]
     pub fn amount_issued(&self) -> Amount<CurrencyUnit> {
         self.amount_issued.clone()
+    }
+
+    /// Unix timestamp of the most recent payment backend status check.
+    pub fn last_checked(&self) -> u64 {
+        self.last_checked
+    }
+
+    /// Replaces `last_checked` with the value persisted by the database.
+    pub fn set_last_checked(&mut self, last_checked: u64) {
+        self.last_checked = last_checked;
     }
 
     /// Get state of mint quote

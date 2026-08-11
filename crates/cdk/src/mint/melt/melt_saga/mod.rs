@@ -444,12 +444,14 @@ impl MeltSaga<SetupComplete> {
     /// # What This Does
     ///
     /// Within a single database transaction:
-    /// 1. Checks if payment request matches a mint quote on this mint
-    /// 2. If not a match or different unit: returns (self, RequiresExternalPayment)
-    /// 3. If match found: validates quote state and amount
-    /// 4. Increments the mint quote's paid amount
-    /// 5. Publishes mint quote payment notification
-    /// 6. Returns (self, Internal{amount})
+    /// 1. Locks the melt quote row and verifies it is still `Pending`
+    /// 2. Checks if payment request matches a mint quote on this mint
+    /// 3. If not a match or different unit: returns (self, RequiresExternalPayment)
+    /// 4. If match found: validates quote state and amount
+    /// 5. Increments the mint quote's paid amount
+    /// 6. Marks the melt quote `Paid` in the same transaction
+    /// 7. Publishes mint quote payment notification
+    /// 8. Returns (self, Internal{amount})
     ///
     /// # Compensation
     ///
@@ -474,6 +476,26 @@ impl MeltSaga<SetupComplete> {
         melt_request: &MeltRequest<QuoteId>,
     ) -> Result<(Self, SettlementDecision), Error> {
         let mut tx = self.db.begin_transaction().await?;
+
+        // Re-read the melt quote state under a row lock in this transaction.
+        let mut melt_quote = match tx.get_melt_quote(&self.state_data.quote.id).await? {
+            Some(quote) if quote.state == MeltQuoteState::Pending => quote,
+            Some(quote) => {
+                tracing::warn!(
+                    "Melt quote {} is {}, not Pending; aborting internal settlement",
+                    quote.id,
+                    quote.state
+                );
+                tx.rollback().await?;
+                self.compensate_all().await?;
+                return Err(Error::UnpaidQuote);
+            }
+            None => {
+                tx.rollback().await?;
+                self.compensate_all().await?;
+                return Err(Error::UnknownQuote);
+            }
+        };
 
         let mut mint_quote = match tx
             .get_mint_quote_by_request(&self.state_data.quote.request.to_string())
@@ -542,6 +564,11 @@ impl MeltSaga<SetupComplete> {
 
         mint_quote.add_payment(amount.clone(), self.state_data.quote.id.to_string(), None)?;
         tx.update_mint_quote(&mut mint_quote).await?;
+
+        // Mark the melt quote Paid in the same transaction as the mint quote
+        // credit.
+        tx.update_melt_quote_state(&mut melt_quote, MeltQuoteState::Paid, None)
+            .await?;
 
         tx.commit().await?;
         self.pubsub

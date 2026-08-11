@@ -710,12 +710,15 @@ pub async fn finalize_melt_quote(
     let should_record_payment_metrics = locked_quote.state != MeltQuoteState::Paid;
 
     // Check if TX1 already completed (e.g., crash between TX1 commit and TX2 commit).
-    // If the quote is already Paid, proofs are already Spent — calling finalize_melt_core
-    // would fail on the Paid→Paid and Spent→Spent state transitions. Skip directly to
-    // change signing and cleanup so the user receives their change.
+    // If the quote is already Paid, calling finalize_melt_core would fail on the
+    // Paid→Paid state transition. Skip directly to change signing and cleanup so
+    // the user receives their change.
     //
-    // We still need the proofs for fee calculation (operation recording), so fetch them
-    // from the DB even in the already-Paid case.
+    // The proofs may still be Pending here; spend any that are still Pending,
+    // otherwise this is a no-op.
+    //
+    // We still need the proofs for fee calculation (operation recording), so fetch
+    // them from the DB even in the already-Paid case.
     let (proofs, quote) = if locked_quote.state == MeltQuoteState::Paid {
         let locked_quote = locked_quote.inner();
 
@@ -728,8 +731,23 @@ pub async fn finalize_melt_quote(
             "Melt quote {} already Paid, skipping to change/cleanup",
             quote.id
         );
-        let proofs = tx.get_proofs(&input_ys).await?.to_vec();
+        let mut proofs_with_state = tx.get_proofs(&input_ys).await?;
+        let spend_pending = proofs_with_state.state == State::Pending;
+        if spend_pending {
+            if let Err(err) =
+                Mint::update_proofs_state(&mut tx, &mut proofs_with_state, State::Spent).await
+            {
+                tx.rollback().await?;
+                return Err(err);
+            }
+        }
+        let proofs = proofs_with_state.to_vec();
         tx.commit().await?;
+        if spend_pending {
+            for pk in input_ys.iter() {
+                pubsub.proof_state((*pk, State::Spent));
+            }
+        }
         (proofs, locked_quote)
     } else {
         let (proofs, quote) = finalize_melt_core(

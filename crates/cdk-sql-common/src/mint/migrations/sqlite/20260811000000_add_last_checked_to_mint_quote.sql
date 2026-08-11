@@ -1,0 +1,1 @@
+ALTER TABLE mint_quote ADD COLUMN last_checked INTEGER NOT NULL DEFAULT 0;

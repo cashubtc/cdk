@@ -340,6 +340,17 @@ pub trait QuotesDatabase {
     /// Get [`MintMintQuote`]
     async fn get_mint_quote(&self, quote_id: &QuoteId) -> Result<Option<MintMintQuote>, Self::Err>;
 
+    /// Record a payment backend status check for a mint quote.
+    ///
+    /// Returns `true` when `last_checked` was updated, or `false` when it was already updated
+    /// within `min_interval` seconds.
+    async fn try_update_mint_quote_last_checked(
+        &self,
+        quote_id: &QuoteId,
+        last_checked: u64,
+        min_interval: u64,
+    ) -> Result<bool, Self::Err>;
+
     /// Get multiple [`MintMintQuote`]s by their IDs.
     ///
     /// Returns results in the same order as the input IDs, with `None` for any IDs not found.

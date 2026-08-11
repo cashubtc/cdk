@@ -1004,6 +1004,7 @@ impl Mint {
 mod batch_mint_tests {
     use std::collections::{HashMap, HashSet};
     use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -1019,18 +1020,20 @@ mod batch_mint_tests {
     };
     use cdk_common::{
         Amount, BatchMintRequest, CurrencyUnit, Error, MintQuoteBolt11Request,
-        MintQuoteBolt11Response, MintQuoteState, MintRequest, PaymentMethod, QuoteId,
+        MintQuoteBolt11Response, MintQuoteState, MintRequest, PaymentMethod, PublicKey, QuoteId,
     };
     use cdk_fake_wallet::FakeWallet;
     use futures::Stream;
     use tokio::time::sleep;
 
+    use crate::mint::ln::MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS;
     use crate::mint::{Mint, MintBuilder, MintMeltLimits};
     use crate::types::{FeeReserve, QuoteTTL};
 
     struct OnchainTestBackend {
         unit: CurrencyUnit,
         confirmations: u32,
+        check_count: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -1090,6 +1093,7 @@ mod batch_mint_tests {
             &self,
             _payment_identifier: &PaymentIdentifier,
         ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+            self.check_count.fetch_add(1, Ordering::Relaxed);
             Ok(Vec::new())
         }
 
@@ -1106,6 +1110,15 @@ mod batch_mint_tests {
     }
 
     async fn create_test_mint_with_onchain_limits(onchain_min: u64, onchain_max: u64) -> Mint {
+        create_test_mint_with_onchain_limits_and_counter(onchain_min, onchain_max)
+            .await
+            .0
+    }
+
+    async fn create_test_mint_with_onchain_limits_and_counter(
+        onchain_min: u64,
+        onchain_max: u64,
+    ) -> (Mint, Arc<AtomicUsize>) {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
 
         let mut mint_builder = MintBuilder::new(db.clone());
@@ -1133,9 +1146,11 @@ mod batch_mint_tests {
             .await
             .unwrap();
 
+        let onchain_check_count = Arc::new(AtomicUsize::new(0));
         let onchain_backend = OnchainTestBackend {
             unit: CurrencyUnit::Sat,
             confirmations: 1,
+            check_count: onchain_check_count.clone(),
         };
 
         mint_builder
@@ -1167,7 +1182,73 @@ mod batch_mint_tests {
 
         mint.start().await.unwrap();
 
-        mint
+        (mint, onchain_check_count)
+    }
+
+    #[tokio::test]
+    async fn mint_quote_status_checks_are_throttled() {
+        let (mint, check_count) = create_test_mint_with_onchain_limits_and_counter(1, 10_000).await;
+        let quote_id = QuoteId::new();
+        let now = cdk_common::util::unix_time();
+        let pubkey = PublicKey::from_hex(
+            "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+        )
+        .expect("test public key");
+        let quote = MintQuote::new(
+            Some(quote_id.clone()),
+            "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
+            CurrencyUnit::Sat,
+            None,
+            0,
+            PaymentIdentifier::QuoteId(quote_id.clone()),
+            Some(pubkey),
+            Amount::new(0, CurrencyUnit::Sat),
+            Amount::new(0, CurrencyUnit::Sat),
+            PaymentMethod::Known(KnownMethod::Onchain),
+            now,
+            vec![],
+            vec![],
+            None,
+        );
+
+        let mut tx = mint.localstore().begin_transaction().await.unwrap();
+        tx.add_mint_quote(quote).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let (first, second) = tokio::join!(
+            mint.check_mint_quote(&quote_id),
+            mint.check_mint_quote(&quote_id)
+        );
+        first.expect("first quote status check");
+        second.expect("second quote status check");
+
+        assert_eq!(check_count.load(Ordering::Relaxed), 1);
+        let last_checked = mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .unwrap()
+            .expect("stored quote")
+            .last_checked();
+        assert!(last_checked >= now);
+        assert!(!mint
+            .localstore()
+            .try_update_mint_quote_last_checked(
+                &quote_id,
+                last_checked + MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS,
+                MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS,
+            )
+            .await
+            .unwrap());
+        assert!(mint
+            .localstore()
+            .try_update_mint_quote_last_checked(
+                &quote_id,
+                last_checked + MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS + 1,
+                MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS,
+            )
+            .await
+            .unwrap());
     }
 
     async fn configure_nut29(
