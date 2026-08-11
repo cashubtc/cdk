@@ -5,12 +5,16 @@ use cdk_common::common::PaymentProcessorKey;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::MintQuote;
 use cdk_common::payment::DynMintPayment;
+use cdk_common::util::unix_time;
 use cdk_common::MintQuoteState;
 use tracing::instrument;
 
 use super::subscription::PubSubManager;
 use super::Mint;
 use crate::Error;
+
+/// Minimum delay between payment backend status checks for the same mint quote.
+pub(super) const MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS: u64 = 10;
 
 impl Mint {
     /// Static implementation of check_mint_quote_paid to avoid circular dependency to the Mint
@@ -30,6 +34,23 @@ impl Mint {
         {
             return Ok(());
         }
+
+        // Claim this check before contacting the backend. The conditional update prevents
+        // concurrent HTTP or WebSocket status requests, including requests handled by different
+        // mint processes, from issuing duplicate backend calls. Recording the attempt first also
+        // throttles retries while a payment backend is failing.
+        let now = unix_time();
+        let claimed = localstore
+            .try_update_mint_quote_last_checked(
+                &quote.id,
+                now,
+                MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS,
+            )
+            .await?;
+        if !claimed {
+            return Ok(());
+        }
+        quote.set_last_checked(now);
 
         let ln = match payment_processors.get(&PaymentProcessorKey::new(
             quote.unit.clone(),
