@@ -943,6 +943,9 @@ pub struct PreMint {
     pub r: SecretKey,
     /// Amount
     pub amount: Amount,
+    /// NUT-13 derivation index for deterministic secrets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derivation_index: Option<u32>,
 }
 
 #[cfg(feature = "wallet")]
@@ -1001,6 +1004,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r,
                 amount,
+                derivation_index: None,
             });
         }
 
@@ -1028,6 +1032,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r,
                 amount,
+                derivation_index: None,
             });
         }
 
@@ -1054,6 +1059,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r,
                 amount: Amount::ZERO,
+                derivation_index: None,
             })
         }
 
@@ -1139,6 +1145,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r: rs,
                 amount,
+                derivation_index: None,
             });
         }
 
@@ -1173,6 +1180,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r,
                 amount,
+                derivation_index: None,
             });
         }
 

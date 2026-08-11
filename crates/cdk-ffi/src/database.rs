@@ -554,6 +554,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
                             cdk::cdk_database::Error::Database(e.to_string().into())
                         })?,
                     unit: info.unit.into(),
+                    derivation_index: info.derivation_index,
                     used_by_operation: info
                         .used_by_operation
                         .map(|id| uuid::Uuid::parse_str(&id))
@@ -606,6 +607,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
                             cdk::cdk_database::Error::Database(e.to_string().into())
                         })?,
                     unit: info.unit.into(),
+                    derivation_index: info.derivation_index,
                     used_by_operation: info
                         .used_by_operation
                         .map(|id| uuid::Uuid::parse_str(&id))
@@ -1029,6 +1031,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
                             cdk::cdk_database::Error::Database(e.to_string().into())
                         })?,
                     unit: info.unit.into(),
+                    derivation_index: info.derivation_index,
                     used_by_operation: info
                         .used_by_operation
                         .map(|id| uuid::Uuid::parse_str(&id))
@@ -1497,6 +1500,7 @@ where
                         .map(|sc| sc.try_into())
                         .transpose()?,
                     unit: info.unit.into(),
+                    derivation_index: info.derivation_index,
                     used_by_operation: info
                         .used_by_operation
                         .map(|id| uuid::Uuid::parse_str(&id))
