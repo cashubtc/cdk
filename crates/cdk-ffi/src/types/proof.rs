@@ -573,6 +573,9 @@ pub fn encode_proof_info(info: ProofInfo) -> Result<String, FfiError> {
         state: info.state.into(),
         spending_condition: info.spending_condition.map(TryInto::try_into).transpose()?,
         unit: info.unit.into(),
+        // Derivation indices are wallet-internal metadata and are not part of
+        // the public FFI proof representation.
+        derivation_index: None,
         used_by_operation: info
             .used_by_operation
             .map(|id| uuid::Uuid::from_str(&id))

@@ -1036,13 +1036,18 @@ impl<'a> MintSaga<'a, Prepared> {
 
             let proof_infos = proofs
                 .iter()
-                .map(|proof| {
-                    ProofInfo::new(
+                .zip(&premint_secrets.secrets)
+                .map(|(proof, premint)| {
+                    let proof_info = ProofInfo::new(
                         proof.clone(),
                         wallet.mint_url.clone(),
                         State::Unspent,
                         wallet.unit.clone(),
-                    )
+                    )?;
+                    Ok::<_, Error>(match premint.derivation_index {
+                        Some(index) => proof_info.with_derivation_index(index),
+                        None => proof_info,
+                    })
                 })
                 .collect::<Result<Vec<ProofInfo>, _>>()?;
 

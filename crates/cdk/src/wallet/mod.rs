@@ -800,9 +800,15 @@ impl Wallet {
                 let (unspent_proofs, updated_restored) = proofs
                     .into_iter()
                     .zip(states)
-                    .filter_map(|(p, state)| {
+                    .enumerate()
+                    .filter_map(|(index, (p, state))| {
                         ProofInfo::new(p, self.mint_url.clone(), state.state, keyset.unit.clone())
                             .ok()
+                            .map(|proof_info| {
+                                proof_info.with_derivation_index(
+                                    start_counter + matched_secrets[index].0 as u32,
+                                )
+                            })
                     })
                     .try_fold(
                         (Vec::new(), restored_result),
@@ -1277,18 +1283,21 @@ mod tests {
             secret: secret1.clone(),
             r: r1.clone(),
             amount: Amount::from(1),
+            derivation_index: None,
         };
         let premint2 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
             secret: secret2.clone(),
             r: r2.clone(),
             amount: Amount::from(2),
+            derivation_index: None,
         };
         let premint3 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
             secret: secret3.clone(),
             r: r3.clone(),
             amount: Amount::from(4),
+            derivation_index: None,
         };
 
         let premint_secrets = PreMintSecrets {
@@ -1375,18 +1384,21 @@ mod tests {
             secret: secret1.clone(),
             r: r1.clone(),
             amount: Amount::from(1),
+            derivation_index: None,
         };
         let premint2 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
             secret: secret2.clone(),
             r: r2.clone(),
             amount: Amount::from(2),
+            derivation_index: None,
         };
         let premint3 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
             secret: secret3.clone(),
             r: r3.clone(),
             amount: Amount::from(4),
+            derivation_index: None,
         };
 
         let premint_secrets = PreMintSecrets {
@@ -1473,18 +1485,21 @@ mod tests {
             secret: secret1.clone(),
             r: r1.clone(),
             amount: Amount::from(1),
+            derivation_index: None,
         };
         let premint2 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
             secret: secret2.clone(),
             r: r2.clone(),
             amount: Amount::from(2),
+            derivation_index: None,
         };
         let premint3 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
             secret: secret3.clone(),
             r: r3.clone(),
             amount: Amount::from(4),
+            derivation_index: None,
         };
 
         let premint_secrets = PreMintSecrets {
