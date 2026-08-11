@@ -24,7 +24,7 @@ pub mod http_client;
 pub mod transport;
 
 use transport::RateLimitedTransport;
-pub use transport::{RateLimitConfig, TokenBucket};
+pub use transport::{RateLimitConfig, RateLimiterManager, TokenBucket};
 
 /// Auth HTTP Client with async transport
 pub type AuthHttpClient = http_client::AuthHttpClient<transport::Async>;

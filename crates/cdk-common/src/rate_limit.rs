@@ -10,6 +10,7 @@
 //! next wallet built for the same mint instead of starting full and bursting
 //! again.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
@@ -190,7 +191,7 @@ impl TokenBucket {
         mint_url: &MintUrl,
         db: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
     ) -> Self {
-        let persistence = kv_key_for(mint_url)
+        let persistence = origin_key(mint_url)
             .map(|key| Arc::new(KvBudgetStore { db, key }) as Arc<dyn BudgetStore>);
         Self::build(config, persistence)
     }
@@ -297,6 +298,23 @@ impl TokenBucket {
             }
             None => false,
         }
+    }
+
+    /// Whether the bucket carries no outstanding GCRA debt: its theoretical
+    /// arrival time is at or before now, so the full burst is available again
+    /// and it behaves identically to a freshly built bucket. Used to decide when
+    /// a shared bucket can be dropped and rebuilt on demand without changing
+    /// pacing behavior.
+    fn is_fully_recovered(&self) -> bool {
+        lock(&self.inner.state).arrival_time <= Instant::now()
+    }
+
+    /// Number of live handles sharing this bucket's budget. Meaningful because
+    /// the background writer owns only the store and channels, never
+    /// `Arc<TokenBucketInner>` (see `run_writer`), so this counts only
+    /// `TokenBucket` clones, not the writer task.
+    fn handle_count(&self) -> usize {
+        Arc::strong_count(&self.inner)
     }
 
     /// Advance the theoretical arrival time by one slot under the lock. Returns
@@ -439,6 +457,83 @@ impl TokenBucket {
     }
 }
 
+/// Hands out one shared [`TokenBucket`] per mint origin.
+///
+/// A mint origin is the sanitized host plus non-default port (see
+/// [`origin_key`]), so every currency-unit wallet at one mint host draws down a
+/// single budget and a single persistence writer instead of each getting a full
+/// burst. Cloning the manager shares the same per-origin map and config through
+/// `Arc`s, so cloned managers keep handing out the same live budgets.
+#[derive(Clone)]
+pub struct RateLimiterManager {
+    config: RateLimitConfig,
+    db: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
+    /// One bucket per origin. An entry is evicted lazily (during
+    /// [`Self::bucket_for`]) once its budget is fully recovered and no live
+    /// wallet still holds it, so the map is bounded by the origins with active
+    /// or recently-active wallets. Eviction is a behavioral no-op: a recovered
+    /// bucket is equivalent to a fresh one, and the persisted budget survives a
+    /// re-add.
+    buckets: Arc<Mutex<HashMap<String, TokenBucket>>>,
+}
+
+impl std::fmt::Debug for RateLimiterManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RateLimiterManager")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RateLimiterManager {
+    /// Create a manager that hands out buckets configured with `config` and
+    /// persisted through `db`.
+    pub fn new(
+        config: RateLimitConfig,
+        db: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
+    ) -> Self {
+        Self {
+            config,
+            db,
+            buckets: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Get or create the shared bucket for `mint_url`'s origin, returning a
+    /// clone that draws down the same budget.
+    ///
+    /// The first call for an origin builds one persisted bucket (via
+    /// [`TokenBucket::for_mint`], so the KV budget and its single background
+    /// writer are shared); later calls for the same origin clone it. A host-less
+    /// URL falls back to keying on the full URL string, so it still gets one
+    /// stable in-memory bucket, though `for_mint` persists nothing for it.
+    ///
+    /// Each call first evicts any other origin whose bucket is fully recovered
+    /// and held only by the map (no live wallet), bounding the map over time.
+    pub fn bucket_for(&self, mint_url: &MintUrl) -> TokenBucket {
+        let key = origin_key(mint_url).unwrap_or_else(|| mint_url.to_string());
+        let mut buckets = lock(&self.buckets);
+        // Drop origins with no live wallet whose budget has fully recovered: a
+        // recovered bucket is equivalent to a fresh one, so rebuilding it later
+        // is free. Keep the requested key and any bucket a wallet still shares
+        // (handle_count > 1) so co-active wallets never split into independent
+        // budgets.
+        buckets.retain(|k, bucket| {
+            k == &key || bucket.handle_count() > 1 || !bucket.is_fully_recovered()
+        });
+        buckets
+            .entry(key)
+            .or_insert_with(|| TokenBucket::for_mint(self.config, mint_url, self.db.clone()))
+            .clone()
+    }
+
+    /// Number of mint origins currently tracked. Exposed for diagnostics and to
+    /// let tests observe eviction.
+    pub fn origin_count(&self) -> usize {
+        lock(&self.buckets).len()
+    }
+}
+
 /// The single writer task for a persisted bucket: persist the latest cached
 /// value whenever it changes, coalescing intermediate updates. Persistence is
 /// best effort (`store` logs its own failures); `progress` reports the latest
@@ -513,15 +608,17 @@ fn tat_to_unix_millis(arrival_time: Instant) -> u64 {
         .unwrap_or(0)
 }
 
-/// Derive a KV key from a mint URL's host and non-default port, sanitized to
-/// the KV alphabet (disallowed characters become `_`, truncated to the max
-/// length). Returns `None` when the URL has no host.
+/// Derive a mint's rate-limit origin identity from its host and non-default
+/// port, sanitized to the KV alphabet (disallowed characters become `_`,
+/// truncated to the max length). Returns `None` when the URL has no host.
 ///
-/// `Url::parse` normalizes a scheme-default port away, so `:443` and an
-/// implicit default map to one budget: one mint host is one budget. Sanitizing
-/// can collide two distinct hosts onto one key; that only makes them share a
-/// budget, never leak between them.
-fn kv_key_for(mint_url: &MintUrl) -> Option<String> {
+/// This is the identity used both to key the persisted budget in the KV store
+/// and to share one live in-memory [`TokenBucket`] across wallets (see
+/// [`RateLimiterManager`]). `Url::parse` normalizes a scheme-default port away,
+/// so `:443` and an implicit default map to one origin: one mint host is one
+/// budget. Sanitizing can collide two distinct hosts onto one key; that only
+/// makes them share a budget, never leak between them.
+pub fn origin_key(mint_url: &MintUrl) -> Option<String> {
     let parsed = Url::parse(&mint_url.to_string()).ok()?;
     let host = parsed.host_str()?;
     let authority = match parsed.port() {
@@ -755,6 +852,56 @@ mod tests {
         }
     }
 
+    /// A [`BudgetStore`] that signals from its `Drop`. Because the writer task
+    /// owns a clone of the store `Arc` (never `Arc<TokenBucketInner>`), the store
+    /// is freed only after the task returns, so this fires exactly when the
+    /// writer terminates.
+    #[derive(Debug)]
+    struct DropSignalStore {
+        on_drop: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    #[async_trait]
+    impl BudgetStore for DropSignalStore {
+        async fn load(&self) -> Option<Vec<u8>> {
+            None
+        }
+        async fn store(&self, _value: &[u8]) -> bool {
+            true
+        }
+    }
+
+    impl Drop for DropSignalStore {
+        fn drop(&mut self) {
+            if let Some(tx) = lock(&self.on_drop).take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn writer_task_terminates_when_last_handle_drops() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let store: Arc<dyn BudgetStore> = Arc::new(DropSignalStore {
+            on_drop: Mutex::new(Some(tx)),
+        });
+        let bucket = TokenBucket::with_store(config(5, 300), store);
+
+        // First acquire spawns the writer task, which holds one store Arc clone.
+        bucket.acquire(async {}).await;
+
+        // Dropping the only handle drops Inner, closing the writer's `desired`
+        // channel. The writer then does its final write, returns, and releases
+        // its store Arc, firing the drop signal. This is the lifecycle eviction
+        // relies on to reclaim writer tasks.
+        drop(bucket);
+
+        tokio::time::timeout(Duration::from_secs(2), rx)
+            .await
+            .expect("writer task should terminate and drop its store")
+            .expect("drop signal sender dropped without sending");
+    }
+
     #[tokio::test]
     async fn far_future_persisted_budget_heals_to_clamped_value() {
         // A persisted TAT an hour ahead is far beyond one burst window. The
@@ -853,7 +1000,7 @@ mod tests {
     #[test]
     fn kv_key_is_sanitized() {
         let url = MintUrl::from_str("https://mint.example.com:3338").unwrap();
-        let key = kv_key_for(&url).expect("host present");
+        let key = origin_key(&url).expect("host present");
         assert!(!key.contains('.'));
         assert!(!key.contains(':'));
         assert!(key
@@ -865,13 +1012,13 @@ mod tests {
     fn kv_key_ignores_default_port() {
         // `Url::parse` normalizes a scheme-default port away, so an explicit
         // `:443` and an implicit default map to one budget for the same host.
-        let implicit = kv_key_for(&MintUrl::from_str("https://mint.example.com").unwrap());
-        let explicit = kv_key_for(&MintUrl::from_str("https://mint.example.com:443").unwrap());
+        let implicit = origin_key(&MintUrl::from_str("https://mint.example.com").unwrap());
+        let explicit = origin_key(&MintUrl::from_str("https://mint.example.com:443").unwrap());
         assert_eq!(implicit, explicit);
         assert_eq!(implicit.as_deref(), Some("mint_example_com"));
 
         // A non-default port still yields a distinct budget.
-        let other = kv_key_for(&MintUrl::from_str("https://mint.example.com:8443").unwrap());
+        let other = origin_key(&MintUrl::from_str("https://mint.example.com:8443").unwrap());
         assert_ne!(implicit, other);
     }
 

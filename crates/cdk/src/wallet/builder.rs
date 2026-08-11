@@ -20,6 +20,15 @@ use crate::wallet::{
 };
 
 /// Builder for creating a new [`Wallet`]
+///
+/// Rate limiting: unless a bucket is injected with
+/// [`WalletBuilder::with_rate_limit_bucket`], `build()` constructs the wallet's
+/// own [`TokenBucket`] for the mint. Two wallets built independently for the
+/// same mint therefore do not share a live in-memory budget, only the persisted
+/// per-host budget in the KV store. To share one live budget across wallets
+/// (for example every currency unit at one mint), build them through a
+/// [`WalletRepository`](crate::wallet::WalletRepository), which injects one
+/// shared bucket per mint origin.
 pub struct WalletBuilder {
     mint_url: Option<MintUrl>,
     unit: Option<CurrencyUnit>,
@@ -34,6 +43,7 @@ pub struct WalletBuilder {
     metadata_cache: Option<Arc<MintMetadataCache>>,
     metadata_caches: HashMap<MintUrl, Arc<MintMetadataCache>>,
     rate_limit: Option<RateLimitConfig>,
+    rate_limit_bucket: Option<TokenBucket>,
     auth_cat: Option<String>,
 }
 
@@ -63,6 +73,7 @@ impl Default for WalletBuilder {
             metadata_cache: None,
             metadata_caches: HashMap::new(),
             rate_limit: Some(RateLimitConfig::default()),
+            rate_limit_bucket: None,
             auth_cat: None,
         }
     }
@@ -192,14 +203,29 @@ impl WalletBuilder {
     /// Set the rate-limiting configuration.
     ///
     /// Rate limiting is enabled by default with [`RateLimitConfig::default`].
+    /// This config is only used when `build()` constructs the wallet's own
+    /// bucket; a bucket injected with [`Self::with_rate_limit_bucket`] carries
+    /// its own config and overrides this, regardless of call order.
     pub fn with_rate_limiting_config(mut self, config: RateLimitConfig) -> Self {
         self.rate_limit = Some(config);
+        self
+    }
+
+    /// Use a pre-built, possibly shared [`TokenBucket`] for pacing.
+    ///
+    /// An injected bucket takes precedence over
+    /// [`Self::with_rate_limiting_config`]: `build()` uses it verbatim instead of
+    /// constructing a per-wallet bucket, so several wallets can share one live
+    /// in-memory budget. [`Self::without_rate_limiting`] still clears it.
+    pub fn with_rate_limit_bucket(mut self, bucket: TokenBucket) -> Self {
+        self.rate_limit_bucket = Some(bucket);
         self
     }
 
     /// Disable client-side rate limiting.
     pub fn without_rate_limiting(mut self) -> Self {
         self.rate_limit = None;
+        self.rate_limit_bucket = None;
         self
     }
 
@@ -256,11 +282,15 @@ impl WalletBuilder {
 
         // A single rate-limited transport, shared by the main client and the
         // blind-auth client so both draw down one persisted budget and reuse one
-        // connection pool.
-        let rate_limit_bucket = self
-            .rate_limit
-            .take()
-            .map(|config| TokenBucket::for_mint(config, &mint_url, localstore.clone()));
+        // connection pool. An injected bucket (e.g. one shared across every unit
+        // at a mint by WalletRepository) wins over building a per-wallet one.
+        let rate_limit_bucket = match self.rate_limit_bucket.take() {
+            Some(bucket) => Some(bucket),
+            None => self
+                .rate_limit
+                .take()
+                .map(|config| TokenBucket::for_mint(config, &mint_url, localstore.clone())),
+        };
         let shared_transport = rate_limit_bucket
             .clone()
             .map(|bucket| Arc::new(RateLimitedTransport::with_bucket(Async::default(), bucket)));

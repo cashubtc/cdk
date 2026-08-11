@@ -89,7 +89,7 @@ pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::{
     AuthHttpClient, HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector,
-    RateLimitConfig, TokenBucket,
+    RateLimitConfig, RateLimiterManager, TokenBucket,
 };
 pub use mint_metadata_cache::MintMetadata;
 #[cfg(feature = "nostr")]
@@ -301,6 +301,11 @@ impl Wallet {
     /// replaced the main transport and no rate-limited auth client remains. With
     /// a custom main client plus a CAT it reconfigures only the blind-auth
     /// client's pacing.
+    ///
+    /// When the wallet was built through a
+    /// [`WalletRepository`], its bucket is
+    /// shared with every other wallet at the same mint origin, so this
+    /// reconfigures the pacing for all of that origin's currency units at once.
     pub fn set_rate_limiting_config(&self, config: RateLimitConfig) {
         if let Some(bucket) = &self.rate_limit {
             bucket.set_config(config);
@@ -311,7 +316,9 @@ impl Wallet {
     ///
     /// Affects the same clients as [`Wallet::set_rate_limiting_config`]: a no-op
     /// when the wallet paces nothing, and with a custom main client plus a CAT it
-    /// disables only the blind-auth client's pacing.
+    /// disables only the blind-auth client's pacing. For a repository-built
+    /// wallet the bucket is shared, so this disables pacing for every currency
+    /// unit at that mint origin.
     pub fn disable_rate_limiting(&self) {
         if let Some(bucket) = &self.rate_limit {
             bucket.set_enabled(false);
