@@ -1654,6 +1654,7 @@ name = "cdk-mint-rpc"
 version = "0.17.4"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bip39",
  "cdk",
  "cdk-common",

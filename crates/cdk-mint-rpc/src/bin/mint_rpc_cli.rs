@@ -6,6 +6,7 @@ use anyhow::{anyhow, Result};
 use cdk_common::grpc::{VersionInterceptor, VERSION_HEADER};
 use cdk_mint_rpc::cdk_mint_client::CdkMintClient;
 use cdk_mint_rpc::mint_rpc_cli::subcommands;
+use cdk_mint_rpc::wallet::wallet_service_client::WalletServiceClient;
 use cdk_mint_rpc::GetInfoRequest;
 use clap::{Parser, Subcommand};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
@@ -104,6 +105,12 @@ enum Commands {
     UpdateNut04QuoteState(subcommands::UpdateNut04QuoteCommand),
     /// Rotate next keyset
     RotateNextKeyset(subcommands::RotateNextKeysetCommand),
+    /// Get the BDK on-chain wallet balance
+    GetWalletBalance,
+    /// List BDK on-chain wallet transactions
+    ListWalletTransactions(subcommands::WalletPaginationCommand),
+    /// List addresses revealed by the BDK on-chain wallet
+    ListWalletAddresses(subcommands::WalletPaginationCommand),
 }
 
 #[tokio::main]
@@ -156,7 +163,8 @@ async fn main() -> Result<()> {
     // Create client with version header interceptor
     let interceptor =
         VersionInterceptor::new(VERSION_HEADER, cdk_common::MINT_RPC_PROTOCOL_VERSION);
-    let mut client = CdkMintClient::with_interceptor(channel, interceptor);
+    let mut client = CdkMintClient::with_interceptor(channel.clone(), interceptor.clone());
+    let mut wallet_client = WalletServiceClient::with_interceptor(channel, interceptor);
 
     match cli.command {
         Commands::GetInfo => {
@@ -239,6 +247,15 @@ async fn main() -> Result<()> {
         }
         Commands::RotateNextKeyset(sub_command_args) => {
             subcommands::rotate_next_keyset(&mut client, &sub_command_args).await?;
+        }
+        Commands::GetWalletBalance => {
+            subcommands::get_wallet_balance(&mut wallet_client).await?;
+        }
+        Commands::ListWalletTransactions(args) => {
+            subcommands::list_wallet_transactions(&mut wallet_client, &args).await?;
+        }
+        Commands::ListWalletAddresses(args) => {
+            subcommands::list_wallet_addresses(&mut wallet_client, &args).await?;
         }
     }
 

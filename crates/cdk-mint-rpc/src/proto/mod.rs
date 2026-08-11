@@ -2,6 +2,11 @@
 
 tonic::include_proto!("cdk_mint_management_v1");
 
+/// On-chain wallet information service
+pub mod wallet {
+    tonic::include_proto!("cdk_mint_wallet_v1");
+}
+
 mod server;
 
 /// Protocol version for gRPC Mint RPC communication

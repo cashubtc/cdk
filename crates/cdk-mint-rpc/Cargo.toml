@@ -20,6 +20,7 @@ path = "src/bin/mint_rpc_cli.rs"
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 cdk = { workspace = true, features = [
     "mint",
 ] }

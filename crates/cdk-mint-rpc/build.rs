@@ -13,7 +13,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .protoc_arg("--experimental_allow_proto3_optional")
         .type_attribute(".", "#[allow(missing_docs)]")
         .field_attribute(".", "#[allow(missing_docs)]")
-        .compile_protos(&["src/proto/cdk-mint-rpc.proto"], &["src/proto"])?;
+        .compile_protos(
+            &["src/proto/cdk-mint-rpc.proto", "src/proto/wallet.proto"],
+            &["src/proto"],
+        )?;
 
     Ok(())
 }
