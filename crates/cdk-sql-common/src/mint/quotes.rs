@@ -744,6 +744,26 @@ where
         &mut self,
         blinded_secrets: &[PublicKey],
     ) -> Result<(), Self::Err> {
+        // Acquire all affected row locks in primary-key order before deleting.
+        query(
+            r#"
+            SELECT blinded_message
+            FROM blind_signature
+            WHERE blinded_message IN (:blinded_secrets) AND c IS NULL
+            ORDER BY blinded_message
+            FOR UPDATE
+            "#,
+        )?
+        .bind_vec(
+            "blinded_secrets",
+            blinded_secrets
+                .iter()
+                .map(|secret| secret.to_bytes().to_vec())
+                .collect(),
+        )?
+        .fetch_all(&self.inner)
+        .await?;
+
         // Delete blinded messages from blind_signature table where c IS NULL
         // (only delete unsigned blinded messages)
         query(
@@ -793,7 +813,7 @@ where
                 SELECT blinded_message, keyset_id, amount
                 FROM blind_signature
                 WHERE quote_id = :quote_id AND c IS NULL
-                ORDER BY order_index ASC
+                ORDER BY order_index ASC, blinded_message ASC
                 FOR UPDATE
                 "#,
             )?
@@ -839,6 +859,21 @@ where
         )?
         .bind("quote_id", quote_id.to_string())
         .execute(&self.inner)
+        .await?;
+
+        // Match the lock order used when change outputs are loaded for
+        // finalization before deleting any still-unsigned rows.
+        query(
+            r#"
+            SELECT blinded_message
+            FROM blind_signature
+            WHERE quote_id = :quote_id AND c IS NULL
+            ORDER BY order_index ASC, blinded_message ASC
+            FOR UPDATE
+            "#,
+        )?
+        .bind("quote_id", quote_id.to_string())
+        .fetch_all(&self.inner)
         .await?;
 
         // Also delete blinded messages (where c IS NULL) from blind_signature table

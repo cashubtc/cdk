@@ -70,6 +70,7 @@ where
             SELECT blinded_message, c, dleq_e, dleq_s
             FROM blind_signature
             WHERE blinded_message IN (:blinded_messages)
+            ORDER BY blinded_message
             FOR UPDATE
             "#,
         )?

@@ -26,7 +26,9 @@ use cdk_common::{
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 
 use crate::mint::melt::melt_saga::{MeltSaga, PaymentOutcome};
-use crate::mint::melt::shared::{finalize_melt_quote, rollback_melt_quote};
+use crate::mint::melt::shared::{
+    finalize_melt_quote, process_melt_change, rollback_melt_quote, MeltChangeResult,
+};
 use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
 
 // ============================================================================
@@ -2634,6 +2636,164 @@ async fn test_finalize_melt_quote_duplicate_success_is_idempotent() {
     .unwrap();
 
     assert_eq!(duplicate_change, first_change.change().cloned());
+}
+
+#[tokio::test]
+async fn test_concurrent_duplicate_melt_finalization_is_idempotent() {
+    let mint = create_test_mint().await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup_saga = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+
+    let operation_id = setup_saga.operation_id;
+    let (payment_saga, decision) = setup_saga
+        .attempt_internal_settlement(&melt_request)
+        .await
+        .unwrap();
+    let PaymentOutcome::Confirmed(confirmed_saga) =
+        payment_saga.make_payment(decision).await.unwrap()
+    else {
+        panic!("Expected Confirmed")
+    };
+    let payment_result = confirmed_saga.state_data.payment_result.clone();
+    let db = mint.localstore();
+    let pubsub = mint.pubsub_manager();
+
+    let first = finalize_melt_quote(
+        &mint,
+        &db,
+        &pubsub,
+        &quote,
+        payment_result.total_spent.clone(),
+        payment_result.payment_proof.clone(),
+        &payment_result.payment_lookup_id,
+        Some(operation_id),
+    );
+    let second = finalize_melt_quote(
+        &mint,
+        &db,
+        &pubsub,
+        &quote,
+        payment_result.total_spent,
+        payment_result.payment_proof,
+        &payment_result.payment_lookup_id,
+        Some(operation_id),
+    );
+
+    let (first_change, second_change) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(first, second)
+        })
+        .await
+        .expect("concurrent finalization should not deadlock");
+
+    assert_eq!(first_change.unwrap(), second_change.unwrap());
+
+    let finalized_quote = mint
+        .localstore
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(finalized_quote.state, MeltQuoteState::Paid);
+    assert_saga_not_exists(&mint, &operation_id).await;
+}
+
+#[tokio::test]
+async fn test_stale_melt_cleanup_observes_completed_finalization() {
+    use crate::test_helpers::mint::create_test_blinded_messages;
+
+    let mint = create_test_mint().await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let (change_outputs, _premint) = create_test_blinded_messages(&mint, Amount::from(1_023))
+        .await
+        .unwrap();
+    let melt_request = MeltRequest::new(quote.id.clone(), proofs, Some(change_outputs));
+
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup_saga = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+
+    let operation_id = setup_saga.operation_id;
+    let (payment_saga, decision) = setup_saga
+        .attempt_internal_settlement(&melt_request)
+        .await
+        .unwrap();
+    let PaymentOutcome::Confirmed(confirmed_saga) =
+        payment_saga.make_payment(decision).await.unwrap()
+    else {
+        panic!("Expected Confirmed")
+    };
+    let payment_result = confirmed_saga.state_data.payment_result.clone();
+    let db = mint.localstore();
+
+    // Preserve the data that a second finalizer can load before the first one
+    // commits its cleanup transaction.
+    let stale_request = {
+        let mut tx = db.begin_transaction().await.unwrap();
+        let request = tx
+            .get_melt_request_and_blinded_messages(&quote.id)
+            .await
+            .unwrap()
+            .expect("melt request should exist before cleanup");
+        tx.commit().await.unwrap();
+        request
+    };
+
+    let first_change = finalize_melt_quote(
+        &mint,
+        &db,
+        &mint.pubsub_manager(),
+        &quote,
+        payment_result.total_spent.clone(),
+        payment_result.payment_proof,
+        &payment_result.payment_lookup_id,
+        Some(operation_id),
+    )
+    .await
+    .unwrap();
+    assert!(first_change.is_some());
+
+    let stale_cleanup = process_melt_change(
+        &mint,
+        &db,
+        &quote.id,
+        stale_request.inputs_amount,
+        payment_result.total_spent,
+        stale_request.inputs_fee,
+        stale_request.change_outputs,
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(stale_cleanup, MeltChangeResult::AlreadyCompleted));
 }
 
 #[tokio::test]

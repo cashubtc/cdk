@@ -30,7 +30,7 @@ where
     let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
 
     query(&format!(
-        r#"SELECT y, state FROM proof WHERE y IN (:ys) {}"#,
+        r#"SELECT y, state FROM proof WHERE y IN (:ys) ORDER BY y {}"#,
         for_update_clause
     ))?
     .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
@@ -238,6 +238,23 @@ where
         ys: &[PublicKey],
         _quote_id: Option<QuoteId>,
     ) -> Result<(), Self::Err> {
+        // Acquire all rows that can be deleted in primary-key order. This keeps
+        // concurrent proof cleanup and finalization from locking batches in
+        // different orders.
+        query(
+            r#"
+            SELECT y
+            FROM proof
+            WHERE y IN (:ys) AND state NOT IN (:exclude_state)
+            ORDER BY y
+            FOR UPDATE
+            "#,
+        )?
+        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
+        .bind_vec("exclude_state", vec![State::Spent.to_string()])?
+        .fetch_all(&self.inner)
+        .await?;
+
         let total_deleted = query(
             r#"
             DELETE FROM proof WHERE y IN (:ys) AND state NOT IN (:exclude_state)
@@ -304,6 +321,7 @@ where
                 proof
             WHERE
                 quote_id = :quote_id
+            ORDER BY y
             FOR UPDATE
             "#,
         )?
@@ -361,6 +379,7 @@ where
                  proof
              WHERE
                  y IN (:ys)
+             ORDER BY y
              FOR UPDATE
              "#,
         )?
