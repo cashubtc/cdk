@@ -102,11 +102,11 @@ local optimization but is no longer the correctness boundary; the database is.
 
 ### Periodic reload
 
-The reload is opt-in. `DbSignatory::spawn_keyset_refresh` takes the interval
-(`None`, the default, or zero disables it and spawns no task;
-`DEFAULT_KEYSET_REFRESH` is the standard cadence). A single process owns its
-database and never polls; enabling the reload is what lets several processes run
-against one shared database. Both construction sites, the embedded mint
+The reload is opt-in. `DbSignatory::spawn_keyset_refresh` takes the interval;
+`None` (the default) or zero disables it and spawns no task. A single process
+owns its database and never polls; enabling the reload is what lets several
+processes run against one shared database. Both construction sites, the
+embedded mint
 (`build_with_seed`, via `MintBuilder::with_keyset_refresh_interval`) and the
 standalone gRPC server (via `--keyset-refresh-interval-ms`), pass the configured
 interval; both default to off. When enabled, the task sleeps until the next epoch
@@ -151,8 +151,8 @@ instance has not loaded, and the instance would then skip it.
 ### Positive Consequences
 
 * Multiple signatory instances can run active/active against one database.
-* The signing paths still never touch the database, and rotation still reads
-  nothing back from it.
+* The signing paths still never touch the database. Rotation coordinates and
+  reloads through the database, but remains outside the signing hot path.
 * No notification channel, extra connection, or backend pub/sub to operate.
 
 ### Negative Consequences
