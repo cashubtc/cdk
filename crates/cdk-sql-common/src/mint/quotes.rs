@@ -337,6 +337,7 @@ where
         FROM
             mint_quote
         WHERE id IN (:quote_ids)
+        ORDER BY id
         {for_update_clause}
         "#
     );
@@ -409,6 +410,7 @@ where
         WHERE
             request_lookup_id = :request_lookup_id
             AND request_lookup_id_kind = :request_lookup_id_kind
+        ORDER BY id
         {for_update_clause}
         "#
     );
@@ -700,9 +702,16 @@ where
     ) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
+        let mut ordered_messages = blinded_messages.iter().enumerate().collect::<Vec<_>>();
+        ordered_messages.sort_unstable_by(|(_, left), (_, right)| {
+            left.blinded_secret
+                .to_bytes()
+                .cmp(&right.blinded_secret.to_bytes())
+        });
+
         // Insert blinded_messages directly into blind_signature with c = NULL
         // Let the database constraint handle duplicate detection
-        for (i, message) in blinded_messages.iter().enumerate() {
+        for (i, message) in ordered_messages {
             match query(
                 r#"
                 INSERT INTO blind_signature

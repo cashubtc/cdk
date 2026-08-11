@@ -482,16 +482,7 @@ pub async fn load_melt_quotes_exclusively(
     // Lock ALL related quotes in a single atomic query to prevent deadlocks.
     // The query locks quotes ordered by ID, ensuring consistent lock acquisition order
     // across concurrent transactions.
-    let locked = tx
-        .lock_melt_quote_and_related(quote_id)
-        .await
-        .map_err(|e| match e {
-            database::Error::Locked => {
-                tracing::warn!("Quote {quote_id} or related quotes are locked by another process");
-                database::Error::Duplicate
-            }
-            e => e,
-        })?;
+    let locked = tx.lock_melt_quote_and_related(quote_id).await?;
 
     let quote = locked.target.ok_or(Error::UnknownQuote)?;
 

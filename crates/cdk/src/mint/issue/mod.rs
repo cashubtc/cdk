@@ -905,6 +905,11 @@ impl Mint {
             // Phase 5: Atomic database transaction
             let mut tx = self.localstore.begin_transaction().await?;
 
+            // Acquire every quote row in one ordered query before taking any other
+            // locks. The database returns the quotes in request order, while locking
+            // them by ID, so reversed batch requests cannot deadlock each other.
+            let locked_quotes = tx.get_mint_quotes_by_ids(&quote_ids).await?;
+
             // For batch minting, outputs are shared across all quotes and should be persisted once.
             if input.is_batch() {
                 let batch_operation =
@@ -918,12 +923,8 @@ impl Mint {
                     .await?;
             }
 
-            for quote_id in &quote_ids {
-                // Get the mutable quote from transaction
-                let mut mint_quote = tx
-                    .get_mint_quote(quote_id)
-                    .await?
-                    .ok_or(Error::UnknownQuote)?;
+            for (quote_id, mint_quote) in quote_ids.iter().zip(locked_quotes) {
+                let mut mint_quote = mint_quote.ok_or(Error::UnknownQuote)?;
 
                 // Re-validate state within transaction (protects against race conditions)
                 match mint_quote.state() {
@@ -1345,7 +1346,7 @@ mod batch_mint_tests {
     }
 
     #[tokio::test]
-    async fn test_process_batch_mint_basic() {
+    async fn test_process_batch_mint_with_reverse_quote_order() {
         let mint = create_test_mint().await;
 
         // Create two quotes
@@ -1403,8 +1404,13 @@ mod batch_mint_tests {
         )
         .unwrap();
 
+        // Keep the request order opposite to the database lock order. The rows
+        // must be locked by ID without changing quote-to-request association.
+        let mut quote_ids = vec![quote1.quote.clone(), quote2.quote.clone()];
+        quote_ids.sort_unstable_by(|left, right| right.cmp(left));
+
         let batch_request = BatchMintRequest {
-            quotes: vec![quote1.quote.clone(), quote2.quote.clone()],
+            quotes: quote_ids,
             quote_amounts: None,
             outputs: premint_secrets.blinded_messages().to_vec(),
             signatures: None,

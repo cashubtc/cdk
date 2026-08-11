@@ -92,8 +92,17 @@ where
         })
         .collect::<Result<HashMap<_, _>, Error>>()?;
 
-        // Iterate over the provided blinded messages and signatures
-        for (i, (message, signature)) in blinded_messages.iter().zip(blind_signatures).enumerate() {
+        let mut ordered_signatures = blinded_messages
+            .iter()
+            .zip(blind_signatures)
+            .enumerate()
+            .collect::<Vec<_>>();
+        ordered_signatures.sort_unstable_by(|(_, (left, _)), (_, (right, _))| {
+            left.to_bytes().cmp(&right.to_bytes())
+        });
+
+        // Mutate rows in blinded-message order while retaining the request order index.
+        for (i, (message, signature)) in ordered_signatures {
             match existing_rows.remove(message) {
                 None => {
                     // Unknown blind message: Insert new row with all columns

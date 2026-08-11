@@ -1,12 +1,15 @@
 //! Proofs tests
 
 use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
 
 use cashu::secret::Secret;
-use cashu::{Amount, Id, SecretKey};
+use cashu::{Amount, Id, SecretKey, State};
+use tokio::sync::Barrier;
 
 use crate::database::mint::test::setup_keyset;
-use crate::database::mint::{Database, Error, KeysDatabase, Proof, QuoteId};
+use crate::database::mint::{Database, DynMintDatabase, Error, KeysDatabase, Proof, QuoteId};
 use crate::mint::Operation;
 use crate::state::check_state_transition;
 
@@ -312,6 +315,85 @@ where
         "ProofsWithState.state should be updated to Spent after update_proofs_state"
     );
     tx.commit().await.unwrap();
+}
+
+/// Test concurrent spends across the same keysets use a consistent lock order.
+///
+/// This test is intended for database backends with row-level locking. It is
+/// invoked explicitly by the PostgreSQL test suite rather than the generic
+/// database macro because SQLite serializes writes at the database level.
+pub async fn concurrent_multi_keyset_spends_use_consistent_lock_order(db: DynMintDatabase) {
+    let first_keyset = Id::from_str("00916bbf7ef91a36").unwrap();
+    let second_keyset = Id::from_str("00916bbf7ef91a37").unwrap();
+
+    let create_proof = |keyset_id| Proof {
+        amount: Amount::from(100),
+        keyset_id,
+        secret: Secret::generate(),
+        c: SecretKey::generate().public_key(),
+        witness: None,
+        dleq: None,
+        p2pk_e: None,
+    };
+
+    // The transactions use disjoint proof rows but update the same two
+    // keyset_amounts rows. Reverse the proof/keyset order so only the explicit
+    // keyset ordering in the upsert can guarantee a common lock order.
+    let first_proofs = vec![create_proof(first_keyset), create_proof(second_keyset)];
+    let second_proofs = vec![create_proof(second_keyset), create_proof(first_keyset)];
+    let first_ys: Vec<_> = first_proofs
+        .iter()
+        .map(|proof| proof.y().unwrap())
+        .collect();
+    let second_ys: Vec<_> = second_proofs
+        .iter()
+        .map(|proof| proof.y().unwrap())
+        .collect();
+
+    let mut tx = db.begin_transaction().await.unwrap();
+    tx.add_proofs(
+        first_proofs,
+        None,
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
+    tx.add_proofs(
+        second_proofs,
+        None,
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let barrier = Arc::new(Barrier::new(2));
+    let first_db = db.clone();
+    let first_barrier = Arc::clone(&barrier);
+    let first = tokio::spawn(async move {
+        let mut tx = first_db.begin_transaction().await?;
+        let mut proofs = tx.get_proofs(&first_ys).await?;
+        first_barrier.wait().await;
+        tx.update_proofs_state(&mut proofs, State::Spent).await?;
+        tx.commit().await
+    });
+
+    let second = tokio::spawn(async move {
+        let mut tx = db.begin_transaction().await?;
+        let mut proofs = tx.get_proofs(&second_ys).await?;
+        barrier.wait().await;
+        tx.update_proofs_state(&mut proofs, State::Spent).await?;
+        tx.commit().await
+    });
+
+    let (first_result, second_result) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(first, second)
+    })
+    .await
+    .expect("concurrent multi-keyset spends should not deadlock");
+
+    first_result.unwrap().unwrap();
+    second_result.unwrap().unwrap();
 }
 
 /// Test removing proofs

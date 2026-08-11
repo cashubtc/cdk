@@ -134,15 +134,18 @@ where
     ) -> Result<Acquired<ProofsWithState>, Self::Err> {
         let current_time = unix_time();
 
+        let mut ordered_proofs = proofs
+            .iter()
+            .map(|proof| Ok((proof.y()?.to_bytes().to_vec(), proof)))
+            .collect::<Result<Vec<_>, Error>>()?;
+        ordered_proofs.sort_unstable_by(|(left_y, _), (right_y, _)| left_y.cmp(right_y));
+
         // Check any previous proof, this query should return None in order to proceed storing
         // Any result here would error
-        match query(r#"SELECT state FROM proof WHERE y IN (:ys) LIMIT 1 FOR UPDATE"#)?
+        match query(r#"SELECT state FROM proof WHERE y IN (:ys) ORDER BY y LIMIT 1 FOR UPDATE"#)?
             .bind_vec(
                 "ys",
-                proofs
-                    .iter()
-                    .map(|y| y.y().map(|y| y.to_bytes().to_vec()))
-                    .collect::<Result<_, _>>()?,
+                ordered_proofs.iter().map(|(y, _)| y.clone()).collect(),
             )?
             .pluck(&self.inner)
             .await?
@@ -154,9 +157,7 @@ where
             None => Ok(()), // no previous record
         }?;
 
-        for proof in &proofs {
-            let y = proof.y()?;
-
+        for (y, proof) in ordered_proofs {
             query(
                 r#"
                   INSERT INTO proof
@@ -165,7 +166,7 @@ where
                   (:y, :amount, :keyset_id, :secret, :c, :witness, :state, :quote_id, :created_time, :operation_kind, :operation_id)
                   "#,
             )?
-            .bind("y", y.to_bytes().to_vec())
+            .bind("y", y)
             .bind("amount", proof.amount.to_i64())
             .bind("keyset_id", proof.keyset_id.to_string())
             .bind("secret", proof.secret.to_string())
@@ -219,6 +220,7 @@ where
                     FROM proof
                     WHERE y IN (:ys)
                     GROUP BY keyset_id
+                    ORDER BY keyset_id
                     ON CONFLICT (keyset_id)
                     DO UPDATE SET total_redeemed = keyset_amounts.total_redeemed + EXCLUDED.total_redeemed
                     "#,
