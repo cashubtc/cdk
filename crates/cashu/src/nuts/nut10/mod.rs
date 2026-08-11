@@ -275,27 +275,6 @@ pub(crate) fn sig_all_msg_to_sign_v1(
     msg
 }
 
-/// SIG_ALL message as verified by cdk < 0.14.0: secrets then B_ hex strings.
-///
-/// Kept so upgraded mints keep accepting witnesses from older wallets.
-pub(crate) fn sig_all_msg_to_sign_legacy(
-    quote_id: Option<&str>,
-    inputs: &Proofs,
-    outputs: &[super::BlindedMessage],
-) -> String {
-    let mut msg = String::new();
-    for proof in inputs {
-        msg.push_str(&proof.secret.to_string());
-    }
-    for output in outputs {
-        msg.push_str(&output.blinded_secret.to_hex());
-    }
-    if let Some(quote_id) = quote_id {
-        msg.push_str(quote_id);
-    }
-    msg
-}
-
 /// Trait for requests that spend proofs (SwapRequest, MeltRequest)
 pub trait SpendingConditionVerification {
     /// Get the input proofs
@@ -311,28 +290,17 @@ pub trait SpendingConditionVerification {
     /// Construct the NUT-11 v1 (length-framed) SIG_ALL message to sign
     fn sig_all_msg_to_sign_v1(&self) -> Vec<u8>;
 
-    /// Construct the pre-0.14 SIG_ALL message (secrets then B_ values)
-    fn sig_all_msg_to_sign_legacy(&self) -> String;
-
     /// SIG_ALL message formats accepted during verification, newest first.
     ///
     /// Signatures that do not verify under any format are ignored; only unique
     /// pubkeys with valid signatures count towards thresholds (NUT-11). The
-    /// legacy format is signed for older mints but never accepted here: it
-    /// does not commit to input C values or output amounts.
+    /// pre-0.14 format (secrets then B_ values) is not accepted: it does not
+    /// commit to input C values or output amounts.
     fn sig_all_msgs_to_verify(&self) -> Vec<Vec<u8>> {
         vec![
             self.sig_all_msg_to_sign_v1(),
             self.sig_all_msg_to_sign().into_bytes(),
         ]
-    }
-
-    /// SIG_ALL messages a wallet signs: every accepted format plus legacy,
-    /// so the request also verifies on not-yet-upgraded mints.
-    fn sig_all_msgs_to_sign(&self) -> Vec<Vec<u8>> {
-        let mut msgs = self.sig_all_msgs_to_verify();
-        msgs.push(self.sig_all_msg_to_sign_legacy().into_bytes());
-        msgs
     }
 
     /// Check if at least one proof in the set has SIG_ALL flag set
@@ -523,10 +491,6 @@ mod tests {
 
         fn sig_all_msg_to_sign_v1(&self) -> Vec<u8> {
             sig_all_msg_to_sign_v1(None, &self.inputs, &[])
-        }
-
-        fn sig_all_msg_to_sign_legacy(&self) -> String {
-            sig_all_msg_to_sign_legacy(None, &self.inputs, &[])
         }
     }
 

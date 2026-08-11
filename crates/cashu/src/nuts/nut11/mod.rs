@@ -534,11 +534,11 @@ pub struct EnforceSigFlag {
 impl SwapRequest {
     /// Sign swap request with SIG_ALL
     pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
-        // One signature per SIG_ALL message format (v1, current, legacy) so the
-        // request verifies on mints at any upgrade stage; mints ignore
+        // One signature per accepted SIG_ALL message format (v1, current) so
+        // the request verifies on mints at any upgrade stage; mints ignore
         // signatures that do not verify.
-        let mut signatures = Vec::with_capacity(3);
-        for msg in self.sig_all_msgs_to_sign() {
+        let mut signatures = Vec::with_capacity(2);
+        for msg in self.sig_all_msgs_to_verify() {
             signatures.push(secret_key.sign(&msg)?.to_string());
         }
 
@@ -569,11 +569,11 @@ where
 {
     /// Sign melt request with SIG_ALL
     pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
-        // One signature per SIG_ALL message format (v1, current, legacy) so the
-        // request verifies on mints at any upgrade stage; mints ignore
+        // One signature per accepted SIG_ALL message format (v1, current) so
+        // the request verifies on mints at any upgrade stage; mints ignore
         // signatures that do not verify.
-        let mut signatures = Vec::with_capacity(3);
-        for msg in self.sig_all_msgs_to_sign() {
+        let mut signatures = Vec::with_capacity(2);
+        for msg in self.sig_all_msgs_to_verify() {
             signatures.push(secret_key.sign(&msg)?.to_string());
         }
 
@@ -1402,8 +1402,8 @@ mod tests {
     fn test_sig_all_v1_message_canonical_vector() {
         // Canonical vectors from nuts tests/11-test.md ("SIG_ALL v1 Message
         // Vectors"), pinned byte-for-byte in cashu-ts and nutshell too. The
-        // witness carries one signature per message format (v1, current,
-        // legacy) by the well-known test key (privkey 0x...01).
+        // witness carries one signature per accepted message format (v1,
+        // current) by the well-known test key (privkey 0x...01).
         let swap = r#"{
           "inputs": [
             {
@@ -1411,7 +1411,7 @@ mod tests {
               "id": "009a1f293253e41e",
               "secret": "[\"P2PK\",{\"nonce\":\"859d4935c4907062a6297cf4e663e2835d90d97ecdd510745d32f6816323a41f\",\"data\":\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]",
               "C": "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
-              "witness": "{\"signatures\":[\"b2b821f819f12ab61d261971187d19772aaad11422f9d5f3ffda6f97de03349e0e44976b5d44e3c850a99b621045167915caf3ef5b102abe69439e36b68f89d5\",\"947864cac6d9369f358257eece81c4aa9deb2e63899f2d868e7c243ff334ade5db1d8db010daa2b9f4407610458d9ffa3250eb778d1a0980f4de671627c8718e\",\"ea0cdab0d0895bbf212d6d301ea4180171a1e2af309fcee57fa16998b9c234f2f8722953f9703f561866f45672b2a499109722dfeb3c3e7a2a2d51cda9684652\"]}"
+              "witness": "{\"signatures\":[\"b2b821f819f12ab61d261971187d19772aaad11422f9d5f3ffda6f97de03349e0e44976b5d44e3c850a99b621045167915caf3ef5b102abe69439e36b68f89d5\",\"947864cac6d9369f358257eece81c4aa9deb2e63899f2d868e7c243ff334ade5db1d8db010daa2b9f4407610458d9ffa3250eb778d1a0980f4de671627c8718e\"]}"
             },
             {
               "amount": 2,
