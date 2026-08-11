@@ -53,6 +53,11 @@ pub mod storage;
 pub(crate) mod sync;
 pub mod types;
 pub(crate) mod util;
+pub mod wallet_info;
+
+pub use crate::wallet_info::{
+    WalletAddress, WalletBalance, WalletKeychain, WalletPage, WalletTransaction,
+};
 
 /// Wrapper struct that combines wallet and database to prevent deadlocks
 pub(crate) struct WalletWithDb {
@@ -842,7 +847,7 @@ mod tests {
     };
     use bdk_wallet::keys::bip39::Mnemonic;
     use cdk_common::common::FeeReserve;
-    use cdk_common::payment::MintPayment;
+    use cdk_common::payment::{MintPayment, OnchainIncomingPaymentOptions};
     use futures::StreamExt;
 
     use super::*;
@@ -924,32 +929,188 @@ mod tests {
         Ok((backend, tmp))
     }
 
-    async fn fund_backend_wallet(backend: &CdkBdk, amount_sat: u64) {
+    #[tokio::test]
+    async fn wallet_info_lists_revealed_addresses_without_revealing_more() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
+
+        let initial_addresses = backend
+            .wallet_addresses(0, 100)
+            .await
+            .expect("list initial addresses");
+        assert_eq!(initial_addresses.total, 0);
+
+        backend
+            .create_incoming_payment_request(IncomingPaymentOptions::Onchain(
+                OnchainIncomingPaymentOptions {
+                    quote_id: cdk_common::QuoteId::new(),
+                },
+            ))
+            .await
+            .expect("create on-chain request");
+
+        let addresses = backend
+            .wallet_addresses(0, 100)
+            .await
+            .expect("list revealed addresses");
+        assert_eq!(addresses.total, 1);
+        assert_eq!(addresses.items.len(), 1);
+        assert_eq!(addresses.items[0].keychain, WalletKeychain::External);
+        assert_eq!(addresses.items[0].derivation_index, 0);
+        assert!(!addresses.items[0].used);
+        assert_eq!(addresses.items[0].balance_sat, 0);
+
+        let balance = backend.wallet_balance().await;
+        assert_eq!(balance.total_sat, 0);
+        assert_eq!(
+            backend
+                .wallet_transactions(0, 20)
+                .await
+                .expect("list transactions")
+                .total,
+            0
+        );
+
+        let addresses_again = backend
+            .wallet_addresses(0, 100)
+            .await
+            .expect("list revealed addresses again");
+        assert_eq!(addresses_again.total, 1);
+    }
+
+    #[tokio::test]
+    async fn wallet_info_paginates_revealed_addresses_across_keychains() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
+
+        {
+            let mut wallet_with_db = backend.wallet_with_db.lock().await;
+            let _ = wallet_with_db
+                .wallet
+                .reveal_addresses_to(KeychainKind::External, 1)
+                .count();
+            let _ = wallet_with_db
+                .wallet
+                .reveal_addresses_to(KeychainKind::Internal, 1)
+                .count();
+            wallet_with_db
+                .persist()
+                .expect("persist revealed addresses");
+        }
+
+        let page = backend
+            .wallet_addresses(1, 2)
+            .await
+            .expect("list paginated addresses");
+
+        assert_eq!(page.total, 4);
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.items[0].keychain, WalletKeychain::External);
+        assert_eq!(page.items[0].derivation_index, 1);
+        assert_eq!(page.items[1].keychain, WalletKeychain::Internal);
+        assert_eq!(page.items[1].derivation_index, 0);
+    }
+
+    async fn fund_backend_wallet_transactions(backend: &CdkBdk, amounts_sat: &[u64]) -> Vec<Txid> {
         let mut wallet_with_db = backend.wallet_with_db.lock().await;
         let funding_script = wallet_with_db
             .wallet
             .reveal_next_address(KeychainKind::External)
             .address
             .script_pubkey();
-        let funding_tx = Transaction {
-            version: transaction::Version::TWO,
-            lock_time: absolute::LockTime::ZERO,
-            input: vec![TxIn {
-                previous_output: OutPoint::new(Txid::all_zeros(), 0),
-                script_sig: Default::default(),
-                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                witness: Witness::new(),
-            }],
-            output: vec![TxOut {
-                value: bdk_wallet::bitcoin::Amount::from_sat(amount_sat),
-                script_pubkey: funding_script,
-            }],
-        };
+        let funding_transactions = amounts_sat
+            .iter()
+            .enumerate()
+            .map(|(index, amount_sat)| Transaction {
+                version: transaction::Version::TWO,
+                lock_time: absolute::LockTime::ZERO,
+                input: vec![TxIn {
+                    previous_output: OutPoint::new(
+                        Txid::all_zeros(),
+                        u32::try_from(index).expect("test transaction index fits in u32"),
+                    ),
+                    script_sig: Default::default(),
+                    sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                    witness: Witness::new(),
+                }],
+                output: vec![TxOut {
+                    value: bdk_wallet::bitcoin::Amount::from_sat(*amount_sat),
+                    script_pubkey: funding_script.clone(),
+                }],
+            })
+            .collect::<Vec<_>>();
+        let txids = funding_transactions
+            .iter()
+            .map(Transaction::compute_txid)
+            .collect();
 
         wallet_with_db
             .wallet
-            .apply_unconfirmed_txs([(funding_tx, 0)]);
+            .apply_unconfirmed_txs(funding_transactions.into_iter().map(|tx| (tx, 0)));
         wallet_with_db.persist().expect("persist funded wallet");
+
+        txids
+    }
+
+    async fn fund_backend_wallet(backend: &CdkBdk, amount_sat: u64) {
+        fund_backend_wallet_transactions(backend, &[amount_sat]).await;
+    }
+
+    #[tokio::test]
+    async fn wallet_info_reports_unconfirmed_funding() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
+        fund_backend_wallet(&backend, 42_000).await;
+
+        let balance = backend.wallet_balance().await;
+        assert_eq!(balance.untrusted_pending_sat, 42_000);
+        assert_eq!(balance.total_sat, 42_000);
+
+        let transactions = backend
+            .wallet_transactions(0, 20)
+            .await
+            .expect("list transactions");
+        assert_eq!(transactions.total, 1);
+        assert_eq!(transactions.items[0].received_sat, 42_000);
+        assert_eq!(transactions.items[0].sent_sat, 0);
+        assert_eq!(transactions.items[0].balance_delta_sat, 42_000);
+        assert_eq!(transactions.items[0].confirmation_height, None);
+        assert_eq!(transactions.items[0].first_seen, Some(0));
+
+        let addresses = backend
+            .wallet_addresses(0, 20)
+            .await
+            .expect("list addresses");
+        assert_eq!(addresses.total, 1);
+        assert!(addresses.items[0].used);
+        assert_eq!(addresses.items[0].balance_sat, 42_000);
+        assert_eq!(addresses.items[0].confirmed_balance_sat, 0);
+
+        let empty_page = backend
+            .wallet_transactions(0, 0)
+            .await
+            .expect("list empty transaction page");
+        assert_eq!(empty_page.total, 1);
+        assert!(empty_page.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn wallet_info_uses_txid_to_order_equal_chain_positions() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
+        let mut expected_txids =
+            fund_backend_wallet_transactions(&backend, &[21_000, 42_000]).await;
+        expected_txids.sort_by(|left, right| right.cmp(left));
+
+        let first_page = backend
+            .wallet_transactions(0, 1)
+            .await
+            .expect("list first transaction page");
+        let second_page = backend
+            .wallet_transactions(1, 1)
+            .await
+            .expect("list second transaction page");
+
+        assert_eq!(first_page.total, 2);
+        assert_eq!(second_page.total, 2);
+        assert_eq!(first_page.items[0].txid, expected_txids[0].to_string());
+        assert_eq!(second_page.items[0].txid, expected_txids[1].to_string());
     }
 
     #[tokio::test]

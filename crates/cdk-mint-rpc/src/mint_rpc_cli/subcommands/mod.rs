@@ -26,6 +26,8 @@ mod update_tos_url;
 mod update_ttl;
 /// Module for managing mint URLs
 mod update_urls;
+/// Module for inspecting the mint's BDK on-chain wallet.
+mod wallet;
 
 pub use rotate_next_keyset::{rotate_next_keyset, RotateNextKeysetCommand};
 pub use update_contact::{add_contact, remove_contact, AddContactCommand, RemoveContactCommand};
@@ -40,3 +42,6 @@ pub use update_short_description::{update_short_description, UpdateShortDescript
 pub use update_tos_url::{update_tos_url, UpdateTosUrlCommand};
 pub use update_ttl::{get_quote_ttl, update_quote_ttl, UpdateQuoteTtlCommand};
 pub use update_urls::{add_url, remove_url, AddUrlCommand, RemoveUrlCommand};
+pub use wallet::{
+    get_wallet_balance, list_wallet_addresses, list_wallet_transactions, WalletPaginationCommand,
+};

@@ -202,6 +202,113 @@ impl cdk_mint_rpc::MintMutationGuard for ConfigurationMutationGuard {
     }
 }
 
+#[cfg(all(feature = "management-rpc", feature = "bdk"))]
+type ConfiguredWalletInfoProvider = Option<cdk_mint_rpc::DynWalletInfoProvider>;
+#[cfg(not(all(feature = "management-rpc", feature = "bdk")))]
+type ConfiguredWalletInfoProvider = ();
+
+#[cfg(all(feature = "management-rpc", feature = "bdk"))]
+#[derive(Clone)]
+struct BdkWalletInfoProvider {
+    bdk: Arc<cdk_bdk::CdkBdk>,
+}
+
+#[cfg(all(feature = "management-rpc", feature = "bdk"))]
+#[async_trait::async_trait]
+impl cdk_mint_rpc::WalletInfoProvider for BdkWalletInfoProvider {
+    async fn get_balance(
+        &self,
+    ) -> std::result::Result<cdk_mint_rpc::wallet::GetBalanceResponse, cdk_mint_rpc::WalletInfoError>
+    {
+        let balance = self.bdk.wallet_balance().await;
+
+        Ok(cdk_mint_rpc::wallet::GetBalanceResponse {
+            confirmed_sat: balance.confirmed_sat,
+            trusted_pending_sat: balance.trusted_pending_sat,
+            untrusted_pending_sat: balance.untrusted_pending_sat,
+            immature_sat: balance.immature_sat,
+            trusted_spendable_sat: balance.trusted_spendable_sat,
+            total_sat: balance.total_sat,
+            network: balance.network,
+            synced_height: balance.synced_height,
+        })
+    }
+
+    async fn list_transactions(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> std::result::Result<cdk_mint_rpc::WalletTransactionPage, cdk_mint_rpc::WalletInfoError>
+    {
+        let page = self
+            .bdk
+            .wallet_transactions(offset, limit)
+            .await
+            .map_err(|err| cdk_mint_rpc::WalletInfoError::new(err.to_string()))?;
+
+        Ok(cdk_mint_rpc::WalletTransactionPage {
+            transactions: page
+                .items
+                .into_iter()
+                .map(|transaction| cdk_mint_rpc::wallet::WalletTransaction {
+                    txid: transaction.txid,
+                    received_sat: transaction.received_sat,
+                    sent_sat: transaction.sent_sat,
+                    fee_sat: transaction.fee_sat,
+                    balance_delta_sat: transaction.balance_delta_sat,
+                    confirmation_height: transaction.confirmation_height,
+                    confirmation_time: transaction.confirmation_time,
+                    first_seen: transaction.first_seen,
+                })
+                .collect(),
+            total: page.total,
+        })
+    }
+
+    async fn list_addresses(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> std::result::Result<cdk_mint_rpc::WalletAddressPage, cdk_mint_rpc::WalletInfoError> {
+        let page = self
+            .bdk
+            .wallet_addresses(offset, limit)
+            .await
+            .map_err(|err| cdk_mint_rpc::WalletInfoError::new(err.to_string()))?;
+
+        Ok(cdk_mint_rpc::WalletAddressPage {
+            addresses: page
+                .items
+                .into_iter()
+                .map(|address| cdk_mint_rpc::wallet::WalletAddress {
+                    address: address.address,
+                    keychain: match address.keychain {
+                        cdk_bdk::WalletKeychain::External => {
+                            cdk_mint_rpc::wallet::KeychainKind::External.into()
+                        }
+                        cdk_bdk::WalletKeychain::Internal => {
+                            cdk_mint_rpc::wallet::KeychainKind::Internal.into()
+                        }
+                    },
+                    derivation_index: address.derivation_index,
+                    used: address.used,
+                    balance_sat: address.balance_sat,
+                    confirmed_balance_sat: address.confirmed_balance_sat,
+                })
+                .collect(),
+            total: page.total,
+        })
+    }
+}
+
+#[cfg(all(feature = "management-rpc", feature = "bdk"))]
+fn no_wallet_info_provider() -> ConfiguredWalletInfoProvider {
+    None
+}
+
+#[cfg(not(all(feature = "management-rpc", feature = "bdk")))]
+fn no_wallet_info_provider() -> ConfiguredWalletInfoProvider {}
+
 fn extract_supported_payment_methods(mint_info: &cdk::nuts::MintInfo) -> Vec<String> {
     let mut seen = HashSet::new();
     mint_info
@@ -875,13 +982,13 @@ async fn setup_sqlite_database(
  * Configures a `MintBuilder` instance with provided settings and initializes
  * routers for the configured payment backends.
  */
-async fn configure_mint_builder(
+async fn configure_mint_builder_with_wallet_info(
     settings: &config::Settings,
     mint_builder: MintBuilder,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     work_dir: &Path,
     kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
-) -> Result<MintBuilder> {
+) -> Result<(MintBuilder, ConfiguredWalletInfoProvider)> {
     settings
         .validate_backend_pairing()
         .map_err(anyhow::Error::msg)?;
@@ -922,8 +1029,14 @@ async fn configure_mint_builder(
     .await?;
 
     // Configure onchain backend
-    let mint_builder =
-        configure_onchain_backend(settings, mint_builder, runtime, work_dir, kv_store).await?;
+    let (mint_builder, wallet_info_provider) = configure_onchain_backend_with_wallet_info(
+        settings,
+        mint_builder,
+        runtime,
+        work_dir,
+        kv_store,
+    )
+    .await?;
 
     // Extract configured payment methods from mint_builder
     let mint_info = mint_builder.current_mint_info();
@@ -951,7 +1064,28 @@ async fn configure_mint_builder(
         bail!("At least one payment backend must be configured");
     }
 
-    Ok(mint_builder)
+    Ok((mint_builder, wallet_info_provider))
+}
+
+#[cfg(test)]
+async fn configure_mint_builder(
+    settings: &config::Settings,
+    mint_builder: MintBuilder,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    work_dir: &Path,
+    kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+) -> Result<MintBuilder> {
+    Ok(
+        configure_mint_builder_with_wallet_info(
+            settings,
+            mint_builder,
+            runtime,
+            work_dir,
+            kv_store,
+        )
+        .await?
+        .0,
+    )
 }
 
 /// Configures basic mint information (name, contact info, descriptions, etc.)
@@ -1243,16 +1377,21 @@ fn configure_fake_wallet_keyset_rotations_once(
 }
 
 /// Configures Onchain backend based on the specified backend type
-async fn configure_onchain_backend(
+async fn configure_onchain_backend_with_wallet_info(
     settings: &config::Settings,
     #[cfg_attr(not(feature = "bdk"), allow(unused_mut))] mut mint_builder: MintBuilder,
     _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     _work_dir: &Path,
     _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
-) -> Result<MintBuilder> {
+) -> Result<(MintBuilder, ConfiguredWalletInfoProvider)> {
     use config::OnchainBackend;
     #[cfg(feature = "bdk")]
     use setup::OnchainBackendSetup;
+
+    #[cfg(all(feature = "management-rpc", feature = "bdk"))]
+    let mut wallet_info_provider = no_wallet_info_provider();
+    #[cfg(not(all(feature = "management-rpc", feature = "bdk")))]
+    let wallet_info_provider = no_wallet_info_provider();
 
     if let Some(onchain_settings) = &settings.onchain {
         match onchain_settings.onchain_backend {
@@ -1278,6 +1417,13 @@ async fn configure_onchain_backend(
                     )
                     .await?;
                 let bdk = Arc::new(bdk);
+
+                #[cfg(feature = "management-rpc")]
+                {
+                    wallet_info_provider = Some(Arc::new(BdkWalletInfoProvider {
+                        bdk: Arc::clone(&bdk),
+                    }));
+                }
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -1340,7 +1486,26 @@ async fn configure_onchain_backend(
         }
     }
 
-    Ok(mint_builder)
+    Ok((mint_builder, wallet_info_provider))
+}
+
+#[cfg(test)]
+async fn configure_onchain_backend(
+    settings: &config::Settings,
+    mint_builder: MintBuilder,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    work_dir: &Path,
+    kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+) -> Result<MintBuilder> {
+    Ok(configure_onchain_backend_with_wallet_info(
+        settings,
+        mint_builder,
+        runtime,
+        work_dir,
+        kv_store,
+    )
+    .await?
+    .0)
 }
 
 /// Helper function to configure a mint builder with a payment backend for a specific currency unit
@@ -1810,10 +1975,12 @@ struct RunningMintd {
 impl PreparedMintd {
     /// Builds every resource and performs all database reconciliation
     /// without starting tasks or binding listeners.
+    #[allow(clippy::too_many_arguments)]
     async fn prepare(
         mint: Arc<cdk::mint::Mint>,
         settings: &config::Settings,
         _work_dir: &Path,
+        _wallet_info_provider: ConfiguredWalletInfoProvider,
         mint_builder_info: cdk::nuts::MintInfo,
         routers: Vec<Router>,
         auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
@@ -1843,6 +2010,10 @@ impl PreparedMintd {
                             mint_rpc.with_mutation_guard(Arc::new(ConfigurationMutationGuard {
                                 service: activation.service.clone(),
                             }));
+                    }
+                    #[cfg(feature = "bdk")]
+                    if let Some(provider) = _wallet_info_provider.clone() {
+                        mint_rpc = mint_rpc.with_wallet_info_provider(provider);
                     }
 
                     let tls_dir = rpc_settings.tls_dir.unwrap_or(_work_dir.join("tls"));
@@ -2266,6 +2437,7 @@ async fn start_services_with_shutdown(
     mint: Arc<cdk::mint::Mint>,
     settings: &config::Settings,
     work_dir: &Path,
+    wallet_info_provider: ConfiguredWalletInfoProvider,
     mint_builder_info: cdk::nuts::MintInfo,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     routers: Vec<Router>,
@@ -2276,6 +2448,7 @@ async fn start_services_with_shutdown(
         mint,
         settings,
         work_dir,
+        wallet_info_provider,
         mint_builder_info,
         routers,
         auth_localstore,
@@ -2415,8 +2588,14 @@ async fn run_mintd_with_database_and_shutdown(
         }
     };
 
-    let mint_builder =
-        configure_mint_builder(settings, maybe_mint_builder, runtime, work_dir, Some(kv)).await?;
+    let (mint_builder, wallet_info_provider) = configure_mint_builder_with_wallet_info(
+        settings,
+        maybe_mint_builder,
+        runtime,
+        work_dir,
+        Some(kv),
+    )
+    .await?;
     let (mint_builder, auth_localstore) =
         setup_authentication(settings, work_dir, mint_builder, db_password).await?;
 
@@ -2438,6 +2617,7 @@ async fn run_mintd_with_database_and_shutdown(
         mint.clone(),
         settings,
         work_dir,
+        wallet_info_provider,
         config_mint_info,
         shutdown_signal,
         routers,
@@ -3439,6 +3619,65 @@ backend = "fakewallet"
             err.to_string().contains("fakewallet") && err.to_string().contains("bdk"),
             "error should mention backend pairing validation: {err}"
         );
+    }
+
+    #[cfg(all(feature = "management-rpc", feature = "bdk", feature = "sqlite"))]
+    #[tokio::test]
+    async fn bdk_onchain_exposes_wallet_info_provider() {
+        use cdk::mint::MintBuilder;
+        use cdk_sqlite::mint::memory;
+
+        use crate::config::{Bdk, Onchain, OnchainBackend};
+
+        let work_dir = test_utils::unique_temp_path("cdk_mintd_wallet_info_provider");
+        let settings = config::Settings {
+            onchain: Some(Onchain {
+                onchain_backend: OnchainBackend::Bdk,
+                ..Default::default()
+            }),
+            bdk: Some(Bdk {
+                network: Some("regtest".to_string()),
+                chain_source_type: Some("esplora".to_string()),
+                esplora_url: Some("http://127.0.0.1:1".to_string()),
+                mnemonic: Some(
+                    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+                        .to_string(),
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let localstore = Arc::new(memory::empty().await.expect("in-memory database"));
+        let builder = MintBuilder::new(localstore.clone());
+        let (builder, provider) = configure_onchain_backend_with_wallet_info(
+            &settings,
+            builder,
+            None,
+            &work_dir,
+            Some(localstore),
+        )
+        .await
+        .expect("configure BDK backend");
+
+        assert!(builder
+            .current_mint_info()
+            .nuts
+            .nut04
+            .methods
+            .iter()
+            .any(|method| method.method == PaymentMethod::Known(KnownMethod::Onchain)));
+
+        let balance = provider
+            .expect("wallet info provider")
+            .get_balance()
+            .await
+            .expect("get wallet balance");
+        assert_eq!(balance.network, "regtest");
+        assert_eq!(balance.total_sat, 0);
+
+        drop(builder);
+        let _ = std::fs::remove_dir_all(work_dir);
     }
 
     #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
