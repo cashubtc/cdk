@@ -120,8 +120,11 @@ impl Wallet {
     ///
     /// A new wallet is built with the default limiter enabled. Use this to
     /// disable it, restore the default, or set a custom burst and refill. It
-    /// takes effect immediately on the live wallet and is shared by the main and
-    /// blind-auth clients.
+    /// takes effect immediately and covers every host the wallet's limiter
+    /// paces, so it reaches the main and blind-auth clients as well as any
+    /// third-party host their transport reaches. For a wallet built through a
+    /// wallet repository the limiter is shared, so the change is
+    /// repository-wide.
     ///
     /// Returns an error if a `Custom` value has a zero field.
     pub fn set_rate_limit(&self, rate_limit: RateLimit) -> Result<(), FfiError> {

@@ -1,14 +1,20 @@
 //! Client-side request rate limiting for the wallet.
 //!
-//! The wallet paces its outbound HTTP requests to a mint so it stays under the
-//! mint's server-side request cap without the caller having to think about it.
-//! Pacing uses the Generic Cell Rate Algorithm (GCRA): the bucket tracks a
-//! single theoretical arrival time (TAT) rather than a refilling token count.
+//! The wallet paces its outbound HTTP requests so it stays under a server's
+//! request cap without the caller having to think about it. Pacing uses the
+//! Generic Cell Rate Algorithm (GCRA): the bucket tracks a single theoretical
+//! arrival time (TAT) rather than a refilling token count.
 //!
-//! The budget is persisted per mint host in the wallet key-value store, so a
-//! wallet that is built, used, and dropped hands its remaining budget to the
-//! next wallet built for the same mint instead of starting full and bursting
-//! again.
+//! A cap is a property of the host being called, not of the wallet doing the
+//! calling, so budgets are keyed by the *destination* host of each request (see
+//! [`RateLimiterManager`](crate::rate_limit::RateLimiterManager)). A wallet's
+//! transport also carries requests that have
+//! nothing to do with its mint (LNURL services, OIDC providers), and those must
+//! not draw down the mint's budget.
+//!
+//! The budget is persisted per host in the wallet key-value store, so a wallet
+//! that is built, used, and dropped hands its remaining budget to the next
+//! wallet talking to the same host instead of starting full and bursting again.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -24,11 +30,13 @@ use url::Url;
 use web_time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::database::{self, WalletDatabase, KVSTORE_NAMESPACE_KEY_MAX_LEN};
-use crate::mint_url::MintUrl;
 use crate::{AuthToken, HttpError, RawResponse};
 
 /// Namespace under which per-host rate-limit budgets are stored.
 const KV_NAMESPACE: &str = "rate_limiter";
+
+/// Database handle used to persist budgets.
+type BudgetDb = Arc<dyn WalletDatabase<database::Error> + Send + Sync>;
 
 /// Configuration for a [`TokenBucket`].
 ///
@@ -91,10 +99,10 @@ trait BudgetStore: std::fmt::Debug + Send + Sync {
     async fn store(&self, value: &[u8]) -> bool;
 }
 
-/// [`BudgetStore`] backed by the wallet key-value store, keyed by mint host.
+/// [`BudgetStore`] backed by the wallet key-value store, keyed by host.
 #[derive(Debug)]
 struct KvBudgetStore {
-    db: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
+    db: BudgetDb,
     key: String,
 }
 
@@ -182,17 +190,17 @@ impl TokenBucket {
         Self::build(config, None)
     }
 
-    /// Create a bucket that persists its budget for `mint_url` in `store`.
+    /// Create a bucket whose budget is persisted under `key`, or held only in
+    /// memory when `db` is `None`.
     ///
-    /// If a host cannot be derived from `mint_url`, the bucket still paces
-    /// requests in memory but persists nothing.
-    pub fn for_mint(
-        config: RateLimitConfig,
-        mint_url: &MintUrl,
-        db: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
-    ) -> Self {
-        let persistence = origin_key(mint_url)
-            .map(|key| Arc::new(KvBudgetStore { db, key }) as Arc<dyn BudgetStore>);
+    /// `key` is an [`origin_key`], already sanitized to the KV alphabet.
+    fn persisted(config: RateLimitConfig, key: &str, db: Option<BudgetDb>) -> Self {
+        let persistence = db.map(|db| {
+            Arc::new(KvBudgetStore {
+                db,
+                key: key.to_string(),
+            }) as Arc<dyn BudgetStore>
+        });
         Self::build(config, persistence)
     }
 
@@ -457,78 +465,119 @@ impl TokenBucket {
     }
 }
 
-/// Hands out one shared [`TokenBucket`] per mint origin.
+/// Pacing settings a manager applies to the buckets it hands out. Shared across
+/// clones so a runtime change reaches every one of them.
+#[derive(Debug, Clone, Copy)]
+struct ManagerSettings {
+    config: RateLimitConfig,
+    enabled: bool,
+}
+
+/// Hands out one shared [`TokenBucket`] per destination origin.
 ///
-/// A mint origin is the sanitized host plus non-default port (see
-/// [`origin_key`]), so every currency-unit wallet at one mint host draws down a
-/// single budget and a single persistence writer instead of each getting a full
-/// burst. Cloning the manager shares the same per-origin map and config through
-/// `Arc`s, so cloned managers keep handing out the same live budgets.
+/// An origin is the sanitized host plus non-default port (see [`origin_key`]).
+/// Every request to one host draws down a single budget and feeds a single
+/// persistence writer, no matter which wallet, currency unit, or client issued
+/// it. That also keeps a wallet's non-mint traffic (LNURL, OIDC) off its mint's
+/// budget. Cloning the manager shares the same per-origin map and settings
+/// through `Arc`s, so cloned managers keep handing out the same live budgets.
 #[derive(Clone)]
 pub struct RateLimiterManager {
-    config: RateLimitConfig,
-    db: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
-    /// One bucket per origin. An entry is evicted lazily (during
-    /// [`Self::bucket_for`]) once its budget is fully recovered and no live
-    /// wallet still holds it, so the map is bounded by the origins with active
-    /// or recently-active wallets. Eviction is a behavioral no-op: a recovered
-    /// bucket is equivalent to a fresh one, and the persisted budget survives a
-    /// re-add.
+    settings: Arc<Mutex<ManagerSettings>>,
+    /// `None` keeps every bucket in memory only, for callers with no wallet
+    /// database to persist through.
+    db: Option<BudgetDb>,
+    /// One bucket per origin. An entry is evicted lazily (when
+    /// [`Self::bucket_for`] has to create one) once its budget is fully
+    /// recovered and nothing else still holds it, so the map is bounded by the
+    /// origins with active or recently-active traffic. Eviction is a behavioral
+    /// no-op: a recovered bucket is equivalent to a fresh one, and the persisted
+    /// budget survives a re-add.
     buckets: Arc<Mutex<HashMap<String, TokenBucket>>>,
 }
 
 impl std::fmt::Debug for RateLimiterManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RateLimiterManager")
-            .field("config", &self.config)
+            .field("settings", &*lock(&self.settings))
             .finish_non_exhaustive()
     }
 }
 
 impl RateLimiterManager {
     /// Create a manager that hands out buckets configured with `config` and
-    /// persisted through `db`.
-    pub fn new(
-        config: RateLimitConfig,
-        db: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
-    ) -> Self {
+    /// persisted through `db`, or held in memory only when `db` is `None`.
+    pub fn new(config: RateLimitConfig, db: Option<BudgetDb>) -> Self {
         Self {
-            config,
+            settings: Arc::new(Mutex::new(ManagerSettings {
+                config,
+                enabled: true,
+            })),
             db,
             buckets: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// Get or create the shared bucket for `mint_url`'s origin, returning a
-    /// clone that draws down the same budget.
+    /// Get or create the shared bucket for `url`'s origin, returning a clone
+    /// that draws down the same budget.
     ///
-    /// The first call for an origin builds one persisted bucket (via
-    /// [`TokenBucket::for_mint`], so the KV budget and its single background
-    /// writer are shared); later calls for the same origin clone it. A host-less
-    /// URL falls back to keying on the full URL string, so it still gets one
-    /// stable in-memory bucket, though `for_mint` persists nothing for it.
+    /// The first call for an origin builds one bucket, so the KV budget and its
+    /// single background writer are shared; later calls for the same origin
+    /// clone it. A host-less URL has no valid KV key, so it falls back to keying
+    /// on the full URL string and paces in memory without persisting.
     ///
-    /// Each call first evicts any other origin whose bucket is fully recovered
-    /// and held only by the map (no live wallet), bounding the map over time.
-    pub fn bucket_for(&self, mint_url: &MintUrl) -> TokenBucket {
-        let key = origin_key(mint_url).unwrap_or_else(|| mint_url.to_string());
+    /// Runs on every request, so a hit is a hash lookup and a clone. Only a miss
+    /// pays for the eviction sweep, which drops origins whose budget has fully
+    /// recovered and that nothing else still holds: a recovered bucket is
+    /// equivalent to a fresh one, so rebuilding it later is free. A bucket
+    /// someone still shares (`handle_count > 1`) is kept so co-active callers
+    /// never split into independent budgets.
+    pub fn bucket_for(&self, url: &Url) -> TokenBucket {
+        let origin = origin_key(url);
+        let key = origin.clone().unwrap_or_else(|| url.to_string());
         let mut buckets = lock(&self.buckets);
-        // Drop origins with no live wallet whose budget has fully recovered: a
-        // recovered bucket is equivalent to a fresh one, so rebuilding it later
-        // is free. Keep the requested key and any bucket a wallet still shares
-        // (handle_count > 1) so co-active wallets never split into independent
-        // budgets.
-        buckets.retain(|k, bucket| {
-            k == &key || bucket.handle_count() > 1 || !bucket.is_fully_recovered()
-        });
-        buckets
-            .entry(key)
-            .or_insert_with(|| TokenBucket::for_mint(self.config, mint_url, self.db.clone()))
-            .clone()
+        if let Some(bucket) = buckets.get(&key) {
+            return bucket.clone();
+        }
+        buckets.retain(|_, bucket| bucket.handle_count() > 1 || !bucket.is_fully_recovered());
+
+        let db = match origin {
+            Some(_) => self.db.clone(),
+            None => None,
+        };
+        let settings = *lock(&self.settings);
+        let bucket = TokenBucket::persisted(settings.config, &key, db);
+        bucket.set_enabled(settings.enabled);
+        buckets.insert(key, bucket.clone());
+        bucket
     }
 
-    /// Number of mint origins currently tracked. Exposed for diagnostics and to
-    /// let tests observe eviction.
+    /// Replace the pacing configuration for every origin: the buckets already
+    /// handed out and any created later.
+    ///
+    /// Like [`TokenBucket::set_config`] this also re-enables pacing.
+    pub fn set_config(&self, config: RateLimitConfig) {
+        {
+            let mut settings = lock(&self.settings);
+            settings.config = config;
+            settings.enabled = true;
+        }
+        for bucket in lock(&self.buckets).values() {
+            bucket.set_config(config);
+        }
+    }
+
+    /// Enable or disable pacing for every origin: the buckets already handed out
+    /// and any created later.
+    pub fn set_enabled(&self, enabled: bool) {
+        lock(&self.settings).enabled = enabled;
+        for bucket in lock(&self.buckets).values() {
+            bucket.set_enabled(enabled);
+        }
+    }
+
+    /// Number of origins currently tracked. Exposed for diagnostics and to let
+    /// tests observe eviction.
     pub fn origin_count(&self) -> usize {
         lock(&self.buckets).len()
     }
@@ -608,20 +657,20 @@ fn tat_to_unix_millis(arrival_time: Instant) -> u64 {
         .unwrap_or(0)
 }
 
-/// Derive a mint's rate-limit origin identity from its host and non-default
-/// port, sanitized to the KV alphabet (disallowed characters become `_`,
-/// truncated to the max length). Returns `None` when the URL has no host.
+/// Derive a rate-limit origin identity from a URL's host and non-default port,
+/// sanitized to the KV alphabet (disallowed characters become `_`, truncated to
+/// the max length). Returns `None` when the URL has no host.
 ///
 /// This is the identity used both to key the persisted budget in the KV store
-/// and to share one live in-memory [`TokenBucket`] across wallets (see
-/// [`RateLimiterManager`]). `Url::parse` normalizes a scheme-default port away,
-/// so `:443` and an implicit default map to one origin: one mint host is one
-/// budget. Sanitizing can collide two distinct hosts onto one key; that only
-/// makes them share a budget, never leak between them.
-pub fn origin_key(mint_url: &MintUrl) -> Option<String> {
-    let parsed = Url::parse(&mint_url.to_string()).ok()?;
-    let host = parsed.host_str()?;
-    let authority = match parsed.port() {
+/// and to share one live in-memory [`TokenBucket`] (see [`RateLimiterManager`]).
+/// The scheme is deliberately excluded, so `http://` and `https://` on one host
+/// share a budget: it is one server enforcing one cap. `Url::parse` normalizes a
+/// scheme-default port away, so `:443` and an implicit default map to one origin
+/// too. Sanitizing can collide two distinct hosts onto one key; that only makes
+/// them share a budget, never leak between them.
+pub fn origin_key(url: &Url) -> Option<String> {
+    let host = url.host_str()?;
+    let authority = match url.port() {
         Some(port) => format!("{host}:{port}"),
         None => host.to_string(),
     };
@@ -655,26 +704,35 @@ async fn sleep(duration: Duration) {
     gloo_timers::future::TimeoutFuture::new(duration.as_millis() as u32).await;
 }
 
-/// A [`Transport`] decorator that paces HTTP requests through a [`TokenBucket`].
+/// A [`Transport`] decorator that paces each HTTP request through the bucket for
+/// the host it is addressed to.
+///
+/// The bucket is resolved per request rather than fixed at construction, so a
+/// transport built for a mint does not spend that mint's budget on a call to an
+/// unrelated host (an LNURL service, an OIDC provider) and does not pace that
+/// host by the mint's budget either.
 ///
 /// Only the HTTP request methods are throttled; `ws_connect`, `with_proxy`, and
 /// `resolve_dns_txt` pass straight through to the inner transport.
 #[derive(Debug, Clone)]
 pub struct RateLimitedTransport<T> {
     inner: T,
-    bucket: TokenBucket,
+    limiter: RateLimiterManager,
 }
 
 impl<T> RateLimitedTransport<T> {
-    /// Wrap `inner` with a (possibly shared) `bucket`.
-    pub fn with_bucket(inner: T, bucket: TokenBucket) -> Self {
-        Self { inner, bucket }
+    /// Wrap `inner` with a (possibly shared) `limiter`.
+    pub fn with_manager(inner: T, limiter: RateLimiterManager) -> Self {
+        Self { inner, limiter }
     }
 }
 
 impl<T: Default> Default for RateLimitedTransport<T> {
     fn default() -> Self {
-        Self::with_bucket(T::default(), TokenBucket::new(RateLimitConfig::default()))
+        Self::with_manager(
+            T::default(),
+            RateLimiterManager::new(RateLimitConfig::default(), None),
+        )
     }
 }
 
@@ -714,7 +772,8 @@ impl<T: Transport> Transport for RateLimitedTransport<T> {
     where
         R: DeserializeOwned,
     {
-        self.bucket.acquire(self.inner.http_get(url, auth)).await
+        let bucket = self.limiter.bucket_for(&url);
+        bucket.acquire(self.inner.http_get(url, auth)).await
     }
 
     async fn http_get_raw(
@@ -722,9 +781,8 @@ impl<T: Transport> Transport for RateLimitedTransport<T> {
         url: Url,
         auth: Option<AuthToken>,
     ) -> Result<RawResponse, HttpError> {
-        self.bucket
-            .acquire(self.inner.http_get_raw(url, auth))
-            .await
+        let bucket = self.limiter.bucket_for(&url);
+        bucket.acquire(self.inner.http_get_raw(url, auth)).await
     }
 
     async fn http_post<P, R>(
@@ -737,7 +795,8 @@ impl<T: Transport> Transport for RateLimitedTransport<T> {
         P: Serialize + Send + Sync,
         R: DeserializeOwned,
     {
-        self.bucket
+        let bucket = self.limiter.bucket_for(&url);
+        bucket
             .acquire(self.inner.http_post(url, auth_token, payload))
             .await
     }
@@ -751,7 +810,8 @@ impl<T: Transport> Transport for RateLimitedTransport<T> {
     where
         P: Serialize + Send + Sync,
     {
-        self.bucket
+        let bucket = self.limiter.bucket_for(&url);
+        bucket
             .acquire(self.inner.http_post_form_raw(url, auth_token, payload))
             .await
     }
@@ -759,7 +819,6 @@ impl<T: Transport> Transport for RateLimitedTransport<T> {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use std::str::FromStr;
     use std::time::Instant as StdInstant;
 
     use super::*;
@@ -997,10 +1056,13 @@ mod tests {
             .expect("flush must not hang on a failing store");
     }
 
+    fn parse(url: &str) -> Url {
+        Url::parse(url).expect("valid url")
+    }
+
     #[test]
     fn kv_key_is_sanitized() {
-        let url = MintUrl::from_str("https://mint.example.com:3338").unwrap();
-        let key = origin_key(&url).expect("host present");
+        let key = origin_key(&parse("https://mint.example.com:3338")).expect("host present");
         assert!(!key.contains('.'));
         assert!(!key.contains(':'));
         assert!(key
@@ -1012,14 +1074,84 @@ mod tests {
     fn kv_key_ignores_default_port() {
         // `Url::parse` normalizes a scheme-default port away, so an explicit
         // `:443` and an implicit default map to one budget for the same host.
-        let implicit = origin_key(&MintUrl::from_str("https://mint.example.com").unwrap());
-        let explicit = origin_key(&MintUrl::from_str("https://mint.example.com:443").unwrap());
+        let implicit = origin_key(&parse("https://mint.example.com"));
+        let explicit = origin_key(&parse("https://mint.example.com:443"));
         assert_eq!(implicit, explicit);
         assert_eq!(implicit.as_deref(), Some("mint_example_com"));
 
         // A non-default port still yields a distinct budget.
-        let other = origin_key(&MintUrl::from_str("https://mint.example.com:8443").unwrap());
+        let other = origin_key(&parse("https://mint.example.com:8443"));
         assert_ne!(implicit, other);
+    }
+
+    #[test]
+    fn kv_key_ignores_scheme_and_path() {
+        // One host is one server enforcing one cap, whatever the scheme, and
+        // whatever path a request targets.
+        let plain = origin_key(&parse("http://mint.example.com/v1/keys"));
+        let secure = origin_key(&parse("https://mint.example.com/other/mint"));
+        assert_eq!(plain, secure);
+    }
+
+    #[tokio::test]
+    async fn manager_paces_each_origin_independently() {
+        let manager = RateLimiterManager::new(config(1, 300), None);
+        let mint = manager.bucket_for(&parse("https://mint.example.com/v1/mint"));
+        // A different path at the same host resolves to the same budget.
+        let same_host = manager.bucket_for(&parse("https://mint.example.com/v1/melt"));
+        // An unrelated host (an LNURL service, say) gets its own.
+        let lnurl = manager.bucket_for(&parse("https://pay.example.org/.well-known/lnurlp/alice"));
+
+        assert!(mint.try_acquire().await);
+        assert!(!same_host.try_acquire().await, "same host shares a budget");
+        assert!(lnurl.try_acquire().await, "another host is independent");
+    }
+
+    #[tokio::test]
+    async fn manager_toggles_reach_existing_and_future_buckets() {
+        let manager = RateLimiterManager::new(config(1, 60), None);
+        let existing = manager.bucket_for(&parse("https://mint.example.com"));
+        assert!(existing.try_acquire().await);
+        assert!(!existing.try_acquire().await);
+
+        manager.set_enabled(false);
+        assert!(existing.try_acquire().await, "existing bucket is disabled");
+        let later = manager.bucket_for(&parse("https://pay.example.org"));
+        for _ in 0..5 {
+            assert!(later.try_acquire().await, "new bucket inherits disabled");
+        }
+
+        // set_config re-enables pacing everywhere. The existing bucket keeps the
+        // debt it had before being disabled, so it is paced again immediately.
+        manager.set_config(config(1, 60));
+        assert!(!existing.try_acquire().await, "existing bucket paces again");
+        let newest = manager.bucket_for(&parse("https://third.example.net"));
+        assert!(newest.try_acquire().await);
+        assert!(!newest.try_acquire().await, "new bucket inherits config");
+    }
+
+    #[tokio::test]
+    async fn manager_evicts_only_recovered_unheld_origins() {
+        let manager = RateLimiterManager::new(config(1, 60), None);
+        // Held by the test, so it survives an eviction sweep even once
+        // recovered.
+        let held = manager.bucket_for(&parse("https://held.example.com"));
+        // Dropped immediately and never used, so it is fully recovered and
+        // unheld: the next miss sweeps it away.
+        manager.bucket_for(&parse("https://stale.example.com"));
+        assert_eq!(manager.origin_count(), 2);
+
+        manager.bucket_for(&parse("https://fresh.example.com"));
+        assert_eq!(manager.origin_count(), 2, "stale origin was evicted");
+        // The held origin kept its drawn-down budget rather than being rebuilt.
+        assert!(held.try_acquire().await);
+        assert!(!held.try_acquire().await);
+        assert!(
+            !manager
+                .bucket_for(&parse("https://held.example.com"))
+                .try_acquire()
+                .await
+        );
     }
 
     // Timing tests use a 200ms emission interval (refill 300/min) so the pace
@@ -1227,7 +1359,10 @@ mod tests {
         // capacity 2, emission ~200ms: two calls burst, the third is paced.
         let inner = CountingTransport::default();
         let counter = inner.clone();
-        let transport = RateLimitedTransport::with_bucket(inner, TokenBucket::new(config(2, 300)));
+        let transport = RateLimitedTransport::with_manager(
+            inner,
+            RateLimiterManager::new(config(2, 300), None),
+        );
 
         let start = StdInstant::now();
         let _ = transport.http_get_raw(url(), None).await;
@@ -1249,12 +1384,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transport_paces_by_destination_host() {
+        // The whole point of resolving per request: a transport built for a mint
+        // must not spend the mint's budget on an LNURL or OIDC host.
+        let transport = RateLimitedTransport::with_manager(
+            CountingTransport::default(),
+            RateLimiterManager::new(config(1, 300), None),
+        );
+        let mint = parse("https://mint.example.com/v1/keys");
+        let lnurl = parse("https://pay.example.org/.well-known/lnurlp/alice");
+
+        // Drain the mint's single burst slot.
+        let _ = transport.http_get_raw(mint.clone(), None).await;
+
+        // The unrelated host still has its own full burst.
+        let start = StdInstant::now();
+        let _ = transport.http_get_raw(lnurl, None).await;
+        assert!(
+            start.elapsed() < Duration::from_millis(100),
+            "another host must not be paced by the mint's budget"
+        );
+
+        // The mint's own budget is still drawn down.
+        let start = StdInstant::now();
+        let _ = transport.http_get_raw(mint, None).await;
+        assert!(
+            start.elapsed() >= Duration::from_millis(150),
+            "the mint's own budget is still enforced"
+        );
+    }
+
+    #[tokio::test]
     async fn transport_passes_proxy_through_unthrottled() {
         let inner = CountingTransport::default();
         let flag = inner.proxied.clone();
         let counter = inner.clone();
-        let mut transport =
-            RateLimitedTransport::with_bucket(inner, TokenBucket::new(config(1, 300)));
+        let mut transport = RateLimitedTransport::with_manager(
+            inner,
+            RateLimiterManager::new(config(1, 300), None),
+        );
 
         transport.with_proxy(url(), None, false).expect("proxy set");
         // with_proxy reached the inner transport and consumed no rate-limit slot.
@@ -1263,15 +1431,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transports_sharing_a_bucket_share_the_budget() {
-        let bucket = TokenBucket::new(config(1, 300));
-        let a = RateLimitedTransport::with_bucket(CountingTransport::default(), bucket.clone());
-        let b = RateLimitedTransport::with_bucket(CountingTransport::default(), bucket.clone());
+    async fn transports_sharing_a_manager_share_the_budget() {
+        let manager = RateLimiterManager::new(config(1, 300), None);
+        let a = RateLimitedTransport::with_manager(CountingTransport::default(), manager.clone());
+        let b = RateLimitedTransport::with_manager(CountingTransport::default(), manager.clone());
 
         // Drain the single burst slot through transport A.
         let _ = a.http_get_raw(url(), None).await;
 
-        // Transport B, sharing the same bucket, must now wait.
+        // Transport B, sharing the same manager and so the same per-host bucket,
+        // must now wait.
         let start = StdInstant::now();
         let _ = b.http_get_raw(url(), None).await;
         assert!(

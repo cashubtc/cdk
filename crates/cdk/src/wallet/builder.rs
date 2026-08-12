@@ -15,20 +15,21 @@ use crate::wallet::mint_connector::transport::{Async, RateLimitedTransport};
 use crate::wallet::mint_connector::{RateLimitedAuthHttpClient, RateLimitedHttpClient};
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::{
-    AuthHttpClient, HttpClient, MintConnector, RateLimitConfig, SubscriptionManager, TokenBucket,
-    Wallet,
+    AuthHttpClient, HttpClient, MintConnector, RateLimitConfig, RateLimiterManager,
+    SubscriptionManager, Wallet,
 };
 
 /// Builder for creating a new [`Wallet`]
 ///
-/// Rate limiting: unless a bucket is injected with
-/// [`WalletBuilder::with_rate_limit_bucket`], `build()` constructs the wallet's
-/// own [`TokenBucket`] for the mint. Two wallets built independently for the
-/// same mint therefore do not share a live in-memory budget, only the persisted
-/// per-host budget in the KV store. To share one live budget across wallets
-/// (for example every currency unit at one mint), build them through a
+/// Rate limiting: unless a limiter is injected with
+/// [`WalletBuilder::with_rate_limiter`], `build()` constructs the wallet's own
+/// [`RateLimiterManager`]. Budgets are keyed by the host each request is
+/// addressed to, so the wallet's mint, an LNURL service, and an OIDC provider
+/// each pace separately. Two wallets built independently do not share a live
+/// in-memory budget, only the persisted per-host budget in the KV store. To
+/// share one live budget, build them through a
 /// [`WalletRepository`](crate::wallet::WalletRepository), which injects one
-/// shared bucket per mint origin.
+/// manager into every wallet it creates.
 pub struct WalletBuilder {
     mint_url: Option<MintUrl>,
     unit: Option<CurrencyUnit>,
@@ -43,7 +44,7 @@ pub struct WalletBuilder {
     metadata_cache: Option<Arc<MintMetadataCache>>,
     metadata_caches: HashMap<MintUrl, Arc<MintMetadataCache>>,
     rate_limit: Option<RateLimitConfig>,
-    rate_limit_bucket: Option<TokenBucket>,
+    rate_limiter: Option<RateLimiterManager>,
     auth_cat: Option<String>,
 }
 
@@ -73,7 +74,7 @@ impl Default for WalletBuilder {
             metadata_cache: None,
             metadata_caches: HashMap::new(),
             rate_limit: Some(RateLimitConfig::default()),
-            rate_limit_bucket: None,
+            rate_limiter: None,
             auth_cat: None,
         }
     }
@@ -204,28 +205,28 @@ impl WalletBuilder {
     ///
     /// Rate limiting is enabled by default with [`RateLimitConfig::default`].
     /// This config is only used when `build()` constructs the wallet's own
-    /// bucket; a bucket injected with [`Self::with_rate_limit_bucket`] carries
-    /// its own config and overrides this, regardless of call order.
+    /// limiter; a limiter injected with [`Self::with_rate_limiter`] carries its
+    /// own config and overrides this, regardless of call order.
     pub fn with_rate_limiting_config(mut self, config: RateLimitConfig) -> Self {
         self.rate_limit = Some(config);
         self
     }
 
-    /// Use a pre-built, possibly shared [`TokenBucket`] for pacing.
+    /// Use a pre-built, possibly shared [`RateLimiterManager`] for pacing.
     ///
-    /// An injected bucket takes precedence over
+    /// An injected limiter takes precedence over
     /// [`Self::with_rate_limiting_config`]: `build()` uses it verbatim instead of
-    /// constructing a per-wallet bucket, so several wallets can share one live
-    /// in-memory budget. [`Self::without_rate_limiting`] still clears it.
-    pub fn with_rate_limit_bucket(mut self, bucket: TokenBucket) -> Self {
-        self.rate_limit_bucket = Some(bucket);
+    /// constructing a per-wallet one, so several wallets can share one live set
+    /// of per-host budgets. [`Self::without_rate_limiting`] still clears it.
+    pub fn with_rate_limiter(mut self, limiter: RateLimiterManager) -> Self {
+        self.rate_limiter = Some(limiter);
         self
     }
 
     /// Disable client-side rate limiting.
     pub fn without_rate_limiting(mut self) -> Self {
         self.rate_limit = None;
-        self.rate_limit_bucket = None;
+        self.rate_limiter = None;
         self
     }
 
@@ -281,29 +282,33 @@ impl WalletBuilder {
         metadata_cache.set_ttl(self.metadata_cache_ttl);
 
         // A single rate-limited transport, shared by the main client and the
-        // blind-auth client so both draw down one persisted budget and reuse one
-        // connection pool. An injected bucket (e.g. one shared across every unit
-        // at a mint by WalletRepository) wins over building a per-wallet one.
-        let rate_limit_bucket = match self.rate_limit_bucket.take() {
-            Some(bucket) => Some(bucket),
+        // blind-auth client so both draw down one persisted budget per host and
+        // reuse one connection pool. An injected limiter (e.g. the one
+        // WalletRepository shares across all its wallets) wins over building a
+        // per-wallet one.
+        let rate_limiter = match self.rate_limiter.take() {
+            Some(limiter) => Some(limiter),
             None => self
                 .rate_limit
                 .take()
-                .map(|config| TokenBucket::for_mint(config, &mint_url, localstore.clone())),
+                .map(|config| RateLimiterManager::new(config, Some(localstore.clone()))),
         };
-        let shared_transport = rate_limit_bucket
-            .clone()
-            .map(|bucket| Arc::new(RateLimitedTransport::with_bucket(Async::default(), bucket)));
+        let shared_transport = rate_limiter.clone().map(|limiter| {
+            Arc::new(RateLimitedTransport::with_manager(
+                Async::default(),
+                limiter,
+            ))
+        });
 
-        // The bucket only paces traffic through a client the wallet itself
+        // The limiter only paces traffic through a client the wallet itself
         // builds around `shared_transport`: the main client (unless a custom one
         // replaces it) and the blind-auth client (only on the CAT path). If a
-        // custom client is supplied and there is no CAT, the bucket is wired to
+        // custom client is supplied and there is no CAT, the limiter is wired to
         // nothing, so keep it off the wallet rather than exposing runtime setters
-        // that mutate a disconnected bucket.
+        // that mutate a disconnected limiter.
         let has_custom_client = self.client.is_some();
         let has_auth_cat = self.auth_cat.is_some();
-        let bucket_is_wired = rate_limit_bucket.is_some() && (!has_custom_client || has_auth_cat);
+        let limiter_is_wired = rate_limiter.is_some() && (!has_custom_client || has_auth_cat);
 
         // The auth wallet comes either from a CAT set on the builder (built here
         // so it can share the transport) or from a pre-built wallet supplied
@@ -358,11 +363,7 @@ impl WalletBuilder {
             seed,
             client: client.clone(),
             subscription: SubscriptionManager::new(client, self.use_http_subscription),
-            rate_limit: if bucket_is_wired {
-                rate_limit_bucket
-            } else {
-                None
-            },
+            rate_limiter: if limiter_is_wired { rate_limiter } else { None },
         })
     }
 }
@@ -447,19 +448,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_build_keeps_the_rate_limit_bucket() {
-        // No custom client: the bucket paces the main client, so it is retained
+    async fn default_build_keeps_the_rate_limiter() {
+        // No custom client: the limiter paces the main client, so it is retained
         // and the runtime setters have something to act on.
         let wallet = base_builder().await.build().unwrap();
-        assert!(wallet.rate_limit.is_some());
+        assert!(wallet.rate_limiter.is_some());
     }
 
     #[tokio::test]
-    async fn custom_client_drops_the_rate_limit_bucket() {
+    async fn custom_client_drops_the_rate_limiter() {
         // A custom client replaces the wallet's rate-limited transport and there
-        // is no CAT, so the bucket is wired to nothing. The wallet must not keep
+        // is no CAT, so the limiter is wired to nothing. The wallet must not keep
         // it, otherwise the runtime setters would silently mutate a disconnected
-        // bucket that never touches the main client's traffic.
+        // limiter that never touches the main client's traffic.
         use crate::wallet::test_utils::MockMintConnector;
 
         let wallet = base_builder()
@@ -467,12 +468,12 @@ mod tests {
             .shared_client(Arc::new(MockMintConnector::new()))
             .build()
             .unwrap();
-        assert!(wallet.rate_limit.is_none());
+        assert!(wallet.rate_limiter.is_none());
     }
 
     #[tokio::test]
-    async fn custom_client_with_auth_cat_keeps_bucket_for_auth() {
-        // With a custom main client but a CAT, the bucket still paces the
+    async fn custom_client_with_auth_cat_keeps_limiter_for_auth() {
+        // With a custom main client but a CAT, the limiter still paces the
         // blind-auth client the wallet builds, so it is retained: the setters
         // then reconfigure the auth client's pacing.
         use crate::wallet::test_utils::MockMintConnector;
@@ -484,6 +485,6 @@ mod tests {
             .unwrap()
             .build()
             .unwrap();
-        assert!(wallet.rate_limit.is_some());
+        assert!(wallet.rate_limiter.is_some());
     }
 }

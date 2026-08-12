@@ -233,7 +233,10 @@ impl WalletRepositoryBuilder {
         let seed = self.seed.ok_or(Error::Custom("seed is required".into()))?;
 
         let wallet = WalletRepository {
-            rate_limiter: RateLimiterManager::new(RateLimitConfig::default(), localstore.clone()),
+            rate_limiter: RateLimiterManager::new(
+                RateLimitConfig::default(),
+                Some(localstore.clone()),
+            ),
             localstore,
             seed,
             wallets: Arc::new(RwLock::new(BTreeMap::new())),
@@ -298,10 +301,11 @@ fn validate_proxy_url(proxy_url: &url::Url) -> Result<(), Error> {
 /// access to individual Wallet instances. Each wallet is uniquely identified
 /// by the combination of mint URL and currency unit.
 ///
-/// Wallets that target the same mint origin (host + non-default port) share one
-/// live rate-limit budget through the repository's [`RateLimiterManager`],
-/// regardless of currency unit, so they pace one combined burst instead of each
-/// getting a full one.
+/// Every wallet shares the repository's [`RateLimiterManager`], which keys
+/// budgets by the host each request is addressed to. Wallets at one mint pace
+/// one combined burst regardless of currency unit, and traffic to a third-party
+/// host (an LNURL service, an OIDC provider) paces against that host's own
+/// budget rather than any mint's.
 #[derive(Clone)]
 pub struct WalletRepository {
     /// Storage backend
@@ -309,8 +313,8 @@ pub struct WalletRepository {
     seed: [u8; 64],
     /// Wallets indexed by (mint URL, currency unit)
     wallets: Arc<RwLock<BTreeMap<WalletKey, Wallet>>>,
-    /// Hands out one shared rate-limit budget per mint origin, so every wallet
-    /// at an origin paces one combined burst regardless of currency unit.
+    /// Hands out one shared rate-limit budget per destination host, injected
+    /// into every wallet this repository builds.
     rate_limiter: RateLimiterManager,
     /// Proxy configuration for HTTP clients (optional)
     proxy_config: Option<url::Url>,
@@ -616,10 +620,6 @@ impl WalletRepository {
         let metadata_cache_ttl = config.and_then(|c| c.metadata_cache_ttl);
         let configured_auth_connector = config.and_then(|c| c.auth_connector.clone());
 
-        // One shared budget per mint origin: every unit at this mint paces one
-        // combined burst instead of each wallet building its own bucket.
-        let rate_limit_bucket = self.rate_limiter.bucket_for(&mint_url);
-
         // Check if custom connector is provided in config
         if let Some(cfg) = config {
             if let Some(custom_connector) = &cfg.mint_connector {
@@ -630,7 +630,7 @@ impl WalletRepository {
                     .localstore(self.localstore.clone())
                     .seed(self.seed)
                     .target_proof_count(target_proof_count)
-                    .with_rate_limit_bucket(rate_limit_bucket.clone())
+                    .with_rate_limiter(self.rate_limiter.clone())
                     .shared_client(custom_connector.clone());
 
                 if let Some(auth_connector) = configured_auth_connector.clone() {
@@ -667,7 +667,7 @@ impl WalletRepository {
                 .localstore(self.localstore.clone())
                 .seed(self.seed)
                 .target_proof_count(target_proof_count)
-                .with_rate_limit_bucket(rate_limit_bucket.clone())
+                .with_rate_limiter(self.rate_limiter.clone())
                 .client(client)
                 .auth_connector(auth_connector);
 
@@ -699,7 +699,7 @@ impl WalletRepository {
                     .localstore(self.localstore.clone())
                     .seed(self.seed)
                     .target_proof_count(target_proof_count)
-                    .with_rate_limit_bucket(rate_limit_bucket.clone())
+                    .with_rate_limiter(self.rate_limiter.clone())
                     .client(client)
                     .auth_connector(auth_connector);
 
@@ -716,7 +716,7 @@ impl WalletRepository {
                     .localstore(self.localstore.clone())
                     .seed(self.seed)
                     .target_proof_count(target_proof_count)
-                    .with_rate_limit_bucket(rate_limit_bucket.clone());
+                    .with_rate_limiter(self.rate_limiter.clone());
 
                 if let Some(auth_connector) = configured_auth_connector.clone() {
                     builder = builder.auth_connector(auth_connector);
@@ -738,7 +738,7 @@ impl WalletRepository {
                     .localstore(self.localstore.clone())
                     .seed(self.seed)
                     .target_proof_count(target_proof_count)
-                    .with_rate_limit_bucket(rate_limit_bucket.clone());
+                    .with_rate_limiter(self.rate_limiter.clone());
 
                 if let Some(auth_connector) = configured_auth_connector.clone() {
                     builder = builder.auth_connector(auth_connector);
@@ -1346,6 +1346,15 @@ mod tests {
     // exceeds test wall-clock, so no slot is earned back mid-test.
     const DEFAULT_BURST: usize = 20;
 
+    /// Resolve the bucket a wallet's requests to `url` would draw from.
+    fn bucket_for(wallet: &Wallet, url: &str) -> crate::wallet::TokenBucket {
+        wallet
+            .rate_limiter
+            .clone()
+            .expect("default path retains its limiter")
+            .bucket_for(&url::Url::parse(url).expect("valid url"))
+    }
+
     #[tokio::test]
     async fn wallets_for_same_mint_share_one_rate_limit_budget() {
         let repo = create_test_repository().await;
@@ -1360,14 +1369,8 @@ mod tests {
             .await
             .expect("failed to create usd wallet");
 
-        let sat_bucket = sat
-            .rate_limit
-            .clone()
-            .expect("default path retains its bucket");
-        let usd_bucket = usd
-            .rate_limit
-            .clone()
-            .expect("default path retains its bucket");
+        let sat_bucket = bucket_for(&sat, "https://mint.example.com/v1/mint");
+        let usd_bucket = bucket_for(&usd, "https://mint.example.com/v1/melt");
 
         // Interleave across the two handles: sharing one budget means the two
         // together drain a single burst, not one each.
@@ -1408,8 +1411,8 @@ mod tests {
             .create_wallet(mint_b, CurrencyUnit::Sat, None)
             .await
             .expect("failed to create wallet b");
-        let bucket_a = wallet_a.rate_limit.clone().expect("bucket a");
-        let bucket_b = wallet_b.rate_limit.clone().expect("bucket b");
+        let bucket_a = bucket_for(&wallet_a, "https://mint-a.example.com/v1/info");
+        let bucket_b = bucket_for(&wallet_b, "https://mint-b.example.com/v1/info");
 
         for _ in 0..DEFAULT_BURST {
             assert!(bucket_a.try_acquire().await);
@@ -1421,6 +1424,53 @@ mod tests {
         assert!(
             bucket_b.try_acquire().await,
             "mint B has an untouched budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn third_party_hosts_pace_against_their_own_budget() {
+        // A wallet's transport also carries LNURL and OIDC traffic. That must
+        // neither spend the mint's budget nor be paced by it, and two wallets at
+        // different mints hitting one service must share that service's budget.
+        let repo = create_test_repository().await;
+        let wallet_a = repo
+            .create_wallet(
+                "https://mint-a.example.com".parse().unwrap(),
+                CurrencyUnit::Sat,
+                None,
+            )
+            .await
+            .expect("failed to create wallet a");
+        let wallet_b = repo
+            .create_wallet(
+                "https://mint-b.example.com".parse().unwrap(),
+                CurrencyUnit::Sat,
+                None,
+            )
+            .await
+            .expect("failed to create wallet b");
+
+        let mint_bucket = bucket_for(&wallet_a, "https://mint-a.example.com/v1/info");
+        let lnurl = "https://pay.example.org/.well-known/lnurlp/alice";
+        let lnurl_bucket = bucket_for(&wallet_a, lnurl);
+
+        // Spending the mint's whole burst leaves the LNURL host untouched.
+        for _ in 0..DEFAULT_BURST {
+            assert!(mint_bucket.try_acquire().await);
+        }
+        assert!(!mint_bucket.try_acquire().await);
+        assert!(
+            lnurl_bucket.try_acquire().await,
+            "the LNURL host keeps its own budget"
+        );
+
+        // Wallet B, a different mint entirely, draws from the same LNURL budget.
+        for _ in 0..(DEFAULT_BURST - 1) {
+            assert!(bucket_for(&wallet_b, lnurl).try_acquire().await);
+        }
+        assert!(
+            !bucket_for(&wallet_b, lnurl).try_acquire().await,
+            "the LNURL host's budget is shared across mints"
         );
     }
 
@@ -1438,8 +1488,8 @@ mod tests {
             .await
             .expect("failed to create usd wallet");
 
-        let sat_bucket = sat.rate_limit.clone().expect("bucket");
-        let usd_bucket = usd.rate_limit.clone().expect("bucket");
+        let sat_bucket = bucket_for(&sat, "https://mint.example.com/v1/mint");
+        let usd_bucket = bucket_for(&usd, "https://mint.example.com/v1/melt");
 
         // Drain the whole burst through the Sat handle; the Usd handle sees an
         // already-spent budget because they share one bucket.
