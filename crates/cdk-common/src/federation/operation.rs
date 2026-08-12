@@ -39,8 +39,15 @@ fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
-/// Version of the federation operation envelope format.
-pub const FEDERATION_OPERATION_VERSION: u16 = 6;
+/// Version of the original federation operation envelope format.
+///
+/// Existing operation variants keep this version so persisted journals and
+/// mixed-version rolling upgrades remain compatible. Application-owned
+/// operations use [`FEDERATION_APPLICATION_ENVELOPE_VERSION`] because older
+/// binaries cannot decode that extension point.
+pub const FEDERATION_OPERATION_VERSION: u16 = 5;
+/// Envelope version reserved for application-owned federation operations.
+pub const FEDERATION_APPLICATION_ENVELOPE_VERSION: u16 = 6;
 
 /// Maximum canonical operation envelope size admitted into federation consensus.
 ///
@@ -1683,6 +1690,26 @@ pub enum FederationOperation {
 }
 
 impl FederationOperation {
+    const fn envelope_version(&self) -> u16 {
+        match self {
+            Self::Application(_) => FEDERATION_APPLICATION_ENVELOPE_VERSION,
+            Self::AddressAllocation(_)
+            | Self::ChainObservation(_)
+            | Self::MintQuote(_)
+            | Self::MintQuotePayment(_)
+            | Self::Mint(_)
+            | Self::MeltQuote(_)
+            | Self::MeltQuotePayment(_)
+            | Self::Melt(_)
+            | Self::Swap(_)
+            | Self::KeysetRotation(_)
+            | Self::TransactionProposal(_)
+            | Self::TransactionSigned(_)
+            | Self::TransactionBroadcastIntent(_)
+            | Self::TransactionBroadcastObservation(_) => FEDERATION_OPERATION_VERSION,
+        }
+    }
+
     /// Return the operation kind.
     #[must_use]
     pub fn kind(&self) -> FederationOperationKind {
@@ -2089,8 +2116,9 @@ impl FederationOperationEnvelope {
     /// Create a new operation envelope for the current operation format.
     #[must_use]
     pub fn new(federation_id: FederationId, operation: FederationOperation) -> Self {
+        let version = operation.envelope_version();
         Self {
-            version: FEDERATION_OPERATION_VERSION,
+            version,
             federation_id,
             operation,
             authorization: None,
@@ -2185,9 +2213,10 @@ impl FederationOperationEnvelope {
 
     /// Reject this operation if its envelope version is unsupported.
     pub fn ensure_supported_version(&self) -> Result<()> {
-        if self.version != FEDERATION_OPERATION_VERSION {
+        let expected = self.operation.envelope_version();
+        if self.version != expected {
             return Err(FederationError::OperationVersionMismatch {
-                expected: FEDERATION_OPERATION_VERSION,
+                expected,
                 found: self.version,
             });
         }
@@ -2673,7 +2702,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_operation_encoding_matches_v6_golden_vector() {
+    fn canonical_operation_encoding_matches_v5_golden_vector() {
         let envelope = envelope(mint_operation(
             "quote-golden",
             vec![output(
@@ -2689,12 +2718,12 @@ mod tests {
             concat!(
                 r#"{"federation_id":"0707070707070707070707070707070707070707070707070707070707070707","#,
                 r#""operation":{"data":{"request":{"data":{"outputs":[{"B_":"0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41","#,
-                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":6}"#
+                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":5}"#
             )
         );
         assert_eq!(
             envelope.operation_id().expect("operation id").to_hex(),
-            "5ea20e90a36ab5621c7c8310f47d836bf5fc0398b743ccd4b6b94ae0e0d9c354"
+            "3eb834c8a11c4dcba92dd021b66eeedbd4ef18ca6ff7a658f9d6da416fbfb1c8"
         );
     }
 
@@ -2823,6 +2852,56 @@ mod tests {
                 } if actual == found
             ));
         }
+    }
+
+    #[test]
+    fn application_operations_use_the_extension_envelope_version() {
+        let application = FederationApplicationOperation::new(
+            FederationFrostApplicationId::from_bytes([9; 32]).expect("application ID"),
+            "test_operation",
+            &json!({"version": 1}),
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("application operation");
+        let mut envelope = FederationOperationEnvelope::new(
+            federation_id(),
+            FederationOperation::Application(application),
+        );
+
+        assert_eq!(envelope.version, FEDERATION_APPLICATION_ENVELOPE_VERSION);
+        envelope
+            .ensure_supported_version()
+            .expect("application envelope version");
+        let encoded = envelope.canonical_bytes().expect("canonical bytes");
+        let encoded = std::str::from_utf8(&encoded).expect("canonical UTF-8");
+        assert_eq!(
+            encoded,
+            concat!(
+                r#"{"federation_id":"0707070707070707070707070707070707070707070707070707070707070707","#,
+                r#""operation":{"data":{"application_id":"0909090909090909090909090909090909090909090909090909090909090909","#,
+                r#""conflict_keys":[],"operation_kind":"test_operation","payload":{"version":1},"state_keys":[],"version":1},"#,
+                r#""type":"application"},"version":6}"#
+            )
+        );
+        assert_eq!(
+            envelope.operation_id().expect("operation ID").to_hex(),
+            "156807cc736360f993d838e8769ac08146fc1d65fe54dd321c458b3d411068c5"
+        );
+
+        envelope.version = FEDERATION_OPERATION_VERSION;
+        let err = envelope
+            .ensure_supported_version()
+            .expect_err("legacy envelope version must not carry an application operation");
+        assert!(matches!(
+            err,
+            FederationError::OperationVersionMismatch {
+                expected: FEDERATION_APPLICATION_ENVELOPE_VERSION,
+                found: FEDERATION_OPERATION_VERSION,
+            }
+        ));
     }
 
     #[test]
