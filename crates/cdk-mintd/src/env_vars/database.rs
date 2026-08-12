@@ -1,7 +1,6 @@
 //! Database environment variables
 
 use std::env;
-
 use std::str::FromStr;
 
 use crate::config::{PostgresAuthConfig, PostgresConfig, PubSubConfig, PubSubTransport};

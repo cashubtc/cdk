@@ -1011,10 +1011,11 @@ pub struct PubSubConfig {
     /// built-in name when unset.
     pub channel: Option<String>,
     /// Poll interval in milliseconds (sql transport). Defaults to a built-in
-    /// value when unset.
+    /// value when unset. Validated at startup against the bus minimum.
     pub poll_interval_ms: Option<u64>,
     /// Age in seconds after which outbox rows are pruned (sql transport).
-    /// Defaults to a built-in value when unset.
+    /// Defaults to a built-in value when unset. Validated at startup: it must
+    /// cover several poll intervals so no instance misses a row.
     pub retention_seconds: Option<u64>,
 }
 
@@ -1464,6 +1465,7 @@ mod tests {
                 url: url.clone(),
                 ..Default::default()
             }),
+            pubsub: Default::default(),
         };
         let auth_database = AuthDatabase {
             postgres: Some(PostgresAuthConfig {
