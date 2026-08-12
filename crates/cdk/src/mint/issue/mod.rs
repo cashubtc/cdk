@@ -906,6 +906,11 @@ impl Mint {
             // Phase 5: Atomic database transaction
             let mut tx = self.localstore.begin_transaction().await?;
 
+            // Lock every quote in the request before the row locks below. A batch
+            // naming the same quotes in a different order would otherwise deadlock
+            // against this one.
+            tx.lock_quotes(&quote_ids).await?;
+
             // Acquire every quote row in one ordered query before taking any other
             // locks. The database returns the quotes in request order, while locking
             // them by ID, so reversed batch requests cannot deadlock each other.

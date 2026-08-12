@@ -123,6 +123,26 @@ pub struct LockedMeltQuotes {
     pub all_related: Vec<Acquired<MeltQuote>>,
 }
 
+/// The advisory lock serializing every keyset transaction, which is what makes
+/// a rotation and a peer's reload mutually exclusive. The backend takes it as
+/// the transaction begins, so callers never reach for it themselves.
+///
+/// One global key rather than per-unit: rotations are rare, and a single key
+/// keeps the keyset reads a signatory does during reload consistent with each
+/// other without per-unit lock bookkeeping.
+pub const KEYSETS_LOCK: &str = "cdk:keysets";
+
+/// The advisory lock covering a quote, mint or melt alike: quote ids are unique
+/// across both, so they share one namespace.
+fn quote_lock(quote_id: &QuoteId) -> String {
+    format!("cdk:quote:{quote_id}")
+}
+
+/// The advisory lock covering a single proof, keyed by its `Y`.
+fn proof_lock(y: &PublicKey) -> String {
+    format!("cdk:proof:{y}")
+}
+
 /// KeysDatabaseWriter
 #[async_trait]
 pub trait KeysDatabaseTransaction<'a, Error>: DbTransactionFinalizer<Err = Error> {
@@ -667,6 +687,28 @@ pub trait CompletedOperationsDatabase {
 }
 
 /// Base database writer
+///
+/// # Advisory locks
+///
+/// Row locks ([`Acquired`]) only protect rows that already exist. The advisory
+/// locks below cover what they cannot: serializing operations whose rows are not
+/// inserted yet (proofs entering a swap or melt), and giving every caller one
+/// agreed acquisition order so overlapping operations queue instead of
+/// deadlocking on each other's row locks. A lock is released when the
+/// transaction ends, so it cannot outlive the operation that took it.
+///
+/// Two ordering rules, both of which exist to keep the locks from causing the
+/// deadlocks they are meant to prevent:
+///
+/// 1. Take every advisory lock a transaction needs before its first row lock. A
+///    transaction that row-locks a quote and then reaches for that quote's
+///    advisory lock deadlocks against one doing the reverse. A caller that only
+///    learns which rows it needs by reading them (a quote looked up by payment
+///    identifier, say) therefore takes no advisory lock at all, and relies on
+///    its row locks.
+/// 2. Take quote locks before proof locks. [`lock_quotes`](Self::lock_quotes)
+///    and [`lock_proofs`](Self::lock_proofs) sort within each group.
+#[async_trait]
 pub trait Transaction<Error>:
     DbTransactionFinalizer<Err = Error>
     + QuotesTransaction<Err = Error>
@@ -676,6 +718,45 @@ pub trait Transaction<Error>:
     + SagaTransaction<Err = Error>
     + CompletedOperationsTransaction<Err = Error>
 {
+    /// Take the exclusive advisory locks named by `keys`, waiting for whichever
+    /// transactions hold them. A key this transaction already holds is a no-op.
+    ///
+    /// Keys are opaque namespaced strings, `cdk:<domain>:<id>`; only equality
+    /// matters, so two callers that build the same string exclude each other.
+    /// Prefer [`lock_quotes`](Self::lock_quotes) and
+    /// [`lock_proofs`](Self::lock_proofs), which build the keys and order them.
+    ///
+    /// The whole batch is one call so a backend can take it in a single round
+    /// trip, which is what keeps a melt or swap with many proofs from paying a
+    /// round trip per proof. Callers hand the keys over already sorted, and an
+    /// implementation must acquire them in that order: agreeing on the order is
+    /// what leaves two overlapping batches queueing instead of deadlocking.
+    async fn advisory_locks(&mut self, keys: &[String]) -> Result<(), Error>;
+
+    /// Take the advisory locks for a set of quotes.
+    ///
+    /// Sorting is the point: a batch mint naming the same quotes as another, in
+    /// a different order, would otherwise deadlock on the row locks it takes
+    /// later.
+    async fn lock_quotes(&mut self, quote_ids: &[QuoteId]) -> Result<(), Error> {
+        let mut keys = quote_ids.iter().map(quote_lock).collect::<Vec<_>>();
+        keys.sort();
+        keys.dedup();
+
+        self.advisory_locks(&keys).await
+    }
+
+    /// Take the advisory locks for a set of proofs. See
+    /// [`lock_quotes`](Self::lock_quotes) for why the order is fixed; two
+    /// operations spending overlapping proofs deadlock inserting them if they
+    /// disagree on it.
+    async fn lock_proofs(&mut self, ys: &[PublicKey]) -> Result<(), Error> {
+        let mut keys = ys.iter().map(proof_lock).collect::<Vec<_>>();
+        keys.sort();
+        keys.dedup();
+
+        self.advisory_locks(&keys).await
+    }
 }
 
 /// Mint Database trait

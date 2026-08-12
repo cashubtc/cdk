@@ -145,6 +145,12 @@ pub async fn rollback_melt_quote(
 
     let mut tx = db.begin_transaction().await?;
 
+    // Same lock order as the setup this undoes, and taken before any row lock,
+    // so a rollback racing another operation over these proofs waits instead of
+    // deadlocking.
+    tx.lock_quotes(std::slice::from_ref(quote_id)).await?;
+    tx.lock_proofs(input_ys).await?;
+
     // Acquire quote locks before touching the saga, melt-request,
     // blinded-signature, or proof rows. Finalization uses the same order.
     let locked_quotes = tx.lock_melt_quote_and_related(quote_id).await?;
@@ -726,6 +732,10 @@ pub async fn finalize_melt_quote(
     };
 
     let mut tx = db.begin_transaction().await?;
+
+    // Advisory lock before the row lock below, so the saga's finalize and the
+    // startup recovery's finalize for the same quote serialize.
+    tx.lock_quotes(std::slice::from_ref(&quote.id)).await?;
 
     // Acquire lock on the quote for safe state update
 

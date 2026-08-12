@@ -17,6 +17,7 @@ use cdk_common::database::{self, DbTransactionFinalizer, Error, MintDatabase};
 use crate::common::migrate;
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
 use crate::pool::{DatabasePool, Pool, PooledResource};
+use crate::stmt::query;
 
 mod auth;
 mod completed_operations;
@@ -80,8 +81,58 @@ where
     }
 }
 
+impl<RM> SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    /// Take a whole batch of advisory locks in one statement, so a melt or swap
+    /// with many proofs does not pay a round trip per key.
+    ///
+    /// Only Postgres needs any of this. It runs the transaction at read
+    /// committed, where concurrent transactions interleave freely; SQLite
+    /// already serializes writers with `BEGIN IMMEDIATE`, so there is nothing
+    /// left to exclude. Dispatched by driver name, the same way migrations are.
+    ///
+    /// The `ORDER BY` is what preserves the caller's acquisition order: the sort
+    /// feeds the rows to `pg_advisory_xact_lock` in key order, so two batches
+    /// that overlap take the shared keys in the same order and queue rather than
+    /// deadlock. Callers already hand the keys over sorted; this keeps the plan
+    /// from being the one place that could disagree.
+    ///
+    /// Keys are hashed with `hashtextextended` rather than `hashtext`: a
+    /// collision only costs two unrelated operations a needless wait, but the
+    /// wider space makes it vanishingly rare across per-quote and per-proof
+    /// keys.
+    pub(crate) async fn take_advisory_locks(&mut self, keys: &[String]) -> Result<(), Error> {
+        if keys.is_empty() || RM::Connection::name() != "postgres" {
+            return Ok(());
+        }
+
+        query(
+            r#"
+            SELECT pg_advisory_xact_lock(hashtextextended(key, 0))
+            FROM (
+                SELECT key FROM unnest(ARRAY[:keys]::TEXT[]) AS t(key) ORDER BY key
+            ) sorted
+            "#,
+        )?
+        .bind_vec("keys", keys.to_vec())?
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+}
+
 #[async_trait]
-impl<RM> database::MintTransaction<Error> for SQLTransaction<RM> where RM: DatabasePool + 'static {}
+impl<RM> database::MintTransaction<Error> for SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    async fn advisory_locks(&mut self, keys: &[String]) -> Result<(), Error> {
+        self.take_advisory_locks(keys).await
+    }
+}
 
 #[async_trait]
 impl<RM> DbTransactionFinalizer for SQLTransaction<RM>

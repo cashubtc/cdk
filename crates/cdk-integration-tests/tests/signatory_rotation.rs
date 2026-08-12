@@ -4,9 +4,8 @@
 //! lock, drive concurrent rotations of the same unit through separate
 //! Postgres connection pools pointing at one schema. Nothing in-process
 //! serializes them: the only guard is the global keyset advisory lock
-//! (`pg_advisory_xact_lock(hashtext('cdk:keysets'))`) taken when each keyset
-//! transaction begins. The test asserts every rotation still gets a unique
-//! keyset id and path index.
+//! (`cdk:keysets`) taken when each keyset transaction begins. The test asserts
+//! every rotation still gets a unique keyset id and path index.
 //!
 //! Requires Postgres. Set `CDK_MINTD_DATABASE_URL` (or `PG_DB_URL`) to a
 //! reachable server (see `docker-compose.postgres.yaml`). With neither set the

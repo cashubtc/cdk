@@ -215,7 +215,25 @@ impl MeltSaga<Initial> {
         // and HTLC (including SIGALL)
         melt_request.verify_spending_conditions()?;
 
+        let input_ys = melt_request.inputs().ys()?;
+
         let mut tx = self.db.begin_transaction().await?;
+
+        // Lock the quote and the inputs up front, before any row lock is taken
+        // below, so concurrent melts of the same quote or of overlapping proofs
+        // queue rather than deadlock.
+        if let Err(err) = tx
+            .lock_quotes(std::slice::from_ref(melt_request.quote_id()))
+            .await
+        {
+            tx.rollback().await?;
+            return Err(err.into());
+        }
+
+        if let Err(err) = tx.lock_proofs(&input_ys).await {
+            tx.rollback().await?;
+            return Err(err.into());
+        }
 
         let mut quote =
             match shared::load_melt_quotes_exclusively(&mut tx, melt_request.quote()).await {
@@ -258,8 +276,6 @@ impl MeltSaga<Initial> {
                 err => Error::Database(err),
             });
         }
-
-        let input_ys = melt_request.inputs().ys()?;
 
         let mut proofs = tx.get_proofs(&input_ys).await?;
 

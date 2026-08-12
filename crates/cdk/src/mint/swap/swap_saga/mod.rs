@@ -179,7 +179,20 @@ impl<'a> SwapSaga<'a, Initial> {
             None, // payment_method (not applicable for swap)
         );
 
+        let ys = match input_proofs.ys() {
+            Ok(ys) => ys,
+            Err(err) => return Err(Error::NUT00(err)),
+        };
+
         let mut tx = self.db.begin_transaction().await?;
+
+        // Lock the inputs before touching them. Without it two swaps sharing
+        // proofs, listed in different orders, deadlock against each other
+        // inserting them below.
+        if let Err(err) = tx.lock_proofs(&ys).await {
+            tx.rollback().await?;
+            return Err(err.into());
+        }
 
         // Add input proofs to DB
         let mut new_proofs = match tx
@@ -195,11 +208,6 @@ impl<'a> SwapSaga<'a, Initial> {
                     _ => Error::Database(err),
                 });
             }
-        };
-
-        let ys = match input_proofs.ys() {
-            Ok(ys) => ys,
-            Err(err) => return Err(Error::NUT00(err)),
         };
 
         if let Err(err) = Mint::update_proofs_state(&mut tx, &mut new_proofs, State::Pending).await

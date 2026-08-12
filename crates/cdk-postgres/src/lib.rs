@@ -427,6 +427,97 @@ mod test {
 
     mint_db_test!(provide_mint_db);
 
+    /// Postgres-only: SQLite serializes writers already, so it has no second
+    /// concurrent transaction to exclude and nothing to assert here. The
+    /// one-key batch is the shape every keyset transaction takes.
+    #[tokio::test]
+    async fn advisory_lock_excludes_concurrent_transaction() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use cdk_common::database::MintDatabase;
+
+        let test_id = format!("test_advisory_lock_{}", uuid::Uuid::new_v4());
+        let db = Arc::new(provide_mint_db(test_id).await);
+        // Advisory locks are database-wide, not schema-scoped, so the key has to
+        // be unique or concurrent test runs would block each other.
+        let key = vec![format!("cdk:test:{}", uuid::Uuid::new_v4())];
+
+        let mut holder = MintDatabase::begin_transaction(&*db).await.expect("tx");
+        holder.advisory_locks(&key).await.expect("lock");
+
+        let waiter = tokio::spawn({
+            let db = db.clone();
+            let key = key.clone();
+            async move {
+                let mut tx = MintDatabase::begin_transaction(&*db).await.expect("tx");
+                tx.advisory_locks(&key).await.expect("lock");
+                tx.commit().await.expect("commit");
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !waiter.is_finished(),
+            "second transaction took a lock the first still holds"
+        );
+
+        holder.commit().await.expect("commit");
+
+        tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("lock still held after the holder committed")
+            .expect("waiter task");
+    }
+
+    /// The batched form takes every key in one statement, so it also needs the
+    /// exclusion the per-key form gives.
+    #[tokio::test]
+    async fn advisory_locks_batch_excludes_concurrent_transaction() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use cdk_common::database::MintDatabase;
+
+        let test_id = format!("test_advisory_locks_batch_{}", uuid::Uuid::new_v4());
+        let db = Arc::new(provide_mint_db(test_id).await);
+        let run = uuid::Uuid::new_v4();
+        let mut keys = (0..4)
+            .map(|i| format!("cdk:test:{run}:{i}"))
+            .collect::<Vec<_>>();
+        keys.sort();
+
+        let mut holder = MintDatabase::begin_transaction(&*db).await.expect("tx");
+        holder.advisory_locks(&keys).await.expect("lock");
+
+        // Only the last key overlaps, which is enough to block the whole batch.
+        let waiter = tokio::spawn({
+            let db = db.clone();
+            let overlapping = vec![
+                format!("cdk:test:{}:{}", uuid::Uuid::new_v4(), 0),
+                keys[keys.len() - 1].clone(),
+            ];
+            async move {
+                let mut tx = MintDatabase::begin_transaction(&*db).await.expect("tx");
+                tx.advisory_locks(&overlapping).await.expect("lock");
+                tx.commit().await.expect("commit");
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !waiter.is_finished(),
+            "second transaction took a lock the first still holds"
+        );
+
+        holder.commit().await.expect("commit");
+
+        tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("lock still held after the holder committed")
+            .expect("waiter task");
+    }
+
     #[tokio::test]
     async fn kvstore_compare_and_swap() {
         let test_id = format!("test_kvstore_compare_and_swap_{}", uuid::Uuid::new_v4());

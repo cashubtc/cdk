@@ -6,6 +6,7 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::common::IssuerVersion;
+use cdk_common::database::mint::KEYSETS_LOCK;
 use cdk_common::database::{Error, MintKeyDatabaseTransaction, MintKeysDatabase};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::{CurrencyUnit, Id};
@@ -264,26 +265,6 @@ impl<RM> SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
-    /// Take the global keyset advisory lock, held until the transaction commits,
-    /// so every keyset transaction (rotation, reload, boot reactivation)
-    /// serializes across processes. This removes torn reads and index races
-    /// without per-unit lock bookkeeping.
-    ///
-    /// No-op on backends that already serialize writers (SQLite's
-    /// `BEGIN IMMEDIATE`). Postgres runs at `START TRANSACTION` isolation, which
-    /// does not serialize concurrent reads, so it takes an explicit,
-    /// non-standard lock. Dispatched by driver name, the same way migrations
-    /// are.
-    async fn lock_keysets(&self) -> Result<(), Error> {
-        if RM::Connection::name() == "postgres" {
-            query(r#"SELECT pg_advisory_xact_lock(hashtext('cdk:keysets'))"#)?
-                .execute(&self.inner)
-                .await?;
-        }
-
-        Ok(())
-    }
-
     /// Bump the persisted keyset epoch so any keyset change (insert or
     /// active-pointer reassignment) is observable by peers, which reload when
     /// the epoch they loaded no longer matches.
@@ -319,7 +300,7 @@ where
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn MintKeyDatabaseTransaction<'a, Error> + Send + Sync + 'a>, Error> {
-        let tx = SQLTransaction {
+        let mut tx = SQLTransaction {
             inner: ConnectionWithTransaction::new(
                 self.pool
                     .get()
@@ -332,7 +313,7 @@ where
         // Serialize every keyset transaction on one global advisory lock, held
         // to commit. All keyset reads and writes then see a consistent snapshot
         // without per-unit locking or torn-read retries.
-        tx.lock_keysets().await?;
+        tx.take_advisory_locks(&[KEYSETS_LOCK.to_owned()]).await?;
 
         Ok(Box::new(tx))
     }
