@@ -39,6 +39,17 @@ impl Wallet {
             .await
     }
 
+    /// Get pending receive [`Proofs`]
+    ///
+    /// These proofs have been verified offline (DLEQ) and stored locally, but
+    /// have not yet been swapped with the mint.  Call
+    /// [`Wallet::finalize_pending_receives`] to settle them.
+    #[instrument(skip(self))]
+    pub async fn get_pending_receive_proofs(&self) -> Result<Proofs, Error> {
+        self.get_proofs_with(Some(vec![State::PendingReceive]), None)
+            .await
+    }
+
     /// Get proofs filtered by states
     #[instrument(skip(self))]
     pub async fn get_proofs_by_states(&self, states: Vec<State>) -> Result<Proofs, Error> {
