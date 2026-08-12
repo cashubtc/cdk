@@ -2939,8 +2939,7 @@ pub struct FederationOnchainWalletStatus {
 }
 
 /// Detailed private federation member status used by operator tooling.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederationLocalStatusResponse {
     /// Private REST payload version.
     pub version: u16,
@@ -2953,16 +2952,12 @@ pub struct FederationLocalStatusResponse {
     /// Redacted operator-facing synchronization detail.
     pub sync_message: String,
     /// Peer involved in the current synchronization state, when applicable.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub sync_peer: Option<MemberId>,
     /// Local operation count for a lagging state.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub sync_local_operation_count: Option<u64>,
     /// Peer operation count for a lagging state.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub sync_peer_operation_count: Option<u64>,
     /// Operation count being verified after catch-up.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub sync_operation_count: Option<u64>,
     /// Operations waiting in the local AlephBFT mempool.
     pub pending_mempool_items: u64,
@@ -2985,7 +2980,6 @@ pub struct FederationLocalStatusResponse {
     /// Payment-observation health summaries.
     pub payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
     /// Local AlephBFT runtime counters, when the runtime is active.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub aleph_bft_status: Option<FederationConsensusRuntimeStatus>,
     /// Whether the local AlephBFT live session is active.
     pub aleph_bft_live_session_active: bool,
@@ -2996,20 +2990,212 @@ pub struct FederationLocalStatusResponse {
     /// Aggregated invalid-operation alerts.
     pub invalid_operation_alerts: Vec<FederationInvalidOperationAlertSummary>,
     /// Active local federated on-chain wallet health records.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub onchain_wallets: Vec<FederationOnchainWalletStatus>,
     /// Redacted state-to-action recovery classification for the joint wallet.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallet_recovery: Option<FederationWalletRecoveryStatus>,
     /// Redacted proposer and signing-coordinator liveness state.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallet_liveness: Option<super::FederationWalletLivenessStatus>,
     /// Bounded accepted-state wallet diagnosis without addresses or transaction contents.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallet_operator: Option<super::FederationWalletOperatorStatus>,
     /// Redacted operator views supplied by separately feature-gated applications.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub application_operators: BTreeMap<String, serde_json::Value>,
+}
+
+const FEDERATION_LEGACY_APPLICATION_OPERATOR_SUFFIX: &str = "_operator";
+
+#[derive(Serialize)]
+struct FederationLocalStatusResponseRef<'a> {
+    version: u16,
+    peer_status: &'a FederationPeerStatus,
+    sync_state: &'a str,
+    sync_ready: bool,
+    sync_message: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sync_peer: Option<MemberId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sync_local_operation_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sync_peer_operation_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sync_operation_count: Option<u64>,
+    pending_mempool_items: u64,
+    pending_response_waiters: u64,
+    response_cache_items: u64,
+    response_cache_lookups: u64,
+    response_cache_hits: u64,
+    response_cache_hit_rate_bps: u64,
+    duplicate_submissions: u64,
+    duplicate_pending_waiter_joins: u64,
+    checkpoint: &'a FederationCheckpointStatus,
+    payment_observation_reports: &'a [FederationPaymentObservationReportSummary],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    aleph_bft_status: &'a Option<FederationConsensusRuntimeStatus>,
+    aleph_bft_live_session_active: bool,
+    aleph_bft_network_inbound_active: bool,
+    materialized_state_rows: &'a [FederationMaterializedStateRowFingerprint],
+    invalid_operation_alerts: &'a [FederationInvalidOperationAlertSummary],
+    #[serde(skip_serializing_if = "<[FederationOnchainWalletStatus]>::is_empty")]
+    onchain_wallets: &'a [FederationOnchainWalletStatus],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wallet_recovery: &'a Option<FederationWalletRecoveryStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wallet_liveness: &'a Option<super::FederationWalletLivenessStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wallet_operator: &'a Option<super::FederationWalletOperatorStatus>,
+    #[serde(flatten)]
+    legacy_application_operators: BTreeMap<String, &'a serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct FederationLocalStatusResponseOwned {
+    version: u16,
+    peer_status: FederationPeerStatus,
+    sync_state: String,
+    sync_ready: bool,
+    sync_message: String,
+    #[serde(default)]
+    sync_peer: Option<MemberId>,
+    #[serde(default)]
+    sync_local_operation_count: Option<u64>,
+    #[serde(default)]
+    sync_peer_operation_count: Option<u64>,
+    #[serde(default)]
+    sync_operation_count: Option<u64>,
+    pending_mempool_items: u64,
+    pending_response_waiters: u64,
+    response_cache_items: u64,
+    response_cache_lookups: u64,
+    response_cache_hits: u64,
+    response_cache_hit_rate_bps: u64,
+    duplicate_submissions: u64,
+    duplicate_pending_waiter_joins: u64,
+    checkpoint: FederationCheckpointStatus,
+    payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
+    #[serde(default)]
+    aleph_bft_status: Option<FederationConsensusRuntimeStatus>,
+    aleph_bft_live_session_active: bool,
+    aleph_bft_network_inbound_active: bool,
+    materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
+    invalid_operation_alerts: Vec<FederationInvalidOperationAlertSummary>,
+    #[serde(default)]
+    onchain_wallets: Vec<FederationOnchainWalletStatus>,
+    #[serde(default)]
+    wallet_recovery: Option<FederationWalletRecoveryStatus>,
+    #[serde(default)]
+    wallet_liveness: Option<super::FederationWalletLivenessStatus>,
+    #[serde(default)]
+    wallet_operator: Option<super::FederationWalletOperatorStatus>,
+    #[serde(default)]
+    application_operators: BTreeMap<String, serde_json::Value>,
+    #[serde(flatten)]
+    legacy_application_operators: BTreeMap<String, serde_json::Value>,
+}
+
+impl Serialize for FederationLocalStatusResponse {
+    fn serialize<S>(&self, serializer: S) -> core::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let legacy_application_operators = self
+            .application_operators
+            .iter()
+            .map(|(name, status)| {
+                (
+                    format!("{name}{FEDERATION_LEGACY_APPLICATION_OPERATOR_SUFFIX}"),
+                    status,
+                )
+            })
+            .collect();
+        FederationLocalStatusResponseRef {
+            version: self.version,
+            peer_status: &self.peer_status,
+            sync_state: &self.sync_state,
+            sync_ready: self.sync_ready,
+            sync_message: &self.sync_message,
+            sync_peer: self.sync_peer,
+            sync_local_operation_count: self.sync_local_operation_count,
+            sync_peer_operation_count: self.sync_peer_operation_count,
+            sync_operation_count: self.sync_operation_count,
+            pending_mempool_items: self.pending_mempool_items,
+            pending_response_waiters: self.pending_response_waiters,
+            response_cache_items: self.response_cache_items,
+            response_cache_lookups: self.response_cache_lookups,
+            response_cache_hits: self.response_cache_hits,
+            response_cache_hit_rate_bps: self.response_cache_hit_rate_bps,
+            duplicate_submissions: self.duplicate_submissions,
+            duplicate_pending_waiter_joins: self.duplicate_pending_waiter_joins,
+            checkpoint: &self.checkpoint,
+            payment_observation_reports: &self.payment_observation_reports,
+            aleph_bft_status: &self.aleph_bft_status,
+            aleph_bft_live_session_active: self.aleph_bft_live_session_active,
+            aleph_bft_network_inbound_active: self.aleph_bft_network_inbound_active,
+            materialized_state_rows: &self.materialized_state_rows,
+            invalid_operation_alerts: &self.invalid_operation_alerts,
+            onchain_wallets: &self.onchain_wallets,
+            wallet_recovery: &self.wallet_recovery,
+            wallet_liveness: &self.wallet_liveness,
+            wallet_operator: &self.wallet_operator,
+            legacy_application_operators,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for FederationLocalStatusResponse {
+    fn deserialize<D>(deserializer: D) -> core::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mut response = FederationLocalStatusResponseOwned::deserialize(deserializer)?;
+        for (field, status) in response.legacy_application_operators {
+            let Some(name) = field.strip_suffix(FEDERATION_LEGACY_APPLICATION_OPERATOR_SUFFIX)
+            else {
+                return Err(serde::de::Error::unknown_field(
+                    &field,
+                    &["application_operators", "<application>_operator"],
+                ));
+            };
+            if name.is_empty() || response.application_operators.contains_key(name) {
+                return Err(serde::de::Error::custom(format!(
+                    "duplicate or empty legacy application operator field {field}"
+                )));
+            }
+            response
+                .application_operators
+                .insert(name.to_string(), status);
+        }
+        Ok(Self {
+            version: response.version,
+            peer_status: response.peer_status,
+            sync_state: response.sync_state,
+            sync_ready: response.sync_ready,
+            sync_message: response.sync_message,
+            sync_peer: response.sync_peer,
+            sync_local_operation_count: response.sync_local_operation_count,
+            sync_peer_operation_count: response.sync_peer_operation_count,
+            sync_operation_count: response.sync_operation_count,
+            pending_mempool_items: response.pending_mempool_items,
+            pending_response_waiters: response.pending_response_waiters,
+            response_cache_items: response.response_cache_items,
+            response_cache_lookups: response.response_cache_lookups,
+            response_cache_hits: response.response_cache_hits,
+            response_cache_hit_rate_bps: response.response_cache_hit_rate_bps,
+            duplicate_submissions: response.duplicate_submissions,
+            duplicate_pending_waiter_joins: response.duplicate_pending_waiter_joins,
+            checkpoint: response.checkpoint,
+            payment_observation_reports: response.payment_observation_reports,
+            aleph_bft_status: response.aleph_bft_status,
+            aleph_bft_live_session_active: response.aleph_bft_live_session_active,
+            aleph_bft_network_inbound_active: response.aleph_bft_network_inbound_active,
+            materialized_state_rows: response.materialized_state_rows,
+            invalid_operation_alerts: response.invalid_operation_alerts,
+            onchain_wallets: response.onchain_wallets,
+            wallet_recovery: response.wallet_recovery,
+            wallet_liveness: response.wallet_liveness,
+            wallet_operator: response.wallet_operator,
+            application_operators: response.application_operators,
+        })
+    }
 }
 
 /// Scalar metadata for one stored, previously verified checkpoint quorum.
@@ -4232,7 +4418,7 @@ mod tests {
     #[test]
     fn local_status_wire_fixture_round_trips_every_current_field() {
         let member = member_id();
-        let status = FederationLocalStatusResponse {
+        let mut status = FederationLocalStatusResponse {
             version: FEDERATION_REST_API_VERSION,
             peer_status: FederationPeerStatus::new(
                 federation_id(),
@@ -4314,6 +4500,10 @@ mod tests {
             wallet_operator: None,
             application_operators: BTreeMap::new(),
         };
+        status.application_operators.insert(
+            "example".to_string(),
+            serde_json::json!({"readiness": "ready"}),
+        );
 
         let value = serde_json::to_value(&status).expect("local status json");
         let fields = value
@@ -4331,6 +4521,7 @@ mod tests {
                 "checkpoint",
                 "duplicate_pending_waiter_joins",
                 "duplicate_submissions",
+                "example_operator",
                 "invalid_operation_alerts",
                 "materialized_state_rows",
                 "onchain_wallets",
@@ -4354,6 +4545,7 @@ mod tests {
                 "wallet_liveness",
             ])
         );
+        assert!(value.get("application_operators").is_none());
         let wallet_status = value["onchain_wallets"][0]
             .as_object()
             .expect("on-chain wallet status");
@@ -4361,8 +4553,29 @@ mod tests {
         assert_eq!(wallet_status["source_id"], "shared-regtest-source");
         assert_eq!(wallet_status["correlated_source_warning"], true);
         let decoded: FederationLocalStatusResponse =
-            serde_json::from_value(value).expect("local status round trip");
+            serde_json::from_value(value.clone()).expect("local status round trip");
         assert_eq!(decoded, status);
+
+        let mut current_value = value;
+        let object = current_value
+            .as_object_mut()
+            .expect("local status wire object");
+        let legacy = object
+            .remove("example_operator")
+            .expect("legacy application operator");
+        object.insert(
+            "application_operators".to_string(),
+            serde_json::json!({"example": legacy}),
+        );
+        let decoded: FederationLocalStatusResponse =
+            serde_json::from_value(current_value.clone()).expect("current status wire");
+        assert_eq!(decoded, status);
+
+        current_value
+            .as_object_mut()
+            .expect("local status wire object")
+            .insert("unexpected".to_string(), serde_json::Value::Null);
+        assert!(serde_json::from_value::<FederationLocalStatusResponse>(current_value).is_err());
     }
 
     #[test]
