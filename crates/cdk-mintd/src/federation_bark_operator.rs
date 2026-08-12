@@ -4,10 +4,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
+    FederationConfig, FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate,
+    MemberConfigPublic, MemberId, FEDERATION_REST_API_VERSION,
+};
+use cdk_federation_bark::{
     FederationBarkActionId, FederationBarkReconcileRequest, FederationBarkReconcileResponse,
-    FederationBarkRetryRequest, FederationBarkRetryResponse, FederationConfig,
-    FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic,
-    MemberId, FEDERATION_REST_API_VERSION,
+    FederationBarkRetryRequest, FederationBarkRetryResponse,
 };
 use cdk_http_client::Transport;
 
@@ -28,7 +30,7 @@ pub(crate) async fn run_reconcile_command(
         public.federation_id,
         member.member_id,
         operator_sequence(),
-        FederationRestMessageKind::BarkReconcile,
+        FederationRestMessageKind::ApplicationReconcile,
         FederationBarkReconcileRequest::default(),
         &private,
     )?;
@@ -74,7 +76,7 @@ pub(crate) async fn run_retry_command(
         public.federation_id,
         member.member_id,
         operator_sequence(),
-        FederationRestMessageKind::BarkActionRetry,
+        FederationRestMessageKind::ApplicationActionRetry,
         FederationBarkRetryRequest::new(action_id, true),
         &private,
     )?;

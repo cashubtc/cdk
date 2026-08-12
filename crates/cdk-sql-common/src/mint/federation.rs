@@ -44,6 +44,7 @@ macro_rules! federation_aleph_bft_finalized_item_select {
 }
 
 mod application;
+#[cfg(feature = "federation-bark")]
 mod bark_projection;
 mod dkg;
 mod frost_wallet;
@@ -59,17 +60,16 @@ use cdk_common::database::mint::{
     FederationSetupTransaction,
 };
 use cdk_common::database::Error;
+#[cfg(feature = "federation-bark")]
+use cdk_common::federation::FederationOperation;
 use cdk_common::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
     FederationAlephBftPendingOperationRecord, FederationApplicationDigest,
-    FederationApplicationState, FederationBarkActionRecord,
-    FederationBarkDerivationAllocationRecord, FederationBarkObservationRecord,
-    FederationBarkOperation, FederationBarkProjectionSnapshot, FederationBarkReservationRecord,
-    FederationBarkTransitionRecord, FederationBarkVtxoRecord, FederationBarkVtxoState,
-    FederationCheckpoint, FederationCheckpointFrontier, FederationCheckpointId,
-    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSignature,
-    FederationConfigDigest, FederationConfigSnapshot, FederationDkgActivationRequest,
-    FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
+    FederationApplicationOperation, FederationApplicationState, FederationCheckpoint,
+    FederationCheckpointFrontier, FederationCheckpointId, FederationCheckpointKind,
+    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfigDigest,
+    FederationConfigSnapshot, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationFinalizedItemDigest,
@@ -78,7 +78,7 @@ use cdk_common::federation::{
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
     FederationId, FederationJournalConsensusEvidence, FederationJournalDigest,
     FederationJournalEntry, FederationJournalTip, FederationMaterializedStateDigest,
-    FederationMaterializedStateKeyRecord, FederationOperation, FederationOperationConflictKey,
+    FederationMaterializedStateKeyRecord, FederationOperationConflictKey,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationSetupActivation, FederationSetupApproval,
@@ -90,6 +90,13 @@ use cdk_common::federation::{
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::PublicKey;
+#[cfg(feature = "federation-bark")]
+use cdk_federation_bark::{
+    FederationBarkActionRecord, FederationBarkDerivationAllocationRecord,
+    FederationBarkObservationRecord, FederationBarkOperation, FederationBarkProjectionSnapshot,
+    FederationBarkReservationRecord, FederationBarkTransitionRecord, FederationBarkVtxoRecord,
+    FederationBarkVtxoState,
+};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 

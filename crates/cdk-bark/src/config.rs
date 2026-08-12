@@ -10,11 +10,14 @@ use bark::{Config as BarkConfig, WalletSeed};
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::Network;
 use cdk_common::federation::{
-    FederationBarkFrostApplicationConfig, FederationBarkPolicyConfig,
-    FederationBarkReceiveAntiDosPolicy, FederationConfig, FederationDkgSetupMethod,
-    FederationFrostApplicationId, FederationId, MemberId,
+    FederationConfig, FederationDkgSetupMethod, FederationFrostApplicationId, FederationId,
+    MemberId,
 };
 use cdk_common::CurrencyUnit;
+use cdk_federation_bark::{
+    federation_bark_application, FederationBarkFrostApplicationConfig, FederationBarkPolicyConfig,
+    FederationBarkReceiveAntiDosPolicy,
+};
 use cdk_frost_bark::FrostBark;
 use sha2::{Digest, Sha256};
 
@@ -331,6 +334,7 @@ pub struct ValidatedFederatedBarkConfig {
     ark_server_public_key: PublicKey,
     public_adapter: FrostBark,
     descriptor: KeySourceDescriptor,
+    application: FederationBarkFrostApplicationConfig,
     policy: FederationBarkPolicyConfig,
 }
 
@@ -376,9 +380,8 @@ impl ValidatedFederatedBarkConfig {
             .frost_wallet
             .as_ref()
             .ok_or(Error::MissingApplication)?;
-        let application = wallet
-            .bark_application
-            .as_ref()
+        let application = federation_bark_application(federation)
+            .map_err(|_| Error::InvalidPublicConfig)?
             .ok_or(Error::MissingApplication)?;
         let ark_server_public_key = PublicKey::from_slice(&application.ark_server_public_key)
             .map_err(|_| Error::InvalidPublicConfig)?;
@@ -392,7 +395,7 @@ impl ValidatedFederatedBarkConfig {
                 application.application_key_epoch,
             )
             .map_err(|_| Error::InvalidPublicConfig)?;
-        let fingerprint = custody_fingerprint(federation, application);
+        let fingerprint = custody_fingerprint(federation, &application);
         let group_public_key = PublicKey::from_slice(&application.derived_group_key)
             .map_err(|_| Error::InvalidPublicConfig)?;
         let descriptor = KeySourceDescriptor::frost(
@@ -415,9 +418,10 @@ impl ValidatedFederatedBarkConfig {
             ark_server_public_key,
             public_adapter,
             descriptor,
+            application: application.clone(),
             policy: application.policy.clone(),
         };
-        validated.validate_local(federation, application, local)?;
+        validated.validate_local(federation, &application, local)?;
         Ok(validated)
     }
 
@@ -538,6 +542,10 @@ impl ValidatedFederatedBarkConfig {
     #[must_use]
     pub const fn policy(&self) -> &FederationBarkPolicyConfig {
         &self.policy
+    }
+
+    pub(crate) const fn application(&self) -> &FederationBarkFrostApplicationConfig {
+        &self.application
     }
 
     pub(crate) fn public_adapter(&self) -> FrostBark {

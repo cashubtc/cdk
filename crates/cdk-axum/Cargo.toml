@@ -24,7 +24,9 @@ federation = [
 federation-bark = [
     "federation",
     "dep:cdk-bark",
+    "dep:cdk-federation-bark",
     "dep:cdk-frost-bark",
+    "cdk/federation-bark",
     "cdk-bark/federation-bark",
 ]
 redis = ["dep:redis"]
@@ -47,6 +49,7 @@ cdk-frost-bark = { workspace = true, optional = true }
 cdk-frost-bip32 = { workspace = true, optional = true }
 cdk-bdk = { workspace = true, optional = true, features = ["bitcoin-rpc", "esplora"] }
 cdk-bark = { workspace = true, optional = true }
+cdk-federation-bark = { workspace = true, optional = true }
 cdk-http-client = { workspace = true, features = ["bitreq"] }
 cdk-iroh = { workspace = true, optional = true }
 tokio.workspace = true

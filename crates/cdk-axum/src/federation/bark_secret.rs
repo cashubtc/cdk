@@ -96,7 +96,7 @@ pub(super) async fn post_bark_receive_secret(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationBarkPrepareReceiveSecretRequest>>,
 ) -> Result<Json<FederationSignedRequest<FederationBarkReceiveSecretAcknowledgement>>, Response> {
-    let kind = FederationRestMessageKind::BarkReceiveSecretPrepare;
+    let kind = FederationRestMessageKind::ApplicationSecretPrepare;
     let verified = admit_private_request(&state, &payload, kind).await?;
     state
         .ensure_federation_ready_for_authoritative_read()
@@ -149,7 +149,7 @@ pub(super) async fn post_bark_evidence_attestation(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationBarkEvidenceAttestationRequest>>,
 ) -> Result<Json<FederationSignedRequest<FederationBarkEvidenceAttestationResponse>>, Response> {
-    let kind = FederationRestMessageKind::BarkEvidenceAttestation;
+    let kind = FederationRestMessageKind::ApplicationEvidenceAttestation;
     let verified = admit_private_request(&state, &payload, kind).await?;
     state
         .ensure_federation_ready_for_authoritative_read()
@@ -183,11 +183,11 @@ pub(super) async fn post_bark_evidence_attestation(
     let actor_index = members
         .iter()
         .position(|member| *member == action.actor)
-        .ok_or_else(|| bark_secret_store_unavailable_response())?;
+        .ok_or_else(bark_secret_store_unavailable_response)?;
     let local_index = members
         .iter()
         .position(|member| *member == local_member)
-        .ok_or_else(|| bark_secret_store_unavailable_response())?;
+        .ok_or_else(bark_secret_store_unavailable_response)?;
     let collector_fallback_round = if local_index >= actor_index {
         local_index - actor_index
     } else {

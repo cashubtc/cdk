@@ -2,13 +2,18 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{
+use cdk_common::federation::{
+    FederationError, FederationJournalEntry, FederationMaterializedStateRow, FederationOperationId,
+    MemberId, Result,
+};
+use cdk_common::Amount;
+
+use crate::{
     FederationBarkActionId, FederationBarkActionKind, FederationBarkArtifact, FederationBarkDigest,
     FederationBarkOperation, FederationBarkSemanticPhase, FederationBarkVtxoId,
-    FederationBarkVtxoLocator, FederationBarkVtxoState, FederationJournalEntry,
-    FederationMaterializedStateRow, FederationOperationId, MemberId, Result,
+    FederationBarkVtxoLocator, FederationBarkVtxoState, FEDERATION_MAX_BARK_REFRESH_INPUTS,
+    FEDERATION_MAX_BARK_REFRESH_INPUT_ARTIFACT_BYTES,
 };
-use crate::Amount;
 
 fn amount_is_zero(amount: &Amount) -> bool {
     *amount == Amount::ZERO
@@ -71,7 +76,7 @@ impl FederationBarkActionRecord {
             phase: operation.phase(),
             signing_retry_phase: None,
             actor: operation.claimed_author().ok_or_else(|| {
-                super::FederationError::BarkOperationInvalid {
+                FederationError::ApplicationOperationInvalid {
                     reason: "Bark action head requires a claimed author".to_string(),
                 }
             })?,
@@ -117,7 +122,7 @@ impl FederationBarkActionRecord {
                 Some(actor) => actor,
                 None if operation.preserves_action_actor() => self.actor,
                 None => {
-                    return Err(super::FederationError::BarkOperationInvalid {
+                    return Err(FederationError::ApplicationOperationInvalid {
                         reason: "Bark action transition has no authority".to_string(),
                     });
                 }
@@ -248,6 +253,52 @@ impl FederationBarkVtxoRecord {
                 .with_field("payload_json", serde_json::to_string(self)?),
         )
     }
+}
+
+/// Select the canonical bounded prefix of the earliest-expiring spendable VTXOs.
+///
+/// The byte budget mirrors Bark's round-attempt authorization shape. Stopping
+/// at the first input that does not fit preserves a single deterministic
+/// prefix across every member and leaves the remainder for a later refresh.
+#[must_use]
+pub fn federation_bark_refresh_candidates(
+    snapshot: &FederationBarkProjectionSnapshot,
+) -> Vec<&FederationBarkVtxoRecord> {
+    let Some(minimum_expiry) = snapshot
+        .vtxos
+        .iter()
+        .filter(|record| record.state == FederationBarkVtxoState::Spendable)
+        .map(|record| record.expiry_height)
+        .min()
+    else {
+        return Vec::new();
+    };
+    let mut records = snapshot
+        .vtxos
+        .iter()
+        .filter(|record| {
+            record.state == FederationBarkVtxoState::Spendable
+                && record.expiry_height == minimum_expiry
+        })
+        .collect::<Vec<_>>();
+    records.sort_by_key(|record| record.vtxo_id);
+
+    let mut selected = Vec::new();
+    let mut artifact_bytes = 0_usize;
+    for record in records {
+        let Some(next_artifact_bytes) = artifact_bytes.checked_add(record.artifact.bytes.len())
+        else {
+            break;
+        };
+        if selected.len() == FEDERATION_MAX_BARK_REFRESH_INPUTS
+            || next_artifact_bytes > FEDERATION_MAX_BARK_REFRESH_INPUT_ARTIFACT_BYTES
+        {
+            break;
+        }
+        selected.push(record);
+        artifact_bytes = next_artifact_bytes;
+    }
+    selected
 }
 
 /// Append-only accepted Bark action transition or preparation record.
@@ -439,13 +490,79 @@ fn operation_head_fields(
 
 #[cfg(test)]
 mod tests {
-    use super::{FederationBarkObservationRecord, FederationBarkProjectionSnapshot};
-    use crate::federation::{
-        FederationBarkActionId, FederationBarkDigest, FederationBarkMemberObservation,
-        FederationBarkObservationStatus, FederationBarkOperation, FederationOperationId, MemberId,
-        FEDERATION_BARK_OPERATION_VERSION,
+    use cdk_common::federation::{FederationOperationId, MemberId};
+    use cdk_common::Amount;
+
+    use super::{
+        federation_bark_refresh_candidates, FederationBarkObservationRecord,
+        FederationBarkProjectionSnapshot, FederationBarkVtxoRecord,
     };
-    use crate::Amount;
+    use crate::{
+        FederationBarkActionId, FederationBarkArtifact, FederationBarkArtifactKind,
+        FederationBarkDigest, FederationBarkMemberObservation, FederationBarkObservationStatus,
+        FederationBarkOperation, FederationBarkVtxoId, FederationBarkVtxoLocator,
+        FederationBarkVtxoState, FEDERATION_BARK_OPERATION_VERSION,
+        FEDERATION_MAX_BARK_REFRESH_INPUTS,
+    };
+
+    fn spendable_vtxo(
+        seed: u8,
+        expiry_height: u32,
+        artifact_bytes: usize,
+    ) -> FederationBarkVtxoRecord {
+        FederationBarkVtxoRecord {
+            vtxo_id: FederationBarkVtxoId::from_bytes([seed; 36]).expect("VTXO ID"),
+            locator: FederationBarkVtxoLocator::vtxo_custody(u32::from(seed)),
+            amount: Amount::from(1_000),
+            expiry_height,
+            state: FederationBarkVtxoState::Spendable,
+            artifact: FederationBarkArtifact {
+                kind: FederationBarkArtifactKind::Vtxo,
+                hash: FederationBarkDigest::from_bytes([seed; 32]).expect("artifact hash"),
+                bytes: vec![seed; artifact_bytes],
+            },
+            reservation_action_id: None,
+            origin_operation_id: FederationOperationId::from_bytes([seed; 32]),
+            origin_operation_index: u64::from(seed),
+            latest_operation_id: FederationOperationId::from_bytes([seed; 32]),
+            latest_operation_index: u64::from(seed),
+        }
+    }
+
+    #[test]
+    fn refresh_candidates_are_a_deterministic_bounded_prefix() {
+        let mut snapshot = FederationBarkProjectionSnapshot::default();
+        for seed in (1..=10).rev() {
+            snapshot.vtxos.push(spendable_vtxo(seed, 900, 1_500));
+        }
+        snapshot.vtxos.push(spendable_vtxo(11, 901, 1));
+
+        let selected = federation_bark_refresh_candidates(&snapshot);
+
+        assert_eq!(selected.len(), FEDERATION_MAX_BARK_REFRESH_INPUTS);
+        assert_eq!(selected.first().expect("first").locator.index, 1);
+        assert_eq!(selected.last().expect("last").locator.index, 8);
+        assert!(selected.iter().all(|record| record.expiry_height == 900));
+    }
+
+    #[test]
+    fn refresh_candidates_stop_before_the_authorization_byte_budget() {
+        let mut snapshot = FederationBarkProjectionSnapshot::default();
+        for seed in 1..=5 {
+            snapshot.vtxos.push(spendable_vtxo(seed, 900, 3_000));
+        }
+
+        let selected = federation_bark_refresh_candidates(&snapshot);
+
+        assert_eq!(selected.len(), 4);
+        assert_eq!(
+            selected
+                .iter()
+                .map(|record| record.artifact.bytes.len())
+                .sum::<usize>(),
+            12_000
+        );
+    }
 
     #[test]
     fn projection_frontier_covers_observation_only_progress() {

@@ -367,7 +367,7 @@ pub(super) async fn post_bark_virtual_musig_commitment(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationBarkVirtualMusigCommitmentRequest>>,
 ) -> Result<Json<FederationSignedRequest<FederationBarkVirtualMusigCommitmentResponse>>, Response> {
-    let kind = FederationRestMessageKind::BarkVirtualMusigCommitment;
+    let kind = FederationRestMessageKind::ApplicationVirtualMusigCommitment;
     let verified = admit_private_request(&state, &payload, kind).await?;
     state
         .ensure_federation_ready_for_authoritative_read()
@@ -403,7 +403,7 @@ pub(super) async fn post_bark_virtual_musig_partial(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationBarkVirtualMusigPartialRequest>>,
 ) -> Result<Json<FederationSignedRequest<FederationBarkVirtualMusigPartialResponse>>, Response> {
-    let kind = FederationRestMessageKind::BarkVirtualMusigPartial;
+    let kind = FederationRestMessageKind::ApplicationVirtualMusigPartial;
     let verified = admit_private_request(&state, &payload, kind).await?;
     state
         .ensure_federation_ready_for_authoritative_read()
@@ -446,7 +446,7 @@ pub(super) async fn post_bark_threshold_dh(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationBarkThresholdDhRequest>>,
 ) -> Result<Json<FederationSignedRequest<FederationBarkThresholdDhResponse>>, Response> {
-    let kind = FederationRestMessageKind::BarkThresholdDh;
+    let kind = FederationRestMessageKind::ApplicationThresholdDh;
     let verified = admit_private_request(&state, &payload, kind).await?;
     state
         .ensure_federation_ready_for_authoritative_read()
@@ -482,7 +482,7 @@ pub(super) async fn post_bark_custody_abort(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationBarkCustodyAbortRequest>>,
 ) -> Result<Json<FederationSignedRequest<FederationFrostSigningAck>>, Response> {
-    let kind = FederationRestMessageKind::BarkCustodyAbort;
+    let kind = FederationRestMessageKind::ApplicationCustodyAbort;
     let verified = admit_private_request(&state, &payload, kind).await?;
     let runtime_config = federation_runtime_config(&state)?;
     let (context, authorization, reason) = payload

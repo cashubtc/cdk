@@ -6,6 +6,9 @@
 #![cfg_attr(not(feature = "federation-bark"), allow(missing_docs))]
 
 #[cfg(feature = "federation-bark")]
+pub use cdk_federation_bark::*;
+
+#[cfg(feature = "federation-bark")]
 mod adapter;
 #[cfg(feature = "federation-bark")]
 mod config;

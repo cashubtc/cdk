@@ -12,8 +12,8 @@ fn sql_i64(label: &str, value: u64) -> Result<i64, Error> {
         .map_err(|_| invalid_projection(format!("Bark {label} exceeds the SQL integer range")))
 }
 
-fn phase_label(phase: cdk_common::federation::FederationBarkSemanticPhase) -> &'static str {
-    use cdk_common::federation::FederationBarkSemanticPhase as Phase;
+fn phase_label(phase: cdk_federation_bark::FederationBarkSemanticPhase) -> &'static str {
+    use cdk_federation_bark::FederationBarkSemanticPhase as Phase;
     match phase {
         Phase::ReceiveIntent => "receive_intent",
         Phase::ReceivePrepared => "receive_prepared",
@@ -39,9 +39,9 @@ fn phase_label(phase: cdk_common::federation::FederationBarkSemanticPhase) -> &'
 }
 
 fn action_kind_label(
-    kind: Option<cdk_common::federation::FederationBarkActionKind>,
+    kind: Option<cdk_federation_bark::FederationBarkActionKind>,
 ) -> Option<&'static str> {
-    use cdk_common::federation::FederationBarkActionKind as Kind;
+    use cdk_federation_bark::FederationBarkActionKind as Kind;
     kind.map(|kind| match kind {
         Kind::LightningSend => "lightning_send",
         Kind::IncomingClaim => "incoming_claim",
@@ -65,7 +65,7 @@ fn vtxo_state_label(state: FederationBarkVtxoState) -> &'static str {
 
 async fn get_action<C>(
     connection: &C,
-    action_id: cdk_common::federation::FederationBarkActionId,
+    action_id: cdk_federation_bark::FederationBarkActionId,
 ) -> Result<Option<FederationBarkActionRecord>, Error>
 where
     C: DatabaseExecutor,
@@ -346,9 +346,9 @@ fn ensure_predecessor(
 }
 
 fn planned_phase(
-    kind: cdk_common::federation::FederationBarkActionKind,
-) -> cdk_common::federation::FederationBarkSemanticPhase {
-    use cdk_common::federation::{
+    kind: cdk_federation_bark::FederationBarkActionKind,
+) -> cdk_federation_bark::FederationBarkSemanticPhase {
+    use cdk_federation_bark::{
         FederationBarkActionKind as Kind, FederationBarkSemanticPhase as Phase,
     };
     match kind {
@@ -361,10 +361,10 @@ fn planned_phase(
 }
 
 fn direct_transition_allowed(
-    previous: cdk_common::federation::FederationBarkSemanticPhase,
-    next: cdk_common::federation::FederationBarkSemanticPhase,
+    previous: cdk_federation_bark::FederationBarkSemanticPhase,
+    next: cdk_federation_bark::FederationBarkSemanticPhase,
 ) -> bool {
-    use cdk_common::federation::FederationBarkSemanticPhase as Phase;
+    use cdk_federation_bark::FederationBarkSemanticPhase as Phase;
     matches!(
         (previous, next),
         (Phase::ReceiveIntent, Phase::ReceivePrepared)
@@ -389,9 +389,9 @@ fn direct_transition_allowed(
 
 fn transition_allowed(
     action: &FederationBarkActionRecord,
-    next: cdk_common::federation::FederationBarkSemanticPhase,
+    next: cdk_federation_bark::FederationBarkSemanticPhase,
 ) -> bool {
-    use cdk_common::federation::FederationBarkSemanticPhase as Phase;
+    use cdk_federation_bark::FederationBarkSemanticPhase as Phase;
 
     let retry_phase = match action.phase {
         Phase::SigningAttemptAdvanced => match action.signing_retry_phase {
@@ -475,7 +475,7 @@ where
 
 async fn get_allocation<C>(
     connection: &C,
-    locator: cdk_common::federation::FederationBarkVtxoLocator,
+    locator: cdk_federation_bark::FederationBarkVtxoLocator,
 ) -> Result<Option<FederationBarkDerivationAllocationRecord>, Error>
 where
     C: DatabaseExecutor,
@@ -555,7 +555,7 @@ where
 
 async fn get_vtxo<C>(
     connection: &C,
-    vtxo_id: cdk_common::federation::FederationBarkVtxoId,
+    vtxo_id: cdk_federation_bark::FederationBarkVtxoId,
 ) -> Result<Option<FederationBarkVtxoRecord>, Error>
 where
     C: DatabaseExecutor,
@@ -664,9 +664,9 @@ where
 async fn reserve_input<C>(
     connection: &C,
     entry: &FederationJournalEntry,
-    action_id: cdk_common::federation::FederationBarkActionId,
-    kind: cdk_common::federation::FederationBarkActionKind,
-    input: &cdk_common::federation::FederationBarkVtxoInput,
+    action_id: cdk_federation_bark::FederationBarkActionId,
+    kind: cdk_federation_bark::FederationBarkActionKind,
+    input: &cdk_federation_bark::FederationBarkVtxoInput,
 ) -> Result<(), Error>
 where
     C: DatabaseExecutor,
@@ -675,10 +675,10 @@ where
         .await?
         .ok_or_else(|| invalid_projection("Bark action plan references an unknown VTXO"))?;
     let expected_state = match kind {
-        cdk_common::federation::FederationBarkActionKind::IncomingClaim => {
+        cdk_federation_bark::FederationBarkActionKind::IncomingClaim => {
             FederationBarkVtxoState::Observed
         }
-        cdk_common::federation::FederationBarkActionKind::FailedSendRevocation => {
+        cdk_federation_bark::FederationBarkActionKind::FailedSendRevocation => {
             FederationBarkVtxoState::PendingSpend
         }
         _ => FederationBarkVtxoState::Spendable,
@@ -687,7 +687,7 @@ where
         || previous.locator != input.locator
         || previous.amount != input.amount
         || match kind {
-            cdk_common::federation::FederationBarkActionKind::FailedSendRevocation => {
+            cdk_federation_bark::FederationBarkActionKind::FailedSendRevocation => {
                 previous.reservation_action_id != Some(action_id)
             }
             _ => previous.reservation_action_id.is_some(),
@@ -739,8 +739,8 @@ where
 
 async fn retain_refresh_reservation_for_exit<C>(
     connection: &C,
-    action_id: cdk_common::federation::FederationBarkActionId,
-    input: &cdk_common::federation::FederationBarkVtxoInput,
+    action_id: cdk_federation_bark::FederationBarkActionId,
+    input: &cdk_federation_bark::FederationBarkVtxoInput,
 ) -> Result<(), Error>
 where
     C: DatabaseExecutor,
@@ -763,8 +763,8 @@ where
 async fn apply_vtxo_transition<C>(
     connection: &C,
     entry: &FederationJournalEntry,
-    transition: &cdk_common::federation::FederationBarkActionTransition,
-    mutation: &cdk_common::federation::FederationBarkVtxoTransition,
+    transition: &cdk_federation_bark::FederationBarkActionTransition,
+    mutation: &cdk_federation_bark::FederationBarkVtxoTransition,
 ) -> Result<(), Error>
 where
     C: DatabaseExecutor,
@@ -782,9 +782,9 @@ where
 async fn apply_vtxo_transition_from_artifacts<C>(
     connection: &C,
     entry: &FederationJournalEntry,
-    action_id: cdk_common::federation::FederationBarkActionId,
-    artifacts: &[cdk_common::federation::FederationBarkArtifact],
-    mutation: &cdk_common::federation::FederationBarkVtxoTransition,
+    action_id: cdk_federation_bark::FederationBarkActionId,
+    artifacts: &[cdk_federation_bark::FederationBarkArtifact],
+    mutation: &cdk_federation_bark::FederationBarkVtxoTransition,
 ) -> Result<(), Error>
 where
     C: DatabaseExecutor,
@@ -792,7 +792,7 @@ where
     let artifact = artifacts
         .iter()
         .find(|artifact| {
-            artifact.kind == cdk_common::federation::FederationBarkArtifactKind::Vtxo
+            artifact.kind == cdk_federation_bark::FederationBarkArtifactKind::Vtxo
                 && artifact.hash == mutation.artifact_hash
         })
         .cloned()
@@ -939,7 +939,7 @@ async fn apply_receive_intent<C>(
     connection: &C,
     entry: &FederationJournalEntry,
     operation: &FederationBarkOperation,
-    intent: &cdk_common::federation::FederationBarkReceiveIntent,
+    intent: &cdk_federation_bark::FederationBarkReceiveIntent,
 ) -> Result<(), Error>
 where
     C: DatabaseExecutor,
@@ -970,7 +970,7 @@ async fn apply_receive_prepared<C>(
     connection: &C,
     entry: &FederationJournalEntry,
     operation: &FederationBarkOperation,
-    prepared: &cdk_common::federation::FederationBarkReceivePrepared,
+    prepared: &cdk_federation_bark::FederationBarkReceivePrepared,
 ) -> Result<(), Error>
 where
     C: DatabaseExecutor,
@@ -978,14 +978,14 @@ where
     let action = get_action(connection, prepared.action_id)
         .await?
         .ok_or_else(|| invalid_projection("Bark receive intent does not exist"))?;
-    let cdk_common::federation::FederationBarkOperation::ReceiveIntent(intent) = &action.operation
+    let cdk_federation_bark::FederationBarkOperation::ReceiveIntent(intent) = &action.operation
     else {
         return Err(invalid_projection(
             "Bark receive preparation predecessor is not an intent",
         ));
     };
     prepared
-        .validate_against_intent(intent)
+        .validate_against_intent(&intent)
         .map_err(|_| invalid_projection("Bark receive preparation differs from its intent"))?;
     ensure_same_action_binding(&action, operation)?;
     ensure_predecessor(&action, prepared.intent_operation_id)?;
@@ -1007,7 +1007,7 @@ async fn apply_action_plan<C>(
     connection: &C,
     entry: &FederationJournalEntry,
     operation: &FederationBarkOperation,
-    plan: &cdk_common::federation::FederationBarkActionPlan,
+    plan: &cdk_federation_bark::FederationBarkActionPlan,
 ) -> Result<(), Error>
 where
     C: DatabaseExecutor,
@@ -1020,8 +1020,8 @@ where
     let existing = get_action(connection, plan.action_id).await?;
     let combined_receive_claim = plan.certified_receive_htlcs.is_some();
     let refresh_exit_escalation = existing.as_ref().is_some_and(|action| {
-        action.phase == cdk_common::federation::FederationBarkSemanticPhase::RefreshPlanned
-            && plan.kind == cdk_common::federation::FederationBarkActionKind::EmergencyExit
+        action.phase == cdk_federation_bark::FederationBarkSemanticPhase::RefreshPlanned
+            && plan.kind == cdk_federation_bark::FederationBarkActionKind::EmergencyExit
     });
     let action = match &existing {
         Some(action) => {
@@ -1030,7 +1030,7 @@ where
             if !(transition_allowed(action, operation.phase())
                 || combined_receive_claim
                     && action.phase
-                        == cdk_common::federation::FederationBarkSemanticPhase::ReceivePrepared)
+                        == cdk_federation_bark::FederationBarkSemanticPhase::ReceivePrepared)
             {
                 return Err(invalid_projection("invalid Bark action plan transition"));
             }
@@ -1039,8 +1039,8 @@ where
         None => {
             if matches!(
                 plan.kind,
-                cdk_common::federation::FederationBarkActionKind::IncomingClaim
-                    | cdk_common::federation::FederationBarkActionKind::FailedSendRevocation
+                cdk_federation_bark::FederationBarkActionKind::IncomingClaim
+                    | cdk_federation_bark::FederationBarkActionKind::FailedSendRevocation
             ) {
                 return Err(invalid_projection(
                     "Bark recovery action plan has no existing lineage",
@@ -1075,7 +1075,7 @@ where
         }
     }
     for output in &plan.outputs {
-        if plan.kind == cdk_common::federation::FederationBarkActionKind::FailedSendRevocation {
+        if plan.kind == cdk_federation_bark::FederationBarkActionKind::FailedSendRevocation {
             let previous = get_allocation(connection, output.locator)
                 .await?
                 .ok_or_else(|| invalid_projection("Bark revocation locator was not reserved"))?;
@@ -1100,7 +1100,7 @@ where
             materialize_allocation(connection, &previous, &updated).await?;
         } else {
             let amount =
-                if plan.kind == cdk_common::federation::FederationBarkActionKind::LightningSend {
+                if plan.kind == cdk_federation_bark::FederationBarkActionKind::LightningSend {
                     plan.inputs
                         .iter()
                         .try_fold(cdk_common::Amount::ZERO, |sum, input| {
@@ -1156,7 +1156,7 @@ async fn apply_action_transition<C>(
     connection: &C,
     entry: &FederationJournalEntry,
     operation: &FederationBarkOperation,
-    transition: &cdk_common::federation::FederationBarkActionTransition,
+    transition: &cdk_federation_bark::FederationBarkActionTransition,
 ) -> Result<(), Error>
 where
     C: DatabaseExecutor,
@@ -1174,8 +1174,7 @@ where
             "Bark action transition does not reference the current plan",
         ));
     }
-    if transition.phase
-        == cdk_common::federation::FederationBarkSemanticPhase::SigningAttemptAdvanced
+    if transition.phase == cdk_federation_bark::FederationBarkSemanticPhase::SigningAttemptAdvanced
     {
         if transition.attempt <= action.attempt {
             return Err(invalid_projection("Bark signing attempt did not advance"));
@@ -1203,7 +1202,7 @@ async fn apply_observation<C>(
     connection: &C,
     entry: &FederationJournalEntry,
     operation: &FederationBarkOperation,
-    observation: &cdk_common::federation::FederationBarkMemberObservation,
+    observation: &cdk_federation_bark::FederationBarkMemberObservation,
 ) -> Result<(), Error>
 where
     C: DatabaseExecutor,
@@ -1262,12 +1261,14 @@ where
             "Bark journal operation ID does not match its canonical envelope",
         ));
     }
-    let FederationOperation::Bark(entry_operation) = &entry.envelope.operation else {
+    let FederationOperation::Application(entry_operation) = &entry.envelope.operation else {
         return Err(invalid_projection(
             "Bark projection operation does not match its journal entry",
         ));
     };
-    if entry_operation != operation {
+    let entry_operation =
+        cdk_federation_bark::validate_federation_bark_application_operation(entry_operation)?;
+    if &entry_operation != operation {
         return Err(invalid_projection(
             "Bark projection operation does not match its journal entry",
         ));
@@ -1388,7 +1389,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::direct_transition_allowed;
-    use cdk_common::federation::FederationBarkSemanticPhase as Phase;
+    use cdk_federation_bark::FederationBarkSemanticPhase as Phase;
 
     #[test]
     fn maintenance_projection_allows_only_the_frozen_lifecycle() {

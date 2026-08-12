@@ -5,11 +5,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use cdk::federation::{
-    federation_bark_exit_allocation_quote, FederationAddressAllocationScope,
-    FederationAddressKeychain, FederationAllocatedAddressRef, FederationBarkActionId,
-    FederationBarkActionKind, FederationBarkDigest, FederationBarkEvidencePhase,
-    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkProjectionSnapshot,
-    FederationBarkSemanticPhase, FederationOperation, MemberId,
+    federation_bark_exit_allocation_quote, federation_bark_refresh_requires_recovery,
+    FederationAddressAllocationScope, FederationAddressKeychain, FederationAllocatedAddressRef,
+    FederationBarkActionId, FederationBarkActionKind, FederationBarkDigest,
+    FederationBarkEvidencePhase, FederationBarkObservationStatus, FederationBarkOperation,
+    FederationBarkProjectionSnapshot, FederationBarkSemanticPhase, FederationOperation, MemberId,
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::MeltQuoteState;
@@ -102,9 +102,7 @@ async fn advance_federated_bark_maintenance_inner(
     {
         return Ok(0);
     }
-    let projection = crate::federation_bark_ready_projection(&state.mint, &runtime)
-        .await
-        .map_err(|_| cdk::Error::Internal)?;
+    let projection = maintenance_projection(&state, &runtime).await?;
     let active = projection
         .actions
         .iter()
@@ -156,9 +154,9 @@ async fn advance_federated_bark_maintenance_inner(
         }
         return submit_bark_operation(
             state.clone(),
-            federation.operation_envelope(FederationOperation::Bark(
+            federation.operation_envelope(super::bark_federation_operation(
                 FederationBarkOperation::ActionPlan(plan),
-            )),
+            )?),
         )
         .await;
     };
@@ -173,13 +171,32 @@ async fn advance_federated_bark_maintenance_inner(
                 FederationBarkSemanticPhase::RefreshPlanned,
             )
             .await?;
-            let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-                &plan_entry.envelope.operation
+            let FederationBarkOperation::ActionPlan(plan) =
+                super::bark_operation(&plan_entry.envelope.operation)?
             else {
                 return Err(cdk::Error::Internal);
             };
+            if federation_bark_refresh_requires_recovery(&plan) {
+                if controls.automatic_emergency_exit || target_action_id.is_some() {
+                    return propose_exit(
+                        state.clone(),
+                        runtime.clone(),
+                        projection.clone(),
+                        plan_entry,
+                    )
+                    .await;
+                }
+                runtime
+                    .mark_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
+                    .await;
+                tracing::warn!(
+                    action_id = %plan.action_id,
+                    "accepted Bark refresh exceeds its signing budget and remains reserved for operator-triggered emergency exit"
+                );
+                return Ok(0);
+            }
             runtime
-                .apply_refresh_plan(&projection, plan)
+                .apply_refresh_plan(&projection, &plan)
                 .await
                 .map_err(|_| cdk::Error::Internal)?;
 
@@ -210,7 +227,7 @@ async fn advance_federated_bark_maintenance_inner(
                 return Ok(1);
             }
             if plan.actor != federation.member_id()
-                || maintenance_trigger_observers(&projection, plan).len()
+                || maintenance_trigger_observers(&projection, &plan).len()
                     < usize::from(
                         federation
                             .public_config()
@@ -236,9 +253,9 @@ async fn advance_federated_bark_maintenance_inner(
                 Ok(cdk_bark::FederatedBarkRefreshOutcome::Completed(transition)) => {
                     submit_bark_operation(
                         state.clone(),
-                        federation.operation_envelope(FederationOperation::Bark(
+                        federation.operation_envelope(super::bark_federation_operation(
                             FederationBarkOperation::ActionTransition(*transition),
-                        )),
+                        )?),
                     )
                     .await
                 }
@@ -248,9 +265,9 @@ async fn advance_federated_bark_maintenance_inner(
                         .map_err(|_| cdk::Error::Internal)?;
                     submit_bark_operation(
                         state.clone(),
-                        federation.operation_envelope(FederationOperation::Bark(
+                        federation.operation_envelope(super::bark_federation_operation(
                             FederationBarkOperation::ActionTransition(retry),
-                        )),
+                        )?),
                     )
                     .await
                 }
@@ -265,13 +282,13 @@ async fn advance_federated_bark_maintenance_inner(
                 FederationBarkSemanticPhase::ExitPlanned,
             )
             .await?;
-            let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-                &plan_entry.envelope.operation
+            let FederationBarkOperation::ActionPlan(plan) =
+                super::bark_operation(&plan_entry.envelope.operation)?
             else {
                 return Err(cdk::Error::Internal);
             };
             runtime
-                .apply_emergency_exit_plan(&projection, plan)
+                .apply_emergency_exit_plan(&projection, &plan)
                 .await
                 .map_err(|_| cdk::Error::Internal)?;
             if submit_trigger_observation(
@@ -285,7 +302,7 @@ async fn advance_federated_bark_maintenance_inner(
                 return Ok(1);
             }
             if plan.actor != federation.member_id()
-                || maintenance_trigger_observers(&projection, plan).len()
+                || maintenance_trigger_observers(&projection, &plan).len()
                     < usize::from(
                         federation
                             .public_config()
@@ -301,17 +318,17 @@ async fn advance_federated_bark_maintenance_inner(
                 .map_err(|_| cdk::Error::Internal)?;
             submit_bark_operation(
                 state.clone(),
-                federation.operation_envelope(FederationOperation::Bark(
+                federation.operation_envelope(super::bark_federation_operation(
                     FederationBarkOperation::ActionTransition(transition),
-                )),
+                )?),
             )
             .await
         }
         FederationBarkSemanticPhase::ExitRegistered => {
             let (plan_entry, registered_entry) =
                 exit_entries(state.clone(), projection.clone(), action.action_id).await?;
-            let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-                &plan_entry.envelope.operation
+            let FederationBarkOperation::ActionPlan(plan) =
+                super::bark_operation(&plan_entry.envelope.operation)?
             else {
                 return Err(cdk::Error::Internal);
             };
@@ -343,9 +360,9 @@ async fn advance_federated_bark_maintenance_inner(
                 Ok(cdk_bark::FederatedBarkExitOutcome::Published(transition)) => {
                     submit_bark_operation(
                         state.clone(),
-                        federation.operation_envelope(FederationOperation::Bark(
+                        federation.operation_envelope(super::bark_federation_operation(
                             FederationBarkOperation::ActionTransition(*transition),
-                        )),
+                        )?),
                     )
                     .await
                 }
@@ -355,9 +372,9 @@ async fn advance_federated_bark_maintenance_inner(
                         .map_err(|_| cdk::Error::Internal)?;
                     submit_bark_operation(
                         state.clone(),
-                        federation.operation_envelope(FederationOperation::Bark(
+                        federation.operation_envelope(super::bark_federation_operation(
                             FederationBarkOperation::ActionTransition(retry),
-                        )),
+                        )?),
                     )
                     .await
                 }
@@ -386,8 +403,8 @@ async fn advance_federated_bark_maintenance_inner(
             {
                 return Ok(1);
             }
-            let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-                &plan_entry.envelope.operation
+            let FederationBarkOperation::ActionPlan(plan) =
+                super::bark_operation(&plan_entry.envelope.operation)?
             else {
                 return Err(cdk::Error::Internal);
             };
@@ -417,13 +434,35 @@ async fn advance_federated_bark_maintenance_inner(
             };
             submit_bark_operation(
                 state.clone(),
-                federation.operation_envelope(FederationOperation::Bark(
+                federation.operation_envelope(super::bark_federation_operation(
                     FederationBarkOperation::ActionTransition(transition),
-                )),
+                )?),
             )
             .await
         }
         _ => Ok(0),
+    }
+}
+
+async fn maintenance_projection(
+    state: &MintState,
+    runtime: &Arc<cdk_bark::FederatedBarkRuntime>,
+) -> Result<FederationBarkProjectionSnapshot, cdk::Error> {
+    match crate::federation_bark_ready_projection(&state.mint, runtime).await {
+        Ok(projection) => Ok(projection),
+        Err(_) => {
+            let projection = state.mint.federation_bark_projection_snapshot().await?;
+            let required_frontier = projection.frontier().unwrap_or(0);
+            let status = runtime.status(required_frontier).await;
+            if status.local_frontier >= required_frontier
+                && status.degraded_reason
+                    == Some(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
+            {
+                Ok(projection)
+            } else {
+                Err(cdk::Error::Internal)
+            }
+        }
     }
 }
 
@@ -647,8 +686,8 @@ async fn propose_exit(
         .federation_config()
         .cloned()
         .ok_or(cdk::Error::Internal)?;
-    let FederationOperation::Bark(FederationBarkOperation::ActionPlan(refresh)) =
-        &refresh_plan_entry.envelope.operation
+    let FederationBarkOperation::ActionPlan(refresh) =
+        super::bark_operation(&refresh_plan_entry.envelope.operation)?
     else {
         return Err(cdk::Error::Internal);
     };
@@ -704,9 +743,9 @@ async fn propose_exit(
         .map_err(|_| cdk::Error::Internal)?;
     submit_bark_operation(
         state,
-        federation.operation_envelope(FederationOperation::Bark(
+        federation.operation_envelope(super::bark_federation_operation(
             FederationBarkOperation::ActionPlan(plan),
-        )),
+        )?),
     )
     .await
 }
@@ -717,12 +756,12 @@ async fn submit_trigger_observation(
     projection: FederationBarkProjectionSnapshot,
     plan_entry: cdk::federation::FederationJournalEntry,
 ) -> Result<bool, cdk::Error> {
-    let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-        &plan_entry.envelope.operation
+    let FederationBarkOperation::ActionPlan(plan) =
+        super::bark_operation(&plan_entry.envelope.operation)?
     else {
         return Err(cdk::Error::Internal);
     };
-    if maintenance_trigger_observers(&projection, plan).contains(&runtime.member_id()) {
+    if maintenance_trigger_observers(&projection, &plan).contains(&runtime.member_id()) {
         return Ok(false);
     }
     let epoch = next_observation_epoch(&projection, plan.action_id, runtime.member_id())?;
@@ -740,9 +779,9 @@ async fn submit_trigger_observation(
         .ok_or(cdk::Error::Internal)?;
     submit_bark_operation(
         state,
-        federation.operation_envelope(FederationOperation::Bark(
+        federation.operation_envelope(super::bark_federation_operation(
             FederationBarkOperation::MemberObservation(observation),
-        )),
+        )?),
     )
     .await?;
     Ok(true)
@@ -756,8 +795,8 @@ async fn submit_confirmation_observation(
     registered_entry: cdk::federation::FederationJournalEntry,
     published_entry: cdk::federation::FederationJournalEntry,
 ) -> Result<bool, cdk::Error> {
-    let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-        &plan_entry.envelope.operation
+    let FederationBarkOperation::ActionPlan(plan) =
+        super::bark_operation(&plan_entry.envelope.operation)?
     else {
         return Err(cdk::Error::Internal);
     };
@@ -793,9 +832,9 @@ async fn submit_confirmation_observation(
         .ok_or(cdk::Error::Internal)?;
     submit_bark_operation(
         state,
-        federation.operation_envelope(FederationOperation::Bark(
+        federation.operation_envelope(super::bark_federation_operation(
             FederationBarkOperation::MemberObservation(observation),
-        )),
+        )?),
     )
     .await?;
     Ok(true)

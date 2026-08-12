@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
+#[cfg(all(feature = "sqlite", feature = "federation-bark"))]
+use cdk_common::bitcoin::secp256k1::PublicKey;
 use cdk_common::database::mint::Database;
 use cdk_common::database::Error as DatabaseError;
 #[cfg(feature = "sqlite")]
@@ -35,8 +37,6 @@ use cdk_common::federation::{
     FederationDkgFinalizedMemberConfig, FederationSetupActivation,
 };
 use cdk_common::mint_url::MintUrl;
-#[cfg(feature = "sqlite")]
-use cdk_common::PublicKey;
 use cdk_common::SecretKey;
 #[cfg(feature = "sqlite")]
 use cdk_common::{Amount, CurrencyUnit};
@@ -259,12 +259,14 @@ fn setup_frost_policy(
     args: &cli::FederationSetupCreateArgs,
     network: FederationSetupBitcoinNetwork,
 ) -> Result<FederationSetupFrostPolicy> {
-    let mut applications = vec![FederationSetupFrostApplication::CdkOnchain {
+    let applications = vec![FederationSetupFrostApplication::CdkOnchain {
         application_key_epoch: args.frost_application_key_epoch,
         confirmation_policy_version: 1,
         minimum_confirmations: args.frost_minimum_confirmations,
         fee_policy_version: args.frost_fee_policy_version,
     }];
+    #[cfg(feature = "federation-bark")]
+    let mut applications = applications;
     let bark = match (
         args.frost_bark_ark_server_public_key.as_deref(),
         args.frost_bark_application_key_epoch,
@@ -279,17 +281,24 @@ fn setup_frost_policy(
              --frost-bark-application-key-epoch, and --frost-bark-policy-config together"
         ),
     };
+    #[cfg(feature = "federation-bark")]
     if let Some((ark_server_public_key, application_key_epoch, policy_path)) = bark {
         let ark_server_public_key = PublicKey::from_str(ark_server_public_key)
             .context("invalid compressed Ark server public key")?;
-        let policy =
+        let policy: cdk_federation_bark::FederationBarkPolicyConfig =
             crate::read_federation_json(policy_path, "federation setup Bark public policy config")?;
-        applications.push(FederationSetupFrostApplication::Bark {
-            application_key_epoch,
-            network,
-            ark_server_public_key: Box::new(ark_server_public_key),
-            policy,
-        });
+        applications.push(cdk_federation_bark::federation_bark_setup_application(
+            cdk_federation_bark::FederationBarkSetupConfig {
+                application_key_epoch,
+                network: network.bitcoin_network(),
+                ark_server_public_key,
+                policy,
+            },
+        )?);
+    }
+    #[cfg(not(feature = "federation-bark"))]
+    if bark.is_some() {
+        bail!("setup Bark policy requires the `federation-bark` feature");
     }
     FederationSetupFrostPolicy::new(args.frost_root_key_epoch, applications, network)
         .context("invalid setup FROST policy")

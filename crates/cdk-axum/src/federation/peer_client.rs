@@ -6,12 +6,8 @@ use cdk::federation::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftBackupRequest, FederationAlephBftBackupResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
-    FederationBarkCustodyAbortRequest, FederationBarkThresholdDhRequest,
-    FederationBarkThresholdDhResponse, FederationBarkVirtualMusigCommitmentRequest,
-    FederationBarkVirtualMusigCommitmentResponse, FederationBarkVirtualMusigPartialRequest,
-    FederationBarkVirtualMusigPartialResponse, FederationCheckpoint,
-    FederationCheckpointFetchRequest, FederationCheckpointFetchResponse, FederationCheckpointId,
-    FederationCheckpointQuorum, FederationCheckpointQuorumRequest,
+    FederationCheckpoint, FederationCheckpointFetchRequest, FederationCheckpointFetchResponse,
+    FederationCheckpointId, FederationCheckpointQuorum, FederationCheckpointQuorumRequest,
     FederationCheckpointQuorumResponse, FederationCheckpointSignatureRequest,
     FederationCheckpointSignatureResponse, FederationCheckpointSummaryRequest,
     FederationCheckpointSummaryResponse, FederationConfig, FederationDkgActivationRequest,
@@ -29,6 +25,13 @@ use cdk::federation::{
     MemberConfigPublic, FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES,
     FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES, FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES, FEDERATION_REST_API_VERSION,
+};
+#[cfg(feature = "federation-bark")]
+use cdk::federation::{
+    FederationBarkCustodyAbortRequest, FederationBarkThresholdDhRequest,
+    FederationBarkThresholdDhResponse, FederationBarkVirtualMusigCommitmentRequest,
+    FederationBarkVirtualMusigCommitmentResponse, FederationBarkVirtualMusigPartialRequest,
+    FederationBarkVirtualMusigPartialResponse,
 };
 #[cfg(feature = "federation-bark")]
 use cdk::federation::{
@@ -879,12 +882,13 @@ where
         Ok(())
     }
 
+    #[cfg(feature = "federation-bark")]
     pub(crate) async fn request_bark_virtual_musig_commitment(
         &self,
         member: &MemberConfigPublic,
         request: &FederationBarkVirtualMusigCommitmentRequest,
     ) -> anyhow::Result<cdk_frost::VirtualMusigNonceCommitment> {
-        let kind = FederationRestMessageKind::BarkVirtualMusigCommitment;
+        let kind = FederationRestMessageKind::ApplicationVirtualMusigCommitment;
         let context = cdk_frost::SigningSessionContext::decode(&request.context)?;
         let signed = self.signed_request(member, kind, request.clone())?;
         let response: FederationSignedRequest<FederationBarkVirtualMusigCommitmentResponse> = self
@@ -900,12 +904,13 @@ where
         Ok(response.payload.decode(member.member_id, &context)?)
     }
 
+    #[cfg(feature = "federation-bark")]
     pub(crate) async fn request_bark_virtual_musig_partial(
         &self,
         member: &MemberConfigPublic,
         request: &FederationBarkVirtualMusigPartialRequest,
     ) -> anyhow::Result<cdk_frost::VirtualMusigPartialShare> {
-        let kind = FederationRestMessageKind::BarkVirtualMusigPartial;
+        let kind = FederationRestMessageKind::ApplicationVirtualMusigPartial;
         let context = cdk_frost::SigningSessionContext::decode(&request.context)?;
         let transcript_binding = request.transcript_binding;
         let signed = self.signed_request(member, kind, request.clone())?;
@@ -924,12 +929,13 @@ where
             .decode(member.member_id, context.session_id(), transcript_binding)?)
     }
 
+    #[cfg(feature = "federation-bark")]
     pub(crate) async fn request_bark_threshold_dh_share(
         &self,
         member: &MemberConfigPublic,
         request: &FederationBarkThresholdDhRequest,
     ) -> anyhow::Result<cdk_frost::ThresholdDhShare> {
-        let kind = FederationRestMessageKind::BarkThresholdDh;
+        let kind = FederationRestMessageKind::ApplicationThresholdDh;
         let context = cdk_frost::SigningSessionContext::decode(&request.context)?;
         let request_binding = request.request_binding;
         let signed = self.signed_request(member, kind, request.clone())?;
@@ -948,12 +954,13 @@ where
             .decode(member.member_id, context.session_id(), request_binding)?)
     }
 
+    #[cfg(feature = "federation-bark")]
     pub(crate) async fn abort_bark_custody(
         &self,
         member: &MemberConfigPublic,
         request: &FederationBarkCustodyAbortRequest,
     ) -> anyhow::Result<()> {
-        let kind = FederationRestMessageKind::BarkCustodyAbort;
+        let kind = FederationRestMessageKind::ApplicationCustodyAbort;
         let expected_session =
             cdk_frost::SigningSessionContext::decode(&request.context)?.session_id();
         let signed = self.signed_request(member, kind, request.clone())?;
@@ -988,7 +995,7 @@ where
         if request.recipient != member.member_id {
             anyhow::bail!("Bark receive-secret request recipient differs from target member");
         }
-        let kind = FederationRestMessageKind::BarkReceiveSecretPrepare;
+        let kind = FederationRestMessageKind::ApplicationSecretPrepare;
         let signed = self.signed_request(member, kind, request.clone())?;
         let response: FederationSignedRequest<FederationBarkReceiveSecretAcknowledgement> = self
             .http_post_with_timeout(
@@ -1016,7 +1023,7 @@ where
         request: &FederationBarkEvidenceAttestationRequest,
     ) -> anyhow::Result<FederationBarkEvidenceAttestationResponse> {
         request.validate_relayed(&self.public_config, self.private_config.member_id)?;
-        let kind = FederationRestMessageKind::BarkEvidenceAttestation;
+        let kind = FederationRestMessageKind::ApplicationEvidenceAttestation;
         let signed = self.signed_request(member, kind, request.clone())?;
         let response: FederationSignedRequest<FederationBarkEvidenceAttestationResponse> = self
             .http_post_bounded_with_timeout(

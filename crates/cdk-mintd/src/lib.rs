@@ -48,14 +48,14 @@ use cdk::nuts::{
 use cdk_axum::cache::HttpCache;
 use cdk_common::common::QuoteTTL;
 use cdk_common::database::DynMintDatabase;
-#[cfg(feature = "federation-bark")]
-use cdk_common::federation::FederationBarkReceiveAntiDosPolicy;
 #[cfg(feature = "federation")]
 use cdk_common::federation::{
     FederationConfig, FederationDkgCeremonyRecord, FederationDkgCeremonyState,
     FederationDkgSetupMethod, FederationPaymentObservationContext,
     FederationPaymentVerificationPolicy, MemberConfigPrivate,
 };
+#[cfg(feature = "federation-bark")]
+use cdk_federation_bark::FederationBarkReceiveAntiDosPolicy;
 // internal crate modules
 #[cfg(feature = "prometheus")]
 use cdk_common::payment::MetricsMintPayment;
@@ -1515,10 +1515,7 @@ fn validate_federated_bark_startup(
             "federation.bark.enabled=true requires exactly one satoshi ln_backend = \"federated-bark\" entry"
         );
     }
-    let application = public_config
-        .frost_wallet
-        .as_ref()
-        .and_then(|wallet| wallet.bark_application.as_ref())
+    let application = cdk_federation_bark::federation_bark_application(public_config)?
         .ok_or_else(|| anyhow!("federated Bark requires an accepted Bark FROST application"))?;
     let network = federation
         .bark
@@ -1883,11 +1880,7 @@ fn federation_bark_local_config(
     if !wallet.enabled {
         return Ok(None);
     }
-    let application = runtime
-        .public_config()
-        .frost_wallet
-        .as_ref()
-        .and_then(|wallet| wallet.bark_application.as_ref())
+    let application = cdk_federation_bark::federation_bark_application(runtime.public_config())?
         .ok_or_else(|| anyhow!("accepted Bark application is missing"))?;
     let selected = settings
         .ln
@@ -2497,8 +2490,11 @@ async fn configure_payment_backends(
                 )?;
                 let application = mint_builder
                     .federation_config()
-                    .and_then(|runtime| runtime.public_config().frost_wallet.as_ref())
-                    .and_then(|wallet| wallet.bark_application.as_ref())
+                    .map(|runtime| {
+                        cdk_federation_bark::federation_bark_application(runtime.public_config())
+                    })
+                    .transpose()?
+                    .flatten()
                     .ok_or_else(|| {
                         anyhow!("federated Bark requires an accepted Bark application")
                     })?;

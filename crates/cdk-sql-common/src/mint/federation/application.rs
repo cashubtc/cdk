@@ -109,12 +109,27 @@ where
         .collect()
     }
 
-    async fn apply_federation_bark_operation(
+    async fn apply_federation_application_operation(
         &mut self,
         entry: &FederationJournalEntry,
-        operation: &FederationBarkOperation,
+        operation: &FederationApplicationOperation,
     ) -> Result<(), Self::Err> {
-        super::bark_projection::apply_bark_operation(&self.inner, entry, operation).await
+        #[cfg(feature = "federation-bark")]
+        {
+            let bark =
+                cdk_federation_bark::validate_federation_bark_application_operation(operation)?;
+            return super::bark_projection::apply_bark_operation(&self.inner, entry, &bark).await;
+        }
+        #[cfg(not(feature = "federation-bark"))]
+        {
+            let _ = (entry, operation);
+            Err(
+                cdk_common::federation::FederationError::ApplicationOperationInvalid {
+                    reason: "federation application support is disabled".to_owned(),
+                }
+                .into(),
+            )
+        }
     }
 }
 
@@ -197,15 +212,28 @@ where
         .collect()
     }
 
-    async fn get_federation_bark_projection_snapshot(
+    async fn get_federation_application_projection_snapshot(
         &self,
-    ) -> Result<FederationBarkProjectionSnapshot, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        super::bark_projection::get_bark_projection_snapshot(&*conn).await
+        application_id: cdk_common::federation::FederationFrostApplicationId,
+    ) -> Result<serde_json::Value, Self::Err> {
+        #[cfg(feature = "federation-bark")]
+        {
+            if application_id != cdk_federation_bark::federation_bark_application_id()? {
+                return Ok(serde_json::Value::Null);
+            }
+            let conn = self
+                .pool
+                .get()
+                .await
+                .map_err(|e| Error::Database(Box::new(e)))?;
+            let snapshot = super::bark_projection::get_bark_projection_snapshot(&*conn).await?;
+            return serde_json::to_value(snapshot).map_err(Error::from);
+        }
+        #[cfg(not(feature = "federation-bark"))]
+        {
+            let _ = application_id;
+            Ok(serde_json::Value::Null)
+        }
     }
 
     async fn get_federation_mint_quote_states(

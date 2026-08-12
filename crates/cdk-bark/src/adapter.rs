@@ -5,13 +5,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::database::DynMintDatabase;
-use cdk_common::federation::{FederationBarkPolicyConfig, FederationBarkVtxoState};
 use cdk_common::payment::{
     Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
     MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
     PaymentQuoteResponse, SettingsResponse, WaitPaymentResponse,
 };
 use cdk_common::CurrencyUnit;
+use cdk_federation_bark::{
+    federation_bark_application_id, FederationBarkPolicyConfig, FederationBarkProjectionSnapshot,
+    FederationBarkVtxoState,
+};
 use futures::{stream, Stream};
 
 use crate::{Error, FederatedBarkLimits, FederatedBarkRuntime};
@@ -162,8 +165,13 @@ impl MintPayment for FederatedBarkPaymentAdapter {
             .ok_or(cdk_common::payment::Error::AmountMismatch)?;
         let projection = self
             .database
-            .get_federation_bark_projection_snapshot()
+            .get_federation_application_projection_snapshot(
+                federation_bark_application_id()
+                    .map_err(|_| cdk_common::payment::Error::UnknownPaymentState)?,
+            )
             .await
+            .map_err(|_| cdk_common::payment::Error::UnknownPaymentState)?;
+        let projection: FederationBarkProjectionSnapshot = serde_json::from_value(projection)
             .map_err(|_| cdk_common::payment::Error::UnknownPaymentState)?;
         let available = projection
             .vtxos

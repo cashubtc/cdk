@@ -41,7 +41,13 @@ mod lightning_address;
 #[cfg(any(feature = "wallet", feature = "mint"))]
 pub use cdk_common::auth::oidc::OidcClient;
 #[cfg(feature = "federation")]
-pub use cdk_common::federation;
+pub mod federation {
+    //! Generic federation types plus enabled application protocols.
+
+    pub use cdk_common::federation::*;
+    #[cfg(feature = "federation-bark")]
+    pub use cdk_federation_bark::*;
+}
 #[cfg(feature = "mint")]
 #[doc(hidden)]
 pub use cdk_common::payment as cdk_payment;

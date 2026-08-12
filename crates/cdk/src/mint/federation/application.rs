@@ -53,20 +53,23 @@ async fn finish_federation_apply_transaction<T>(
     finish_federation_transaction(transaction, entry, "apply", outcome).await
 }
 
+#[cfg(feature = "federation-bark")]
 #[derive(Debug, Clone, Copy)]
 struct FederationBarkResultObservationKey {
-    action_id: cdk_common::federation::FederationBarkActionId,
-    status: cdk_common::federation::FederationBarkObservationStatus,
-    payment_hash: cdk_common::federation::FederationBarkDigest,
-    source_scope: cdk_common::federation::FederationBarkDigest,
+    action_id: cdk_federation_bark::FederationBarkActionId,
+    status: cdk_federation_bark::FederationBarkObservationStatus,
+    payment_hash: cdk_federation_bark::FederationBarkDigest,
+    source_scope: cdk_federation_bark::FederationBarkDigest,
     amount: Amount,
     fee: Amount,
-    result_hash: cdk_common::federation::FederationBarkDigest,
+    result_hash: cdk_federation_bark::FederationBarkDigest,
 }
 
+#[cfg(feature = "federation-bark")]
 const FEDERATION_BARK_CERTIFICATE_OBSERVATION_ID_DOMAIN: &[u8] =
     b"cdk/federation/bark-certificate-observation-id/v1";
 
+#[cfg(feature = "federation-bark")]
 fn federation_bark_certificate_observation_id(
     operation_id: FederationOperationId,
     observer: MemberId,
@@ -80,16 +83,16 @@ fn federation_bark_certificate_observation_id(
     FederationOperationId::from_bytes(sha256::Hash::hash(&bytes).to_byte_array())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "federation-bark"))]
 fn federation_bark_matching_result_observers(
-    projection: &cdk_common::federation::FederationBarkProjectionSnapshot,
+    projection: &cdk_federation_bark::FederationBarkProjectionSnapshot,
     key: FederationBarkResultObservationKey,
 ) -> std::collections::BTreeSet<MemberId> {
     projection
         .observations
         .iter()
         .filter_map(|record| match &record.operation {
-            cdk_common::federation::FederationBarkOperation::MemberObservation(observation)
+            cdk_federation_bark::FederationBarkOperation::MemberObservation(observation)
                 if observation.action_id == key.action_id
                     && observation.status == key.status
                     && observation.payment_hash == Some(key.payment_hash)
@@ -105,12 +108,14 @@ fn federation_bark_matching_result_observers(
         .collect()
 }
 
+#[cfg(feature = "federation-bark")]
 #[derive(Debug, Clone)]
 enum FederationBarkPaymentObservationTemplate {
     Mint(FederationMintQuotePaymentObservation),
     Melt(FederationMeltQuotePaymentObservation),
 }
 
+#[cfg(feature = "federation-bark")]
 impl FederationBarkPaymentObservationTemplate {
     fn with_observer(&self, observer: MemberId) -> FederationPaymentObservation {
         match self {
@@ -128,9 +133,10 @@ impl FederationBarkPaymentObservationTemplate {
     }
 }
 
+#[cfg(feature = "federation-bark")]
 fn federation_bark_result_payment_records_from_projection(
-    projection: &cdk_common::federation::FederationBarkProjectionSnapshot,
-    expected: &cdk_common::federation::FederationBarkMemberObservation,
+    projection: &cdk_federation_bark::FederationBarkProjectionSnapshot,
+    expected: &cdk_federation_bark::FederationBarkMemberObservation,
     required_bark_observers: u16,
     template: &FederationBarkPaymentObservationTemplate,
 ) -> Vec<FederationPaymentObservationRecord> {
@@ -165,7 +171,7 @@ fn federation_bark_result_payment_records_from_projection(
         matching_by_observer
             .entry(candidate.observer)
             .and_modify(
-                |existing: &mut &cdk_common::federation::FederationBarkObservationRecord| {
+                |existing: &mut &cdk_federation_bark::FederationBarkObservationRecord| {
                     if record.operation_index < existing.operation_index {
                         *existing = record;
                     }
@@ -288,6 +294,7 @@ impl Mint {
     }
 
     /// Return the replaceable receive-worker actor for one applied Bark receive intent.
+    #[cfg(feature = "federation-bark")]
     pub async fn federation_bark_receive_actor(
         &self,
         operation_id: FederationOperationId,
@@ -303,10 +310,8 @@ impl Mint {
             .ok_or(Error::Internal)?;
         if entry.status() != FederationOperationStatus::Applied
             || !matches!(
-                entry.envelope.operation,
-                FederationOperation::Bark(
-                    cdk_common::federation::FederationBarkOperation::ReceiveIntent(_)
-                )
+                projection::bark_operation(&entry.envelope.operation),
+                Ok(cdk_federation_bark::FederationBarkOperation::ReceiveIntent(_))
             )
         {
             return Err(Error::Internal);
@@ -318,10 +323,11 @@ impl Mint {
             .await
     }
 
+    #[cfg(feature = "federation-bark")]
     async fn federation_bark_result_payment_records(
         &self,
         entry: &FederationJournalEntry,
-        observation: &cdk_common::federation::FederationBarkMemberObservation,
+        observation: &cdk_federation_bark::FederationBarkMemberObservation,
     ) -> Result<Vec<FederationPaymentObservationRecord>, Error> {
         let config = self
             .effective_federation_config()
@@ -334,7 +340,7 @@ impl Mint {
             .any(|record| record.operation_id == entry.operation_id)
         {
             projection.observations.push(
-                cdk_common::federation::FederationBarkObservationRecord {
+                cdk_federation_bark::FederationBarkObservationRecord {
                     operation_id: entry.operation_id,
                     operation_index: entry.index,
                     operation: FederationBarkOperation::MemberObservation(observation.clone()),
@@ -363,10 +369,11 @@ impl Mint {
         ))
     }
 
+    #[cfg(feature = "federation-bark")]
     async fn federation_bark_certificate_payment_records(
         &self,
         entry: &FederationJournalEntry,
-        certificate: &cdk_common::federation::FederationBarkEvidenceCertificate,
+        certificate: &cdk_federation_bark::FederationBarkEvidenceCertificate,
     ) -> Result<Vec<FederationPaymentObservationRecord>, Error> {
         let observer = certificate
             .attestations
@@ -397,15 +404,16 @@ impl Mint {
             .collect())
     }
 
+    #[cfg(feature = "federation-bark")]
     async fn federation_bark_payment_observation_template(
         &self,
-        action: &cdk_common::federation::FederationBarkActionRecord,
-        observation: &cdk_common::federation::FederationBarkMemberObservation,
+        action: &cdk_federation_bark::FederationBarkActionRecord,
+        observation: &cdk_federation_bark::FederationBarkMemberObservation,
     ) -> Result<Option<FederationBarkPaymentObservationTemplate>, Error> {
         match (action.phase, observation.status) {
             (
-                cdk_common::federation::FederationBarkSemanticPhase::ReceiveClaimed,
-                cdk_common::federation::FederationBarkObservationStatus::Succeeded,
+                cdk_federation_bark::FederationBarkSemanticPhase::ReceiveClaimed,
+                cdk_federation_bark::FederationBarkObservationStatus::Succeeded,
             ) => {
                 let FederationBarkOperation::ActionTransition(transition) = &action.operation else {
                     return Err(Error::Internal);
@@ -428,7 +436,7 @@ impl Mint {
                     .filter(|mutation| {
                         mutation.previous_state.is_none()
                             && mutation.new_state
-                                == cdk_common::federation::FederationBarkVtxoState::Spendable
+                                == cdk_federation_bark::FederationBarkVtxoState::Spendable
                     })
                     .try_fold(Amount::ZERO, |sum, mutation| {
                         sum.checked_add(mutation.amount).ok_or(Error::Internal)
@@ -454,8 +462,8 @@ impl Mint {
                 )))
             }
             (
-                cdk_common::federation::FederationBarkSemanticPhase::PaymentSucceeded,
-                cdk_common::federation::FederationBarkObservationStatus::Succeeded,
+                cdk_federation_bark::FederationBarkSemanticPhase::PaymentSucceeded,
+                cdk_federation_bark::FederationBarkObservationStatus::Succeeded,
             ) => {
                 let FederationBarkOperation::ActionTransition(transition) = &action.operation else {
                     return Err(Error::Internal);
@@ -465,23 +473,22 @@ impl Mint {
                     .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
                     .await?
                     .ok_or(Error::Internal)?;
-                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-                    &plan_entry.envelope.operation
+                let FederationBarkOperation::ActionPlan(plan) = projection::bark_operation(&plan_entry.envelope.operation)?
                 else {
                     return Err(Error::Internal);
                 };
-                projection::validate_payment_success_proof(plan, transition)?;
+                projection::validate_payment_success_proof(&plan, transition)?;
                 let proof = transition
                     .artifacts
                     .iter()
                     .find(|artifact| {
                         artifact.kind
-                            == cdk_common::federation::FederationBarkArtifactKind::Proof
+                            == cdk_federation_bark::FederationBarkArtifactKind::Proof
                     })
                     .ok_or(Error::Internal)?;
                 self.federation_bark_melt_payment_template(
                     observation,
-                    plan,
+                    &plan,
                     cdk_common::MeltQuoteState::Paid,
                     Some(crate::util::hex::encode(&proof.bytes)),
                 )
@@ -489,8 +496,8 @@ impl Mint {
                 .map(Some)
             }
             (
-                cdk_common::federation::FederationBarkSemanticPhase::RevocationCompleted,
-                cdk_common::federation::FederationBarkObservationStatus::Failed,
+                cdk_federation_bark::FederationBarkSemanticPhase::RevocationCompleted,
+                cdk_federation_bark::FederationBarkObservationStatus::Failed,
             ) => {
                 let FederationBarkOperation::ActionTransition(completed) = &action.operation else {
                     return Err(Error::Internal);
@@ -500,13 +507,12 @@ impl Mint {
                     .get_federation_journal_entry_by_operation_id(completed.plan_operation_id)
                     .await?
                     .ok_or(Error::Internal)?;
-                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(revocation)) =
-                    &revocation_entry.envelope.operation
+                let FederationBarkOperation::ActionPlan(revocation) = projection::bark_operation(&revocation_entry.envelope.operation)?
                 else {
                     return Err(Error::Internal);
                 };
                 if revocation.kind
-                    != cdk_common::federation::FederationBarkActionKind::FailedSendRevocation
+                    != cdk_federation_bark::FederationBarkActionKind::FailedSendRevocation
                 {
                     return Err(Error::Internal);
                 }
@@ -517,8 +523,7 @@ impl Mint {
                     )
                     .await?
                     .ok_or(Error::Internal)?;
-                let FederationOperation::Bark(FederationBarkOperation::ActionTransition(failed)) =
-                    &failed_entry.envelope.operation
+                let FederationBarkOperation::ActionTransition(failed) = projection::bark_operation(&failed_entry.envelope.operation)?
                 else {
                     return Err(Error::Internal);
                 };
@@ -527,14 +532,13 @@ impl Mint {
                     .get_federation_journal_entry_by_operation_id(failed.plan_operation_id)
                     .await?
                     .ok_or(Error::Internal)?;
-                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-                    &plan_entry.envelope.operation
+                let FederationBarkOperation::ActionPlan(plan) = projection::bark_operation(&plan_entry.envelope.operation)?
                 else {
                     return Err(Error::Internal);
                 };
                 self.federation_bark_melt_payment_template(
                     observation,
-                    plan,
+                    &plan,
                     cdk_common::MeltQuoteState::Failed,
                     Some(completed.result_hash.to_hex()),
                 )
@@ -545,14 +549,15 @@ impl Mint {
         }
     }
 
+    #[cfg(feature = "federation-bark")]
     async fn federation_bark_melt_payment_template(
         &self,
-        observation: &cdk_common::federation::FederationBarkMemberObservation,
-        plan: &cdk_common::federation::FederationBarkActionPlan,
+        observation: &cdk_federation_bark::FederationBarkMemberObservation,
+        plan: &cdk_federation_bark::FederationBarkActionPlan,
         state: cdk_common::MeltQuoteState,
         payment_proof: Option<String>,
     ) -> Result<FederationBarkPaymentObservationTemplate, Error> {
-        if plan.kind != cdk_common::federation::FederationBarkActionKind::LightningSend {
+        if plan.kind != cdk_federation_bark::FederationBarkActionKind::LightningSend {
             return Err(Error::Internal);
         }
         let payment_hash = plan.payment_hash.ok_or(Error::Internal)?;
@@ -1208,13 +1213,26 @@ impl Mint {
                     .await?;
                 Ok(true)
             }
-            FederationOperation::Bark(operation) => {
-                self.apply_federation_bark(entry, operation).await?;
+            #[cfg(feature = "federation-bark")]
+            FederationOperation::Application(application) => {
+                let operation =
+                    cdk_federation_bark::validate_federation_bark_application_operation(
+                        application,
+                    )?;
+                self.apply_federation_bark(entry, &operation).await?;
                 Ok(true)
             }
+            #[cfg(not(feature = "federation-bark"))]
+            FederationOperation::Application(_) => Err(
+                FederationError::ApplicationOperationInvalid {
+                    reason: "federation application support is disabled".to_owned(),
+                }
+                .into(),
+            ),
         }
     }
 
+    #[cfg(feature = "federation-bark")]
     async fn apply_federation_bark(
         &self,
         entry: &FederationJournalEntry,
@@ -1227,6 +1245,9 @@ impl Mint {
             let runtime_config = self.federation_config().ok_or(Error::Internal)?;
             intent.validate_secret_acknowledgements(runtime_config.public_config())?;
         }
+        let FederationOperation::Application(application) = &entry.envelope.operation else {
+            return Err(Error::Internal);
+        };
         let payment_records = match operation {
             FederationBarkOperation::MemberObservation(observation) => {
                 self.federation_bark_result_payment_records(entry, observation)
@@ -1254,7 +1275,7 @@ impl Mint {
             let mut transaction = self.localstore.begin_transaction().await?;
             let outcome: Result<(), Error> = async {
                 transaction
-                    .apply_federation_bark_operation(entry, operation)
+                    .apply_federation_application_operation(entry, application)
                     .await
                     .map_err(Error::from)?;
                 for record in &payment_records {
@@ -1280,7 +1301,7 @@ impl Mint {
         let mut transaction = self.localstore.begin_transaction().await?;
         let outcome = async {
             transaction
-                .apply_federation_bark_operation(entry, operation)
+                .apply_federation_application_operation(entry, application)
                 .await?;
             for record in &payment_records {
                 transaction

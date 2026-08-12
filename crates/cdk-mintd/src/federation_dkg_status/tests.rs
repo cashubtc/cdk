@@ -802,7 +802,7 @@ fn completed_dual_dkg_registers_bark_under_the_same_sealed_root() {
         144,
         18,
         30,
-        cdk_common::federation::FederationBarkReceiveAntiDosPolicy::ProtectedToken,
+        cdk_federation_bark::FederationBarkReceiveAntiDosPolicy::ProtectedToken,
     )
     .expect("Bark policy");
     let mut wrong_network = finalized.clone();
@@ -819,12 +819,8 @@ fn completed_dual_dkg_registers_bark_under_the_same_sealed_root() {
     assert!(wrong_network_error
         .to_string()
         .contains("networks must match"));
-    assert!(wrong_network
-        .public_config
-        .frost_wallet
-        .as_ref()
-        .expect("wallet")
-        .bark_application
+    assert!(federation_bark_application(&wrong_network.public_config)
+        .expect("valid config without Bark")
         .is_none());
     attach_initial_frost_bark_application(
         &mut finalized,
@@ -842,7 +838,9 @@ fn completed_dual_dkg_registers_bark_under_the_same_sealed_root() {
         .frost_wallet
         .as_ref()
         .expect("FROST wallet");
-    let bark = wallet.bark_application.as_ref().expect("Bark application");
+    let bark = federation_bark_application(&finalized.public_config)
+        .expect("valid Bark application")
+        .expect("Bark application");
     assert_eq!(wallet.version, 2);
     assert_eq!(bark.network, bitcoin::Network::Regtest);
     assert_eq!(bark.ark_server_public_key, server.serialize());

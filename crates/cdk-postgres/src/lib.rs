@@ -719,10 +719,10 @@ mod test {
         .await;
     }
 
-    #[cfg(feature = "federation")]
+    #[cfg(feature = "federation-bark")]
     #[tokio::test]
     async fn federation_bark_projection_persistence() {
-        cdk_common::database::mint::test::federation_bark_projection_persistence(
+        cdk_federation_bark::test_support::federation_bark_projection_persistence(
             provide_mint_db(unique_federation_test_id(
                 "federation_bark_projection_persistence",
             ))

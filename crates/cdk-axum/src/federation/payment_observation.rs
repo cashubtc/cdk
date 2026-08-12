@@ -457,6 +457,8 @@ impl FederationPaymentObserver {
         quote_id: &QuoteId,
         observer_fallback_round: u32,
     ) -> Result<FederationPaymentAdvancement, cdk::Error> {
+        #[cfg(not(feature = "federation-bark"))]
+        let _ = observer_fallback_round;
         let Some(quote) = state.mint.localstore().get_mint_quote(quote_id).await? else {
             return Ok(FederationPaymentAdvancement::Complete);
         };
@@ -567,6 +569,8 @@ impl FederationPaymentObserver {
         quote_id: &QuoteId,
         observer_fallback_round: u32,
     ) -> Result<FederationPaymentAdvancement, cdk::Error> {
+        #[cfg(not(feature = "federation-bark"))]
+        let _ = observer_fallback_round;
         let Some(quote) = state.mint.localstore().get_melt_quote(quote_id).await? else {
             return Ok(FederationPaymentAdvancement::Complete);
         };
@@ -979,17 +983,23 @@ fn payment_wakes_for_entry(
             .map(FederationPaymentQuote::melt)
             .into_iter()
             .collect(),
-        FederationOperation::Bark(operation) => operation
-            .quote()
-            .and_then(parse)
-            .into_iter()
-            .flat_map(|quote| {
-                [
-                    FederationPaymentQuote::mint(quote.clone()),
-                    FederationPaymentQuote::melt(quote),
-                ]
-            })
-            .collect(),
+        #[cfg(feature = "federation-bark")]
+        FederationOperation::Application(application) => {
+            cdk::federation::validate_federation_bark_application_operation(application)
+                .ok()
+                .and_then(|operation| operation.quote().map(str::to_owned))
+                .and_then(|quote| parse(&quote))
+                .into_iter()
+                .flat_map(|quote| {
+                    [
+                        FederationPaymentQuote::mint(quote.clone()),
+                        FederationPaymentQuote::melt(quote),
+                    ]
+                })
+                .collect()
+        }
+        #[cfg(not(feature = "federation-bark"))]
+        FederationOperation::Application(_) => Vec::new(),
         FederationOperation::ChainObservation(FederationChainObservation::Reorg(_))
         | FederationOperation::Swap(_)
         | FederationOperation::KeysetRotation(_)

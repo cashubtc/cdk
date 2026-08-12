@@ -17,6 +17,8 @@ use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Router;
 use cache::HttpCache;
+#[cfg(feature = "federation-bark")]
+use cdk::federation::FederationBarkOperation;
 #[cfg(feature = "federation")]
 use cdk::federation::{
     redact_federation_operator_message, FederationAddressAllocationScope,
@@ -36,8 +38,6 @@ use cdk::federation::{
     FederationRestSequenceTracker, FederationSubmitOperationResponse, FederationSuffixVerifier,
     MemberId, VerifiedFederationCheckpointQuorum,
 };
-#[cfg(feature = "federation-bark")]
-use cdk::federation::{FederationBarkOperation, FederationOperation};
 use cdk::mint::Mint;
 #[cfg(feature = "federation")]
 use cdk_bdk::{
@@ -1227,7 +1227,7 @@ mod tests {
             version: 1,
             root,
             cdk_onchain_application: application,
-            bark_application: None,
+            extension_applications: BTreeMap::new(),
         };
         let federation_id = cdk::federation::FederationId::from_bytes([11; 32]);
 
@@ -3133,9 +3133,7 @@ async fn create_federation_runtime_state_with_wallet(
                 .frost_wallet
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("federated Bark requires a FROST wallet"))?;
-            let application = wallet
-                .bark_application
-                .as_ref()
+            let application = cdk::federation::federation_bark_application(config.public_config())?
                 .ok_or_else(|| anyhow::anyhow!("federated Bark application is missing"))?;
             let public =
                 application.derived_public_package(config.public_config(), &wallet.root)?;
@@ -3436,10 +3434,10 @@ async fn reconcile_federation_bark_runtime(
         .iter()
         .filter(|entry| entry.status() == FederationOperationStatus::Applied)
     {
-        let FederationOperation::Bark(operation) = &entry.envelope.operation else {
+        let Ok(operation) = crate::federation::bark_operation(&entry.envelope.operation) else {
             continue;
         };
-        match operation {
+        match &operation {
             FederationBarkOperation::ReceiveIntent(intent) => {
                 if store
                     .status(intent.action_id)
@@ -3610,8 +3608,8 @@ async fn reconcile_federation_bark_runtime(
                     .get_federation_journal_entry_by_operation_id(send_plan_operation_id)
                     .await?
                     .ok_or_else(|| anyhow::anyhow!("accepted Bark send plan is missing"))?;
-                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-                    &plan_entry.envelope.operation
+                let FederationBarkOperation::ActionPlan(plan) =
+                    crate::federation::bark_operation(&plan_entry.envelope.operation)?
                 else {
                     return Err(anyhow::anyhow!(
                         "accepted Bark send transition references a non-plan"
@@ -3742,13 +3740,13 @@ async fn reconcile_federation_bark_maintenance(
                     cdk::federation::FederationBarkActionKind::Refresh,
                 )
                 .await?;
-                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-                    &plan_entry.envelope.operation
+                let FederationBarkOperation::ActionPlan(plan) =
+                    crate::federation::bark_operation(&plan_entry.envelope.operation)?
                 else {
                     unreachable!("maintenance plan lookup returned a non-plan");
                 };
                 runtime
-                    .apply_refresh_plan(&projection, plan)
+                    .apply_refresh_plan(&projection, &plan)
                     .await
                     .map_err(|_| {
                         anyhow::anyhow!("accepted Bark refresh plan could not be replayed")
@@ -3768,13 +3766,13 @@ async fn reconcile_federation_bark_maintenance(
                     cdk::federation::FederationBarkSemanticPhase::RefreshCompleted,
                 )
                 .await?;
-                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-                    &plan_entry.envelope.operation
+                let FederationBarkOperation::ActionPlan(plan) =
+                    crate::federation::bark_operation(&plan_entry.envelope.operation)?
                 else {
                     unreachable!("maintenance plan lookup returned a non-plan");
                 };
                 runtime
-                    .apply_refresh_plan(&projection, plan)
+                    .apply_refresh_plan(&projection, &plan)
                     .await
                     .map_err(|_| {
                         anyhow::anyhow!("accepted Bark refresh plan could not be replayed")
@@ -3793,13 +3791,13 @@ async fn reconcile_federation_bark_maintenance(
                     cdk::federation::FederationBarkActionKind::EmergencyExit,
                 )
                 .await?;
-                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-                    &plan_entry.envelope.operation
+                let FederationBarkOperation::ActionPlan(plan) =
+                    crate::federation::bark_operation(&plan_entry.envelope.operation)?
                 else {
                     unreachable!("maintenance plan lookup returned a non-plan");
                 };
                 runtime
-                    .apply_emergency_exit_plan(&projection, plan)
+                    .apply_emergency_exit_plan(&projection, &plan)
                     .await
                     .map_err(|_| {
                         anyhow::anyhow!("accepted Bark exit plan could not be replayed")
@@ -3912,10 +3910,11 @@ async fn bark_maintenance_plan_entry(
         .get_federation_journal_entry_by_operation_id(operation_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("accepted Bark maintenance plan is missing"))?;
+    let operation = crate::federation::bark_operation(&entry.envelope.operation)?;
     if entry.status() != FederationOperationStatus::Applied
         || !matches!(
-            &entry.envelope.operation,
-            FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan))
+            operation,
+            FederationBarkOperation::ActionPlan(plan)
                 if plan.action_id == action.action_id && plan.kind == kind
         )
     {
@@ -3944,10 +3943,11 @@ async fn bark_maintenance_transition_entry(
         .get_federation_journal_entry_by_operation_id(operation_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("accepted Bark maintenance transition is missing"))?;
+    let operation = crate::federation::bark_operation(&entry.envelope.operation)?;
     if entry.status() != FederationOperationStatus::Applied
         || !matches!(
-            &entry.envelope.operation,
-            FederationOperation::Bark(FederationBarkOperation::ActionTransition(transition))
+            operation,
+            FederationBarkOperation::ActionTransition(transition)
                 if transition.action_id == action_id && transition.phase == phase
         )
     {

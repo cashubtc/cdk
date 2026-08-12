@@ -69,10 +69,10 @@ pub enum FederationRestMessageKind {
     WalletTransactionStatus,
     /// Request an immediate exact-byte retry for one durable transaction.
     WalletRebroadcast,
-    /// Replay accepted Bark state into one member's local wallet.
-    BarkReconcile,
-    /// Retry exactly one accepted Bark action with explicit acknowledgement.
-    BarkActionRetry,
+    /// Reconcile one extension application's accepted local state.
+    ApplicationReconcile,
+    /// Retry one extension application's accepted action.
+    ApplicationActionRetry,
     /// Confirm that a peer is ready for the exact configured DKG ceremony.
     DkgReadiness,
     /// Publish a pre-reveal DKG commitment hash to a peer.
@@ -95,18 +95,18 @@ pub enum FederationRestMessageKind {
     FrostSigningAbort,
     /// Notify selected signers of the independently verified aggregate result.
     FrostAggregateResult,
-    /// Ask one selected Bark signer for a durable virtual MuSig2 commitment.
-    BarkVirtualMusigCommitment,
-    /// Deliver a finalized Bark MuSig2 transcript and request one partial.
-    BarkVirtualMusigPartial,
-    /// Request one verifiable Bark threshold-DH contribution.
-    BarkThresholdDh,
-    /// Burn one Bark custody protocol session after ambiguity or failover.
-    BarkCustodyAbort,
-    /// Persist one protected Bark receive secret before acknowledging it.
-    BarkReceiveSecretPrepare,
-    /// Deliver one durable independently verified Bark evidence attestation.
-    BarkEvidenceAttestation,
+    /// Ask one application signer for a durable virtual MuSig2 commitment.
+    ApplicationVirtualMusigCommitment,
+    /// Deliver an application's finalized MuSig2 transcript and request one partial.
+    ApplicationVirtualMusigPartial,
+    /// Request one verifiable application threshold-DH contribution.
+    ApplicationThresholdDh,
+    /// Burn one application custody session after ambiguity or failover.
+    ApplicationCustodyAbort,
+    /// Persist one protected application secret before acknowledging it.
+    ApplicationSecretPrepare,
+    /// Deliver one independently verified application evidence attestation.
+    ApplicationEvidenceAttestation,
     /// Share a member signature over a DKG/setup transcript hash.
     DkgTranscriptSignature,
     /// Confirm that one member assembled the exact finalized DKG config.
@@ -156,8 +156,8 @@ impl FederationRestMessageKind {
             Self::CheckpointAudit => b"checkpoint_audit",
             Self::WalletTransactionStatus => b"wallet_transaction_status",
             Self::WalletRebroadcast => b"wallet_rebroadcast",
-            Self::BarkReconcile => b"bark_reconcile",
-            Self::BarkActionRetry => b"bark_action_retry",
+            Self::ApplicationReconcile => b"application_reconcile",
+            Self::ApplicationActionRetry => b"application_action_retry",
             Self::DkgReadiness => b"dkg_readiness",
             Self::DkgCommitment => b"dkg_commitment",
             Self::DkgReveal => b"dkg_reveal",
@@ -169,12 +169,12 @@ impl FederationRestMessageKind {
             Self::FrostSigningPackage => b"frost_signing_package",
             Self::FrostSigningAbort => b"frost_signing_abort",
             Self::FrostAggregateResult => b"frost_aggregate_result",
-            Self::BarkVirtualMusigCommitment => b"bark_virtual_musig_commitment",
-            Self::BarkVirtualMusigPartial => b"bark_virtual_musig_partial",
-            Self::BarkThresholdDh => b"bark_threshold_dh",
-            Self::BarkCustodyAbort => b"bark_custody_abort",
-            Self::BarkReceiveSecretPrepare => b"bark_receive_secret_prepare",
-            Self::BarkEvidenceAttestation => b"bark_evidence_attestation",
+            Self::ApplicationVirtualMusigCommitment => b"application_virtual_musig_commitment",
+            Self::ApplicationVirtualMusigPartial => b"application_virtual_musig_partial",
+            Self::ApplicationThresholdDh => b"application_threshold_dh",
+            Self::ApplicationCustodyAbort => b"application_custody_abort",
+            Self::ApplicationSecretPrepare => b"application_secret_prepare",
+            Self::ApplicationEvidenceAttestation => b"application_evidence_attestation",
             Self::DkgTranscriptSignature => b"dkg_transcript_signature",
             Self::DkgActivation => b"dkg_activation",
             Self::SubmitOperation => b"submit_operation",
@@ -1225,21 +1225,21 @@ impl FederationFrostSigningAck {
     }
 }
 
-/// Coordinator request for one durable Bark virtual MuSig2 commitment.
+/// Coordinator request for one durable application virtual MuSig2 commitment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FederationBarkVirtualMusigCommitmentRequest {
+pub struct FederationApplicationVirtualMusigCommitmentRequest {
     /// Private custody payload version.
     pub version: u16,
     /// Canonical protocol-separated signing context.
     pub context: Vec<u8>,
-    /// Canonical Bark VTXO signing derivation.
+    /// Canonical application signing derivation.
     pub derivation: Vec<u8>,
     /// Canonical accepted-operation authorization.
     pub authorization: Vec<u8>,
 }
 
-impl FederationBarkVirtualMusigCommitmentRequest {
+impl FederationApplicationVirtualMusigCommitmentRequest {
     /// Construct one bounded virtual MuSig2 round-one request.
     #[must_use]
     pub fn new(
@@ -1266,7 +1266,7 @@ impl FederationBarkVirtualMusigCommitmentRequest {
         cdk_frost::AuthorizationRequest,
     )> {
         ensure_frost_signing_version(self.version)?;
-        decode_bark_scope(
+        decode_application_scope(
             &self.context,
             &self.derivation,
             &self.authorization,
@@ -1277,10 +1277,10 @@ impl FederationBarkVirtualMusigCommitmentRequest {
     }
 }
 
-/// Signed participant response containing one durable Bark virtual nonce.
+/// Signed participant response containing one durable application virtual nonce.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FederationBarkVirtualMusigCommitmentResponse {
+pub struct FederationApplicationVirtualMusigCommitmentResponse {
     /// Private custody payload version.
     pub version: u16,
     /// Protocol-separated session identifier.
@@ -1289,7 +1289,7 @@ pub struct FederationBarkVirtualMusigCommitmentResponse {
     pub commitment: Vec<u8>,
 }
 
-impl FederationBarkVirtualMusigCommitmentResponse {
+impl FederationApplicationVirtualMusigCommitmentResponse {
     /// Construct a response after durable commitment publication.
     #[must_use]
     pub fn new(commitment: &cdk_frost::VirtualMusigNonceCommitment) -> Self {
@@ -1313,17 +1313,17 @@ impl FederationBarkVirtualMusigCommitmentResponse {
             || commitment.participant().get() != signer.get()
         {
             return Err(frost_signing_invalid(
-                "Bark virtual commitment has the wrong signer or session",
+                "application virtual commitment has the wrong signer or session",
             ));
         }
         Ok(commitment)
     }
 }
 
-/// Coordinator request for one finalized Bark virtual MuSig2 partial.
+/// Coordinator request for one finalized application virtual MuSig2 partial.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FederationBarkVirtualMusigPartialRequest {
+pub struct FederationApplicationVirtualMusigPartialRequest {
     /// Private custody payload version.
     pub version: u16,
     /// Canonical protocol-separated signing context.
@@ -1340,7 +1340,7 @@ pub struct FederationBarkVirtualMusigPartialRequest {
     pub transcript_binding: [u8; 32],
 }
 
-impl FederationBarkVirtualMusigPartialRequest {
+impl FederationApplicationVirtualMusigPartialRequest {
     /// Construct one exact virtual MuSig2 round-two request.
     #[must_use]
     pub fn new(
@@ -1378,7 +1378,7 @@ impl FederationBarkVirtualMusigPartialRequest {
             cdk_frost::SigningSessionContext::decode(&self.context).map_err(frost_signing_error)?;
         let authorization = cdk_frost::AuthorizationRequest::decode(&self.authorization)
             .map_err(frost_signing_error)?;
-        validate_bark_context(
+        validate_application_context(
             &context,
             &authorization,
             federation_id,
@@ -1392,7 +1392,7 @@ impl FederationBarkVirtualMusigPartialRequest {
             .map_err(frost_signing_error)?;
         let signer = cdk_frost::MemberId::new(signer.get()).map_err(frost_signing_error)?;
         let own = commitments.commitments().get(&signer).ok_or_else(|| {
-            frost_signing_invalid("Bark virtual commitment set omits the receiving signer")
+            frost_signing_invalid("application virtual commitment set omits the receiving signer")
         })?;
         let commitment_signers = commitments
             .commitments()
@@ -1410,7 +1410,7 @@ impl FederationBarkVirtualMusigPartialRequest {
                 != transcript.user_public_nonce()
         {
             return Err(frost_signing_invalid(
-                "Bark virtual partial request bindings are inconsistent",
+                "application virtual partial request bindings are inconsistent",
             ));
         }
         Ok((
@@ -1423,10 +1423,10 @@ impl FederationBarkVirtualMusigPartialRequest {
     }
 }
 
-/// Signed participant response containing one verified Bark virtual partial.
+/// Signed participant response containing one verified application virtual partial.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FederationBarkVirtualMusigPartialResponse {
+pub struct FederationApplicationVirtualMusigPartialResponse {
     /// Private custody payload version.
     pub version: u16,
     /// Exact finalized transcript binding.
@@ -1435,7 +1435,7 @@ pub struct FederationBarkVirtualMusigPartialResponse {
     pub partial: Vec<u8>,
 }
 
-impl FederationBarkVirtualMusigPartialResponse {
+impl FederationApplicationVirtualMusigPartialResponse {
     /// Construct a response after durable nonce consumption.
     #[must_use]
     pub fn new(partial: &cdk_frost::VirtualMusigPartialShare) -> Self {
@@ -1462,22 +1462,22 @@ impl FederationBarkVirtualMusigPartialResponse {
             || self.transcript_binding != expected_transcript_binding
         {
             return Err(frost_signing_invalid(
-                "Bark virtual partial has the wrong signer, session, or transcript",
+                "application virtual partial has the wrong signer, session, or transcript",
             ));
         }
         Ok(partial)
     }
 }
 
-/// Coordinator request for one verifiable Bark threshold-DH contribution.
+/// Coordinator request for one verifiable application threshold-DH contribution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FederationBarkThresholdDhRequest {
+pub struct FederationApplicationThresholdDhRequest {
     /// Private custody payload version.
     pub version: u16,
     /// Canonical protocol-separated signing context.
     pub context: Vec<u8>,
-    /// Canonical Bark VTXO derivation.
+    /// Canonical application derivation.
     pub derivation: Vec<u8>,
     /// Canonical accepted-operation authorization.
     pub authorization: Vec<u8>,
@@ -1487,7 +1487,7 @@ pub struct FederationBarkThresholdDhRequest {
     pub request_binding: [u8; 32],
 }
 
-impl FederationBarkThresholdDhRequest {
+impl FederationApplicationThresholdDhRequest {
     /// Construct one bounded operation-bound threshold-DH request.
     #[must_use]
     pub fn new(
@@ -1518,7 +1518,7 @@ impl FederationBarkThresholdDhRequest {
         cdk_frost::ThresholdDhRequest,
     )> {
         ensure_frost_signing_version(self.version)?;
-        let (context, derivation, authorization) = decode_bark_scope(
+        let (context, derivation, authorization) = decode_application_scope(
             &self.context,
             &self.derivation,
             &self.authorization,
@@ -1533,7 +1533,7 @@ impl FederationBarkThresholdDhRequest {
             || request.binding() != self.request_binding
         {
             return Err(frost_signing_invalid(
-                "Bark threshold-DH request bindings are inconsistent",
+                "application threshold-DH request bindings are inconsistent",
             ));
         }
         Ok((context, derivation, authorization, request))
@@ -1543,7 +1543,7 @@ impl FederationBarkThresholdDhRequest {
 /// Signed participant response containing one DLEQ-proven threshold-DH share.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FederationBarkThresholdDhResponse {
+pub struct FederationApplicationThresholdDhResponse {
     /// Private custody payload version.
     pub version: u16,
     /// Commitment to the exact threshold-DH input.
@@ -1552,7 +1552,7 @@ pub struct FederationBarkThresholdDhResponse {
     pub share: Vec<u8>,
 }
 
-impl FederationBarkThresholdDhResponse {
+impl FederationApplicationThresholdDhResponse {
     /// Construct a response from a durably cached threshold-DH result.
     #[must_use]
     pub fn new(share: &cdk_frost::ThresholdDhShare) -> Self {
@@ -1579,17 +1579,17 @@ impl FederationBarkThresholdDhResponse {
             || self.request_binding != expected_request_binding
         {
             return Err(frost_signing_invalid(
-                "Bark threshold-DH share has the wrong signer, session, or request",
+                "application threshold-DH share has the wrong signer, session, or request",
             ));
         }
         Ok(share)
     }
 }
 
-/// Coordinator request to permanently burn one Bark custody protocol session.
+/// Coordinator request to permanently burn one application custody protocol session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FederationBarkCustodyAbortRequest {
+pub struct FederationApplicationCustodyAbortRequest {
     /// Private custody payload version.
     pub version: u16,
     /// Canonical protocol-separated signing context.
@@ -1600,8 +1600,8 @@ pub struct FederationBarkCustodyAbortRequest {
     pub reason: cdk_frost::NonceBurnReason,
 }
 
-impl FederationBarkCustodyAbortRequest {
-    /// Construct an exact session-bound Bark custody abort.
+impl FederationApplicationCustodyAbortRequest {
+    /// Construct an exact session-bound application custody abort.
     #[must_use]
     pub fn new(
         context: &cdk_frost::SigningSessionContext,
@@ -1616,7 +1616,7 @@ impl FederationBarkCustodyAbortRequest {
         }
     }
 
-    /// Decode and validate the Bark protocol, application, session, and signer.
+    /// Decode and validate the application protocol, application, session, and signer.
     pub fn decode(
         &self,
         federation_id: FederationId,
@@ -1636,10 +1636,10 @@ impl FederationBarkCustodyAbortRequest {
             cdk_frost::CustodyProtocol::VirtualMusig2 | cdk_frost::CustodyProtocol::ThresholdDh
         ) {
             return Err(frost_signing_invalid(
-                "Bark custody abort uses an ordinary FROST session",
+                "application custody abort uses an ordinary FROST session",
             ));
         }
-        validate_bark_context(
+        validate_application_context(
             &context,
             &authorization,
             federation_id,
@@ -1650,7 +1650,7 @@ impl FederationBarkCustodyAbortRequest {
     }
 }
 
-fn decode_bark_scope(
+fn decode_application_scope(
     context: &[u8],
     derivation: &[u8],
     authorization: &[u8],
@@ -1667,16 +1667,16 @@ fn decode_bark_scope(
         cdk_frost::SigningDerivation::decode(derivation).map_err(frost_signing_error)?;
     let authorization =
         cdk_frost::AuthorizationRequest::decode(authorization).map_err(frost_signing_error)?;
-    validate_bark_context(&context, &authorization, federation_id, signer, protocol)?;
+    validate_application_context(&context, &authorization, federation_id, signer, protocol)?;
     if context.derivation_binding() != derivation.binding() {
         return Err(frost_signing_invalid(
-            "Bark custody derivation differs from its session",
+            "application custody derivation differs from its session",
         ));
     }
     Ok((context, derivation, authorization))
 }
 
-fn validate_bark_context(
+fn validate_application_context(
     context: &cdk_frost::SigningSessionContext,
     authorization: &cdk_frost::AuthorizationRequest,
     federation_id: FederationId,
@@ -1695,7 +1695,7 @@ fn validate_bark_context(
         || authorization.derivation_version() != context.registration().derivation_version()
     {
         return Err(frost_signing_invalid(
-            "Bark custody request bindings are inconsistent",
+            "application custody request bindings are inconsistent",
         ));
     }
     Ok(())
@@ -3007,9 +3007,9 @@ pub struct FederationLocalStatusResponse {
     /// Bounded accepted-state wallet diagnosis without addresses or transaction contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallet_operator: Option<super::FederationWalletOperatorStatus>,
-    /// Bounded accepted-state Bark diagnosis without payment or custody secrets.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bark_operator: Option<super::FederationBarkOperatorStatus>,
+    /// Redacted operator views supplied by separately feature-gated applications.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub application_operators: BTreeMap<String, serde_json::Value>,
 }
 
 /// Scalar metadata for one stored, previously verified checkpoint quorum.
@@ -4312,7 +4312,7 @@ mod tests {
             ),
             wallet_liveness: Some(crate::federation::FederationWalletLivenessStatus::default()),
             wallet_operator: None,
-            bark_operator: None,
+            application_operators: BTreeMap::new(),
         };
 
         let value = serde_json::to_value(&status).expect("local status json");
@@ -5917,7 +5917,7 @@ mod tests {
             FederationRestMessageKind::SubmitOperation,
             FederationRestMessageKind::AlephBftActivity,
             FederationRestMessageKind::AlephBftNetworkMessage,
-            FederationRestMessageKind::BarkEvidenceAttestation,
+            FederationRestMessageKind::ApplicationEvidenceAttestation,
         ] {
             tracker
                 .verify_next_sequence(kind, first_private.member_id, 1)
@@ -6040,8 +6040,8 @@ mod tests {
             FederationRestMessageKind::FrostSigningPackage,
             FederationRestMessageKind::FrostSigningAbort,
             FederationRestMessageKind::FrostAggregateResult,
-            FederationRestMessageKind::BarkReceiveSecretPrepare,
-            FederationRestMessageKind::BarkEvidenceAttestation,
+            FederationRestMessageKind::ApplicationSecretPrepare,
+            FederationRestMessageKind::ApplicationEvidenceAttestation,
         ] {
             assert!(!kind.has_durable_replay_state(), "unexpected durable kind");
         }

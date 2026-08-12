@@ -2,10 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{
+use cdk_common::federation::{FederationError, MemberId, Result, FEDERATION_REST_API_VERSION};
+
+use crate::{
     FederationBarkActionId, FederationBarkActionKind, FederationBarkDigest,
-    FederationBarkSemanticPhase, FederationBarkVtxoState, FederationError, MemberId, Result,
-    FEDERATION_REST_API_VERSION,
+    FederationBarkSemanticPhase, FederationBarkVtxoState,
 };
 
 /// Status schema version for the private federated Bark operator view.
@@ -80,7 +81,7 @@ impl FederationBarkRetryRequest {
     pub fn validate(self) -> Result<()> {
         validate_rest_version(self.version)?;
         if !self.acknowledge_side_effects {
-            return Err(FederationError::BarkOperationInvalid {
+            return Err(FederationError::ApplicationOperationInvalid {
                 reason: "Bark action retry requires explicit side-effect acknowledgement"
                     .to_string(),
             });

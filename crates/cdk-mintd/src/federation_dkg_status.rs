@@ -3,12 +3,12 @@ use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "federation-bark")]
 use std::str::FromStr;
 
 use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
-    redact_federation_operator_message, FederationBarkFrostApplicationConfig,
-    FederationBarkPolicyConfig, FederationConfig, FederationDkgActivationRequest,
+    redact_federation_operator_message, FederationConfig, FederationDkgActivationRequest,
     FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgDriverPhase,
     FederationDkgDriverRecords, FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
@@ -19,8 +19,11 @@ use cdk_common::federation::{
 };
 #[cfg(feature = "sqlite")]
 use cdk_common::federation::{FederationSetupFrostApplication, FederationSetupManifest};
-#[cfg(feature = "sqlite")]
-use cdk_common::nuts::nut01::PublicKey;
+#[cfg(feature = "federation-bark")]
+use cdk_federation_bark::{
+    federation_bark_application, federation_bark_setup_config, federation_frost_wallet_with_bark,
+    FederationBarkFrostApplicationConfig, FederationBarkPolicyConfig,
+};
 #[cfg(feature = "sqlite")]
 use serde::Serialize;
 
@@ -145,19 +148,32 @@ fn maybe_write_finalized_configs(
         activations,
     )?;
     let cdk_bootstrap = FrostCdkBootstrap::from_args(args)?;
+    #[cfg(feature = "federation-bark")]
     let bark_bootstrap = FrostBarkBootstrap::from_args(args)?;
+    #[cfg(not(feature = "federation-bark"))]
+    let bark_bootstrap_requested = args.frost_bark_network.is_some()
+        || args.frost_bark_ark_server_public_key.is_some()
+        || args.frost_bark_application_key_epoch.is_some()
+        || args.frost_bark_policy_config.is_some();
+    #[cfg(not(feature = "federation-bark"))]
+    if bark_bootstrap_requested {
+        bail!("initial Bark bootstrap requires the `federation-bark` feature");
+    }
+    #[cfg(feature = "federation-bark")]
     if bark_bootstrap.is_some() && cdk_bootstrap.is_none() {
         bail!("initial Bark bootstrap requires the federated CDK recovery wallet");
     }
     if let Some(bootstrap) = cdk_bootstrap {
         attach_initial_frost_cdk_wallet(&mut finalized, frost_roots, bootstrap)?;
     }
+    #[cfg(feature = "federation-bark")]
     if let Some(bootstrap) = bark_bootstrap {
         attach_initial_frost_bark_application(&mut finalized, bootstrap)?;
     }
     write_finalized_member_config(output_dir, &finalized, args.force).map(Some)
 }
 
+#[cfg(feature = "federation-bark")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FrostBarkBootstrap {
     network: bitcoin::Network,
@@ -166,6 +182,7 @@ struct FrostBarkBootstrap {
     policy: FederationBarkPolicyConfig,
 }
 
+#[cfg(feature = "federation-bark")]
 impl FrostBarkBootstrap {
     fn from_args(args: &FederationDkgStatusArgs) -> Result<Option<Self>> {
         let values = (
@@ -262,6 +279,7 @@ pub(crate) fn attach_manifest_frost_applications(
 ) -> Result<()> {
     manifest.validate(cdk_common::federation::FederationSetupUrlPolicy::AllowInsecureLocalhost)?;
     let mut cdk_application = None;
+    #[cfg(feature = "federation-bark")]
     let mut bark_application = None;
     for application in &manifest.frost_policy().applications {
         match application {
@@ -281,28 +299,26 @@ pub(crate) fn attach_manifest_frost_applications(
                     application_key_epoch: *application_key_epoch,
                 });
             }
-            FederationSetupFrostApplication::Bark {
-                application_key_epoch,
-                network,
-                ark_server_public_key,
-                policy,
-            } => {
-                let PublicKey::Secp256k1(ark_server_public_key) = ark_server_public_key.as_ref()
-                else {
-                    bail!("manifest Ark server identity is not secp256k1");
+            #[cfg(feature = "federation-bark")]
+            FederationSetupFrostApplication::Extension { .. } => {
+                let Some(setup) = federation_bark_setup_config(application)? else {
+                    continue;
                 };
                 bark_application = Some(FrostBarkBootstrap {
-                    network: network.bitcoin_network(),
-                    ark_server_public_key: *ark_server_public_key,
-                    application_key_epoch: *application_key_epoch,
-                    policy: policy.clone(),
+                    network: setup.network,
+                    ark_server_public_key: setup.ark_server_public_key,
+                    application_key_epoch: setup.application_key_epoch,
+                    policy: setup.policy,
                 });
             }
+            #[cfg(not(feature = "federation-bark"))]
+            FederationSetupFrostApplication::Extension { .. } => {}
         }
     }
     let cdk_application = cdk_application
         .ok_or_else(|| anyhow::anyhow!("manifest omits the required CDK FROST application"))?;
     attach_initial_frost_cdk_wallet(finalized, frost_roots, cdk_application)?;
+    #[cfg(feature = "federation-bark")]
     if let Some(bark_application) = bark_application {
         attach_initial_frost_bark_application(finalized, bark_application)?;
     }
@@ -341,6 +357,7 @@ fn attach_initial_frost_cdk_wallet(
     Ok(())
 }
 
+#[cfg(feature = "federation-bark")]
 fn attach_initial_frost_bark_application(
     finalized: &mut FederationDkgFinalizedMemberConfig,
     bootstrap: FrostBarkBootstrap,
@@ -352,7 +369,7 @@ fn attach_initial_frost_bark_application(
         .ok_or_else(|| {
             anyhow::anyhow!("initial Bark bootstrap requires an existing FROST CDK wallet")
         })?;
-    if wallet.bark_application.is_some() {
+    if federation_bark_application(&finalized.public_config)?.is_some() {
         bail!("initial Bark bootstrap cannot replace an existing Bark application");
     }
     if wallet.cdk_onchain_application.network != bootstrap.network {
@@ -366,7 +383,7 @@ fn attach_initial_frost_bark_application(
         bootstrap.ark_server_public_key,
         bootstrap.policy,
     )?;
-    let upgraded = FederationFrostWalletConfig::new_with_bark(
+    let upgraded = federation_frost_wallet_with_bark(
         &finalized.public_config,
         wallet.root.clone(),
         wallet.cdk_onchain_application.clone(),

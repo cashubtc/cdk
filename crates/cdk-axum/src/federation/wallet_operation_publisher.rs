@@ -84,7 +84,7 @@ mod tests {
         assert!(coordinates(FederationOperationKind::Swap));
         assert!(!coordinates(FederationOperationKind::MintQuote));
         assert!(!coordinates(FederationOperationKind::MintQuotePayment));
-        assert!(!coordinates(FederationOperationKind::Bark));
+        assert!(!coordinates(FederationOperationKind::Application));
         assert!(!coordinates(FederationOperationKind::ChainObservation));
     }
 

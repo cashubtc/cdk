@@ -6,22 +6,25 @@ use async_trait::async_trait;
 use cdk_common::federation::{
     generate_trusted_dealer_configs, FederationAlephBftBackupStatus,
     FederationAlephBftRecoveryCursor, FederationApplicationDigest, FederationApplicationFrontier,
-    FederationBarkActionId, FederationBarkActionKind, FederationBarkActionStatus,
-    FederationBarkDigest, FederationBarkOperatorStatus, FederationBarkProtocolStatus,
-    FederationBarkReceiveSecretCoverage, FederationBarkSemanticPhase, FederationBarkVtxoState,
-    FederationBarkVtxoStatusCount, FederationCheckpointId, FederationCheckpointKind,
-    FederationCheckpointQuorumSummary, FederationCheckpointStatus, FederationCheckpointSummary,
-    FederationCommittedFrontier, FederationConsensusRuntimeStatus, FederationFinalizedFrontier,
-    FederationFinalizedItemDigest, FederationInvalidOperationAlertSummary, FederationJournalDigest,
-    FederationJournalFrontier, FederationMaterializedStateDigest,
-    FederationPaymentObservationContext, FederationPaymentObservationEvidenceGroupSummary,
-    FederationPeerStatus, FederationWalletBroadcastHealth, FederationWalletOperationPhase,
+    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorumSummary,
+    FederationCheckpointStatus, FederationCheckpointSummary, FederationCommittedFrontier,
+    FederationConsensusRuntimeStatus, FederationFinalizedFrontier, FederationFinalizedItemDigest,
+    FederationInvalidOperationAlertSummary, FederationJournalDigest, FederationJournalFrontier,
+    FederationMaterializedStateDigest, FederationPaymentObservationContext,
+    FederationPaymentObservationEvidenceGroupSummary, FederationPeerStatus,
+    FederationWalletBroadcastHealth, FederationWalletOperationPhase,
     FederationWalletOperationPhaseCount, FederationWalletOperatorStatus, FederationWalletUtxoState,
     FederationWalletUtxoStatusCount, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut22::AuthToken;
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
+use cdk_federation_bark::{
+    FederationBarkActionId, FederationBarkActionKind, FederationBarkActionStatus,
+    FederationBarkDigest, FederationBarkOperatorStatus, FederationBarkProtocolStatus,
+    FederationBarkReceiveSecretCoverage, FederationBarkSemanticPhase, FederationBarkVtxoState,
+    FederationBarkVtxoStatusCount,
+};
 use cdk_http_client::{HttpError, RawResponse};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -215,7 +218,7 @@ fn local_status(
         wallet_recovery: None,
         wallet_liveness: None,
         wallet_operator: None,
-        bark_operator: None,
+        application_operators: BTreeMap::new(),
     }
 }
 
@@ -1219,7 +1222,10 @@ fn ready_guard_rejects_bark_projection_lag() {
     let mut bark = bark_operator_fixture();
     bark.readiness = "behind_consensus".to_string();
     bark.projection_lag_operations = 1;
-    status.bark_operator = Some(bark);
+    status.application_operators.insert(
+        "bark".to_string(),
+        serde_json::to_value(bark).expect("Bark operator status"),
+    );
 
     let error = ensure_statuses_ready(&[status]).expect_err("Bark lag must fail readiness");
     assert!(error.to_string().contains("projection_lag_operations=1"));

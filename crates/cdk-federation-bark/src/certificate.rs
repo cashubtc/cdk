@@ -5,13 +5,16 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Serialize};
 
-use super::operation::{canonical_json_bytes, FederationOperationSignature};
-use super::{
-    FederationBarkActionId, FederationBarkDigest, FederationBarkMemberObservation,
-    FederationBarkObservationStatus, FederationConfig, FederationConfigDigest, FederationError,
-    FederationId, FederationOperationId, MemberConfigPrivate, MemberId, Result,
+use cdk_common::federation::{
+    FederationConfig, FederationConfigDigest, FederationError, FederationId, FederationOperationId,
+    FederationOperationSignature, MemberConfigPrivate, MemberId, Result,
 };
-use crate::Amount;
+use cdk_common::Amount;
+
+use crate::{
+    canonical_json_bytes, FederationBarkActionId, FederationBarkDigest,
+    FederationBarkMemberObservation, FederationBarkObservationStatus,
+};
 
 /// Current signed Bark evidence-certificate format.
 pub const FEDERATION_BARK_EVIDENCE_CERTIFICATE_VERSION: u16 = 1;
@@ -23,7 +26,7 @@ const BARK_EVIDENCE_CERTIFICATE_ID_DOMAIN: &[u8] =
     b"cdk/federation/bark-evidence-certificate-id/v1";
 
 fn invalid_certificate(reason: impl Into<String>) -> FederationError {
-    FederationError::BarkOperationInvalid {
+    FederationError::ApplicationOperationInvalid {
         reason: reason.into(),
     }
 }
@@ -86,10 +89,7 @@ impl FederationBarkEvidenceBinding {
         attempt: u32,
         observation: &FederationBarkMemberObservation,
     ) -> Result<Self> {
-        let application = config
-            .frost_wallet
-            .as_ref()
-            .and_then(|wallet| wallet.bark_application.as_ref())
+        let application = crate::federation_bark_application(config)?
             .ok_or_else(|| invalid_certificate("Bark evidence requires an accepted application"))?;
         let binding = Self {
             version: FEDERATION_BARK_EVIDENCE_CERTIFICATE_VERSION,
@@ -134,10 +134,7 @@ impl FederationBarkEvidenceBinding {
         {
             return Err(invalid_certificate("invalid Bark evidence binding"));
         }
-        let application = config
-            .frost_wallet
-            .as_ref()
-            .and_then(|wallet| wallet.bark_application.as_ref())
+        let application = crate::federation_bark_application(config)?
             .ok_or_else(|| invalid_certificate("Bark evidence requires an accepted application"))?;
         if self.application_key_epoch != application.application_key_epoch {
             return Err(invalid_certificate(
@@ -174,7 +171,7 @@ impl FederationBarkEvidenceBinding {
     #[must_use]
     pub fn observation_for(&self, observer: MemberId) -> FederationBarkMemberObservation {
         FederationBarkMemberObservation {
-            version: super::FEDERATION_BARK_OPERATION_VERSION,
+            version: crate::FEDERATION_BARK_OPERATION_VERSION,
             action_id: self.action_id,
             quote: Some(self.quote.clone()),
             observer,

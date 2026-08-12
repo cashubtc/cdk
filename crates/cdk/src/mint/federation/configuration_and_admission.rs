@@ -3,14 +3,15 @@ use std::str::FromStr;
 #[cfg(feature = "prometheus")]
 use std::time::Instant;
 
+#[cfg(feature = "federation-bark")]
 use cdk_common::bitcoin::hashes::{sha256, Hash};
 use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
     FederationAcceptedSigningRequest, FederationAddressAllocationOperation,
     FederationAddressAllocationScope, FederationAddressKeychain, FederationApplicationState,
-    FederationBarkEvidenceCertificate, FederationBarkOperation, FederationBlindSignatureShareSet,
-    FederationChainObservation, FederationConfig, FederationConfigDigest, FederationError,
+    FederationBlindSignatureShareSet, FederationChainObservation, FederationConfig,
+    FederationConfigDigest, FederationError,
     FederationFrostApplicationId, FederationId, FederationJournalEntry,
     FederationKeysetRotationOperation, FederationMaterializedStateKey, FederationMeltOperation,
     FederationMeltQuoteMetadata, FederationMeltQuoteOperation,
@@ -24,6 +25,11 @@ use cdk_common::federation::{
     FederationTransactionBroadcastObservation, FederationTransactionProposal,
     FederationTransactionScope, FederationTransactionSettlementPolicy, MemberConfigPrivate,
     MemberId,
+};
+#[cfg(feature = "federation-bark")]
+use cdk_federation_bark::{
+    validate_federation_bark_application_operation, FederationBarkEvidenceCertificate,
+    FederationBarkOperation,
 };
 use cdk_common::mint::{
     MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
@@ -706,9 +712,11 @@ impl FederationRuntimeConfig {
                 observation.validate()?;
                 self.validate_federation_observer(observation.observer)
             }
-            FederationOperation::Bark(operation) => {
+            #[cfg(feature = "federation-bark")]
+            FederationOperation::Application(application) => {
+                let operation = validate_federation_bark_application_operation(application)?;
                 operation.validate()?;
-                let evidence_certificate = match operation {
+                let evidence_certificate = match &operation {
                     FederationBarkOperation::ActionTransition(transition) => {
                         transition.evidence_certificate.as_deref()
                     }
@@ -727,23 +735,31 @@ impl FederationRuntimeConfig {
                 if let Some(author) = operation.claimed_author() {
                     self.validate_federation_observer(author)?;
                 }
-                if let FederationBarkOperation::ReceiveIntent(intent) = operation {
+                if let FederationBarkOperation::ReceiveIntent(intent) = &operation {
                     intent.validate_secret_acknowledgements(&self.public_config)?;
                 }
                 Ok(())
             }
+            #[cfg(not(feature = "federation-bark"))]
+            FederationOperation::Application(_) => Err(
+                FederationError::ApplicationOperationInvalid {
+                    reason: "federation application support is disabled".to_owned(),
+                }
+                .into(),
+            ),
         }
     }
 
+    #[cfg(feature = "federation-bark")]
     fn validate_bark_evidence_certificate(
         &self,
         certificate: &FederationBarkEvidenceCertificate,
     ) -> Result<(), Error> {
         let required = match certificate.binding.phase {
-            cdk_common::federation::FederationBarkEvidencePhase::ReceiveHtlcsReady => {
+            cdk_federation_bark::FederationBarkEvidencePhase::ReceiveHtlcsReady => {
                 self.public_config.threshold_params.signature_threshold
             }
-            cdk_common::federation::FederationBarkEvidencePhase::ReceiveClaimed => {
+            cdk_federation_bark::FederationBarkEvidencePhase::ReceiveClaimed => {
                 self.public_config.threshold_params.signature_threshold.max(
                     self.public_config
                         .payment_verification_policy(FederationPaymentObservationContext::MintQuote)

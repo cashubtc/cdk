@@ -156,6 +156,31 @@ pub(crate) use self::sync_loop::spawn_federation_peer_sync_loop_with_config;
 use self::sync_loop::{
     run_federation_peer_sync_round, run_federation_peer_sync_round_with_backoff,
 };
+
+#[cfg(feature = "federation-bark")]
+pub(super) fn bark_operation(
+    operation: &cdk::federation::FederationOperation,
+) -> Result<cdk::federation::FederationBarkOperation, cdk::Error> {
+    let cdk::federation::FederationOperation::Application(application) = operation else {
+        return Err(cdk::Error::Internal);
+    };
+    cdk::federation::validate_federation_bark_application_operation(application)
+        .map_err(cdk::Error::from)
+}
+
+#[cfg(feature = "federation-bark")]
+pub(super) fn bark_federation_operation(
+    operation: cdk::federation::FederationBarkOperation,
+) -> Result<cdk::federation::FederationOperation, cdk::Error> {
+    cdk::federation::federation_bark_application_operation(operation).map_err(cdk::Error::from)
+}
+
+#[cfg(feature = "federation-bark")]
+pub(super) fn bark_application(
+    config: &cdk::federation::FederationConfig,
+) -> Result<cdk::federation::FederationBarkFrostApplicationConfig, cdk::Error> {
+    cdk::federation::federation_bark_application(config)?.ok_or(cdk::Error::Internal)
+}
 #[cfg(feature = "iroh")]
 pub use self::transport::federation_transport_with_iroh_node;
 pub use self::transport::{default_federation_transport, FederationTransport};

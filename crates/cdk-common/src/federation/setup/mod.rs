@@ -12,10 +12,9 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use url::{Host, Url};
 
 use super::{
-    FederationBarkPolicyConfig, FederationCheckpointPolicy, FederationConfig,
-    FederationDkgCeremonyId, FederationDkgKeysetSpec, FederationError,
-    FederationPaymentObservationPolicy, FederationPaymentVerificationPolicy, MemberConfigPublic,
-    MemberId, Result, ThresholdParams, FEDERATION_MAX_DKG_KEYSET_AMOUNTS,
+    FederationCheckpointPolicy, FederationConfig, FederationDkgCeremonyId, FederationDkgKeysetSpec,
+    FederationError, FederationPaymentObservationPolicy, FederationPaymentVerificationPolicy,
+    MemberConfigPublic, MemberId, Result, ThresholdParams, FEDERATION_MAX_DKG_KEYSET_AMOUNTS,
     FEDERATION_MAX_DKG_MEMBERS, FEDERATION_WALLET_PROTOCOL_VERSION,
 };
 use crate::mint_url::MintUrl;
@@ -954,16 +953,18 @@ pub enum FederationSetupFrostApplication {
         /// Transaction fee policy version.
         fee_policy_version: u16,
     },
-    /// Bark VTXO application derived from the same FROST root.
-    Bark {
+    /// Separately feature-gated application derived from the same FROST root.
+    Extension {
+        /// Stable application identifier.
+        application_id: super::FederationFrostApplicationId,
         /// Application derivation epoch.
         application_key_epoch: u64,
-        /// Bitcoin network accepted by the Bark application.
-        network: FederationSetupBitcoinNetwork,
-        /// Single accepted Ark server key.
-        ark_server_public_key: Box<PublicKey>,
-        /// Exact Bark fee, CLTV, retention, and recovery policy.
-        policy: FederationBarkPolicyConfig,
+        /// Application derivation contract version.
+        derivation_version: u16,
+        /// Commitment to the typed authorization policy.
+        authorization_policy: [u8; 32],
+        /// Application-owned public setup policy.
+        configuration: serde_json::Value,
     },
 }
 
@@ -971,11 +972,11 @@ impl FederationSetupFrostApplication {
     fn tag(&self) -> u8 {
         match self {
             Self::CdkOnchain { .. } => 1,
-            Self::Bark { .. } => 2,
+            Self::Extension { .. } => 2,
         }
     }
 
-    fn validate(&self, network: FederationSetupBitcoinNetwork) -> Result<()> {
+    fn validate(&self, _network: FederationSetupBitcoinNetwork) -> Result<()> {
         match self {
             Self::CdkOnchain {
                 application_key_epoch,
@@ -991,19 +992,25 @@ impl FederationSetupFrostApplication {
                     return Err(invalid("unsupported CDK on-chain FROST application policy"));
                 }
             }
-            Self::Bark {
+            Self::Extension {
+                application_id: _,
                 application_key_epoch,
-                network: bark_network,
-                ark_server_public_key,
-                policy,
+                derivation_version,
+                authorization_policy,
+                configuration,
             } => {
-                if *application_key_epoch == 0 || *bark_network != network {
-                    return Err(invalid("Bark FROST application network or epoch mismatch"));
+                if *application_key_epoch == 0
+                    || *derivation_version == 0
+                    || *authorization_policy == [0; 32]
+                    || configuration.is_null()
+                {
+                    return Err(invalid("extension FROST application policy is invalid"));
                 }
-                if !matches!(ark_server_public_key.as_ref(), PublicKey::Secp256k1(_)) {
-                    return Err(invalid("Ark server identity must use secp256k1"));
+                let mut configuration = configuration.clone();
+                configuration.sort_all_objects();
+                if serde_json::to_vec(&configuration)?.len() > 64 * 1024 {
+                    return Err(invalid("extension FROST application policy is oversized"));
                 }
-                policy.validate()?;
             }
         }
         Ok(())
@@ -1023,30 +1030,23 @@ impl FederationSetupFrostApplication {
                 output.extend_from_slice(&minimum_confirmations.to_be_bytes());
                 output.extend_from_slice(&fee_policy_version.to_be_bytes());
             }
-            Self::Bark {
+            Self::Extension {
+                application_id,
                 application_key_epoch,
-                network,
-                ark_server_public_key,
-                policy,
+                derivation_version,
+                authorization_policy,
+                configuration,
             } => {
+                output.extend_from_slice(&application_id.to_bytes());
                 output.extend_from_slice(&application_key_epoch.to_be_bytes());
-                output.push(network.discriminant());
-                output.extend_from_slice(&ark_server_public_key.to_bytes());
-                output.extend_from_slice(&policy.version.to_be_bytes());
-                output.extend_from_slice(&policy.receive_base_fee_sat.to_be_bytes());
-                output.extend_from_slice(&policy.receive_fee_ppm.to_be_bytes());
-                output.extend_from_slice(&policy.maximum_outgoing_base_fee_sat.to_be_bytes());
-                output.extend_from_slice(&policy.maximum_outgoing_fee_ppm.to_be_bytes());
-                output.extend_from_slice(&policy.minimum_incoming_cltv_delta.to_be_bytes());
-                output.extend_from_slice(&policy.minimum_outgoing_cltv_delta.to_be_bytes());
-                output.extend_from_slice(&policy.refresh_before_expiry_blocks.to_be_bytes());
-                output.extend_from_slice(&policy.emergency_exit_before_expiry_blocks.to_be_bytes());
-                output.extend_from_slice(&policy.receive_secret_retention_days.to_be_bytes());
-                output.push(match policy.receive_anti_dos {
-                    super::FederationBarkReceiveAntiDosPolicy::NoProof => 1,
-                    super::FederationBarkReceiveAntiDosPolicy::ProtectedToken => 2,
-                    super::FederationBarkReceiveAntiDosPolicy::AcceptedVtxo => 3,
-                });
+                output.extend_from_slice(&derivation_version.to_be_bytes());
+                output.extend_from_slice(authorization_policy);
+                let mut configuration = configuration.clone();
+                configuration.sort_all_objects();
+                let bytes = serde_json::to_vec(&configuration)
+                    .expect("validated JSON values always serialize");
+                output.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+                output.extend_from_slice(&bytes);
             }
         }
         output
@@ -1070,7 +1070,7 @@ impl FederationSetupFrostPolicy {
         mut applications: Vec<FederationSetupFrostApplication>,
         network: FederationSetupBitcoinNetwork,
     ) -> Result<Self> {
-        applications.sort_by_key(FederationSetupFrostApplication::tag);
+        applications.sort_by_key(FederationSetupFrostApplication::canonical_bytes);
         let policy = Self {
             root_key_epoch,
             applications,
@@ -1089,12 +1089,18 @@ impl FederationSetupFrostPolicy {
                 "at least the CDK on-chain FROST application is required",
             ));
         }
-        let tags = self
+        let application_keys = self
             .applications
             .iter()
-            .map(FederationSetupFrostApplication::tag)
+            .map(FederationSetupFrostApplication::canonical_bytes)
             .collect::<Vec<_>>();
-        if !is_strictly_sorted(&tags) || tags.first() != Some(&1) {
+        if !is_strictly_sorted(&application_keys)
+            || self
+                .applications
+                .first()
+                .map(FederationSetupFrostApplication::tag)
+                != Some(1)
+        {
             return Err(invalid(
                 "FROST applications must be unique, canonical, and include CDK on-chain",
             ));

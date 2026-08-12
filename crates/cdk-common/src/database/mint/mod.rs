@@ -13,15 +13,15 @@ use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "federation")]
 use crate::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftPendingOperationRecord,
-    FederationApplicationState, FederationBarkOperation, FederationBarkProjectionSnapshot,
-    FederationCheckpoint, FederationCheckpointFrontier, FederationCheckpointId,
-    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSignature,
-    FederationConfigSnapshot, FederationDkgActivationRequest, FederationDkgCeremonyRecord,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
-    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest,
-    FederationFrostApplicationConfig, FederationFrostDkgConfirmationRequest,
-    FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
+    FederationApplicationOperation, FederationApplicationState, FederationCheckpoint,
+    FederationCheckpointFrontier, FederationCheckpointId, FederationCheckpointKind,
+    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfigSnapshot,
+    FederationDkgActivationRequest, FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgParticipantState, FederationDkgSecretShareRequest,
+    FederationDkgTranscriptSignatureRequest, FederationFrostApplicationConfig,
+    FederationFrostDkgConfirmationRequest, FederationFrostDkgLocalState,
+    FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
     FederationId, FederationJournalEntry, FederationJournalTip,
     FederationMaterializedStateKeyRecord, FederationOperationConflictKey, FederationOperationId,
@@ -967,11 +967,11 @@ pub trait FederationApplicationTransaction {
         quote: &str,
     ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;
 
-    /// Deterministically apply one accepted Bark operation to its SQL projection.
-    async fn apply_federation_bark_operation(
+    /// Deterministically apply one accepted extension operation to its projection.
+    async fn apply_federation_application_operation(
         &mut self,
         entry: &FederationJournalEntry,
-        operation: &FederationBarkOperation,
+        operation: &FederationApplicationOperation,
     ) -> Result<(), Self::Err>;
 }
 
@@ -1585,10 +1585,11 @@ pub trait FederationApplicationDatabase {
         &self,
     ) -> Result<Vec<FederationMaterializedStateKeyRecord>, Self::Err>;
 
-    /// Get the complete deterministic Bark projection in primary-key order.
-    async fn get_federation_bark_projection_snapshot(
+    /// Get a complete application-owned projection encoded as bounded JSON.
+    async fn get_federation_application_projection_snapshot(
         &self,
-    ) -> Result<FederationBarkProjectionSnapshot, Self::Err>;
+        application_id: crate::federation::FederationFrostApplicationId,
+    ) -> Result<serde_json::Value, Self::Err>;
 
     /// Get minimal mint-quote state for convergence projection in input order.
     async fn get_federation_mint_quote_states(

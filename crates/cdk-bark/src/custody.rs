@@ -15,11 +15,14 @@ use bark::custody::{
 };
 use bitcoin::secp256k1::schnorr;
 use cdk_common::federation::{
-    federation_bark_custody_transcript_hash, FederationBarkActionKind,
+    FederationConfig, FederationJournalEntry, FederationOperation, FederationOperationStatus,
+};
+use cdk_federation_bark::{
+    federation_bark_application, federation_bark_custody_transcript_hash,
+    validate_federation_bark_application_operation, FederationBarkActionKind,
     FederationBarkAuthorizationReference, FederationBarkCustodyProtocol,
     FederationBarkFrostAuthorization, FederationBarkOperation, FederationBarkSemanticPhase,
-    FederationBarkVtxoLocator, FederationConfig, FederationJournalEntry, FederationOperation,
-    FederationOperationStatus, FEDERATION_BARK_AUTHORIZATION_VERSION,
+    FederationBarkVtxoLocator, FEDERATION_BARK_AUTHORIZATION_VERSION,
 };
 use cdk_frost::{
     AggregateSignature, AuthorizationRequest, CustodyProtocol, NonceBurnReason,
@@ -198,9 +201,7 @@ impl CdkFrostVtxoCustody {
             plan_entry.status() == FederationOperationStatus::Applied,
             "Bark custody requires an applied operation"
         );
-        let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-            &plan_entry.envelope.operation
-        else {
+        let FederationBarkOperation::ActionPlan(plan) = bark_operation(&plan_entry)? else {
             anyhow::bail!("Bark custody requires an accepted action plan");
         };
         anyhow::ensure!(
@@ -230,9 +231,7 @@ impl CdkFrostVtxoCustody {
             plan_entry.status() == FederationOperationStatus::Applied,
             "Bark custody requires an applied operation"
         );
-        let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-            &plan_entry.envelope.operation
-        else {
+        let FederationBarkOperation::ActionPlan(plan) = bark_operation(&plan_entry)? else {
             anyhow::bail!("Bark custody requires an accepted action plan");
         };
         anyhow::ensure!(
@@ -261,9 +260,7 @@ impl CdkFrostVtxoCustody {
             plan_entry.status() == FederationOperationStatus::Applied,
             "Bark custody requires an applied operation"
         );
-        let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-            &plan_entry.envelope.operation
-        else {
+        let FederationBarkOperation::ActionPlan(plan) = bark_operation(&plan_entry)? else {
             anyhow::bail!("Bark custody requires an accepted action plan");
         };
         anyhow::ensure!(
@@ -292,9 +289,7 @@ impl CdkFrostVtxoCustody {
             plan_entry.status() == FederationOperationStatus::Applied,
             "Bark custody requires an applied operation"
         );
-        let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-            &plan_entry.envelope.operation
-        else {
+        let FederationBarkOperation::ActionPlan(plan) = bark_operation(&plan_entry)? else {
             anyhow::bail!("Bark custody requires an accepted action plan");
         };
         anyhow::ensure!(
@@ -328,9 +323,7 @@ impl CdkFrostVtxoCustody {
             plan_entry.status() == FederationOperationStatus::Applied,
             "Bark custody requires an applied operation"
         );
-        let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-            &plan_entry.envelope.operation
-        else {
+        let FederationBarkOperation::ActionPlan(plan) = bark_operation(&plan_entry)? else {
             anyhow::bail!("Bark custody requires an accepted action plan");
         };
         anyhow::ensure!(
@@ -444,8 +437,7 @@ impl CdkFrostVtxoCustody {
             .map_err(|_| anyhow::anyhow!("Bark custody scope lock is poisoned"))?
             .clone()
             .ok_or_else(|| anyhow::anyhow!("Bark custody has no active accepted action"))?;
-        let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-            &accepted.plan_entry.envelope.operation
+        let FederationBarkOperation::ActionPlan(plan) = bark_operation(&accepted.plan_entry)?
         else {
             anyhow::bail!("active Bark custody operation is not an action plan");
         };
@@ -486,17 +478,16 @@ impl CdkFrostVtxoCustody {
             .federation
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Bark custody coordination is disabled"))?;
-        let application = federation
-            .frost_wallet
-            .as_ref()
-            .and_then(|wallet| wallet.bark_application.as_ref())
+        let application = federation_bark_application(federation)?
             .ok_or_else(|| anyhow::anyhow!("accepted Bark application is missing"))?;
         let transcript_hash = federation_bark_custody_transcript_hash(&request_transcript)?;
-        let FederationOperation::Bark(operation) = &accepted.authorization_entry.envelope.operation
+        let FederationOperation::Application(envelope) =
+            &accepted.authorization_entry.envelope.operation
         else {
             anyhow::bail!("active Bark custody authorization is not a Bark operation");
         };
-        let (signer_set, attempt) = authorization_signers(operation)?;
+        let operation = validate_federation_bark_application_operation(envelope)?;
+        let (signer_set, attempt) = authorization_signers(&operation)?;
         let reference = FederationBarkAuthorizationReference {
             version: FEDERATION_BARK_AUTHORIZATION_VERSION,
             federation_id: federation.federation_id,
@@ -565,6 +556,13 @@ impl CdkFrostVtxoCustody {
     }
 }
 
+fn bark_operation(entry: &FederationJournalEntry) -> anyhow::Result<FederationBarkOperation> {
+    let FederationOperation::Application(envelope) = &entry.envelope.operation else {
+        anyhow::bail!("federation operation is not application-owned");
+    };
+    validate_federation_bark_application_operation(envelope).map_err(Into::into)
+}
+
 fn validate_authorization_entry(
     plan_entry: &FederationJournalEntry,
     authorization_entry: &FederationJournalEntry,
@@ -573,19 +571,15 @@ fn validate_authorization_entry(
         authorization_entry.status() == FederationOperationStatus::Applied,
         "Bark custody authorization requires an applied operation"
     );
-    let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-        &plan_entry.envelope.operation
-    else {
+    let FederationBarkOperation::ActionPlan(plan) = bark_operation(plan_entry)? else {
         anyhow::bail!("Bark custody plan entry is not an action plan");
     };
-    let FederationOperation::Bark(operation) = &authorization_entry.envelope.operation else {
-        anyhow::bail!("Bark custody authorization entry is not a Bark operation");
-    };
-    match operation {
+    let operation = bark_operation(authorization_entry)?;
+    match &operation {
         FederationBarkOperation::ActionPlan(authorized_plan) => anyhow::ensure!(
             authorization_entry.operation_id == plan_entry.operation_id
                 && authorization_entry.index == plan_entry.index
-                && authorized_plan == plan,
+                && authorized_plan == &plan,
             "Bark custody action-plan authorization differs from its plan"
         ),
         FederationBarkOperation::ActionTransition(transition) => {

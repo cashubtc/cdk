@@ -251,8 +251,9 @@ fn print_statuses(
         if let Some(wallet) = &status.wallet_operator {
             println!("{}", wallet_operator_status_line(wallet));
         }
-        if let Some(bark) = &status.bark_operator {
-            println!("{}", bark_operator_status_line(bark));
+        #[cfg(feature = "federation-bark")]
+        if let Some(bark) = bark_operator_status(status) {
+            println!("{}", bark_operator_status_line(&bark));
             for action in &bark.actions {
                 println!("{}", bark_action_status_line(action));
             }
@@ -263,9 +264,18 @@ fn print_statuses(
     }
 }
 
-fn bark_operator_status_line(
-    bark: &cdk_common::federation::FederationBarkOperatorStatus,
-) -> String {
+#[cfg(feature = "federation-bark")]
+fn bark_operator_status(
+    status: &FederationLocalStatusResponse,
+) -> Option<cdk_federation_bark::FederationBarkOperatorStatus> {
+    status
+        .application_operators
+        .get("bark")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+}
+
+#[cfg(feature = "federation-bark")]
+fn bark_operator_status_line(bark: &cdk_federation_bark::FederationBarkOperatorStatus) -> String {
     let vtxos = bark
         .vtxos
         .iter()
@@ -317,7 +327,8 @@ fn bark_operator_status_line(
     )
 }
 
-fn bark_action_status_line(action: &cdk_common::federation::FederationBarkActionStatus) -> String {
+#[cfg(feature = "federation-bark")]
+fn bark_action_status_line(action: &cdk_federation_bark::FederationBarkActionStatus) -> String {
     format!(
         "    bark_action id={} kind={} phase={} retry_phase={} actor={} local_actor={} attempt={} age_operations={} value_sat={}",
         action.action_id,
@@ -502,6 +513,7 @@ fn option_u64(value: Option<u64>) -> String {
         .unwrap_or_else(|| "none".to_string())
 }
 
+#[cfg(feature = "federation-bark")]
 fn option_u32(value: Option<u32>) -> String {
     value
         .map(|value| value.to_string())
@@ -677,7 +689,8 @@ fn ensure_statuses_ready(statuses: &[FederationLocalStatusResponse]) -> Result<(
                 status.aleph_bft_network_inbound_active
             );
         }
-        if let Some(bark) = &status.bark_operator {
+        #[cfg(feature = "federation-bark")]
+        if let Some(bark) = bark_operator_status(status) {
             if bark.readiness != "ready" || bark.projection_lag_operations != 0 {
                 bail!(
                     "federation member {} Bark backend is not ready: readiness={} degraded_reason={} projection_lag_operations={}",

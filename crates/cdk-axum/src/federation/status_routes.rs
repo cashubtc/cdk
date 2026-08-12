@@ -94,11 +94,21 @@ pub(super) async fn post_local_status(
         .await
         .map_err(cdk_error_response)?;
     #[cfg(feature = "federation-bark")]
-    let bark_operator = federation_bark_operator_status(&state)
-        .await
-        .map_err(anyhow_response)?;
+    let application_operators = {
+        let mut application_operators = std::collections::BTreeMap::new();
+        if let Some(bark) = federation_bark_operator_status(&state)
+            .await
+            .map_err(anyhow_response)?
+        {
+            application_operators.insert(
+                "bark".to_owned(),
+                serde_json::to_value(bark).map_err(|error| anyhow_response(error.into()))?,
+            );
+        }
+        application_operators
+    };
     #[cfg(not(feature = "federation-bark"))]
-    let bark_operator = None;
+    let application_operators = std::collections::BTreeMap::<String, serde_json::Value>::new();
     let response = federation_local_status_response(
         peer_status,
         sync_status,
@@ -120,7 +130,7 @@ pub(super) async fn post_local_status(
         wallet_recovery,
         wallet_liveness,
         wallet_operator,
-        bark_operator,
+        application_operators,
     );
     #[cfg(feature = "prometheus")]
     record_federation_local_status_metrics(&response);
@@ -148,7 +158,7 @@ fn federation_local_status_response(
     wallet_recovery: Option<FederationWalletRecoveryStatus>,
     wallet_liveness: Option<cdk::federation::FederationWalletLivenessStatus>,
     wallet_operator: Option<cdk::federation::FederationWalletOperatorStatus>,
-    bark_operator: Option<cdk::federation::FederationBarkOperatorStatus>,
+    application_operators: std::collections::BTreeMap<String, serde_json::Value>,
 ) -> FederationLocalStatusResponse {
     FederationLocalStatusResponse {
         version: FEDERATION_REST_API_VERSION,
@@ -182,7 +192,7 @@ fn federation_local_status_response(
         wallet_recovery,
         wallet_liveness,
         wallet_operator,
-        bark_operator,
+        application_operators,
     }
 }
 
@@ -434,7 +444,15 @@ fn record_federation_local_status_metrics(response: &FederationLocalStatusRespon
             super::u64_to_i64_saturating(wallet.broadcast_failures),
         );
     }
-    if let Some(bark) = &response.bark_operator {
+    #[cfg(feature = "federation-bark")]
+    if let Some(bark) = response
+        .application_operators
+        .get("bark")
+        .and_then(|value| {
+            serde_json::from_value::<cdk::federation::FederationBarkOperatorStatus>(value.clone())
+                .ok()
+        })
+    {
         for readiness in ["ready", "behind_consensus", "degraded"] {
             cdk_prometheus::METRICS.set_federation_bark_readiness(
                 &member,

@@ -18,6 +18,7 @@ federation-bark = [
     "dep:bark",
     "dep:bitcoin",
     "dep:cdk-common",
+    "dep:cdk-federation-bark",
     "dep:cdk-frost-bark",
     "dep:cdk-frost",
     "dep:futures",
@@ -43,6 +44,7 @@ async-trait = { workspace = true, optional = true }
 bark = { package = "bark-wallet", path = "../../../bark-cdk/bark", default-features = false, features = ["bitcoind-rpc", "native", "sqlite", "tls-webpki-roots"], optional = true }
 bitcoin = { workspace = true, optional = true }
 cdk-common = { workspace = true, features = ["federation", "mint"], optional = true }
+cdk-federation-bark = { workspace = true, optional = true }
 cdk-frost-bark = { workspace = true, optional = true }
 cdk-frost = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }

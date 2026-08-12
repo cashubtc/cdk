@@ -2,7 +2,7 @@
 
 use cdk::federation::{
     FederationBarkActionRecord, FederationBarkOperation, FederationBarkProjectionSnapshot,
-    FederationBarkSemanticPhase, FederationJournalEntry, FederationOperation,
+    FederationBarkSemanticPhase, FederationJournalEntry,
 };
 use cdk::mint::Mint;
 
@@ -15,8 +15,8 @@ pub(super) async fn accepted_bark_custody_authorization(
     action: &FederationBarkActionRecord,
     plan_entry: &FederationJournalEntry,
 ) -> Result<FederationJournalEntry, cdk::Error> {
-    let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-        &plan_entry.envelope.operation
+    let FederationBarkOperation::ActionPlan(plan) =
+        super::bark_operation(&plan_entry.envelope.operation)?
     else {
         return Err(cdk::Error::Internal);
     };

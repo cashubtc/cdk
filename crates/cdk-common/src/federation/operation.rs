@@ -17,9 +17,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::journal::FederationJournalEntry;
 use super::{
-    FederatedKeyset, FederationAddressAllocationOperation, FederationBarkConflictKey,
-    FederationBarkOperation, FederationChainObservation, FederationConfig, FederationError,
-    FederationId, FederationPaymentObservationContext, FederationSignedTransaction,
+    FederatedKeyset, FederationAddressAllocationOperation, FederationChainObservation,
+    FederationConfig, FederationError, FederationFrostApplicationId, FederationId,
+    FederationPaymentObservationContext, FederationSignedTransaction,
     FederationTransactionBroadcastIntent, FederationTransactionBroadcastObservation,
     FederationTransactionProposal, MemberConfigPrivate, MemberId, Result,
 };
@@ -40,7 +40,7 @@ fn is_zero(value: &u64) -> bool {
 }
 
 /// Version of the federation operation envelope format.
-pub const FEDERATION_OPERATION_VERSION: u16 = 5;
+pub const FEDERATION_OPERATION_VERSION: u16 = 6;
 
 /// Maximum canonical operation envelope size admitted into federation consensus.
 ///
@@ -48,6 +48,216 @@ pub const FEDERATION_OPERATION_VERSION: u16 = 5;
 /// IDs so every member evaluates the same payload size independent of local
 /// JSON formatting.
 pub const FEDERATION_MAX_OPERATION_ENVELOPE_BYTES: usize = 1024 * 1024;
+
+/// Current application-extension operation format.
+pub const FEDERATION_APPLICATION_OPERATION_VERSION: u16 = 1;
+/// Maximum canonical bytes in one application-owned payload.
+pub const FEDERATION_MAX_APPLICATION_OPERATION_PAYLOAD_BYTES: usize = 512 * 1024;
+/// Maximum number of semantic conflict keys exposed by one application operation.
+pub const FEDERATION_MAX_APPLICATION_CONFLICT_KEYS: usize = 64;
+/// Maximum UTF-8 bytes in an application or conflict-key namespace.
+pub const FEDERATION_MAX_APPLICATION_LABEL_BYTES: usize = 64;
+/// Maximum UTF-8 bytes in one application-owned conflict key.
+pub const FEDERATION_MAX_APPLICATION_CONFLICT_KEY_BYTES: usize = 4 * 1024;
+/// Reserved state-key token resolved to the containing operation ID by the journal.
+pub const FEDERATION_APPLICATION_OPERATION_ID_STATE_KEY: &str = "__operation_id__";
+
+/// One application-owned semantic conflict key exposed to generic consensus.
+///
+/// The application crate must derive this value from its canonical payload and
+/// verify the derivation again during admission. Generic consensus only needs
+/// the stable namespace and key bytes to serialize conflicting operations.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationApplicationConflictKey {
+    /// Application-defined conflict-key namespace.
+    pub namespace: String,
+    /// Canonical application-defined key.
+    pub key: String,
+}
+
+/// One application-owned materialized row affected by an operation.
+///
+/// The owning application derives and revalidates these keys. The generic
+/// journal uses them only to maintain its compact convergence registry.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationApplicationStateKey {
+    /// Stable application-owned collection name.
+    pub collection: String,
+    /// Stable row key within that collection.
+    pub key: String,
+}
+
+impl FederationApplicationStateKey {
+    /// Construct and validate one bounded application state key.
+    pub fn new<C, K>(collection: C, key: K) -> Result<Self>
+    where
+        C: Into<String>,
+        K: Into<String>,
+    {
+        let state_key = Self {
+            collection: collection.into(),
+            key: key.into(),
+        };
+        state_key.validate()?;
+        Ok(state_key)
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_application_label("state collection", &self.collection)?;
+        if self.key.is_empty() || self.key.len() > FEDERATION_MAX_APPLICATION_CONFLICT_KEY_BYTES {
+            return Err(application_operation_invalid(
+                "application state key is empty or oversized",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl FederationApplicationConflictKey {
+    /// Construct and validate one bounded application conflict key.
+    pub fn new<N, K>(namespace: N, key: K) -> Result<Self>
+    where
+        N: Into<String>,
+        K: Into<String>,
+    {
+        let conflict_key = Self {
+            namespace: namespace.into(),
+            key: key.into(),
+        };
+        conflict_key.validate()?;
+        Ok(conflict_key)
+    }
+
+    fn validate(&self) -> Result<()> {
+        validate_application_label("conflict-key namespace", &self.namespace)?;
+        if self.key.is_empty() || self.key.len() > FEDERATION_MAX_APPLICATION_CONFLICT_KEY_BYTES {
+            return Err(application_operation_invalid(
+                "application conflict key is empty or oversized",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Canonical application payload ordered by generic federation consensus.
+///
+/// Application backends own their typed payloads in separate crates. This
+/// envelope carries only the metadata consensus needs before dispatch. The
+/// owning application must decode `payload`, run all semantic validation, and
+/// prove that `operation_kind`, `conflict_keys`, `quote`, and `claimed_author`
+/// are the exact values derived from that payload before admission succeeds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationApplicationOperation {
+    /// Application-envelope schema version.
+    pub version: u16,
+    /// Registered FROST application that owns this payload.
+    pub application_id: FederationFrostApplicationId,
+    /// Stable application-defined operation kind.
+    pub operation_kind: String,
+    /// Canonical typed payload represented as JSON.
+    pub payload: serde_json::Value,
+    /// Semantic conflict keys derived by the application.
+    pub conflict_keys: Vec<FederationApplicationConflictKey>,
+    /// Materialized-state rows derived by the application.
+    pub state_keys: Vec<FederationApplicationStateKey>,
+    /// Quote binding derived by the application, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+    /// Member binding derived by the application, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimed_author: Option<MemberId>,
+}
+
+impl FederationApplicationOperation {
+    /// Construct a bounded application operation from an already typed payload.
+    pub fn new<T>(
+        application_id: FederationFrostApplicationId,
+        operation_kind: impl Into<String>,
+        payload: &T,
+        conflict_keys: Vec<FederationApplicationConflictKey>,
+        state_keys: Vec<FederationApplicationStateKey>,
+        quote: Option<String>,
+        claimed_author: Option<MemberId>,
+    ) -> Result<Self>
+    where
+        T: Serialize + ?Sized,
+    {
+        let operation = Self {
+            version: FEDERATION_APPLICATION_OPERATION_VERSION,
+            application_id,
+            operation_kind: operation_kind.into(),
+            payload: serde_json::to_value(payload)?,
+            conflict_keys,
+            state_keys,
+            quote,
+            claimed_author,
+        };
+        operation.validate()?;
+        Ok(operation)
+    }
+
+    /// Decode the application-owned payload after structural validation.
+    pub fn decode_payload<T>(&self) -> Result<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        self.validate()?;
+        serde_json::from_value(self.payload.clone()).map_err(FederationError::from)
+    }
+
+    /// Validate only generic, deterministic application-envelope bounds.
+    pub fn validate(&self) -> Result<()> {
+        if self.version != FEDERATION_APPLICATION_OPERATION_VERSION {
+            return Err(application_operation_invalid(
+                "unsupported application operation version",
+            ));
+        }
+        validate_application_label("operation kind", &self.operation_kind)?;
+        if self.conflict_keys.len() > FEDERATION_MAX_APPLICATION_CONFLICT_KEYS
+            || self.state_keys.len() > FEDERATION_MAX_APPLICATION_CONFLICT_KEYS
+        {
+            return Err(application_operation_invalid(
+                "application operation has too many conflict or state keys",
+            ));
+        }
+        for conflict_key in &self.conflict_keys {
+            conflict_key.validate()?;
+        }
+        for state_key in &self.state_keys {
+            state_key.validate()?;
+        }
+        let payload_size = canonical_json_bytes(&self.payload)?.len();
+        if payload_size == 0 || payload_size > FEDERATION_MAX_APPLICATION_OPERATION_PAYLOAD_BYTES {
+            return Err(application_operation_invalid(
+                "application operation payload is empty or oversized",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn validate_application_label(label: &str, value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > FEDERATION_MAX_APPLICATION_LABEL_BYTES
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        return Err(application_operation_invalid(format!(
+            "application {label} is invalid"
+        )));
+    }
+    Ok(())
+}
+
+fn application_operation_invalid(reason: impl Into<String>) -> FederationError {
+    FederationError::ApplicationOperationInvalid {
+        reason: reason.into(),
+    }
+}
 
 /// Stable identifier for a canonical federation operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -159,8 +369,8 @@ pub enum FederationOperationKind {
     TransactionBroadcastIntent,
     /// Persist one authenticated member broadcast result.
     TransactionBroadcastObservation,
-    /// Execute one typed federated Bark custody or Lightning state transition.
-    Bark,
+    /// Execute one operation owned by a separately feature-gated application.
+    Application,
 }
 
 impl fmt::Display for FederationOperationKind {
@@ -182,7 +392,7 @@ impl fmt::Display for FederationOperationKind {
             Self::TransactionBroadcastObservation => {
                 f.write_str("transaction_broadcast_observation")
             }
-            Self::Bark => f.write_str("bark"),
+            Self::Application => f.write_str("application"),
         }
     }
 }
@@ -299,10 +509,12 @@ pub enum FederationOperationConflictKey {
         /// Batch-bound replacement lineage.
         lineage: super::FederationOnchainBatchId,
     },
-    /// Typed Bark reservation derived from a nested operation.
-    Bark {
-        /// Semantic Bark conflict key.
-        key: FederationBarkConflictKey,
+    /// Application-owned reservation derived from a validated nested payload.
+    Application {
+        /// Registered application that owns the key.
+        application_id: FederationFrostApplicationId,
+        /// Application-defined semantic conflict key.
+        key: FederationApplicationConflictKey,
     },
 }
 
@@ -791,7 +1003,7 @@ impl FederationPaymentObservation {
             | FederationOperation::TransactionSigned(_)
             | FederationOperation::TransactionBroadcastIntent(_)
             | FederationOperation::TransactionBroadcastObservation(_)
-            | FederationOperation::Bark(_) => None,
+            | FederationOperation::Application(_) => None,
         }
     }
 
@@ -1466,8 +1678,8 @@ pub enum FederationOperation {
     TransactionBroadcastIntent(FederationTransactionBroadcastIntent),
     /// Record one authenticated local-backend broadcast result.
     TransactionBroadcastObservation(FederationTransactionBroadcastObservation),
-    /// Execute one typed Bark custody or Lightning operation.
-    Bark(FederationBarkOperation),
+    /// Execute one operation owned by a separately feature-gated application.
+    Application(FederationApplicationOperation),
 }
 
 impl FederationOperation {
@@ -1493,7 +1705,7 @@ impl FederationOperation {
             Self::TransactionBroadcastObservation(_) => {
                 FederationOperationKind::TransactionBroadcastObservation
             }
-            Self::Bark(_) => FederationOperationKind::Bark,
+            Self::Application(_) => FederationOperationKind::Application,
         }
     }
 
@@ -1595,10 +1807,14 @@ impl FederationOperation {
                 }));
                 keys
             }
-            Self::Bark(operation) => operation
-                .conflict_keys()
-                .into_iter()
-                .map(|key| FederationOperationConflictKey::Bark { key })
+            Self::Application(operation) => operation
+                .conflict_keys
+                .iter()
+                .cloned()
+                .map(|key| FederationOperationConflictKey::Application {
+                    application_id: operation.application_id,
+                    key,
+                })
                 .collect(),
             Self::Swap(_)
             | Self::TransactionSigned(_)
@@ -1622,7 +1838,7 @@ impl FederationOperation {
             Self::MeltQuote(operation) => Some(operation.quote.as_str()),
             Self::MeltQuotePayment(observation) => Some(observation.quote.as_str()),
             Self::Melt(operation) => Some(operation.request.quote().as_str()),
-            Self::Bark(operation) => operation.quote(),
+            Self::Application(operation) => operation.quote.as_deref(),
             Self::Swap(_)
             | Self::KeysetRotation(_)
             | Self::TransactionProposal(_)
@@ -1649,7 +1865,7 @@ impl FederationOperation {
             Self::TransactionProposal(proposal) => proposal.validate()?,
             Self::TransactionBroadcastIntent(intent) => intent.settlement_policy.validate()?,
             Self::TransactionBroadcastObservation(observation) => observation.validate()?,
-            Self::Bark(operation) => operation.validate()?,
+            Self::Application(operation) => operation.validate()?,
             Self::MintQuote(_)
             | Self::MintQuotePayment(_)
             | Self::Mint(_)
@@ -1683,7 +1899,7 @@ impl FederationOperation {
             | Self::TransactionBroadcastObservation(_) => {
                 Ok(FederationOperationBalanceAudit::unchecked(operation_kind))
             }
-            Self::Bark(operation) => {
+            Self::Application(operation) => {
                 operation.validate()?;
                 Ok(FederationOperationBalanceAudit::unchecked(operation_kind))
             }
@@ -1929,18 +2145,6 @@ impl FederationOperationEnvelope {
                 member_id: authorization.author,
             })?;
 
-        if matches!(&self.operation, FederationOperation::Bark(_))
-            && public_config
-                .frost_wallet
-                .as_ref()
-                .and_then(|wallet| wallet.bark_application.as_ref())
-                .is_none()
-        {
-            return Err(FederationError::BarkOperationInvalid {
-                reason: "Bark operation requires an accepted Bark application".to_string(),
-            });
-        }
-
         let claimed_observer = match &self.operation {
             FederationOperation::ChainObservation(observation) => Some(observation.observer()),
             FederationOperation::MintQuotePayment(observation) => Some(observation.observer),
@@ -1949,7 +2153,7 @@ impl FederationOperationEnvelope {
             FederationOperation::TransactionBroadcastObservation(observation) => {
                 Some(observation.observer)
             }
-            FederationOperation::Bark(operation) => operation.claimed_author(),
+            FederationOperation::Application(operation) => operation.claimed_author,
             FederationOperation::AddressAllocation(_)
             | FederationOperation::MintQuote(_)
             | FederationOperation::Mint(_)
@@ -2469,7 +2673,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_operation_encoding_matches_v5_golden_vector() {
+    fn canonical_operation_encoding_matches_v6_golden_vector() {
         let envelope = envelope(mint_operation(
             "quote-golden",
             vec![output(
@@ -2485,12 +2689,12 @@ mod tests {
             concat!(
                 r#"{"federation_id":"0707070707070707070707070707070707070707070707070707070707070707","#,
                 r#""operation":{"data":{"request":{"data":{"outputs":[{"B_":"0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41","#,
-                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":5}"#
+                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":6}"#
             )
         );
         assert_eq!(
             envelope.operation_id().expect("operation id").to_hex(),
-            "3eb834c8a11c4dcba92dd021b66eeedbd4ef18ca6ff7a658f9d6da416fbfb1c8"
+            "5ea20e90a36ab5621c7c8310f47d836bf5fc0398b743ccd4b6b94ae0e0d9c354"
         );
     }
 

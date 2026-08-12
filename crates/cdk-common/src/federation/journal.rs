@@ -413,35 +413,14 @@ pub enum FederationMaterializedStateKey {
         /// Rotated federated keyset.
         keyset: FederatedKeyset,
     },
-    /// Current Bark action head.
-    BarkAction {
-        /// Stable action lineage.
-        action_id: super::FederationBarkActionId,
-    },
-    /// Current authoritative Bark VTXO row.
-    BarkVtxo {
-        /// Canonical VTXO identifier.
-        vtxo_id: super::FederationBarkVtxoId,
-    },
-    /// Consensus-owned Bark derivation allocation.
-    BarkDerivationAllocation {
-        /// Unique custody locator.
-        locator: super::FederationBarkVtxoLocator,
-    },
-    /// Append-only Bark input reservation.
-    BarkReservation {
-        /// Reserved VTXO.
-        vtxo_id: super::FederationBarkVtxoId,
-    },
-    /// Append-only Bark action transition.
-    BarkTransition {
-        /// Operation that created the transition row.
-        operation_id: FederationOperationId,
-    },
-    /// Append-only Bark member observation.
-    BarkObservation {
-        /// Operation that created the observation row.
-        operation_id: FederationOperationId,
+    /// Application-owned materialized row identified by opaque canonical keys.
+    Application {
+        /// Registered application that owns the row.
+        application_id: super::FederationFrostApplicationId,
+        /// Stable application-owned collection.
+        collection: String,
+        /// Stable key within the collection.
+        key: String,
     },
 }
 
@@ -456,12 +435,7 @@ impl FederationMaterializedStateKey {
             Self::ProofState { .. } => "proof_state",
             Self::BlindSignature { .. } => "blind_signature",
             Self::KeysetRotation { .. } => "keyset_rotation",
-            Self::BarkAction { .. } => "bark_action",
-            Self::BarkVtxo { .. } => "bark_vtxo",
-            Self::BarkDerivationAllocation { .. } => "bark_derivation_allocation",
-            Self::BarkReservation { .. } => "bark_reservation",
-            Self::BarkTransition { .. } => "bark_transition",
-            Self::BarkObservation { .. } => "bark_observation",
+            Self::Application { .. } => "application",
         }
     }
 
@@ -474,11 +448,17 @@ impl FederationMaterializedStateKey {
             Self::ProofState { y } => y.to_hex(),
             Self::BlindSignature { blinded_message } => blinded_message.to_hex(),
             Self::KeysetRotation { keyset } => keyset.id.to_string(),
-            Self::BarkAction { action_id } => action_id.to_string(),
-            Self::BarkVtxo { vtxo_id } | Self::BarkReservation { vtxo_id } => vtxo_id.to_string(),
-            Self::BarkDerivationAllocation { locator } => locator.to_string(),
-            Self::BarkTransition { operation_id } | Self::BarkObservation { operation_id } => {
-                operation_id.to_string()
+            Self::Application {
+                application_id,
+                collection,
+                key,
+            } => {
+                let key = if key == super::FEDERATION_APPLICATION_OPERATION_ID_STATE_KEY {
+                    operation_id.to_string()
+                } else {
+                    key.clone()
+                };
+                format!("{application_id}:{collection}:{key}")
             }
         }
     }
@@ -742,72 +722,15 @@ impl FederationJournalEntry {
             | FederationOperation::TransactionSigned(_)
             | FederationOperation::TransactionBroadcastIntent(_)
             | FederationOperation::TransactionBroadcastObservation(_) => {}
-            FederationOperation::Bark(operation) => match operation {
-                super::FederationBarkOperation::ReceiveIntent(intent) => {
-                    insert(FederationMaterializedStateKey::BarkAction {
-                        action_id: operation.action_id(),
-                    });
-                    insert(FederationMaterializedStateKey::BarkDerivationAllocation {
-                        locator: intent.destination,
-                    });
-                }
-                super::FederationBarkOperation::ReceivePrepared(_) => {
-                    insert(FederationMaterializedStateKey::BarkAction {
-                        action_id: operation.action_id(),
-                    });
-                    insert(FederationMaterializedStateKey::BarkTransition {
-                        operation_id: self.operation_id,
+            FederationOperation::Application(operation) => {
+                for state_key in &operation.state_keys {
+                    insert(FederationMaterializedStateKey::Application {
+                        application_id: operation.application_id,
+                        collection: state_key.collection.clone(),
+                        key: state_key.key.clone(),
                     });
                 }
-                super::FederationBarkOperation::ActionPlan(plan) => {
-                    insert(FederationMaterializedStateKey::BarkAction {
-                        action_id: operation.action_id(),
-                    });
-                    insert(FederationMaterializedStateKey::BarkTransition {
-                        operation_id: self.operation_id,
-                    });
-                    for input in &plan.inputs {
-                        insert(FederationMaterializedStateKey::BarkVtxo {
-                            vtxo_id: input.vtxo_id,
-                        });
-                        insert(FederationMaterializedStateKey::BarkReservation {
-                            vtxo_id: input.vtxo_id,
-                        });
-                    }
-                    for output in &plan.outputs {
-                        insert(FederationMaterializedStateKey::BarkDerivationAllocation {
-                            locator: output.locator,
-                        });
-                    }
-                    if let Some(locator) = plan.revocation_locator {
-                        insert(FederationMaterializedStateKey::BarkDerivationAllocation {
-                            locator,
-                        });
-                    }
-                }
-                super::FederationBarkOperation::ActionTransition(transition) => {
-                    insert(FederationMaterializedStateKey::BarkAction {
-                        action_id: operation.action_id(),
-                    });
-                    insert(FederationMaterializedStateKey::BarkTransition {
-                        operation_id: self.operation_id,
-                    });
-                    for vtxo in &transition.vtxo_transitions {
-                        insert(FederationMaterializedStateKey::BarkVtxo {
-                            vtxo_id: vtxo.vtxo_id,
-                        });
-                        insert(FederationMaterializedStateKey::BarkDerivationAllocation {
-                            locator: vtxo.locator,
-                        });
-                    }
-                }
-                super::FederationBarkOperation::MemberObservation(_)
-                | super::FederationBarkOperation::EvidenceCertificate(_) => {
-                    insert(FederationMaterializedStateKey::BarkObservation {
-                        operation_id: self.operation_id,
-                    });
-                }
-            },
+            }
             FederationOperation::MintQuote(operation) => {
                 insert(FederationMaterializedStateKey::MintQuote {
                     quote: operation.quote.clone(),
@@ -2156,11 +2079,11 @@ mod tests {
         );
         assert_eq!(
             entry.operation_id.to_string(),
-            "a5a962bcc0f62fbdb92bc6c369e9247b8681b45e753d8c6ce9d7ea9f0c015542"
+            "d7c9e7c084dc33de0f1dab094a5b9884b8d0fc4d34544df5fa746840a7c2f9a0"
         );
         assert_eq!(
             entry.order_digest.to_hex(),
-            "7ac847af7ed481b344917e7ed1e009ca59f8b0b5e7f03a51a5e06172cc00f925"
+            "022d8081272bbb704f7a2df0f1980295b87a5a3ad7a2967d248900a04364fe27"
         );
         assert_eq!(
             FederationMaterializedStateDigest::genesis().to_hex(),

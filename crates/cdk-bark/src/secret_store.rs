@@ -7,12 +7,14 @@ use std::sync::Arc;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use cdk_common::federation::{
+    FederationCheckpointId, FederationConfig, FederationId, FederationOperationId,
+    MemberConfigPrivate, MemberId, VerifiedFederationCheckpointQuorum,
+};
+use cdk_federation_bark::{
     payment_hash_for_preimage, preimage_commitment, FederationBarkActionId, FederationBarkDigest,
     FederationBarkEvidenceAttestation, FederationBarkEvidenceBinding, FederationBarkEvidencePhase,
     FederationBarkPrepareReceiveSecretRequest, FederationBarkReceiveSecret,
     FederationBarkReceiveSecretAcknowledgement, FederationBarkReceiveSecretBinding,
-    FederationCheckpointId, FederationConfig, FederationId, FederationOperationId,
-    MemberConfigPrivate, MemberId, VerifiedFederationCheckpointQuorum,
     FEDERATION_MAX_BARK_COLLECTION_ENTRIES,
 };
 use cdk_frost::rand_core::{CryptoRng, OsRng, RngCore};

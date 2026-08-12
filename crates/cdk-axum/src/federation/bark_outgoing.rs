@@ -6,7 +6,7 @@ use std::str::FromStr;
 use cdk::federation::{
     FederationBarkActionKind, FederationBarkDigest, FederationBarkMemberObservation,
     FederationBarkObservationStatus, FederationBarkOperation, FederationBarkSemanticPhase,
-    FederationOperation, FederationOperationId, FederationPaymentObservationContext, MemberId,
+    FederationOperationId, FederationPaymentObservationContext, MemberId,
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::MeltQuoteState;
@@ -121,13 +121,13 @@ pub(super) async fn advance_federated_bark_melt_quote(
             FederationBarkSemanticPhase::SendPlanned,
         )
         .await?;
-        let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-            &plan_entry.envelope.operation
+        let FederationBarkOperation::ActionPlan(plan) =
+            super::bark_operation(&plan_entry.envelope.operation)?
         else {
             return Err(cdk::Error::Internal);
         };
         runtime
-            .apply_lightning_send_plan(&quote, &projection, plan)
+            .apply_lightning_send_plan(&quote, &projection, &plan)
             .await
             .map_err(|_| cdk::Error::Internal)?;
 
@@ -233,9 +233,9 @@ pub(super) async fn advance_federated_bark_melt_quote(
                             .map_err(|_| cdk::Error::Internal)?;
                         return submit_bark_operation(
                             state,
-                            federation.operation_envelope(FederationOperation::Bark(
+                            federation.operation_envelope(super::bark_federation_operation(
                                 FederationBarkOperation::ActionTransition(retry),
-                            )),
+                            )?),
                         )
                         .await;
                     }
@@ -243,9 +243,9 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 };
                 submit_bark_operation(
                     state,
-                    federation.operation_envelope(FederationOperation::Bark(
+                    federation.operation_envelope(super::bark_federation_operation(
                         FederationBarkOperation::ActionTransition(transition),
-                    )),
+                    )?),
                 )
                 .await
             }
@@ -272,9 +272,9 @@ pub(super) async fn advance_federated_bark_melt_quote(
                         .map_err(|_| cdk::Error::Internal)?;
                     return submit_bark_operation(
                         state,
-                        federation.operation_envelope(FederationOperation::Bark(
+                        federation.operation_envelope(super::bark_federation_operation(
                             FederationBarkOperation::ActionTransition(transition),
-                        )),
+                        )?),
                     )
                     .await;
                 }
@@ -349,18 +349,18 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     cdk_bark::FederatedBarkSendTerminalStatus::Succeeded(transition) => {
                         submit_bark_operation(
                             state,
-                            federation.operation_envelope(FederationOperation::Bark(
+                            federation.operation_envelope(super::bark_federation_operation(
                                 FederationBarkOperation::ActionTransition(*transition),
-                            )),
+                            )?),
                         )
                         .await
                     }
                     cdk_bark::FederatedBarkSendTerminalStatus::Failed(observation) => {
                         submit_bark_operation(
                             state,
-                            federation.operation_envelope(FederationOperation::Bark(
+                            federation.operation_envelope(super::bark_federation_operation(
                                 FederationBarkOperation::MemberObservation(observation),
-                            )),
+                            )?),
                         )
                         .await
                     }
@@ -374,8 +374,8 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     FederationBarkSemanticPhase::PaymentSucceeded,
                 )
                 .await?;
-                let FederationOperation::Bark(FederationBarkOperation::ActionTransition(succeeded)) =
-                    &success_entry.envelope.operation
+                let FederationBarkOperation::ActionTransition(succeeded) =
+                    super::bark_operation(&success_entry.envelope.operation)?
                 else {
                     return Err(cdk::Error::Internal);
                 };
@@ -431,9 +431,9 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     .map_err(|_| cdk::Error::Internal)?;
                 submit_bark_operation(
                     state,
-                    federation.operation_envelope(FederationOperation::Bark(
+                    federation.operation_envelope(super::bark_federation_operation(
                         FederationBarkOperation::MemberObservation(observation),
-                    )),
+                    )?),
                 )
                 .await
             }
@@ -450,9 +450,9 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     .map_err(|_| cdk::Error::Internal)?;
                 submit_bark_operation(
                     state,
-                    federation.operation_envelope(FederationOperation::Bark(
+                    federation.operation_envelope(super::bark_federation_operation(
                         FederationBarkOperation::ActionPlan(revocation),
-                    )),
+                    )?),
                 )
                 .await
             }
@@ -487,9 +487,9 @@ pub(super) async fn advance_federated_bark_melt_quote(
                             .map_err(|_| cdk::Error::Internal)?;
                         return submit_bark_operation(
                             state,
-                            federation.operation_envelope(FederationOperation::Bark(
+                            federation.operation_envelope(super::bark_federation_operation(
                                 FederationBarkOperation::ActionTransition(retry),
-                            )),
+                            )?),
                         )
                         .await;
                     }
@@ -506,9 +506,9 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 };
                 submit_bark_operation(
                     state,
-                    federation.operation_envelope(FederationOperation::Bark(
+                    federation.operation_envelope(super::bark_federation_operation(
                         FederationBarkOperation::ActionTransition(transition),
-                    )),
+                    )?),
                 )
                 .await
             }
@@ -520,8 +520,8 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     FederationBarkSemanticPhase::RevocationCompleted,
                 )
                 .await?;
-                let FederationOperation::Bark(FederationBarkOperation::ActionTransition(completed)) =
-                    &completed_entry.envelope.operation
+                let FederationBarkOperation::ActionTransition(completed) =
+                    super::bark_operation(&completed_entry.envelope.operation)?
                 else {
                     return Err(cdk::Error::Internal);
                 };
@@ -594,9 +594,9 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     .await;
                 submit_bark_operation(
                     state,
-                    federation.operation_envelope(FederationOperation::Bark(
+                    federation.operation_envelope(super::bark_federation_operation(
                         FederationBarkOperation::MemberObservation(observation),
-                    )),
+                    )?),
                 )
                 .await
             }
@@ -622,12 +622,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
     if actor != federation.member_id() {
         return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
     }
-    let application = federation
-        .public_config()
-        .frost_wallet
-        .as_ref()
-        .and_then(|wallet| wallet.bark_application.as_ref())
-        .ok_or(cdk::Error::Internal)?;
+    let application = super::bark_application(federation.public_config())?;
     let signer_set = federation
         .public_config()
         .members
@@ -655,9 +650,9 @@ pub(super) async fn advance_federated_bark_melt_quote(
     if plan.kind != FederationBarkActionKind::LightningSend {
         return Err(cdk::Error::Internal);
     }
-    let envelope = federation.operation_envelope(FederationOperation::Bark(
+    let envelope = federation.operation_envelope(super::bark_federation_operation(
         FederationBarkOperation::ActionPlan(plan.clone()),
-    ));
+    )?);
     state
         .submit_federation_envelope(envelope)
         .await?

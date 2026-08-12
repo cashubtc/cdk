@@ -218,18 +218,19 @@ impl fmt::Display for FederationSetupProposalReview {
                     minimum_confirmations,
                     fee_policy_version,
                 )?,
-                FederationSetupFrostApplication::Bark {
+                FederationSetupFrostApplication::Extension {
+                    application_id,
                     application_key_epoch,
-                    network,
-                    ark_server_public_key,
-                    policy,
+                    derivation_version,
+                    authorization_policy: _,
+                    configuration,
                 } => writeln!(
                     formatter,
-                    "  - bark application_key_epoch={} network={} ark_identity={} policy_version={}",
+                    "  - extension application_id={} application_key_epoch={} derivation_version={} configuration={}",
+                    application_id,
                     application_key_epoch,
-                    network_label(*network),
-                    identity_fingerprint(ark_server_public_key),
-                    policy.version,
+                    derivation_version,
+                    application_configuration_fingerprint(configuration),
                 )?,
             }
         }
@@ -239,6 +240,14 @@ impl fmt::Display for FederationSetupProposalReview {
 
 fn identity_fingerprint(key: &crate::nuts::nut01::PublicKey) -> String {
     let hash = sha256::Hash::hash(&key.to_bytes()).to_string();
+    hash[..16].to_string()
+}
+
+fn application_configuration_fingerprint(configuration: &serde_json::Value) -> String {
+    let mut configuration = configuration.clone();
+    configuration.sort_all_objects();
+    let bytes = serde_json::to_vec(&configuration).unwrap_or_default();
+    let hash = sha256::Hash::hash(&bytes).to_string();
     hash[..16].to_string()
 }
 

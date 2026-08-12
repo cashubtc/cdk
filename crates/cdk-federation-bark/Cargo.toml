@@ -1,0 +1,31 @@
+[package]
+name = "cdk-federation-bark"
+version.workspace = true
+edition.workspace = true
+authors = ["CDK Developers"]
+description = "Bark application protocol for CDK federations"
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+test-util = []
+
+[dependencies]
+bitcoin.workspace = true
+cdk-common = { workspace = true, default-features = false, features = ["federation", "mint"] }
+cdk-frost.workspace = true
+cdk-frost-bark.workspace = true
+ciborium.workspace = true
+lightning-invoice.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+rand_chacha = "0.3"
+
+[lints]
+workspace = true

@@ -15,6 +15,7 @@ default = ["mint", "wallet"]
 mint = ["cdk-common/mint", "cdk-sql-common/mint"]
 wallet = ["cdk-common/wallet", "cdk-sql-common/wallet"]
 federation = ["cdk-common/federation", "cdk-sql-common/federation"]
+federation-bark = ["federation", "cdk-sql-common/federation-bark"]
 
 [dependencies]
 async-trait.workspace = true
@@ -31,6 +32,9 @@ native-tls = "=0.2.18"
 cdk-common = { workspace = true, features = ["test"] }
 # Needed at macro-expansion sites of cdk-common's `*_db_test!` macros
 paste.workspace = true
+
+[dev-dependencies]
+cdk-federation-bark = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

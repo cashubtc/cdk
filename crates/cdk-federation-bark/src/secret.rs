@@ -9,14 +9,17 @@ use bitcoin::Network;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::Zeroize;
 
-use super::operation::canonical_json_bytes;
-use super::{
-    FederationBarkActionId, FederationBarkDigest, FederationBarkReceiveIntent,
-    FederationBarkReceiveProof, FederationBarkReceiveSecretAcknowledgement, FederationBarkUnit,
-    FederationBarkVtxoLocator, FederationConfig, FederationError, FederationId,
+use cdk_common::federation::{
+    FederationConfig, FederationError, FederationId, FederationOperationSignature,
     MemberConfigPrivate, MemberId, Result,
 };
-use crate::Amount;
+use cdk_common::Amount;
+
+use crate::{
+    canonical_json_bytes, FederationBarkActionId, FederationBarkDigest,
+    FederationBarkReceiveIntent, FederationBarkReceiveProof,
+    FederationBarkReceiveSecretAcknowledgement, FederationBarkUnit, FederationBarkVtxoLocator,
+};
 
 /// Current protected receive-secret record and acknowledgement format.
 pub const FEDERATION_BARK_RECEIVE_SECRET_VERSION: u16 = 1;
@@ -29,7 +32,7 @@ const RECEIVE_SECRET_ACK_DOMAIN: &[u8] = b"cdk/federation/bark-receive-secret-ac
 const ARK_SERVER_DOMAIN: &[u8] = b"cdk/federation/bark-ark-server/v1";
 
 fn invalid_secret(reason: impl Into<String>) -> FederationError {
-    FederationError::BarkOperationInvalid {
+    FederationError::ApplicationOperationInvalid {
         reason: reason.into(),
     }
 }
@@ -164,15 +167,12 @@ impl FederationBarkReceiveSecretBinding {
                 "Bark receive-secret locator, policy, or expiry is unsupported",
             ));
         }
-        if self.mailbox_scope != super::federation_bark_mailbox_scope(&self.mailbox_id)? {
+        if self.mailbox_scope != crate::federation_bark_mailbox_scope(&self.mailbox_id)? {
             return Err(invalid_secret(
                 "Bark receive-secret mailbox differs from its scope commitment",
             ));
         }
-        let application = config
-            .frost_wallet
-            .as_ref()
-            .and_then(|wallet| wallet.bark_application.as_ref())
+        let application = crate::federation_bark_application(config)?
             .ok_or_else(|| invalid_secret("accepted Bark application is missing"))?;
         if self.network != application.network
             || self.minimum_cltv_delta < application.policy.minimum_incoming_cltv_delta
@@ -349,7 +349,7 @@ impl FederationBarkReceiveSecretAcknowledgement {
         Ok(Self {
             member,
             record_hash,
-            signature: super::FederationOperationSignature::from_slice(&signature.serialize())?,
+            signature: FederationOperationSignature::from_slice(&signature.serialize())?,
         })
     }
 
@@ -455,7 +455,7 @@ mod hex_array_33 {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&crate::util::hex::encode(bytes))
+        serializer.serialize_str(&cdk_common::util::hex::encode(bytes))
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 33], D::Error>
@@ -463,7 +463,7 @@ mod hex_array_33 {
         D: Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        let bytes = crate::util::hex::decode(&value).map_err(serde::de::Error::custom)?;
+        let bytes = cdk_common::util::hex::decode(&value).map_err(serde::de::Error::custom)?;
         bytes.try_into().map_err(|bytes: Vec<u8>| {
             serde::de::Error::custom(format!(
                 "mailbox identifier must contain 33 bytes, found {}",
@@ -492,7 +492,7 @@ mod hex_array_32 {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&crate::util::hex::encode(bytes))
+        serializer.serialize_str(&cdk_common::util::hex::encode(bytes))
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> std::result::Result<[u8; 32], D::Error>
@@ -500,7 +500,7 @@ mod hex_array_32 {
         D: Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        let bytes = crate::util::hex::decode(value).map_err(serde::de::Error::custom)?;
+        let bytes = cdk_common::util::hex::decode(value).map_err(serde::de::Error::custom)?;
         bytes.try_into().map_err(|bytes: Vec<u8>| {
             serde::de::Error::custom(format!("expected 32 secret bytes, found {}", bytes.len()))
         })

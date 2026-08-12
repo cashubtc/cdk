@@ -156,6 +156,15 @@ pub enum Error {
     /// Exact refresh or emergency-exit planning failed closed.
     #[error("federated Bark maintenance plan is invalid")]
     MaintenancePlanInvalid,
+    /// The next canonical refresh input cannot fit the fixed participant
+    /// authorization boundary and therefore cannot be proposed safely.
+    #[error("federated Bark refresh input is too large for its authorization budget: {actual} bytes exceeds {maximum} bytes")]
+    MaintenanceAuthorizationTooLarge {
+        /// Canonical VTXO artifact size.
+        actual: usize,
+        /// Accepted per-round aggregate input-artifact budget.
+        maximum: usize,
+    },
     /// An accepted maintenance plan could not be materialized locally.
     #[error("federated Bark maintenance projection failed")]
     MaintenanceProjectionFailed,

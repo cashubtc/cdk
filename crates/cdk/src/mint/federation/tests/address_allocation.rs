@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use cdk_common::federation::{
     FederationAddressAllocationScope, FederationAddressKeychain, FederationDkgCeremonyId,
     FederationFrostApplicationConfig, FederationFrostApplicationId,
@@ -77,7 +79,7 @@ pub(super) fn attach_address_application(
         version: 1,
         root,
         cdk_onchain_application: application,
-        bark_application: None,
+        extension_applications: BTreeMap::new(),
     });
     application_id
 }

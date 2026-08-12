@@ -100,7 +100,7 @@ pub(super) async fn post_bark_reconcile(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationBarkReconcileRequest>>,
 ) -> Result<Json<FederationBarkReconcileResponse>, Response> {
-    let kind = FederationRestMessageKind::BarkReconcile;
+    let kind = FederationRestMessageKind::ApplicationReconcile;
     let verified = admit_private_request(&state, &payload, kind).await?;
     payload
         .payload
@@ -154,7 +154,7 @@ pub(super) async fn post_bark_action_retry(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationBarkRetryRequest>>,
 ) -> Result<Json<FederationBarkRetryResponse>, Response> {
-    let kind = FederationRestMessageKind::BarkActionRetry;
+    let kind = FederationRestMessageKind::ApplicationActionRetry;
     let verified = admit_private_request(&state, &payload, kind).await?;
     payload
         .payload
@@ -179,7 +179,7 @@ pub(super) async fn post_bark_action_retry(
         .find(|action| action.action_id == payload.payload.action_id)
         .cloned()
         .ok_or_else(|| {
-            federation_error_response(FederationError::BarkOperationInvalid {
+            federation_error_response(FederationError::ApplicationOperationInvalid {
                 reason: "operator retry target is not an accepted Bark action".to_string(),
             })
         })?;

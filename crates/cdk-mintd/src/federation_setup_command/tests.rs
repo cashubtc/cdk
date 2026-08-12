@@ -8,15 +8,18 @@ use async_trait::async_trait;
 use cdk_common::database::mint::{Database, FederationDkgDatabase, FederationFrostWalletDatabase};
 use cdk_common::database::MintFederationSetupDatabase;
 use cdk_common::federation::{
-    FederationBarkPolicyConfig, FederationBarkReceiveAntiDosPolicy, FederationCheckpointPolicy,
-    FederationDkgKeysetSpec, FederationPaymentObservationPolicy, FederationSetupApproval,
-    FederationSetupBitcoinNetwork, FederationSetupEnrollment, FederationSetupFrostApplication,
-    FederationSetupFrostPolicy, FederationSetupInvitation, FederationSetupInvitationState,
-    FederationSetupParticipantPhase, FederationSetupProposal, FederationSetupUrlPolicy, MemberId,
-    ThresholdParams, FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+    FederationCheckpointPolicy, FederationDkgKeysetSpec, FederationPaymentObservationPolicy,
+    FederationSetupApproval, FederationSetupBitcoinNetwork, FederationSetupEnrollment,
+    FederationSetupFrostApplication, FederationSetupFrostPolicy, FederationSetupInvitation,
+    FederationSetupInvitationState, FederationSetupParticipantPhase, FederationSetupProposal,
+    FederationSetupUrlPolicy, MemberId, ThresholdParams,
+    FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
+use cdk_federation_bark::{
+    federation_bark_setup_config, FederationBarkPolicyConfig, FederationBarkReceiveAntiDosPolicy,
+};
 use cdk_sqlite::MintSqliteDatabase;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
@@ -87,10 +90,9 @@ fn setup_create_builds_bark_policy_into_the_signed_frost_inputs() {
     let frost = setup_frost_policy(&args, FederationSetupBitcoinNetwork::Signet)
         .expect("setup FROST policy");
     assert_eq!(frost.applications.len(), 2);
-    assert!(matches!(
-        frost.applications[1],
-        FederationSetupFrostApplication::Bark { .. }
-    ));
+    assert!(federation_bark_setup_config(&frost.applications[1])
+        .expect("valid Bark setup application")
+        .is_some());
 }
 
 struct FakeCoordinator {

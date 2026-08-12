@@ -11,26 +11,30 @@ use bitcoin::Network;
 use cashu::MintUrl;
 use cdk_common::federation::FederationApplicationDigest;
 use cdk_common::federation::{
-    ark_server_commitment, federation_bark_signer_set_for_attempt, payment_hash_for_preimage,
-    preimage_commitment, FederationBarkActionId, FederationBarkEvidenceAttestation,
+    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSignature,
+    FederationConfig, FederationConfigDigest, FederationDkgCeremonyId,
+    FederationFinalizedItemDigest, FederationFrostApplicationConfig, FederationFrostDkgContext,
+    FederationFrostRootPublicConfig, FederationFrostRootRecord, FederationId,
+    FederationJournalDigest, FederationMaterializedStateDigest,
+    FederationOnchainConfirmationPolicy, FederationOperationId, FederationOperationSignature,
+    MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
+    VerifiedFederationCheckpointQuorum, FEDERATION_CHECKPOINT_VERSION,
+};
+use cdk_common::SecretKey as CdkSecretKey;
+use cdk_common::{Amount, CurrencyUnit};
+use cdk_federation_bark::{
+    ark_server_commitment, federation_bark_application, federation_bark_signer_set_for_attempt,
+    federation_frost_wallet_with_bark, payment_hash_for_preimage, preimage_commitment,
+    FederationBarkActionId, FederationBarkEvidenceAttestation,
     FederationBarkEvidenceAttestationRequest, FederationBarkEvidenceAttestationResponse,
     FederationBarkEvidenceBinding, FederationBarkEvidenceCertificate, FederationBarkEvidencePhase,
     FederationBarkFrostApplicationConfig, FederationBarkMemberObservation,
     FederationBarkObservationStatus, FederationBarkPolicyConfig,
     FederationBarkPrepareReceiveSecretRequest, FederationBarkReceiveAntiDosPolicy,
     FederationBarkReceiveIntent, FederationBarkReceiveProof, FederationBarkReceiveSecretBinding,
-    FederationBarkUnit, FederationBarkVtxoLocator, FederationCheckpointKind,
-    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfig,
-    FederationConfigDigest, FederationDkgCeremonyId, FederationFinalizedItemDigest,
-    FederationFrostApplicationConfig, FederationFrostDkgContext, FederationFrostRootPublicConfig,
-    FederationFrostRootRecord, FederationFrostWalletConfig, FederationId, FederationJournalDigest,
-    FederationMaterializedStateDigest, FederationOnchainConfirmationPolicy, FederationOperationId,
-    FederationOperationSignature, MemberConfigPrivate, MemberConfigPublic, MemberId,
-    ThresholdParams, VerifiedFederationCheckpointQuorum, FEDERATION_BARK_OPERATION_VERSION,
-    FEDERATION_CHECKPOINT_VERSION, FEDERATION_MAX_BARK_EVIDENCE_ATTESTATION_REQUEST_BYTES,
+    FederationBarkUnit, FederationBarkVtxoLocator, FEDERATION_BARK_OPERATION_VERSION,
+    FEDERATION_MAX_BARK_EVIDENCE_ATTESTATION_REQUEST_BYTES,
 };
-use cdk_common::SecretKey as CdkSecretKey;
-use cdk_common::{Amount, CurrencyUnit};
 use cdk_frost::rand_core::SeedableRng;
 use cdk_frost::{advance_dkg, finish_dkg, start_dkg, SecretEncryptionKey};
 use rand_chacha::ChaCha20Rng;
@@ -184,11 +188,32 @@ fn federated_config() -> FederationConfig {
     )
     .expect("Bark application");
     config.frost_wallet = Some(
-        FederationFrostWalletConfig::new_with_bark(&config, root, onchain, bark)
-            .expect("wallet config"),
+        federation_frost_wallet_with_bark(&config, root, onchain, bark).expect("wallet config"),
     );
     config.validate().expect("federated config");
     config
+}
+
+fn bark_application(config: &FederationConfig) -> FederationBarkFrostApplicationConfig {
+    federation_bark_application(config)
+        .expect("valid Bark application")
+        .expect("Bark application")
+}
+
+fn replace_bark_application(
+    config: &mut FederationConfig,
+    application: FederationBarkFrostApplicationConfig,
+) {
+    let root = config.frost_wallet.as_ref().expect("wallet").root.clone();
+    let extension = application
+        .extension(config, &root)
+        .expect("Bark extension");
+    config
+        .frost_wallet
+        .as_mut()
+        .expect("wallet")
+        .extension_applications
+        .insert(application.application_id, extension);
 }
 
 #[test]
@@ -210,13 +235,7 @@ fn bark_signer_attempts_rotate_deterministically_without_repeating() {
 }
 
 fn local_config(config: &FederationConfig) -> FederatedBarkLocalConfig {
-    let application = config
-        .frost_wallet
-        .as_ref()
-        .expect("wallet")
-        .bark_application
-        .as_ref()
-        .expect("Bark application");
+    let application = bark_application(config);
     let mut bark = BarkConfig::network_default(Network::Regtest);
     bark.server_address = "https://operator:credential@ark.example.invalid".to_string();
     bark.esplora_address = Some("https://chain-secret.example.invalid".to_string());
@@ -411,32 +430,22 @@ fn production_v1_rejects_receive_fees_and_anti_dos_modes_it_does_not_implement()
     let baseline = federated_config();
 
     let mut config = baseline.clone();
-    let application = config
-        .frost_wallet
-        .as_mut()
-        .expect("wallet")
-        .bark_application
-        .as_mut()
-        .expect("Bark application");
+    let mut application = bark_application(&config);
     application.policy.receive_base_fee_sat = 1;
     let mut local = local_config(&baseline);
     local.bindings.policy = application.policy.clone();
+    replace_bark_application(&mut config, application);
     assert!(matches!(
         validates(&config, &local),
         Err(Error::UnsupportedReceivePolicy)
     ));
 
     let mut config = baseline.clone();
-    let application = config
-        .frost_wallet
-        .as_mut()
-        .expect("wallet")
-        .bark_application
-        .as_mut()
-        .expect("Bark application");
+    let mut application = bark_application(&config);
     application.policy.receive_anti_dos = FederationBarkReceiveAntiDosPolicy::ProtectedToken;
     let mut local = local_config(&baseline);
     local.bindings.policy = application.policy.clone();
+    replace_bark_application(&mut config, application);
     assert!(matches!(
         validates(&config, &local),
         Err(Error::UnsupportedReceivePolicy)
@@ -519,11 +528,13 @@ fn persisted_wallet_properties_require_exact_frost_descriptor_and_operational_se
 fn missing_bark_application_and_invalid_limits_fail_closed() {
     let mut config = federated_config();
     let local = local_config(&config);
+    let application_id = bark_application(&config).application_id;
     config
         .frost_wallet
         .as_mut()
         .expect("wallet")
-        .bark_application = None;
+        .extension_applications
+        .remove(&application_id);
     assert!(matches!(
         validates(&config, &local),
         Err(Error::InvalidPublicConfig | Error::MissingApplication)
@@ -556,15 +567,9 @@ fn receive_binding(
     action_seed: u8,
     preimage: &[u8; 32],
 ) -> FederationBarkReceiveSecretBinding {
-    let application = config
-        .frost_wallet
-        .as_ref()
-        .expect("wallet")
-        .bark_application
-        .as_ref()
-        .expect("Bark application");
+    let application = bark_application(config);
     FederationBarkReceiveSecretBinding {
-        version: cdk_common::federation::FEDERATION_BARK_RECEIVE_SECRET_VERSION,
+        version: cdk_federation_bark::FEDERATION_BARK_RECEIVE_SECRET_VERSION,
         federation_id: config.federation_id,
         action_id: FederationBarkActionId::from_bytes([action_seed; 32]).expect("action"),
         quote: format!("receive-secret-quote-{action_seed}"),
@@ -574,12 +579,12 @@ fn receive_binding(
         receive_fee: Amount::ZERO,
         minimum_net_amount: Amount::from(100),
         unit: FederationBarkUnit::Sat,
-        description_hash: cdk_common::federation::federation_bark_description_hash(None)
+        description_hash: cdk_federation_bark::federation_bark_description_hash(None)
             .expect("description commitment"),
         payment_hash: payment_hash_for_preimage(preimage).expect("payment hash"),
         preimage_commitment: preimage_commitment(preimage).expect("preimage commitment"),
         destination: FederationBarkVtxoLocator::vtxo_custody(u32::from(action_seed)),
-        mailbox_scope: cdk_common::federation::federation_bark_mailbox_scope(
+        mailbox_scope: cdk_federation_bark::federation_bark_mailbox_scope(
             &application.ark_server_public_key,
         )
         .expect("mailbox commitment"),
@@ -601,13 +606,7 @@ fn evidence_observation(
     observer: MemberId,
     result_seed: u8,
 ) -> FederationBarkMemberObservation {
-    let application = config
-        .frost_wallet
-        .as_ref()
-        .expect("wallet")
-        .bark_application
-        .as_ref()
-        .expect("Bark application");
+    let application = bark_application(config);
     FederationBarkMemberObservation {
         version: FEDERATION_BARK_OPERATION_VERSION,
         action_id: FederationBarkActionId::from_bytes([action_seed; 32]).expect("action"),
@@ -616,13 +615,12 @@ fn evidence_observation(
         observation_epoch: 1,
         source_scope: ark_server_commitment(&application.ark_server_public_key).expect("Ark scope"),
         payment_hash: Some(
-            cdk_common::federation::FederationBarkDigest::from_bytes([61; 32])
-                .expect("payment hash"),
+            cdk_federation_bark::FederationBarkDigest::from_bytes([61; 32]).expect("payment hash"),
         ),
         status: FederationBarkObservationStatus::Accepted,
         amount: Amount::from(100),
         fee: Amount::ZERO,
-        result_hash: cdk_common::federation::FederationBarkDigest::from_bytes([result_seed; 32])
+        result_hash: cdk_federation_bark::FederationBarkDigest::from_bytes([result_seed; 32])
             .expect("result hash"),
     }
 }
@@ -770,11 +768,11 @@ fn evidence_certificate_rejects_every_signed_binding_mutation() {
     assert_binding_rejected(mutated);
     let mut mutated = binding.clone();
     mutated.payment_hash =
-        cdk_common::federation::FederationBarkDigest::from_bytes([86; 32]).expect("payment hash");
+        cdk_federation_bark::FederationBarkDigest::from_bytes([86; 32]).expect("payment hash");
     assert_binding_rejected(mutated);
     let mut mutated = binding.clone();
     mutated.source_scope =
-        cdk_common::federation::FederationBarkDigest::from_bytes([87; 32]).expect("source scope");
+        cdk_federation_bark::FederationBarkDigest::from_bytes([87; 32]).expect("source scope");
     assert_binding_rejected(mutated);
     let mut mutated = binding.clone();
     mutated.status = FederationBarkObservationStatus::Succeeded;
@@ -786,8 +784,8 @@ fn evidence_certificate_rejects_every_signed_binding_mutation() {
     mutated.fee = Amount::from(1);
     assert_binding_rejected(mutated);
     let mut mutated = binding.clone();
-    mutated.evidence_digest = cdk_common::federation::FederationBarkDigest::from_bytes([88; 32])
-        .expect("evidence digest");
+    mutated.evidence_digest =
+        cdk_federation_bark::FederationBarkDigest::from_bytes([88; 32]).expect("evidence digest");
     assert_binding_rejected(mutated);
     let mut mutated = binding;
     mutated.attempt = mutated.attempt.saturating_add(1);
@@ -1181,7 +1179,7 @@ fn orphan_cleanup_threshold_acknowledgements_and_replay_bindings_fail_closed() {
     }
     acknowledgements.sort_by_key(|acknowledgement| acknowledgement.member);
     let intent = FederationBarkReceiveIntent {
-        version: cdk_common::federation::FEDERATION_BARK_OPERATION_VERSION,
+        version: cdk_federation_bark::FEDERATION_BARK_OPERATION_VERSION,
         action_id: binding.action_id,
         quote: binding.quote.clone(),
         actor: binding.actor,

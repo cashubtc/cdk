@@ -31,7 +31,7 @@ iroh = ["cdk/iroh", "cdk-axum/iroh", "dep:cdk-iroh"]
 federation = ["bdk", "cdk/federation", "cdk/wallet", "cdk-common/federation", "cdk-axum/federation", "cdk-sqlite?/federation", "cdk-sqlite?/wallet", "cdk-postgres?/federation"]
 # Federated Bark is deliberately separate so ordinary federation builds do not
 # resolve or compile the Bark dependency graph.
-federation-bark = ["federation", "dep:cdk-bark", "cdk-bark/federation-bark", "cdk-axum/federation-bark"]
+federation-bark = ["federation", "dep:cdk-bark", "dep:cdk-federation-bark", "cdk/federation-bark", "cdk-bark/federation-bark", "cdk-axum/federation-bark", "cdk-sqlite?/federation-bark", "cdk-postgres?/federation-bark"]
 # Local/regtest-only trusted-dealer setup and runtime admission.
 federation-test-utils = ["federation", "fakewallet", "cdk-bark?/federation-test-utils"]
 
@@ -55,6 +55,7 @@ cdk-ldk-node = { workspace = true, optional = true }
 cdk-fake-wallet = { workspace = true, optional = true }
 cdk-bdk = { workspace = true, optional = true }
 cdk-bark = { workspace = true, optional = true }
+cdk-federation-bark = { workspace = true, optional = true }
 cdk-axum.workspace = true
 cdk-signatory.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }

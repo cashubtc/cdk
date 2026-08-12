@@ -72,6 +72,7 @@ pub(super) enum FederationPaymentAdvancement {
     Progressed,
     AwaitingExternalEvidence,
     AwaitingFederationEvidence,
+    #[cfg_attr(not(feature = "federation-bark"), allow(dead_code))]
     AwaitingObserverFallback,
     Complete,
 }

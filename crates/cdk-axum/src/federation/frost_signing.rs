@@ -12,16 +12,16 @@ use axum::response::{IntoResponse, Response};
 #[cfg(feature = "federation-bark")]
 use cdk::federation::{
     FederationBarkActionKind, FederationBarkCustodyProtocol, FederationBarkFrostAuthorization,
-    FederationBarkProtocolStatus, FederationBarkSemanticPhase,
+    FederationBarkFrostRegistrationAdapter, FederationBarkProtocolStatus,
+    FederationBarkSemanticPhase,
 };
 use cdk::federation::{
-    FederationBarkFrostRegistrationAdapter, FederationCdkOnchainFrostAuthorization,
-    FederationCdkOnchainFrostAuthorizationAdapter, FederationFrostAggregateResultNotification,
-    FederationFrostCommitmentRequest, FederationFrostCommitmentResponse,
-    FederationFrostInputSignatureAudit, FederationFrostSignatureShareResponse,
-    FederationFrostSigningAbortRequest, FederationFrostSigningAck,
-    FederationFrostSigningPackageRequest, FederationRestMessageKind, FederationSignedRequest,
-    FederationSignedTransaction, FederationTransactionProposalId,
+    FederationCdkOnchainFrostAuthorization, FederationCdkOnchainFrostAuthorizationAdapter,
+    FederationFrostAggregateResultNotification, FederationFrostCommitmentRequest,
+    FederationFrostCommitmentResponse, FederationFrostInputSignatureAudit,
+    FederationFrostSignatureShareResponse, FederationFrostSigningAbortRequest,
+    FederationFrostSigningAck, FederationFrostSigningPackageRequest, FederationRestMessageKind,
+    FederationSignedRequest, FederationSignedTransaction, FederationTransactionProposalId,
 };
 use cdk::mint::{FederationRuntimeConfig, Mint};
 use cdk_frost::{
@@ -488,9 +488,10 @@ impl FederationFrostSigningRuntime {
         manager.register_application(FederationCdkOnchainFrostAuthorizationAdapter::new(
             application,
         )?)?;
-        if let Some(bark) = &wallet.bark_application {
-            let derived =
-                manager.register_application(FederationBarkFrostRegistrationAdapter::new(bark)?)?;
+        #[cfg(feature = "federation-bark")]
+        if let Some(bark) = cdk::federation::federation_bark_application(runtime.public_config())? {
+            let derived = manager
+                .register_application(FederationBarkFrostRegistrationAdapter::new(&bark)?)?;
             if derived.group_key() != bark.derived_group_key
                 || derived.verifying_shares().len() != bark.verification_shares.len()
                 || derived.verifying_shares().iter().any(|(member, share)| {
@@ -821,21 +822,30 @@ impl FederationFrostSigningRuntime {
         context: &SigningSessionContext,
         authorization: &AuthorizationRequest,
     ) -> Result<ValidatedCdkAuthorization, cdk::Error> {
-        let bark_application = mint
-            .federation_config()
-            .and_then(|runtime| runtime.public_config().frost_wallet.as_ref())
-            .and_then(|wallet| wallet.bark_application.as_ref());
-        match bark_application {
-            Some(application)
-                if authorization.application_id().to_bytes()
-                    == application.application_id.to_bytes() =>
-            {
-                self.validate_bark(mint, context, authorization).await
+        #[cfg(feature = "federation-bark")]
+        {
+            let bark_application = mint.federation_config().and_then(|runtime| {
+                cdk::federation::federation_bark_application(runtime.public_config())
+                    .ok()
+                    .flatten()
+            });
+            match bark_application {
+                Some(application)
+                    if authorization.application_id().to_bytes()
+                        == application.application_id.to_bytes() =>
+                {
+                    self.validate_bark(mint, context, authorization).await
+                }
+                Some(_) | None => self.validate_onchain(mint, context, authorization).await,
             }
-            Some(_) | None => self.validate_onchain(mint, context, authorization).await,
+        }
+        #[cfg(not(feature = "federation-bark"))]
+        {
+            self.validate_onchain(mint, context, authorization).await
         }
     }
 
+    #[cfg(feature = "federation-bark")]
     async fn validate_bark(
         &self,
         mint: &Mint,
@@ -854,12 +864,6 @@ impl FederationFrostSigningRuntime {
                 derivation: derivation.clone(),
             });
         }
-        #[cfg(not(feature = "federation-bark"))]
-        {
-            let _ = (mint, context, authorization);
-            return Err(frost_invalid("Bark custody support is not enabled").into());
-        }
-        #[cfg(feature = "federation-bark")]
         {
             let typed = FederationBarkFrostAuthorization::from_bytes(authorization.payload())?;
             let entry = mint
@@ -874,32 +878,37 @@ impl FederationFrostSigningRuntime {
             typed
                 .reference
                 .validate_accepted_operation(public_config, &entry)?;
-            let (plan_entry, authorization_attempt) = match &entry.envelope.operation {
-                cdk::federation::FederationOperation::Bark(
-                    cdk::federation::FederationBarkOperation::ActionPlan(plan),
-                ) => (entry.clone(), plan.attempt),
-                cdk::federation::FederationOperation::Bark(
-                    cdk::federation::FederationBarkOperation::ActionTransition(transition),
-                ) if transition.phase == FederationBarkSemanticPhase::SigningAttemptAdvanced => (
-                    mint.localstore()
-                        .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
-                        .await?
-                        .ok_or_else(|| frost_invalid("accepted Bark action plan is unavailable"))?,
-                    transition.attempt,
-                ),
+            let operation = super::bark_operation(&entry.envelope.operation)?;
+            let (plan_entry, authorization_attempt) = match &operation {
+                cdk::federation::FederationBarkOperation::ActionPlan(plan) => {
+                    (entry.clone(), plan.attempt)
+                }
+                cdk::federation::FederationBarkOperation::ActionTransition(transition)
+                    if transition.phase == FederationBarkSemanticPhase::SigningAttemptAdvanced =>
+                {
+                    (
+                        mint.localstore()
+                            .get_federation_journal_entry_by_operation_id(
+                                transition.plan_operation_id,
+                            )
+                            .await?
+                            .ok_or_else(|| {
+                                frost_invalid("accepted Bark action plan is unavailable")
+                            })?,
+                        transition.attempt,
+                    )
+                }
                 _ => return Err(frost_invalid("Bark custody reference has no action plan").into()),
             };
-            let cdk::federation::FederationOperation::Bark(
-                cdk::federation::FederationBarkOperation::ActionPlan(plan),
-            ) = &plan_entry.envelope.operation
+            let cdk::federation::FederationBarkOperation::ActionPlan(plan) =
+                super::bark_operation(&plan_entry.envelope.operation)?
             else {
                 return Err(frost_invalid("Bark custody plan reference is invalid").into());
             };
             let plan_commitment =
                 cdk::federation::FederationBarkOperation::ActionPlan(plan.clone()).commitment()?;
-            if let cdk::federation::FederationOperation::Bark(
-                cdk::federation::FederationBarkOperation::ActionTransition(transition),
-            ) = &entry.envelope.operation
+            if let cdk::federation::FederationBarkOperation::ActionTransition(transition) =
+                &operation
             {
                 let signer_set = cdk::federation::federation_bark_signer_set_for_attempt(
                     public_config,
@@ -909,7 +918,7 @@ impl FederationFrostSigningRuntime {
                     cdk::federation::FederationBarkActionTransition::signing_attempt_advanced(
                         plan_entry.operation_id,
                         transition.predecessor_operation_id,
-                        plan,
+                        &plan,
                         transition.attempt,
                         signer_set,
                     )?;
@@ -991,14 +1000,12 @@ impl FederationFrostSigningRuntime {
                 )
                 .into());
             }
-            wait_for_bark_custody_projection(mint, plan, authorization_attempt).await?;
+            wait_for_bark_custody_projection(mint, &plan, authorization_attempt).await?;
             let wallet = public_config
                 .frost_wallet
                 .as_ref()
                 .ok_or_else(|| frost_invalid("FROST wallet configuration is unavailable"))?;
-            let application = wallet
-                .bark_application
-                .as_ref()
+            let application = cdk::federation::federation_bark_application(public_config)?
                 .ok_or_else(|| frost_invalid("Bark application configuration is unavailable"))?;
             let adapter = cdk_frost_bark::FrostBark::new(
                 application.derived_public_package(public_config, &wallet.root)?,
@@ -1057,10 +1064,7 @@ async fn wait_for_bark_custody_projection(
 ) -> Result<(), cdk::Error> {
     let deadline = tokio::time::Instant::now() + BARK_CUSTODY_PROJECTION_WAIT_TIMEOUT;
     loop {
-        let projection = mint
-            .localstore()
-            .get_federation_bark_projection_snapshot()
-            .await?;
+        let projection = mint.federation_bark_projection_snapshot().await?;
         let authorization_is_current = projection.actions.iter().any(|action| {
             if action.action_id != plan.action_id {
                 return false;

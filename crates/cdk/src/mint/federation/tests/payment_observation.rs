@@ -2,10 +2,11 @@ use super::*;
 
 #[test]
 fn one_false_bark_result_observer_cannot_form_the_inner_quorum() {
-    use cdk_common::federation::{
+    use cdk_common::federation::FederationOperationId;
+    use cdk_federation_bark::{
         FederationBarkActionId, FederationBarkDigest, FederationBarkMemberObservation,
         FederationBarkObservationRecord, FederationBarkObservationStatus, FederationBarkOperation,
-        FederationBarkProjectionSnapshot, FederationOperationId, FEDERATION_BARK_OPERATION_VERSION,
+        FederationBarkProjectionSnapshot, FEDERATION_BARK_OPERATION_VERSION,
     };
 
     let action_id = FederationBarkActionId::from_bytes([1; 32]).expect("action ID");
@@ -93,10 +94,11 @@ fn one_false_bark_result_observer_cannot_form_the_inner_quorum() {
 
 #[test]
 fn bark_result_records_materialize_only_after_distinct_inner_quorum() {
-    use cdk_common::federation::{
+    use cdk_common::federation::FederationOperationId;
+    use cdk_federation_bark::{
         FederationBarkActionId, FederationBarkDigest, FederationBarkMemberObservation,
         FederationBarkObservationRecord, FederationBarkObservationStatus, FederationBarkOperation,
-        FederationBarkProjectionSnapshot, FederationOperationId, FEDERATION_BARK_OPERATION_VERSION,
+        FederationBarkProjectionSnapshot, FEDERATION_BARK_OPERATION_VERSION,
     };
 
     let action_id = FederationBarkActionId::from_bytes([11; 32]).expect("action ID");
