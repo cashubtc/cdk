@@ -519,6 +519,18 @@ mod tests {
     }
 
     #[test]
+    fn test_sig_all_msgs_to_verify_lists_accepted_formats() {
+        let request = TestSpendRequest {
+            inputs: vec![p2pk_proof_with_sig_flag(SigFlag::SigAll)],
+        };
+        let msgs = request.sig_all_msgs_to_verify();
+        assert_eq!(msgs.len(), 2);
+        // Newest first: the length-framed v1 message, then the current format
+        assert!(msgs[0].starts_with(b"Cashu_SigAllSig_v1"));
+        assert_eq!(msgs[1], b"test message".to_vec());
+    }
+
+    #[test]
     fn test_secret_serialize() {
         let secret_data = SecretData::new(
             "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198".to_string(),
