@@ -469,6 +469,8 @@ fn validate_database_config(settings: &config::Settings) -> Result<()> {
         bail!("pubsub transport 'postgres-listen-notify' requires the Postgres database engine; use 'sql' for a portable cross-instance transport");
     }
 
+    sql_bus_options(&settings.database.pubsub)?;
+
     Ok(())
 }
 
@@ -790,7 +792,7 @@ pub fn apply_seed_file(settings: &mut config::Settings, seed_file: &Path) -> Res
 
 /// Build [`SqlBusOptions`] from the mint's pub/sub config, falling back to the
 /// library defaults for any unset field.
-fn sql_bus_options(pubsub: &PubSubConfig) -> SqlBusOptions {
+fn sql_bus_options(pubsub: &PubSubConfig) -> Result<SqlBusOptions> {
     let mut options = SqlBusOptions::default();
     if let Some(ms) = pubsub.poll_interval_ms {
         options.poll_interval = Duration::from_millis(ms);
@@ -799,6 +801,9 @@ fn sql_bus_options(pubsub: &PubSubConfig) -> SqlBusOptions {
         options.retention = Duration::from_secs(secs);
     }
     options
+        .validate()
+        .map_err(|err| anyhow!("Invalid [database.pubsub] timing: {err}"))?;
+    Ok(options)
 }
 
 async fn setup_database(
@@ -825,7 +830,7 @@ async fn setup_database(
                 PubSubTransport::InMemory => None,
                 PubSubTransport::Sql => {
                     let connector =
-                        SqlBusConnector::connect(db.pool(), sql_bus_options(pubsub)).await?;
+                        SqlBusConnector::connect(db.pool(), sql_bus_options(pubsub)?).await?;
                     Some(Box::new(move |local| connector.build(local)))
                 }
                 PubSubTransport::PostgresListenNotify => {
@@ -865,7 +870,7 @@ async fn setup_database(
                 PubSubTransport::InMemory => None,
                 PubSubTransport::Sql => {
                     let connector =
-                        SqlBusConnector::connect(pg_db.pool(), sql_bus_options(pubsub)).await?;
+                        SqlBusConnector::connect(pg_db.pool(), sql_bus_options(pubsub)?).await?;
                     Some(Box::new(move |local| connector.build(local)))
                 }
                 PubSubTransport::PostgresListenNotify => {
@@ -3154,6 +3159,24 @@ engine = "sqlite"
         assert_eq!(settings.info.mnemonic, None);
 
         let _ = fs::remove_file(&seed_file);
+    }
+
+    #[test]
+    fn validate_database_config_rejects_degenerate_pubsub_timings() {
+        let mut settings = config::Settings::default();
+        settings.database.pubsub.transport = config::PubSubTransport::Sql;
+
+        settings.database.pubsub.poll_interval_ms = Some(0);
+        let err = validate_database_config(&settings).expect_err("zero poll interval");
+        assert!(err.to_string().contains("poll interval"));
+
+        settings.database.pubsub.poll_interval_ms = Some(200);
+        settings.database.pubsub.retention_seconds = Some(1);
+        let err = validate_database_config(&settings).expect_err("retention below poll window");
+        assert!(err.to_string().contains("retention"));
+
+        settings.database.pubsub.retention_seconds = Some(3600);
+        validate_database_config(&settings).expect("sane timings are accepted");
     }
 
     #[cfg(feature = "fakewallet")]
