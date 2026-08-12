@@ -61,6 +61,36 @@ const DEFAULT_RETENTION: Duration = Duration::from_secs(3600);
 /// Maximum rows read in a single poll, to bound memory and query cost.
 const POLL_BATCH: i64 = 512;
 
+/// Smallest accepted poll interval. Anything shorter turns the poll loop into a
+/// tight query loop against the mint database.
+pub const MIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Retention must cover at least this many poll intervals, so a row is still
+/// there when every instance next polls.
+pub const MIN_RETENTION_POLL_INTERVALS: u32 = 10;
+
+/// Rejected [`SqlBusOptions`] timings.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidOptions {
+    /// Poll interval below [`MIN_POLL_INTERVAL`].
+    #[error("poll interval {0:?} is below the {MIN_POLL_INTERVAL:?} minimum")]
+    PollInterval(Duration),
+    /// Retention too small for the configured poll interval, which would prune
+    /// outbox rows before peers have read them.
+    #[error(
+        "retention {retention:?} is too short for a {poll_interval:?} poll interval; \
+         use at least {minimum:?}"
+    )]
+    Retention {
+        /// Configured retention.
+        retention: Duration,
+        /// Configured poll interval.
+        poll_interval: Duration,
+        /// Smallest retention accepted for that poll interval.
+        minimum: Duration,
+    },
+}
+
 /// Configuration for a [`SqlBus`].
 #[derive(Clone, Debug)]
 pub struct SqlBusOptions {
@@ -78,6 +108,29 @@ impl Default for SqlBusOptions {
             poll_interval: DEFAULT_POLL_INTERVAL,
             retention: DEFAULT_RETENTION,
         }
+    }
+}
+
+impl SqlBusOptions {
+    /// Reject timings that would busy-poll the database or drop outbox rows
+    /// before peers have read them.
+    pub fn validate(&self) -> Result<(), InvalidOptions> {
+        if self.poll_interval < MIN_POLL_INTERVAL {
+            return Err(InvalidOptions::PollInterval(self.poll_interval));
+        }
+
+        let minimum = self
+            .poll_interval
+            .saturating_mul(MIN_RETENTION_POLL_INTERVALS);
+        if self.retention < minimum {
+            return Err(InvalidOptions::Retention {
+                retention: self.retention,
+                poll_interval: self.poll_interval,
+                minimum,
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -108,6 +161,10 @@ where
     /// and only delivers events published after this instance came up, matching
     /// `LISTEN`/`NOTIFY` semantics.
     pub async fn connect(pool: Arc<Pool<RM>>, options: SqlBusOptions) -> Result<Self, Error> {
+        options
+            .validate()
+            .map_err(|err| Error::Database(Box::new(err)))?;
+
         let cursor = {
             let conn = pool.get().await.map_err(|e| Error::Database(Box::new(e)))?;
             query("SELECT COALESCE(MAX(id), 0) FROM pubsub_outbox")?
@@ -343,5 +400,57 @@ fn value_as_i64_ref(value: &Value) -> Option<i64> {
     match value {
         Value::Integer(i) => Some(*i),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_valid() {
+        assert!(SqlBusOptions::default().validate().is_ok());
+    }
+
+    #[test]
+    fn zero_poll_interval_is_rejected() {
+        let options = SqlBusOptions {
+            poll_interval: Duration::ZERO,
+            ..SqlBusOptions::default()
+        };
+        assert!(matches!(
+            options.validate(),
+            Err(InvalidOptions::PollInterval(_))
+        ));
+    }
+
+    #[test]
+    fn retention_must_outlast_several_poll_intervals() {
+        let options = SqlBusOptions {
+            poll_interval: Duration::from_millis(500),
+            retention: Duration::from_secs(1),
+        };
+        assert!(matches!(
+            options.validate(),
+            Err(InvalidOptions::Retention { .. })
+        ));
+
+        let options = SqlBusOptions {
+            retention: Duration::ZERO,
+            ..SqlBusOptions::default()
+        };
+        assert!(matches!(
+            options.validate(),
+            Err(InvalidOptions::Retention { .. })
+        ));
+    }
+
+    #[test]
+    fn huge_poll_interval_does_not_overflow_the_retention_minimum() {
+        let options = SqlBusOptions {
+            poll_interval: Duration::from_millis(u64::MAX),
+            retention: Duration::MAX,
+        };
+        assert!(options.validate().is_ok());
     }
 }

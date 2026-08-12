@@ -25,6 +25,9 @@ tokio-postgres = "0.7.13"
 futures-util = "0.3.31"
 postgres-native-tls = "0.5.1"
 native-tls = "=0.2.18"
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 cdk-common = { workspace = true, features = ["test"] }

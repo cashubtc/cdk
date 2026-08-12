@@ -130,8 +130,12 @@ connection_timeout_seconds = 10
 [database.pubsub]
 # transport = "in-memory"
 # channel = "cdk_mint_pubsub"        # postgres-listen-notify only; all instances must match
-# poll_interval_ms = 200             # sql only
-# retention_seconds = 3600           # sql only: how long outbox rows are kept
+# poll_interval_ms = 200             # sql only; at least 10
+# retention_seconds = 3600           # sql only: how long outbox rows are kept.
+                                     # Must cover at least 10 poll intervals,
+                                     # otherwise rows are pruned before peers
+                                     # read them. Out-of-range values are
+                                     # rejected at startup.
 
 # Auth database configuration (optional, only used when auth is enabled)
 [auth_database.postgres]
