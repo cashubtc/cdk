@@ -207,6 +207,17 @@ impl WalletRepository {
             .map_err(|e| e.into()) // Ensure the inner error can convert to FfiError
     }
 
+    /// Wait until the rate-limit budgets drawn down by every wallet in this
+    /// repository have been handed to storage.
+    ///
+    /// Await this before dropping the repository on shutdown. Without it,
+    /// persistence is best effort and a rebuild can outrun the detached
+    /// writer, so every rebuilt wallet starts with a full burst against the
+    /// mint's rate cap.
+    pub async fn flush_rate_limits(&self) {
+        self.inner.flush_rate_limits().await;
+    }
+
     /// Check if mint is in wallet
     pub async fn has_mint(&self, mint_url: MintUrl) -> bool {
         if let Ok(cdk_mint_url) = mint_url.try_into() {

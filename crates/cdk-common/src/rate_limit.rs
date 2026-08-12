@@ -1,4 +1,5 @@
-//! Client-side request rate limiting for the wallet.
+//! Client-side request rate limiting for the wallet (GCRA token bucket plus an
+//! HTTP transport decorator).
 //!
 //! The wallet paces its outbound HTTP requests so it stays under a server's
 //! request cap without the caller having to think about it. Pacing uses the
@@ -15,6 +16,12 @@
 //! The budget is persisted per host in the wallet key-value store, so a wallet
 //! that is built, used, and dropped hands its remaining budget to the next
 //! wallet talking to the same host instead of starting full and bursting again.
+//! That write is best effort: the request path never waits for the store, and a
+//! dropped bucket leaves the final write to a detached task that a rebuild or a
+//! runtime teardown can cut short. A caller that needs the handover to happen
+//! awaits [`RateLimiterManager::flush`](crate::rate_limit::RateLimiterManager::flush)
+//! (`Wallet::flush_rate_limits` in `cdk`)
+//! before dropping the wallet.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -432,9 +439,13 @@ impl TokenBucket {
     /// hot path never waits for the store, but a caller can. Completion is based
     /// on the writer having *attempted* the value, so a failing store still lets
     /// `flush` return; the timeout is a backstop for a store call that never
-    /// completes. Returns early if the bucket has no persistence.
+    /// completes.
+    ///
+    /// Returns early when the bucket has no persistence, and when it has never
+    /// been used: nothing was reserved, so there is nothing to persist and no
+    /// writer to wait for. Starting one here would write a debt-free budget for
+    /// an origin that never issued a request.
     pub async fn flush(&self) {
-        self.ensure_started().await;
         let Some(Some(writer)) = self.inner.started.get() else {
             return;
         };
@@ -574,6 +585,21 @@ impl RateLimiterManager {
         for bucket in lock(&self.buckets).values() {
             bucket.set_enabled(enabled);
         }
+    }
+
+    /// Wait until every budget drawn down so far has been handed to the store.
+    ///
+    /// The shutdown barrier for a wallet lifecycle owner: without it, the final
+    /// write is left to a detached writer task that can lose the race against an
+    /// immediate wallet rebuild or a runtime teardown, and the next wallet then
+    /// starts full and bursts again.
+    ///
+    /// Bounded even when the store is slow or hung: buckets flush concurrently
+    /// and each [`TokenBucket::flush`] has its own timeout, so the whole call
+    /// costs one flush timeout rather than one per origin.
+    pub async fn flush(&self) {
+        let buckets: Vec<TokenBucket> = lock(&self.buckets).values().cloned().collect();
+        futures::future::join_all(buckets.iter().map(TokenBucket::flush)).await;
     }
 
     /// Number of origins currently tracked. Exposed for diagnostics and to let
@@ -1041,6 +1067,53 @@ mod tests {
             bucket.acquire(async {}).await;
         }
         assert!(start.elapsed() < Duration::from_millis(100));
+    }
+
+    /// A [`BudgetStore`] whose writes never complete, so `flush` can only return
+    /// through its own timeout.
+    #[derive(Debug)]
+    struct HangingStore;
+
+    #[async_trait]
+    impl BudgetStore for HangingStore {
+        async fn load(&self) -> Option<Vec<u8>> {
+            None
+        }
+        async fn store(&self, _value: &[u8]) -> bool {
+            std::future::pending().await
+        }
+    }
+
+    /// Paused time auto-advances while every task is idle, so the flush timeout
+    /// elapses in virtual time: this asserts the bound exists, without waiting
+    /// five real seconds for it.
+    #[tokio::test(start_paused = true)]
+    async fn flush_is_bounded_when_the_store_hangs() {
+        let bucket = TokenBucket::with_store(config(5, 300), Arc::new(HangingStore));
+        bucket.acquire(async {}).await;
+
+        assert!(
+            with_timeout(FLUSH_TIMEOUT * 2, bucket.flush())
+                .await
+                .is_some(),
+            "flush must give up rather than wait on a hung store",
+        );
+    }
+
+    /// No request ever went through, so there is nothing to hand over and no
+    /// writer to wait for: a manager flushing every origin must not write a
+    /// debt-free budget for one that never issued a request.
+    #[tokio::test]
+    async fn flush_on_an_unused_bucket_persists_nothing() {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let store = Arc::new(PreloadedStore {
+            preload: 0,
+            writes: writes.clone(),
+        });
+        let bucket = TokenBucket::with_store(config(5, 300), store);
+
+        bucket.flush().await;
+        assert!(lock(&writes).is_empty());
     }
 
     #[tokio::test]

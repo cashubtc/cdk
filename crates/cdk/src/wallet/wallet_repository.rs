@@ -493,6 +493,19 @@ impl WalletRepository {
         Ok(wallet)
     }
 
+    /// Wait until the rate-limit budgets drawn down by every wallet in this
+    /// repository have been handed to storage.
+    ///
+    /// The repository owns the limiter its wallets share, so this is the
+    /// shutdown barrier to await before dropping it. Equivalent to
+    /// [`Wallet::flush_rate_limits`] on any one of its wallets, and safe to call
+    /// when the repository holds no wallets at all. The same caveat applies:
+    /// without it, persistence is best effort and a rebuild can outrun the
+    /// detached writer.
+    pub async fn flush_rate_limits(&self) {
+        self.rate_limiter.flush().await;
+    }
+
     /// Remove a wallet from the in-memory repository
     ///
     /// This only removes the wallet from the in-memory map. It does not remove
@@ -986,7 +999,7 @@ impl Drop for WalletRepository {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use cdk_common::database::WalletDatabase;
     use cdk_common::nut00::KnownMethod;
@@ -1472,6 +1485,96 @@ mod tests {
             !bucket_for(&wallet_b, lnurl).try_acquire().await,
             "the LNURL host's budget is shared across mints"
         );
+    }
+
+    /// Awaiting the barrier is what makes the handover deterministic: without
+    /// it the rebuild races the detached writer. Capacity 2 and emission ~200ms
+    /// keep the pace signal clear of scheduler noise.
+    #[tokio::test]
+    async fn flushing_a_wallet_hands_its_budget_to_the_rebuilt_one() {
+        let cfg = RateLimitConfig::try_new(2, 300).expect("non-zero");
+        let localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("Failed to create in-memory database"),
+        );
+        let mint_url: MintUrl = "https://mint.example.com".parse().unwrap();
+        let mint_endpoint = "https://mint.example.com/v1/mint";
+
+        let repo = WalletRepositoryBuilder::new()
+            .localstore(localstore.clone())
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("Failed to create WalletRepository");
+        let wallet = repo
+            .create_wallet(mint_url.clone(), CurrencyUnit::Sat, None)
+            .await
+            .expect("failed to create wallet");
+        wallet.set_rate_limiting_config(cfg);
+
+        let bucket = bucket_for(&wallet, mint_endpoint);
+        bucket.acquire(async {}).await;
+        bucket.acquire(async {}).await;
+        wallet.flush_rate_limits().await;
+        drop((bucket, wallet, repo));
+
+        let rebuilt_repo = WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("Failed to rebuild WalletRepository");
+        let rebuilt = rebuilt_repo
+            .get_or_create_wallet(mint_url, CurrencyUnit::Sat, None)
+            .await
+            .expect("failed to rebuild wallet");
+        rebuilt.set_rate_limiting_config(cfg);
+
+        let rebuilt_bucket = bucket_for(&rebuilt, mint_endpoint);
+        let start = Instant::now();
+        rebuilt_bucket.acquire(async {}).await;
+        rebuilt_bucket.acquire(async {}).await;
+        assert!(
+            start.elapsed() >= Duration::from_millis(150),
+            "rebuilt wallet should inherit the flushed budget, took {:?}",
+            start.elapsed()
+        );
+
+        let untouched = bucket_for(&rebuilt, "https://other.example.com/v1/info");
+        let start = Instant::now();
+        untouched.acquire(async {}).await;
+        untouched.acquire(async {}).await;
+        assert!(
+            start.elapsed() < Duration::from_millis(100),
+            "an origin the flushed wallet never touched still bursts"
+        );
+    }
+
+    /// A wallet built with a custom client keeps no limiter, and a fresh
+    /// repository has no origins, so the barrier has nothing to wait for and
+    /// must still return.
+    #[tokio::test]
+    async fn flush_rate_limits_is_a_no_op_without_a_limiter() {
+        use crate::wallet::test_utils::MockMintConnector;
+
+        let localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("Failed to create in-memory database"),
+        );
+        let unlimited = crate::wallet::WalletBuilder::default()
+            .mint_url("https://mint.example.com".parse().unwrap())
+            .unit(CurrencyUnit::Sat)
+            .localstore(localstore)
+            .seed([0u8; 64])
+            .shared_client(Arc::new(MockMintConnector::new()))
+            .build()
+            .expect("failed to build wallet");
+
+        assert!(unlimited.rate_limiter.is_none());
+        unlimited.flush_rate_limits().await;
+        create_test_repository().await.flush_rate_limits().await;
     }
 
     #[tokio::test]

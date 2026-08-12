@@ -325,6 +325,28 @@ impl Wallet {
         }
     }
 
+    /// Wait until the rate-limit budget this wallet has drawn down has been
+    /// handed to storage.
+    ///
+    /// Persistence is otherwise best effort: the request path never waits for
+    /// the store, and dropping a wallet leaves the final write to a detached
+    /// background task. A caller that does not await this barrier can rebuild
+    /// the wallet, or tear down the runtime, before that write lands, and the
+    /// rebuilt wallet then starts with a full burst. Await it before dropping a
+    /// wallet whose budget must carry over.
+    ///
+    /// The wait is bounded, so a slow or hung store cannot hang shutdown; on
+    /// timeout the budget is simply not persisted.
+    ///
+    /// Has the same reach as [`Wallet::set_rate_limiting_config`]: every host
+    /// the wallet's limiter paces, repository-wide for a wallet built through a
+    /// [`WalletRepository`], and a no-op when the wallet paces nothing.
+    pub async fn flush_rate_limits(&self) {
+        if let Some(limiter) = &self.rate_limiter {
+            limiter.flush().await;
+        }
+    }
+
     /// Subscribe to events
     pub async fn subscribe<T: Into<WalletParams>>(
         &self,

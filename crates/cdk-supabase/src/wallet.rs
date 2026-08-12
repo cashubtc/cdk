@@ -145,9 +145,9 @@ impl SupabaseWalletDatabase {
     /// No automatic token refresh is configured.
     ///
     /// **Note**: This does NOT run or check migrations automatically. After
-    /// authentication, call [`check_schema_compatibility()`] to verify the
+    /// authentication, call [`Self::check_schema_compatibility`] to verify the
     /// database schema is ready. Migrations must be run separately by an
-    /// administrator — see [`get_schema_sql()`] or use `supabase db push`.
+    /// administrator: see [`Self::get_schema_sql`] or use `supabase db push`.
     pub async fn new(url: Url, api_key: String) -> Result<Self, Error> {
         Ok(Self {
             url,
@@ -167,9 +167,9 @@ impl SupabaseWalletDatabase {
     /// Token refresh uses `POST /auth/v1/token` with `grant_type=refresh_token`.
     ///
     /// **Note**: This does NOT run or check migrations automatically. After
-    /// authentication, call [`check_schema_compatibility()`] to verify the
+    /// authentication, call [`Self::check_schema_compatibility`] to verify the
     /// database schema is ready. Migrations must be run separately by an
-    /// administrator — see [`get_schema_sql()`] or use `supabase db push`.
+    /// administrator: see [`Self::get_schema_sql`] or use `supabase db push`.
     pub async fn with_supabase_auth(url: Url, api_key: String) -> Result<Self, Error> {
         Ok(Self {
             url,
@@ -189,9 +189,9 @@ impl SupabaseWalletDatabase {
     /// The OIDC provider must be configured in Supabase to validate the JWTs.
     ///
     /// **Note**: This does NOT run or check migrations automatically. After
-    /// authentication, call [`check_schema_compatibility()`] to verify the
+    /// authentication, call [`Self::check_schema_compatibility`] to verify the
     /// database schema is ready. Migrations must be run separately by an
-    /// administrator — see [`get_schema_sql()`] or use `supabase db push`.
+    /// administrator: see [`Self::get_schema_sql`] or use `supabase db push`.
     pub async fn with_oidc(
         url: Url,
         api_key: String,

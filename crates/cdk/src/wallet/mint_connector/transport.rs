@@ -161,6 +161,41 @@ mod persistence_tests {
         );
     }
 
+    /// One barrier covers every origin the manager paces, not just the one the
+    /// caller happens to hold. Capacity 2 and emission ~200ms keep the pace
+    /// signal clear of scheduler noise.
+    #[tokio::test]
+    async fn manager_flush_covers_every_origin() {
+        let store = store().await;
+        let cfg = config(2, 300);
+        let urls = [
+            parse("https://a.example.com/v1/info"),
+            parse("https://b.example.com/v1/info"),
+        ];
+
+        let first = RateLimiterManager::new(cfg, Some(store.clone()));
+        for url in &urls {
+            let bucket = first.bucket_for(url);
+            bucket.acquire(async {}).await;
+            bucket.acquire(async {}).await;
+        }
+        first.flush().await;
+        drop(first);
+
+        let second = RateLimiterManager::new(cfg, Some(store));
+        for url in &urls {
+            let bucket = second.bucket_for(url);
+            let start = Instant::now();
+            bucket.acquire(async {}).await;
+            bucket.acquire(async {}).await;
+            assert!(
+                start.elapsed() >= Duration::from_millis(150),
+                "{url} should inherit its drained budget, took {:?}",
+                start.elapsed()
+            );
+        }
+    }
+
     #[tokio::test]
     async fn budget_persists_across_instances() {
         let store = store().await;
