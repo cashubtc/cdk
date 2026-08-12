@@ -383,8 +383,7 @@ impl FederationMaterializedStateSnapshot {
 /// writes and terminal application state. Full-state audits enumerate this
 /// compact registry and the referenced current rows instead of replaying the
 /// historical operation journal.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FederationMaterializedStateKey {
     /// Mint quote identified by its public quote ID.
     MintQuote {
@@ -422,12 +421,129 @@ pub enum FederationMaterializedStateKey {
         /// Stable key within the collection.
         key: String,
     },
+    /// Application-owned key retaining an established storage wire format.
+    ExternalApplication(super::FederationExternalApplicationMaterializedStateKey),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum FederationKnownMaterializedStateKey {
+    MintQuote {
+        quote: String,
+    },
+    MeltQuote {
+        quote: String,
+    },
+    CompletedOperation,
+    ProofState {
+        y: PublicKey,
+    },
+    BlindSignature {
+        blinded_message: PublicKey,
+    },
+    KeysetRotation {
+        keyset: FederatedKeyset,
+    },
+    Application {
+        application_id: super::FederationFrostApplicationId,
+        collection: String,
+        key: String,
+    },
+}
+
+impl FederationKnownMaterializedStateKey {
+    fn from_public(key: &FederationMaterializedStateKey) -> Option<Self> {
+        Some(match key {
+            FederationMaterializedStateKey::MintQuote { quote } => Self::MintQuote {
+                quote: quote.clone(),
+            },
+            FederationMaterializedStateKey::MeltQuote { quote } => Self::MeltQuote {
+                quote: quote.clone(),
+            },
+            FederationMaterializedStateKey::CompletedOperation => Self::CompletedOperation,
+            FederationMaterializedStateKey::ProofState { y } => Self::ProofState { y: *y },
+            FederationMaterializedStateKey::BlindSignature { blinded_message } => {
+                Self::BlindSignature {
+                    blinded_message: *blinded_message,
+                }
+            }
+            FederationMaterializedStateKey::KeysetRotation { keyset } => Self::KeysetRotation {
+                keyset: keyset.clone(),
+            },
+            FederationMaterializedStateKey::Application {
+                application_id,
+                collection,
+                key,
+            } => Self::Application {
+                application_id: *application_id,
+                collection: collection.clone(),
+                key: key.clone(),
+            },
+            FederationMaterializedStateKey::ExternalApplication(_) => return None,
+        })
+    }
+
+    fn into_public(self) -> FederationMaterializedStateKey {
+        match self {
+            Self::MintQuote { quote } => FederationMaterializedStateKey::MintQuote { quote },
+            Self::MeltQuote { quote } => FederationMaterializedStateKey::MeltQuote { quote },
+            Self::CompletedOperation => FederationMaterializedStateKey::CompletedOperation,
+            Self::ProofState { y } => FederationMaterializedStateKey::ProofState { y },
+            Self::BlindSignature { blinded_message } => {
+                FederationMaterializedStateKey::BlindSignature { blinded_message }
+            }
+            Self::KeysetRotation { keyset } => {
+                FederationMaterializedStateKey::KeysetRotation { keyset }
+            }
+            Self::Application {
+                application_id,
+                collection,
+                key,
+            } => FederationMaterializedStateKey::Application {
+                application_id,
+                collection,
+                key,
+            },
+        }
+    }
+}
+
+impl Serialize for FederationMaterializedStateKey {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::ExternalApplication(key) => key.wire_value().serialize(serializer),
+            _ => FederationKnownMaterializedStateKey::from_public(self)
+                .ok_or_else(|| serde::ser::Error::custom("unsupported materialized-state key"))?
+                .serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for FederationMaterializedStateKey {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if let Some(key) =
+            super::operation::decode_external_application_materialized_state_key(&value)
+                .map_err(serde::de::Error::custom)?
+        {
+            return Ok(Self::ExternalApplication(key));
+        }
+        serde_json::from_value::<FederationKnownMaterializedStateKey>(value)
+            .map(FederationKnownMaterializedStateKey::into_public)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl FederationMaterializedStateKey {
     /// Stable storage kind label.
     #[must_use]
-    pub fn kind_label(&self) -> &'static str {
+    pub fn kind_label(&self) -> &str {
         match self {
             Self::MintQuote { .. } => "mint_quote",
             Self::MeltQuote { .. } => "melt_quote",
@@ -436,6 +552,7 @@ impl FederationMaterializedStateKey {
             Self::BlindSignature { .. } => "blind_signature",
             Self::KeysetRotation { .. } => "keyset_rotation",
             Self::Application { .. } => "application",
+            Self::ExternalApplication(key) => key.kind(),
         }
     }
 
@@ -460,6 +577,7 @@ impl FederationMaterializedStateKey {
                 };
                 format!("{application_id}:{collection}:{key}")
             }
+            Self::ExternalApplication(key) => key.row_key().to_string(),
         }
     }
 }
@@ -479,7 +597,7 @@ pub struct FederationMaterializedStateKeyRecord {
 impl FederationMaterializedStateKeyRecord {
     /// Stable storage kind label.
     #[must_use]
-    pub fn kind_label(&self) -> &'static str {
+    pub fn kind_label(&self) -> &str {
         self.key.kind_label()
     }
 
@@ -729,6 +847,11 @@ impl FederationJournalEntry {
                         collection: state_key.collection.clone(),
                         key: state_key.key.clone(),
                     });
+                }
+            }
+            FederationOperation::ExternalApplication(operation) => {
+                for key in operation.materialized_state_keys(self.operation_id)? {
+                    insert(FederationMaterializedStateKey::ExternalApplication(key));
                 }
             }
             FederationOperation::MintQuote(operation) => {

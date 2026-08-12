@@ -116,9 +116,9 @@ pub use self::dkg_driver::{
 pub use self::frost_config::{
     FederationCdkOnchainFrostAuthorizationAdapter, FederationFrostApplicationConfig,
     FederationFrostApplicationId, FederationFrostExtensionApplicationConfig,
-    FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig,
-    FederationFrostSealedStorageMetadata, FederationFrostWalletConfig,
-    FederationOnchainConfirmationPolicy,
+    FederationFrostLegacyExtensionApplicationConfig, FederationFrostRootPrivateConfig,
+    FederationFrostRootPublicConfig, FederationFrostSealedStorageMetadata,
+    FederationFrostWalletConfig, FederationOnchainConfirmationPolicy,
 };
 pub use self::frost_dkg::{
     FederationDualDkgResult, FederationFrostDkgConfirmationRequest, FederationFrostDkgContext,
@@ -140,12 +140,14 @@ pub use self::liveness::{
     FEDERATION_WALLET_SIGNING_ATTEMPT_LEASE_MILLIS,
 };
 pub use self::operation::{
-    FederationApplicationConflictKey, FederationApplicationOperation,
-    FederationApplicationStateKey, FederationKeysetRotationOperation, FederationMeltOperation,
-    FederationMeltQuoteMetadata, FederationMeltQuoteOperation,
-    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
-    FederationOperationAuthorization, FederationOperationBalanceAudit,
+    register_external_application_codec, FederationApplicationConflictKey,
+    FederationApplicationOperation, FederationApplicationStateKey,
+    FederationExternalApplicationCodec, FederationExternalApplicationDecoded,
+    FederationExternalApplicationMaterializedStateKey, FederationExternalApplicationOperation,
+    FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteMetadata,
+    FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
+    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
+    FederationOperation, FederationOperationAuthorization, FederationOperationBalanceAudit,
     FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
     FederationOperationKind, FederationOperationSignature, FederationPaymentObservation,
     FederationPaymentObservationEvidenceGroup, FederationPaymentObservationEvidenceGroupSummary,

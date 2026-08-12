@@ -93,8 +93,10 @@ where
         FederationJournalAppendOutcome::Appended(entry)
         | FederationJournalAppendOutcome::Duplicate(entry) => entry,
     };
-    let FederationOperation::Application(application) = &entry.envelope.operation else {
-        panic!("expected application operation");
+    let application = match &entry.envelope.operation {
+        FederationOperation::Application(application) => application,
+        FederationOperation::ExternalApplication(application) => application.application(),
+        _ => panic!("expected application operation"),
     };
 
     let mut transaction = Database::begin_transaction(&db)

@@ -28,8 +28,7 @@ use cdk_common::federation::{
 };
 #[cfg(feature = "federation-bark")]
 use cdk_federation_bark::{
-    validate_federation_bark_application_operation, FederationBarkEvidenceCertificate,
-    FederationBarkOperation,
+    validate_federation_bark_operation, FederationBarkEvidenceCertificate, FederationBarkOperation,
 };
 use cdk_common::mint::{
     MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
@@ -713,8 +712,8 @@ impl FederationRuntimeConfig {
                 self.validate_federation_observer(observation.observer)
             }
             #[cfg(feature = "federation-bark")]
-            FederationOperation::Application(application) => {
-                let operation = validate_federation_bark_application_operation(application)?;
+            FederationOperation::Application(_) | FederationOperation::ExternalApplication(_) => {
+                let operation = validate_federation_bark_operation(operation)?;
                 operation.validate()?;
                 let evidence_certificate = match &operation {
                     FederationBarkOperation::ActionTransition(transition) => {
@@ -741,7 +740,8 @@ impl FederationRuntimeConfig {
                 Ok(())
             }
             #[cfg(not(feature = "federation-bark"))]
-            FederationOperation::Application(_) => Err(
+            FederationOperation::Application(_)
+            | FederationOperation::ExternalApplication(_) => Err(
                 FederationError::ApplicationOperationInvalid {
                     reason: "federation application support is disabled".to_owned(),
                 }

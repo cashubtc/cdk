@@ -221,6 +221,34 @@ fn bark_registration_is_distinct_persistent_and_derived_by_each_member() {
             .expect("Bark application"),
         bark_application
     );
+
+    let mut legacy_value = serde_json::to_value(&config).expect("public config value");
+    let wallet = legacy_value
+        .get_mut("frost_wallet")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("FROST wallet object");
+    wallet
+        .shift_remove("extension_applications")
+        .expect("generic extension field");
+    wallet.insert(
+        "bark_application".to_string(),
+        serde_json::to_value(&bark_application).expect("legacy Bark application"),
+    );
+    let legacy_json = serde_json::to_string(&legacy_value).expect("legacy public config JSON");
+    let legacy_restored: FederationConfig =
+        serde_json::from_str(&legacy_json).expect("legacy public config decode");
+    legacy_restored.validate().expect("legacy public config");
+    assert_eq!(
+        federation_bark_application(&legacy_restored)
+            .expect("legacy Bark application lookup")
+            .expect("legacy Bark application"),
+        bark_application
+    );
+    assert_eq!(
+        serde_json::to_string(&legacy_restored).expect("legacy public config re-encode"),
+        legacy_json,
+        "established public-config field order and digest bytes must remain stable",
+    );
     assert!(bark_application
         .open_public_adapter(&config, &root, bitcoin::Network::Signet, server, 1, 1,)
         .is_err());

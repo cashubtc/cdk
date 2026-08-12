@@ -984,8 +984,8 @@ fn payment_wakes_for_entry(
             .into_iter()
             .collect(),
         #[cfg(feature = "federation-bark")]
-        FederationOperation::Application(application) => {
-            cdk::federation::validate_federation_bark_application_operation(application)
+        FederationOperation::Application(_) | FederationOperation::ExternalApplication(_) => {
+            cdk::federation::validate_federation_bark_operation(&entry.envelope.operation)
                 .ok()
                 .and_then(|operation| operation.quote().map(str::to_owned))
                 .and_then(|quote| parse(&quote))
@@ -999,7 +999,9 @@ fn payment_wakes_for_entry(
                 .collect()
         }
         #[cfg(not(feature = "federation-bark"))]
-        FederationOperation::Application(_) => Vec::new(),
+        FederationOperation::Application(_) | FederationOperation::ExternalApplication(_) => {
+            Vec::new()
+        }
         FederationOperation::ChainObservation(FederationChainObservation::Reorg(_))
         | FederationOperation::Swap(_)
         | FederationOperation::KeysetRotation(_)

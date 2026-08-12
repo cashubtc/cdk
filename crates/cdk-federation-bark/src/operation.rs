@@ -14,11 +14,14 @@ use lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescriptionRef};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use cdk_common::federation::{
-    FederationAllocatedAddressRef, FederationApplicationConflictKey,
-    FederationApplicationOperation, FederationApplicationStateKey, FederationConfig,
-    FederationError, FederationFrostApplicationId, FederationId, FederationJournalEntry,
-    FederationOperation, FederationOperationId, FederationOperationSignature,
-    FederationOperationStatus, MemberId, Result,
+    register_external_application_codec, FederationAllocatedAddressRef,
+    FederationApplicationConflictKey, FederationApplicationOperation,
+    FederationApplicationStateKey, FederationConfig, FederationError,
+    FederationExternalApplicationCodec, FederationExternalApplicationDecoded,
+    FederationExternalApplicationMaterializedStateKey, FederationExternalApplicationOperation,
+    FederationFrostApplicationId, FederationId, FederationJournalEntry, FederationOperation,
+    FederationOperationId, FederationOperationSignature, FederationOperationStatus, MemberId,
+    Result,
 };
 use cdk_common::Amount;
 
@@ -3119,12 +3122,7 @@ impl FederationBarkAuthorizationReference {
                 "Bark authorization application scope differs from public config",
             ));
         }
-        let FederationOperation::Application(envelope) = &entry.envelope.operation else {
-            return Err(invalid_bark(
-                "Bark authorization references a non-Bark operation",
-            ));
-        };
-        let operation = validate_federation_bark_application_operation(envelope)?;
+        let operation = validate_federation_bark_operation(&entry.envelope.operation)?;
         if self.action_id != operation.action_id()
             || self.operation_kind != operation.kind()
             || self.phase != operation.phase()
@@ -3372,10 +3370,7 @@ impl FederationBarkOperationRecord {
     /// Extract Bark metadata from one journal entry.
     #[must_use]
     pub fn from_journal_entry(entry: &FederationJournalEntry) -> Option<Self> {
-        let FederationOperation::Application(envelope) = &entry.envelope.operation else {
-            return None;
-        };
-        let operation = validate_federation_bark_application_operation(envelope).ok()?;
+        let operation = validate_federation_bark_operation(&entry.envelope.operation).ok()?;
         Some(Self {
             operation_id: entry.operation_id,
             operation_index: entry.index,
@@ -3546,32 +3541,275 @@ pub fn federation_bark_application_id() -> Result<FederationFrostApplicationId> 
     FederationFrostApplicationId::from_bytes(registration.id().to_bytes())
 }
 
-/// Wrap one typed Bark operation in the application-neutral consensus envelope.
-pub fn federation_bark_application_operation(
-    operation: FederationBarkOperation,
-) -> Result<FederationOperation> {
+const FEDERATION_BARK_WIRE_TAG: &str = "bark";
+
+/// Register Bark's application-owned established federation wire codec.
+pub fn register_federation_bark_wire_codec() -> Result<()> {
+    register_external_application_codec(
+        FEDERATION_BARK_WIRE_TAG,
+        FederationExternalApplicationCodec::new(
+            decode_federation_bark_wire_operation,
+            federation_bark_materialized_state_keys,
+            decode_federation_bark_materialized_state_key,
+        ),
+    )
+}
+
+fn federation_bark_application_metadata(
+    operation: &FederationBarkOperation,
+) -> Result<FederationApplicationOperation> {
     operation.validate()?;
     let conflict_keys = operation
         .conflict_keys()
         .into_iter()
         .map(|key| {
             FederationApplicationConflictKey::new(
-                "bark",
+                FEDERATION_BARK_WIRE_TAG,
                 cdk_common::util::hex::encode(canonical_json_bytes(&key)?),
             )
         })
         .collect::<Result<Vec<_>>>()?;
-    let state_keys = bark_state_keys(&operation)?;
-    let application = FederationApplicationOperation::new(
+    FederationApplicationOperation::new(
         federation_bark_application_id()?,
         bark_operation_kind_label(operation.kind()),
-        &operation,
+        operation,
         conflict_keys,
-        state_keys,
+        bark_state_keys(operation)?,
         operation.quote().map(ToOwned::to_owned),
         operation.claimed_author(),
-    )?;
-    Ok(FederationOperation::Application(application))
+    )
+}
+
+#[derive(Serialize)]
+struct FederationBarkWireConflictKey {
+    key: FederationBarkConflictKey,
+}
+
+fn federation_bark_external_decoded(
+    operation: &FederationBarkOperation,
+) -> Result<FederationExternalApplicationDecoded> {
+    let conflict_key_data = operation
+        .conflict_keys()
+        .into_iter()
+        .map(|key| serde_json::to_value(FederationBarkWireConflictKey { key }))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    FederationExternalApplicationDecoded::new(
+        federation_bark_application_metadata(operation)?,
+        conflict_key_data,
+    )
+}
+
+fn decode_federation_bark_wire_operation(
+    value: &serde_json::Value,
+) -> Result<FederationExternalApplicationDecoded> {
+    let operation: FederationBarkOperation = serde_json::from_value(value.clone())?;
+    federation_bark_external_decoded(&operation)
+}
+
+fn federation_bark_materialized_state_keys(
+    application: &FederationApplicationOperation,
+    operation_id: FederationOperationId,
+) -> Result<Vec<FederationExternalApplicationMaterializedStateKey>> {
+    let operation = validate_federation_bark_application_operation(application)?;
+    let mut keys = Vec::new();
+    let action_id = operation.action_id();
+    match &operation {
+        FederationBarkOperation::ReceiveIntent(intent) => {
+            keys.push(federation_bark_materialized_key(
+                "bark_action",
+                "action_id",
+                &action_id,
+                action_id.to_string(),
+            )?);
+            keys.push(federation_bark_materialized_key(
+                "bark_derivation_allocation",
+                "locator",
+                &intent.destination,
+                intent.destination.to_string(),
+            )?);
+        }
+        FederationBarkOperation::ReceivePrepared(_) => {
+            keys.push(federation_bark_materialized_key(
+                "bark_action",
+                "action_id",
+                &action_id,
+                action_id.to_string(),
+            )?);
+            keys.push(federation_bark_materialized_key(
+                "bark_transition",
+                "operation_id",
+                &operation_id,
+                operation_id.to_string(),
+            )?);
+        }
+        FederationBarkOperation::ActionPlan(plan) => {
+            keys.push(federation_bark_materialized_key(
+                "bark_action",
+                "action_id",
+                &action_id,
+                action_id.to_string(),
+            )?);
+            keys.push(federation_bark_materialized_key(
+                "bark_transition",
+                "operation_id",
+                &operation_id,
+                operation_id.to_string(),
+            )?);
+            for input in &plan.inputs {
+                keys.push(federation_bark_materialized_key(
+                    "bark_vtxo",
+                    "vtxo_id",
+                    &input.vtxo_id,
+                    input.vtxo_id.to_string(),
+                )?);
+                keys.push(federation_bark_materialized_key(
+                    "bark_reservation",
+                    "vtxo_id",
+                    &input.vtxo_id,
+                    input.vtxo_id.to_string(),
+                )?);
+            }
+            for output in &plan.outputs {
+                keys.push(federation_bark_materialized_key(
+                    "bark_derivation_allocation",
+                    "locator",
+                    &output.locator,
+                    output.locator.to_string(),
+                )?);
+            }
+            if let Some(locator) = plan.revocation_locator {
+                keys.push(federation_bark_materialized_key(
+                    "bark_derivation_allocation",
+                    "locator",
+                    &locator,
+                    locator.to_string(),
+                )?);
+            }
+        }
+        FederationBarkOperation::ActionTransition(transition) => {
+            keys.push(federation_bark_materialized_key(
+                "bark_action",
+                "action_id",
+                &action_id,
+                action_id.to_string(),
+            )?);
+            keys.push(federation_bark_materialized_key(
+                "bark_transition",
+                "operation_id",
+                &operation_id,
+                operation_id.to_string(),
+            )?);
+            for vtxo in &transition.vtxo_transitions {
+                keys.push(federation_bark_materialized_key(
+                    "bark_vtxo",
+                    "vtxo_id",
+                    &vtxo.vtxo_id,
+                    vtxo.vtxo_id.to_string(),
+                )?);
+                keys.push(federation_bark_materialized_key(
+                    "bark_derivation_allocation",
+                    "locator",
+                    &vtxo.locator,
+                    vtxo.locator.to_string(),
+                )?);
+            }
+        }
+        FederationBarkOperation::MemberObservation(_)
+        | FederationBarkOperation::EvidenceCertificate(_) => {
+            keys.push(federation_bark_materialized_key(
+                "bark_observation",
+                "operation_id",
+                &operation_id,
+                operation_id.to_string(),
+            )?);
+        }
+    }
+    Ok(keys)
+}
+
+fn federation_bark_materialized_key<T>(
+    kind: &str,
+    field: &str,
+    value: &T,
+    row_key: String,
+) -> Result<FederationExternalApplicationMaterializedStateKey>
+where
+    T: Serialize + ?Sized,
+{
+    let mut object = serde_json::Map::new();
+    object.insert("kind".to_string(), kind.into());
+    object.insert(field.to_string(), serde_json::to_value(value)?);
+    FederationExternalApplicationMaterializedStateKey::new(
+        kind,
+        row_key,
+        serde_json::Value::Object(object),
+    )
+}
+
+fn decode_federation_bark_materialized_state_key(
+    value: &serde_json::Value,
+) -> Result<Option<FederationExternalApplicationMaterializedStateKey>> {
+    let Some(object) = value.as_object() else {
+        return Ok(None);
+    };
+    let Some(kind) = object.get("kind").and_then(serde_json::Value::as_str) else {
+        return Ok(None);
+    };
+    let field = match kind {
+        "bark_action" => "action_id",
+        "bark_vtxo" | "bark_reservation" => "vtxo_id",
+        "bark_derivation_allocation" => "locator",
+        "bark_transition" | "bark_observation" => "operation_id",
+        _ => return Ok(None),
+    };
+    if object.len() != 2 {
+        return Err(invalid_bark(
+            "Bark materialized-state key contains unexpected fields",
+        ));
+    }
+    let row_key = match kind {
+        "bark_action" => serde_json::from_value::<FederationBarkActionId>(
+            object
+                .get(field)
+                .cloned()
+                .ok_or_else(|| invalid_bark("Bark materialized-state action ID is missing"))?,
+        )?
+        .to_string(),
+        "bark_vtxo" | "bark_reservation" => serde_json::from_value::<FederationBarkVtxoId>(
+            object
+                .get(field)
+                .cloned()
+                .ok_or_else(|| invalid_bark("Bark materialized-state VTXO ID is missing"))?,
+        )?
+        .to_string(),
+        "bark_derivation_allocation" => serde_json::from_value::<FederationBarkVtxoLocator>(
+            object
+                .get(field)
+                .cloned()
+                .ok_or_else(|| invalid_bark("Bark materialized-state locator is missing"))?,
+        )?
+        .to_string(),
+        "bark_transition" | "bark_observation" => serde_json::from_value::<FederationOperationId>(
+            object
+                .get(field)
+                .cloned()
+                .ok_or_else(|| invalid_bark("Bark materialized-state operation ID is missing"))?,
+        )?
+        .to_string(),
+        _ => return Ok(None),
+    };
+    FederationExternalApplicationMaterializedStateKey::new(kind, row_key, value.clone()).map(Some)
+}
+
+/// Wrap one typed Bark operation in the application-neutral consensus envelope.
+pub fn federation_bark_application_operation(
+    operation: FederationBarkOperation,
+) -> Result<FederationOperation> {
+    register_federation_bark_wire_codec()?;
+    let decoded = federation_bark_external_decoded(&operation)?;
+    let application =
+        FederationExternalApplicationOperation::new(FEDERATION_BARK_WIRE_TAG, &operation, decoded)?;
+    Ok(FederationOperation::ExternalApplication(application))
 }
 
 /// Decode a Bark application payload and verify every generic metadata field.
@@ -3585,16 +3823,42 @@ pub fn validate_federation_bark_application_operation(
         ));
     }
     let operation: FederationBarkOperation = application.decode_payload()?;
-    let rebuilt = federation_bark_application_operation(operation.clone())?;
-    let FederationOperation::Application(rebuilt) = rebuilt else {
-        return Err(invalid_bark("Bark wrapper construction failed"));
-    };
+    let rebuilt = federation_bark_application_metadata(&operation)?;
     if &rebuilt != application {
         return Err(invalid_bark(
             "Bark application metadata differs from its typed payload",
         ));
     }
     Ok(operation)
+}
+
+/// Decode and validate Bark from either generic or established application wire.
+pub fn validate_federation_bark_operation(
+    operation: &FederationOperation,
+) -> Result<FederationBarkOperation> {
+    match operation {
+        FederationOperation::Application(application) => {
+            validate_federation_bark_application_operation(application)
+        }
+        FederationOperation::ExternalApplication(application)
+            if application.wire_tag() == FEDERATION_BARK_WIRE_TAG =>
+        {
+            let operation: FederationBarkOperation = application.decode_payload()?;
+            operation.validate()?;
+            if application.application() != &federation_bark_application_metadata(&operation)? {
+                return Err(invalid_bark(
+                    "Bark established-wire metadata differs from its typed payload",
+                ));
+            }
+            Ok(operation)
+        }
+        FederationOperation::ExternalApplication(_) => {
+            Err(invalid_bark("external application operation is not Bark"))
+        }
+        _ => Err(invalid_bark(
+            "operation is not a federation application operation",
+        )),
+    }
 }
 
 fn bark_operation_kind_label(kind: FederationBarkOperationKind) -> &'static str {

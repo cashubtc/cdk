@@ -23,13 +23,12 @@ use cdk_common::{Amount, PublicKey};
 use cdk_federation_bark::{
     ark_server_commitment, federation_bark_application, federation_bark_application_id,
     federation_bark_exit_allocation_quote, federation_bark_signer_set_for_attempt,
-    validate_federation_bark_application_operation, FederationBarkActionKind,
-    FederationBarkActionPlan, FederationBarkActionRecord, FederationBarkActionTransition,
-    FederationBarkArtifact, FederationBarkArtifactKind, FederationBarkDigest,
-    FederationBarkEvidencePhase, FederationBarkObservationStatus, FederationBarkOperation,
-    FederationBarkProjectionSnapshot, FederationBarkReceiveIntent, FederationBarkSemanticPhase,
-    FederationBarkVtxoInput, FederationBarkVtxoLocator, FederationBarkVtxoState,
-    FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU,
+    validate_federation_bark_operation, FederationBarkActionKind, FederationBarkActionPlan,
+    FederationBarkActionRecord, FederationBarkActionTransition, FederationBarkArtifact,
+    FederationBarkArtifactKind, FederationBarkDigest, FederationBarkEvidencePhase,
+    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkProjectionSnapshot,
+    FederationBarkReceiveIntent, FederationBarkSemanticPhase, FederationBarkVtxoInput,
+    FederationBarkVtxoLocator, FederationBarkVtxoState, FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU,
 };
 use tracing::instrument;
 use uuid::Uuid;
@@ -46,12 +45,7 @@ const MATERIALIZED_STATE_QUERY_BATCH_SIZE: usize = 500;
 pub(super) fn bark_operation(
     operation: &FederationOperation,
 ) -> Result<FederationBarkOperation, Error> {
-    let FederationOperation::Application(application) = operation else {
-        return Err(bark_state_error(
-            "operation is not a federation application operation",
-        ));
-    };
-    validate_federation_bark_application_operation(application).map_err(Error::from)
+    validate_federation_bark_operation(operation).map_err(Error::from)
 }
 
 #[cfg(feature = "federation-bark")]
@@ -1974,7 +1968,8 @@ impl Mint {
                 FederationMaterializedStateKey::KeysetRotation { keyset } => {
                     keyset_rotations.push((record.operation_index, record.operation_id, keyset));
                 }
-                FederationMaterializedStateKey::Application { .. } => {}
+                FederationMaterializedStateKey::Application { .. }
+                | FederationMaterializedStateKey::ExternalApplication(_) => {}
             }
         }
 

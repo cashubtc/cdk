@@ -9,10 +9,13 @@
 use core::fmt;
 use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{OnceLock, RwLock};
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
+use serde::de::Error as _;
+use serde::ser::{Error as _, SerializeMap};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::journal::FederationJournalEntry;
@@ -266,6 +269,352 @@ fn application_operation_invalid(reason: impl Into<String>) -> FederationError {
     }
 }
 
+/// Decoded consensus metadata supplied by an external application wire codec.
+///
+/// This keeps application-owned payload types outside `cdk-common` while
+/// allowing an established application wire tag to retain stable operation
+/// IDs, signatures, conflict keys, and materialized-state registry rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationExternalApplicationDecoded {
+    application: FederationApplicationOperation,
+    conflict_key_data: Vec<serde_json::Value>,
+}
+
+impl FederationExternalApplicationDecoded {
+    /// Construct validated generic metadata and the matching established-wire conflict keys.
+    pub fn new(
+        application: FederationApplicationOperation,
+        conflict_key_data: Vec<serde_json::Value>,
+    ) -> Result<Self> {
+        application.validate()?;
+        if application.conflict_keys.len() != conflict_key_data.len() {
+            return Err(application_operation_invalid(
+                "external application conflict-key metadata length mismatch",
+            ));
+        }
+        Ok(Self {
+            application,
+            conflict_key_data,
+        })
+    }
+}
+
+/// Opaque established-wire materialized-state key owned by an application crate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationExternalApplicationMaterializedStateKey {
+    kind: String,
+    row_key: String,
+    wire_value: serde_json::Value,
+}
+
+impl FederationExternalApplicationMaterializedStateKey {
+    /// Construct one validated application-owned materialized-state registry key.
+    pub fn new<K, R>(kind: K, row_key: R, wire_value: serde_json::Value) -> Result<Self>
+    where
+        K: Into<String>,
+        R: Into<String>,
+    {
+        let key = Self {
+            kind: kind.into(),
+            row_key: row_key.into(),
+            wire_value,
+        };
+        validate_application_label("materialized-state kind", &key.kind)?;
+        if key.row_key.is_empty()
+            || key.row_key.len() > FEDERATION_MAX_APPLICATION_CONFLICT_KEY_BYTES
+        {
+            return Err(application_operation_invalid(
+                "external application materialized-state row key is empty or oversized",
+            ));
+        }
+        let object = key.wire_value.as_object().ok_or_else(|| {
+            application_operation_invalid(
+                "external application materialized-state wire value is not an object",
+            )
+        })?;
+        if object.get("kind").and_then(serde_json::Value::as_str) != Some(key.kind.as_str()) {
+            return Err(application_operation_invalid(
+                "external application materialized-state kind differs from its wire value",
+            ));
+        }
+        if canonical_json_bytes(&key.wire_value)?.len()
+            > FEDERATION_MAX_APPLICATION_CONFLICT_KEY_BYTES
+        {
+            return Err(application_operation_invalid(
+                "external application materialized-state wire value is oversized",
+            ));
+        }
+        Ok(key)
+    }
+
+    /// Established storage kind label.
+    #[must_use]
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    /// Established logical row key.
+    #[must_use]
+    pub fn row_key(&self) -> &str {
+        &self.row_key
+    }
+
+    pub(crate) fn wire_value(&self) -> &serde_json::Value {
+        &self.wire_value
+    }
+}
+
+/// Application-owned decoder for one established federation wire tag.
+#[derive(Clone, Copy)]
+pub struct FederationExternalApplicationCodec {
+    decode_operation: fn(&serde_json::Value) -> Result<FederationExternalApplicationDecoded>,
+    materialized_state_keys: fn(
+        &FederationApplicationOperation,
+        FederationOperationId,
+    )
+        -> Result<Vec<FederationExternalApplicationMaterializedStateKey>>,
+    decode_materialized_state_key:
+        fn(&serde_json::Value) -> Result<Option<FederationExternalApplicationMaterializedStateKey>>,
+}
+
+impl fmt::Debug for FederationExternalApplicationCodec {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FederationExternalApplicationCodec")
+            .finish_non_exhaustive()
+    }
+}
+
+impl FederationExternalApplicationCodec {
+    /// Construct a codec from deterministic application-owned decoding functions.
+    #[must_use]
+    pub const fn new(
+        decode_operation: fn(&serde_json::Value) -> Result<FederationExternalApplicationDecoded>,
+        materialized_state_keys: fn(
+            &FederationApplicationOperation,
+            FederationOperationId,
+        ) -> Result<
+            Vec<FederationExternalApplicationMaterializedStateKey>,
+        >,
+        decode_materialized_state_key: fn(
+            &serde_json::Value,
+        ) -> Result<
+            Option<FederationExternalApplicationMaterializedStateKey>,
+        >,
+    ) -> Self {
+        Self {
+            decode_operation,
+            materialized_state_keys,
+            decode_materialized_state_key,
+        }
+    }
+}
+
+static EXTERNAL_APPLICATION_CODECS: OnceLock<
+    RwLock<BTreeMap<String, FederationExternalApplicationCodec>>,
+> = OnceLock::new();
+
+fn external_application_codecs(
+) -> &'static RwLock<BTreeMap<String, FederationExternalApplicationCodec>> {
+    EXTERNAL_APPLICATION_CODECS.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+/// Register one application-owned established wire codec.
+///
+/// Registration is idempotent only for the exact same function set. A build
+/// without the owning application crate never registers the tag and therefore
+/// rejects that wire format rather than partially interpreting it.
+pub fn register_external_application_codec(
+    wire_tag: &str,
+    codec: FederationExternalApplicationCodec,
+) -> Result<()> {
+    validate_application_label("wire tag", wire_tag)?;
+    let mut codecs = external_application_codecs()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match codecs.get(wire_tag) {
+        Some(existing)
+            if std::ptr::fn_addr_eq(existing.decode_operation, codec.decode_operation)
+                && std::ptr::fn_addr_eq(
+                    existing.materialized_state_keys,
+                    codec.materialized_state_keys,
+                )
+                && std::ptr::fn_addr_eq(
+                    existing.decode_materialized_state_key,
+                    codec.decode_materialized_state_key,
+                ) =>
+        {
+            Ok(())
+        }
+        Some(_) => Err(application_operation_invalid(
+            "external application wire tag is already registered",
+        )),
+        None => {
+            codecs.insert(wire_tag.to_string(), codec);
+            Ok(())
+        }
+    }
+}
+
+fn external_application_codec(wire_tag: &str) -> Option<FederationExternalApplicationCodec> {
+    external_application_codecs()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(wire_tag)
+        .copied()
+}
+
+pub(crate) fn decode_external_application_materialized_state_key(
+    wire_value: &serde_json::Value,
+) -> Result<Option<FederationExternalApplicationMaterializedStateKey>> {
+    for codec in external_application_codecs()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .values()
+    {
+        if let Some(key) = (codec.decode_materialized_state_key)(wire_value)? {
+            return Ok(Some(key));
+        }
+    }
+    Ok(None)
+}
+
+/// One application operation that retains an application-owned established wire tag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationExternalApplicationOperation {
+    wire_tag: String,
+    wire_data: serde_json::Value,
+    decoded: FederationExternalApplicationDecoded,
+}
+
+impl FederationExternalApplicationOperation {
+    /// Construct an established-wire operation from application-owned typed data.
+    pub fn new<T>(
+        wire_tag: &str,
+        wire_data: &T,
+        decoded: FederationExternalApplicationDecoded,
+    ) -> Result<Self>
+    where
+        T: Serialize + ?Sized,
+    {
+        validate_application_label("wire tag", wire_tag)?;
+        if external_application_codec(wire_tag).is_none() {
+            return Err(application_operation_invalid(
+                "external application wire codec is not registered",
+            ));
+        }
+        let wire_data = serde_json::to_value(wire_data)?;
+        if canonical_json_bytes(&wire_data)?.len()
+            > FEDERATION_MAX_APPLICATION_OPERATION_PAYLOAD_BYTES
+        {
+            return Err(application_operation_invalid(
+                "external application wire payload is oversized",
+            ));
+        }
+        Ok(Self {
+            wire_tag: wire_tag.to_string(),
+            wire_data,
+            decoded,
+        })
+    }
+
+    fn decode(wire_tag: String, wire_data: serde_json::Value) -> Result<Self> {
+        validate_application_label("wire tag", &wire_tag)?;
+        let codec = external_application_codec(&wire_tag).ok_or_else(|| {
+            application_operation_invalid("external application wire codec is not registered")
+        })?;
+        if canonical_json_bytes(&wire_data)?.len()
+            > FEDERATION_MAX_APPLICATION_OPERATION_PAYLOAD_BYTES
+        {
+            return Err(application_operation_invalid(
+                "external application wire payload is oversized",
+            ));
+        }
+        let decoded = (codec.decode_operation)(&wire_data)?;
+        Ok(Self {
+            wire_tag,
+            wire_data,
+            decoded,
+        })
+    }
+
+    /// Established application wire tag.
+    #[must_use]
+    pub fn wire_tag(&self) -> &str {
+        &self.wire_tag
+    }
+
+    /// Decode the application-owned established payload.
+    pub fn decode_payload<T>(&self) -> Result<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        serde_json::from_value(self.wire_data.clone()).map_err(FederationError::from)
+    }
+
+    /// Validated generic application metadata derived by the owning codec.
+    #[must_use]
+    pub fn application(&self) -> &FederationApplicationOperation {
+        &self.decoded.application
+    }
+
+    fn conflict_keys(&self) -> Vec<FederationOperationConflictKey> {
+        self.decoded
+            .conflict_key_data
+            .iter()
+            .cloned()
+            .map(|wire_data| {
+                FederationOperationConflictKey::ExternalApplication(
+                    FederationExternalApplicationConflictKey {
+                        wire_tag: self.wire_tag.clone(),
+                        wire_data,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    pub(crate) fn materialized_state_keys(
+        &self,
+        operation_id: FederationOperationId,
+    ) -> Result<Vec<FederationExternalApplicationMaterializedStateKey>> {
+        let codec = external_application_codec(&self.wire_tag).ok_or_else(|| {
+            application_operation_invalid("external application wire codec is not registered")
+        })?;
+        (codec.materialized_state_keys)(&self.decoded.application, operation_id)
+    }
+}
+
+/// Opaque established-wire conflict key owned by an application crate.
+#[derive(Debug, Clone)]
+pub struct FederationExternalApplicationConflictKey {
+    wire_tag: String,
+    wire_data: serde_json::Value,
+}
+
+impl PartialEq for FederationExternalApplicationConflictKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.wire_tag == other.wire_tag
+            && canonical_json_bytes(&self.wire_data).ok()
+                == canonical_json_bytes(&other.wire_data).ok()
+    }
+}
+
+impl Eq for FederationExternalApplicationConflictKey {}
+
+impl std::hash::Hash for FederationExternalApplicationConflictKey {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: std::hash::Hasher,
+    {
+        self.wire_tag.hash(state);
+        match canonical_json_bytes(&self.wire_data) {
+            Ok(bytes) => bytes.hash(state),
+            Err(_) => self.wire_data.to_string().hash(state),
+        }
+    }
+}
+
 /// Stable identifier for a canonical federation operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationOperationId([u8; 32]);
@@ -405,8 +754,7 @@ impl fmt::Display for FederationOperationKind {
 }
 
 /// Semantic key used to reject mix-and-match duplicates before signing.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FederationOperationConflictKey {
     /// One application-epoch quote key may only map to one address.
     AddressAllocation {
@@ -424,7 +772,6 @@ pub enum FederationOperationConflictKey {
         /// Zero before confirmation, otherwise the observer's claimed depth.
         confirmation_depth: u32,
         /// Observation epoch that scopes this evidence revision.
-        #[serde(default, skip_serializing_if = "is_zero")]
         observation_epoch: u64,
         /// Reporting federation member.
         observer: MemberId,
@@ -434,7 +781,6 @@ pub enum FederationOperationConflictKey {
         /// Disconnected transaction output.
         outpoint: bitcoin::OutPoint,
         /// Observation epoch invalidated by the report.
-        #[serde(default, skip_serializing_if = "is_zero")]
         observation_epoch: u64,
         /// Reporting federation member.
         observer: MemberId,
@@ -523,6 +869,322 @@ pub enum FederationOperationConflictKey {
         /// Application-defined semantic conflict key.
         key: FederationApplicationConflictKey,
     },
+    /// Application-owned reservation retaining an established external wire tag.
+    ExternalApplication(FederationExternalApplicationConflictKey),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+enum FederationKnownOperationConflictKey {
+    AddressAllocation {
+        application_id: FederationFrostApplicationId,
+        application_key_epoch: u64,
+        quote: String,
+    },
+    DepositObservation {
+        outpoint: bitcoin::OutPoint,
+        confirmation_depth: u32,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        observation_epoch: u64,
+        observer: MemberId,
+    },
+    DepositReorgObservation {
+        outpoint: bitcoin::OutPoint,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        observation_epoch: u64,
+        observer: MemberId,
+    },
+    MintQuote {
+        quote: String,
+    },
+    Mint {
+        quote: String,
+    },
+    MintQuotePayment {
+        quote: String,
+        state: MintQuoteState,
+        observer: MemberId,
+    },
+    MintQuotePaymentRevision {
+        quote: String,
+        observer: MemberId,
+        payment_id: [u8; 32],
+    },
+    MeltQuote {
+        quote: String,
+    },
+    Melt {
+        quote: String,
+    },
+    MeltQuotePayment {
+        quote: String,
+        state: MeltQuoteState,
+        observer: MemberId,
+    },
+    KeysetRotation {
+        keyset_id: Id,
+    },
+    OnchainPaymentIntent {
+        quote: String,
+    },
+    OnchainPaymentIntentAssignment {
+        intent_id: super::FederationOnchainPaymentIntentId,
+    },
+    OnchainBatch {
+        batch_id: super::FederationOnchainBatchId,
+    },
+    OnchainUtxo {
+        outpoint: bitcoin::OutPoint,
+    },
+    OnchainReplacementLineage {
+        lineage: super::FederationOnchainBatchId,
+    },
+    Application {
+        application_id: FederationFrostApplicationId,
+        key: FederationApplicationConflictKey,
+    },
+}
+
+impl FederationKnownOperationConflictKey {
+    fn from_public(key: &FederationOperationConflictKey) -> Option<Self> {
+        Some(match key {
+            FederationOperationConflictKey::AddressAllocation {
+                application_id,
+                application_key_epoch,
+                quote,
+            } => Self::AddressAllocation {
+                application_id: *application_id,
+                application_key_epoch: *application_key_epoch,
+                quote: quote.clone(),
+            },
+            FederationOperationConflictKey::DepositObservation {
+                outpoint,
+                confirmation_depth,
+                observation_epoch,
+                observer,
+            } => Self::DepositObservation {
+                outpoint: *outpoint,
+                confirmation_depth: *confirmation_depth,
+                observation_epoch: *observation_epoch,
+                observer: *observer,
+            },
+            FederationOperationConflictKey::DepositReorgObservation {
+                outpoint,
+                observation_epoch,
+                observer,
+            } => Self::DepositReorgObservation {
+                outpoint: *outpoint,
+                observation_epoch: *observation_epoch,
+                observer: *observer,
+            },
+            FederationOperationConflictKey::MintQuote { quote } => Self::MintQuote {
+                quote: quote.clone(),
+            },
+            FederationOperationConflictKey::Mint { quote } => Self::Mint {
+                quote: quote.clone(),
+            },
+            FederationOperationConflictKey::MintQuotePayment {
+                quote,
+                state,
+                observer,
+            } => Self::MintQuotePayment {
+                quote: quote.clone(),
+                state: *state,
+                observer: *observer,
+            },
+            FederationOperationConflictKey::MintQuotePaymentRevision {
+                quote,
+                observer,
+                payment_id,
+            } => Self::MintQuotePaymentRevision {
+                quote: quote.clone(),
+                observer: *observer,
+                payment_id: *payment_id,
+            },
+            FederationOperationConflictKey::MeltQuote { quote } => Self::MeltQuote {
+                quote: quote.clone(),
+            },
+            FederationOperationConflictKey::Melt { quote } => Self::Melt {
+                quote: quote.clone(),
+            },
+            FederationOperationConflictKey::MeltQuotePayment {
+                quote,
+                state,
+                observer,
+            } => Self::MeltQuotePayment {
+                quote: quote.clone(),
+                state: *state,
+                observer: *observer,
+            },
+            FederationOperationConflictKey::KeysetRotation { keyset_id } => Self::KeysetRotation {
+                keyset_id: *keyset_id,
+            },
+            FederationOperationConflictKey::OnchainPaymentIntent { quote } => {
+                Self::OnchainPaymentIntent {
+                    quote: quote.clone(),
+                }
+            }
+            FederationOperationConflictKey::OnchainPaymentIntentAssignment { intent_id } => {
+                Self::OnchainPaymentIntentAssignment {
+                    intent_id: *intent_id,
+                }
+            }
+            FederationOperationConflictKey::OnchainBatch { batch_id } => Self::OnchainBatch {
+                batch_id: *batch_id,
+            },
+            FederationOperationConflictKey::OnchainUtxo { outpoint } => Self::OnchainUtxo {
+                outpoint: *outpoint,
+            },
+            FederationOperationConflictKey::OnchainReplacementLineage { lineage } => {
+                Self::OnchainReplacementLineage { lineage: *lineage }
+            }
+            FederationOperationConflictKey::Application {
+                application_id,
+                key,
+            } => Self::Application {
+                application_id: *application_id,
+                key: key.clone(),
+            },
+            FederationOperationConflictKey::ExternalApplication(_) => return None,
+        })
+    }
+
+    fn into_public(self) -> FederationOperationConflictKey {
+        match self {
+            Self::AddressAllocation {
+                application_id,
+                application_key_epoch,
+                quote,
+            } => FederationOperationConflictKey::AddressAllocation {
+                application_id,
+                application_key_epoch,
+                quote,
+            },
+            Self::DepositObservation {
+                outpoint,
+                confirmation_depth,
+                observation_epoch,
+                observer,
+            } => FederationOperationConflictKey::DepositObservation {
+                outpoint,
+                confirmation_depth,
+                observation_epoch,
+                observer,
+            },
+            Self::DepositReorgObservation {
+                outpoint,
+                observation_epoch,
+                observer,
+            } => FederationOperationConflictKey::DepositReorgObservation {
+                outpoint,
+                observation_epoch,
+                observer,
+            },
+            Self::MintQuote { quote } => FederationOperationConflictKey::MintQuote { quote },
+            Self::Mint { quote } => FederationOperationConflictKey::Mint { quote },
+            Self::MintQuotePayment {
+                quote,
+                state,
+                observer,
+            } => FederationOperationConflictKey::MintQuotePayment {
+                quote,
+                state,
+                observer,
+            },
+            Self::MintQuotePaymentRevision {
+                quote,
+                observer,
+                payment_id,
+            } => FederationOperationConflictKey::MintQuotePaymentRevision {
+                quote,
+                observer,
+                payment_id,
+            },
+            Self::MeltQuote { quote } => FederationOperationConflictKey::MeltQuote { quote },
+            Self::Melt { quote } => FederationOperationConflictKey::Melt { quote },
+            Self::MeltQuotePayment {
+                quote,
+                state,
+                observer,
+            } => FederationOperationConflictKey::MeltQuotePayment {
+                quote,
+                state,
+                observer,
+            },
+            Self::KeysetRotation { keyset_id } => {
+                FederationOperationConflictKey::KeysetRotation { keyset_id }
+            }
+            Self::OnchainPaymentIntent { quote } => {
+                FederationOperationConflictKey::OnchainPaymentIntent { quote }
+            }
+            Self::OnchainPaymentIntentAssignment { intent_id } => {
+                FederationOperationConflictKey::OnchainPaymentIntentAssignment { intent_id }
+            }
+            Self::OnchainBatch { batch_id } => {
+                FederationOperationConflictKey::OnchainBatch { batch_id }
+            }
+            Self::OnchainUtxo { outpoint } => {
+                FederationOperationConflictKey::OnchainUtxo { outpoint }
+            }
+            Self::OnchainReplacementLineage { lineage } => {
+                FederationOperationConflictKey::OnchainReplacementLineage { lineage }
+            }
+            Self::Application {
+                application_id,
+                key,
+            } => FederationOperationConflictKey::Application {
+                application_id,
+                key,
+            },
+        }
+    }
+}
+
+impl Serialize for FederationOperationConflictKey {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::ExternalApplication(key) => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("type", &key.wire_tag)?;
+                map.serialize_entry("data", &key.wire_data)?;
+                map.end()
+            }
+            _ => FederationKnownOperationConflictKey::from_public(self)
+                .ok_or_else(|| S::Error::custom("unsupported federation conflict key"))?
+                .serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for FederationOperationConflictKey {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let wire_tag = value
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| D::Error::custom("federation conflict key type is missing"))?;
+        if external_application_codec(wire_tag).is_some() {
+            let wire_data = value
+                .get("data")
+                .cloned()
+                .ok_or_else(|| D::Error::custom("external application conflict data is missing"))?;
+            return Ok(Self::ExternalApplication(
+                FederationExternalApplicationConflictKey {
+                    wire_tag: wire_tag.to_string(),
+                    wire_data,
+                },
+            ));
+        }
+        serde_json::from_value::<FederationKnownOperationConflictKey>(value)
+            .map(FederationKnownOperationConflictKey::into_public)
+            .map_err(D::Error::custom)
+    }
 }
 
 /// Proposed mint quote creation.
@@ -1010,7 +1672,8 @@ impl FederationPaymentObservation {
             | FederationOperation::TransactionSigned(_)
             | FederationOperation::TransactionBroadcastIntent(_)
             | FederationOperation::TransactionBroadcastObservation(_)
-            | FederationOperation::Application(_) => None,
+            | FederationOperation::Application(_)
+            | FederationOperation::ExternalApplication(_) => None,
         }
     }
 
@@ -1649,13 +2312,7 @@ impl FederationOperationBalanceAudit {
 
 /// Consensus operation payload.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(
-    tag = "type",
-    content = "data",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
+#[derive(Debug, Clone)]
 pub enum FederationOperation {
     /// Allocate one deterministic descriptor address after consensus.
     AddressAllocation(FederationAddressAllocationOperation),
@@ -1687,12 +2344,152 @@ pub enum FederationOperation {
     TransactionBroadcastObservation(FederationTransactionBroadcastObservation),
     /// Execute one operation owned by a separately feature-gated application.
     Application(FederationApplicationOperation),
+    /// Execute an external application operation retaining its established wire tag.
+    ExternalApplication(FederationExternalApplicationOperation),
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    content = "data",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+enum FederationKnownOperation {
+    AddressAllocation(FederationAddressAllocationOperation),
+    ChainObservation(FederationChainObservation),
+    MintQuote(FederationMintQuoteOperation),
+    MintQuotePayment(FederationMintQuotePaymentObservation),
+    Mint(FederationMintOperation),
+    MeltQuote(FederationMeltQuoteOperation),
+    MeltQuotePayment(FederationMeltQuotePaymentObservation),
+    Melt(FederationMeltOperation),
+    Swap(FederationSwapOperation),
+    KeysetRotation(FederationKeysetRotationOperation),
+    TransactionProposal(FederationTransactionProposal),
+    TransactionSigned(FederationSignedTransaction),
+    TransactionBroadcastIntent(FederationTransactionBroadcastIntent),
+    TransactionBroadcastObservation(FederationTransactionBroadcastObservation),
+    Application(FederationApplicationOperation),
+}
+
+impl FederationKnownOperation {
+    fn from_public(operation: &FederationOperation) -> Option<Self> {
+        Some(match operation {
+            FederationOperation::AddressAllocation(operation) => {
+                Self::AddressAllocation(operation.clone())
+            }
+            FederationOperation::ChainObservation(operation) => {
+                Self::ChainObservation(operation.clone())
+            }
+            FederationOperation::MintQuote(operation) => Self::MintQuote(operation.clone()),
+            FederationOperation::MintQuotePayment(operation) => {
+                Self::MintQuotePayment(operation.clone())
+            }
+            FederationOperation::Mint(operation) => Self::Mint(operation.clone()),
+            FederationOperation::MeltQuote(operation) => Self::MeltQuote(operation.clone()),
+            FederationOperation::MeltQuotePayment(operation) => {
+                Self::MeltQuotePayment(operation.clone())
+            }
+            FederationOperation::Melt(operation) => Self::Melt(operation.clone()),
+            FederationOperation::Swap(operation) => Self::Swap(operation.clone()),
+            FederationOperation::KeysetRotation(operation) => {
+                Self::KeysetRotation(operation.clone())
+            }
+            FederationOperation::TransactionProposal(operation) => {
+                Self::TransactionProposal(operation.clone())
+            }
+            FederationOperation::TransactionSigned(operation) => {
+                Self::TransactionSigned(operation.clone())
+            }
+            FederationOperation::TransactionBroadcastIntent(operation) => {
+                Self::TransactionBroadcastIntent(operation.clone())
+            }
+            FederationOperation::TransactionBroadcastObservation(operation) => {
+                Self::TransactionBroadcastObservation(operation.clone())
+            }
+            FederationOperation::Application(operation) => Self::Application(operation.clone()),
+            FederationOperation::ExternalApplication(_) => return None,
+        })
+    }
+
+    fn into_public(self) -> FederationOperation {
+        match self {
+            Self::AddressAllocation(operation) => FederationOperation::AddressAllocation(operation),
+            Self::ChainObservation(operation) => FederationOperation::ChainObservation(operation),
+            Self::MintQuote(operation) => FederationOperation::MintQuote(operation),
+            Self::MintQuotePayment(operation) => FederationOperation::MintQuotePayment(operation),
+            Self::Mint(operation) => FederationOperation::Mint(operation),
+            Self::MeltQuote(operation) => FederationOperation::MeltQuote(operation),
+            Self::MeltQuotePayment(operation) => FederationOperation::MeltQuotePayment(operation),
+            Self::Melt(operation) => FederationOperation::Melt(operation),
+            Self::Swap(operation) => FederationOperation::Swap(operation),
+            Self::KeysetRotation(operation) => FederationOperation::KeysetRotation(operation),
+            Self::TransactionProposal(operation) => {
+                FederationOperation::TransactionProposal(operation)
+            }
+            Self::TransactionSigned(operation) => FederationOperation::TransactionSigned(operation),
+            Self::TransactionBroadcastIntent(operation) => {
+                FederationOperation::TransactionBroadcastIntent(operation)
+            }
+            Self::TransactionBroadcastObservation(operation) => {
+                FederationOperation::TransactionBroadcastObservation(operation)
+            }
+            Self::Application(operation) => FederationOperation::Application(operation),
+        }
+    }
+}
+
+impl Serialize for FederationOperation {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::ExternalApplication(operation) => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("type", operation.wire_tag())?;
+                map.serialize_entry("data", &operation.wire_data)?;
+                map.end()
+            }
+            _ => FederationKnownOperation::from_public(self)
+                .ok_or_else(|| S::Error::custom("unsupported federation operation"))?
+                .serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for FederationOperation {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let wire_tag = value
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| D::Error::custom("federation operation type is missing"))?;
+        if external_application_codec(wire_tag).is_some() {
+            let wire_data = value.get("data").cloned().ok_or_else(|| {
+                D::Error::custom("external application operation data is missing")
+            })?;
+            let operation =
+                FederationExternalApplicationOperation::decode(wire_tag.to_string(), wire_data)
+                    .map_err(D::Error::custom)?;
+            return Ok(Self::ExternalApplication(operation));
+        }
+        serde_json::from_value::<FederationKnownOperation>(value)
+            .map(FederationKnownOperation::into_public)
+            .map_err(D::Error::custom)
+    }
 }
 
 impl FederationOperation {
     const fn envelope_version(&self) -> u16 {
         match self {
             Self::Application(_) => FEDERATION_APPLICATION_ENVELOPE_VERSION,
+            Self::ExternalApplication(_) => FEDERATION_OPERATION_VERSION,
             Self::AddressAllocation(_)
             | Self::ChainObservation(_)
             | Self::MintQuote(_)
@@ -1732,7 +2529,9 @@ impl FederationOperation {
             Self::TransactionBroadcastObservation(_) => {
                 FederationOperationKind::TransactionBroadcastObservation
             }
-            Self::Application(_) => FederationOperationKind::Application,
+            Self::Application(_) | Self::ExternalApplication(_) => {
+                FederationOperationKind::Application
+            }
         }
     }
 
@@ -1843,6 +2642,7 @@ impl FederationOperation {
                     key,
                 })
                 .collect(),
+            Self::ExternalApplication(operation) => operation.conflict_keys(),
             Self::Swap(_)
             | Self::TransactionSigned(_)
             | Self::TransactionBroadcastIntent(_)
@@ -1866,6 +2666,7 @@ impl FederationOperation {
             Self::MeltQuotePayment(observation) => Some(observation.quote.as_str()),
             Self::Melt(operation) => Some(operation.request.quote().as_str()),
             Self::Application(operation) => operation.quote.as_deref(),
+            Self::ExternalApplication(operation) => operation.application().quote.as_deref(),
             Self::Swap(_)
             | Self::KeysetRotation(_)
             | Self::TransactionProposal(_)
@@ -1893,6 +2694,7 @@ impl FederationOperation {
             Self::TransactionBroadcastIntent(intent) => intent.settlement_policy.validate()?,
             Self::TransactionBroadcastObservation(observation) => observation.validate()?,
             Self::Application(operation) => operation.validate()?,
+            Self::ExternalApplication(operation) => operation.application().validate()?,
             Self::MintQuote(_)
             | Self::MintQuotePayment(_)
             | Self::Mint(_)
@@ -1928,6 +2730,10 @@ impl FederationOperation {
             }
             Self::Application(operation) => {
                 operation.validate()?;
+                Ok(FederationOperationBalanceAudit::unchecked(operation_kind))
+            }
+            Self::ExternalApplication(operation) => {
+                operation.application().validate()?;
                 Ok(FederationOperationBalanceAudit::unchecked(operation_kind))
             }
             Self::MintQuotePayment(observation) => FederationOperationBalanceAudit::checked(
@@ -2182,6 +2988,9 @@ impl FederationOperationEnvelope {
                 Some(observation.observer)
             }
             FederationOperation::Application(operation) => operation.claimed_author,
+            FederationOperation::ExternalApplication(operation) => {
+                operation.application().claimed_author
+            }
             FederationOperation::AddressAllocation(_)
             | FederationOperation::MintQuote(_)
             | FederationOperation::Mint(_)

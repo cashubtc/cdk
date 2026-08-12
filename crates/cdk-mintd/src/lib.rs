@@ -221,6 +221,9 @@ async fn federation_client_transport(
 
 /// Run a one-shot CLI subcommand, returning true when no mint daemon should be started.
 pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
+    #[cfg(feature = "federation-bark")]
+    cdk_federation_bark::register_federation_bark_wire_codec()?;
+
     #[cfg(not(any(feature = "federation", feature = "iroh")))]
     let _ = args;
 
@@ -3822,6 +3825,9 @@ pub async fn run_mintd_with_shutdown(
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     routers: Vec<Router>,
 ) -> Result<()> {
+    #[cfg(feature = "federation-bark")]
+    cdk_federation_bark::register_federation_bark_wire_codec()?;
+
     let (localstore, keystore, kv, _configuration_store) =
         initial_setup(work_dir, settings, db_password.clone()).await?;
 

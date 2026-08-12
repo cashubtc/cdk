@@ -1214,16 +1214,17 @@ impl Mint {
                 Ok(true)
             }
             #[cfg(feature = "federation-bark")]
-            FederationOperation::Application(application) => {
-                let operation =
-                    cdk_federation_bark::validate_federation_bark_application_operation(
-                        application,
-                    )?;
+            FederationOperation::Application(_)
+            | FederationOperation::ExternalApplication(_) => {
+                let operation = cdk_federation_bark::validate_federation_bark_operation(
+                    &entry.envelope.operation,
+                )?;
                 self.apply_federation_bark(entry, &operation).await?;
                 Ok(true)
             }
             #[cfg(not(feature = "federation-bark"))]
-            FederationOperation::Application(_) => Err(
+            FederationOperation::Application(_)
+            | FederationOperation::ExternalApplication(_) => Err(
                 FederationError::ApplicationOperationInvalid {
                     reason: "federation application support is disabled".to_owned(),
                 }
@@ -1245,8 +1246,10 @@ impl Mint {
             let runtime_config = self.federation_config().ok_or(Error::Internal)?;
             intent.validate_secret_acknowledgements(runtime_config.public_config())?;
         }
-        let FederationOperation::Application(application) = &entry.envelope.operation else {
-            return Err(Error::Internal);
+        let application = match &entry.envelope.operation {
+            FederationOperation::Application(application) => application,
+            FederationOperation::ExternalApplication(application) => application.application(),
+            _ => return Err(Error::Internal),
         };
         let payment_records = match operation {
             FederationBarkOperation::MemberObservation(observation) => {

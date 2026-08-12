@@ -445,16 +445,22 @@ pub fn federation_bark_application(
     let registration =
         application_registration_for_epoch(1).map_err(|error| invalid_bark(error.to_string()))?;
     let application_id = FederationFrostApplicationId::from_bytes(registration.id().to_bytes())?;
-    wallet
-        .extension_application(application_id)
-        .map(|extension| {
-            FederationBarkFrostApplicationConfig::from_extension(
-                federation,
-                &wallet.root,
-                extension,
-            )
-        })
-        .transpose()
+    match wallet.extension_application(application_id) {
+        Some(extension) => FederationBarkFrostApplicationConfig::from_extension(
+            federation,
+            &wallet.root,
+            extension,
+        )
+        .map(Some),
+        None => wallet
+            .legacy_extension_application("bark_application")
+            .map(|legacy| {
+                let application: FederationBarkFrostApplicationConfig = legacy.decode()?;
+                application.validate(federation, &wallet.root)?;
+                Ok(application)
+            })
+            .transpose(),
+    }
 }
 
 /// Bark adapter for a payload already revalidated against accepted state.

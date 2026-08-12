@@ -161,11 +161,7 @@ use self::sync_loop::{
 pub(super) fn bark_operation(
     operation: &cdk::federation::FederationOperation,
 ) -> Result<cdk::federation::FederationBarkOperation, cdk::Error> {
-    let cdk::federation::FederationOperation::Application(application) = operation else {
-        return Err(cdk::Error::Internal);
-    };
-    cdk::federation::validate_federation_bark_application_operation(application)
-        .map_err(cdk::Error::from)
+    cdk::federation::validate_federation_bark_operation(operation).map_err(cdk::Error::from)
 }
 
 #[cfg(feature = "federation-bark")]
