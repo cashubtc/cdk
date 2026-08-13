@@ -14,12 +14,10 @@ use bark::custody::{
     SchnorrSigningRequest, VtxoCustody, VtxoKeyLocator,
 };
 use bitcoin::secp256k1::schnorr;
-use cdk_common::federation::{
-    FederationConfig, FederationJournalEntry, FederationOperation, FederationOperationStatus,
-};
+use cdk_common::federation::{FederationConfig, FederationJournalEntry, FederationOperationStatus};
 use cdk_federation_bark::{
     federation_bark_application, federation_bark_custody_transcript_hash,
-    validate_federation_bark_application_operation, FederationBarkActionKind,
+    validate_federation_bark_operation, FederationBarkActionKind,
     FederationBarkAuthorizationReference, FederationBarkCustodyProtocol,
     FederationBarkFrostAuthorization, FederationBarkOperation, FederationBarkSemanticPhase,
     FederationBarkVtxoLocator, FEDERATION_BARK_AUTHORIZATION_VERSION,
@@ -481,12 +479,8 @@ impl CdkFrostVtxoCustody {
         let application = federation_bark_application(federation)?
             .ok_or_else(|| anyhow::anyhow!("accepted Bark application is missing"))?;
         let transcript_hash = federation_bark_custody_transcript_hash(&request_transcript)?;
-        let FederationOperation::Application(envelope) =
-            &accepted.authorization_entry.envelope.operation
-        else {
-            anyhow::bail!("active Bark custody authorization is not a Bark operation");
-        };
-        let operation = validate_federation_bark_application_operation(envelope)?;
+        let operation =
+            validate_federation_bark_operation(&accepted.authorization_entry.envelope.operation)?;
         let (signer_set, attempt) = authorization_signers(&operation)?;
         let reference = FederationBarkAuthorizationReference {
             version: FEDERATION_BARK_AUTHORIZATION_VERSION,
@@ -557,10 +551,7 @@ impl CdkFrostVtxoCustody {
 }
 
 fn bark_operation(entry: &FederationJournalEntry) -> anyhow::Result<FederationBarkOperation> {
-    let FederationOperation::Application(envelope) = &entry.envelope.operation else {
-        anyhow::bail!("federation operation is not application-owned");
-    };
-    validate_federation_bark_application_operation(envelope).map_err(Into::into)
+    validate_federation_bark_operation(&entry.envelope.operation).map_err(Into::into)
 }
 
 fn validate_authorization_entry(

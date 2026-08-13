@@ -29,8 +29,8 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::{FeeRate, ScriptBuf, Transaction};
 use cdk_common::federation::{
-    FederationAllocatedAddressRef, FederationConfig, FederationJournalEntry, FederationOperation,
-    FederationOperationId, FederationOperationStatus, MemberId, FEDERATION_MAX_DERIVATION_INDEX,
+    FederationAllocatedAddressRef, FederationConfig, FederationJournalEntry, FederationOperationId,
+    FederationOperationStatus, MemberId, FEDERATION_MAX_DERIVATION_INDEX,
 };
 use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 use cdk_common::{CurrencyUnit, MeltQuoteState};
@@ -38,7 +38,7 @@ use cdk_federation_bark::{
     ark_server_commitment, federation_bark_exit_allocation_quote,
     federation_bark_receive_htlc_package_hash, federation_bark_receive_request_hash,
     federation_bark_refresh_candidates, federation_bark_signer_set_for_attempt,
-    validate_federation_bark_application_operation, validate_federation_bark_lightning_send_expiry,
+    validate_federation_bark_lightning_send_expiry, validate_federation_bark_operation,
     FederationBarkActionId, FederationBarkActionKind, FederationBarkActionPlan,
     FederationBarkActionRecord, FederationBarkActionStatus, FederationBarkActionTransition,
     FederationBarkArtifact, FederationBarkArtifactKind, FederationBarkCertifiedReceiveHtlcs,
@@ -3473,10 +3473,7 @@ fn usize_to_u64_saturating(value: usize) -> u64 {
 }
 
 fn bark_operation(entry: &FederationJournalEntry) -> Option<FederationBarkOperation> {
-    let FederationOperation::Application(envelope) = &entry.envelope.operation else {
-        return None;
-    };
-    validate_federation_bark_application_operation(envelope).ok()
+    validate_federation_bark_operation(&entry.envelope.operation).ok()
 }
 
 fn accepted_send_plan(entry: &FederationJournalEntry) -> Result<FederationBarkActionPlan, Error> {
@@ -5378,6 +5375,47 @@ mod tests {
         assert!(send_quote_state_is_replayable(MeltQuoteState::Paid));
         assert!(send_quote_state_is_replayable(MeltQuoteState::Failed));
         assert!(!send_quote_state_is_replayable(MeltQuoteState::Unknown));
+    }
+
+    #[test]
+    fn historical_external_application_entries_replay_in_bark_runtime() {
+        let operation =
+            FederationBarkOperation::MemberObservation(FederationBarkMemberObservation {
+                version: FEDERATION_BARK_OPERATION_VERSION,
+                action_id: FederationBarkActionId::from_bytes([1; 32]).expect("action ID"),
+                quote: Some("historical-quote".to_string()),
+                observer: MemberId::new(1).expect("member ID"),
+                observation_epoch: 1,
+                source_scope: FederationBarkDigest::from_bytes([2; 32]).expect("source scope"),
+                payment_hash: Some(
+                    FederationBarkDigest::from_bytes([3; 32]).expect("payment hash"),
+                ),
+                status: FederationBarkObservationStatus::Accepted,
+                amount: cdk_common::Amount::from(1),
+                fee: cdk_common::Amount::ZERO,
+                result_hash: FederationBarkDigest::from_bytes([4; 32]).expect("result hash"),
+            });
+        let wrapped = cdk_federation_bark::federation_bark_application_operation(operation.clone())
+            .expect("historical Bark wire operation");
+        assert!(matches!(
+            wrapped,
+            cdk_common::federation::FederationOperation::ExternalApplication(_)
+        ));
+        let entry = FederationJournalEntry {
+            index: 0,
+            operation_id: FederationOperationId::from_bytes([5; 32]),
+            envelope: cdk_common::federation::FederationOperationEnvelope::new(
+                cdk_common::federation::FederationId::from_bytes([6; 32]),
+                wrapped,
+            ),
+            conflict_keys: Vec::new(),
+            previous_order_digest: cdk_common::federation::FederationJournalDigest::genesis(),
+            order_digest: cdk_common::federation::FederationJournalDigest::from_bytes([7; 32]),
+            consensus_evidence: None,
+            application: cdk_common::federation::FederationApplicationState::Applied {},
+        };
+
+        assert_eq!(bark_operation(&entry), Some(operation));
     }
 
     #[test]
