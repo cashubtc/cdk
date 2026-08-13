@@ -394,8 +394,8 @@ impl Mint {
     /// - **Finalize**: If payment was confirmed as PAID on the LN backend, the
     ///   saga already reached `Finalizing`, or the melt settled internally
     /// - **Compensate**: If the saga is `SetupComplete` (payment never
-    ///   attempted) or the LN backend confirms UNPAID/FAILED for a payment
-    ///   that was attempted
+    ///   attempted), the backend explicitly confirms FAILED, or it confirms
+    ///   UNPAID after the saga durably reached `PaymentPending`
     /// - **Skip**: If payment is PENDING/UNKNOWN, or its status cannot be
     ///   verified (e.g. `PaymentAttempted` without a lookup id — left pending
     ///   for manual intervention rather than risking a premature refund)
@@ -560,7 +560,7 @@ impl Mint {
 
             // Check saga state to determine if payment was attempted
             // SetupComplete means setup transaction committed but payment NOT yet attempted
-            // PaymentAttempted means payment was attempted - must check LN backend
+            // PaymentAttempted/PaymentPending means payment was attempted - must check LN backend
             let should_compensate = match &saga.state {
                 cdk_common::mint::SagaStateEnum::Melt(state) => {
                     match state {
@@ -639,11 +639,13 @@ impl Mint {
                             );
                             continue;
                         }
-                        cdk_common::mint::MeltSagaState::PaymentAttempted => {
+                        cdk_common::mint::MeltSagaState::PaymentAttempted
+                        | cdk_common::mint::MeltSagaState::PaymentPending => {
                             // Payment was attempted - check for internal settlement first, then LN backend
                             tracing::info!(
-                                "Saga {} in PaymentAttempted state - checking for internal or external payment",
-                                saga.operation_id
+                                "Saga {} in {} state - checking for internal or external payment",
+                                saga.operation_id,
+                                state
                             );
 
                             // Check if this was an internal settlement by looking for a mint quote

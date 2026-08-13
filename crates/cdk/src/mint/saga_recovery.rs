@@ -127,7 +127,16 @@ pub(crate) async fn process_melt_saga_outcome(
                     )
                     .await;
                 }
-                MeltQuoteState::Pending | MeltQuoteState::Unknown => {
+                MeltQuoteState::Pending => {
+                    persist_payment_pending_handoff(saga, quote, &fresh_response, db).await?;
+                    tracing::info!(
+                        "Fresh payment status for melt quote {} is Pending; recorded durable handoff (saga {})",
+                        quote.id,
+                        saga.operation_id
+                    );
+                    return Ok(());
+                }
+                MeltQuoteState::Unknown => {
                     tracing::info!(
                         "Fresh payment status for melt quote {} is {}; leaving pending (saga {})",
                         quote.id,
@@ -137,6 +146,24 @@ pub(crate) async fn process_melt_saga_outcome(
                     return Ok(());
                 }
                 MeltQuoteState::Unpaid | MeltQuoteState::Failed => {}
+            }
+
+            if fresh_response.status == MeltQuoteState::Unpaid
+                && matches!(
+                    &saga.state,
+                    SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
+                )
+            {
+                // The process may have crashed after dispatch but before the
+                // backend returned a durable acknowledgement. Some backends
+                // report Unpaid when that attempt cannot yet be found, so only
+                // an explicit Failed result is safe to compensate here.
+                tracing::warn!(
+                    "Melt quote {} is Unpaid but saga {} has only PaymentAttempted; leaving pending because dispatch remains ambiguous",
+                    quote.id,
+                    saga.operation_id
+                );
+                return Ok(());
             }
 
             tracing::info!(
@@ -184,7 +211,16 @@ pub(crate) async fn process_melt_saga_outcome(
 
             Ok(())
         }
-        MeltQuoteState::Pending | MeltQuoteState::Unknown => {
+        MeltQuoteState::Pending => {
+            persist_payment_pending_handoff(saga, quote, payment_response, db).await?;
+            tracing::debug!(
+                "Melt quote {} (saga {}) payment remains Pending; durable handoff recorded",
+                quote.id,
+                saga.operation_id
+            );
+            Ok(())
+        }
+        MeltQuoteState::Unknown => {
             tracing::debug!(
                 "Melt quote {} (saga {}) payment status still {}, skipping action",
                 quote.id,
@@ -194,6 +230,55 @@ pub(crate) async fn process_melt_saga_outcome(
             Ok(())
         }
     }
+}
+
+/// Records that the backend recognizes an in-flight payment. Unlike the
+/// write-ahead `PaymentAttempted` marker, `PaymentPending` makes a later
+/// `Unpaid` observation safe to compensate.
+async fn persist_payment_pending_handoff(
+    saga: &Saga,
+    quote: &mut MeltQuote,
+    payment_response: &MakePaymentResponse,
+    db: &cdk_common::database::DynMintDatabase,
+) -> Result<(), Error> {
+    if !matches!(
+        &saga.state,
+        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
+    ) {
+        return Ok(());
+    }
+
+    let mut tx = db.begin_transaction().await?;
+    let Some(mut current_saga) = tx.get_saga_for_update(&saga.operation_id).await? else {
+        tx.rollback().await?;
+        return Ok(());
+    };
+
+    if current_saga.state != SagaStateEnum::Melt(MeltSagaState::PaymentAttempted) {
+        tx.rollback().await?;
+        return Ok(());
+    }
+
+    let mut current_quote = tx
+        .get_melt_quote(&quote.id)
+        .await?
+        .ok_or(Error::UnknownQuote)?;
+    if current_quote.request_lookup_id.as_ref() != Some(&payment_response.payment_lookup_id) {
+        tx.update_melt_quote_request_lookup_id(
+            &mut current_quote,
+            &payment_response.payment_lookup_id,
+        )
+        .await?;
+    }
+    tx.update_acquired_saga(
+        &mut current_saga,
+        SagaStateEnum::Melt(MeltSagaState::PaymentPending),
+    )
+    .await?;
+    tx.commit().await?;
+
+    quote.request_lookup_id = Some(payment_response.payment_lookup_id.clone());
+    Ok(())
 }
 
 /// Persists the paid outcome as a durable `Finalizing` handoff, then runs the
@@ -477,6 +562,116 @@ mod tests {
             .unwrap()
             .expect("quote should still exist after rollback");
         assert_eq!(recovered_quote.state, MeltQuoteState::Unpaid);
+    }
+
+    #[tokio::test]
+    async fn test_unpaid_only_compensates_after_pending_handoff() {
+        async fn run_case(state: MeltSagaState, should_compensate: bool) {
+            let fake_description = FakeInvoiceDescription {
+                pay_invoice_state: MeltQuoteState::Unpaid,
+                check_payment_state: MeltQuoteState::Unpaid,
+                pay_err: false,
+                check_err: false,
+            };
+            let amount_msats: u64 = Amount::from(9_000).into();
+            let invoice = create_fake_invoice(
+                amount_msats,
+                serde_json::to_string(&fake_description).unwrap(),
+            );
+            let payment_states = std::collections::HashMap::from([(
+                invoice.payment_hash().to_string(),
+                (
+                    MeltQuoteState::Unpaid,
+                    Amount::from(9_000).with_unit(CurrencyUnit::Sat),
+                ),
+            )]);
+            let mint = create_test_mint_with_payment_states(payment_states)
+                .await
+                .unwrap();
+            let request = cdk_common::melt::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+                request: invoice,
+                unit: CurrencyUnit::Sat,
+                options: None,
+            });
+            let quote_response = mint.get_melt_quote(request).await.unwrap();
+            let quote = mint
+                .localstore
+                .get_melt_quote(quote_response.quote().unwrap())
+                .await
+                .unwrap()
+                .expect("quote should exist");
+            let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+            let input_ys = proofs.ys().unwrap();
+            let melt_request = create_test_melt_request(&proofs, &quote);
+            let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+            let saga = MeltSaga::new(
+                std::sync::Arc::new(mint.clone()),
+                mint.localstore(),
+                mint.pubsub_manager(),
+            );
+            let setup_saga = saga
+                .setup_melt(
+                    &melt_request,
+                    verification,
+                    PaymentMethod::Known(KnownMethod::Bolt11),
+                )
+                .await
+                .unwrap();
+            let operation_id = assert_single_melt_saga_operation_id(&mint).await;
+            drop(setup_saga);
+
+            let mut tx = mint.localstore.begin_transaction().await.unwrap();
+            let mut acquired_saga = tx
+                .get_saga_for_update(&operation_id)
+                .await
+                .unwrap()
+                .expect("saga should exist");
+            tx.update_acquired_saga(&mut acquired_saga, SagaStateEnum::Melt(state))
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+
+            let saga = assert_saga_exists(&mint, &operation_id).await;
+            let mut quote = mint
+                .localstore
+                .get_melt_quote(&quote.id)
+                .await
+                .unwrap()
+                .expect("quote should exist");
+            let payment_response = MakePaymentResponse {
+                payment_lookup_id: quote
+                    .request_lookup_id
+                    .clone()
+                    .expect("bolt11 quote should have a lookup id"),
+                payment_proof: None,
+                status: MeltQuoteState::Unpaid,
+                total_spent: quote.amount(),
+            };
+
+            process_melt_saga_outcome(
+                &saga,
+                &mut quote,
+                &payment_response,
+                &mint.localstore,
+                &mint.pubsub_manager,
+                &mint,
+            )
+            .await
+            .unwrap();
+
+            if should_compensate {
+                assert_saga_not_exists(&mint, &operation_id).await;
+                assert_proofs_state(&mint, &input_ys, None).await;
+                assert_eq!(quote.state, MeltQuoteState::Unpaid);
+            } else {
+                assert_saga_exists(&mint, &operation_id).await;
+                assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
+                assert_eq!(quote.state, MeltQuoteState::Pending);
+            }
+        }
+
+        run_case(MeltSagaState::PaymentAttempted, false).await;
+        run_case(MeltSagaState::PaymentPending, true).await;
     }
 
     #[tokio::test]

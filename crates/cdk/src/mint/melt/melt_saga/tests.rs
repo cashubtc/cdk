@@ -1784,7 +1784,12 @@ async fn test_payment_error_with_pending_check_does_not_compensate() {
     let outcome = payment_saga.make_payment(decision).await.unwrap();
 
     assert!(matches!(outcome, PaymentOutcome::Pending { .. }));
-    assert_saga_exists(&mint, &operation_id).await;
+    let pending_saga = assert_saga_exists(&mint, &operation_id).await;
+    assert_eq!(
+        pending_saga.state,
+        SagaStateEnum::Melt(MeltSagaState::PaymentPending),
+        "a backend Pending response should create a durable handoff"
+    );
     assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
 
     mint.recover_from_incomplete_melt_sagas()
@@ -2937,7 +2942,12 @@ async fn test_unknown_follow_up_after_payment_error_keeps_proofs_pending() {
     // recoverable and the proofs must stay reserved until the backend reports
     // a terminal state.
     assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
-    assert_saga_exists(&mint, &operation_id).await;
+    let pending_saga = assert_saga_exists(&mint, &operation_id).await;
+    assert_eq!(
+        pending_saga.state,
+        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+        "a backend Unknown response must leave dispatch marked ambiguous"
+    );
 
     let stored_quote = mint
         .localstore
