@@ -406,6 +406,16 @@ impl<'a> MintSaga<'a, Initial> {
             return Err(Error::SignatureMissingOrInvalid);
         }
 
+        // Resolving a legacy NpubCash signing key can migrate the quote in the
+        // localstore. Reload it so the prepared saga carries the current
+        // optimistic-lock version into the post-mint persistence step.
+        let quote_info = self
+            .wallet
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
         let operation_id = self.state_data.operation_id;
 
         // Get counter range for recovery
@@ -715,6 +725,18 @@ impl<'a> MintSaga<'a, Initial> {
                 // Quote is unlocked
                 signatures.push(None);
             }
+        }
+
+        // Signing-key resolution can migrate legacy NpubCash quotes. Refresh
+        // every snapshot before retaining it in the prepared batch so later
+        // versioned writes do not use pre-migration versions.
+        for quote in &mut quote_infos {
+            *quote = self
+                .wallet
+                .localstore
+                .get_mint_quote(&quote.id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
         }
 
         // Check if any quote requires a signature.
@@ -1074,6 +1096,89 @@ mod tests {
         mint_quote.amount_paid = amount;
         mint_quote.secret_key = Some(signing_key);
         mint_quote
+    }
+
+    #[cfg(feature = "npubcash")]
+    fn seed_prefix_signing_key(wallet: &Wallet) -> SecretKey {
+        SecretKey::from_slice(&wallet.seed[..32]).expect("wallet seed prefix is a valid key")
+    }
+
+    #[cfg(feature = "npubcash")]
+    #[tokio::test]
+    async fn seed_prefix_quote_preparation_refreshes_persisted_version() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let mint_quote =
+            paid_signed_mint_quote(mint_url, Amount::from(64), seed_prefix_signing_key(&wallet));
+        let quote_id = mint_quote.id.clone();
+        db.add_mint_quote(mint_quote).await.expect("add mint quote");
+
+        let prepared = MintSaga::new(&wallet)
+            .prepare(&quote_id, SplitTarget::Values(vec![Amount::from(64)]), None)
+            .await
+            .expect("prepare mint saga");
+
+        let mut prepared_quote = match prepared.state_data.mint_request {
+            PreparedMintRequest::Single { quote_info, .. } => quote_info,
+            PreparedMintRequest::Batch { .. } => panic!("expected single mint request"),
+        };
+        let persisted = db
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("get mint quote")
+            .expect("mint quote exists");
+        assert_eq!(prepared_quote.version, persisted.version);
+
+        prepared_quote.state = MintQuoteState::Issued;
+        prepared_quote.amount_issued = Amount::from(64);
+        db.add_mint_quote(prepared_quote)
+            .await
+            .expect("post-mint quote update uses the current version");
+    }
+
+    #[cfg(feature = "npubcash")]
+    #[tokio::test]
+    async fn seed_prefix_batch_preparation_refreshes_persisted_version() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let mint_quote =
+            paid_signed_mint_quote(mint_url, Amount::from(64), seed_prefix_signing_key(&wallet));
+        let quote_id = mint_quote.id.clone();
+        db.add_mint_quote(mint_quote).await.expect("add mint quote");
+
+        let prepared = MintSaga::new(&wallet)
+            .prepare_batch(
+                &[quote_id.as_str()],
+                SplitTarget::Values(vec![Amount::from(64)]),
+                None,
+                None,
+            )
+            .await
+            .expect("prepare batch mint saga");
+
+        let mut prepared_quote = match prepared.state_data.mint_request {
+            PreparedMintRequest::Batch { quote_infos, .. } => quote_infos
+                .into_iter()
+                .next()
+                .expect("batch contains the mint quote"),
+            PreparedMintRequest::Single { .. } => panic!("expected batch mint request"),
+        };
+        let persisted = db
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("get mint quote")
+            .expect("mint quote exists");
+        assert_eq!(prepared_quote.version, persisted.version);
+
+        prepared_quote.state = MintQuoteState::Issued;
+        prepared_quote.amount_issued = Amount::from(64);
+        db.add_mint_quote(prepared_quote)
+            .await
+            .expect("post-mint quote update uses the current version");
     }
 
     #[tokio::test]
