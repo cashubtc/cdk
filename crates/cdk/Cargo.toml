@@ -187,7 +187,7 @@ required-features = ["wallet"]
 [dev-dependencies]
 axum.workspace = true
 rand.workspace = true
-cdk-sqlite = { workspace = true, features = ["federation"] }
+cdk-sqlite = { workspace = true, features = ["federation-bark"] }
 cdk-postgres.workspace = true
 cdk-sql-common.workspace = true
 cdk-fake-wallet.workspace = true

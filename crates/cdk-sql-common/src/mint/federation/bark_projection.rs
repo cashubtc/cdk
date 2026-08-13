@@ -387,6 +387,19 @@ fn direct_transition_allowed(
     )
 }
 
+fn is_refresh_exit_escalation(
+    phase: cdk_federation_bark::FederationBarkSemanticPhase,
+    signing_retry_phase: Option<cdk_federation_bark::FederationBarkSemanticPhase>,
+    plan_kind: cdk_federation_bark::FederationBarkActionKind,
+) -> bool {
+    use cdk_federation_bark::{
+        FederationBarkActionKind as Kind, FederationBarkSemanticPhase as Phase,
+    };
+
+    signing_retry_phase.unwrap_or(phase) == Phase::RefreshPlanned
+        && plan_kind == Kind::EmergencyExit
+}
+
 fn transition_allowed(
     action: &FederationBarkActionRecord,
     next: cdk_federation_bark::FederationBarkSemanticPhase,
@@ -1020,8 +1033,7 @@ where
     let existing = get_action(connection, plan.action_id).await?;
     let combined_receive_claim = plan.certified_receive_htlcs.is_some();
     let refresh_exit_escalation = existing.as_ref().is_some_and(|action| {
-        action.phase == cdk_federation_bark::FederationBarkSemanticPhase::RefreshPlanned
-            && plan.kind == cdk_federation_bark::FederationBarkActionKind::EmergencyExit
+        is_refresh_exit_escalation(action.phase, action.signing_retry_phase, plan.kind)
     });
     let action = match &existing {
         Some(action) => {
@@ -1390,12 +1402,15 @@ where
 mod tests {
     use cdk_common::federation::{FederationOperation, MemberId};
     use cdk_federation_bark::{
-        federation_bark_application_operation, FederationBarkActionId, FederationBarkDigest,
-        FederationBarkMemberObservation, FederationBarkObservationStatus, FederationBarkOperation,
-        FederationBarkSemanticPhase as Phase, FEDERATION_BARK_OPERATION_VERSION,
+        federation_bark_application_operation, FederationBarkActionId, FederationBarkActionKind,
+        FederationBarkDigest, FederationBarkMemberObservation, FederationBarkObservationStatus,
+        FederationBarkOperation, FederationBarkSemanticPhase as Phase,
+        FEDERATION_BARK_OPERATION_VERSION,
     };
 
-    use super::{bark_projection_entry_operation, direct_transition_allowed};
+    use super::{
+        bark_projection_entry_operation, direct_transition_allowed, is_refresh_exit_escalation,
+    };
 
     #[test]
     fn projection_accepts_established_bark_wire_operations() {
@@ -1445,6 +1460,25 @@ mod tests {
         ] {
             assert!(!direct_transition_allowed(previous, next));
         }
+    }
+
+    #[test]
+    fn signing_retry_preserves_the_refresh_reservation_during_exit_escalation() {
+        assert!(is_refresh_exit_escalation(
+            Phase::SigningAttemptAdvanced,
+            Some(Phase::RefreshPlanned),
+            FederationBarkActionKind::EmergencyExit,
+        ));
+        assert!(is_refresh_exit_escalation(
+            Phase::RefreshPlanned,
+            None,
+            FederationBarkActionKind::EmergencyExit,
+        ));
+        assert!(!is_refresh_exit_escalation(
+            Phase::SigningAttemptAdvanced,
+            Some(Phase::SendPlanned),
+            FederationBarkActionKind::EmergencyExit,
+        ));
     }
 
     #[test]
