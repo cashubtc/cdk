@@ -164,15 +164,15 @@ pub(super) async fn post_bark_action_retry(
         .ensure_federation_ready_for_authoritative_read()
         .await
         .map_err(cdk_error_response)?;
-    let projection = crate::federation_bark_ready_projection(
-        &state.mint,
+    let projection = super::bark_maintenance::recovery_projection(
+        &state,
         state
             .federation
             .bark_runtime()
             .ok_or_else(|| cdk_error_response(cdk::Error::Internal))?,
     )
     .await
-    .map_err(anyhow_response)?;
+    .map_err(cdk_error_response)?;
     let action = projection
         .actions
         .iter()

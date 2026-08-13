@@ -1223,12 +1223,14 @@ mod tests {
                 .expect("confirmation policy"),
             fee_policy_version: 1,
         };
-        let wallet = cdk::federation::FederationFrostWalletConfig {
-            version: 1,
-            root,
-            cdk_onchain_application: application,
-            extension_applications: BTreeMap::new(),
-        };
+        let wallet: cdk::federation::FederationFrostWalletConfig =
+            serde_json::from_value(serde_json::json!({
+                "version": 1,
+                "root": root,
+                "cdk_onchain_application": application,
+                "extension_applications": {},
+            }))
+            .expect("test wallet config");
         let federation_id = cdk::federation::FederationId::from_bytes([11; 32]);
 
         let error = initialize_accepted_federation_onchain_wallets(federation_id, &wallet, None)

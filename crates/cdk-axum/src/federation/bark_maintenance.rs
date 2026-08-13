@@ -102,7 +102,7 @@ async fn advance_federated_bark_maintenance_inner(
     {
         return Ok(0);
     }
-    let projection = maintenance_projection(&state, &runtime).await?;
+    let projection = recovery_projection(&state, &runtime).await?;
     let active = projection
         .actions
         .iter()
@@ -444,7 +444,12 @@ async fn advance_federated_bark_maintenance_inner(
     }
 }
 
-async fn maintenance_projection(
+/// Return the accepted projection for an ordinary ready runtime or an exact
+/// operator/maintenance recovery flow.
+///
+/// Recovery remains fail-closed unless the member has replayed the complete
+/// accepted frontier and its only degradation is `recovery_required`.
+pub(super) async fn recovery_projection(
     state: &MintState,
     runtime: &Arc<cdk_bark::FederatedBarkRuntime>,
 ) -> Result<FederationBarkProjectionSnapshot, cdk::Error> {
@@ -454,16 +459,21 @@ async fn maintenance_projection(
             let projection = state.mint.federation_bark_projection_snapshot().await?;
             let required_frontier = projection.frontier().unwrap_or(0);
             let status = runtime.status(required_frontier).await;
-            if status.local_frontier >= required_frontier
-                && status.degraded_reason
-                    == Some(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
-            {
+            if runtime_allows_recovery(status, required_frontier) {
                 Ok(projection)
             } else {
                 Err(cdk::Error::Internal)
             }
         }
     }
+}
+
+fn runtime_allows_recovery(
+    status: cdk_bark::FederatedBarkRuntimeStatus,
+    required_frontier: u64,
+) -> bool {
+    status.local_frontier >= required_frontier
+        && status.degraded_reason == Some(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
 }
 
 async fn routine_payment_work_blocks_maintenance(
@@ -973,14 +983,42 @@ async fn submit_bark_operation(
 mod tests {
     use cdk::federation::{FederationBarkSemanticPhase, MemberId};
     use cdk::nuts::MeltQuoteState;
+    use cdk_bark::{
+        FederatedBarkDegradedReason, FederatedBarkReadiness, FederatedBarkRuntimeStatus,
+    };
 
     use super::{
         bark_maintenance_retry_delay, melt_quote_blocks_routine_maintenance,
         payment_phase_is_terminal, payment_state_blocks_routine_maintenance,
-        payment_timestamp_is_quiet, recent_payment_journal_floor, should_publish_maintenance_plan,
-        BARK_MAINTENANCE_INTERVAL, BARK_RECENT_PAYMENT_JOURNAL_LIMIT,
-        BARK_ROUTINE_MAINTENANCE_PAYMENT_QUIET_PERIOD,
+        payment_timestamp_is_quiet, recent_payment_journal_floor, runtime_allows_recovery,
+        should_publish_maintenance_plan, BARK_MAINTENANCE_INTERVAL,
+        BARK_RECENT_PAYMENT_JOURNAL_LIMIT, BARK_ROUTINE_MAINTENANCE_PAYMENT_QUIET_PERIOD,
     };
+
+    #[test]
+    fn recovery_projection_requires_caught_up_recovery_degradation() {
+        let recovery = FederatedBarkRuntimeStatus {
+            readiness: FederatedBarkReadiness::Degraded,
+            local_frontier: 42,
+            degraded_reason: Some(FederatedBarkDegradedReason::RecoveryRequired),
+        };
+        assert!(runtime_allows_recovery(recovery, 42));
+        assert!(!runtime_allows_recovery(recovery, 43));
+
+        for reason in [
+            FederatedBarkDegradedReason::WalletUnavailable,
+            FederatedBarkDegradedReason::ProjectionInvalid,
+            FederatedBarkDegradedReason::ParticipantsUnavailable,
+        ] {
+            assert!(!runtime_allows_recovery(
+                FederatedBarkRuntimeStatus {
+                    degraded_reason: Some(reason),
+                    ..recovery
+                },
+                42,
+            ));
+        }
+    }
 
     #[test]
     fn maintenance_failures_back_off_to_five_minutes() {
