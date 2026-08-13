@@ -567,7 +567,8 @@ impl Mint {
                     action,
                     plan,
                     &allocations,
-                )?;
+                )
+                .await?;
             }
             FederationBarkOperation::ActionPlan(plan)
                 if plan.kind == FederationBarkActionKind::IncomingClaim =>
@@ -1660,7 +1661,7 @@ impl Mint {
         Ok(())
     }
 
-    fn validate_federation_bark_exit_plan_submission(
+    async fn validate_federation_bark_exit_plan_submission(
         &self,
         config: &super::FederationRuntimeConfig,
         application: &cdk_federation_bark::FederationBarkFrostApplicationConfig,
@@ -1672,12 +1673,25 @@ impl Mint {
         let (records, predecessor, expected_action, expected_actor, expected_signers, attempt) =
             match action {
                 Some(action) => {
-                    let FederationBarkOperation::ActionPlan(refresh) = &action.operation else {
+                    let plan_operation_id = action.plan_operation_id.ok_or_else(|| {
+                        bark_state_error("exit escalation has no accepted refresh plan")
+                    })?;
+                    let refresh_entry = self
+                        .localstore()
+                        .get_federation_journal_entry_by_operation_id(plan_operation_id)
+                        .await?
+                        .ok_or_else(|| {
+                            bark_state_error("exit escalation refresh plan is missing")
+                        })?;
+                    let FederationBarkOperation::ActionPlan(refresh) =
+                        bark_operation(&refresh_entry.envelope.operation)?
+                    else {
                         return Err(bark_state_error(
                             "exit escalation predecessor is not a refresh plan",
                         ));
                     };
-                    if action.phase != FederationBarkSemanticPhase::RefreshPlanned
+                    if action_effective_phase(action) != FederationBarkSemanticPhase::RefreshPlanned
+                        || action.action_kind != Some(FederationBarkActionKind::Refresh)
                         || refresh.kind != FederationBarkActionKind::Refresh
                         || plan.predecessor_operation_id != action.latest_operation_id
                     {
@@ -1707,9 +1721,12 @@ impl Mint {
                         records,
                         action.latest_operation_id,
                         refresh.action_id,
-                        refresh.actor,
-                        refresh.signer_set.clone(),
-                        refresh.attempt,
+                        action.actor,
+                        federation_bark_signer_set_for_attempt(
+                            config.public_config(),
+                            action.attempt,
+                        )?,
+                        action.attempt,
                     )
                 }
                 None => {

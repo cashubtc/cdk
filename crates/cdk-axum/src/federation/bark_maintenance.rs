@@ -7,9 +7,10 @@ use std::sync::Arc;
 use cdk::federation::{
     federation_bark_exit_allocation_quote, federation_bark_refresh_requires_recovery,
     FederationAddressAllocationScope, FederationAddressKeychain, FederationAllocatedAddressRef,
-    FederationBarkActionId, FederationBarkActionKind, FederationBarkDigest,
-    FederationBarkEvidencePhase, FederationBarkObservationStatus, FederationBarkOperation,
-    FederationBarkProjectionSnapshot, FederationBarkSemanticPhase, FederationOperation, MemberId,
+    FederationBarkActionId, FederationBarkActionKind, FederationBarkActionRecord,
+    FederationBarkDigest, FederationBarkEvidencePhase, FederationBarkObservationStatus,
+    FederationBarkOperation, FederationBarkProjectionSnapshot, FederationBarkSemanticPhase,
+    FederationOperation, FederationOperationStatus, MemberId,
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::MeltQuoteState;
@@ -182,7 +183,9 @@ async fn advance_federated_bark_maintenance_inner(
                         state.clone(),
                         runtime.clone(),
                         projection.clone(),
+                        action.clone(),
                         plan_entry,
+                        target_action_id.is_some(),
                     )
                     .await;
                 }
@@ -211,7 +214,9 @@ async fn advance_federated_bark_maintenance_inner(
                     state.clone(),
                     runtime.clone(),
                     projection.clone(),
+                    action.clone(),
                     plan_entry.clone(),
+                    target_action_id.is_some(),
                 )
                 .await;
             }
@@ -689,7 +694,9 @@ async fn propose_exit(
     state: MintState,
     runtime: Arc<cdk_bark::FederatedBarkRuntime>,
     projection: FederationBarkProjectionSnapshot,
+    action: FederationBarkActionRecord,
     refresh_plan_entry: cdk::federation::FederationJournalEntry,
+    operator_requested: bool,
 ) -> Result<usize, cdk::Error> {
     let federation = state
         .mint
@@ -739,6 +746,7 @@ async fn propose_exit(
     let plan = runtime
         .propose_emergency_exit(
             &projection,
+            &action,
             &refresh_plan_entry,
             FederationAllocatedAddressRef {
                 application_id: onchain.application_id,
@@ -751,13 +759,40 @@ async fn propose_exit(
             onchain.confirmation_policy.minimum_confirmations,
         )
         .map_err(|_| cdk::Error::Internal)?;
-    submit_bark_operation(
-        state,
-        federation.operation_envelope(super::bark_federation_operation(
-            FederationBarkOperation::ActionPlan(plan),
-        )?),
-    )
-    .await
+    let envelope = federation.operation_envelope(super::bark_federation_operation(
+        FederationBarkOperation::ActionPlan(plan),
+    )?);
+    let operation_id = envelope.operation_id()?;
+    let rejected = state
+        .mint
+        .localstore()
+        .get_federation_journal_entry_by_operation_id(operation_id)
+        .await?
+        .is_some_and(|entry| entry.status() == FederationOperationStatus::Rejected);
+    if rejected {
+        if !operator_requested {
+            runtime
+                .mark_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
+                .await;
+            tracing::warn!(
+                action_id = %action.action_id,
+                attempt = action.attempt,
+                "rejected Bark emergency exit requires an explicit operator retry"
+            );
+            return Ok(0);
+        }
+        let retry = runtime
+            .advance_signing_attempt(&action, &refresh_plan_entry)
+            .map_err(|_| cdk::Error::Internal)?;
+        return submit_bark_operation(
+            state,
+            federation.operation_envelope(super::bark_federation_operation(
+                FederationBarkOperation::ActionTransition(retry),
+            )?),
+        )
+        .await;
+    }
+    submit_bark_operation(state, envelope).await
 }
 
 async fn submit_trigger_observation(

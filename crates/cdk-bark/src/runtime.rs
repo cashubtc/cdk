@@ -1716,6 +1716,7 @@ impl FederatedBarkRuntime {
     pub fn propose_emergency_exit(
         &self,
         projection: &FederationBarkProjectionSnapshot,
+        action: &FederationBarkActionRecord,
         refresh_plan_entry: &FederationJournalEntry,
         destination: FederationAllocatedAddressRef,
         destination_script: Vec<u8>,
@@ -1723,7 +1724,16 @@ impl FederatedBarkRuntime {
     ) -> Result<FederationBarkActionPlan, Error> {
         let refresh =
             accepted_maintenance_plan(refresh_plan_entry, FederationBarkActionKind::Refresh)?;
-        if destination.quote != federation_bark_exit_allocation_quote(refresh.action_id)
+        let effective_phase = action.signing_retry_phase.unwrap_or(action.phase);
+        let signer_set = federation_bark_signer_set_for_attempt(&self.federation, action.attempt)
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        if action.action_id != refresh.action_id
+            || action.action_kind != Some(FederationBarkActionKind::Refresh)
+            || effective_phase != FederationBarkSemanticPhase::RefreshPlanned
+            || action.plan_operation_id != Some(refresh_plan_entry.operation_id)
+            || action.actor != refresh.actor
+            || action.attempt < refresh.attempt
+            || destination.quote != federation_bark_exit_allocation_quote(refresh.action_id)
             || minimum_confirmations == 0
         {
             return Err(Error::MaintenancePlanInvalid);
@@ -1789,7 +1799,7 @@ impl FederatedBarkRuntime {
                 bitcoin::Amount::from_sat(u64::from(fee_bound)),
                 trigger_height,
                 minimum_confirmations,
-                refresh.attempt,
+                action.attempt,
             )
             .map_err(|_| Error::MaintenancePlanInvalid)?;
         if bark_plan.minimum_recovered.to_sat() != u64::from(minimum_recovered)
@@ -1811,8 +1821,8 @@ impl FederatedBarkRuntime {
             action_id: refresh.action_id,
             quote: None,
             kind: FederationBarkActionKind::EmergencyExit,
-            actor: refresh.actor,
-            predecessor_operation_id: refresh_plan_entry.operation_id,
+            actor: action.actor,
+            predecessor_operation_id: action.latest_operation_id,
             payment_hash: None,
             inputs: refresh.inputs.clone(),
             outputs: Vec::new(),
@@ -1824,12 +1834,12 @@ impl FederatedBarkRuntime {
             artifacts: Vec::new(),
             external_id: FederationBarkExternalId::derive_emergency_exit(
                 refresh.action_id,
-                refresh_plan_entry.operation_id,
-                refresh.attempt,
+                action.latest_operation_id,
+                action.attempt,
             )
             .map_err(|_| Error::MaintenancePlanInvalid)?,
-            signer_set: refresh.signer_set.clone(),
-            attempt: refresh.attempt,
+            signer_set,
+            attempt: action.attempt,
             expires_at: u64::from(minimum_expiry),
         };
         plan.bind_emergency_exit_artifacts(
