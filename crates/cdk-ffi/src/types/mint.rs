@@ -637,6 +637,8 @@ pub struct MintInfo {
     pub time: Option<u64>,
     /// terms of url service of the mint
     pub tos_url: Option<String>,
+    /// max length the mint accepts for any array in a request
+    pub max_array_length: Option<u64>,
 }
 
 impl From<cdk::nuts::MintInfo> for MintInfo {
@@ -656,6 +658,7 @@ impl From<cdk::nuts::MintInfo> for MintInfo {
             motd: info.motd,
             time: info.time,
             tos_url: info.tos_url,
+            max_array_length: info.max_array_length,
         }
     }
 }
@@ -679,6 +682,7 @@ impl TryFrom<MintInfo> for cdk::nuts::MintInfo {
             motd: info.motd,
             time: info.time,
             tos_url: info.tos_url,
+            max_array_length: info.max_array_length,
         })
     }
 }
@@ -1107,6 +1111,7 @@ mod tests {
             motd: None,
             time: None,
             tos_url: None,
+            max_array_length: None,
         };
 
         let result = cdk::nuts::MintInfo::try_from(ffi_mint_info);

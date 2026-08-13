@@ -749,7 +749,7 @@ impl Mint {
 
         let mint_info: MintInfo = serde_json::from_slice(&mint_info)?;
 
-        let mint_info = if let Some(auth_db) = self.auth_localstore.as_ref() {
+        let mut mint_info = if let Some(auth_db) = self.auth_localstore.as_ref() {
             let mut mint_info = mint_info;
             let auth_endpoints = auth_db.get_auth_for_endpoints().await?;
 
@@ -781,6 +781,11 @@ impl Mint {
         } else {
             mint_info
         };
+
+        // Derived from the running limits rather than stored config, so it cannot drift from what
+        // the endpoints actually enforce. One figure for both, so a wallet respecting it trips
+        // neither cap.
+        mint_info.max_array_length = Some(self.max_inputs.min(self.max_outputs) as u64);
 
         Ok(mint_info)
     }

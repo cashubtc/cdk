@@ -107,6 +107,9 @@ pub struct MintInfo {
     /// terms of url service of the mint
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tos_url: Option<String>,
+    /// max length the mint accepts for any array in a request
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_array_length: Option<u64>,
 }
 
 impl MintInfo {
@@ -217,6 +220,14 @@ impl MintInfo {
     {
         Self {
             tos_url: Some(tos_url.into()),
+            ..self
+        }
+    }
+
+    /// Set max_array_length
+    pub fn max_array_length(self, max_array_length: u64) -> Self {
+        Self {
+            max_array_length: Some(max_array_length),
             ..self
         }
     }
@@ -753,7 +764,8 @@ mod tests {
             .icon_url("https://example.com/icon.png")
             .motd("hello")
             .time(123_u64)
-            .tos_url("https://example.com/tos");
+            .tos_url("https://example.com/tos")
+            .max_array_length(1000);
 
         assert_eq!(info.name.as_deref(), Some("Test mint"));
         assert_eq!(info.pubkey, Some(pubkey));
@@ -772,6 +784,7 @@ mod tests {
         assert_eq!(info.motd.as_deref(), Some("hello"));
         assert_eq!(info.time, Some(123));
         assert_eq!(info.tos_url.as_deref(), Some("https://example.com/tos"));
+        assert_eq!(info.max_array_length, Some(1000));
     }
 
     #[test]
