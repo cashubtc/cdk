@@ -27,8 +27,12 @@ use cdk_common::Amount;
 
 use crate::{canonical_json_bytes, FederationBarkEvidenceCertificate, FederationBarkEvidencePhase};
 
+const FEDERATION_BARK_LEGACY_OPERATION_VERSION: u16 = 1;
 /// Current nested Bark operation format.
-pub const FEDERATION_BARK_OPERATION_VERSION: u16 = 1;
+///
+/// Version 2 lets same-action recovery plans reuse reservations. Version 1
+/// remains accepted with its original conflict keys for journal replay.
+pub const FEDERATION_BARK_OPERATION_VERSION: u16 = 2;
 /// Current typed Bark participant-authorization format.
 pub const FEDERATION_BARK_AUTHORIZATION_VERSION: u16 = 1;
 /// Maximum canonical size of one nested Bark operation.
@@ -1497,11 +1501,20 @@ impl FederationBarkOperation {
                         phase: certified.certificate.binding.phase,
                     });
                 }
-                keys.extend(operation.inputs.iter().map(|input| {
-                    FederationBarkConflictKey::VtxoReservation {
-                        vtxo_id: input.vtxo_id,
-                    }
-                }));
+                let reuses_existing_reservations = operation.version
+                    >= FEDERATION_BARK_OPERATION_VERSION
+                    && matches!(
+                        operation.kind,
+                        FederationBarkActionKind::FailedSendRevocation
+                            | FederationBarkActionKind::EmergencyExit
+                    );
+                if !reuses_existing_reservations {
+                    keys.extend(operation.inputs.iter().map(|input| {
+                        FederationBarkConflictKey::VtxoReservation {
+                            vtxo_id: input.vtxo_id,
+                        }
+                    }));
+                }
                 if operation.kind != FederationBarkActionKind::FailedSendRevocation {
                     keys.extend(operation.outputs.iter().map(|output| {
                         FederationBarkConflictKey::Locator {
@@ -3398,7 +3411,10 @@ impl FederationBarkOperationRecord {
 }
 
 fn ensure_version(version: u16) -> Result<()> {
-    if version != FEDERATION_BARK_OPERATION_VERSION {
+    if !matches!(
+        version,
+        FEDERATION_BARK_LEGACY_OPERATION_VERSION | FEDERATION_BARK_OPERATION_VERSION
+    ) {
         return Err(invalid_bark(format!(
             "unsupported Bark operation version {version}"
         )));

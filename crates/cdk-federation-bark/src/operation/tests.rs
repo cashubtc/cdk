@@ -556,9 +556,14 @@ fn nested_operation_is_canonical_bounded_and_roundtrips() {
 #[test]
 fn maintenance_plans_bind_exact_refresh_and_exit_requests() {
     let refresh = refresh_plan();
-    FederationBarkOperation::ActionPlan(refresh.clone())
+    let refresh_operation = FederationBarkOperation::ActionPlan(refresh.clone());
+    refresh_operation
         .validate()
         .expect("valid exact refresh plan");
+    assert!(refresh_operation
+        .conflict_keys()
+        .iter()
+        .any(|key| matches!(key, FederationBarkConflictKey::VtxoReservation { .. })));
     let request = refresh.refresh_request().expect("refresh request");
     assert_eq!(request.trigger_height, 800);
     assert_eq!(request.emergency_height, 880);
@@ -571,9 +576,20 @@ fn maintenance_plans_bind_exact_refresh_and_exit_requests() {
         .is_err());
 
     let exit = emergency_exit_plan();
-    FederationBarkOperation::ActionPlan(exit.clone())
-        .validate()
-        .expect("valid exact exit plan");
+    let exit_operation = FederationBarkOperation::ActionPlan(exit.clone());
+    exit_operation.validate().expect("valid exact exit plan");
+    assert!(exit_operation
+        .conflict_keys()
+        .iter()
+        .all(|key| !matches!(key, FederationBarkConflictKey::VtxoReservation { .. })));
+    let mut legacy_exit = exit.clone();
+    legacy_exit.version = 1;
+    let legacy_exit = FederationBarkOperation::ActionPlan(legacy_exit);
+    legacy_exit.validate().expect("valid legacy exit plan");
+    assert!(legacy_exit
+        .conflict_keys()
+        .iter()
+        .any(|key| matches!(key, FederationBarkConflictKey::VtxoReservation { .. })));
     let request = exit.emergency_exit_request().expect("exit request");
     assert_eq!(
         request.destination.quote,
@@ -1182,6 +1198,10 @@ fn failed_send_revocation_reuses_only_the_preallocated_recovery_locator() {
     };
     let operation = FederationBarkOperation::ActionPlan(plan.clone());
     operation.validate().expect("valid revocation plan");
+    assert!(operation
+        .conflict_keys()
+        .iter()
+        .all(|key| !matches!(key, FederationBarkConflictKey::VtxoReservation { .. })));
     assert!(operation.conflict_keys().iter().all(|key| {
         !matches!(
             key,
