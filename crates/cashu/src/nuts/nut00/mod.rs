@@ -944,7 +944,7 @@ pub struct PreMint {
     /// Amount
     pub amount: Amount,
     /// NUT-13 derivation index for deterministic secrets.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub derivation_index: Option<u32>,
 }
 
