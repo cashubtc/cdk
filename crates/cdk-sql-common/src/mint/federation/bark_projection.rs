@@ -1261,13 +1261,7 @@ where
             "Bark journal operation ID does not match its canonical envelope",
         ));
     }
-    let FederationOperation::Application(entry_operation) = &entry.envelope.operation else {
-        return Err(invalid_projection(
-            "Bark projection operation does not match its journal entry",
-        ));
-    };
-    let entry_operation =
-        cdk_federation_bark::validate_federation_bark_application_operation(entry_operation)?;
+    let entry_operation = bark_projection_entry_operation(&entry.envelope.operation)?;
     if &entry_operation != operation {
         return Err(invalid_projection(
             "Bark projection operation does not match its journal entry",
@@ -1316,6 +1310,12 @@ where
             apply_observation(connection, entry, operation, &observation).await
         }
     }
+}
+
+fn bark_projection_entry_operation(
+    operation: &FederationOperation,
+) -> Result<FederationBarkOperation, Error> {
+    cdk_federation_bark::validate_federation_bark_operation(operation).map_err(Error::from)
 }
 
 pub(super) async fn get_bark_projection_snapshot<C>(
@@ -1388,8 +1388,41 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::direct_transition_allowed;
-    use cdk_federation_bark::FederationBarkSemanticPhase as Phase;
+    use cdk_common::federation::{FederationOperation, MemberId};
+    use cdk_federation_bark::{
+        federation_bark_application_operation, FederationBarkActionId, FederationBarkDigest,
+        FederationBarkMemberObservation, FederationBarkObservationStatus, FederationBarkOperation,
+        FederationBarkSemanticPhase as Phase, FEDERATION_BARK_OPERATION_VERSION,
+    };
+
+    use super::{bark_projection_entry_operation, direct_transition_allowed};
+
+    #[test]
+    fn projection_accepts_established_bark_wire_operations() {
+        let bark = FederationBarkOperation::MemberObservation(FederationBarkMemberObservation {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: FederationBarkActionId::from_bytes([1; 32]).expect("action id"),
+            quote: None,
+            observer: MemberId::new(1).expect("member"),
+            observation_epoch: 1,
+            source_scope: FederationBarkDigest::from_bytes([2; 32]).expect("source scope"),
+            payment_hash: None,
+            status: FederationBarkObservationStatus::Pending,
+            amount: cdk_common::Amount::ZERO,
+            fee: cdk_common::Amount::ZERO,
+            result_hash: FederationBarkDigest::from_bytes([3; 32]).expect("result hash"),
+        });
+        let operation = federation_bark_application_operation(bark.clone()).expect("Bark wire");
+        assert!(matches!(
+            operation,
+            FederationOperation::ExternalApplication(_)
+        ));
+
+        assert_eq!(
+            bark_projection_entry_operation(&operation).expect("projection operation"),
+            bark
+        );
+    }
 
     #[test]
     fn maintenance_projection_allows_only_the_frozen_lifecycle() {
