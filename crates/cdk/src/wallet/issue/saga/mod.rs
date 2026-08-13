@@ -242,9 +242,9 @@ impl<'a> MintSaga<'a, Initial> {
             return Err(Error::SignatureMissingOrInvalid);
         }
 
-        // Resolving a legacy NpubCash signing key can migrate the quote in the
-        // localstore. Reload it so the prepared saga carries the current
-        // optimistic-lock version into the post-mint persistence step.
+        // Reload the quote after signing-key resolution so the prepared saga
+        // carries the latest optimistic-lock version into the post-mint
+        // persistence step.
         let quote_info = self
             .wallet
             .localstore
@@ -552,9 +552,8 @@ impl<'a> MintSaga<'a, Initial> {
             }
         }
 
-        // Signing-key resolution can migrate legacy NpubCash quotes. Refresh
-        // every snapshot before retaining it in the prepared batch so later
-        // versioned writes do not use pre-migration versions.
+        // Refresh every snapshot after signing-key resolution so later
+        // versioned writes use the latest persisted versions.
         for quote in &mut quote_infos {
             *quote = self
                 .wallet
