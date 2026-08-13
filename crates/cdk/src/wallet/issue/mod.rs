@@ -151,35 +151,18 @@ fn mint_quote_response_amount(response: &MintQuoteResponse<String>) -> Option<Am
 impl Wallet {
     /// Resolve the NUT-20 signing key for a mint quote
     ///
-    /// Returns the quote's stored key if present. NpubCash quotes do not
-    /// persist a key; for those the key is re-derived from the wallet seed.
+    /// Re-derives the key for explicitly marked NpubCash quotes. For all other
+    /// quotes, returns the stored key without modifying wallet state.
     pub(crate) async fn mint_quote_signing_key(
         &self,
         quote: &MintQuote,
     ) -> Result<Option<SecretKey>, Error> {
         #[cfg(feature = "npubcash")]
-        if let Some(secret_key) = &quote.secret_key {
-            if self.is_legacy_npubcash_secret_key(secret_key) {
-                self.scrub_legacy_npubcash_quote(quote).await?;
-                return Ok(Some(self.npubcash_quote_secret_key(
-                    crate::wallet::npubcash::NpubCashQuoteKey::LegacySeedPrefix,
-                )?));
-            }
-
-            return Ok(Some(secret_key.clone()));
-        }
-
-        #[cfg(not(feature = "npubcash"))]
-        if let Some(secret_key) = &quote.secret_key {
-            return Ok(Some(secret_key.clone()));
-        }
-
-        #[cfg(feature = "npubcash")]
         if let Some(key) = self.npubcash_quote_key(&quote.id).await? {
             return Ok(Some(self.npubcash_quote_secret_key(key)?));
         }
 
-        Ok(None)
+        Ok(quote.secret_key.clone())
     }
 
     /// Create a mint quote for the given payment method and amount

@@ -7,14 +7,14 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::Network;
-use cdk_common::SECP256K1;
+use cdk_common::{database, SECP256K1};
 use cdk_npubcash::{JwtAuthProvider, NpubCashClient, Quote};
 use tracing::instrument;
 
 use crate::error::Error;
 use crate::nuts::SecretKey;
 use crate::wallet::types::{MintQuote, TransactionDirection, TransactionStatus};
-use crate::wallet::Wallet;
+use crate::wallet::{MintQuoteState, Wallet};
 
 /// KV store namespace for npubcash-related data
 pub const NPUBCASH_KV_NAMESPACE: &str = "npubcash";
@@ -26,8 +26,8 @@ const QUOTE_KEY_NIP06: &[u8] = b"nip06";
 const QUOTE_KEY_LEGACY_SEED_PREFIX: &[u8] = b"legacy-seed-prefix";
 /// KV store key for the last fetch timestamp (stored as u64 Unix timestamp)
 const LAST_FETCH_TIMESTAMP_KEY: &str = "last_fetch_timestamp";
-/// KV store key for whether legacy seed-prefix quotes have been imported
-const LEGACY_QUOTES_IMPORTED_KEY: &str = "legacy_quotes_imported";
+/// KV store key for whether the provenance-safe legacy quote migration completed
+const LEGACY_QUOTES_MIGRATED_V2_KEY: &str = "legacy_quotes_migrated_v2";
 /// KV store key for the active mint URL
 pub const ACTIVE_MINT_KEY: &str = "active_mint";
 
@@ -53,6 +53,22 @@ impl NpubCashQuoteKey {
             _ => Self::Nip06,
         }
     }
+}
+
+fn merge_npubcash_quote(mut incoming: MintQuote, existing: MintQuote) -> MintQuote {
+    incoming.state = match (incoming.state, existing.state) {
+        (MintQuoteState::Issued, _) | (_, MintQuoteState::Issued) => MintQuoteState::Issued,
+        (MintQuoteState::Paid, _) | (_, MintQuoteState::Paid) => MintQuoteState::Paid,
+        (MintQuoteState::Unpaid, MintQuoteState::Unpaid) => MintQuoteState::Unpaid,
+    };
+    incoming.amount_paid = incoming.amount_paid.max(existing.amount_paid);
+    incoming.amount_issued = incoming.amount_issued.max(existing.amount_issued);
+    incoming.updated_at = incoming.updated_at.max(existing.updated_at);
+    incoming.secret_key = existing.secret_key;
+    incoming.estimated_blocks = existing.estimated_blocks;
+    incoming.used_by_operation = existing.used_by_operation;
+    incoming.version = existing.version;
+    incoming
 }
 
 /// Derive the current NpubCash secret key from a wallet seed
@@ -335,6 +351,25 @@ impl Wallet {
     ) -> Result<Option<MintQuote>, Error> {
         let mint_quote: MintQuote = npubcash_quote.into();
 
+        // This marker is authoritative because the quote came from the
+        // NpubCash account associated with `key`.
+        self.localstore
+            .kv_write(
+                NPUBCASH_KV_NAMESPACE,
+                QUOTES_KV_SECONDARY_NAMESPACE,
+                &mint_quote.id,
+                key.as_bytes(),
+            )
+            .await?;
+
+        let stored_quote = match key {
+            NpubCashQuoteKey::Nip06 => self.localstore.get_mint_quote(&mint_quote.id).await?,
+            NpubCashQuoteKey::LegacySeedPrefix => {
+                self.scrub_proven_legacy_npubcash_quote(&mint_quote.id)
+                    .await?
+            }
+        };
+
         let exists = self
             .list_transactions(Some(TransactionDirection::Incoming))
             .await?
@@ -348,14 +383,19 @@ impl Wallet {
             return Ok(None);
         }
 
-        self.localstore
-            .kv_write(
-                NPUBCASH_KV_NAMESPACE,
-                QUOTES_KV_SECONDARY_NAMESPACE,
-                &mint_quote.id,
-                key.as_bytes(),
-            )
-            .await?;
+        if let Some(stored_quote) = stored_quote {
+            let updated_quote = merge_npubcash_quote(mint_quote, stored_quote);
+            let quote_id = updated_quote.id.clone();
+            self.localstore.add_mint_quote(updated_quote).await?;
+
+            let persisted = self
+                .localstore
+                .get_mint_quote(&quote_id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
+            tracing::info!("Updated NpubCash quote {} in wallet database", quote_id);
+            return Ok(Some(persisted));
+        }
 
         self.localstore.add_mint_quote(mint_quote.clone()).await?;
 
@@ -378,7 +418,7 @@ impl Wallet {
             .map(|value| NpubCashQuoteKey::from_bytes(&value)))
     }
 
-    pub(crate) fn is_legacy_npubcash_secret_key(&self, secret_key: &SecretKey) -> bool {
+    fn is_legacy_npubcash_secret_key(&self, secret_key: &SecretKey) -> bool {
         secret_key.as_secret_bytes() == &self.seed[..32]
     }
 
@@ -392,28 +432,40 @@ impl Wallet {
         }
     }
 
-    pub(crate) async fn scrub_legacy_npubcash_quote(&self, quote: &MintQuote) -> Result<(), Error> {
-        let mut scrubbed = quote.clone();
-        scrubbed.secret_key = None;
+    async fn scrub_proven_legacy_npubcash_quote(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<MintQuote>, Error> {
+        let mut retry_concurrent_update = true;
 
-        self.localstore
-            .kv_write(
-                NPUBCASH_KV_NAMESPACE,
-                QUOTES_KV_SECONDARY_NAMESPACE,
-                &scrubbed.id,
-                NpubCashQuoteKey::LegacySeedPrefix.as_bytes(),
-            )
-            .await?;
+        loop {
+            let Some(mut quote) = self.localstore.get_mint_quote(quote_id).await? else {
+                return Ok(None);
+            };
 
-        self.localstore.add_mint_quote(scrubbed).await?;
+            let Some(secret_key) = &quote.secret_key else {
+                return Ok(Some(quote));
+            };
 
-        Ok(())
+            if !self.is_legacy_npubcash_secret_key(secret_key) {
+                return Ok(Some(quote));
+            }
+
+            quote.secret_key = None;
+            match self.localstore.add_mint_quote(quote).await {
+                Ok(()) => return Ok(self.localstore.get_mint_quote(quote_id).await?),
+                Err(database::Error::ConcurrentUpdate) if retry_concurrent_update => {
+                    retry_concurrent_update = false;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     async fn import_legacy_npubcash_quotes_once(&self, npubcash_url: &str) -> Result<(), Error> {
         if self
             .localstore
-            .kv_read(NPUBCASH_KV_NAMESPACE, "", LEGACY_QUOTES_IMPORTED_KEY)
+            .kv_read(NPUBCASH_KV_NAMESPACE, "", LEGACY_QUOTES_MIGRATED_V2_KEY)
             .await?
             .is_some()
         {
@@ -432,7 +484,12 @@ impl Wallet {
             .await?;
 
         self.localstore
-            .kv_write(NPUBCASH_KV_NAMESPACE, "", LEGACY_QUOTES_IMPORTED_KEY, &[1])
+            .kv_write(
+                NPUBCASH_KV_NAMESPACE,
+                "",
+                LEGACY_QUOTES_MIGRATED_V2_KEY,
+                &[1],
+            )
             .await?;
 
         Ok(())
@@ -635,7 +692,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_persisted_npubcash_key_is_scrubbed() {
+    async fn external_seed_prefix_key_is_not_claimed_by_npubcash() {
+        let seed = [0x42u8; 64];
+        let wallet = build_test_wallet(seed).await;
+        let mut external_quote: MintQuote = test_quote().into();
+        external_quote.secret_key = Some(
+            wallet
+                .derive_legacy_npubcash_secret_key()
+                .expect("legacy key derives"),
+        );
+
+        wallet
+            .localstore
+            .add_mint_quote(external_quote.clone())
+            .await
+            .expect("external quote is stored");
+        let before = wallet
+            .localstore
+            .get_mint_quote(&external_quote.id)
+            .await
+            .expect("quote lookup")
+            .expect("quote remains stored");
+
+        let signing_key = wallet
+            .mint_quote_signing_key(&before)
+            .await
+            .expect("signing key lookup")
+            .expect("external signing key is returned");
+
+        assert_eq!(&signing_key.to_secret_bytes()[..], &seed[..32]);
+
+        let after = wallet
+            .localstore
+            .get_mint_quote(&external_quote.id)
+            .await
+            .expect("quote lookup")
+            .expect("quote remains stored");
+        assert_eq!(after.version, before.version);
+        assert!(
+            after.secret_key.is_some(),
+            "an unmarked external quote must keep its signing key"
+        );
+        assert_eq!(
+            wallet
+                .npubcash_quote_key(&external_quote.id)
+                .await
+                .expect("kv lookup"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn proven_legacy_persisted_npubcash_key_is_scrubbed_during_import() {
         let seed = [0x42u8; 64];
         let wallet = build_test_wallet(seed).await;
         let mut legacy_quote: MintQuote = test_quote().into();
@@ -651,24 +759,17 @@ mod tests {
             .await
             .expect("legacy quote is stored");
 
-        let signing_key = wallet
-            .mint_quote_signing_key(&legacy_quote)
-            .await
-            .expect("signing key lookup")
-            .expect("legacy signing key is returned");
-
-        assert_eq!(&signing_key.to_secret_bytes()[..], &seed[..32]);
-
         let scrubbed = wallet
-            .localstore
-            .get_mint_quote(&legacy_quote.id)
+            .add_npubcash_mint_quote_with_key(test_quote(), NpubCashQuoteKey::LegacySeedPrefix)
             .await
-            .expect("quote lookup")
-            .expect("quote remains stored");
+            .expect("legacy quote import succeeds")
+            .expect("legacy quote is returned");
+
         assert!(
             scrubbed.secret_key.is_none(),
-            "legacy raw seed key should be removed from storage"
+            "proven legacy raw seed key should be removed from storage"
         );
+        assert!(scrubbed.version > legacy_quote.version);
         assert_eq!(
             wallet
                 .npubcash_quote_key(&legacy_quote.id)
@@ -676,5 +777,21 @@ mod tests {
                 .expect("kv lookup"),
             Some(NpubCashQuoteKey::LegacySeedPrefix)
         );
+
+        let version_before_lookup = scrubbed.version;
+        let signing_key = wallet
+            .mint_quote_signing_key(&scrubbed)
+            .await
+            .expect("signing key lookup")
+            .expect("legacy signing key is returned");
+        assert_eq!(&signing_key.to_secret_bytes()[..], &seed[..32]);
+
+        let after_lookup = wallet
+            .localstore
+            .get_mint_quote(&legacy_quote.id)
+            .await
+            .expect("quote lookup")
+            .expect("quote remains stored");
+        assert_eq!(after_lookup.version, version_before_lookup);
     }
 }
