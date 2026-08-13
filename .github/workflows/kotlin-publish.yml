@@ -274,7 +274,7 @@ jobs:
       - name: Build (Nix)
         working-directory: cdk-kotlin/rust
         run: |
-          nix develop -L ../../cdk#kotlin-build --command \
+          nix develop --fallback -L ../../cdk#kotlin-build --command \
             cargo build --release --target ${{ matrix.target }}
 
       - name: Strip debug symbols
@@ -282,7 +282,7 @@ jobs:
         shell: bash
         run: |
           FILE="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
-          nix develop -L ../../cdk#kotlin-build --command \
+          nix develop --fallback -L ../../cdk#kotlin-build --command \
             bash -c '"$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-all '"$FILE"
 
       - name: Verify Android ELF 16 KB alignment
@@ -290,7 +290,7 @@ jobs:
         shell: bash
         run: |
           FILE="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
-          nix develop -L ../../cdk#kotlin-build --command \
+          nix develop --fallback -L ../../cdk#kotlin-build --command \
             ../../cdk/.github/scripts/check-android-elf-alignment.sh "$FILE"
 
       # uniffi 0.30 reads the component interface statically from the library
@@ -301,7 +301,7 @@ jobs:
         working-directory: cdk-kotlin/rust
         run: |
           mkdir -p ../generated-bindings
-          nix develop -L ../../cdk#kotlin-build --command \
+          nix develop --fallback -L ../../cdk#kotlin-build --command \
             cargo run --release --bin uniffi-bindgen-kotlin -- generate \
               --library "target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
               --language kotlin \
@@ -434,7 +434,7 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
         run: |
-          nix develop -L ../cdk#kotlin-publish --command \
+          nix develop --fallback -L ../cdk#kotlin-publish --command \
             env -u ANDROID_SDK_ROOT \
             ./gradlew --no-parallel publishAndReleaseToMavenCentral
 

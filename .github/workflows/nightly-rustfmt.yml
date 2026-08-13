@@ -27,7 +27,7 @@ jobs:
         continue-on-error: true
       - name: Run Nightly rustfmt
         run: |
-          nix develop -i -L .#nightly --command bash -c '
+          nix develop --fallback -i -L .#nightly --command bash -c '
             # Force use of Nix-provided rustfmt
             export RUSTFMT=$(command -v rustfmt)
             cargo fmt
