@@ -20,14 +20,8 @@ pub type WsUnsubscribeRequest = nut17::ws::WsUnsubscribeRequest<SubId>;
 /// Notification message sent over websocket
 pub type WsNotification = nut17::ws::WsNotification<SubId>;
 
-/// Response to a subscription request
-pub type WsSubscribeResponse = nut17::ws::WsSubscribeResponse<SubId>;
-
 /// Result part of a websocket response
 pub type WsResponseResult = nut17::ws::WsResponseResult<SubId>;
-
-/// Response to an unsubscribe request
-pub type WsUnsubscribeResponse = nut17::ws::WsUnsubscribeResponse<SubId>;
 
 /// Generic websocket request
 pub type WsRequest = nut17::ws::WsRequest<SubId>;

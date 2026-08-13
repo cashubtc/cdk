@@ -1,5 +1,5 @@
 use cdk::subscription::Params;
-use cdk::ws::{WsResponseResult, WsSubscribeResponse};
+use cdk::ws::WsResponseResult;
 
 use super::{WsContext, WsError, MAX_FILTERS_PER_SUBSCRIPTION, MAX_SUBSCRIPTIONS_PER_CONNECTION};
 
@@ -51,9 +51,8 @@ pub(crate) async fn handle(
             }
         }),
     );
-    Ok(WsSubscribeResponse {
+    Ok(WsResponseResult {
         status: "OK".to_string(),
         sub_id,
-    }
-    .into())
+    })
 }
