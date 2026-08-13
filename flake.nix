@@ -940,6 +940,17 @@
           export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [ pkgs.zlib ]}:$LD_LIBRARY_PATH
         '';
 
+        dockerShellHook = ''
+          # Ensure Docker is available
+          if ! command -v docker &> /dev/null; then
+            echo "Docker is not installed or not in PATH"
+            echo "Please install Docker to run integration tests"
+            exit 1
+          fi
+          echo "Docker is available at $(command -v docker)"
+          echo "Docker version: $(docker --version)"
+        '';
+
         pgShellHook = ''
           # PostgreSQL environment variables
           export CDK_MINTD_DATABASE_URL="postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
@@ -1618,18 +1629,7 @@
             # Shell with Docker for integration tests
             integration = pkgs.mkShell (
               {
-                shellHook = ''
-                  # Ensure Docker is available
-                  if ! command -v docker &> /dev/null; then
-                    echo "Docker is not installed or not in PATH"
-                    echo "Please install Docker to run integration tests"
-                    exit 1
-                  fi
-                  echo "Docker is available at $(which docker)"
-                  echo "Docker version: $(docker --version)"
-                ''
-                + commonShellHook
-                + pgShellHook;
+                shellHook = dockerShellHook + commonShellHook + pgShellHook;
                 buildInputs =
                   baseBuildInputs
                   ++ regtestBuildInputs
@@ -1640,6 +1640,21 @@
                     pkgsUnstable.cargo-llvm-cov
                   ]
                   ++ builtins.attrValues itestBinaries;
+                inherit nativeBuildInputs;
+              }
+              // envVars
+            );
+
+            # Minimal shell for the Nutshell interoperability tests. These tests
+            # compile their own binaries with Cargo and do not use the pre-built
+            # integration-test harnesses from the full integration shell.
+            nutshell = pkgs.mkShell (
+              {
+                shellHook = dockerShellHook + commonShellHook;
+                buildInputs = baseBuildInputs ++ [
+                  stable_toolchain
+                  pkgs.docker-client
+                ];
                 inherit nativeBuildInputs;
               }
               // envVars
@@ -1780,6 +1795,7 @@
               nightly
               nightly-regtest
               integration
+              nutshell
               ffi
               bindings
               kotlin-build
