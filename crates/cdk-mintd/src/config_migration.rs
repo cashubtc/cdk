@@ -14,9 +14,16 @@ const TEMPORARY_FILE_ATTEMPTS: usize = 100;
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RELEASED_V017_SIGNATORY_URL_ENV_VAR: &str = "CDK_MINTD_SIGNATORY_URL";
 const RELEASED_V017_SIGNATORY_CERTS_ENV_VAR: &str = "CDK_MINTD_SIGNATORY_CERTS";
+const RELEASED_V017_LN_BACKEND_ENV_VAR: &str = "CDK_MINTD_LN_BACKEND";
+const RELEASED_V017_LN_INVOICE_DESCRIPTION_ENV_VAR: &str = "CDK_MINTD_LN_INVOICE_DESCRIPTION";
+const RELEASED_V017_LN_MIN_MINT_ENV_VAR: &str = "CDK_MINTD_LN_MIN_MINT";
+const RELEASED_V017_LN_MAX_MINT_ENV_VAR: &str = "CDK_MINTD_LN_MAX_MINT";
+const RELEASED_V017_LN_MIN_MELT_ENV_VAR: &str = "CDK_MINTD_LN_MIN_MELT";
+const RELEASED_V017_LN_MAX_MELT_ENV_VAR: &str = "CDK_MINTD_LN_MAX_MELT";
 const RELEASED_V017_UNKNOWN_FIELDS: &[&str] = &[
     "info.signatory_certs",
     "info.signatory_url",
+    "ln",
     #[cfg(feature = "management-rpc")]
     "mint_management_rpc.tls_dir_path",
 ];
@@ -33,6 +40,75 @@ struct ReleasedV017Document {
     info: ReleasedV017Info,
     signatory: Option<CanonicalSignatoryTable>,
     mint_management_rpc: Option<ReleasedV017ManagementRpc>,
+    ln: ReleasedV017LnSection,
+}
+
+/// Released v0.17 accepted either a single `[ln]` table or repeated `[[ln]]`
+/// entries, each with an `ln_backend` key instead of the current `backend`.
+#[derive(Default, Deserialize)]
+#[serde(untagged)]
+enum ReleasedV017LnSection {
+    #[default]
+    Missing,
+    One(ReleasedV017Ln),
+    Many(Vec<ReleasedV017Ln>),
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ReleasedV017Ln {
+    ln_backend: Option<String>,
+    unit: Option<cdk::nuts::CurrencyUnit>,
+    invoice_description: Option<String>,
+    min_mint: Option<u64>,
+    max_mint: Option<u64>,
+    min_melt: Option<u64>,
+    max_melt: Option<u64>,
+}
+
+/// Legacy `CDK_MINTD_LN_*` environment overrides, as released in v0.17.
+#[derive(Default)]
+struct ReleasedV017LnEnv {
+    backend: Option<String>,
+    invoice_description: Option<String>,
+    min_mint: Option<u64>,
+    max_mint: Option<u64>,
+    min_melt: Option<u64>,
+    max_melt: Option<u64>,
+}
+
+impl ReleasedV017LnEnv {
+    fn from_env() -> Self {
+        fn parse_amount(name: &str) -> Option<u64> {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| match value.parse::<u64>() {
+                    Ok(amount) => Some(amount),
+                    Err(_) => {
+                        tracing::warn!("Ignoring invalid amount in legacy env var {name}: {value}");
+                        None
+                    }
+                })
+        }
+
+        Self {
+            backend: std::env::var(RELEASED_V017_LN_BACKEND_ENV_VAR).ok(),
+            invoice_description: std::env::var(RELEASED_V017_LN_INVOICE_DESCRIPTION_ENV_VAR).ok(),
+            min_mint: parse_amount(RELEASED_V017_LN_MIN_MINT_ENV_VAR),
+            max_mint: parse_amount(RELEASED_V017_LN_MAX_MINT_ENV_VAR),
+            min_melt: parse_amount(RELEASED_V017_LN_MIN_MELT_ENV_VAR),
+            max_melt: parse_amount(RELEASED_V017_LN_MAX_MELT_ENV_VAR),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.backend.is_none()
+            && self.invoice_description.is_none()
+            && self.min_mint.is_none()
+            && self.max_mint.is_none()
+            && self.min_melt.is_none()
+            && self.max_melt.is_none()
+    }
 }
 
 #[derive(Default, Deserialize)]
@@ -147,6 +223,15 @@ pub fn migrate_legacy_configuration(
     let released_v017 = released_v017_document(&document).with_context(|| parse_context.clone())?;
     let mut effective = Settings::try_from_toml_allowing(&document, RELEASED_V017_UNKNOWN_FIELDS)
         .with_context(|| parse_context)?;
+    // Translate the released v0.17 `[ln]` section before applying environment
+    // overrides so the backend configuration exists when validation runs,
+    // exactly as it did in v0.17.
+    apply_released_v017_payment_backend_file(&mut effective, &released_v017)?;
+    // Re-apply the released v0.17 `CDK_MINTD_LN_*` overrides before the
+    // canonical environment so validation sees the same backends v0.17 would
+    // have configured; canonical `CDK_MINTD_PAYMENT_BACKEND_*` variables are
+    // applied afterwards and therefore win when both are set.
+    apply_released_v017_payment_backend_env(&mut effective)?;
     effective = effective
         .from_env()
         .context("could not apply legacy environment overrides")?;
@@ -367,10 +452,9 @@ pub fn migrate_legacy_configuration(
 }
 
 fn released_v017_document(document: &str) -> Result<ReleasedV017Document> {
-    Ok(config::Config::builder()
-        .add_source(config::File::from_str(document, config::FileFormat::Toml))
-        .build()?
-        .try_deserialize()?)
+    // Parsed with serde/toml directly (rather than the `config` crate) so the
+    // untagged one-or-many `[ln]` section deserializes correctly.
+    Ok(toml::from_str(document)?)
 }
 
 fn apply_released_v017_compatibility(
@@ -380,6 +464,122 @@ fn apply_released_v017_compatibility(
     apply_released_v017_signatory(settings, released)?;
     #[cfg(feature = "management-rpc")]
     apply_released_v017_management_rpc(settings, released);
+    Ok(())
+}
+
+/// Translates a released v0.17 `[ln]`/`[[ln]]` document section into the
+/// canonical `[payment_backend]` model.
+///
+/// Canonical `payment_backend` entries win over the legacy section when both
+/// are present.
+fn apply_released_v017_payment_backend_file(
+    settings: &mut Settings,
+    released: &ReleasedV017Document,
+) -> Result<()> {
+    let legacy_entries: Vec<&ReleasedV017Ln> = match &released.ln {
+        ReleasedV017LnSection::Missing => Vec::new(),
+        ReleasedV017LnSection::One(ln) => vec![ln],
+        ReleasedV017LnSection::Many(lns) => lns.iter().collect(),
+    };
+
+    if !legacy_entries.is_empty() {
+        if settings.payment_backend.is_empty() {
+            for legacy in legacy_entries {
+                settings
+                    .payment_backend
+                    .push(convert_released_v017_ln(legacy)?);
+            }
+        } else {
+            tracing::warn!(
+                "Ignoring legacy [ln] section: canonical [payment_backend] section is present"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn convert_released_v017_ln(legacy: &ReleasedV017Ln) -> Result<crate::config::PaymentBackend> {
+    let backend = match legacy.ln_backend.as_deref() {
+        None => crate::config::PaymentBackendType::None,
+        Some(value) => parse_released_v017_backend(value, "ln_backend")?,
+    };
+
+    Ok(crate::config::PaymentBackend {
+        backend,
+        unit: legacy.unit.clone().unwrap_or_default(),
+        invoice_description: legacy.invoice_description.clone(),
+        min_mint: legacy.min_mint.unwrap_or(1).into(),
+        max_mint: legacy.max_mint.unwrap_or(500_000).into(),
+        min_melt: legacy.min_melt.unwrap_or(1).into(),
+        max_melt: legacy.max_melt.unwrap_or(500_000).into(),
+    })
+}
+
+/// Parses a released v0.17 backend name. The v0.17 TOML section accepted
+/// `none` through serde while its `FromStr` (used for the env var) did not;
+/// accept it in both paths during migration so an explicit disable migrates.
+fn parse_released_v017_backend(
+    value: &str,
+    source: &str,
+) -> Result<crate::config::PaymentBackendType> {
+    if value.eq_ignore_ascii_case("none") {
+        return Ok(crate::config::PaymentBackendType::None);
+    }
+    value.parse().map_err(|err: String| {
+        anyhow!("legacy {source} value {value:?} is not a supported payment backend: {err}")
+    })
+}
+
+/// Applies the released v0.17 `CDK_MINTD_LN_*` environment variables with the
+/// semantics they had in v0.17: they only ever target a single configured
+/// entry (creating it when the document has none). Canonical
+/// `CDK_MINTD_PAYMENT_BACKEND_*` variables are applied afterwards, so they
+/// take precedence when both are set.
+fn apply_released_v017_payment_backend_env(settings: &mut Settings) -> Result<()> {
+    let legacy = ReleasedV017LnEnv::from_env();
+    if legacy.is_empty() {
+        return Ok(());
+    }
+
+    let apply = |entry: &mut crate::config::PaymentBackend| -> Result<()> {
+        if let Some(backend) = legacy.backend.as_deref() {
+            entry.backend = parse_released_v017_backend(backend, RELEASED_V017_LN_BACKEND_ENV_VAR)?;
+        }
+        if let Some(description) = legacy.invoice_description.clone() {
+            entry.invoice_description = Some(description);
+        }
+        if let Some(min_mint) = legacy.min_mint {
+            entry.min_mint = min_mint.into();
+        }
+        if let Some(max_mint) = legacy.max_mint {
+            entry.max_mint = max_mint.into();
+        }
+        if let Some(min_melt) = legacy.min_melt {
+            entry.min_melt = min_melt.into();
+        }
+        if let Some(max_melt) = legacy.max_melt {
+            entry.max_melt = max_melt.into();
+        }
+        Ok(())
+    };
+
+    match settings.payment_backend.len() {
+        0 => {
+            let mut entry = crate::config::PaymentBackend::default();
+            apply(&mut entry)?;
+            if entry.backend != crate::config::PaymentBackendType::None {
+                settings.payment_backend.push(entry);
+            }
+        }
+        1 => apply(&mut settings.payment_backend[0])?,
+        _ => {
+            tracing::warn!(
+                "CDK_MINTD_LN_* legacy environment variables ignored: multiple [[payment_backend]] entries configured"
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -1276,8 +1476,8 @@ mod tests {
 [info]
 mnemonic = "{mnemonic}"
 
-[payment_backend]
-backend = "fakewallet"
+[ln]
+ln_backend = "fakewallet"
 
 [fake_wallet]
 
@@ -1297,8 +1497,8 @@ engine = "sqlite"
 signatory_url = "{url}"
 {certs}
 
-[payment_backend]
-backend = "fakewallet"
+[ln]
+ln_backend = "fakewallet"
 
 [fake_wallet]
 
@@ -1377,6 +1577,250 @@ signatory_url = "http://127.0.0.1:10009"
             .expect("validate migrated document");
         assert_eq!(outcome.secret_files_written, 0);
         assert!(outcome.secrets_dir.is_none());
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn migration_translates_released_v017_ln_section() {
+        let _env_lock = crate::test_utils::env_lock();
+        let _environment = MintdEnvironment::cleared();
+        let (directory, source, output) = migration_paths("migrate_released_v017_ln");
+        fs::write(
+            &source,
+            format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[ln]
+ln_backend = "fakewallet"
+unit = "sat"
+invoice_description = "legacy description"
+min_mint = 10
+max_mint = 250000
+min_melt = 20
+max_melt = 125000
+
+[fake_wallet]
+
+[database]
+engine = "sqlite"
+"#
+            ),
+        )
+        .expect("write released v0.17 config");
+
+        migrate_legacy_configuration(&source, &output, None, None, false)
+            .expect("migrate released v0.17 [ln] section");
+        let migrated = fs::read_to_string(&output).expect("read migrated config");
+        let settings = Settings::try_from_toml(&migrated).expect("parse migrated config");
+
+        assert!(
+            !migrated.contains("[ln]") && !migrated.contains("ln_backend"),
+            "migrated document must use the canonical schema:\n{migrated}"
+        );
+        assert_eq!(settings.payment_backend.len(), 1);
+        let backend = &settings.payment_backend[0];
+        assert_eq!(
+            backend.backend,
+            crate::config::PaymentBackendType::FakeWallet
+        );
+        assert_eq!(backend.unit, cdk::nuts::CurrencyUnit::Sat);
+        assert_eq!(
+            backend.invoice_description.as_deref(),
+            Some("legacy description")
+        );
+        assert_eq!(u64::from(backend.min_mint), 10);
+        assert_eq!(u64::from(backend.max_mint), 250_000);
+        assert_eq!(u64::from(backend.min_melt), 20);
+        assert_eq!(u64::from(backend.max_melt), 125_000);
+
+        crate::config_service::ConfigurationService::validate_document(&migrated)
+            .expect("validate migrated document");
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn migration_translates_released_v017_multi_ln_entries() {
+        let _env_lock = crate::test_utils::env_lock();
+        let _environment = MintdEnvironment::cleared();
+        let (directory, source, output) = migration_paths("migrate_released_v017_multi_ln");
+        fs::write(
+            &source,
+            format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[[ln]]
+ln_backend = "fakewallet"
+unit = "sat"
+
+[[ln]]
+ln_backend = "fakewallet"
+unit = "usd"
+max_mint = 1000
+
+[fake_wallet]
+supported_units = ["sat", "usd"]
+
+[database]
+engine = "sqlite"
+"#
+            ),
+        )
+        .expect("write released v0.17 config");
+
+        migrate_legacy_configuration(&source, &output, None, None, false)
+            .expect("migrate released v0.17 [[ln]] entries");
+        let migrated = fs::read_to_string(&output).expect("read migrated config");
+        let settings = Settings::try_from_toml(&migrated).expect("parse migrated config");
+
+        assert!(
+            !migrated.contains("[[ln]]") && !migrated.contains("ln_backend"),
+            "migrated document must use the canonical schema:\n{migrated}"
+        );
+        assert_eq!(settings.payment_backend.len(), 2);
+        assert_eq!(
+            settings.payment_backend[0].unit,
+            cdk::nuts::CurrencyUnit::Sat
+        );
+        assert_eq!(
+            settings.payment_backend[1].unit,
+            cdk::nuts::CurrencyUnit::Usd
+        );
+        assert_eq!(u64::from(settings.payment_backend[1].max_mint), 1_000);
+        // Unspecified legacy limits take the v0.17 defaults
+        assert_eq!(u64::from(settings.payment_backend[0].min_mint), 1);
+        assert_eq!(u64::from(settings.payment_backend[0].max_mint), 500_000);
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn migration_applies_released_v017_ln_env_overrides() {
+        let _env_lock = crate::test_utils::env_lock();
+        let _environment = MintdEnvironment::cleared();
+        let (directory, source, output) = migration_paths("migrate_released_v017_ln_env");
+        fs::write(
+            &source,
+            format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[fake_wallet]
+
+[database]
+engine = "sqlite"
+"#
+            ),
+        )
+        .expect("write released v0.17 config without [ln] section");
+        std::env::set_var(RELEASED_V017_LN_BACKEND_ENV_VAR, "fakewallet");
+        std::env::set_var(RELEASED_V017_LN_MIN_MINT_ENV_VAR, "10");
+
+        migrate_legacy_configuration(&source, &output, None, None, false)
+            .expect("migrate released v0.17 env-only backend");
+        let migrated = fs::read_to_string(&output).expect("read migrated config");
+        let settings = Settings::try_from_toml(&migrated).expect("parse migrated config");
+
+        assert_eq!(settings.payment_backend.len(), 1);
+        assert_eq!(
+            settings.payment_backend[0].backend,
+            crate::config::PaymentBackendType::FakeWallet
+        );
+        assert_eq!(u64::from(settings.payment_backend[0].min_mint), 10);
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn migration_canonical_env_wins_over_released_v017_ln_env() {
+        let _env_lock = crate::test_utils::env_lock();
+        let _environment = MintdEnvironment::cleared();
+        let (directory, source, output) = migration_paths("migrate_canonical_env_wins");
+        fs::write(
+            &source,
+            format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
+
+[database]
+engine = "sqlite"
+"#
+            ),
+        )
+        .expect("write released v0.17 config");
+        std::env::set_var(RELEASED_V017_LN_MIN_MINT_ENV_VAR, "10");
+        std::env::set_var(crate::env_vars::ENV_PAYMENT_BACKEND_MIN_MINT, "77");
+
+        migrate_legacy_configuration(&source, &output, None, None, false)
+            .expect("migrate with both legacy and canonical env vars");
+        let migrated = fs::read_to_string(&output).expect("read migrated config");
+        let settings = Settings::try_from_toml(&migrated).expect("parse migrated config");
+
+        assert_eq!(settings.payment_backend.len(), 1);
+        assert_eq!(u64::from(settings.payment_backend[0].min_mint), 77);
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn migration_prefers_canonical_payment_backend_over_legacy_ln() {
+        let _env_lock = crate::test_utils::env_lock();
+        let _environment = MintdEnvironment::cleared();
+        let (directory, source, output) = migration_paths("migrate_canonical_wins_over_ln");
+        fs::write(
+            &source,
+            format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[ln]
+ln_backend = "fakewallet"
+unit = "usd"
+min_mint = 99
+
+[payment_backend]
+backend = "fakewallet"
+unit = "sat"
+min_mint = 1
+
+[fake_wallet]
+
+[database]
+engine = "sqlite"
+"#
+            ),
+        )
+        .expect("write hybrid config");
+
+        migrate_legacy_configuration(&source, &output, None, None, false)
+            .expect("migrate hybrid config");
+        let migrated = fs::read_to_string(&output).expect("read migrated config");
+        let settings = Settings::try_from_toml(&migrated).expect("parse migrated config");
+
+        assert_eq!(settings.payment_backend.len(), 1);
+        assert_eq!(
+            settings.payment_backend[0].unit,
+            cdk::nuts::CurrencyUnit::Sat
+        );
+        assert_eq!(u64::from(settings.payment_backend[0].min_mint), 1);
 
         fs::remove_dir_all(directory).expect("remove migration test directory");
     }
