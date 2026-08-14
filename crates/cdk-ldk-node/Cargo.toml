@@ -7,7 +7,7 @@ license.workspace = true
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
 rust-version.workspace = true # MSRV
-description = "CDK ln backend for cdk-ldk-node"
+description = "CDK payment backend for cdk-ldk-node"
 readme = "README.md"
 
 [dependencies]

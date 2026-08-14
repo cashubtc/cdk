@@ -1124,7 +1124,7 @@ mod tests {
             percent_fee_reserve: 1.0,
         };
 
-        let ln_fake = FakeWallet::new(
+        let fake_backend = FakeWallet::new(
             fee_reserve,
             HashMap::default(),
             HashSet::default(),
@@ -1137,7 +1137,7 @@ mod tests {
                 CurrencyUnit::Sat,
                 PaymentMethod::Known(KnownMethod::Bolt11),
                 MintMeltLimits::new(1, 10_000),
-                Arc::new(ln_fake),
+                Arc::new(fake_backend),
             )
             .await
             .unwrap();

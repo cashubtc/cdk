@@ -30,7 +30,7 @@ cleanup() {
   # Unset variables
   unset MINT_URL WALLET_URL MINT_PORT WALLET_PORT MINT_CONTAINER_NAME WALLET_CONTAINER_NAME
   unset CDK_MINTD_PID CDK_MINTD_URL CDK_MINTD_WORK_DIR CDK_MINTD_LISTEN_HOST CDK_MINTD_LISTEN_PORT
-  unset CDK_MINTD_LN_BACKEND CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS CDK_MINTD_MNEMONIC
+  unset CDK_MINTD_PAYMENT_BACKEND CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS CDK_MINTD_MNEMONIC
   unset CDK_MINTD_FAKE_WALLET_FEE_PERCENT CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN CDK_MINTD_DATABASE
   unset TEST_STATUS
   unset CDK_MINTD_INPUT_FEE_PPK
@@ -62,12 +62,12 @@ input_fee_ppk = 100
 [database]
 engine = "sqlite"
 
-[[ln]]
-ln_backend = "fakewallet"
+[[payment_backend]]
+backend = "fakewallet"
 unit = "sat"
 
-[[ln]]
-ln_backend = "fakewallet"
+[[payment_backend]]
+backend = "fakewallet"
 unit = "usd"
 
 [fake_wallet]

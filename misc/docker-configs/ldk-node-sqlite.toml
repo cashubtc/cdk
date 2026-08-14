@@ -16,8 +16,8 @@ description = "LDK Node mint for Docker testing"
 [database]
 engine = "sqlite"
 
-[ln]
-ln_backend = "ldknode"
+[payment_backend]
+backend = "ldknode"
 unit = "sat"
 
 [ldk_node]

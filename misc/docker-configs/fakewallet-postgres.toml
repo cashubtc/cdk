@@ -22,8 +22,8 @@ tls_mode = "disable"
 max_connections = 20
 connection_timeout_seconds = 10
 
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 unit = "sat"
 
 [onchain]

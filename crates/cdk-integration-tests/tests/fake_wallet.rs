@@ -323,7 +323,7 @@ async fn test_fake_melt_payment_return_fail_status() {
         .is_empty());
 }
 
-/// Tests that when the ln backend returns an error with unknown status,
+/// Tests that when the payment backend returns an error with unknown status,
 /// the mint should do a second check and keep proofs pending.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_error_unknown() {
@@ -399,7 +399,7 @@ async fn test_fake_melt_payment_error_unknown() {
         .is_empty());
 }
 
-/// Tests that when the ln backend returns an error but the second check returns paid,
+/// Tests that when the payment backend returns an error but the second check returns paid,
 /// proofs should remain in pending state
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_err_paid() {

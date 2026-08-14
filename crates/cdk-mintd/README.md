@@ -7,19 +7,19 @@
 > **Warning**
 > This project is in early development, it does however work with real sats! Always use amounts you don't mind losing.
 
-Cashu mint daemon implementation for the Cashu Development Kit (CDK). This binary provides a complete Cashu mint server implementation with support for multiple database backends and Lightning Network integrations.
+Cashu mint daemon implementation for the Cashu Development Kit (CDK). This binary provides a complete Cashu mint server implementation with support for multiple database backends and pluggable payment backends (Lightning, on-chain, or custom processors).
 
 ## Features
 
 - **Multiple Database Backends**: SQLite, PostgreSQL, and ReDB
-- **Lightning Network Integration**: Support for CLN, LND, LDK Node, external payment processors, and test backends
+- **Pluggable Payment Backends**: Support for CLN, LND, LDK Node, external payment processors, and test backends
 - **Authentication**: Optional user authentication with OpenID Connect
 - **Management RPC**: gRPC interface for mint management
 - **Docker Support**: Ready-to-use Docker configurations
 
-## Lightning Backend Documentation
+## Payment Backend Documentation
 
-For detailed configuration of each Lightning backend, see:
+For detailed configuration of each payment backend, see:
 
 - **[LND](../cdk-lnd/README.md)** - Lightning Network Daemon
 - **[CLN](../cdk-cln/README.md)** - Core Lightning
@@ -261,12 +261,12 @@ and NUT-05 custom payment flows. Configure methods in `config.toml` with one
 entry per method and unit:
 
 ```toml
-[[ln]]
-ln_backend = "fakewallet"
+[[payment_backend]]
+backend = "fakewallet"
 unit = "sat"
 
-[[ln]]
-ln_backend = "fakewallet"
+[[payment_backend]]
+backend = "fakewallet"
 unit = "usd"
 
 [fake_wallet]
@@ -276,9 +276,9 @@ custom_payment_methods = [
 ]
 ```
 
-For a single fake wallet unit, the legacy `[ln]` table is still accepted and
-defaults to `unit = "sat"`. For multiple fake wallet units, use one `[[ln]]`
-entry per unit.
+For a single fake wallet unit, the single `[payment_backend]` table is accepted
+and defaults to `unit = "sat"`. For multiple fake wallet units, use one
+`[[payment_backend]]` entry per unit.
 
 For Docker setups, put these operational values in the TOML import document and
 run `config init` once against the persistent database. Setting the former
@@ -320,8 +320,8 @@ cdk-mint-cli rotate-next-keyset --use-keyset-v2 false # Rotate to V1
 
 ### With LDK Node (Recommended for Testing)
 ```toml
-[ln]
-ln_backend = "ldk-node"
+[payment_backend]
+backend = "ldk-node"
 
 [ldk_node]
 bitcoin_network = "signet"  # Use "mainnet" for production
@@ -334,8 +334,8 @@ storage_dir_path = "/var/lib/cdk-mintd/ldk-node"
 
 ### With CLN Lightning Backend
 ```toml
-[ln]
-ln_backend = "cln"
+[payment_backend]
+backend = "cln"
 
 [cln]
 rpc_path = "/home/bitcoin/.lightning/bitcoin/lightning-rpc"
@@ -345,8 +345,8 @@ rpc_path = "/home/bitcoin/.lightning/bitcoin/lightning-rpc"
 
 ### With LND Lightning Backend
 ```toml
-[ln]
-ln_backend = "lnd"
+[payment_backend]
+backend = "lnd"
 
 [lnd]
 address = "https://localhost:10009"
@@ -369,17 +369,17 @@ Set `CDK_MINTD_DATABASE=postgres` and `CDK_MINTD_POSTGRES_URL` for both
 initialization and subsequent starts so mintd can locate the authoritative
 database before reading its stored configuration.
 
-### With Multiple Lightning Backends
+### With Multiple Payment Backends
 
-A single mint can serve more than one currency unit by configuring a separate backend per unit. Replace the single `[ln]` block with one `[[ln]]` block per backend/unit, and keep the existing per-backend config sections (such as `[cln]`) as-is.
+A single mint can serve more than one currency unit by configuring a separate backend per unit. Replace the single `[payment_backend]` block with one `[[payment_backend]]` block per backend/unit, and keep the existing per-backend config sections (such as `[cln]`) as-is.
 
 ```toml
-[[ln]]
-ln_backend = "cln"
+[[payment_backend]]
+backend = "cln"
 unit = "sat"
 
-[[ln]]
-ln_backend = "grpcprocessor"
+[[payment_backend]]
+backend = "grpcprocessor"
 unit = "msat"
 
 [cln]
@@ -392,11 +392,11 @@ address = "127.0.0.1"
 port = 50051
 ```
 
-Each `[[ln]]` block carries its own `min_mint`, `max_mint`, `min_melt`, `max_melt` if you want different limits per unit. The configured unit must match the backend's reported unit, except for the supported `sat`/`msat` conversion pair. If two configured backends expose the same `(unit, method)` pair, startup is rejected.
+Each `[[payment_backend]]` block carries its own `min_mint`, `max_mint`, `min_melt`, `max_melt` if you want different limits per unit. The configured unit must match the backend's reported unit, except for the supported `sat`/`msat` conversion pair. If two configured backends expose the same `(unit, method)` pair, startup is rejected.
 
-The legacy single `[ln]` form is still accepted; it is equivalent to one
-`[[ln]]` entry with `unit = "sat"` (the default). Multi-backend topology is
-imported from TOML and is not overridden by environment variables at startup.
+The single `[payment_backend]` form is equivalent to one `[[payment_backend]]`
+entry with `unit = "sat"` (the default). Multi-backend topology is imported
+from TOML and is not overridden by environment variables at startup.
 
 ## Directory Structure
 
@@ -422,11 +422,11 @@ After setup and first run, your directory will look like:
 **What gets created automatically:**
 - Database files
 - Log directories and files
-- Lightning backend data directories
+- Payment backend data directories
 
 ## Docker Usage
 
-CDK Mintd provides ready-to-use Docker images with multiple Lightning backend options.
+CDK Mintd provides ready-to-use Docker images with multiple payment backend options.
 
 ### Quick Start
 

@@ -551,7 +551,7 @@ pub struct MintQuote {
     pub request: String,
     /// Expiration time of quote
     pub expiry: u64,
-    /// Value used by ln backend to look up state of request
+    /// Value used by the payment backend to look up state of request
     pub request_lookup_id: PaymentIdentifier,
     /// Pubkey
     pub pubkey: Option<PublicKey>,
@@ -881,7 +881,7 @@ pub struct MeltQuote {
     pub expiry: u64,
     /// Payment proof (e.g. Lightning preimage or onchain outpoint)
     pub payment_proof: Option<String>,
-    /// Value used by ln backend to look up state of request
+    /// Value used by the payment backend to look up state of request
     pub request_lookup_id: Option<PaymentIdentifier>,
     /// Payment options
     ///

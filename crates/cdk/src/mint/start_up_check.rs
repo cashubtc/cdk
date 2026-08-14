@@ -1,7 +1,7 @@
 //! Check used at mint start up
 //!
-//! These checks are need in the case the mint was offline and the lightning node was node.
-//! These ensure that the status of the mint or melt quote matches in the mint db and on the node.
+//! These checks are needed in the case the mint was offline and the payment backend was not.
+//! These ensure that the status of the mint or melt quote matches in the mint db and on the backend.
 
 use std::str::FromStr;
 
@@ -59,7 +59,7 @@ impl Mint {
             })
     }
 
-    /// Checks the payment status of a melt quote with the LN backend
+    /// Checks the payment status of a melt quote with the payment backend
     ///
     /// This is a helper function used by saga recovery to determine whether to
     /// finalize or compensate an incomplete melt operation.
@@ -72,20 +72,26 @@ impl Mint {
         &self,
         quote: &MeltQuote,
     ) -> Result<crate::cdk_payment::MakePaymentResponse, Error> {
-        let ln_key = PaymentProcessorKey {
+        let payment_processor_key = PaymentProcessorKey {
             unit: quote.unit.clone(),
             method: quote.payment_method.clone(),
         };
 
-        let ln_backend = self.payment_processors.get(&ln_key).ok_or_else(|| {
-            tracing::warn!("No backend for ln key: {:?}", ln_key);
-            Error::UnsupportedUnit
-        })?;
+        let payment_backend = self
+            .payment_processors
+            .get(&payment_processor_key)
+            .ok_or_else(|| {
+                tracing::warn!(
+                    "No backend for payment processor key: {:?}",
+                    payment_processor_key
+                );
+                Error::UnsupportedUnit
+            })?;
 
         let lookup_id = Self::melt_payment_lookup_id(quote);
 
-        // Check payment status with LN backend
-        let pay_invoice_response = ln_backend
+        // Check payment status with the payment backend
+        let pay_invoice_response = payment_backend
             .check_outgoing_payment(&lookup_id)
             .await
             .map_err(|err| {
@@ -220,14 +226,14 @@ impl Mint {
         match self.check_melt_payment_status(quote).await {
             Ok(payment_response) if payment_response.status == MeltQuoteState::Paid => {
                 tracing::info!(
-                    "Recovered legacy Finalizing saga {} from LN backend",
+                    "Recovered legacy Finalizing saga {} from the payment backend",
                     saga.operation_id
                 );
                 Ok(Some(payment_response))
             }
             Ok(payment_response) => {
                 tracing::error!(
-                    "Legacy Finalizing saga {} returned {} from LN backend after TX1 may have committed. Manual intervention required.",
+                    "Legacy Finalizing saga {} returned {} from the payment backend after TX1 may have committed. Manual intervention required.",
                     saga.operation_id,
                     payment_response.status
                 );
@@ -235,7 +241,7 @@ impl Mint {
             }
             Err(err) => {
                 tracing::error!(
-                    "Failed to recover legacy Finalizing saga {} from LN backend: {}",
+                    "Failed to recover legacy Finalizing saga {} from the payment backend: {}",
                     saga.operation_id,
                     err
                 );
@@ -395,7 +401,7 @@ impl Mint {
     /// Recover from incomplete melt sagas
     ///
     /// Checks all persisted sagas for melt operations and determines whether to:
-    /// - **Finalize**: If payment was confirmed as PAID on the LN backend, the
+    /// - **Finalize**: If payment was confirmed as PAID on the payment backend, the
     ///   saga already reached `Finalizing`, or the melt settled internally
     /// - **Compensate**: If the saga is `SetupComplete` (payment never
     ///   attempted), or the backend confirms `Unpaid`/`Failed`
@@ -411,13 +417,13 @@ impl Mint {
     /// # Critical Bug Fix
     ///
     /// Previously, this function always compensated (rolled back) incomplete sagas without
-    /// checking if the payment actually succeeded on the LN backend. This could cause the
+    /// checking if the payment actually succeeded on the payment backend. This could cause the
     /// mint to lose funds if:
-    /// 1. Payment succeeded on LN backend
+    /// 1. Payment succeeded on the payment backend
     /// 2. Mint crashed before finalize() committed
     /// 3. Recovery compensated (returned proofs) instead of finalizing
     ///
-    /// Now we check the LN backend payment status before deciding whether to compensate or finalize.
+    /// Now we check the payment backend payment status before deciding whether to compensate or finalize.
     pub async fn recover_from_incomplete_melt_sagas(&self) -> Result<(), Error> {
         let incomplete_sagas = self
             .localstore
@@ -578,7 +584,7 @@ impl Mint {
 
             // Check saga state to determine if payment was attempted
             // SetupComplete means setup transaction committed but payment NOT yet attempted
-            // PaymentAttempted means payment was attempted - must check LN backend
+            // PaymentAttempted means payment was attempted - must check the payment backend
             let should_compensate = match &saga.state {
                 cdk_common::mint::SagaStateEnum::Melt(state) => {
                     match state {
@@ -658,7 +664,7 @@ impl Mint {
                             continue;
                         }
                         cdk_common::mint::MeltSagaState::PaymentAttempted => {
-                            // Payment was attempted - check for internal settlement first, then LN backend
+                            // Payment was attempted - check for internal settlement first, then the payment backend
                             tracing::info!(
                                 "Saga {} in {} state - checking for internal or external payment",
                                 saga.operation_id,
@@ -720,7 +726,7 @@ impl Mint {
                                 continue; // Skip to next saga
                             }
 
-                            false // Will check LN payment status below
+                            false // Will check payment status below
                         }
                     }
                 }
@@ -732,7 +738,7 @@ impl Mint {
             let should_compensate = if should_compensate {
                 true
             } else {
-                // Payment was attempted - check LN backend status
+                // Payment was attempted - check payment backend status
                 tracing::info!(
                     "Saga {} for quote {} was attempted - checking payment status with backend",
                     saga.operation_id,
@@ -785,7 +791,7 @@ impl Mint {
                             MeltQuoteState::Pending | MeltQuoteState::Unknown => {
                                 // Payment still pending - skip for check_pending_melt_quotes
                                 tracing::info!(
-                                    "Saga {} for quote {} - payment {} on LN backend, skipping",
+                                    "Saga {} for quote {} - payment {} on the payment backend, skipping",
                                     saga.operation_id,
                                     quote_id,
                                     payment_response.status
@@ -795,7 +801,7 @@ impl Mint {
                         }
                     }
                     Err(err) => {
-                        // LN backend unavailable - skip this saga, will retry on next recovery cycle
+                        // payment backend unavailable - skip this saga, will retry on next recovery cycle
                         tracing::warn!(
                             "Failed to check payment status for saga {} quote {}: {}. Skipping for now, will retry on next recovery cycle.",
                             saga.operation_id,

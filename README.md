@@ -40,7 +40,7 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-lnd**](./crates/cdk-lnd/): Lnd Lightning backend for mint.
     * [**cdk-ldk-node**](./crates/cdk-ldk-node/): LDK Node Lightning backend for mint.
     * [**cdk-bdk**](./crates/cdk-bdk/): Onchain Bitcoin backend using BDK.
-    * [**cdk-fake-wallet**](./crates/cdk-fake-wallet/): Fake Lightning backend for mint. To be used only for testing, quotes are automatically filled.
+    * [**cdk-fake-wallet**](./crates/cdk-fake-wallet/): Fake payment backend for mint. To be used only for testing, quotes are automatically filled.
     * [**cdk-common**](./crates/cdk-common/): Common utilities and shared code.
     * [**cdk-sql-common**](./crates/cdk-sql-common/): Common SQL utilities for storage backends.
     * [**cdk-signatory**](./crates/cdk-signatory/): Signing utilities and cryptographic operations.

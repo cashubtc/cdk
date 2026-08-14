@@ -1579,7 +1579,7 @@ mod tests {
         )
         .expect_err("paid payment details without amount should fail");
 
-        assert!(matches!(err, payment::Error::Lightning(_)));
+        assert!(matches!(err, payment::Error::Backend(_)));
     }
 
     #[test]

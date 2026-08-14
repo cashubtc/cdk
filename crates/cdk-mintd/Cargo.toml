@@ -15,7 +15,7 @@ default = ["management-rpc", "cln", "lnd", "fakewallet", "grpc-processor", "sqli
 # Database features - at least one must be enabled
 sqlite = ["dep:cdk-sqlite"]
 postgres = ["dep:cdk-postgres"]
-# Ensure at least one lightning backend is enabled
+# Ensure at least one payment backend is enabled
 management-rpc = ["cdk-mint-rpc"]
 cln = ["dep:cdk-cln"]
 lnd = ["dep:cdk-lnd"]

@@ -454,8 +454,8 @@ fn create_ldk_settings(
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
         limits: cdk_mintd::config::Limits::default(),
-        ln: vec![cdk_mintd::config::Ln {
-            ln_backend: cdk_mintd::config::LnBackend::LdkNode,
+        payment_backend: vec![cdk_mintd::config::PaymentBackend {
+            backend: cdk_mintd::config::PaymentBackendType::LdkNode,
             unit: cdk::nuts::CurrencyUnit::Sat,
             invoice_description: None,
             min_mint: 1.into(),
@@ -561,8 +561,8 @@ fn create_onchain_settings(port: u16) -> cdk_mintd::config::Settings {
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
         limits: cdk_mintd::config::Limits::default(),
-        ln: vec![cdk_mintd::config::Ln {
-            ln_backend: cdk_mintd::config::LnBackend::None,
+        payment_backend: vec![cdk_mintd::config::PaymentBackend {
+            backend: cdk_mintd::config::PaymentBackendType::None,
             ..Default::default()
         }],
         onchain: None, // Will be set by apply_onchain_settings

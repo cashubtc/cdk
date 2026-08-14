@@ -26,9 +26,9 @@ impl Mint {
     ) -> Result<(), Error> {
         let state = quote.state();
 
-        // We can just return here and do not need to check with ln node.
-        // If quote is issued it is already in a final state,
-        // If it is paid ln node will only tell us what we already know
+        // We can just return here and do not need to check with the payment
+        // backend. If quote is issued it is already in a final state,
+        // If it is paid the payment backend will only tell us what we already know
         if quote.payment_method.is_bolt11()
             && (state == MintQuoteState::Issued || state == MintQuoteState::Paid)
         {
@@ -52,23 +52,23 @@ impl Mint {
         }
         quote.set_last_checked(now);
 
-        let ln = match payment_processors.get(&PaymentProcessorKey::new(
+        let payment_backend = match payment_processors.get(&PaymentProcessorKey::new(
             quote.unit.clone(),
             quote.payment_method.clone(),
         )) {
-            Some(ln) => ln,
+            Some(payment_backend) => payment_backend,
             None => {
-                tracing::info!("Could not get ln backend for {}, bolt11 ", quote.unit);
+                tracing::info!("Could not get payment backend for {}, bolt11 ", quote.unit);
 
                 return Err(Error::UnsupportedUnit);
             }
         };
 
-        let ln_status = ln
+        let payment_status = payment_backend
             .check_incoming_payment_status(&quote.request_lookup_id)
             .await?;
 
-        if ln_status.is_empty() {
+        if payment_status.is_empty() {
             return Ok(());
         }
 
@@ -91,7 +91,7 @@ impl Mint {
 
         let mut should_notify = false;
 
-        for payment in ln_status {
+        for payment in payment_status {
             if !new_quote.payment_ids().contains(&&payment.payment_id)
                 && payment.payment_amount.value() > 0
             {
@@ -136,7 +136,7 @@ impl Mint {
         Ok(())
     }
 
-    /// Check the status of an ln payment for a quote
+    /// Check the status of a payment for a quote with the payment backend
     #[instrument(skip_all)]
     pub async fn check_mint_quote_paid(&self, quote: &mut MintQuote) -> Result<(), Error> {
         Self::check_mint_quote_payments(

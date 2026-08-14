@@ -1,4 +1,4 @@
-//! CDK Fake LN Backend
+//! CDK fake payment backend
 //!
 //! Used for testing where quotes are auto filled.
 //!

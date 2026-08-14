@@ -214,11 +214,11 @@ impl fmt::Display for MyType { ... }
 - `cdk-redb` -- Redb embedded storage (wallet only)
 - `cdk-supabase` -- Supabase remote storage (wallet)
 
-**Lightning backends**
+**Payment backends**
 - `cdk-cln` -- Core Lightning (CLN)
 - `cdk-lnd` -- LND
 - `cdk-ldk-node` -- LDK Node (embedded Lightning, includes web management UI)
-- `cdk-fake-wallet` -- always-succeeding fake backend for testing
+- `cdk-fake-wallet` -- always-succeeding fake payment backend for testing
 
 **Services / RPC**
 - `cdk-signatory` -- blind signature creation (embedded or remote gRPC)

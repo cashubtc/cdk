@@ -1,7 +1,7 @@
 //! Test helper utilities for CDK unit tests
 //!
 //! This module provides shared test utilities for creating test mints, wallets,
-//! and test data without external dependencies (Lightning nodes, databases).
+//! and test data without external dependencies (payment backends, databases).
 //!
 //! These helpers are only compiled when running tests.
 

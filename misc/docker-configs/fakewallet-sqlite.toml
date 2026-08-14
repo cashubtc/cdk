@@ -16,8 +16,8 @@ description = "Fake wallet mint for local Docker testing"
 [database]
 engine = "sqlite"
 
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 unit = "sat"
 
 [onchain]

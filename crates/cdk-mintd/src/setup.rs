@@ -29,7 +29,7 @@ use crate::config::{self, Settings};
 use crate::expand_path;
 
 #[async_trait]
-pub trait LnBackendSetup {
+pub trait PaymentBackendSetup {
     async fn setup(
         &self,
         settings: &Settings,
@@ -54,7 +54,7 @@ pub trait OnchainBackendSetup {
 
 #[cfg(feature = "cln")]
 #[async_trait]
-impl LnBackendSetup for config::Cln {
+impl PaymentBackendSetup for config::Cln {
     async fn setup(
         &self,
         _settings: &Settings,
@@ -96,7 +96,7 @@ impl LnBackendSetup for config::Cln {
 
 #[cfg(feature = "lnd")]
 #[async_trait]
-impl LnBackendSetup for config::Lnd {
+impl PaymentBackendSetup for config::Lnd {
     async fn setup(
         &self,
         _settings: &Settings,
@@ -141,7 +141,7 @@ impl LnBackendSetup for config::Lnd {
 
 #[cfg(feature = "fakewallet")]
 #[async_trait]
-impl LnBackendSetup for config::FakeWallet {
+impl PaymentBackendSetup for config::FakeWallet {
     async fn setup(
         &self,
         _settings: &Settings,
@@ -260,7 +260,7 @@ mod tests {
 
 #[cfg(feature = "grpc-processor")]
 #[async_trait]
-impl LnBackendSetup for config::GrpcProcessor {
+impl PaymentBackendSetup for config::GrpcProcessor {
     async fn setup(
         &self,
         _settings: &Settings,
@@ -418,7 +418,7 @@ mod ldk_node_tests {
 
 #[cfg(feature = "ldk-node")]
 #[async_trait]
-impl LnBackendSetup for config::LdkNode {
+impl PaymentBackendSetup for config::LdkNode {
     async fn setup(
         &self,
         settings: &Settings,

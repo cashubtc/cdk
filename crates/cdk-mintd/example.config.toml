@@ -112,23 +112,24 @@ max_connections = 20
 # Connection timeout in seconds (optional, defaults to 10)
 connection_timeout_seconds = 10
 
-# Lightning backends. Use [ln] for a single backend, or repeat [[ln]] for one
-# backend per unit. Duplicate (unit, method) pairs are rejected at startup.
-#   [[ln]]
-#   ln_backend = "cln"
+# Payment backends. Use [payment_backend] for a single backend, or repeat
+# [[payment_backend]] for one backend per unit. Duplicate (unit, method) pairs
+# are rejected at startup.
+#   [[payment_backend]]
+#   backend = "cln"
 #   unit = "sat"
-# Fake wallet multi-unit testing uses one fakewallet [[ln]] entry per unit:
-#   [[ln]]
-#   ln_backend = "fakewallet"
+# Fake wallet multi-unit testing uses one fakewallet [[payment_backend]] entry per unit:
+#   [[payment_backend]]
+#   backend = "fakewallet"
 #   unit = "sat"
-#   [[ln]]
-#   ln_backend = "fakewallet"
+#   [[payment_backend]]
+#   backend = "fakewallet"
 #   unit = "usd"
 
-[ln]
-# Required ln backend `cln`, `lnd`, `fakewallet`, `grpcprocessor`, `ldk-node` (`ldknode` legacy alias), or `none` (if onchain is enabled)
+[payment_backend]
+# Required payment backend `cln`, `lnd`, `fakewallet`, `grpcprocessor`, `ldk-node` (`ldknode` legacy alias), or `none` (if onchain is enabled)
 # NOTE: fakewallet is isolated testing mode and cannot be mixed with real payment backends.
-ln_backend = "fakewallet"
+backend = "fakewallet"
 # unit = "sat"          # Optional, defaults to "sat"
 # min_mint=1
 # max_mint=500000
@@ -137,9 +138,9 @@ ln_backend = "fakewallet"
 
 [onchain]
 # Required onchain backend `bdk`, `fakewallet`, or `none`.
-# If `ln_backend` is set to `none`, `onchain_backend` MUST be set to a valid backend (e.g., `bdk`).
-# Use `fakewallet` with `ln_backend = "fakewallet"` for fully fake rails, or with
-# `ln_backend = "none"` for fake onchain-only testing.
+# If `backend` is set to `none`, `onchain_backend` MUST be set to a valid backend (e.g., `bdk`).
+# Use `fakewallet` with `backend = "fakewallet"` for fully fake rails, or with
+# `backend = "none"` for fake onchain-only testing.
 onchain_backend = "fakewallet"
 # min_mint=1000
 # max_mint=1000000

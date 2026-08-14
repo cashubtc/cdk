@@ -241,7 +241,7 @@ pub enum Error {
     /// regardless since the quote remains `Pending`.
     #[error("Timed out waiting for pending melt to complete{}", .last_backend_error.as_ref().map(|e| format!(": last backend error: {}", e)).unwrap_or_default())]
     PendingMeltTimeout {
-        /// Last error observed from the LN backend status check, if any.
+        /// Last error observed from the payment backend status check, if any.
         last_backend_error: Option<String>,
     },
     /// ecash already issued for quote

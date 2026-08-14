@@ -1,7 +1,7 @@
 //! Unit tests for the swap saga implementation
 //!
 //! These tests verify the swap saga pattern using in-memory mints and databases,
-//! without requiring external dependencies like Lightning nodes.
+//! without requiring external dependencies like payment backends.
 
 use std::sync::Arc;
 

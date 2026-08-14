@@ -217,7 +217,8 @@ impl Mint {
             // Extract pubkey using the getter
             let pubkey = mint_quote_request.pubkey();
 
-            let ln = self.get_payment_processor(unit.clone(), payment_method.clone())?;
+            let payment_backend =
+                self.get_payment_processor(unit.clone(), payment_method.clone())?;
 
             let quote_id = QuoteId::new();
 
@@ -237,7 +238,7 @@ impl Mint {
 
                     let quote_expiry = unix_time() + mint_ttl;
 
-                    let settings = ln.get_settings().await?;
+                    let settings = payment_backend.get_settings().await?;
 
                     let description = bolt11_request.description;
 
@@ -328,7 +329,7 @@ impl Mint {
                 }
             };
 
-            let create_invoice_response = ln
+            let create_invoice_response = payment_backend
                 .create_incoming_payment_request(payment_options)
                 .await
                 .map_err(|err| {
@@ -1031,7 +1032,7 @@ mod batch_mint_tests {
     use futures::Stream;
     use tokio::time::sleep;
 
-    use crate::mint::ln::MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS;
+    use crate::mint::payment_backend::MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS;
     use crate::mint::{Mint, MintBuilder, MintMeltLimits};
     use crate::types::{FeeReserve, QuoteTTL};
 
@@ -1133,7 +1134,7 @@ mod batch_mint_tests {
             percent_fee_reserve: 1.0,
         };
 
-        let ln_fake_backend = FakeWallet::new(
+        let fake_payment_backend = FakeWallet::new(
             fee_reserve.clone(),
             HashMap::default(),
             HashSet::default(),
@@ -1146,7 +1147,7 @@ mod batch_mint_tests {
                 CurrencyUnit::Sat,
                 PaymentMethod::Known(KnownMethod::Bolt11),
                 MintMeltLimits::new(1, 10_000),
-                Arc::new(ln_fake_backend),
+                Arc::new(fake_payment_backend),
             )
             .await
             .unwrap();

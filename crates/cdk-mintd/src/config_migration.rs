@@ -1276,8 +1276,8 @@ mod tests {
 [info]
 mnemonic = "{mnemonic}"
 
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 
 [fake_wallet]
 
@@ -1297,8 +1297,8 @@ engine = "sqlite"
 signatory_url = "{url}"
 {certs}
 
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 
 [fake_wallet]
 

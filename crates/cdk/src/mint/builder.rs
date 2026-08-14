@@ -584,7 +584,7 @@ impl MintBuilder {
     }
     /// Sets the input fee ppk for a given unit
     ///
-    /// The unit **MUST** already have been added with a ln backend
+    /// The unit **MUST** already have been added with a payment backend
     pub fn set_unit_fee(&mut self, unit: &CurrencyUnit, input_fee_ppk: u64) -> Result<(), Error> {
         let (input_fee, _) = self
             .supported_units

@@ -12,10 +12,10 @@ use crate::mint::subscription::PubSubManager;
 use crate::mint::Mint;
 use crate::Error;
 
-/// Process the outcome of a melt saga based on LN payment status.
+/// Process the outcome of a melt saga based on payment status.
 ///
 /// This function handles the shared logic for deciding whether to finalize, compensate, or skip
-/// a melt operation based on the payment response from the LN backend.
+/// a melt operation based on the payment response from the payment backend.
 ///
 /// For the `Paid` case, this delegates to [`super::melt::shared::finalize_melt_quote`] which
 /// is the single finalization path — it handles operation recording, saga deletion, and all
@@ -36,7 +36,7 @@ use crate::Error;
 /// # Arguments
 /// * `saga` - The melt saga being processed
 /// * `quote` - The melt quote associated with the saga
-/// * `payment_response` - The payment status from the LN backend
+/// * `payment_response` - The payment status from the payment backend
 /// * `db` - Database handle
 /// * `pubsub` - PubSub manager for notifications
 /// * `mint` - Mint instance for signing operations

@@ -434,9 +434,9 @@ pub(crate) fn prune_inactive_configuration(settings: &mut Settings) {
 
     #[cfg(feature = "ldk-node")]
     if !settings
-        .ln
+        .payment_backend
         .iter()
-        .any(|ln| ln.ln_backend == crate::config::LnBackend::LdkNode)
+        .any(|backend| backend.backend == crate::config::PaymentBackendType::LdkNode)
     {
         settings.ldk_node = None;
     }
@@ -667,8 +667,8 @@ mnemonic = "{secret_reference}"
 [mint_info]
 name = "{name}"
 
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 
 [fake_wallet]
 
@@ -689,8 +689,8 @@ engine = "sqlite"
 enabled = true
 allow_insecure = true
 
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 
 [fake_wallet]
 
@@ -739,8 +739,8 @@ mnemonic = "file:{}"
 enabled = true
 allow_insecure = true
 
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 
 [fake_wallet]
 
@@ -770,8 +770,8 @@ engine = "sqlite"
 enabled = true
 allow_insecure = true
 
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 
 [fake_wallet]
 
@@ -1016,8 +1016,8 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
 listen_port = 8091
 mnemonic = "file:{}"
 
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 
 [fake_wallet]
 
@@ -1043,8 +1043,8 @@ engine = "sqlite"
 [info]
 mnemonic = "file:{}"
 
-[ln]
-ln_backend = "none"
+[payment_backend]
+backend = "none"
 
 [database]
 engine = "sqlite"
@@ -1075,8 +1075,8 @@ engine = "sqlite"
 [info]
 mnemonic = "file:{}"
 
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 
 [database]
 engine = "sqlite"
@@ -1115,8 +1115,8 @@ engine = "sqlite"
 [info]
 mnemonic = "file:{}"
 
-[ln]
-ln_backend = "none"
+[payment_backend]
+backend = "none"
 
 [onchain]
 onchain_backend = "bdk"
@@ -1204,8 +1204,8 @@ url = "file:{}"
 [info]
 mnemonic = "file:{}"
 
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 
 [fake_wallet]
 
@@ -1243,8 +1243,8 @@ seed = "env:{SEED_ENV}"
 [mint_info]
 name = "pruned"
 
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 
 [fake_wallet]
 
@@ -1344,8 +1344,8 @@ mnemonic = "file:{}"
 name = "mismatch"
 pubkey = "{}"
 
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 
 [fake_wallet]
 
@@ -1369,8 +1369,8 @@ mnemonic = "file:{}"
 name = "match"
 pubkey = "{}"
 
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 
 [fake_wallet]
 

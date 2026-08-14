@@ -186,8 +186,8 @@ engine = "$MINTD_DATABASE_ENGINE"
 [database.postgres]
 url = "env:CDK_MINTD_DATABASE_URL"
 
-[[ln]]
-ln_backend = "cln"
+[[payment_backend]]
+backend = "cln"
 unit = "sat"
 
 [cln]
@@ -225,8 +225,8 @@ engine = "$MINTD_DATABASE_ENGINE"
 [database.postgres]
 url = "env:CDK_MINTD_DATABASE_URL"
 
-[[ln]]
-ln_backend = "lnd"
+[[payment_backend]]
+backend = "lnd"
 unit = "sat"
 
 [lnd]
@@ -266,8 +266,8 @@ engine = "$MINTD_DATABASE_ENGINE"
 [database.postgres]
 url = "env:CDK_MINTD_DATABASE_URL"
 
-[[ln]]
-ln_backend = "ldk-node"
+[[payment_backend]]
+backend = "ldk-node"
 unit = "sat"
 
 [ldk_node]

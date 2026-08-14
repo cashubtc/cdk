@@ -33,8 +33,8 @@ mod builder;
 mod check_spendable;
 mod issue;
 mod keysets;
-mod ln;
 mod melt;
+mod payment_backend;
 mod proofs;
 mod saga_recovery;
 mod start_up_check;
@@ -435,7 +435,7 @@ impl Mint {
 
         // Recover from incomplete melt sagas
         // This cleans up incomplete melt operations using persisted saga state
-        // Now includes checking payment status with LN backend to determine
+        // Now includes checking payment status with the payment backend to determine
         // whether to finalize (if paid) or compensate (if failed/unpaid)
         if let Err(e) = self.recover_from_incomplete_melt_sagas().await {
             tracing::error!("Failed to recover incomplete melt sagas: {}", e);

@@ -248,7 +248,7 @@ mod tests {
             min_fee_reserve: 1.into(),
             percent_fee_reserve: 1.0,
         };
-        let ln_fake_backend = FakeWallet::new(
+        let fake_payment_backend = FakeWallet::new(
             fee_reserve,
             HashMap::default(),
             HashSet::default(),
@@ -261,7 +261,7 @@ mod tests {
                 CurrencyUnit::Sat,
                 PaymentMethod::Known(KnownMethod::Bolt11),
                 MintMeltLimits::new(1, 10_000),
-                Arc::new(ln_fake_backend),
+                Arc::new(fake_payment_backend),
             )
             .await
             .expect("payment processor");

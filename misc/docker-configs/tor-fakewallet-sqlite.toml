@@ -15,8 +15,8 @@ description = "Fake wallet mint exposed through a Tor hidden service"
 [database]
 engine = "sqlite"
 
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 unit = "sat"
 
 [onchain]

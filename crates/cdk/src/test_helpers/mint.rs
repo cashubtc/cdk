@@ -57,10 +57,10 @@ pub(crate) fn should_fail_for(operation: &str) -> bool {
     TEST_FAILURES.with(|failures| failures.borrow().contains(&operation.to_string()))
 }
 
-/// Creates and starts a test mint with in-memory storage and a fake Lightning backend.
+/// Creates and starts a test mint with in-memory storage and a fake payment backend.
 ///
 /// This mint can be used for unit tests without requiring external dependencies
-/// like Lightning nodes or persistent databases.
+/// like a payment backend or persistent databases.
 ///
 /// # Example
 ///
@@ -83,7 +83,7 @@ pub async fn create_test_mint() -> Result<Mint, Error> {
         percent_fee_reserve: 1.0,
     };
 
-    let ln_fake_backend = FakeWallet::new(
+    let fake_payment_backend = FakeWallet::new(
         fee_reserve.clone(),
         HashMap::default(),
         HashSet::default(),
@@ -96,7 +96,7 @@ pub async fn create_test_mint() -> Result<Mint, Error> {
             CurrencyUnit::Sat,
             PaymentMethod::Known(KnownMethod::Bolt11),
             MintMeltLimits::new(1, 10_000),
-            Arc::new(ln_fake_backend),
+            Arc::new(fake_payment_backend),
         )
         .await?;
 

@@ -1,4 +1,4 @@
-//! CDK Mint Lightning
+//! CDK mint payment backend interface
 
 use std::convert::Infallible;
 use std::pin::Pin;
@@ -44,9 +44,9 @@ pub enum Error {
     /// Invalid expiry
     #[error("Invalid expiry")]
     InvalidExpiry,
-    /// Lightning Error
+    /// Payment backend error
     #[error(transparent)]
-    Lightning(Box<dyn std::error::Error + Send + Sync>),
+    Backend(Box<dyn std::error::Error + Send + Sync>),
     /// Onchain Error
     #[error(transparent)]
     Onchain(Box<dyn std::error::Error + Send + Sync>),
@@ -436,7 +436,7 @@ impl OutgoingPaymentOptions {
 /// Mint payment trait
 #[async_trait]
 pub trait MintPayment {
-    /// Mint Lightning Error
+    /// Payment backend error
     type Err: Into<Error> + From<Error>;
 
     /// Start the payment processor
@@ -546,7 +546,7 @@ impl WaitPaymentResponse {
 /// Create incoming payment response
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateIncomingPaymentResponse {
-    /// Id that is used to look up the payment from the ln backend
+    /// Id that is used to look up the payment from the payment backend
     pub request_lookup_id: PaymentIdentifier,
     /// Payment request
     pub request: String,
