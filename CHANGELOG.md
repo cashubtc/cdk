@@ -7,6 +7,22 @@
 
 ## [Unreleased]
 
+## [0.17.4](https://github.com/cashubtc/cdk/releases/tag/v0.17.4)
+
+### Added
+
+- cdk-cln: Use CLN `xpay` for outgoing Bolt11 and Bolt12 payments ([thesimplekid]).
+
+### Changed
+
+- cdk, cdk-ffi: Restore wallet repository units from persisted mint metadata without contacting configured mints during startup ([asmo]).
+
+### Fixed
+
+- cdk: Allow LNURL-pay invoice description hash mismatches while retaining strict invoice amount validation ([thesimplekid]).
+- cdk: Refresh mint quote snapshots after signing-key resolution to prevent optimistic-lock conflicts during single and batch minting ([thesimplekid]).
+- cdk: Migrate legacy npubcash signing keys only for provenance-confirmed quotes while preserving external keys and existing quote metadata ([thesimplekid]).
+
 ## [0.17.3](https://github.com/cashubtc/cdk/releases/tag/v0.17.3)
 
 ### Added
