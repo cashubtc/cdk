@@ -45,6 +45,16 @@ hosts or starting a federation ceremony.
 
 ## Repository routing
 
+- For the existing five-member LNvps Dublin federation, load the private
+  operator inventory from
+  `${XDG_CONFIG_HOME:-$HOME/.config}/cdk-federations/lnvps-dublin/`. Read
+  `README.txt` first, use `operator-host-map` for member-to-alias mapping,
+  `federation-public.json` for public federation metadata, and `known_hosts`
+  for pinned SSH host keys. Connect through the stable aliases
+  `cdk-dublin-1` through `cdk-dublin-5`, defined in
+  `~/.ssh/config.d/lnvps-dublin`. Update only the private inventory and SSH
+  fragment when addresses change; never copy server addresses into tracked
+  files.
 - Study `scripts/deploy_nocean_federation.sh` and
   `scripts/nocean_federation_control.sh` for the proven single-host lifecycle.
   Do not use them as evidence of multi-machine independence.
