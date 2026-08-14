@@ -7,6 +7,11 @@ pub mod keyset {
     tonic::include_proto!("cdk_mint_keyset_v1");
 }
 
+/// Payment method administration service
+pub mod payment_method {
+    tonic::include_proto!("cdk_mint_payment_method_v1");
+}
+
 /// Quote administration service
 pub mod quote {
     tonic::include_proto!("cdk_mint_quote_v1");

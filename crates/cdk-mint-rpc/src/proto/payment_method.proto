@@ -1,0 +1,125 @@
+syntax = "proto3";
+
+package cdk_mint_payment_method_v1;
+
+// Payment method administration for a mint.
+service PaymentMethodService {
+    // Updates the settings of one mint (NUT-04) payment method.
+    rpc UpdateMintMethod(UpdateMintMethodRequest) returns (UpdateMintMethodResponse) {}
+    // Updates the settings of one melt (NUT-05) payment method.
+    rpc UpdateMeltMethod(UpdateMeltMethodRequest) returns (UpdateMeltMethodResponse) {}
+    // Enables or disables minting and melting for the whole mint.
+    rpc UpdateDisabled(UpdateDisabledRequest) returns (UpdateDisabledResponse) {}
+}
+
+// Options of a bolt11 mint (NUT-04) payment method. Setting options on any
+// other method fails with gRPC status INVALID_ARGUMENT.
+message Bolt11MintMethodOptions {
+    // Whether bolt11 mint quotes may carry an invoice description.
+    bool description = 1;
+}
+
+// A method the mint serves but has no stored settings for is created by this
+// call, in which case omitted fields are left unset rather than carried over.
+message UpdateMintMethodRequest {
+    // Currency unit of the method to update, e.g. "sat". Known units match
+    // case-insensitively, custom units are trimmed and lowercased, and the
+    // response echoes the normalized form. A pair the mint has no payment
+    // processor for fails with gRPC status INVALID_ARGUMENT.
+    string unit = 1;
+    // Payment method to update, e.g. "bolt11". Matched case-insensitively.
+    string method = 2;
+    // New minimum amount the method accepts. Omit to keep the current value.
+    optional uint64 min_amount = 3;
+    // New maximum amount the method accepts. Omit to keep the current value.
+    optional uint64 max_amount = 4;
+    // New method options. Omit to keep the current value.
+    optional Bolt11MintMethodOptions options = 5;
+    // New human-readable payment method name. Omit to keep the current value.
+    optional string method_name = 6;
+}
+
+// The method settings in effect after the update, with omitted request fields
+// carrying over their previous values. On failure a gRPC error status is
+// returned instead.
+message UpdateMintMethodResponse {
+    // Currency unit of the updated method.
+    string unit = 1;
+    // Payment method that was updated.
+    string method = 2;
+    // Minimum amount the method accepts, if set.
+    optional uint64 min_amount = 3;
+    // Maximum amount the method accepts, if set.
+    optional uint64 max_amount = 4;
+    // Method options. Set only when the method carries bolt11 options.
+    optional Bolt11MintMethodOptions options = 5;
+    // Human-readable payment method name. When unset, wallets derive one from
+    // method by replacing '_' and '-' with spaces and title-casing words.
+    optional string method_name = 6;
+}
+
+message UpdateDisabledRequest {
+    // True disables minting for every unit and method; false enables it.
+    // Omit to keep the current value.
+    optional bool mint_disabled = 1;
+    // True disables melting for every unit and method; false enables it.
+    // Omit to keep the current value.
+    optional bool melt_disabled = 2;
+}
+
+// The settings in effect after the update, with omitted request fields
+// carrying over their previous values. On failure a gRPC error status is
+// returned instead.
+message UpdateDisabledResponse {
+    // Whether minting is disabled for the whole mint.
+    bool mint_disabled = 1;
+    // Whether melting is disabled for the whole mint.
+    bool melt_disabled = 2;
+}
+
+// Options of a bolt11 melt (NUT-05) payment method. Setting options on any
+// other method fails with gRPC status INVALID_ARGUMENT.
+message Bolt11MeltMethodOptions {
+    // Whether bolt11 melt quotes may pay amountless invoices.
+    bool amountless = 1;
+}
+
+// A method the mint serves but has no stored settings for is created by this
+// call, in which case omitted fields are left unset rather than carried over.
+message UpdateMeltMethodRequest {
+    // Currency unit of the method to update, e.g. "sat". Known units match
+    // case-insensitively, custom units are trimmed and lowercased, and the
+    // response echoes the normalized form. A pair the mint has no payment
+    // processor for fails with gRPC status INVALID_ARGUMENT.
+    string unit = 1;
+    // Payment method to update, e.g. "bolt11". Matched case-insensitively.
+    string method = 2;
+    // New minimum amount the method accepts. Omit to keep the current value.
+    optional uint64 min_amount = 3;
+    // New maximum amount the method accepts. Omit to keep the current value.
+    optional uint64 max_amount = 4;
+    // New method options. Omit to keep the current value.
+    optional Bolt11MeltMethodOptions options = 5;
+    // New human-readable payment method name. Omit to keep the current value.
+    optional string method_name = 6;
+}
+
+// The method settings in effect after the update, with omitted request fields
+// carrying over their previous values. On failure a gRPC error status is
+// returned instead.
+message UpdateMeltMethodResponse {
+    // Currency unit of the updated method.
+    string unit = 1;
+    // Payment method that was updated.
+    string method = 2;
+    // Minimum amount the method accepts, if set.
+    optional uint64 min_amount = 3;
+    // Maximum amount the method accepts, if set.
+    optional uint64 max_amount = 4;
+    // Method options. Set only when the method carries bolt11 options.
+    optional Bolt11MeltMethodOptions options = 5;
+    // Human-readable payment method name. When unset, wallets derive one from
+    // method by replacing '_' and '-' with spaces and title-casing words.
+    optional string method_name = 6;
+}
+

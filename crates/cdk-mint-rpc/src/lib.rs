@@ -31,6 +31,15 @@ pub type InterceptedKeysetServiceClient = keyset::keyset_service_client::KeysetS
     >,
 >;
 
+/// Type alias for PaymentMethodServiceClient with the version header interceptor over a Channel
+pub type InterceptedPaymentMethodServiceClient =
+    payment_method::payment_method_service_client::PaymentMethodServiceClient<
+        tonic::codegen::InterceptedService<
+            tonic::transport::Channel,
+            cdk_common::grpc::VersionInterceptor,
+        >,
+    >;
+
 /// Type alias for QuoteServiceClient with the version header interceptor over a Channel
 pub type InterceptedQuoteServiceClient = quote::quote_service_client::QuoteServiceClient<
     tonic::codegen::InterceptedService<

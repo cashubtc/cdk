@@ -20,6 +20,9 @@ use tonic::{Request, Response, Status};
 
 use crate::cdk_mint_server::{CdkMint, CdkMintServer};
 use crate::keyset::keyset_service_server::{KeysetService, KeysetServiceServer};
+use crate::payment_method::payment_method_service_server::{
+    PaymentMethodService, PaymentMethodServiceServer,
+};
 use crate::quote::quote_service_server::{QuoteService, QuoteServiceServer};
 use crate::wallet::wallet_service_server::{WalletService, WalletServiceServer};
 use crate::{
@@ -208,6 +211,13 @@ impl MintRPCServer {
                             cdk_common::MINT_RPC_PROTOCOL_VERSION,
                         ),
                     ))
+                    .add_service(PaymentMethodServiceServer::with_interceptor(
+                        self.clone(),
+                        create_version_check_interceptor(
+                            cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                        ),
+                    ))
                     .add_service(QuoteServiceServer::with_interceptor(
                         self.clone(),
                         create_version_check_interceptor(
@@ -234,6 +244,13 @@ impl MintRPCServer {
                         ),
                     ))
                     .add_service(KeysetServiceServer::with_interceptor(
+                        self.clone(),
+                        create_version_check_interceptor(
+                            cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                        ),
+                    ))
+                    .add_service(PaymentMethodServiceServer::with_interceptor(
                         self.clone(),
                         create_version_check_interceptor(
                             cdk_common::grpc::VERSION_HEADER,
@@ -419,6 +436,195 @@ impl MintRPCServer {
         self.wallet_info_provider.as_ref().ok_or_else(|| {
             Status::failed_precondition("No on-chain wallet information provider is configured")
         })
+    }
+
+    /// Updates the settings of one mint (NUT-04) payment method, keeping the
+    /// current value of any setting that is not given
+    ///
+    /// Returns the method settings in effect after the update. Shared by the
+    /// legacy [`CdkMint`] service and [`PaymentMethodService`] while both are
+    /// served; `disabled` toggles minting for the whole mint and is only
+    /// passed by the legacy service.
+    #[allow(clippy::too_many_arguments)]
+    async fn set_mint_method(
+        &self,
+        unit: &str,
+        method: &str,
+        min_amount: Option<u64>,
+        max_amount: Option<u64>,
+        options: Option<cdk::nuts::nut04::MintMethodOptions>,
+        method_name: Option<String>,
+        disabled: Option<bool>,
+    ) -> Result<MintMethodSettings, Status> {
+        self.ensure_mutation_allowed().await?;
+        let mut info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        let unit = CurrencyUnit::from_str(unit)
+            .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
+
+        let payment_method = PaymentMethod::from_str(method)
+            .map_err(|_| Status::invalid_argument("Invalid method".to_string()))?;
+
+        self.mint
+            .get_payment_processor(unit.clone(), payment_method.clone())
+            .map_err(|_| Status::invalid_argument("Unit payment method pair is not supported"))?;
+
+        let current_nut04_settings = info.nuts.nut04.remove_settings(&unit, &payment_method);
+
+        let updated_method_settings = MintMethodSettings {
+            method: payment_method,
+            unit,
+            method_name: method_name.or_else(|| {
+                current_nut04_settings
+                    .as_ref()
+                    .and_then(|s| s.method_name.clone())
+            }),
+            min_amount: min_amount
+                .map(Amount::from)
+                .or_else(|| current_nut04_settings.as_ref().and_then(|s| s.min_amount)),
+            max_amount: max_amount
+                .map(Amount::from)
+                .or_else(|| current_nut04_settings.as_ref().and_then(|s| s.max_amount)),
+            options: options.or_else(|| {
+                current_nut04_settings
+                    .as_ref()
+                    .and_then(|s| s.options.clone())
+            }),
+        };
+
+        info.nuts
+            .nut04
+            .methods
+            .push(updated_method_settings.clone());
+
+        if let Some(disabled) = disabled {
+            info.nuts.nut04.disabled = disabled;
+        }
+
+        self.mint
+            .set_mint_info(info)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(updated_method_settings)
+    }
+
+    /// Enables or disables minting and melting for the whole mint, keeping
+    /// the current value of any flag that is not given
+    ///
+    /// Returns the (minting disabled, melting disabled) flags in effect after
+    /// the update, applied in a single write.
+    async fn set_disabled(
+        &self,
+        mint_disabled: Option<bool>,
+        melt_disabled: Option<bool>,
+    ) -> Result<(bool, bool), Status> {
+        self.ensure_mutation_allowed().await?;
+        let mut info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        if mint_disabled.is_none() && melt_disabled.is_none() {
+            return Ok((info.nuts.nut04.disabled, info.nuts.nut05.disabled));
+        }
+
+        if let Some(disabled) = mint_disabled {
+            info.nuts.nut04.disabled = disabled;
+        }
+
+        if let Some(disabled) = melt_disabled {
+            info.nuts.nut05.disabled = disabled;
+        }
+
+        let flags = (info.nuts.nut04.disabled, info.nuts.nut05.disabled);
+
+        self.mint
+            .set_mint_info(info)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(flags)
+    }
+
+    /// Updates the settings of one melt (NUT-05) payment method, keeping the
+    /// current value of any setting that is not given
+    ///
+    /// Returns the method settings in effect after the update. Shared by the
+    /// legacy [`CdkMint`] service and [`PaymentMethodService`] while both are
+    /// served; `disabled` toggles melting for the whole mint and is only
+    /// passed by the legacy service.
+    #[allow(clippy::too_many_arguments)]
+    async fn set_melt_method(
+        &self,
+        unit: &str,
+        method: &str,
+        min_amount: Option<u64>,
+        max_amount: Option<u64>,
+        options: Option<cdk::nuts::nut05::MeltMethodOptions>,
+        method_name: Option<String>,
+        disabled: Option<bool>,
+    ) -> Result<MeltMethodSettings, Status> {
+        self.ensure_mutation_allowed().await?;
+        let mut info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        let unit = CurrencyUnit::from_str(unit)
+            .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
+
+        let payment_method = PaymentMethod::from_str(method)
+            .map_err(|_| Status::invalid_argument("Invalid method".to_string()))?;
+
+        self.mint
+            .get_payment_processor(unit.clone(), payment_method.clone())
+            .map_err(|_| Status::invalid_argument("Unit payment method pair is not supported"))?;
+
+        let current_nut05_settings = info.nuts.nut05.remove_settings(&unit, &payment_method);
+
+        let updated_method_settings = MeltMethodSettings {
+            method: payment_method,
+            unit,
+            method_name: method_name.or_else(|| {
+                current_nut05_settings
+                    .as_ref()
+                    .and_then(|s| s.method_name.clone())
+            }),
+            min_amount: min_amount
+                .map(Amount::from)
+                .or_else(|| current_nut05_settings.as_ref().and_then(|s| s.min_amount)),
+            max_amount: max_amount
+                .map(Amount::from)
+                .or_else(|| current_nut05_settings.as_ref().and_then(|s| s.max_amount)),
+            options: options.or_else(|| {
+                current_nut05_settings
+                    .as_ref()
+                    .and_then(|s| s.options.clone())
+            }),
+        };
+
+        info.nuts
+            .nut05
+            .methods
+            .push(updated_method_settings.clone());
+
+        if let Some(disabled) = disabled {
+            info.nuts.nut05.disabled = disabled;
+        }
+
+        self.mint
+            .set_mint_info(info)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(updated_method_settings)
     }
 }
 
@@ -730,75 +936,24 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNut04Request>,
     ) -> Result<Response<UpdateResponse>, Status> {
-        self.ensure_mutation_allowed().await?;
-        let mut info = self
-            .mint
-            .mint_info()
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
+        let request = request.into_inner();
 
-        let mut nut04_settings = info.nuts.nut04.clone();
-
-        let request_inner = request.into_inner();
-
-        let unit = CurrencyUnit::from_str(&request_inner.unit)
-            .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
-
-        let payment_method = PaymentMethod::from_str(&request_inner.method)
-            .map_err(|_| Status::invalid_argument("Invalid method".to_string()))?;
-
-        self.mint
-            .get_payment_processor(unit.clone(), payment_method.clone())
-            .map_err(|_| Status::invalid_argument("Unit payment method pair is not supported"))?;
-
-        let current_nut04_settings = nut04_settings.remove_settings(&unit, &payment_method);
-
-        let mut methods = nut04_settings.methods.clone();
-
-        // Create options from the request
-        let options = if let Some(options) = request_inner.options {
-            Some(cdk::nuts::nut04::MintMethodOptions::Bolt11 {
+        let options = request
+            .options
+            .map(|options| cdk::nuts::nut04::MintMethodOptions::Bolt11 {
                 description: options.description,
-            })
-        } else if let Some(current_settings) = current_nut04_settings.as_ref() {
-            current_settings.options.clone()
-        } else {
-            None
-        };
+            });
 
-        let updated_method_settings = MintMethodSettings {
-            method: payment_method,
-            unit,
-            method_name: request_inner.method_name.or_else(|| {
-                current_nut04_settings
-                    .as_ref()
-                    .and_then(|s| s.method_name.clone())
-            }),
-            min_amount: request_inner
-                .min_amount
-                .map(Amount::from)
-                .or_else(|| current_nut04_settings.as_ref().and_then(|s| s.min_amount)),
-            max_amount: request_inner
-                .max_amount
-                .map(Amount::from)
-                .or_else(|| current_nut04_settings.as_ref().and_then(|s| s.max_amount)),
+        self.set_mint_method(
+            &request.unit,
+            &request.method,
+            request.min_amount,
+            request.max_amount,
             options,
-        };
-
-        methods.push(updated_method_settings);
-
-        nut04_settings.methods = methods;
-
-        if let Some(disabled) = request_inner.disabled {
-            nut04_settings.disabled = disabled;
-        }
-
-        info.nuts.nut04 = nut04_settings;
-
-        self.mint
-            .set_mint_info(info)
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
+            request.method_name,
+            request.disabled,
+        )
+        .await?;
 
         Ok(Response::new(UpdateResponse {}))
     }
@@ -808,73 +963,24 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNut05Request>,
     ) -> Result<Response<UpdateResponse>, Status> {
-        self.ensure_mutation_allowed().await?;
-        let mut info = self
-            .mint
-            .mint_info()
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
-        let mut nut05_settings = info.nuts.nut05.clone();
+        let request = request.into_inner();
 
-        let request_inner = request.into_inner();
-
-        let unit = CurrencyUnit::from_str(&request_inner.unit)
-            .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
-
-        let payment_method = PaymentMethod::from_str(&request_inner.method)
-            .map_err(|_| Status::invalid_argument("Invalid method".to_string()))?;
-
-        self.mint
-            .get_payment_processor(unit.clone(), payment_method.clone())
-            .map_err(|_| Status::invalid_argument("Unit payment method pair is not supported"))?;
-
-        let current_nut05_settings = nut05_settings.remove_settings(&unit, &payment_method);
-
-        let mut methods = nut05_settings.methods;
-
-        // Create options from the request
-        let options = if let Some(options) = request_inner.options {
-            Some(cdk::nuts::nut05::MeltMethodOptions::Bolt11 {
+        let options = request
+            .options
+            .map(|options| cdk::nuts::nut05::MeltMethodOptions::Bolt11 {
                 amountless: options.amountless,
-            })
-        } else if let Some(current_settings) = current_nut05_settings.as_ref() {
-            current_settings.options.clone()
-        } else {
-            None
-        };
+            });
 
-        let updated_method_settings = MeltMethodSettings {
-            method: payment_method,
-            unit,
-            method_name: request_inner.method_name.or_else(|| {
-                current_nut05_settings
-                    .as_ref()
-                    .and_then(|s| s.method_name.clone())
-            }),
-            min_amount: request_inner
-                .min_amount
-                .map(Amount::from)
-                .or_else(|| current_nut05_settings.as_ref().and_then(|s| s.min_amount)),
-            max_amount: request_inner
-                .max_amount
-                .map(Amount::from)
-                .or_else(|| current_nut05_settings.as_ref().and_then(|s| s.max_amount)),
+        self.set_melt_method(
+            &request.unit,
+            &request.method,
+            request.min_amount,
+            request.max_amount,
             options,
-        };
-
-        methods.push(updated_method_settings);
-        nut05_settings.methods = methods;
-
-        if let Some(disabled) = request_inner.disabled {
-            nut05_settings.disabled = disabled;
-        }
-
-        info.nuts.nut05 = nut05_settings;
-
-        self.mint
-            .set_mint_info(info)
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
+            request.method_name,
+            request.disabled,
+        )
+        .await?;
 
         Ok(Response::new(UpdateResponse {}))
     }
@@ -1192,6 +1298,139 @@ impl From<MintQuoteState> for crate::quote::MintQuoteState {
             MintQuoteState::Unpaid => Self::Unpaid,
             MintQuoteState::Paid => Self::Paid,
             MintQuoteState::Issued => Self::Issued,
+        }
+    }
+}
+
+#[tonic::async_trait]
+impl PaymentMethodService for MintRPCServer {
+    /// Updates the settings of one mint (NUT-04) payment method
+    async fn update_mint_method(
+        &self,
+        request: Request<crate::payment_method::UpdateMintMethodRequest>,
+    ) -> Result<Response<crate::payment_method::UpdateMintMethodResponse>, Status> {
+        let request = request.into_inner();
+
+        if request.options.is_some()
+            && PaymentMethod::from_str(&request.method).is_ok_and(|method| !method.is_bolt11())
+        {
+            return Err(Status::invalid_argument(
+                "Options can only be set on the bolt11 method".to_string(),
+            ));
+        }
+
+        let options = request
+            .options
+            .map(|options| cdk::nuts::nut04::MintMethodOptions::Bolt11 {
+                description: options.description,
+            });
+
+        let settings = self
+            .set_mint_method(
+                &request.unit,
+                &request.method,
+                request.min_amount,
+                request.max_amount,
+                options,
+                request.method_name,
+                None,
+            )
+            .await?;
+
+        Ok(Response::new(settings.into()))
+    }
+
+    /// Updates the settings of one melt (NUT-05) payment method
+    async fn update_melt_method(
+        &self,
+        request: Request<crate::payment_method::UpdateMeltMethodRequest>,
+    ) -> Result<Response<crate::payment_method::UpdateMeltMethodResponse>, Status> {
+        let request = request.into_inner();
+
+        if request.options.is_some()
+            && PaymentMethod::from_str(&request.method).is_ok_and(|method| !method.is_bolt11())
+        {
+            return Err(Status::invalid_argument(
+                "Options can only be set on the bolt11 method".to_string(),
+            ));
+        }
+
+        let options = request
+            .options
+            .map(|options| cdk::nuts::nut05::MeltMethodOptions::Bolt11 {
+                amountless: options.amountless,
+            });
+
+        let settings = self
+            .set_melt_method(
+                &request.unit,
+                &request.method,
+                request.min_amount,
+                request.max_amount,
+                options,
+                request.method_name,
+                None,
+            )
+            .await?;
+
+        Ok(Response::new(settings.into()))
+    }
+
+    /// Enables or disables minting and melting for the whole mint
+    async fn update_disabled(
+        &self,
+        request: Request<crate::payment_method::UpdateDisabledRequest>,
+    ) -> Result<Response<crate::payment_method::UpdateDisabledResponse>, Status> {
+        let request = request.into_inner();
+
+        let (mint_disabled, melt_disabled) = self
+            .set_disabled(request.mint_disabled, request.melt_disabled)
+            .await?;
+
+        Ok(Response::new(
+            crate::payment_method::UpdateDisabledResponse {
+                mint_disabled,
+                melt_disabled,
+            },
+        ))
+    }
+}
+
+impl From<MintMethodSettings> for crate::payment_method::UpdateMintMethodResponse {
+    fn from(settings: MintMethodSettings) -> Self {
+        let options = settings.options.and_then(|options| match options {
+            cdk::nuts::nut04::MintMethodOptions::Bolt11 { description } => {
+                Some(crate::payment_method::Bolt11MintMethodOptions { description })
+            }
+            _ => None,
+        });
+
+        Self {
+            unit: settings.unit.to_string(),
+            method: settings.method.to_string(),
+            min_amount: settings.min_amount.map(u64::from),
+            max_amount: settings.max_amount.map(u64::from),
+            options,
+            method_name: settings.method_name,
+        }
+    }
+}
+
+impl From<MeltMethodSettings> for crate::payment_method::UpdateMeltMethodResponse {
+    fn from(settings: MeltMethodSettings) -> Self {
+        let options = settings.options.map(|options| match options {
+            cdk::nuts::nut05::MeltMethodOptions::Bolt11 { amountless } => {
+                crate::payment_method::Bolt11MeltMethodOptions { amountless }
+            }
+        });
+
+        Self {
+            unit: settings.unit.to_string(),
+            method: settings.method.to_string(),
+            min_amount: settings.min_amount.map(u64::from),
+            max_amount: settings.max_amount.map(u64::from),
+            options,
+            method_name: settings.method_name,
         }
     }
 }
@@ -1796,6 +2035,68 @@ mod tests {
 
         assert_eq!(quote_state_error.code(), Code::FailedPrecondition);
         assert_eq!(quote_state_error.message(), "configuration restart pending");
+
+        let mint_method_error = PaymentMethodService::update_mint_method(
+            &server,
+            Request::new(crate::payment_method::UpdateMintMethodRequest {
+                unit: "sat".to_owned(),
+                method: "bolt11".to_owned(),
+                min_amount: Some(1),
+                max_amount: None,
+                options: None,
+                method_name: None,
+            }),
+        )
+        .await
+        .expect_err("mint-method mutation should be rejected");
+
+        assert_eq!(mint_method_error.code(), Code::FailedPrecondition);
+        assert_eq!(mint_method_error.message(), "configuration restart pending");
+
+        let melt_method_error = PaymentMethodService::update_melt_method(
+            &server,
+            Request::new(crate::payment_method::UpdateMeltMethodRequest {
+                unit: "sat".to_owned(),
+                method: "bolt11".to_owned(),
+                min_amount: Some(1),
+                max_amount: None,
+                options: None,
+                method_name: None,
+            }),
+        )
+        .await
+        .expect_err("melt-method mutation should be rejected");
+
+        assert_eq!(melt_method_error.code(), Code::FailedPrecondition);
+        assert_eq!(melt_method_error.message(), "configuration restart pending");
+
+        let disabled_error = PaymentMethodService::update_disabled(
+            &server,
+            Request::new(crate::payment_method::UpdateDisabledRequest {
+                mint_disabled: Some(true),
+                melt_disabled: None,
+            }),
+        )
+        .await
+        .expect_err("disabled mutation should be rejected");
+
+        assert_eq!(disabled_error.code(), Code::FailedPrecondition);
+        assert_eq!(disabled_error.message(), "configuration restart pending");
+
+        // A request that changes nothing is still a mutation RPC: the guard
+        // runs before the both-flags-omitted early return
+        let no_flags_error = PaymentMethodService::update_disabled(
+            &server,
+            Request::new(crate::payment_method::UpdateDisabledRequest {
+                mint_disabled: None,
+                melt_disabled: None,
+            }),
+        )
+        .await
+        .expect_err("no-flags disabled mutation should be rejected");
+
+        assert_eq!(no_flags_error.code(), Code::FailedPrecondition);
+        assert_eq!(no_flags_error.message(), "configuration restart pending");
         assert!(server
             .get_info(Request::new(GetInfoRequest {}))
             .await
@@ -1803,5 +2104,317 @@ mod tests {
             .into_inner()
             .tos_url
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_payment_method_service_update_mint_method_keeps_omitted_settings() {
+        let server = create_test_rpc_server().await;
+
+        let response = PaymentMethodService::update_mint_method(
+            &server,
+            Request::new(crate::payment_method::UpdateMintMethodRequest {
+                unit: "sat".to_owned(),
+                method: "bolt11".to_owned(),
+                min_amount: Some(1),
+                max_amount: Some(1_000),
+                options: Some(crate::payment_method::Bolt11MintMethodOptions { description: true }),
+                method_name: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert_eq!(response.unit, "sat");
+        assert_eq!(response.method, "bolt11");
+        assert_eq!(response.min_amount, Some(1));
+        assert_eq!(response.max_amount, Some(1_000));
+        assert_eq!(
+            response.options,
+            Some(crate::payment_method::Bolt11MintMethodOptions { description: true })
+        );
+
+        let response = PaymentMethodService::update_mint_method(
+            &server,
+            Request::new(crate::payment_method::UpdateMintMethodRequest {
+                unit: "sat".to_owned(),
+                method: "bolt11".to_owned(),
+                min_amount: None,
+                max_amount: Some(5_000),
+                options: None,
+                method_name: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert_eq!(response.min_amount, Some(1));
+        assert_eq!(response.max_amount, Some(5_000));
+        assert_eq!(
+            response.options,
+            Some(crate::payment_method::Bolt11MintMethodOptions { description: true })
+        );
+
+        let settings = server
+            .mint
+            .mint_info()
+            .await
+            .unwrap()
+            .nuts
+            .nut04
+            .get_settings(
+                &CurrencyUnit::Sat,
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+            )
+            .unwrap();
+        assert_eq!(settings.min_amount, Some(Amount::from(1)));
+        assert_eq!(settings.max_amount, Some(Amount::from(5_000)));
+    }
+
+    #[tokio::test]
+    async fn test_payment_method_service_update_mint_method_rejects_unknown_pair() {
+        let server = create_test_rpc_server().await;
+
+        let error = PaymentMethodService::update_mint_method(
+            &server,
+            Request::new(crate::payment_method::UpdateMintMethodRequest {
+                unit: "sat".to_owned(),
+                method: "bolt12".to_owned(),
+                min_amount: None,
+                max_amount: None,
+                options: None,
+                method_name: None,
+            }),
+        )
+        .await
+        .expect_err("method without a payment processor should be rejected");
+
+        // The message separates this from the options guard, which must not
+        // fire on a request that carries no options
+        assert_eq!(error.code(), Code::InvalidArgument);
+        assert_eq!(error.message(), "Unit payment method pair is not supported");
+    }
+
+    #[tokio::test]
+    async fn test_payment_method_service_rejects_options_on_non_bolt11_method() {
+        let server = create_test_rpc_server().await;
+
+        let error = PaymentMethodService::update_mint_method(
+            &server,
+            Request::new(crate::payment_method::UpdateMintMethodRequest {
+                unit: "sat".to_owned(),
+                method: "onchain".to_owned(),
+                min_amount: None,
+                max_amount: None,
+                options: Some(crate::payment_method::Bolt11MintMethodOptions { description: true }),
+                method_name: None,
+            }),
+        )
+        .await
+        .expect_err("bolt11 options on an onchain method should be rejected");
+
+        // The processor check also rejects this pair; the message shows the guard fired
+        assert_eq!(error.code(), Code::InvalidArgument);
+        assert_eq!(
+            error.message(),
+            "Options can only be set on the bolt11 method"
+        );
+
+        let error = PaymentMethodService::update_melt_method(
+            &server,
+            Request::new(crate::payment_method::UpdateMeltMethodRequest {
+                unit: "sat".to_owned(),
+                method: "onchain".to_owned(),
+                min_amount: None,
+                max_amount: None,
+                options: Some(crate::payment_method::Bolt11MeltMethodOptions { amountless: true }),
+                method_name: None,
+            }),
+        )
+        .await
+        .expect_err("bolt11 options on an onchain method should be rejected");
+
+        assert_eq!(error.code(), Code::InvalidArgument);
+        assert_eq!(
+            error.message(),
+            "Options can only be set on the bolt11 method"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_payment_method_service_update_disabled_keeps_omitted_flag() {
+        let server = create_test_rpc_server().await;
+
+        let response = PaymentMethodService::update_disabled(
+            &server,
+            Request::new(crate::payment_method::UpdateDisabledRequest {
+                mint_disabled: Some(true),
+                melt_disabled: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert!(response.mint_disabled);
+        assert!(!response.melt_disabled);
+        let info = server.mint.mint_info().await.unwrap();
+        assert!(info.nuts.nut04.disabled);
+        assert!(!info.nuts.nut05.disabled);
+
+        let response = PaymentMethodService::update_disabled(
+            &server,
+            Request::new(crate::payment_method::UpdateDisabledRequest {
+                mint_disabled: Some(false),
+                melt_disabled: Some(true),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert!(!response.mint_disabled);
+        assert!(response.melt_disabled);
+        let info = server.mint.mint_info().await.unwrap();
+        assert!(!info.nuts.nut04.disabled);
+        assert!(info.nuts.nut05.disabled);
+    }
+
+    #[tokio::test]
+    async fn test_payment_method_service_update_disabled_with_no_flags_changes_nothing() {
+        let server = create_test_rpc_server().await;
+
+        // Set both flags first; on a fresh server every flag is already false
+        PaymentMethodService::update_disabled(
+            &server,
+            Request::new(crate::payment_method::UpdateDisabledRequest {
+                mint_disabled: Some(true),
+                melt_disabled: Some(true),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let response = PaymentMethodService::update_disabled(
+            &server,
+            Request::new(crate::payment_method::UpdateDisabledRequest {
+                mint_disabled: None,
+                melt_disabled: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert!(response.mint_disabled);
+        assert!(response.melt_disabled);
+        let info = server.mint.mint_info().await.unwrap();
+        assert!(info.nuts.nut04.disabled);
+        assert!(info.nuts.nut05.disabled);
+    }
+
+    #[tokio::test]
+    async fn test_payment_method_service_update_melt_method_keeps_omitted_settings() {
+        let server = create_test_rpc_server().await;
+
+        PaymentMethodService::update_melt_method(
+            &server,
+            Request::new(crate::payment_method::UpdateMeltMethodRequest {
+                unit: "sat".to_owned(),
+                method: "bolt11".to_owned(),
+                min_amount: Some(2),
+                max_amount: Some(2_000),
+                options: Some(crate::payment_method::Bolt11MeltMethodOptions { amountless: true }),
+                method_name: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let response = PaymentMethodService::update_melt_method(
+            &server,
+            Request::new(crate::payment_method::UpdateMeltMethodRequest {
+                unit: "sat".to_owned(),
+                method: "bolt11".to_owned(),
+                min_amount: None,
+                max_amount: None,
+                options: None,
+                method_name: Some("Lightning".to_owned()),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert_eq!(response.min_amount, Some(2));
+        assert_eq!(response.max_amount, Some(2_000));
+        assert_eq!(
+            response.options,
+            Some(crate::payment_method::Bolt11MeltMethodOptions { amountless: true })
+        );
+        assert_eq!(response.method_name, Some("Lightning".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn test_legacy_update_nut04_disabled_flag_still_works() {
+        let server = create_test_rpc_server().await;
+
+        server
+            .update_nut04(Request::new(UpdateNut04Request {
+                unit: "sat".to_owned(),
+                method: "bolt11".to_owned(),
+                disabled: Some(true),
+                min_amount: Some(5),
+                max_amount: None,
+                options: None,
+                method_name: None,
+            }))
+            .await
+            .unwrap();
+
+        let info = server.mint.mint_info().await.unwrap();
+        assert!(info.nuts.nut04.disabled);
+        let settings = info
+            .nuts
+            .nut04
+            .get_settings(
+                &CurrencyUnit::Sat,
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+            )
+            .unwrap();
+        assert_eq!(settings.min_amount, Some(Amount::from(5)));
+    }
+
+    #[tokio::test]
+    async fn test_legacy_update_nut05_disabled_flag_still_works() {
+        let server = create_test_rpc_server().await;
+
+        server
+            .update_nut05(Request::new(UpdateNut05Request {
+                unit: "sat".to_owned(),
+                method: "bolt11".to_owned(),
+                disabled: Some(true),
+                min_amount: Some(7),
+                max_amount: Some(700),
+                options: None,
+                method_name: None,
+            }))
+            .await
+            .unwrap();
+
+        let info = server.mint.mint_info().await.unwrap();
+        assert!(info.nuts.nut05.disabled);
+        assert!(!info.nuts.nut04.disabled);
+        let settings = info
+            .nuts
+            .nut05
+            .get_settings(
+                &CurrencyUnit::Sat,
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+            )
+            .unwrap();
+        assert_eq!(settings.min_amount, Some(Amount::from(7)));
+        assert_eq!(settings.max_amount, Some(Amount::from(700)));
     }
 }

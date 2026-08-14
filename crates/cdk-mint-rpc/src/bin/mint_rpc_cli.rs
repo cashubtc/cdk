@@ -7,6 +7,7 @@ use cdk_common::grpc::{VersionInterceptor, VERSION_HEADER};
 use cdk_mint_rpc::cdk_mint_client::CdkMintClient;
 use cdk_mint_rpc::keyset::keyset_service_client::KeysetServiceClient;
 use cdk_mint_rpc::mint_rpc_cli::subcommands;
+use cdk_mint_rpc::payment_method::payment_method_service_client::PaymentMethodServiceClient;
 use cdk_mint_rpc::quote::quote_service_client::QuoteServiceClient;
 use cdk_mint_rpc::wallet::wallet_service_client::WalletServiceClient;
 use cdk_mint_rpc::GetInfoRequest;
@@ -95,10 +96,14 @@ enum Commands {
     AddContact(subcommands::AddContactCommand),
     /// Remove contact
     RemoveContact(subcommands::RemoveContactCommand),
-    /// Update nut04
-    UpdateNut04(subcommands::UpdateNut04Command),
-    /// Update nut05
-    UpdateNut05(subcommands::UpdateNut05Command),
+    /// Update mint (NUT-04) payment method settings
+    #[command(alias = "update-nut04")]
+    UpdateMintMethod(subcommands::UpdateMintMethodCommand),
+    /// Update melt (NUT-05) payment method settings
+    #[command(alias = "update-nut05")]
+    UpdateMeltMethod(subcommands::UpdateMeltMethodCommand),
+    /// Enable or disable minting and melting
+    UpdateDisabled(subcommands::UpdateDisabledCommand),
     /// Update quote ttl
     UpdateQuoteTtl(subcommands::UpdateQuoteTtlCommand),
     /// Get quote ttl
@@ -234,11 +239,20 @@ async fn main() -> Result<()> {
         Commands::RemoveContact(sub_command_args) => {
             subcommands::remove_contact(&mut client, &sub_command_args).await?;
         }
-        Commands::UpdateNut04(sub_command_args) => {
-            subcommands::update_nut04(&mut client, &sub_command_args).await?;
+        Commands::UpdateMintMethod(sub_command_args) => {
+            let mut payment_method_client =
+                PaymentMethodServiceClient::with_interceptor(channel, interceptor);
+            subcommands::update_mint_method(&mut payment_method_client, &sub_command_args).await?;
         }
-        Commands::UpdateNut05(sub_command_args) => {
-            subcommands::update_nut05(&mut client, &sub_command_args).await?;
+        Commands::UpdateMeltMethod(sub_command_args) => {
+            let mut payment_method_client =
+                PaymentMethodServiceClient::with_interceptor(channel, interceptor);
+            subcommands::update_melt_method(&mut payment_method_client, &sub_command_args).await?;
+        }
+        Commands::UpdateDisabled(sub_command_args) => {
+            let mut payment_method_client =
+                PaymentMethodServiceClient::with_interceptor(channel, interceptor);
+            subcommands::update_disabled(&mut payment_method_client, &sub_command_args).await?;
         }
         Commands::GetQuoteTtl => {
             let mut quote_client = QuoteServiceClient::with_interceptor(channel, interceptor);

@@ -18,6 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &[
                 "src/proto/cdk-mint-rpc.proto",
                 "src/proto/keyset.proto",
+                "src/proto/payment_method.proto",
                 "src/proto/quote.proto",
                 "src/proto/wallet.proto",
             ],
