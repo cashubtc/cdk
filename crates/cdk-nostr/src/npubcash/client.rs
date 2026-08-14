@@ -5,9 +5,9 @@ use std::sync::Arc;
 use cdk_http_client::{HttpClient, RawResponse};
 use tracing::instrument;
 
-use crate::auth::JwtAuthProvider;
-use crate::error::{Error, Result};
-use crate::types::{Quote, QuotesResponse};
+use crate::npubcash::auth::JwtAuthProvider;
+use crate::npubcash::error::{Error, Result};
+use crate::npubcash::types::{Quote, QuotesResponse};
 
 const API_PATHS_QUOTES: &str = "/api/v2/wallet/quotes";
 const PAGINATION_LIMIT: usize = 50;
@@ -57,8 +57,8 @@ impl NpubCashClient {
     /// # Examples
     ///
     /// ```no_run
-    /// # use cdk_npubcash::{NpubCashClient, JwtAuthProvider};
-    /// # use nostr_sdk::Keys;
+    /// # use cdk_nostr::npubcash::{NpubCashClient, JwtAuthProvider};
+    /// # use cdk_nostr::nostr_sdk::Keys;
     /// # use std::sync::Arc;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// # let base_url = "https://npubx.cash".to_string();
@@ -167,7 +167,7 @@ impl NpubCashClient {
     pub async fn set_mint_url(
         &self,
         mint_url: impl Into<String>,
-    ) -> Result<crate::types::UserResponse> {
+    ) -> Result<crate::npubcash::types::UserResponse> {
         use serde::Serialize;
 
         const MINT_URL_PATH: &str = "/api/v2/user/mint";
@@ -192,7 +192,10 @@ impl NpubCashClient {
             .header("Authorization", auth_header)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .header("User-Agent", "cdk-npubcash/0.13.0")
+            .header(
+                "User-Agent",
+                concat!("cdk-nostr/", env!("CARGO_PKG_VERSION")),
+            )
             .json(&payload)
             .send()
             .await?;
@@ -248,7 +251,7 @@ impl NpubCashClient {
         const METHOD: &str = "GET";
 
         // Extract URL for authentication (without query parameters)
-        let url_for_auth = crate::extract_auth_url(url)?;
+        let url_for_auth = crate::npubcash::extract_auth_url(url)?;
 
         // Get authentication token
         let auth_token = self
@@ -264,7 +267,10 @@ impl NpubCashClient {
             .header("Authorization", auth_token)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .header("User-Agent", "cdk-npubcash/0.13.0")
+            .header(
+                "User-Agent",
+                concat!("cdk-nostr/", env!("CARGO_PKG_VERSION")),
+            )
             .send()
             .await?;
 

@@ -221,6 +221,11 @@ coverage:
   echo "Running unit tests coverage..."
   cargo llvm-cov --no-report --lib --workspace --exclude cdk-integration-tests
 
+  # Run cdk-nostr tests with all features; its npubcash/nwc modules are
+  # feature-gated, so the default-feature workspace run does not execute them.
+  echo "Running cdk-nostr feature-gated tests coverage..."
+  cargo llvm-cov --no-report --lib -p cdk-nostr --all-features
+
   # Run pure integration tests with coverage (memory backend)
   echo "Running pure integration tests coverage (memory)..."
   CDK_TEST_DB_TYPE=memory cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
@@ -232,6 +237,10 @@ coverage:
   # Run NWC e2e tests with coverage (requires nostr-rs-relay on PATH)
   echo "Running NWC e2e tests coverage (memory)..."
   CDK_TEST_DB_TYPE=memory cargo llvm-cov --no-report -p cdk-integration-tests --test nwc_e2e
+
+  # Run NIP-17 inbox e2e tests with coverage (requires nostr-rs-relay on PATH)
+  echo "Running NIP-17 inbox e2e tests coverage..."
+  cargo llvm-cov --no-report -p cdk-integration-tests --test nip17_inbox_e2e
 
   # Generate report
   echo "Generating coverage report..."
@@ -752,14 +761,13 @@ release m="":
     "-p cdk-prometheus"
     "-p cdk-http-client"
     "-p cdk-common"
-    "-p cdk-npubcash"
+    "-p cdk-nostr"
     "-p cdk-sql-common"
     "-p cdk-sqlite"
     "-p cdk-postgres"
     "-p cdk-redb"
     "-p cdk-signatory"
     "-p cdk-fake-wallet"
-    "-p cdk-nwc"
     "-p cdk"
     "-p cdk-supabase"
     "-p cdk-ffi"
@@ -792,7 +800,7 @@ check-docs:
     "-p cashu"
     "-p cdk-common"
     "-p cdk-http-client"
-    "-p cdk-npubcash"
+    "-p cdk-nostr"
     "-p cdk-sql-common"
     "-p cdk-sqlite"
     "-p cdk-postgres"
@@ -826,7 +834,7 @@ docs-strict:
     "-p cashu"
     "-p cdk-common"
     "-p cdk-http-client"
-    "-p cdk-npubcash"
+    "-p cdk-nostr"
     "-p cdk-sql-common"
     "-p cdk-sqlite"
     "-p cdk-postgres"

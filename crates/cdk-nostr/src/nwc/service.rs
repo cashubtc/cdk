@@ -29,8 +29,8 @@ use nostr_sdk::{Client as NostrClient, Keys, PublicKey, RelayUrl, SecretKey};
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 
-use crate::error::{Error, Result};
-use crate::handler::NwcRequestHandler;
+use crate::nwc::error::{Error, Result};
+use crate::nwc::handler::NwcRequestHandler;
 
 /// Commands advertised in the info event and reported by `get_info`.
 ///
@@ -476,7 +476,7 @@ mod tests {
     struct MockHandler;
 
     #[async_trait]
-    impl crate::handler::NwcRequestHandler for MockHandler {
+    impl crate::nwc::handler::NwcRequestHandler for MockHandler {
         async fn get_info(&self) -> std::result::Result<GetInfoResponse, NIP47Error> {
             Err(NIP47Error {
                 code: ErrorCode::Internal,

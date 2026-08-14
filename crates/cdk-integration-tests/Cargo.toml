@@ -28,7 +28,7 @@ cdk-redb = { workspace = true }
 cdk-fake-wallet = { workspace = true }
 cdk-common = { workspace = true, features = ["mint", "wallet", "http"] }
 cdk-http-client = { workspace = true, features = ["bitreq"] }
-cdk-nwc = { workspace = true }
+cdk-nostr = { workspace = true, features = ["nwc"] }
 nostr-sdk = { workspace = true }
 cdk-mintd = { workspace = true, features = ["cln", "lnd", "fakewallet", "grpc-processor", "management-rpc", "sqlite", "postgres", "ldk-node", "bdk", "prometheus"] }
 futures = { workspace = true, default-features = false, features = [

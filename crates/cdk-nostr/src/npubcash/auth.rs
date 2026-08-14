@@ -11,8 +11,8 @@ use nostr_sdk::{EventBuilder, Keys, Kind, Tag};
 use tokio::sync::RwLock;
 use web_time::SystemTime;
 
-use crate::types::Nip98Response;
-use crate::{Error, Result};
+use crate::npubcash::types::Nip98Response;
+use crate::npubcash::{Error, Result};
 
 struct CachedToken {
     token: String,
@@ -132,7 +132,10 @@ impl JwtAuthProvider {
             .header("Authorization", format!("Nostr {nostr_token}"))
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .header("User-Agent", "cdk-npubcash/0.13.0")
+            .header(
+                "User-Agent",
+                concat!("cdk-nostr/", env!("CARGO_PKG_VERSION")),
+            )
             .send()
             .await?;
 

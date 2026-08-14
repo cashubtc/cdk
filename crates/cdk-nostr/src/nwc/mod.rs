@@ -6,7 +6,7 @@
 //!
 //! The protocol wire types (connection URI, requests, responses, error codes)
 //! come from [`nostr_sdk::nips::nip47`] and are re-exported here for
-//! convenience. This crate adds:
+//! convenience. This module adds:
 //!
 //! - [`NwcRequestHandler`]: the trait a wallet backend implements to service
 //!   the supported commands.
@@ -14,7 +14,7 @@
 //!   authorizes and decrypts requests, dispatches to the handler, and publishes
 //!   encrypted responses.
 //!
-//! The crate has no dependency on the `cdk` wallet crate; the Cashu-wallet
+//! The module has no dependency on the `cdk` wallet crate; the Cashu-wallet
 //! backed handler lives in `cdk::wallet::nwc`, keeping this layer reusable and
 //! independently testable.
 //!
@@ -25,8 +25,6 @@
 //! [`ErrorCode::NotImplemented`](nostr_sdk::nips::nip47::ErrorCode::NotImplemented).
 //!
 //! All amounts in the NIP-47 protocol are denominated in **millisatoshis**.
-
-#![warn(missing_docs)]
 
 pub mod error;
 pub mod handler;

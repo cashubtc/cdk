@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use cdk_npubcash::{JwtAuthProvider, NpubCashClient as CdkNpubCashClient};
+use cdk_nostr::npubcash::{JwtAuthProvider, NpubCashClient as CdkNpubCashClient};
 
 use crate::error::FfiError;
 use crate::types::MintQuote;
@@ -115,8 +115,8 @@ pub struct NpubCashQuote {
     pub locked: Option<bool>,
 }
 
-impl From<cdk_npubcash::Quote> for NpubCashQuote {
-    fn from(quote: cdk_npubcash::Quote) -> Self {
+impl From<cdk_nostr::npubcash::Quote> for NpubCashQuote {
+    fn from(quote: cdk_nostr::npubcash::Quote) -> Self {
         Self {
             id: quote.id,
             amount: quote.amount,
@@ -147,7 +147,7 @@ impl From<cdk_npubcash::Quote> for NpubCashQuote {
 /// A MintQuote that can be used with wallet minting functions
 #[uniffi::export]
 pub fn npubcash_quote_to_mint_quote(quote: NpubCashQuote) -> MintQuote {
-    let cdk_quote = cdk_npubcash::Quote {
+    let cdk_quote = cdk_nostr::npubcash::Quote {
         id: quote.id,
         amount: quote.amount,
         unit: quote.unit,
@@ -177,8 +177,8 @@ pub struct NpubCashUserResponse {
     pub lock_quote: bool,
 }
 
-impl From<cdk_npubcash::UserResponse> for NpubCashUserResponse {
-    fn from(response: cdk_npubcash::UserResponse) -> Self {
+impl From<cdk_nostr::npubcash::UserResponse> for NpubCashUserResponse {
+    fn from(response: cdk_nostr::npubcash::UserResponse) -> Self {
         Self {
             error: response.error,
             pubkey: response.data.user.pubkey,
@@ -243,16 +243,16 @@ pub fn npubcash_get_pubkey(nostr_secret_key: String) -> Result<String, FfiError>
 }
 
 /// Parse a Nostr secret key from either hex or nsec format
-fn parse_nostr_secret_key(key: &str) -> Result<nostr_sdk::Keys, FfiError> {
+fn parse_nostr_secret_key(key: &str) -> Result<cdk_nostr::nostr_sdk::Keys, FfiError> {
     // Try parsing as nsec (bech32) first
     if key.starts_with("nsec") {
-        nostr_sdk::Keys::parse(key)
+        cdk_nostr::nostr_sdk::Keys::parse(key)
             .map_err(|e| FfiError::internal(format!("Invalid nsec key: {}", e)))
     } else {
         // Try parsing as hex
-        let secret_key = nostr_sdk::SecretKey::parse(key)
+        let secret_key = cdk_nostr::nostr_sdk::SecretKey::parse(key)
             .map_err(|e| FfiError::internal(format!("Invalid hex secret key: {}", e)))?;
-        Ok(nostr_sdk::Keys::new(secret_key))
+        Ok(cdk_nostr::nostr_sdk::Keys::new(secret_key))
     }
 }
 

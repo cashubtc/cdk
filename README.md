@@ -46,7 +46,7 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-signatory**](./crates/cdk-signatory/): Signing utilities and cryptographic operations.
     * [**cdk-payment-processor**](./crates/cdk-payment-processor/): Payment processing functionality; LNbits integrations should use an external payment processor.
     * [**cdk-prometheus**](./crates/cdk-prometheus/): Prometheus metrics integration.
-    * [**cdk-npubcash**](./crates/cdk-npubcash/): npub.cash SDK integration.
+    * [**cdk-nostr**](./crates/cdk-nostr/): Nostr integration — keys, NIP-44 encryption, NIP-17 inbox listener, NIP-47 wallet service, npub.cash SDK.
     * [**cdk-ffi**](./crates/cdk-ffi/): Foreign Function Interface bindings for other languages.
     * [**cdk-integration-tests**](./crates/cdk-integration-tests/): Integration test suite.
     * [**cdk-mint-rpc**](./crates/cdk-mint-rpc/): Mint management gRPC server and cli.

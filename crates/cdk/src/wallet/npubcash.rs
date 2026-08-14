@@ -8,7 +8,7 @@ use std::sync::Arc;
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::Network;
 use cdk_common::{database, SECP256K1};
-use cdk_npubcash::{JwtAuthProvider, NpubCashClient, Quote};
+use cdk_nostr::npubcash::{JwtAuthProvider, NpubCashClient, Quote};
 use tracing::instrument;
 
 use crate::error::Error;
@@ -313,7 +313,7 @@ impl Wallet {
     pub async fn set_npubcash_mint_url(
         &self,
         mint_url: impl Into<String>,
-    ) -> Result<cdk_npubcash::UserResponse, Error> {
+    ) -> Result<cdk_nostr::npubcash::UserResponse, Error> {
         let client = self.get_npubcash_client().await?;
         client
             .set_mint_url(mint_url)
@@ -338,7 +338,7 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn add_npubcash_mint_quote(
         &self,
-        npubcash_quote: cdk_npubcash::Quote,
+        npubcash_quote: cdk_nostr::npubcash::Quote,
     ) -> Result<Option<MintQuote>, Error> {
         self.add_npubcash_mint_quote_with_key(npubcash_quote, NpubCashQuoteKey::Nip06)
             .await
@@ -346,7 +346,7 @@ impl Wallet {
 
     async fn add_npubcash_mint_quote_with_key(
         &self,
-        npubcash_quote: cdk_npubcash::Quote,
+        npubcash_quote: cdk_nostr::npubcash::Quote,
         key: NpubCashQuoteKey,
     ) -> Result<Option<MintQuote>, Error> {
         let mint_quote: MintQuote = npubcash_quote.into();
