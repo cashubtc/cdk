@@ -10,6 +10,8 @@ pub mod bip321;
 pub mod database;
 pub mod error;
 pub mod logging;
+#[cfg(feature = "nostr")]
+pub mod nostr;
 #[cfg(feature = "npubcash")]
 pub mod npubcash;
 #[cfg(feature = "nwc")]
@@ -29,6 +31,8 @@ mod wallet_trait;
 pub use database::*;
 pub use error::*;
 pub use logging::*;
+#[cfg(feature = "nostr")]
+pub use nostr::*;
 #[cfg(feature = "npubcash")]
 pub use npubcash::*;
 #[cfg(feature = "nwc")]

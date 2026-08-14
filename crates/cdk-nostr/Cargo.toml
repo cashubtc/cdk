@@ -1,0 +1,64 @@
+[package]
+name = "cdk-nostr"
+version.workspace = true
+authors = ["CDK Developers"]
+description = "Nostr support for CDK: key management, NIP-44 encryption, NIP-17 inbox listener, NIP-47 wallet service and npub.cash client"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# NIP-47 Nostr Wallet Connect wallet service
+nwc = ["dep:async-trait", "dep:serde_json"]
+# NpubCash (npub.cash) API client
+npubcash = [
+    "dep:async-trait",
+    "dep:base64",
+    "dep:cashu",
+    "dep:cdk-common",
+    "dep:cdk-http-client",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:url",
+    "dep:web-time",
+]
+
+[dependencies]
+nostr-sdk = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true, optional = true }
+base64 = { version = "0.22", optional = true }
+cashu = { workspace = true, optional = true }
+cdk-common = { workspace = true, default-features = false, features = ["wallet", "http"], optional = true }
+cdk-http-client = { workspace = true, default-features = false, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+web-time = { workspace = true, optional = true }
+
+[dev-dependencies]
+chrono = "0.4"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "test-util"] }
+tracing-subscriber = { workspace = true }
+web-time = { workspace = true }
+
+[[example]]
+name = "basic_usage"
+required-features = ["npubcash"]
+
+[[example]]
+name = "create_and_wait_payment"
+required-features = ["npubcash"]
+
+[[example]]
+name = "manage_settings"
+required-features = ["npubcash"]
+
+[lints]
+workspace = true

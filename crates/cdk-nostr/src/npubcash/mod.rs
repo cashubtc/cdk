@@ -13,8 +13,8 @@
 //! ```no_run
 //! use std::sync::Arc;
 //!
-//! use cdk_npubcash::{JwtAuthProvider, NpubCashClient};
-//! use nostr_sdk::Keys;
+//! use cdk_nostr::npubcash::{JwtAuthProvider, NpubCashClient};
+//! use cdk_nostr::nostr_sdk::Keys;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,10 +30,6 @@
 //!     let quotes = client.get_quotes(None).await?;
 //!     println!("Found {} quotes", quotes.len());
 //!
-//!     // Fetch quotes since a specific timestamp
-//!     let recent_quotes = client.get_quotes(Some(1234567890)).await?;
-//!     println!("Found {} recent quotes", recent_quotes.len());
-//!
 //!     // Update mint URL setting
 //!     client.set_mint_url("https://example-mint.tld").await?;
 //!
@@ -47,56 +43,13 @@
 //! for subsequent requests. The [`JwtAuthProvider`] handles this automatically,
 //! including token caching and refresh.
 //!
-//! ## Fetching Quotes
-//!
-//! ```no_run
-//! # use cdk_npubcash::{NpubCashClient, JwtAuthProvider};
-//! # use nostr_sdk::Keys;
-//! # use std::sync::Arc;
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! # let base_url = "https://npubx.cash".to_string();
-//! # let keys = Keys::generate();
-//! # let auth_provider = Arc::new(JwtAuthProvider::new(base_url.clone(), keys));
-//! # let client = NpubCashClient::new(base_url, auth_provider);
-//! // Fetch all quotes
-//! let all_quotes = client.get_quotes(None).await?;
-//!
-//! // Fetch quotes since a specific timestamp
-//! let recent_quotes = client.get_quotes(Some(1234567890)).await?;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! ## Managing Settings
-//!
-//! ```no_run
-//! # use cdk_npubcash::{NpubCashClient, JwtAuthProvider};
-//! # use nostr_sdk::Keys;
-//! # use std::sync::Arc;
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! # let base_url = "https://npubx.cash".to_string();
-//! # let keys = Keys::generate();
-//! # let auth_provider = Arc::new(JwtAuthProvider::new(base_url.clone(), keys));
-//! # let client = NpubCashClient::new(base_url, auth_provider);
-//! // Set mint URL
-//! let response = client.set_mint_url("https://my-mint.com").await?;
-//! println!("Mint URL: {:?}", response.data.user.mint_url);
-//! println!("Lock quote: {}", response.data.user.lock_quote);
-//! # Ok(())
-//! # }
-//! ```
-//!
 //! **Note:** Quotes are always locked by default on the NPubCash server for security.
-
-#![warn(missing_docs)]
-#![allow(clippy::doc_markdown)]
 
 pub mod auth;
 pub mod client;
 pub mod error;
 pub mod types;
 
-// Re-export main types for convenient access
 pub use auth::JwtAuthProvider;
 pub use client::NpubCashClient;
 pub use error::{Error, Result};

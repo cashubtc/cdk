@@ -1,0 +1,207 @@
+//! Standing NIP-17 inbox listener
+//!
+//! Subscribes a set of relays for NIP-59 gift wraps (kind `1059`) addressed to
+//! a Nostr identity, unwraps them (two layers of NIP-44) and delivers the
+//! inner rumor to a [`NostrInboxListener`] callback. The relay pool reconnects
+//! automatically; relays may re-deliver events after a reconnect, so consumers
+//! must de-duplicate by [`Nip17Event::wrap_id`].
+//!
+//! The listener deliberately performs no further protocol interpretation: the
+//! rumor's kind and content are for the consumer to handle (e.g. a NUT-18
+//! payment request payload for kind `14` rumors).
+
+use std::sync::Arc;
+
+use nostr_sdk::{
+    Client, EventId, Filter, Keys, Kind, PublicKey, RelayPoolNotification, RelayUrl, SecretKey,
+    Timestamp, UnsignedEvent,
+};
+use tokio::sync::broadcast::error::RecvError;
+use tokio_util::sync::CancellationToken;
+
+use crate::error::{Error, Result};
+
+/// A gift wrap that was addressed to the inbox identity and successfully
+/// unwrapped
+#[derive(Debug, Clone)]
+pub struct Nip17Event {
+    /// ID of the (ephemeral) kind `1059` gift wrap event — use it to
+    /// de-duplicate deliveries across relay reconnects and restarts
+    pub wrap_id: EventId,
+    /// `created_at` of the gift wrap (NIP-59 randomizes/backdates it)
+    pub wrap_created_at: Timestamp,
+    /// Author of the verified seal — the real sender of the rumor
+    pub sender: PublicKey,
+    /// The unwrapped, unsigned rumor (commonly kind `14` for chat/DM payloads)
+    pub rumor: UnsignedEvent,
+}
+
+/// Callback receiving unwrapped inbox events
+///
+/// Implementations must be non-blocking; do any expensive work (token claims,
+/// database writes) on a separate task.
+pub trait NostrInboxListener: Send + Sync {
+    /// Called once per successfully unwrapped gift wrap
+    fn on_event(&self, event: Nip17Event);
+}
+
+/// A standing NIP-17 inbox listener for a single Nostr identity
+///
+/// Create with [`NostrInbox::new`], then call [`NostrInbox::start`] to spawn
+/// the relay pump and [`NostrInbox::stop`] to shut it down.
+#[derive(Debug)]
+pub struct NostrInbox {
+    keys: Keys,
+    relays: Vec<RelayUrl>,
+    since: Option<Timestamp>,
+    cancel: CancellationToken,
+}
+
+impl NostrInbox {
+    /// Create a new inbox listener
+    ///
+    /// # Arguments
+    ///
+    /// * `secret_key` - The identity's secret key; gift wraps addressed to its
+    ///   public key are unwrapped with it
+    /// * `relays` - Relays to subscribe; must be non-empty
+    /// * `since` - Optional lower bound for the relay `since` filter. Because
+    ///   NIP-59 backdates gift wraps, pick a generous lookback window instead
+    ///   of "now".
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoRelays`] if `relays` is empty.
+    pub fn new(
+        secret_key: SecretKey,
+        relays: Vec<RelayUrl>,
+        since: Option<Timestamp>,
+    ) -> Result<Self> {
+        if relays.is_empty() {
+            return Err(Error::NoRelays);
+        }
+        Ok(Self {
+            keys: Keys::new(secret_key),
+            relays,
+            since,
+            cancel: CancellationToken::new(),
+        })
+    }
+
+    /// Public key of the inbox identity
+    pub fn pubkey(&self) -> PublicKey {
+        self.keys.public_key()
+    }
+
+    /// Connect to the relays, activate the subscription and spawn the
+    /// background pump that delivers events to `listener`
+    ///
+    /// Returns once the subscription is active. Events are delivered until
+    /// [`NostrInbox::stop`] is called. Starting an already-started inbox
+    /// spawns an additional pump; call [`NostrInbox::stop`] first if
+    /// reconfiguring.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a relay cannot be added or the subscription cannot
+    /// be created.
+    pub async fn start(&self, listener: Arc<dyn NostrInboxListener>) -> Result<()> {
+        let client = Client::new(self.keys.clone());
+
+        for relay in &self.relays {
+            client
+                .add_relay(relay.clone())
+                .await
+                .map_err(|e| Error::Relay(format!("add relay {relay}: {e}")))?;
+        }
+
+        client.connect().await;
+
+        let mut filter = Filter::new()
+            .kind(Kind::GiftWrap)
+            .pubkey(self.keys.public_key());
+        if let Some(since) = self.since {
+            filter = filter.since(since);
+        }
+
+        // Take the notification stream before subscribing so no event can slip
+        // between subscription creation and the receive loop.
+        let mut notifications = client.notifications();
+
+        client
+            .subscribe(filter, None)
+            .await
+            .map_err(|e| Error::Subscription(e.to_string()))?;
+
+        let cancel = self.cancel.clone();
+        tokio::spawn(async move {
+            loop {
+                let notification = tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    notification = notifications.recv() => notification,
+                };
+
+                match notification {
+                    Ok(RelayPoolNotification::Event { event, .. }) => {
+                        // Defense in depth: never trust a relay to honor the filter.
+                        if event.kind != Kind::GiftWrap {
+                            continue;
+                        }
+                        match client.unwrap_gift_wrap(&event).await {
+                            Ok(unwrapped) => listener.on_event(Nip17Event {
+                                wrap_id: event.id,
+                                wrap_created_at: event.created_at,
+                                sender: unwrapped.sender,
+                                rumor: unwrapped.rumor,
+                            }),
+                            Err(e) => {
+                                // Not encrypted for us or malformed — log and keep going
+                                tracing::debug!("inbox: unwrap gift wrap {} failed: {e}", event.id);
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(RecvError::Lagged(skipped)) => {
+                        tracing::warn!("inbox: notification stream lagged; skipped {skipped}");
+                    }
+                    Err(RecvError::Closed) => break,
+                }
+            }
+            client.disconnect().await;
+        });
+
+        Ok(())
+    }
+
+    /// Stop listening: cancels the pump and disconnects from the relays
+    pub fn stop(&self) {
+        self.cancel.cancel();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keys;
+
+    #[test]
+    fn new_requires_at_least_one_relay() {
+        let secret = keys::generate_secret_key();
+        let result = NostrInbox::new(secret, Vec::new(), None);
+        assert!(matches!(result, Err(Error::NoRelays)));
+    }
+
+    #[test]
+    fn pubkey_matches_secret_key() {
+        let secret = keys::parse_secret_key(
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .expect("valid secret key");
+        let relay = RelayUrl::parse("wss://relay.example.com").expect("valid relay url");
+        let inbox = NostrInbox::new(secret, vec![relay], None).expect("inbox");
+        assert_eq!(
+            inbox.pubkey().to_hex(),
+            "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        );
+    }
+}

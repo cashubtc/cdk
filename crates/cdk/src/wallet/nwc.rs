@@ -1,7 +1,7 @@
 //! Nostr Wallet Connect (NIP-47) integration for the CDK wallet.
 //!
-//! This module bridges the transport-agnostic [`cdk_nwc`] wallet service to a
-//! Cashu [`Wallet`]. [`WalletNwcHandler`] implements [`cdk_nwc::NwcRequestHandler`]
+//! This module bridges the transport-agnostic [`cdk_nostr::nwc`] wallet service to a
+//! Cashu [`Wallet`]. [`WalletNwcHandler`] implements [`cdk_nostr::nwc::NwcRequestHandler`]
 //! by mapping each NIP-47 command onto wallet operations:
 //!
 //! | NIP-47 command      | Wallet operation                                   |
@@ -32,12 +32,12 @@ use cdk_common::wallet::{
     MeltQuote, MintQuote, Transaction, TransactionDirection, TransactionStatus,
 };
 use cdk_common::{MeltQuoteState, MintQuoteState, PaymentMethod, SECP256K1};
-use cdk_nwc::nip47::{
+use cdk_nostr::nwc::nip47::{
     ErrorCode, GetBalanceResponse, GetInfoResponse, ListTransactionsRequest, LookupInvoiceRequest,
     LookupInvoiceResponse, MakeInvoiceRequest, MakeInvoiceResponse, Method, NIP47Error,
     PayInvoiceRequest, PayInvoiceResponse, TransactionType,
 };
-use cdk_nwc::service::SUPPORTED_METHODS;
+use cdk_nostr::nwc::service::SUPPORTED_METHODS;
 use lightning_invoice::Bolt11Invoice;
 use nostr_sdk::Timestamp;
 use tracing::instrument;
@@ -95,7 +95,7 @@ impl Wallet {
     }
 }
 
-/// A [`cdk_nwc::NwcRequestHandler`] backed by a Cashu [`Wallet`].
+/// A [`cdk_nostr::nwc::NwcRequestHandler`] backed by a Cashu [`Wallet`].
 #[derive(Debug, Clone)]
 pub struct WalletNwcHandler {
     wallet: Arc<Wallet>,
@@ -213,27 +213,31 @@ enum TransactionQuote<'a> {
     Melt(&'a MeltQuote),
 }
 
-fn transaction_status_to_nip47(status: TransactionStatus) -> cdk_nwc::nip47::TransactionState {
+fn transaction_status_to_nip47(
+    status: TransactionStatus,
+) -> cdk_nostr::nwc::nip47::TransactionState {
     match status {
-        TransactionStatus::Pending => cdk_nwc::nip47::TransactionState::Pending,
-        TransactionStatus::Completed => cdk_nwc::nip47::TransactionState::Settled,
-        TransactionStatus::Failed => cdk_nwc::nip47::TransactionState::Failed,
+        TransactionStatus::Pending => cdk_nostr::nwc::nip47::TransactionState::Pending,
+        TransactionStatus::Completed => cdk_nostr::nwc::nip47::TransactionState::Settled,
+        TransactionStatus::Failed => cdk_nostr::nwc::nip47::TransactionState::Failed,
     }
 }
 
-fn mint_quote_state_to_nip47(state: MintQuoteState) -> cdk_nwc::nip47::TransactionState {
+fn mint_quote_state_to_nip47(state: MintQuoteState) -> cdk_nostr::nwc::nip47::TransactionState {
     match state {
-        MintQuoteState::Unpaid => cdk_nwc::nip47::TransactionState::Pending,
-        MintQuoteState::Paid | MintQuoteState::Issued => cdk_nwc::nip47::TransactionState::Settled,
+        MintQuoteState::Unpaid => cdk_nostr::nwc::nip47::TransactionState::Pending,
+        MintQuoteState::Paid | MintQuoteState::Issued => {
+            cdk_nostr::nwc::nip47::TransactionState::Settled
+        }
     }
 }
 
-fn melt_quote_state_to_nip47(state: MeltQuoteState) -> cdk_nwc::nip47::TransactionState {
+fn melt_quote_state_to_nip47(state: MeltQuoteState) -> cdk_nostr::nwc::nip47::TransactionState {
     match state {
-        MeltQuoteState::Paid => cdk_nwc::nip47::TransactionState::Settled,
-        MeltQuoteState::Failed => cdk_nwc::nip47::TransactionState::Failed,
+        MeltQuoteState::Paid => cdk_nostr::nwc::nip47::TransactionState::Settled,
+        MeltQuoteState::Failed => cdk_nostr::nwc::nip47::TransactionState::Failed,
         MeltQuoteState::Unpaid | MeltQuoteState::Pending | MeltQuoteState::Unknown => {
-            cdk_nwc::nip47::TransactionState::Pending
+            cdk_nostr::nwc::nip47::TransactionState::Pending
         }
     }
 }
@@ -241,12 +245,12 @@ fn melt_quote_state_to_nip47(state: MeltQuoteState) -> cdk_nwc::nip47::Transacti
 fn transaction_state(
     tx: &Transaction,
     quote: Option<TransactionQuote<'_>>,
-) -> cdk_nwc::nip47::TransactionState {
+) -> cdk_nostr::nwc::nip47::TransactionState {
     match (tx.direction, quote) {
         (TransactionDirection::Incoming, Some(TransactionQuote::Mint(quote))) => {
             match quote.state {
                 MintQuoteState::Unpaid if tx.status == TransactionStatus::Completed => {
-                    cdk_nwc::nip47::TransactionState::Settled
+                    cdk_nostr::nwc::nip47::TransactionState::Settled
                 }
                 state => mint_quote_state_to_nip47(state),
             }
@@ -279,7 +283,7 @@ fn transaction_to_nip47(
         .unwrap_or_default();
 
     let state = transaction_state(tx, quote);
-    let settled_at = (state == cdk_nwc::nip47::TransactionState::Settled
+    let settled_at = (state == cdk_nostr::nwc::nip47::TransactionState::Settled
         && tx.status == TransactionStatus::Completed
         && tx.saga_id.is_none())
     .then_some(Timestamp::from(tx.timestamp));
@@ -378,7 +382,7 @@ fn transaction_time_matches(
 fn should_include_transaction(transaction: &LookupInvoiceResponse, include_unpaid: bool) -> bool {
     include_unpaid
         || transaction.transaction_type != Some(TransactionType::Incoming)
-        || transaction.state != Some(cdk_nwc::nip47::TransactionState::Pending)
+        || transaction.state != Some(cdk_nostr::nwc::nip47::TransactionState::Pending)
 }
 
 fn sort_nip47_transactions(transactions: &mut [LookupInvoiceResponse]) {
@@ -391,7 +395,7 @@ fn sort_nip47_transactions(transactions: &mut [LookupInvoiceResponse]) {
 }
 
 #[async_trait]
-impl cdk_nwc::NwcRequestHandler for WalletNwcHandler {
+impl cdk_nostr::nwc::NwcRequestHandler for WalletNwcHandler {
     #[instrument(skip(self))]
     async fn get_info(&self) -> Result<GetInfoResponse, NIP47Error> {
         let methods = SUPPORTED_METHODS
@@ -842,7 +846,7 @@ mod tests {
         assert_eq!(mapped.transaction_type, Some(TransactionType::Incoming));
         assert_eq!(
             mapped.state,
-            Some(cdk_nwc::nip47::TransactionState::Settled)
+            Some(cdk_nostr::nwc::nip47::TransactionState::Settled)
         );
         assert_eq!(mapped.amount, 10_000);
         assert_eq!(mapped.fees_paid, 1_000);
@@ -860,7 +864,7 @@ mod tests {
 
         assert_eq!(
             mapped.state,
-            Some(cdk_nwc::nip47::TransactionState::Settled)
+            Some(cdk_nostr::nwc::nip47::TransactionState::Settled)
         );
         assert!(mapped.settled_at.is_none());
     }
@@ -873,13 +877,16 @@ mod tests {
         let pending = transaction_to_nip47(&tx, &CurrencyUnit::Sat, None).expect("map pending tx");
         assert_eq!(
             pending.state,
-            Some(cdk_nwc::nip47::TransactionState::Pending)
+            Some(cdk_nostr::nwc::nip47::TransactionState::Pending)
         );
         assert!(pending.settled_at.is_none());
 
         tx.status = TransactionStatus::Failed;
         let failed = transaction_to_nip47(&tx, &CurrencyUnit::Sat, None).expect("map failed tx");
-        assert_eq!(failed.state, Some(cdk_nwc::nip47::TransactionState::Failed));
+        assert_eq!(
+            failed.state,
+            Some(cdk_nostr::nwc::nip47::TransactionState::Failed)
+        );
         assert!(failed.settled_at.is_none());
     }
 
@@ -913,7 +920,7 @@ mod tests {
 
             assert_eq!(
                 mapped.state,
-                Some(cdk_nwc::nip47::TransactionState::Settled)
+                Some(cdk_nostr::nwc::nip47::TransactionState::Settled)
             );
             assert!(mapped.settled_at.is_none());
         }
@@ -951,7 +958,10 @@ mod tests {
         )
         .expect("map melt transaction");
 
-        assert_eq!(mapped.state, Some(cdk_nwc::nip47::TransactionState::Failed));
+        assert_eq!(
+            mapped.state,
+            Some(cdk_nostr::nwc::nip47::TransactionState::Failed)
+        );
     }
 
     #[tokio::test]
@@ -976,7 +986,7 @@ mod tests {
             .expect("add newer transaction");
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
-        let transactions = cdk_nwc::NwcRequestHandler::list_transactions(
+        let transactions = cdk_nostr::nwc::NwcRequestHandler::list_transactions(
             &handler,
             ListTransactionsRequest {
                 limit: Some(1),
@@ -1017,24 +1027,18 @@ mod tests {
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
         let transactions =
-            cdk_nwc::NwcRequestHandler::list_transactions(&handler, Default::default())
+            cdk_nostr::nwc::NwcRequestHandler::list_transactions(&handler, Default::default())
                 .await
                 .expect("list transactions");
         assert_eq!(transactions.len(), 2);
-        assert!(transactions.iter().any(
-            |transaction| transaction.state == Some(cdk_nwc::nip47::TransactionState::Settled)
-        ));
-        assert!(!transactions.iter().any(
-            |transaction| transaction.state == Some(cdk_nwc::nip47::TransactionState::Pending)
-        ));
-        assert!(
-            transactions
-                .iter()
-                .any(|transaction| transaction.state
-                    == Some(cdk_nwc::nip47::TransactionState::Failed))
-        );
+        assert!(transactions.iter().any(|transaction| transaction.state
+            == Some(cdk_nostr::nwc::nip47::TransactionState::Settled)));
+        assert!(!transactions.iter().any(|transaction| transaction.state
+            == Some(cdk_nostr::nwc::nip47::TransactionState::Pending)));
+        assert!(transactions.iter().any(|transaction| transaction.state
+            == Some(cdk_nostr::nwc::nip47::TransactionState::Failed)));
 
-        let transactions = cdk_nwc::NwcRequestHandler::list_transactions(
+        let transactions = cdk_nostr::nwc::NwcRequestHandler::list_transactions(
             &handler,
             ListTransactionsRequest {
                 unpaid: Some(true),
@@ -1044,9 +1048,8 @@ mod tests {
         .await
         .expect("list transactions with unpaid");
         assert_eq!(transactions.len(), 3);
-        assert!(transactions.iter().any(
-            |transaction| transaction.state == Some(cdk_nwc::nip47::TransactionState::Pending)
-        ));
+        assert!(transactions.iter().any(|transaction| transaction.state
+            == Some(cdk_nostr::nwc::nip47::TransactionState::Pending)));
     }
 
     #[tokio::test]
@@ -1078,7 +1081,7 @@ mod tests {
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
         let transactions =
-            cdk_nwc::NwcRequestHandler::list_transactions(&handler, Default::default())
+            cdk_nostr::nwc::NwcRequestHandler::list_transactions(&handler, Default::default())
                 .await
                 .expect("list transactions");
 
@@ -1116,14 +1119,14 @@ mod tests {
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
         let transactions =
-            cdk_nwc::NwcRequestHandler::list_transactions(&handler, Default::default())
+            cdk_nostr::nwc::NwcRequestHandler::list_transactions(&handler, Default::default())
                 .await
                 .expect("list transactions");
 
         assert_eq!(transactions.len(), 1);
         assert_eq!(
             transactions[0].state,
-            Some(cdk_nwc::nip47::TransactionState::Settled)
+            Some(cdk_nostr::nwc::nip47::TransactionState::Settled)
         );
         assert!(transactions[0].settled_at.is_none());
     }
@@ -1169,17 +1172,17 @@ mod tests {
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
         let transactions =
-            cdk_nwc::NwcRequestHandler::list_transactions(&handler, Default::default())
+            cdk_nostr::nwc::NwcRequestHandler::list_transactions(&handler, Default::default())
                 .await
                 .expect("list transactions");
 
         assert_eq!(transactions.len(), 1);
         assert_eq!(
             transactions[0].state,
-            Some(cdk_nwc::nip47::TransactionState::Settled)
+            Some(cdk_nostr::nwc::nip47::TransactionState::Settled)
         );
 
-        let transaction = cdk_nwc::NwcRequestHandler::lookup_invoice(
+        let transaction = cdk_nostr::nwc::NwcRequestHandler::lookup_invoice(
             &handler,
             LookupInvoiceRequest {
                 payment_hash: Some(payment_hash_of(TEST_BOLT11).expect("payment hash")),
@@ -1190,7 +1193,7 @@ mod tests {
         .expect("lookup transaction");
         assert_eq!(
             transaction.state,
-            Some(cdk_nwc::nip47::TransactionState::Settled)
+            Some(cdk_nostr::nwc::nip47::TransactionState::Settled)
         );
     }
 
@@ -1224,7 +1227,7 @@ mod tests {
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
         let payment_hash = payment_hash_of(TEST_BOLT11).expect("payment hash");
-        let transactions = cdk_nwc::NwcRequestHandler::list_transactions(
+        let transactions = cdk_nostr::nwc::NwcRequestHandler::list_transactions(
             &handler,
             ListTransactionsRequest {
                 unpaid: Some(true),
@@ -1242,7 +1245,7 @@ mod tests {
         );
         assert_eq!(
             transaction.state,
-            Some(cdk_nwc::nip47::TransactionState::Pending)
+            Some(cdk_nostr::nwc::nip47::TransactionState::Pending)
         );
         assert_eq!(transaction.invoice.as_deref(), Some(TEST_BOLT11));
         assert_eq!(transaction.payment_hash, payment_hash);
@@ -1288,7 +1291,7 @@ mod tests {
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
         let payment_hash = payment_hash_of(TEST_BOLT11).expect("payment hash");
-        let transactions = cdk_nwc::NwcRequestHandler::list_transactions(
+        let transactions = cdk_nostr::nwc::NwcRequestHandler::list_transactions(
             &handler,
             ListTransactionsRequest {
                 transaction_type: Some(TransactionType::Outgoing),
@@ -1306,7 +1309,7 @@ mod tests {
         );
         assert_eq!(
             transaction.state,
-            Some(cdk_nwc::nip47::TransactionState::Pending)
+            Some(cdk_nostr::nwc::nip47::TransactionState::Pending)
         );
         assert_eq!(transaction.invoice.as_deref(), Some(TEST_BOLT11));
         assert_eq!(transaction.payment_hash, payment_hash);
@@ -1347,7 +1350,7 @@ mod tests {
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
         let payment_hash = payment_hash_of(TEST_BOLT11).expect("payment hash");
         let invoice_created_at = invoice_created_at(TEST_BOLT11).expect("invoice created at");
-        let transaction = cdk_nwc::NwcRequestHandler::lookup_invoice(
+        let transaction = cdk_nostr::nwc::NwcRequestHandler::lookup_invoice(
             &handler,
             LookupInvoiceRequest {
                 payment_hash: Some(payment_hash),
@@ -1359,7 +1362,7 @@ mod tests {
 
         assert_eq!(
             transaction.state,
-            Some(cdk_nwc::nip47::TransactionState::Pending)
+            Some(cdk_nostr::nwc::nip47::TransactionState::Pending)
         );
         assert_eq!(transaction.created_at, invoice_created_at);
         assert_eq!(transaction.expires_at, Some(Timestamp::from(expiry)));
@@ -1402,7 +1405,7 @@ mod tests {
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
         let payment_hash = payment_hash_of(TEST_BOLT11).expect("payment hash");
         let invoice_created_at = invoice_created_at(TEST_BOLT11).expect("invoice created at");
-        let transaction = cdk_nwc::NwcRequestHandler::lookup_invoice(
+        let transaction = cdk_nostr::nwc::NwcRequestHandler::lookup_invoice(
             &handler,
             LookupInvoiceRequest {
                 payment_hash: Some(payment_hash.clone()),
@@ -1418,7 +1421,7 @@ mod tests {
         );
         assert_eq!(
             transaction.state,
-            Some(cdk_nwc::nip47::TransactionState::Pending)
+            Some(cdk_nostr::nwc::nip47::TransactionState::Pending)
         );
         assert_eq!(transaction.invoice.as_deref(), Some(TEST_BOLT11));
         assert_eq!(transaction.payment_hash, payment_hash);
@@ -1442,7 +1445,7 @@ mod tests {
         .expect("wallet");
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
-        let err = cdk_nwc::NwcRequestHandler::make_invoice(
+        let err = cdk_nostr::nwc::NwcRequestHandler::make_invoice(
             &handler,
             MakeInvoiceRequest {
                 amount: 1_000,
@@ -1471,7 +1474,7 @@ mod tests {
         .expect("wallet");
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
-        let err = cdk_nwc::NwcRequestHandler::make_invoice(
+        let err = cdk_nostr::nwc::NwcRequestHandler::make_invoice(
             &handler,
             MakeInvoiceRequest {
                 amount: 1_000,
@@ -1517,7 +1520,7 @@ mod tests {
             .expect("wallet");
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
-        let err = cdk_nwc::NwcRequestHandler::make_invoice(
+        let err = cdk_nostr::nwc::NwcRequestHandler::make_invoice(
             &handler,
             MakeInvoiceRequest {
                 amount: 1_000,
@@ -1546,7 +1549,7 @@ mod tests {
         .expect("wallet");
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
-        let info = cdk_nwc::NwcRequestHandler::get_info(&handler)
+        let info = cdk_nostr::nwc::NwcRequestHandler::get_info(&handler)
             .await
             .expect("get_info");
 
@@ -1568,7 +1571,7 @@ mod tests {
         .expect("wallet");
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
-        let balance = cdk_nwc::NwcRequestHandler::get_balance(&handler)
+        let balance = cdk_nostr::nwc::NwcRequestHandler::get_balance(&handler)
             .await
             .expect("get_balance");
 
@@ -1588,7 +1591,7 @@ mod tests {
         .expect("wallet");
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
-        let err = cdk_nwc::NwcRequestHandler::pay_invoice(
+        let err = cdk_nostr::nwc::NwcRequestHandler::pay_invoice(
             &handler,
             PayInvoiceRequest {
                 id: None,
@@ -1615,7 +1618,7 @@ mod tests {
         .expect("wallet");
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
-        let err = cdk_nwc::NwcRequestHandler::pay_invoice(
+        let err = cdk_nostr::nwc::NwcRequestHandler::pay_invoice(
             &handler,
             PayInvoiceRequest {
                 id: None,
@@ -1643,7 +1646,7 @@ mod tests {
         .expect("wallet");
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), Some(1_000));
-        let err = cdk_nwc::NwcRequestHandler::pay_invoice(
+        let err = cdk_nostr::nwc::NwcRequestHandler::pay_invoice(
             &handler,
             PayInvoiceRequest {
                 id: None,
@@ -1670,7 +1673,7 @@ mod tests {
         .expect("wallet");
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
-        let err = cdk_nwc::NwcRequestHandler::lookup_invoice(
+        let err = cdk_nostr::nwc::NwcRequestHandler::lookup_invoice(
             &handler,
             LookupInvoiceRequest {
                 payment_hash: Some("00".repeat(32)),
@@ -1696,7 +1699,7 @@ mod tests {
         .expect("wallet");
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
-        let err = cdk_nwc::NwcRequestHandler::lookup_invoice(
+        let err = cdk_nostr::nwc::NwcRequestHandler::lookup_invoice(
             &handler,
             LookupInvoiceRequest {
                 payment_hash: None,

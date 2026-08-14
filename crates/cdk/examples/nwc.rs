@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{Wallet, WalletNwcHandler};
-use cdk_nwc::{NwcService, NwcServiceConfig};
+use cdk_nostr::nwc::{NwcService, NwcServiceConfig};
 use cdk_sqlite::wallet::memory;
 use nostr_sdk::{Keys, RelayUrl, SecretKey};
 use nwc::prelude::{NostrWalletConnect, NostrWalletConnectUri};
