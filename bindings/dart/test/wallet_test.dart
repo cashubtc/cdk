@@ -64,6 +64,71 @@ void main() {
     }
   });
 
+  Wallet rateLimitedWallet(RateLimit? rateLimit) => Wallet(
+    mintUrl: 'https://mint.example.com',
+    unit: SatCurrencyUnit(),
+    mnemonic: generateMnemonic(),
+    store: SqliteWalletStore(':memory:'),
+    config: WalletConfig(targetProofCount: null, rateLimit: rateLimit),
+  );
+
+  test('rate limit defaults to pacing', () {
+    // Omitting the field is the backwards-compatible spelling and must keep
+    // selecting the built-in default.
+    final omitted = Wallet(
+      mintUrl: 'https://mint.example.com',
+      unit: SatCurrencyUnit(),
+      mnemonic: generateMnemonic(),
+      store: SqliteWalletStore(':memory:'),
+      config: WalletConfig(targetProofCount: null),
+    );
+    try {
+      expect(omitted.isRateLimited(), isTrue);
+    } finally {
+      omitted.dispose();
+    }
+
+    final explicit = rateLimitedWallet(DefaultRateLimit());
+    try {
+      expect(explicit.isRateLimited(), isTrue);
+    } finally {
+      explicit.dispose();
+    }
+  });
+
+  test('rate limit can be disabled and re-enabled', () {
+    final wallet = rateLimitedWallet(DisabledRateLimit());
+    try {
+      expect(wallet.isRateLimited(), isFalse);
+      wallet.setRateLimit(rateLimit: DefaultRateLimit());
+      expect(wallet.isRateLimited(), isTrue);
+    } finally {
+      wallet.dispose();
+    }
+  });
+
+  test('custom rate limit paces the wallet', () {
+    final wallet = rateLimitedWallet(
+      CustomRateLimit(capacity: 5, refillPerMinute: 30),
+    );
+    try {
+      expect(wallet.isRateLimited(), isTrue);
+    } finally {
+      wallet.dispose();
+    }
+  });
+
+  test('zero rate limit values are rejected', () {
+    expect(
+      () => rateLimitedWallet(CustomRateLimit(capacity: 0, refillPerMinute: 30)),
+      throwsA(isA<FfiException>()),
+    );
+    expect(
+      () => rateLimitedWallet(CustomRateLimit(capacity: 5, refillPerMinute: 0)),
+      throwsA(isA<FfiException>()),
+    );
+  });
+
   test(
     'mint flow',
     () async {

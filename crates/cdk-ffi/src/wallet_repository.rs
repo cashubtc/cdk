@@ -10,6 +10,22 @@ use cdk::wallet::wallet_repository::{
 
 use crate::error::FfiError;
 use crate::types::*;
+use crate::wallet::RateLimit;
+
+/// Configuration for creating a wallet repository.
+///
+/// Rate limiting is a repository-wide setting: every wallet the repository
+/// hands out shares one limiter, so there is no per-wallet equivalent.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct WalletRepositoryConfig {
+    /// Proxy used by every mint operation. Omit for a direct connection.
+    #[uniffi(default = None)]
+    pub proxy_url: Option<String>,
+    /// Client-side request pacing to start with. Omit it to keep the built-in
+    /// default.
+    #[uniffi(default = None)]
+    pub rate_limit: Option<RateLimit>,
+}
 
 /// FFI-compatible WalletRepository
 #[derive(uniffi::Object)]
@@ -86,6 +102,61 @@ impl WalletRepository {
                 .proxy_url(proxy_url)
                 .build()
                 .await
+        })?;
+
+        Ok(Self {
+            inner: Arc::new(wallet),
+        })
+    }
+
+    /// Create a new WalletRepository with proxy and rate-limit configuration.
+    ///
+    /// Construction restores locally persisted wallet state without making
+    /// network requests to configured mints.
+    #[uniffi::constructor]
+    pub fn new_with_config(
+        mnemonic: String,
+        store: crate::database::WalletStore,
+        config: WalletRepositoryConfig,
+    ) -> Result<Self, FfiError> {
+        let db = crate::database::resolve_wallet_store(store)?;
+
+        let m = Mnemonic::parse(&mnemonic)
+            .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
+        let seed = m.to_seed_normalized("");
+
+        let localstore = crate::database::create_cdk_database_from_ffi(db);
+
+        let proxy_url = config
+            .proxy_url
+            .as_deref()
+            .map(url::Url::parse)
+            .transpose()
+            .map_err(|e| FfiError::internal(format!("Invalid URL: {}", e)))?;
+
+        let rate_limit = config
+            .rate_limit
+            .as_ref()
+            .map(RateLimit::to_config)
+            .transpose()?;
+
+        let rt = crate::runtime::RuntimeGuard::new().map_err(FfiError::internal)?;
+        let wallet = rt.block_on(async move {
+            let mut builder = WalletRepositoryBuilder::new()
+                .localstore(localstore)
+                .seed(seed);
+
+            if let Some(proxy_url) = proxy_url {
+                builder = builder.proxy_url(proxy_url);
+            }
+
+            builder = match rate_limit {
+                Some(Some(config)) => builder.with_rate_limiting_config(config),
+                Some(None) => builder.with_rate_limiting_disabled(),
+                None => builder,
+            };
+
+            builder.build().await
         })?;
 
         Ok(Self {
@@ -216,6 +287,28 @@ impl WalletRepository {
     /// mint's rate cap.
     pub async fn flush_rate_limits(&self) {
         self.inner.flush_rate_limits().await;
+    }
+
+    /// Change client-side request rate limiting for every wallet here.
+    ///
+    /// Pacing is repository-wide because one limiter is shared, which is why
+    /// `create_wallet` and `get_or_create_wallet` take no rate limit: a
+    /// per-wallet value would silently reconfigure its siblings. Repository
+    /// construction makes no network requests, so calling this immediately
+    /// after `new` is equivalent to configuring it through `new_with_config`.
+    ///
+    /// Returns an error if a `Custom` value has a zero field.
+    pub fn set_rate_limit(&self, rate_limit: RateLimit) -> Result<(), FfiError> {
+        self.inner.set_rate_limiting_config(rate_limit.to_config()?);
+        Ok(())
+    }
+
+    /// Whether this repository is pacing requests right now.
+    ///
+    /// Wallets reached through a proxy or Tor are built with a custom client,
+    /// so they report false even while this is true.
+    pub fn is_rate_limited(&self) -> bool {
+        self.inner.is_rate_limited()
     }
 
     /// Check if mint is in wallet
@@ -359,6 +452,74 @@ mod tests {
 
     fn mint_url() -> MintUrl {
         MintUrl::new("https://mint.example.com".to_string()).expect("valid mint url")
+    }
+
+    fn repository_with(rate_limit: Option<RateLimit>) -> Result<WalletRepository, FfiError> {
+        let db = WalletSqliteDatabase::new_in_memory().expect("in-memory wallet db should open");
+        WalletRepository::new_with_config(
+            MNEMONIC.to_string(),
+            custom_wallet_store(db),
+            WalletRepositoryConfig {
+                proxy_url: None,
+                rate_limit,
+            },
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_with_config_selects_the_starting_rate_limit() {
+        for rate_limit in [
+            None,
+            Some(RateLimit::Default),
+            Some(RateLimit::Custom {
+                capacity: 5,
+                refill_per_minute: 30,
+            }),
+        ] {
+            let repo = repository_with(rate_limit).expect("repository should be created");
+            assert!(repo.is_rate_limited());
+        }
+
+        let disabled =
+            repository_with(Some(RateLimit::Disabled)).expect("repository should be created");
+        assert!(!disabled.is_rate_limited());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_with_config_rejects_zero_custom() {
+        assert!(repository_with(Some(RateLimit::Custom {
+            capacity: 0,
+            refill_per_minute: 30,
+        }))
+        .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_rate_limit_reaches_wallets_it_handed_out() {
+        let repo = repository_with(Some(RateLimit::Disabled)).expect("repository created");
+        let wallet = repo
+            .get_or_create_wallet(mint_url(), CurrencyUnit::Sat, None)
+            .await
+            .expect("wallet should be created");
+        assert!(!wallet.is_rate_limited());
+
+        repo.set_rate_limit(RateLimit::Default)
+            .expect("default is always valid");
+        assert!(
+            wallet.is_rate_limited(),
+            "wallets share the repository limiter"
+        );
+
+        repo.set_rate_limit(RateLimit::Disabled)
+            .expect("disabled is always valid");
+        assert!(!wallet.is_rate_limited());
+
+        assert!(repo
+            .set_rate_limit(RateLimit::Custom {
+                capacity: 5,
+                refill_per_minute: 0,
+            })
+            .is_err());
     }
 
     #[tokio::test(flavor = "multi_thread")]

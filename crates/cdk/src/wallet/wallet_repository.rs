@@ -149,6 +149,7 @@ pub struct WalletRepositoryBuilder {
     seed: Option<[u8; 64]>,
     proxy_config: Option<url::Url>,
     danger_accept_invalid_certs: bool,
+    rate_limit: Option<RateLimitConfig>,
     #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
     use_tor: bool,
 }
@@ -163,6 +164,7 @@ impl std::fmt::Debug for WalletRepositoryBuilder {
                 "danger_accept_invalid_certs",
                 &self.danger_accept_invalid_certs,
             )
+            .field("rate_limit", &self.rate_limit)
             .finish()
     }
 }
@@ -181,6 +183,7 @@ impl WalletRepositoryBuilder {
             seed: None,
             proxy_config: None,
             danger_accept_invalid_certs: false,
+            rate_limit: Some(RateLimitConfig::default()),
             #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
             use_tor: false,
         }
@@ -223,6 +226,28 @@ impl WalletRepositoryBuilder {
         self
     }
 
+    /// Set the rate-limiting configuration shared by every wallet this
+    /// repository builds.
+    ///
+    /// Rate limiting is on by default with [`RateLimitConfig::default`].
+    pub fn with_rate_limiting_config(mut self, config: RateLimitConfig) -> Self {
+        self.rate_limit = Some(config);
+        self
+    }
+
+    /// Start with pacing turned off.
+    ///
+    /// The limiter is still built, so
+    /// [`WalletRepository::set_rate_limiting_config`] can turn pacing back on
+    /// later. That reversibility is why this is not named
+    /// `without_rate_limiting`: the repository has no equivalent of
+    /// [`WalletBuilder::without_rate_limiting`], which drops the limiter
+    /// outright, because one limiter is shared across every wallet here.
+    pub fn with_rate_limiting_disabled(mut self) -> Self {
+        self.rate_limit = None;
+        self
+    }
+
     /// Build the WalletRepository and load existing wallets from the database.
     ///
     /// This only uses persisted mint metadata and does not make network requests.
@@ -232,11 +257,14 @@ impl WalletRepositoryBuilder {
             .ok_or(Error::Custom("localstore is required".into()))?;
         let seed = self.seed.ok_or(Error::Custom("seed is required".into()))?;
 
+        let rate_limiter = RateLimiterManager::new(
+            self.rate_limit.unwrap_or_default(),
+            Some(localstore.clone()),
+        );
+        rate_limiter.set_enabled(self.rate_limit.is_some());
+
         let wallet = WalletRepository {
-            rate_limiter: RateLimiterManager::new(
-                RateLimitConfig::default(),
-                Some(localstore.clone()),
-            ),
+            rate_limiter,
             localstore,
             seed,
             wallets: Arc::new(RwLock::new(BTreeMap::new())),
@@ -306,6 +334,13 @@ fn validate_proxy_url(proxy_url: &url::Url) -> Result<(), Error> {
 /// one combined burst regardless of currency unit, and traffic to a third-party
 /// host (an LNURL service, an OIDC provider) paces against that host's own
 /// budget rather than any mint's.
+///
+/// Because that limiter is shared, pacing is configured for the repository as a
+/// whole, at build time through [`WalletRepositoryBuilder::with_rate_limiting_config`]
+/// or later through [`WalletRepository::set_rate_limiting_config`], never per
+/// wallet. Proxied and Tor wallets are built with a custom client, so their
+/// limiter is wired to nothing and they report
+/// [`Wallet::is_rate_limited`] as false whatever the repository is set to.
 #[derive(Clone)]
 pub struct WalletRepository {
     /// Storage backend
@@ -504,6 +539,28 @@ impl WalletRepository {
     /// detached writer.
     pub async fn flush_rate_limits(&self) {
         self.rate_limiter.flush().await;
+    }
+
+    /// Reconfigure pacing for every wallet in this repository, or turn it off
+    /// with `None`.
+    ///
+    /// Pacing is a repository-wide property because one limiter is shared, so
+    /// there is deliberately no per-wallet equivalent at creation time: it would
+    /// silently reconfigure sibling wallets.
+    pub fn set_rate_limiting_config(&self, config: Option<RateLimitConfig>) {
+        match config {
+            Some(config) => self.rate_limiter.set_config(config),
+            None => self.rate_limiter.set_enabled(false),
+        }
+    }
+
+    /// Whether this repository is pacing requests right now.
+    ///
+    /// Individual wallets can still report false while this is true: a proxied
+    /// or Tor wallet is built with a custom client, which leaves its limiter
+    /// wired to nothing.
+    pub fn is_rate_limited(&self) -> bool {
+        self.rate_limiter.is_enabled()
     }
 
     /// Remove a wallet from the in-memory repository
@@ -1575,6 +1632,70 @@ mod tests {
         assert!(unlimited.rate_limiter.is_none());
         unlimited.flush_rate_limits().await;
         create_test_repository().await.flush_rate_limits().await;
+    }
+
+    async fn repository_with_rate_limit(rate_limit: Option<RateLimitConfig>) -> WalletRepository {
+        let localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("Failed to create in-memory database"),
+        );
+        let builder = WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed([0u8; 64]);
+        let builder = match rate_limit {
+            Some(config) => builder.with_rate_limiting_config(config),
+            None => builder.with_rate_limiting_disabled(),
+        };
+        builder
+            .build()
+            .await
+            .expect("Failed to create WalletRepository")
+    }
+
+    #[tokio::test]
+    async fn repository_starts_with_the_configured_rate_limit() {
+        assert!(create_test_repository().await.is_rate_limited());
+        assert!(repository_with_rate_limit(RateLimitConfig::try_new(5, 30))
+            .await
+            .is_rate_limited());
+        assert!(!repository_with_rate_limit(None).await.is_rate_limited());
+    }
+
+    #[tokio::test]
+    async fn repository_rate_limit_reaches_wallets_it_already_handed_out() {
+        let repo = repository_with_rate_limit(None).await;
+        let mint_url: MintUrl = "https://mint.example.com".parse().unwrap();
+        let wallet = repo
+            .get_or_create_wallet(mint_url, CurrencyUnit::Sat, None)
+            .await
+            .expect("wallet should be created");
+        assert!(!wallet.is_rate_limited());
+
+        repo.set_rate_limiting_config(Some(RateLimitConfig::default()));
+        assert!(repo.is_rate_limited());
+        assert!(
+            wallet.is_rate_limited(),
+            "the wallet shares the repository's limiter"
+        );
+
+        repo.set_rate_limiting_config(None);
+        assert!(!wallet.is_rate_limited());
+    }
+
+    #[tokio::test]
+    async fn a_disabled_repository_admits_more_than_one_burst() {
+        let repo = repository_with_rate_limit(None).await;
+        let mint_url: MintUrl = "https://mint.example.com".parse().unwrap();
+        let wallet = repo
+            .get_or_create_wallet(mint_url, CurrencyUnit::Sat, None)
+            .await
+            .expect("wallet should be created");
+
+        let bucket = bucket_for(&wallet, "https://mint.example.com/v1/info");
+        for _ in 0..(DEFAULT_BURST + 5) {
+            assert!(bucket.try_acquire().await, "pacing is off");
+        }
     }
 
     #[tokio::test]

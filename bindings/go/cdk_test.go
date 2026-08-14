@@ -84,6 +84,89 @@ func TestInMemorySqliteConcurrentAccess(t *testing.T) {
 	}
 }
 
+func newRateLimitedWallet(rateLimit *RateLimit) (*Wallet, error) {
+	mnemonic, err := GenerateMnemonic()
+	if err != nil {
+		return nil, err
+	}
+	return NewWallet(
+		"https://mint.example.com",
+		CurrencyUnitSat{},
+		mnemonic,
+		WalletStoreSqlite{Path: ":memory:"},
+		WalletConfig{TargetProofCount: nil, RateLimit: rateLimit},
+	)
+}
+
+func TestRateLimitDefaultsToPacing(t *testing.T) {
+	// A nil rate limit is the backwards-compatible spelling and must keep
+	// selecting the built-in default.
+	omitted, err := newRateLimitedWallet(nil)
+	if err != nil {
+		t.Fatalf("NewWallet: %v", err)
+	}
+	defer omitted.Destroy()
+	if !omitted.IsRateLimited() {
+		t.Error("an omitted rate limit should pace by default")
+	}
+
+	var def RateLimit = RateLimitDefault{}
+	explicit, err := newRateLimitedWallet(&def)
+	if err != nil {
+		t.Fatalf("NewWallet: %v", err)
+	}
+	defer explicit.Destroy()
+	if !explicit.IsRateLimited() {
+		t.Error("Default should pace the wallet")
+	}
+}
+
+func TestRateLimitCanBeDisabledAndReEnabled(t *testing.T) {
+	var disabled RateLimit = RateLimitDisabled{}
+	w, err := newRateLimitedWallet(&disabled)
+	if err != nil {
+		t.Fatalf("NewWallet: %v", err)
+	}
+	defer w.Destroy()
+
+	if w.IsRateLimited() {
+		t.Error("Disabled should not pace")
+	}
+
+	if err := w.SetRateLimit(RateLimitDefault{}); err != nil {
+		t.Fatalf("SetRateLimit: %v", err)
+	}
+	if !w.IsRateLimited() {
+		t.Error("a wallet built disabled should be re-enablable")
+	}
+}
+
+func TestCustomRateLimitPaces(t *testing.T) {
+	var custom RateLimit = RateLimitCustom{Capacity: 5, RefillPerMinute: 30}
+	w, err := newRateLimitedWallet(&custom)
+	if err != nil {
+		t.Fatalf("NewWallet: %v", err)
+	}
+	defer w.Destroy()
+
+	if !w.IsRateLimited() {
+		t.Error("Custom should pace the wallet")
+	}
+}
+
+func TestZeroRateLimitValuesAreRejected(t *testing.T) {
+	for _, rl := range []RateLimit{
+		RateLimitCustom{Capacity: 0, RefillPerMinute: 30},
+		RateLimitCustom{Capacity: 5, RefillPerMinute: 0},
+	} {
+		rl := rl
+		if w, err := newRateLimitedWallet(&rl); err == nil {
+			w.Destroy()
+			t.Errorf("%v should be rejected", rl)
+		}
+	}
+}
+
 func TestMintFlow(t *testing.T) {
 	w := newTestWallet(t, tempDBPath(t))
 	defer w.Destroy()

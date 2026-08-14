@@ -11,6 +11,7 @@ use cdk_common::nuts::nut18::PaymentRequest;
 use cdk_common::nuts::{
     AuthProof, CurrencyUnit, Id, MeltOptions, MintInfo, PaymentMethod, Proofs, SpendingConditions,
 };
+use cdk_common::rate_limit::RateLimitConfig;
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::{
     CrossMintTransferQuote, MeltQuote, MintQuote, ReceiveOptions, Restored, SendOptions,
@@ -386,6 +387,21 @@ impl WalletTrait for super::Wallet {
         self.set_metadata_cache_ttl(ttl);
     }
 
+    fn set_rate_limiting_config(&self, config: Option<RateLimitConfig>) {
+        match config {
+            Some(config) => self.set_rate_limiting_config(config),
+            None => self.disable_rate_limiting(),
+        }
+    }
+
+    fn is_rate_limited(&self) -> bool {
+        self.is_rate_limited()
+    }
+
+    async fn flush_rate_limits(&self) {
+        self.flush_rate_limits().await;
+    }
+
     #[instrument(skip(self, params))]
     async fn subscribe(&self, params: WalletParams) -> Result<ActiveSubscription, Self::Error> {
         self.subscribe(params).await
@@ -467,5 +483,44 @@ impl WalletTrait for super::Wallet {
     async fn get_signing_key(&self, pubkey: &PublicKey) -> Result<Option<SecretKey>, Self::Error> {
         let signing_key = self.get_signing_key(pubkey).await?;
         Ok(signing_key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use cdk_common::rate_limit::RateLimitConfig;
+
+    use super::*;
+    use crate::wallet::WalletBuilder;
+
+    async fn test_wallet() -> super::super::Wallet {
+        let store = Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap());
+        WalletBuilder::default()
+            .mint_url(MintUrl::from_str("https://mint.example.com").unwrap())
+            .unit(CurrencyUnit::Sat)
+            .localstore(store)
+            .seed([0u8; 64])
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn rate_limiting_round_trips_through_the_trait() {
+        let wallet = test_wallet().await;
+        assert!(WalletTrait::is_rate_limited(&wallet));
+
+        WalletTrait::set_rate_limiting_config(&wallet, None);
+        assert!(!WalletTrait::is_rate_limited(&wallet));
+
+        WalletTrait::set_rate_limiting_config(&wallet, Some(RateLimitConfig::default()));
+        assert!(WalletTrait::is_rate_limited(&wallet));
+    }
+
+    #[tokio::test]
+    async fn flushing_an_untouched_wallet_returns() {
+        let wallet = test_wallet().await;
+        WalletTrait::flush_rate_limits(&wallet).await;
     }
 }

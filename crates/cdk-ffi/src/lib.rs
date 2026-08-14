@@ -501,11 +501,13 @@ mod tests {
     fn test_wallet_config() {
         let config = WalletConfig {
             target_proof_count: None,
+            rate_limit: None,
         };
         assert!(config.target_proof_count.is_none());
 
         let config_with_values = WalletConfig {
             target_proof_count: Some(5),
+            rate_limit: None,
         };
         assert_eq!(config_with_values.target_proof_count, Some(5));
     }

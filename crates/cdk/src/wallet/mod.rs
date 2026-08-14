@@ -323,6 +323,9 @@ impl Wallet {
     /// When the wallet was built through a [`WalletRepository`], the limiter is
     /// shared with every other wallet in that repository, so this reconfigures
     /// pacing repository-wide.
+    ///
+    /// [`Wallet::is_rate_limited`] reports whether the call took effect, since
+    /// the no-op cases are otherwise silent.
     pub fn set_rate_limiting_config(&self, config: RateLimitConfig) {
         if let Some(limiter) = &self.rate_limiter {
             limiter.set_config(config);
@@ -338,6 +341,17 @@ impl Wallet {
         if let Some(limiter) = &self.rate_limiter {
             limiter.set_enabled(false);
         }
+    }
+
+    /// Whether this wallet's requests are being paced right now.
+    ///
+    /// False both when pacing was turned off and when the wallet paces nothing
+    /// at all, which is the case [`Wallet::set_rate_limiting_config`] silently
+    /// ignores.
+    pub fn is_rate_limited(&self) -> bool {
+        self.rate_limiter
+            .as_ref()
+            .is_some_and(RateLimiterManager::is_enabled)
     }
 
     /// Wait until the rate-limit budget this wallet has drawn down has been

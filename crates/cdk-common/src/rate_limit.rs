@@ -587,6 +587,12 @@ impl RateLimiterManager {
         }
     }
 
+    /// Whether pacing is currently on. Reports the manager-wide toggle, which
+    /// every bucket created later inherits.
+    pub fn is_enabled(&self) -> bool {
+        lock(&self.settings).enabled
+    }
+
     /// Wait until every budget drawn down so far has been handed to the store.
     ///
     /// The shutdown barrier for a wallet lifecycle owner: without it, the final
@@ -1201,6 +1207,18 @@ mod tests {
         let newest = manager.bucket_for(&parse("https://third.example.net"));
         assert!(newest.try_acquire().await);
         assert!(!newest.try_acquire().await, "new bucket inherits config");
+    }
+
+    #[tokio::test]
+    async fn manager_reports_whether_pacing_is_on() {
+        let manager = RateLimiterManager::new(config(1, 60), None);
+        assert!(manager.is_enabled(), "a fresh manager paces");
+
+        manager.set_enabled(false);
+        assert!(!manager.is_enabled());
+
+        manager.set_config(config(2, 120));
+        assert!(manager.is_enabled(), "set_config re-enables pacing");
     }
 
     #[tokio::test]

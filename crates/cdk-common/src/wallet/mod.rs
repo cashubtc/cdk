@@ -21,6 +21,8 @@ use crate::mint_url::MintUrl;
 use crate::nuts::{
     CurrencyUnit, Id, MeltQuoteState, MintQuoteState, SecretKey, SpendingConditions, State,
 };
+#[cfg(feature = "http")]
+use crate::rate_limit::RateLimitConfig;
 use crate::{Amount, Error};
 
 pub mod saga;
@@ -1187,6 +1189,29 @@ pub trait Wallet: Send + Sync {
     /// before requiring a refresh from the mint server.
     /// If `None`, cache never expires and is always used.
     fn set_metadata_cache_ttl(&self, ttl_secs: Option<u64>);
+
+    /// Configure client-side request pacing, or turn it off with `None`.
+    ///
+    /// Reaches every host the wallet paces, not only its mint, and is
+    /// repository-wide when the wallet came from a wallet repository, since
+    /// those share one limiter. `None` then `Some` is a reversible toggle.
+    #[cfg(feature = "http")]
+    fn set_rate_limiting_config(&self, config: Option<RateLimitConfig>);
+
+    /// Whether requests from this wallet are being paced right now.
+    ///
+    /// Also false when a custom transport left the limiter wired to nothing,
+    /// which is what silently makes [`Self::set_rate_limiting_config`] a no-op.
+    #[cfg(feature = "http")]
+    fn is_rate_limited(&self) -> bool;
+
+    /// Wait until the rate-limit budget drawn down so far has been persisted.
+    ///
+    /// Persistence is otherwise best effort, so a caller that rebuilds the
+    /// wallet or tears down the runtime without this barrier can lose the final
+    /// write and start the next wallet with a full burst.
+    #[cfg(feature = "http")]
+    async fn flush_rate_limits(&self);
 
     /// Subscribe to wallet events
     async fn subscribe(

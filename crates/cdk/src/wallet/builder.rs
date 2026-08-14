@@ -224,6 +224,11 @@ impl WalletBuilder {
     }
 
     /// Disable client-side rate limiting.
+    ///
+    /// This drops the limiter entirely rather than turning it off, so the
+    /// runtime setters become permanent no-ops and [`Wallet::is_rate_limited`]
+    /// stays false. A caller who wants a reversible off switch builds with a
+    /// config and calls [`Wallet::disable_rate_limiting`] instead.
     pub fn without_rate_limiting(mut self) -> Self {
         self.rate_limit = None;
         self.rate_limiter = None;
@@ -453,6 +458,33 @@ mod tests {
         // and the runtime setters have something to act on.
         let wallet = base_builder().await.build().unwrap();
         assert!(wallet.rate_limiter.is_some());
+        assert!(wallet.is_rate_limited());
+    }
+
+    #[tokio::test]
+    async fn disabling_at_runtime_is_reversible() {
+        let wallet = base_builder().await.build().unwrap();
+
+        wallet.disable_rate_limiting();
+        assert!(!wallet.is_rate_limited());
+
+        wallet.set_rate_limiting_config(RateLimitConfig::default());
+        assert!(wallet.is_rate_limited());
+    }
+
+    #[tokio::test]
+    async fn without_rate_limiting_cannot_be_turned_back_on() {
+        // The limiter is never built, so the runtime setter has nothing to act
+        // on and the wallet stays unpaced forever.
+        let wallet = base_builder()
+            .await
+            .without_rate_limiting()
+            .build()
+            .unwrap();
+        assert!(!wallet.is_rate_limited());
+
+        wallet.set_rate_limiting_config(RateLimitConfig::default());
+        assert!(!wallet.is_rate_limited());
     }
 
     #[tokio::test]
@@ -469,6 +501,7 @@ mod tests {
             .build()
             .unwrap();
         assert!(wallet.rate_limiter.is_none());
+        assert!(!wallet.is_rate_limited());
     }
 
     #[tokio::test]

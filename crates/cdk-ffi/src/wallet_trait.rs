@@ -9,6 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use cdk_common::bitcoin;
+use cdk_common::rate_limit::RateLimitConfig;
 use cdk_common::wallet::Wallet as WalletTraitDef;
 
 use crate::error::FfiError;
@@ -463,6 +464,18 @@ impl WalletTraitDef for Wallet {
     fn set_metadata_cache_ttl(&self, ttl_secs: Option<u64>) {
         let ttl = ttl_secs.map(std::time::Duration::from_secs);
         self.inner().set_metadata_cache_ttl(ttl);
+    }
+
+    fn set_rate_limiting_config(&self, config: Option<RateLimitConfig>) {
+        WalletTraitDef::set_rate_limiting_config(self.inner().as_ref(), config);
+    }
+
+    fn is_rate_limited(&self) -> bool {
+        WalletTraitDef::is_rate_limited(self.inner().as_ref())
+    }
+
+    async fn flush_rate_limits(&self) {
+        WalletTraitDef::flush_rate_limits(self.inner().as_ref()).await;
     }
 
     async fn subscribe(

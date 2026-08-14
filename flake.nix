@@ -574,6 +574,7 @@
               # Run Python tests
               python3 crates/cdk-ffi/tests/test_transactions.py
               python3 crates/cdk-ffi/tests/test_kvstore.py
+              python3 crates/cdk-ffi/tests/test_rate_limit.py
             '';
             doCheck = false;
             installPhaseCommand = "mkdir -p $out";
