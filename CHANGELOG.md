@@ -7,6 +7,19 @@
 
 ## [Unreleased]
 
+## [0.17.5](https://github.com/cashubtc/cdk/releases/tag/v0.17.5)
+
+### Added
+
+- cdk-mint-rpc: Add BDK wallet balance, transaction history, and address balance queries to the management RPC and CLI ([thesimplekid]).
+
+### Fixed
+
+- cdk: Keep quote status updates and melt settlement state consistent ([thesimplekid]).
+- cdk: Improve blind auth proof handling ([thesimplekid]).
+- cdk: Normalize payment backend error responses ([thesimplekid]).
+- cdk-bdk: Support millisatoshi-denominated melts when creating on-chain sends ([thesimplekid]).
+
 ## [0.17.4](https://github.com/cashubtc/cdk/releases/tag/v0.17.4)
 
 ### Added
