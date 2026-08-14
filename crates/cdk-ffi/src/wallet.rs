@@ -356,6 +356,25 @@ impl Wallet {
         Ok(quote.into())
     }
 
+    /// Get active mint quotes stored in the wallet.
+    ///
+    /// Returns mint quotes for this wallet's mint and unit that are not expired
+    /// and not yet issued.
+    pub async fn get_active_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
+        let quotes = self.inner.get_active_mint_quotes().await?;
+        Ok(quotes.into_iter().map(Into::into).collect())
+    }
+
+    /// Get unissued mint quotes stored in the wallet.
+    ///
+    /// Returns bolt11 quotes for this wallet's mint and unit where nothing has
+    /// been issued yet (amount_issued = 0) and all bolt12 quotes. Expired quotes
+    /// are included so they can be rechecked with the mint.
+    pub async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
+        let quotes = self.inner.get_unissued_mint_quotes().await?;
+        Ok(quotes.into_iter().map(Into::into).collect())
+    }
+
     /// Mint tokens.
     ///
     /// This writes newly issued proofs and saga state to the local store while
@@ -1098,5 +1117,22 @@ mod tests {
                 refill_per_minute: 0,
             })
             .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mint_quote_query_methods_are_available_on_wallet() {
+        let wallet = test_wallet();
+
+        let active = wallet
+            .get_active_mint_quotes()
+            .await
+            .expect("should get active mint quotes");
+        assert!(active.is_empty());
+
+        let unissued = wallet
+            .get_unissued_mint_quotes()
+            .await
+            .expect("should get unissued mint quotes");
+        assert!(unissued.is_empty());
     }
 }
