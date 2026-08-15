@@ -1213,10 +1213,18 @@ impl Settings {
         if unknown_fields.is_empty() {
             Ok(settings)
         } else {
-            Err(ConfigError::Message(format!(
+            let mut message = format!(
                 "unknown configuration field(s): {}",
                 unknown_fields.join(", ")
-            )))
+            );
+            if unknown_fields.iter().any(|field| field == "ln") {
+                message.push_str(
+                    "; legacy `[ln]`/`[[ln]]` configuration must be migrated to \
+                     `[payment_backend]`/`[[payment_backend]]`; run `cdk-mintd config migrate \
+                     --file <old> --output <new>`",
+                );
+            }
+            Err(ConfigError::Message(message))
         }
     }
 
@@ -1379,6 +1387,21 @@ engin = "sqlite"
         let message = error.to_string();
         assert!(message.contains("database.engin"));
         assert!(message.contains("info.listen_por"));
+    }
+
+    #[test]
+    fn toml_parser_reports_legacy_ln_migration() {
+        let error = Settings::try_from_toml(
+            r#"
+[ln]
+ln_backend = "fakewallet"
+"#,
+        )
+        .expect_err("legacy [ln] configuration must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("legacy `[ln]`/`[[ln]]` configuration must be migrated"));
+        assert!(message.contains("`[payment_backend]`/`[[payment_backend]]`"));
+        assert!(message.contains("`cdk-mintd config migrate --file <old> --output <new>`"));
     }
 
     #[test]
