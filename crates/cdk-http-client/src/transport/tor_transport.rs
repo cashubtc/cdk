@@ -7,6 +7,10 @@ use arti_client::{TorClient, TorClientConfig};
 use arti_hyper::ArtiHttpConnector;
 use async_trait::async_trait;
 use cashu::nuts::nut22::AuthToken;
+#[cfg(feature = "bip353")]
+use dnssec_prover::query::{ProofBuilder, QueryBuf};
+#[cfg(feature = "bip353")]
+use dnssec_prover::rr::TXT_TYPE;
 use http::header::{self, HeaderName, HeaderValue};
 use hyper::http::{Method, Request, Uri};
 use hyper::{Body, Client};
@@ -146,7 +150,19 @@ impl TorAsync {
         method: http::Method,
         url: Url,
         auth: Option<AuthToken>,
+        body: Option<(Vec<u8>, &'static str)>,
+    ) -> Result<RawResponse, HttpError> {
+        self.raw_request_with_accept(method, url, auth, body, "application/json")
+            .await
+    }
+
+    async fn raw_request_with_accept(
+        &self,
+        method: http::Method,
+        url: Url,
+        auth: Option<AuthToken>,
         mut body: Option<(Vec<u8>, &'static str)>,
+        accept: &'static str,
     ) -> Result<RawResponse, HttpError> {
         let tls = tls_api_native_tls::TlsConnector::builder()
             .map_err(|e| HttpError::Other(format!("{e:?}")))?
@@ -171,7 +187,7 @@ impl TorAsync {
             .map_err(|e| HttpError::Other(e.to_string()))?;
 
         let mut builder = Request::builder().method(method).uri(uri);
-        builder = builder.header(header::ACCEPT, "application/json");
+        builder = builder.header(header::ACCEPT, accept);
 
         let mut req = match body.take() {
             Some((body, content_type)) => builder
@@ -237,72 +253,42 @@ impl Transport for TorAsync {
 
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, HttpError> {
-        #[derive(serde::Deserialize)]
-        struct Answer {
-            #[serde(default)]
-            data: String,
-            #[allow(dead_code)]
-            #[serde(default)]
-            name: String,
-            #[allow(dead_code)]
-            #[serde(default)]
-            r#type: u32,
-        }
-
-        #[allow(non_snake_case)]
-        #[derive(serde::Deserialize)]
-        struct DnsResp {
-            #[serde(default)]
-            Answer: Option<Vec<Answer>>,
-            #[allow(dead_code)]
-            #[serde(default)]
-            Status: Option<u32>,
-        }
-
-        fn dequote_txt(s: &str) -> String {
-            let mut result = String::new();
-            let mut in_quote = false;
-            let mut buf = String::new();
-            for ch in s.chars() {
-                if ch == '"' {
-                    if in_quote {
-                        result.push_str(&buf);
-                        buf.clear();
-                        in_quote = false;
-                    } else {
-                        in_quote = true;
-                    }
-                } else if in_quote {
-                    buf.push(ch);
-                }
-            }
-            if !result.is_empty() {
-                result
-            } else {
-                s.trim_matches('"').to_string()
-            }
-        }
-
-        let mut url = Url::parse("https://dns.google/resolve")
+        let name = crate::dns::name_from_domain(domain)?;
+        let (mut proof_builder, initial_query) = ProofBuilder::new(&name, TXT_TYPE);
+        let mut pending_queries = vec![initial_query];
+        let url = Url::parse("https://dns.google/dns-query")
             .map_err(|e| HttpError::Other(e.to_string()))?;
-        {
-            let mut qp = url.query_pairs_mut();
-            qp.append_pair("name", domain);
-            qp.append_pair("type", "TXT");
+
+        while let Some(query) = pending_queries.pop() {
+            let response = self
+                .raw_request_with_accept(
+                    Method::POST,
+                    url.clone(),
+                    None,
+                    Some((query.into_vec(), "application/dns-message")),
+                    "application/dns-message",
+                )
+                .await?;
+            if !response.is_success() {
+                return Err(HttpError::Status {
+                    status: response.status(),
+                    message: response.body_lossy(),
+                });
+            }
+
+            let mut answer = QueryBuf::new_zeroed(0);
+            answer.extend_from_slice(&response.bytes().await?);
+            let queries = proof_builder
+                .process_response(&answer)
+                .map_err(|_| HttpError::Other("Invalid DNS-over-HTTPS response".to_owned()))?;
+            pending_queries.extend(queries);
         }
 
-        let resp: DnsResp = self
-            .request::<DnsResp>(Method::GET, url, None, None)
-            .await?;
+        let (proof, _ttl) = proof_builder.finish_proof().map_err(|()| {
+            HttpError::Other("Too many queries required to build DNSSEC proof".to_owned())
+        })?;
 
-        let answers = resp.Answer.unwrap_or_default();
-        let txts = answers
-            .into_iter()
-            .filter(|a| !a.data.is_empty())
-            .map(|a| dequote_txt(&a.data))
-            .collect::<Vec<_>>();
-
-        Ok(txts)
+        crate::dns::validated_txt_records(&name, &proof)
     }
 
     async fn ws_connect(

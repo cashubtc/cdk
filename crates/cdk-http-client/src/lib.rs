@@ -56,6 +56,8 @@
 
 mod backends;
 mod client;
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+mod dns;
 mod error;
 mod request;
 mod response;
