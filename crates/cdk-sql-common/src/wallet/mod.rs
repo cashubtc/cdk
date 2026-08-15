@@ -2015,9 +2015,9 @@ fn sql_row_to_mint_info(row: Vec<Column>) -> Result<MintInfo, Error> {
 
     Ok(MintInfo {
         name: column_as_nullable_string!(&name),
-        pubkey: column_as_nullable_string!(&pubkey, |_| None, |v| {
-            cdk_common::nuts::PublicKey::from_slice(v).ok()
-        }),
+        pubkey: column_as_nullable_binary!(&pubkey)
+            .map(|bytes| cdk_common::nuts::PublicKey::from_slice(&bytes))
+            .transpose()?,
         version: column_as_nullable_string!(&version).and_then(|v| serde_json::from_str(&v).ok()),
         description: column_as_nullable_string!(description),
         description_long: column_as_nullable_string!(description_long),
