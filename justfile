@@ -233,6 +233,10 @@ coverage:
   echo "Running NWC e2e tests coverage (memory)..."
   CDK_TEST_DB_TYPE=memory cargo llvm-cov --no-report -p cdk-integration-tests --test nwc_e2e
 
+  # Run NIP-17 inbox e2e tests with coverage (requires nostr-rs-relay on PATH)
+  echo "Running NIP-17 inbox e2e tests coverage..."
+  cargo llvm-cov --no-report -p cdk-integration-tests --test nip17_inbox_e2e
+
   # Generate report
   echo "Generating coverage report..."
   cargo llvm-cov report --lcov --output-path lcov.info
