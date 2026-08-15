@@ -24,13 +24,12 @@ use std::time::Duration;
 use cdk::wallet::WalletNwcHandler;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
-use cdk_nwc::nip47::{
-    ListTransactionsRequest, LookupInvoiceRequest, MakeInvoiceRequest, PayInvoiceRequest,
-    TransactionState,
-};
 use cdk_nwc::{NwcService, NwcServiceConfig};
 use nostr_sdk::{Client as NostrClient, Filter, Keys, Kind, PublicKey, RelayUrl, SecretKey};
-use nwc::prelude::{NostrWalletConnectOptions, NostrWalletConnectURI, NWC};
+use nwc::prelude::{
+    ListTransactionsRequest, LookupInvoiceRequest, MakeInvoiceRequest, NostrWalletConnect,
+    NostrWalletConnectUri, PayInvoiceRequest, TransactionState,
+};
 use tokio_util::sync::CancellationToken;
 
 /// Manage a local `nostr-rs-relay` subprocess on a free port.
@@ -212,9 +211,10 @@ async fn nwc_e2e_full_flow() {
         "NWC service did not publish its info event"
     );
 
-    let uri: NostrWalletConnectURI = connection_uri.parse().expect("uri");
-    let opts = NostrWalletConnectOptions::new().timeout(Duration::from_secs(30));
-    let nwc_client = NWC::with_opts(uri, opts);
+    let uri: NostrWalletConnectUri = connection_uri.parse().expect("uri");
+    let nwc_client = NostrWalletConnect::builder(uri)
+        .timeout(Duration::from_secs(30))
+        .build();
 
     // 1. get_info
     let info = nwc_client.get_info().await.expect("get_info");
@@ -223,7 +223,7 @@ async fn nwc_e2e_full_flow() {
 
     // 2. get_balance — 1000 sats = 1,000,000 msat
     let balance = nwc_client.get_balance().await.expect("get_balance");
-    assert_eq!(balance, 1_000_000);
+    assert_eq!(balance.balance, 1_000_000);
 
     // 3. make_invoice — create a 500 sat mint quote
     let make_invoice_resp = nwc_client

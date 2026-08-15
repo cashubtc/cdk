@@ -15,7 +15,7 @@ system-metrics = ["sysinfo"]
 
 [dependencies]
 # Prometheus
-prometheus = "0.13"
+prometheus = "0.14"
 
 # Async runtime
 tokio = { workspace = true, features = ["io-util", "net"] }

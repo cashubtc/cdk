@@ -12,7 +12,7 @@ use cdk_common::database::{self, WalletDatabase};
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::{KeysetLoadPolicy, ProofInfo};
 use cdk_common::{PublicKey, SecretKey, SECP256K1};
-use getrandom::getrandom;
+use getrandom::fill;
 pub use mint_connector::http_client::{
     AuthHttpClient as BaseAuthHttpClient, HttpClient as BaseHttpClient,
 };
@@ -197,7 +197,7 @@ impl From<WalletSubscription> for WalletParams {
     fn from(val: WalletSubscription) -> Self {
         let mut buffer = vec![0u8; 10];
 
-        getrandom(&mut buffer).expect("Failed to generate random bytes");
+        fill(&mut buffer).expect("Failed to generate random bytes");
 
         let id = Arc::new(
             buffer

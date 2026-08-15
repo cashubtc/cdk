@@ -24,6 +24,7 @@ mod tests {
     fn test_client_new() {
         let client = HttpClient::new();
         let _ = format!("{:?}", client);
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
     }
 
     #[test]

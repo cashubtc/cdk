@@ -525,9 +525,13 @@ impl MintPayment for Cln {
             .call_typed(&XpayRequest {
                 invstring: invoice,
                 amount_msat: amount_msat.map(CLN_Amount::from_msat),
+                dev_use_shadow: None,
+                label: None,
+                localinvreqid: None,
                 maxdelay: None,
                 maxfee: max_fee_msat.map(CLN_Amount::from_msat),
                 layers: None,
+                payer_note: None,
                 retry_for: None,
                 partial_msat: partial_amount.map(CLN_Amount::from_msat),
             })
@@ -652,7 +656,9 @@ impl MintPayment for Cln {
                         recurrence_base: None,
                         recurrence_limit: None,
                         recurrence_paywindow: None,
-                        recurrence_start_any_period: None,
+                        optional_recurrence: None,
+                        proportional_amount: None,
+                        fronting_nodes: None,
                     })
                     .await
                     .map_err(Error::from)?;

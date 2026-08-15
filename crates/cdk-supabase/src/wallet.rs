@@ -4,8 +4,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aes_gcm::aead::{Aead, AeadCore, KeyInit};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::aead::{Aead, Generate, KeyInit, Nonce};
+use aes_gcm::{Aes256Gcm, Key};
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use bitcoin::secp256k1::rand::rngs::OsRng;
@@ -397,7 +397,7 @@ impl SupabaseWalletDatabase {
         scrypt::scrypt(password.as_bytes(), &salt, &params, &mut key)
             .map_err(|_| Error::Supabase("wallet encryption key derivation failed".to_string()))?;
 
-        Ok(*Key::<Aes256Gcm>::from_slice(&key))
+        Ok(key.into())
     }
 
     async fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>, DatabaseError> {
@@ -406,7 +406,7 @@ impl SupabaseWalletDatabase {
             .as_ref()
             .ok_or(DatabaseError::Internal("Encryption key not set".into()))?;
         let cipher = Aes256Gcm::new(key);
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bits; unique per message
+        let nonce = Nonce::<Aes256Gcm>::generate(); // 96-bits; unique per message
         let ciphertext = cipher
             .encrypt(&nonce, data)
             .map_err(|_| DatabaseError::Internal("Encryption failed".into()))?;
@@ -428,7 +428,8 @@ impl SupabaseWalletDatabase {
             return Err(DatabaseError::Internal("Invalid ciphertext length".into()));
         }
 
-        let nonce = Nonce::from_slice(&data[0..12]);
+        let nonce = <&Nonce<Aes256Gcm>>::try_from(&data[0..12])
+            .map_err(|_| DatabaseError::Internal("Invalid nonce length".into()))?;
         let ciphertext = &data[12..];
 
         cipher

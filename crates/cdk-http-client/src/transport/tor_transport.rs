@@ -47,7 +47,7 @@ impl fmt::Debug for TorAsync {
 #[inline]
 fn gen_salt() -> [u8; 4] {
     let mut s = [0u8; 4];
-    getrandom::getrandom(&mut s).expect("failed to obtain random bytes for TorAsync salt");
+    getrandom::fill(&mut s).expect("failed to obtain random bytes for TorAsync salt");
     s
 }
 

@@ -7,6 +7,13 @@
 //! the features additive means Cargo feature unification across a dependency
 //! graph can never produce a build conflict.
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn install_rustls_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+}
+
 #[cfg(all(
     feature = "bitreq",
     not(feature = "reqwest"),

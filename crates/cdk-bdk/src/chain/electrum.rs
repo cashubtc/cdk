@@ -20,7 +20,7 @@ type ElectrumClient = BdkElectrumClient<Client>;
 
 fn new_electrum_client(url: &str) -> Result<ElectrumClient, bdk_electrum::electrum_client::Error> {
     let client_config = ConfigBuilder::new()
-        .timeout(Some(ELECTRUM_TIMEOUT_SECS))
+        .timeout(Some(Duration::from_secs(u64::from(ELECTRUM_TIMEOUT_SECS))))
         .build();
     let client = Client::from_config(url, client_config)?;
     Ok(BdkElectrumClient::new(client))
@@ -317,7 +317,7 @@ pub(crate) async fn fetch_fee_rate_electrum(
             new_electrum_client(&url).map_err(|error| Error::Electrum(error.to_string()))?;
         let estimate = client
             .inner
-            .estimate_fee(target_blocks as usize)
+            .estimate_fee(target_blocks as usize, None)
             .map_err(|error| Error::Electrum(error.to_string()))?;
 
         btc_per_kb_to_sat_per_vb(estimate).ok_or(Error::FeeEstimationUnavailable)

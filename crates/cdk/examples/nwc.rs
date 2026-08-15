@@ -8,7 +8,7 @@ use cdk::wallet::{Wallet, WalletNwcHandler};
 use cdk_nwc::{NwcService, NwcServiceConfig};
 use cdk_sqlite::wallet::memory;
 use nostr_sdk::{Keys, RelayUrl, SecretKey};
-use nwc::prelude::{NostrWalletConnectOptions, NostrWalletConnectURI, NWC};
+use nwc::prelude::{NostrWalletConnect, NostrWalletConnectUri};
 use rand::random;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
@@ -60,9 +60,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let uri: NostrWalletConnectURI = connection_uri.parse()?;
-    let opts = NostrWalletConnectOptions::new().timeout(Duration::from_secs(15));
-    let client = NWC::with_opts(uri, opts);
+    let uri: NostrWalletConnectUri = connection_uri.parse()?;
+    let client = NostrWalletConnect::builder(uri)
+        .timeout(Duration::from_secs(15))
+        .build();
 
     let info = client.get_info().await?;
     let balance = client.get_balance().await?;
@@ -71,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Wallet service alias: {}",
         info.alias.unwrap_or_else(|| "unknown".to_string())
     );
-    println!("Wallet balance: {balance} msat");
+    println!("Wallet balance: {} msat", balance.balance);
 
     client.shutdown().await;
     cancel.cancel();

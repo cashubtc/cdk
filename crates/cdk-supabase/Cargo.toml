@@ -29,7 +29,7 @@ reqwest = { workspace = true }
 url.workspace = true
 once_cell.workspace = true
 urlencoding = "2.1"
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 scrypt = { version = "0.12.0", default-features = false }
 paste.workspace = true
 
