@@ -10,7 +10,7 @@
 //! rumor's kind and content are for the consumer to handle (e.g. a NUT-18
 //! payment request payload for kind `14` rumors).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use nostr_sdk::{
     Client, EventId, Filter, Keys, Kind, PublicKey, RelayPoolNotification, RelayUrl, SecretKey,
@@ -54,7 +54,11 @@ pub struct NostrInbox {
     keys: Keys,
     relays: Vec<RelayUrl>,
     since: Option<Timestamp>,
-    cancel: CancellationToken,
+    /// Token of the current run. `CancellationToken::cancel()` is permanent,
+    /// so `start()` replaces it with a fresh one — otherwise a pump started
+    /// after `stop()` would observe the stale cancellation and exit
+    /// immediately.
+    cancel: Mutex<CancellationToken>,
 }
 
 impl NostrInbox {
@@ -84,7 +88,7 @@ impl NostrInbox {
             keys: Keys::new(secret_key),
             relays,
             since,
-            cancel: CancellationToken::new(),
+            cancel: Mutex::new(CancellationToken::new()),
         })
     }
 
@@ -97,15 +101,29 @@ impl NostrInbox {
     /// background pump that delivers events to `listener`
     ///
     /// Returns once the subscription is active. Events are delivered until
-    /// [`NostrInbox::stop`] is called. Starting an already-started inbox
-    /// spawns an additional pump; call [`NostrInbox::stop`] first if
-    /// reconfiguring.
+    /// [`NostrInbox::stop`] is called. `start()` replaces any previous run:
+    /// calling it on an already-running inbox stops the old pump before
+    /// starting the new one, and restarting after [`NostrInbox::stop`] works
+    /// as expected.
     ///
     /// # Errors
     ///
     /// Returns an error if a relay cannot be added or the subscription cannot
     /// be created.
     pub async fn start(&self, listener: Arc<dyn NostrInboxListener>) -> Result<()> {
+        // Arm a fresh token for this run, stopping any previous run first. A
+        // cancelled token can never be "un-cancelled", so reusing it would
+        // make the new pump exit immediately.
+        let cancel = {
+            let mut current = self
+                .cancel
+                .lock()
+                .expect("inbox cancel token mutex poisoned");
+            current.cancel();
+            *current = CancellationToken::new();
+            current.clone()
+        };
+
         let client = Client::new(self.keys.clone());
 
         for relay in &self.relays {
@@ -133,7 +151,6 @@ impl NostrInbox {
             .await
             .map_err(|e| Error::Subscription(e.to_string()))?;
 
-        let cancel = self.cancel.clone();
         tokio::spawn(async move {
             loop {
                 let notification = tokio::select! {
@@ -175,7 +192,10 @@ impl NostrInbox {
 
     /// Stop listening: cancels the pump and disconnects from the relays
     pub fn stop(&self) {
-        self.cancel.cancel();
+        self.cancel
+            .lock()
+            .expect("inbox cancel token mutex poisoned")
+            .cancel();
     }
 }
 
@@ -183,6 +203,12 @@ impl NostrInbox {
 mod tests {
     use super::*;
     use crate::keys;
+
+    struct NoopListener;
+
+    impl NostrInboxListener for NoopListener {
+        fn on_event(&self, _event: Nip17Event) {}
+    }
 
     #[test]
     fn new_requires_at_least_one_relay() {
@@ -203,5 +229,40 @@ mod tests {
             inbox.pubkey().to_hex(),
             "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
         );
+    }
+
+    /// Regression test: a `CancellationToken` stays cancelled forever, so a
+    /// pump started after `stop()` used to exit immediately while `start()`
+    /// still reported success. `start()` must arm a fresh token per run.
+    #[tokio::test]
+    async fn restart_after_stop_arms_a_fresh_token() {
+        let secret = keys::generate_secret_key();
+        // Unreachable relay: connect/subscribe are best-effort in the pool,
+        // so `start()` still succeeds without network access.
+        let relay = RelayUrl::parse("ws://127.0.0.1:1").expect("valid relay url");
+        let inbox = NostrInbox::new(secret, vec![relay], None).expect("inbox");
+
+        inbox
+            .start(Arc::new(NoopListener))
+            .await
+            .expect("first start");
+        inbox.stop();
+        assert!(inbox
+            .cancel
+            .lock()
+            .expect("mutex")
+            .is_cancelled());
+
+        inbox
+            .start(Arc::new(NoopListener))
+            .await
+            .expect("restart");
+        assert!(!inbox
+            .cancel
+            .lock()
+            .expect("mutex")
+            .is_cancelled());
+
+        inbox.stop();
     }
 }
