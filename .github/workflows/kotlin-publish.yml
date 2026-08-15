@@ -39,6 +39,7 @@ env:
   TAG: ${{ inputs.release_tag }}
   CDK_REF: ${{ inputs.cdk_ref || inputs.release_tag }}
   RELEASE_BRANCH: release/${{ inputs.release_tag }}
+  NIX_CONFIG: "fallback = true"
 
 jobs:
   validate-release-ref:

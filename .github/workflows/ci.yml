@@ -18,6 +18,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  NIX_CONFIG: "fallback = true"
 
 jobs:
   pre-commit-checks:

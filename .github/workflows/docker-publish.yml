@@ -12,6 +12,7 @@ on:
 env:
   REGISTRY: docker.io
   IMAGE_NAME: cashubtc/mintd
+  NIX_CONFIG: "fallback = true"
 
 jobs:
   build:

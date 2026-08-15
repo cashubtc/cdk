@@ -6,6 +6,9 @@ on:
 
 permissions: {}
 
+env:
+  NIX_CONFIG: "fallback = true"
+
 jobs:
   format:
     name: Nightly rustfmt

@@ -9,6 +9,9 @@ on:
         description: "Tag to build and publish"
         required: true
 
+env:
+  NIX_CONFIG: "fallback = true"
+
 jobs:
   build-x86_64:
     name: "Build static binaries (x86_64)"
