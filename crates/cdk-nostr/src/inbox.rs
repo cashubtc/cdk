@@ -106,6 +106,10 @@ impl NostrInbox {
     /// starting the new one, and restarting after [`NostrInbox::stop`] works
     /// as expected.
     ///
+    /// # Panics
+    ///
+    /// Panics if the internal cancel-token mutex is poisoned.
+    ///
     /// # Errors
     ///
     /// Returns an error if a relay cannot be added or the subscription cannot
@@ -191,11 +195,27 @@ impl NostrInbox {
     }
 
     /// Stop listening: cancels the pump and disconnects from the relays
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal cancel-token mutex is poisoned.
     pub fn stop(&self) {
         self.cancel
             .lock()
             .expect("inbox cancel token mutex poisoned")
             .cancel();
+    }
+}
+
+impl Drop for NostrInbox {
+    /// Dropping the inbox stops the pump: dropping a `CancellationToken` does
+    /// not cancel it, and the spawned pump holds its own clone plus the relay
+    /// client and listener, so without this the task (and its relay
+    /// connections) would leak for the lifetime of the process.
+    fn drop(&mut self) {
+        if let Ok(token) = self.cancel.lock() {
+            token.cancel();
+        }
     }
 }
 
@@ -247,22 +267,28 @@ mod tests {
             .await
             .expect("first start");
         inbox.stop();
-        assert!(inbox
-            .cancel
-            .lock()
-            .expect("mutex")
-            .is_cancelled());
+        assert!(inbox.cancel.lock().expect("mutex").is_cancelled());
 
-        inbox
-            .start(Arc::new(NoopListener))
-            .await
-            .expect("restart");
-        assert!(!inbox
-            .cancel
-            .lock()
-            .expect("mutex")
-            .is_cancelled());
+        inbox.start(Arc::new(NoopListener)).await.expect("restart");
+        assert!(!inbox.cancel.lock().expect("mutex").is_cancelled());
 
         inbox.stop();
+    }
+
+    /// Dropping a running inbox must cancel the pump's token: dropping a
+    /// `CancellationToken` alone does not cancel it, and the pump holds its
+    /// own clone.
+    #[tokio::test]
+    async fn drop_cancels_running_pump() {
+        let secret = keys::generate_secret_key();
+        let relay = RelayUrl::parse("ws://127.0.0.1:1").expect("valid relay url");
+        let inbox = NostrInbox::new(secret, vec![relay], None).expect("inbox");
+
+        // Grab the run's token before dropping the inbox.
+        let token = inbox.cancel.lock().expect("mutex").clone();
+        inbox.start(Arc::new(NoopListener)).await.expect("start");
+        drop(inbox);
+
+        assert!(token.is_cancelled());
     }
 }
