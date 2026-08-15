@@ -277,25 +277,11 @@ jobs:
           nix develop --fallback -L ../../cdk#kotlin-build --command \
             cargo build --release --target ${{ matrix.target }}
 
-      - name: Strip debug symbols
-        working-directory: cdk-kotlin/rust
-        shell: bash
-        run: |
-          FILE="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
-          nix develop --fallback -L ../../cdk#kotlin-build --command \
-            bash -c '"$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-all '"$FILE"
-
-      - name: Verify Android ELF 16 KB alignment
-        working-directory: cdk-kotlin/rust
-        shell: bash
-        run: |
-          FILE="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
-          nix develop --fallback -L ../../cdk#kotlin-build --command \
-            ../../cdk/.github/scripts/check-android-elf-alignment.sh "$FILE"
-
       # uniffi 0.30 reads the component interface statically from the library
       # (it does not load it), so the arm64 Android .so works as the source on
-      # this x86_64 host.
+      # this x86_64 host. This must run before the strip step: llvm-strip
+      # --strip-all removes the ELF symbol table that uniffi extracts the
+      # metadata from, which would silently produce empty bindings.
       - name: Generate Kotlin bindings
         if: matrix.target == 'aarch64-linux-android'
         working-directory: cdk-kotlin/rust
@@ -315,6 +301,23 @@ jobs:
         with:
           name: kotlin-bindings-generated
           path: cdk-kotlin/generated-bindings/
+          if-no-files-found: error
+
+      - name: Strip debug symbols
+        working-directory: cdk-kotlin/rust
+        shell: bash
+        run: |
+          FILE="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
+          nix develop --fallback -L ../../cdk#kotlin-build --command \
+            bash -c '"$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-all '"$FILE"
+
+      - name: Verify Android ELF 16 KB alignment
+        working-directory: cdk-kotlin/rust
+        shell: bash
+        run: |
+          FILE="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
+          nix develop --fallback -L ../../cdk#kotlin-build --command \
+            ../../cdk/.github/scripts/check-android-elf-alignment.sh "$FILE"
 
       - name: Prepare artifact
         shell: bash
