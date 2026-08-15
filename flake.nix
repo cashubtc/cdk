@@ -2,6 +2,7 @@
   description = "CDK Flake";
 
   nixConfig = {
+    fallback = true;
     extra-substituters = [
       "https://cache.cashudevkit.org"
       "https://cashudevkit.cachix.org"
