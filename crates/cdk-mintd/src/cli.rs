@@ -405,14 +405,20 @@ pub enum FederationCommand {
     /// Query signed local status from federation members.
     Status(FederationStatusArgs),
     /// Query redacted federated on-chain wallet status.
+    #[cfg(feature = "federation-bdk")]
     WalletStatus(FederationStatusArgs),
     /// Query one accepted federated on-chain transaction without transaction contents.
+    #[cfg(feature = "federation-bdk")]
     TransactionStatus(FederationWalletTransactionArgs),
     /// Immediately retry one exact durably signed transaction.
+    #[cfg(feature = "federation-bdk")]
     Rebroadcast(FederationWalletRebroadcastArgs),
     /// Replay accepted Bark state into one member's local wallet.
     #[cfg(feature = "federation-bark")]
     BarkReconcile(FederationBarkReconcileArgs),
+    /// Allocate an idempotent Bark-owned CPFP fee-reserve address.
+    #[cfg(feature = "federation-bark")]
+    BarkRecoveryAddress(FederationBarkRecoveryAddressArgs),
     /// Retry exactly one accepted Bark action.
     #[cfg(feature = "federation-bark")]
     BarkRetry(FederationBarkRetryArgs),
@@ -758,6 +764,12 @@ pub struct FederationDkgStatusArgs {
     /// JSON file containing the exact accepted Bark fee, CLTV, and recovery policy.
     #[arg(long, requires_all = ["from_database", "final_config_dir"])]
     pub frost_bark_policy_config: Option<PathBuf>,
+    /// Required confirmations for Bark recovery transactions.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_bark_recovery_minimum_confirmations: Option<u32>,
+    /// Consensus transaction-policy version for Bark recovery transactions.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_bark_recovery_fee_policy_version: Option<u16>,
 }
 
 #[cfg(feature = "federation")]
@@ -1018,7 +1030,7 @@ pub struct FederationStatusArgs {
     pub require_no_invalid_operation_alerts: bool,
 }
 
-#[cfg(feature = "federation")]
+#[cfg(feature = "federation-bdk")]
 #[derive(Debug, Clone, Args)]
 pub struct FederationWalletTransactionArgs {
     /// Shared public federation config JSON path.
@@ -1035,7 +1047,7 @@ pub struct FederationWalletTransactionArgs {
     pub member: Option<u16>,
 }
 
-#[cfg(feature = "federation")]
+#[cfg(feature = "federation-bdk")]
 #[derive(Debug, Clone, Args)]
 pub struct FederationWalletRebroadcastArgs {
     /// Shared public federation config JSON path.
@@ -1065,6 +1077,23 @@ pub struct FederationBarkReconcileArgs {
     #[arg(long)]
     pub private_config: Option<PathBuf>,
     /// Member whose local Bark projection should be reconciled; defaults to the signing member.
+    #[arg(long)]
+    pub member: Option<u16>,
+}
+
+#[cfg(all(feature = "federation", feature = "federation-bark"))]
+#[derive(Debug, Clone, Args)]
+pub struct FederationBarkRecoveryAddressArgs {
+    /// Shared public federation config JSON path.
+    #[arg(long)]
+    pub public_config: Option<PathBuf>,
+    /// Private member config JSON path used to sign the operator request.
+    #[arg(long)]
+    pub private_config: Option<PathBuf>,
+    /// Stable 1-64 character idempotency key for this reserve address.
+    #[arg(long)]
+    pub reserve_id: String,
+    /// Member that should allocate the address; defaults to the signing member.
     #[arg(long)]
     pub member: Option<u16>,
 }
@@ -1895,6 +1924,7 @@ mod tests {
         assert!(backup.force);
     }
 
+    #[cfg(feature = "federation-bdk")]
     #[test]
     fn parses_federated_wallet_operator_commands_and_guards() {
         let proposal_id = "11".repeat(32);
@@ -1955,6 +1985,28 @@ mod tests {
                 member: Some(2),
                 ..
             })
+        ));
+
+        let recovery_address = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "bark-recovery-address",
+            "--reserve-id",
+            "operator-batch-7",
+            "--member",
+            "3",
+        ])
+        .expect("Bark recovery address command parses");
+        let Some(CliCommand::Federation(recovery_address)) = recovery_address.command else {
+            panic!("expected federation command");
+        };
+        assert!(matches!(
+            recovery_address.command,
+            FederationCommand::BarkRecoveryAddress(FederationBarkRecoveryAddressArgs {
+                member: Some(3),
+                reserve_id,
+                ..
+            }) if reserve_id == "operator-batch-7"
         ));
 
         let retry = CLIArgs::try_parse_from([

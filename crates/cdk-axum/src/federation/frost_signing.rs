@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
+#[cfg(feature = "federation-bdk")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Json, State};
@@ -13,15 +14,20 @@ use axum::response::{IntoResponse, Response};
 use cdk::federation::{
     FederationBarkActionKind, FederationBarkCustodyProtocol, FederationBarkFrostAuthorization,
     FederationBarkFrostRegistrationAdapter, FederationBarkProtocolStatus,
+    FederationBarkRecoveryFrostAuthorization, FederationBarkRecoveryFrostAuthorizationAdapter,
     FederationBarkSemanticPhase,
 };
+#[cfg(feature = "federation-bdk")]
 use cdk::federation::{
     FederationCdkOnchainFrostAuthorization, FederationCdkOnchainFrostAuthorizationAdapter,
+    FederationFrostInputSignatureAudit, FederationSignedTransaction,
+    FederationTransactionProposalId,
+};
+use cdk::federation::{
     FederationFrostAggregateResultNotification, FederationFrostCommitmentRequest,
-    FederationFrostCommitmentResponse, FederationFrostInputSignatureAudit,
-    FederationFrostSignatureShareResponse, FederationFrostSigningAbortRequest,
-    FederationFrostSigningAck, FederationFrostSigningPackageRequest, FederationRestMessageKind,
-    FederationSignedRequest, FederationSignedTransaction, FederationTransactionProposalId,
+    FederationFrostCommitmentResponse, FederationFrostSignatureShareResponse,
+    FederationFrostSigningAbortRequest, FederationFrostSigningAck,
+    FederationFrostSigningPackageRequest, FederationRestMessageKind, FederationSignedRequest,
 };
 use cdk::mint::{FederationRuntimeConfig, Mint};
 use cdk_frost::{
@@ -34,6 +40,7 @@ use cdk_frost::{
     VirtualMusigNonceCommitmentSet, VirtualMusigNonceId, VirtualMusigPartialShare,
     VirtualMusigTranscript,
 };
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use cdk_frost_bip32::{FrostBip32, WalletBranch, WalletIndex};
 use futures::future::join_all;
 use sha2::{Digest, Sha256};
@@ -245,6 +252,7 @@ where
     }
 
     /// Sign every input, finalize through BDK, then order the signed record in consensus.
+    #[cfg(feature = "federation-bdk")]
     #[allow(dead_code)]
     pub(crate) async fn sign_accepted_transaction(
         &self,
@@ -449,8 +457,6 @@ impl FederationFrostSigningRuntime {
         let Some(wallet) = runtime.public_config().frost_wallet.as_ref() else {
             return Ok(None);
         };
-        let application = &wallet.cdk_onchain_application;
-
         let private_roots = mint
             .localstore()
             .get_federation_frost_root_private_configs()
@@ -460,12 +466,10 @@ impl FederationFrostSigningRuntime {
         #[cfg(unix)]
         std::fs::set_permissions(&nonce_root, std::fs::Permissions::from_mode(0o700))?;
         let mut managers = BTreeMap::new();
-        let public_root = wallet
-            .root(application.root_key_epoch)
-            .ok_or_else(|| anyhow::anyhow!("FROST application root is missing"))?;
+        let public_root = &wallet.root;
         let private_root = private_roots
             .iter()
-            .find(|root| root.root_key_epoch == application.root_key_epoch)
+            .find(|root| root.root_key_epoch == public_root.root_key_epoch)
             .ok_or_else(|| anyhow::anyhow!("local FROST root share is missing"))?;
         let context = cdk::federation::FederationFrostDkgContext::new(
             runtime.public_config(),
@@ -484,10 +488,14 @@ impl FederationFrostSigningRuntime {
         let store = RedbNonceStore::open(&nonce_path)?;
         #[cfg(unix)]
         std::fs::set_permissions(&nonce_path, std::fs::Permissions::from_mode(0o600))?;
+        #[allow(unused_mut)]
         let mut manager = ParticipantKeyManager::with_nonce_store(root, nonce_key, store)?;
-        manager.register_application(FederationCdkOnchainFrostAuthorizationAdapter::new(
-            application,
-        )?)?;
+        #[cfg(feature = "federation-bdk")]
+        if let Some(application) = wallet.cdk_onchain_application.as_ref() {
+            manager.register_application(FederationCdkOnchainFrostAuthorizationAdapter::new(
+                application,
+            )?)?;
+        }
         #[cfg(feature = "federation-bark")]
         if let Some(bark) = cdk::federation::federation_bark_application(runtime.public_config())? {
             let derived = manager
@@ -503,6 +511,20 @@ impl FederationFrostSigningRuntime {
             {
                 return Err(anyhow::anyhow!(
                     "participant Bark application derivation differs from public config"
+                ));
+            }
+        }
+        #[cfg(feature = "federation-bark")]
+        if let Some(recovery) =
+            cdk::federation::federation_bark_recovery_application(runtime.public_config())?
+        {
+            let derived = manager.register_application(
+                FederationBarkRecoveryFrostAuthorizationAdapter::new(&recovery)?,
+            )?;
+            let expected = recovery.derived_public_package(runtime.public_config(), public_root)?;
+            if derived != expected {
+                return Err(anyhow::anyhow!(
+                    "participant Bark recovery derivation differs from public config"
                 ));
             }
         }
@@ -813,7 +835,15 @@ impl FederationFrostSigningRuntime {
                 derivation: derivation.clone(),
             });
         }
-        validate_cdk_authorization(mint, context, authorization).await
+        #[cfg(feature = "federation-bdk")]
+        {
+            validate_cdk_authorization(mint, context, authorization).await
+        }
+        #[cfg(not(feature = "federation-bdk"))]
+        {
+            let _ = (mint, context, authorization);
+            Err(frost_invalid("CDK on-chain FROST application is disabled").into())
+        }
     }
 
     async fn validate_signing_authorization(
@@ -829,20 +859,124 @@ impl FederationFrostSigningRuntime {
                     .ok()
                     .flatten()
             });
-            match bark_application {
-                Some(application)
+            let recovery_application = mint.federation_config().and_then(|runtime| {
+                cdk::federation::federation_bark_recovery_application(runtime.public_config())
+                    .ok()
+                    .flatten()
+            });
+            match (bark_application, recovery_application) {
+                (_, Some(application))
+                    if authorization.application_id().to_bytes()
+                        == application.application_id().to_bytes() =>
+                {
+                    self.validate_bark_recovery(mint, context, authorization)
+                        .await
+                }
+                (Some(application), _)
                     if authorization.application_id().to_bytes()
                         == application.application_id.to_bytes() =>
                 {
                     self.validate_bark(mint, context, authorization).await
                 }
-                Some(_) | None => self.validate_onchain(mint, context, authorization).await,
+                _ => self.validate_onchain(mint, context, authorization).await,
             }
         }
         #[cfg(not(feature = "federation-bark"))]
         {
             self.validate_onchain(mint, context, authorization).await
         }
+    }
+
+    #[cfg(feature = "federation-bark")]
+    async fn validate_bark_recovery(
+        &self,
+        mint: &Mint,
+        context: &SigningSessionContext,
+        authorization: &AuthorizationRequest,
+    ) -> Result<ValidatedCdkAuthorization, cdk::Error> {
+        let typed = FederationBarkRecoveryFrostAuthorization::from_bytes(authorization.payload())?;
+        let entry = mint
+            .localstore()
+            .get_federation_journal_entry_by_operation_id(typed.registered_operation_id)
+            .await?
+            .ok_or_else(|| frost_invalid("accepted Bark recovery registration is unavailable"))?;
+        let projection = mint.federation_bark_projection_snapshot().await?;
+        let input_index = usize::try_from(typed.recovery_input_index)
+            .map_err(|_| frost_invalid("Bark recovery input index does not fit usize"))?;
+        let chain_state = mint.federation_chain_observation_state().await?;
+        let accepted = typed.validate_accepted_state(&entry, &projection, &chain_state)?;
+        let selected = &accepted.input;
+        let package = &accepted.package;
+        let action = &accepted.action;
+        let transition = &accepted.registered;
+        let authorization_head = &accepted.authorization_head;
+
+        let runtime = mint
+            .federation_config()
+            .ok_or_else(|| frost_invalid("federation configuration is unavailable"))?;
+        let public_config = runtime.public_config();
+        let wallet = public_config
+            .frost_wallet
+            .as_ref()
+            .ok_or_else(|| frost_invalid("FROST wallet configuration is unavailable"))?;
+        let application = cdk::federation::federation_bark_recovery_application(public_config)?
+            .ok_or_else(|| frost_invalid("Bark recovery application is unavailable"))?;
+        if selected.allocation.application_id != application.application_id()
+            || selected.allocation.application_key_epoch != application.application_key_epoch()
+        {
+            return Err(
+                frost_invalid("Bark recovery input uses a different recovery application").into(),
+            );
+        }
+        let public = application.derived_public_package(public_config, &wallet.root)?;
+        let adapter = FrostBip32::new(public.clone(), application.network())
+            .map_err(|error| frost_invalid(error.to_string()))?;
+        let branch = match selected.allocation.keychain {
+            cdk::federation::FederationAddressKeychain::External => WalletBranch::External,
+            cdk::federation::FederationAddressKeychain::Internal => WalletBranch::Internal,
+        };
+        let index = WalletIndex::new(selected.allocation.derivation_index)
+            .map_err(|error| frost_invalid(error.to_string()))?;
+        let derived = adapter
+            .derive(branch, index)
+            .map_err(|error| frost_invalid(error.to_string()))?;
+        let expected = FederationBarkRecoveryFrostAuthorization::new(
+            entry.operation_id,
+            action.latest_operation_id,
+            transition.action_id,
+            package,
+            input_index,
+            derived.signing_derivation(),
+        )?;
+        let expected_signers = authorization_head
+            .signer_set
+            .iter()
+            .map(|member| cdk_frost::MemberId::new(member.get()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(frost_boundary_error)?;
+        if typed != expected
+            || authorization.application_id() != public.registration().id()
+            || authorization.application_key_epoch() != public.registration().key_epoch()
+            || authorization.derivation_version() != public.registration().derivation_version()
+            || authorization.session_id() != context.session_id()
+            || context.protocol() != CustodyProtocol::OrdinaryFrost
+            || context.federation_id() != public_config.federation_id.to_bytes()
+            || context.root_epoch().get() != application.root_key_epoch()
+            || context.registration() != public.registration()
+            || context.derivation_binding() != derived.signing_derivation().binding()
+            || context.authorization_reference() != expected.authorization_reference
+            || context.message_commitment() != expected.message
+            || context.attempt() != action.attempt
+            || context.signer_set() != expected_signers
+        {
+            return Err(frost_invalid(
+                "Bark recovery context differs from the accepted CPFP package",
+            )
+            .into());
+        }
+        Ok(ValidatedCdkAuthorization {
+            derivation: derived.signing_derivation().clone(),
+        })
     }
 
     #[cfg(feature = "federation-bark")]
@@ -919,6 +1053,7 @@ impl FederationFrostSigningRuntime {
                         plan_entry.operation_id,
                         transition.predecessor_operation_id,
                         &plan,
+                        transition.actor,
                         transition.attempt,
                         signer_set,
                     )?;
@@ -1069,7 +1204,7 @@ async fn wait_for_bark_custody_projection(
             if action.action_id != plan.action_id {
                 return false;
             }
-            bark_custody_attempt_is_current(
+            cdk::federation::federation_bark_custody_attempt_is_current(
                 plan.kind,
                 action.phase,
                 action.signing_retry_phase,
@@ -1086,44 +1221,6 @@ async fn wait_for_bark_custody_projection(
             );
         }
         tokio::time::sleep(BARK_CUSTODY_PROJECTION_POLL_INTERVAL).await;
-    }
-}
-
-#[cfg(feature = "federation-bark")]
-pub(super) const fn bark_custody_attempt_is_current(
-    kind: FederationBarkActionKind,
-    phase: FederationBarkSemanticPhase,
-    signing_retry_phase: Option<FederationBarkSemanticPhase>,
-    current_attempt: u32,
-    authorization_attempt: u32,
-) -> bool {
-    if current_attempt != authorization_attempt {
-        return false;
-    }
-    let effective_phase = match signing_retry_phase {
-        Some(phase) => phase,
-        None => phase,
-    };
-    match kind {
-        FederationBarkActionKind::IncomingClaim => matches!(
-            effective_phase,
-            FederationBarkSemanticPhase::ClaimPlanned
-                | FederationBarkSemanticPhase::ReceivePreimageDisclosed
-        ),
-        FederationBarkActionKind::LightningSend => {
-            matches!(effective_phase, FederationBarkSemanticPhase::SendPlanned)
-        }
-        FederationBarkActionKind::FailedSendRevocation => matches!(
-            effective_phase,
-            FederationBarkSemanticPhase::RevocationPlanned
-        ),
-        FederationBarkActionKind::Refresh => {
-            matches!(effective_phase, FederationBarkSemanticPhase::RefreshPlanned)
-        }
-        FederationBarkActionKind::EmergencyExit => matches!(
-            effective_phase,
-            FederationBarkSemanticPhase::ExitPlanned | FederationBarkSemanticPhase::ExitRegistered
-        ),
     }
 }
 
@@ -1153,6 +1250,7 @@ struct ValidatedCdkAuthorization {
     derivation: SigningDerivation,
 }
 
+#[cfg(feature = "federation-bdk")]
 async fn validate_cdk_authorization(
     mint: &Mint,
     context: &SigningSessionContext,
@@ -1177,7 +1275,10 @@ async fn validate_cdk_authorization(
         .frost_wallet
         .as_ref()
         .ok_or_else(|| frost_invalid("FROST wallet configuration is unavailable"))?;
-    let application = &wallet.cdk_onchain_application;
+    let application = wallet
+        .cdk_onchain_application
+        .as_ref()
+        .ok_or_else(|| frost_invalid("CDK on-chain application is unavailable"))?;
     if application.application_id != accepted.proposal.scope.application_id
         || application.application_key_epoch != accepted.proposal.scope.application_key_epoch
         || application.root_key_epoch != accepted.proposal.scope.root_key_epoch

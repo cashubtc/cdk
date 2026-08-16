@@ -5,9 +5,8 @@ use std::collections::BTreeMap;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::Network;
 use cdk_common::federation::{
-    FederationConfig, FederationFrostApplicationConfig, FederationFrostApplicationId,
-    FederationFrostExtensionApplicationConfig, FederationFrostRootPublicConfig,
-    FederationFrostWalletConfig, FederationSetupFrostApplication, MemberId, Result,
+    FederationConfig, FederationFrostApplicationId, FederationFrostExtensionApplicationConfig,
+    FederationFrostRootPublicConfig, FederationSetupFrostApplication, MemberId, Result,
 };
 use cdk_common::Amount;
 use cdk_frost::{
@@ -21,7 +20,9 @@ use cdk_frost_bark::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{invalid_bark, FederationBarkFrostAuthorization};
+use crate::{
+    invalid_bark, FederationBarkFrostAuthorization, FederationBarkRecoveryApplicationConfig,
+};
 
 const BARK_APPLICATION_CONFIG_VERSION: u16 = 1;
 const BARK_POLICY_CONFIG_VERSION: u16 = 1;
@@ -419,20 +420,24 @@ impl FederationBarkFrostApplicationConfig {
     }
 }
 
-/// Construct a wallet config containing the Bark extension registration.
-pub fn federation_frost_wallet_with_bark(
+/// Construct the complete independently owned Bark application registry.
+pub fn federation_bark_frost_applications(
     federation: &FederationConfig,
-    root: FederationFrostRootPublicConfig,
-    cdk_onchain_application: FederationFrostApplicationConfig,
+    root: &FederationFrostRootPublicConfig,
     bark: FederationBarkFrostApplicationConfig,
-) -> Result<FederationFrostWalletConfig> {
-    let extension = bark.extension(federation, &root)?;
-    FederationFrostWalletConfig::new_with_extensions(
-        federation,
-        root,
-        cdk_onchain_application,
-        BTreeMap::from([(extension.application_id, extension)]),
-    )
+    recovery: FederationBarkRecoveryApplicationConfig,
+) -> Result<BTreeMap<FederationFrostApplicationId, FederationFrostExtensionApplicationConfig>> {
+    let bark = bark.extension(federation, root)?;
+    let recovery = recovery.extension();
+    if bark.application_id == recovery.application_id {
+        return Err(invalid_bark(
+            "Bark custody and recovery application IDs overlap",
+        ));
+    }
+    Ok(BTreeMap::from([
+        (bark.application_id, bark),
+        (recovery.application_id, recovery),
+    ]))
 }
 
 /// Decode the Bark registration from one validated federation config.
@@ -445,22 +450,16 @@ pub fn federation_bark_application(
     let registration =
         application_registration_for_epoch(1).map_err(|error| invalid_bark(error.to_string()))?;
     let application_id = FederationFrostApplicationId::from_bytes(registration.id().to_bytes())?;
-    match wallet.extension_application(application_id) {
-        Some(extension) => FederationBarkFrostApplicationConfig::from_extension(
-            federation,
-            &wallet.root,
-            extension,
-        )
-        .map(Some),
-        None => wallet
-            .legacy_extension_application("bark_application")
-            .map(|legacy| {
-                let application: FederationBarkFrostApplicationConfig = legacy.decode()?;
-                application.validate(federation, &wallet.root)?;
-                Ok(application)
-            })
-            .transpose(),
-    }
+    wallet
+        .extension_application(application_id)
+        .map(|extension| {
+            FederationBarkFrostApplicationConfig::from_extension(
+                federation,
+                &wallet.root,
+                extension,
+            )
+        })
+        .transpose()
 }
 
 /// Bark adapter for a payload already revalidated against accepted state.

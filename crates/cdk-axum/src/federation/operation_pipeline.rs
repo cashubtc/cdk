@@ -763,7 +763,9 @@ impl FederationNodeRuntime {
         }
         self.mark_operation_applications(&terminal_applications)
             .await?;
+        #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
         let mint = self.active_mint()?;
+        #[cfg(feature = "federation-bdk")]
         #[cfg(test)]
         let reconcile_result = if self
             .components
@@ -781,6 +783,7 @@ impl FederationNodeRuntime {
         } else {
             self.components.wallet.reconcile(mint).await
         };
+        #[cfg(feature = "federation-bdk")]
         #[cfg(not(test))]
         let reconcile_result = self.components.wallet.reconcile(mint).await;
         // Local BDK projection health is separate from the consensus
@@ -788,6 +791,7 @@ impl FederationNodeRuntime {
         // BDK-degraded (blocking local signing) and is retried on later
         // applications, but it never aborts deterministic application or
         // halts the session.
+        #[cfg(feature = "federation-bdk")]
         if let Err(err) = reconcile_result {
             tracing::error!(
                 reason = %format!("{err:#}"),

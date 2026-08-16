@@ -127,12 +127,6 @@ pub fn validate_existing_wallet(
 }
 pub mod wallet_engine;
 
-/// Wrapper struct that combines wallet and database to prevent deadlocks
-pub(crate) struct WalletWithDb {
-    pub(crate) wallet: PersistedWallet<Connection>,
-    pub(crate) db: Connection,
-}
-
 pub(crate) struct BackgroundTasks {
     pub(crate) cancel: CancellationToken,
     pub(crate) sync: JoinHandle<()>,
@@ -178,16 +172,6 @@ impl Stream for PaymentEventStream {
 impl Drop for PaymentEventStream {
     fn drop(&mut self) {
         self.is_active.store(false, Ordering::SeqCst);
-    }
-}
-
-impl WalletWithDb {
-    pub(crate) fn new(wallet: PersistedWallet<Connection>, db: Connection) -> Self {
-        Self { wallet, db }
-    }
-
-    pub(crate) fn persist(&mut self) -> Result<bool, bdk_wallet::rusqlite::Error> {
-        self.wallet.persist(&mut self.db)
     }
 }
 

@@ -84,7 +84,9 @@ hosts or starting a federation ceremony.
 5. Configure and verify UFW before deployment without locking out the
    orchestrator.
 6. Build a locked release `cdk-mintd` with
-   `sqlite,info-page,federation-bark,iroh,prometheus`. Hash it before upload.
+   `sqlite,info-page,federation-bdk,federation-bark,iroh,prometheus`. Hash it
+   before upload. Since the backends are independent features, omit exactly
+   the backend that the target runtime does not configure.
 7. Create a private operator directory on each host, upload mintd and the
    operator helper, initialize that host's Iroh identity, and write
    mode-`0600` configuration locally on the host.

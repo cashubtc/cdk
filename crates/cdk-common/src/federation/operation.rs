@@ -2404,7 +2404,7 @@ impl FederationKnownOperation {
                 Self::TransactionSigned(operation.clone())
             }
             FederationOperation::TransactionBroadcastIntent(operation) => {
-                Self::TransactionBroadcastIntent(operation.clone())
+                Self::TransactionBroadcastIntent(*operation)
             }
             FederationOperation::TransactionBroadcastObservation(operation) => {
                 Self::TransactionBroadcastObservation(operation.clone())

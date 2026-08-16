@@ -37,7 +37,9 @@ pub(crate) struct FederationNodeRuntime {
     pub(crate) private_rest_admission: Option<FederationRestAdmissionHandle>,
     pub(crate) invalid_operation_alerts: Option<FederationInvalidOperationAlertHandle>,
     pub(crate) payment_observer: super::FederationPaymentObserver,
+    #[cfg(feature = "federation-bdk")]
     pub(crate) transaction_broadcaster: super::FederationTransactionBroadcaster,
+    #[cfg(feature = "federation-bdk")]
     pub(crate) wallet_liveness: super::FederationWalletLivenessWorker,
     pub(crate) components: FederationRuntimeComponents,
     pub(crate) aleph_bft_network_inbound: FederationAlephBftNetworkInboundState,
@@ -335,7 +337,9 @@ impl FederationNodeRuntime {
             private_rest_admission: None,
             invalid_operation_alerts: None,
             payment_observer: super::FederationPaymentObserver::default(),
+            #[cfg(feature = "federation-bdk")]
             transaction_broadcaster: super::FederationTransactionBroadcaster::default(),
+            #[cfg(feature = "federation-bdk")]
             wallet_liveness: super::FederationWalletLivenessWorker::default(),
             components: FederationRuntimeComponents::default(),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
@@ -393,6 +397,7 @@ impl FederationNodeRuntime {
         self.components.dkg.member_admission = admission;
     }
 
+    #[cfg(feature = "federation-bdk")]
     pub(crate) fn onchain_wallets(&self) -> &[cdk_bdk::FederatedBdkWallet] {
         &self.components.wallet.onchain_wallets
     }
@@ -422,11 +427,6 @@ impl FederationNodeRuntime {
     #[cfg(feature = "federation-bark")]
     pub(crate) fn bark_incoming_lock(&self) -> &Arc<tokio::sync::Mutex<()>> {
         &self.components.wallet.bark_incoming
-    }
-
-    #[cfg(feature = "federation-bark")]
-    pub(crate) fn bark_maintenance_lock(&self) -> &Arc<tokio::sync::Mutex<()>> {
-        &self.components.wallet.bark_maintenance
     }
 
     #[cfg(test)]
@@ -466,7 +466,7 @@ impl FederationNodeRuntime {
             .store(true, Ordering::Release);
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "federation-bdk"))]
     pub(crate) fn fail_next_onchain_reconciliation_for_test(&self) {
         self.components
             .faults
@@ -482,7 +482,7 @@ impl FederationNodeRuntime {
             .store(true, Ordering::Release);
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "federation-bdk"))]
     pub(crate) async fn bdk_degraded_reason_for_test(&self) -> Option<String> {
         self.components.wallet.bdk_degraded_reason().await
     }

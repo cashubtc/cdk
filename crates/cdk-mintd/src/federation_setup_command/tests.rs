@@ -7,18 +7,23 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use cdk_common::database::mint::{Database, FederationDkgDatabase, FederationFrostWalletDatabase};
 use cdk_common::database::MintFederationSetupDatabase;
+#[cfg(feature = "federation-bdk")]
+use cdk_common::federation::FederationSetupFrostApplication;
 use cdk_common::federation::{
     FederationCheckpointPolicy, FederationDkgKeysetSpec, FederationPaymentObservationPolicy,
     FederationSetupApproval, FederationSetupBitcoinNetwork, FederationSetupEnrollment,
-    FederationSetupFrostApplication, FederationSetupFrostPolicy, FederationSetupInvitation,
-    FederationSetupInvitationState, FederationSetupParticipantPhase, FederationSetupProposal,
-    FederationSetupUrlPolicy, MemberId, ThresholdParams,
-    FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+    FederationSetupFrostPolicy, FederationSetupInvitation, FederationSetupInvitationState,
+    FederationSetupParticipantPhase, FederationSetupProposal, FederationSetupUrlPolicy, MemberId,
+    ThresholdParams, FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
 };
 use cdk_common::mint_url::MintUrl;
-use cdk_common::{Amount, CurrencyUnit, SecretKey};
+#[cfg(feature = "federation-bark")]
+use cdk_common::SecretKey;
+use cdk_common::{Amount, CurrencyUnit};
+#[cfg(feature = "federation-bark")]
 use cdk_federation_bark::{
-    federation_bark_setup_config, FederationBarkPolicyConfig, FederationBarkReceiveAntiDosPolicy,
+    federation_bark_recovery_setup_config, federation_bark_setup_config,
+    FederationBarkPolicyConfig, FederationBarkReceiveAntiDosPolicy,
 };
 use cdk_sqlite::MintSqliteDatabase;
 use tempfile::TempDir;
@@ -29,6 +34,7 @@ use super::*;
 const NOW_UNIX: u64 = 1_900_000_000;
 const URL_POLICY: FederationSetupUrlPolicy = FederationSetupUrlPolicy::AllowInsecureLocalhost;
 
+#[cfg(feature = "federation-bark")]
 #[test]
 fn setup_create_builds_bark_policy_into_the_signed_frost_inputs() {
     let temp_dir = TempDir::new().expect("temporary Bark setup policy directory");
@@ -89,10 +95,30 @@ fn setup_create_builds_bark_policy_into_the_signed_frost_inputs() {
 
     let frost = setup_frost_policy(&args, FederationSetupBitcoinNetwork::Signet)
         .expect("setup FROST policy");
-    assert_eq!(frost.applications.len(), 2);
-    assert!(federation_bark_setup_config(&frost.applications[1])
-        .expect("valid Bark setup application")
-        .is_some());
+    assert_eq!(
+        frost.applications.len(),
+        usize::from(cfg!(feature = "federation-bdk")) + 2
+    );
+    let bark_count = frost
+        .applications
+        .iter()
+        .filter(|application| {
+            federation_bark_setup_config(application)
+                .expect("valid Bark setup application")
+                .is_some()
+        })
+        .count();
+    let recovery_count = frost
+        .applications
+        .iter()
+        .filter(|application| {
+            federation_bark_recovery_setup_config(application)
+                .expect("valid Bark recovery setup application")
+                .is_some()
+        })
+        .count();
+    assert_eq!(bark_count, 1);
+    assert_eq!(recovery_count, 1);
 }
 
 struct FakeCoordinator {
@@ -1069,6 +1095,18 @@ fn protected_setup_reader_rejects_weak_permissions_symlinks_and_oversized_files(
 
 fn create_spec() -> FederationSetupCreateSpec {
     let thresholds = ThresholdParams::with_bft_consensus(3, 2).expect("safe thresholds");
+    let applications = Vec::new();
+    #[cfg(feature = "federation-bdk")]
+    let applications = {
+        let mut applications = applications;
+        applications.push(FederationSetupFrostApplication::CdkOnchain {
+            application_key_epoch: 1,
+            confirmation_policy_version: 1,
+            minimum_confirmations: 1,
+            fee_policy_version: 1,
+        });
+        applications
+    };
     FederationSetupCreateSpec {
         threshold_params: thresholds,
         public_mint_url: mint_url("http://127.0.0.1:8411"),
@@ -1091,12 +1129,7 @@ fn create_spec() -> FederationSetupCreateSpec {
         .expect("test keyset")],
         frost: FederationSetupFrostPolicy::new(
             1,
-            vec![FederationSetupFrostApplication::CdkOnchain {
-                application_key_epoch: 1,
-                confirmation_policy_version: 1,
-                minimum_confirmations: 1,
-                fee_policy_version: 1,
-            }],
+            applications,
             FederationSetupBitcoinNetwork::Regtest,
         )
         .expect("test FROST policy"),

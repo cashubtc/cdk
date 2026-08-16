@@ -76,23 +76,36 @@ pub(super) async fn post_local_status(
     let aleph_bft_network_inbound_active =
         state.federation_aleph_bft_network_inbound_active().await;
     let invalid_operation_alerts = state.federation_invalid_operation_alert_summaries().await;
+    #[cfg(feature = "federation-bdk")]
     let onchain_wallets = state.federation_onchain_wallet_statuses().await;
+    #[cfg(not(feature = "federation-bdk"))]
+    let onchain_wallets = Vec::new();
+    #[cfg(feature = "federation-bdk")]
     let wallet_recovery = federation_wallet_recovery_status(&state)
         .await
         .map_err(cdk_error_response)?;
+    #[cfg(not(feature = "federation-bdk"))]
+    let wallet_recovery = None;
+    #[cfg(feature = "federation-bdk")]
     let wallet_liveness = state
         .mint
         .federation_config()
         .and_then(|runtime| runtime.public_config().frost_wallet.as_ref())
         .is_some()
         .then(|| state.federation.wallet_liveness.clone());
+    #[cfg(feature = "federation-bdk")]
     let wallet_liveness = match wallet_liveness {
         Some(worker) => Some(worker.status().await),
         None => None,
     };
+    #[cfg(not(feature = "federation-bdk"))]
+    let wallet_liveness = None;
+    #[cfg(feature = "federation-bdk")]
     let wallet_operator = federation_wallet_operator_status(&state, wallet_liveness.as_ref())
         .await
         .map_err(cdk_error_response)?;
+    #[cfg(not(feature = "federation-bdk"))]
+    let wallet_operator = None;
     #[cfg(feature = "federation-bark")]
     let application_operators = {
         let mut application_operators = std::collections::BTreeMap::new();
@@ -279,6 +292,7 @@ async fn federation_checkpoint_status(
     })
 }
 
+#[cfg(feature = "federation-bdk")]
 async fn federation_wallet_operator_status(
     state: &MintState,
     liveness: Option<&cdk::federation::FederationWalletLivenessStatus>,
@@ -304,6 +318,7 @@ async fn federation_wallet_operator_status(
     ))
 }
 
+#[cfg(feature = "federation-bdk")]
 async fn federation_wallet_recovery_status(
     state: &MintState,
 ) -> Result<Option<FederationWalletRecoveryStatus>, cdk::Error> {

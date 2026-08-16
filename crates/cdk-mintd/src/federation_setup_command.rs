@@ -17,7 +17,7 @@ use cdk_common::database::mint::Database;
 use cdk_common::database::Error as DatabaseError;
 #[cfg(feature = "sqlite")]
 use cdk_common::database::MintFederationSetupDatabase;
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", feature = "federation-bdk"))]
 use cdk_common::federation::FederationSetupFrostApplication;
 use cdk_common::federation::{
     FederationCheckpointPolicy, FederationConfig, FederationDkgKeysetSpec,
@@ -259,14 +259,15 @@ fn setup_frost_policy(
     args: &cli::FederationSetupCreateArgs,
     network: FederationSetupBitcoinNetwork,
 ) -> Result<FederationSetupFrostPolicy> {
-    let applications = vec![FederationSetupFrostApplication::CdkOnchain {
+    #[allow(unused_mut)]
+    let mut applications = Vec::new();
+    #[cfg(feature = "federation-bdk")]
+    applications.push(FederationSetupFrostApplication::CdkOnchain {
         application_key_epoch: args.frost_application_key_epoch,
         confirmation_policy_version: 1,
         minimum_confirmations: args.frost_minimum_confirmations,
         fee_policy_version: args.frost_fee_policy_version,
-    }];
-    #[cfg(feature = "federation-bark")]
-    let mut applications = applications;
+    });
     let bark = match (
         args.frost_bark_ark_server_public_key.as_deref(),
         args.frost_bark_application_key_epoch,
@@ -295,6 +296,16 @@ fn setup_frost_policy(
                 policy,
             },
         )?);
+        applications.push(
+            cdk_federation_bark::federation_bark_recovery_setup_application(
+                cdk_federation_bark::FederationBarkRecoverySetupConfig {
+                    application_key_epoch,
+                    network: network.bitcoin_network(),
+                    minimum_confirmations: args.frost_minimum_confirmations,
+                    fee_policy_version: args.frost_fee_policy_version,
+                },
+            )?,
+        );
     }
     #[cfg(not(feature = "federation-bark"))]
     if bark.is_some() {

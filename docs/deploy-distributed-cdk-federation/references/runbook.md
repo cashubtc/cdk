@@ -205,7 +205,7 @@ Use the pinned toolchain and lockfile. Build for the servers' architecture:
 ```bash
 cargo build --locked --release -p cdk-mintd \
     --no-default-features \
-    --features sqlite,info-page,federation-bark,iroh,prometheus
+    --features sqlite,info-page,federation-bdk,federation-bark,iroh,prometheus
 ```
 
 The repository's Docker build pattern is preferred when the workstation
@@ -224,6 +224,11 @@ target/linux-x86_64/release/cdk-mintd iroh init --help >/dev/null
 
 Do not build or upload `cdk-cli` or `fed-cdk-tui` for a mintd-only server
 deployment.
+
+When using `scripts/deploy_nocean_multi_operator_federation.sh` as the
+ceremony driver for independent hosts, set `MINTD_ONLY=1`. This keeps the
+client wallet, TUI, and wallet-smoke state off every server; run paid
+acceptance from a separate local client instead.
 
 ## Install independent operators
 

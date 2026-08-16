@@ -498,7 +498,7 @@ pub enum OnchainBackend {
     #[cfg(feature = "bdk")]
     Bdk,
     /// Watch-only BDK wallet whose spends are authorized by federation consensus and FROST.
-    #[cfg(feature = "federation")]
+    #[cfg(feature = "federation-bdk")]
     #[serde(rename = "federated-bdk", alias = "federated_bdk")]
     FederatedBdk,
     #[cfg(feature = "fakewallet")]
@@ -513,7 +513,7 @@ impl std::str::FromStr for OnchainBackend {
             "none" => Ok(OnchainBackend::None),
             #[cfg(feature = "bdk")]
             "bdk" => Ok(OnchainBackend::Bdk),
-            #[cfg(feature = "federation")]
+            #[cfg(feature = "federation-bdk")]
             "federated-bdk" | "federated_bdk" | "federatedbdk" => Ok(OnchainBackend::FederatedBdk),
             #[cfg(feature = "fakewallet")]
             "fakewallet" => Ok(OnchainBackend::FakeWallet),
@@ -801,12 +801,12 @@ fn default_bdk_min_send_amount_sat() -> u64 {
     546
 }
 
-#[cfg(feature = "bdk")]
+#[cfg(any(feature = "bdk", feature = "federation"))]
 fn default_bdk_sync_interval_secs() -> u64 {
     30
 }
 
-#[cfg(feature = "bdk")]
+#[cfg(any(feature = "bdk", feature = "federation"))]
 fn default_bdk_esplora_parallel_requests() -> usize {
     1
 }
@@ -816,14 +816,14 @@ fn default_bdk_electrum_batch_size() -> usize {
     5
 }
 
-#[cfg(feature = "bdk")]
+#[cfg(any(feature = "bdk", feature = "federation"))]
 fn default_bdk_request_timeout_secs() -> u64 {
-    cdk_bdk::DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS
+    15
 }
 
-#[cfg(feature = "bdk")]
+#[cfg(any(feature = "bdk", feature = "federation"))]
 fn default_bdk_esplora_max_retries() -> usize {
-    cdk_bdk::DEFAULT_ESPLORA_MAX_RETRIES
+    3
 }
 
 #[cfg(feature = "bdk")]
@@ -2079,7 +2079,7 @@ impl Settings {
                      \"fakewallet\" or \"none\""
                     .to_string());
             }
-            #[cfg(feature = "federation")]
+            #[cfg(feature = "federation-bdk")]
             OnchainBackend::FederatedBdk
                 if has_fake_wallet_backend && !cfg!(feature = "federation-test-utils") =>
             {
@@ -2166,7 +2166,7 @@ mod tests {
 
     use super::*;
 
-    #[cfg(feature = "federation")]
+    #[cfg(feature = "federation-bdk")]
     #[test]
     fn federated_bdk_backend_parsing_is_explicit() {
         assert_eq!(
@@ -2923,7 +2923,7 @@ target_block_time_secs = 300
 
     #[cfg(all(
         feature = "fakewallet",
-        feature = "federation",
+        feature = "federation-bdk",
         feature = "federation-test-utils"
     ))]
     #[test]

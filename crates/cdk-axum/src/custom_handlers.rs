@@ -71,6 +71,7 @@ async fn create_mint_quote_for_route(
                 .await?;
             return Ok((response, Some(request_lookup_id)));
         }
+        #[cfg(feature = "federation-bdk")]
         if matches!(request, cdk::mint::MintQuoteRequest::Onchain(_)) {
             let quote_id = QuoteId::new();
             state.mint.check_mint_request_acceptable(&request).await?;
@@ -1932,8 +1933,10 @@ mod tests {
                     crate::FederationInvalidOperationAlertTracker::default(),
                 ))),
                 payment_observer: crate::federation::FederationPaymentObserver::default(),
+                #[cfg(feature = "federation-bdk")]
                 transaction_broadcaster:
                     crate::federation::FederationTransactionBroadcaster::default(),
+                #[cfg(feature = "federation-bdk")]
                 wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
                 components: crate::federation::runtime_components::FederationRuntimeComponents::new(
                     Some(Arc::new(tokio::sync::Mutex::new(if local_finality_test {
@@ -1943,6 +1946,7 @@ mod tests {
                     }))),
                     None,
                     None,
+                    #[cfg(feature = "federation-bdk")]
                     Vec::new(),
                     None,
                     #[cfg(feature = "federation-bark")]
@@ -2778,8 +2782,10 @@ mod tests {
                     ))
                 }),
                 payment_observer: crate::federation::FederationPaymentObserver::default(),
+                #[cfg(feature = "federation-bdk")]
                 transaction_broadcaster:
                     crate::federation::FederationTransactionBroadcaster::default(),
+                #[cfg(feature = "federation-bdk")]
                 wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
                 components: crate::federation::runtime_components::FederationRuntimeComponents::new(
                     is_federated.then(|| {
@@ -2789,6 +2795,7 @@ mod tests {
                     }),
                     None,
                     None,
+                    #[cfg(feature = "federation-bdk")]
                     Vec::new(),
                     None,
                     #[cfg(feature = "federation-bark")]

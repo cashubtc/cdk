@@ -9,13 +9,16 @@ use bark::{Config as BarkConfig, WalletProperties, WalletSeed};
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::Network;
 use cashu::MintUrl;
+use cdk_bitcoin_wallet::{
+    ChainSource, EsploraConfig, FederatedChainSourceDescriptor, FederatedChainSourceScope,
+};
 use cdk_common::federation::FederationApplicationDigest;
 use cdk_common::federation::{
     FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSignature,
     FederationConfig, FederationConfigDigest, FederationDkgCeremonyId,
     FederationFinalizedItemDigest, FederationFrostApplicationConfig, FederationFrostDkgContext,
-    FederationFrostRootPublicConfig, FederationFrostRootRecord, FederationId,
-    FederationJournalDigest, FederationMaterializedStateDigest,
+    FederationFrostRootPublicConfig, FederationFrostRootRecord, FederationFrostWalletConfig,
+    FederationId, FederationJournalDigest, FederationMaterializedStateDigest,
     FederationOnchainConfirmationPolicy, FederationOperationId, FederationOperationSignature,
     MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
     VerifiedFederationCheckpointQuorum, FEDERATION_CHECKPOINT_VERSION,
@@ -23,16 +26,17 @@ use cdk_common::federation::{
 use cdk_common::SecretKey as CdkSecretKey;
 use cdk_common::{Amount, CurrencyUnit};
 use cdk_federation_bark::{
-    ark_server_commitment, federation_bark_application, federation_bark_signer_set_for_attempt,
-    federation_frost_wallet_with_bark, payment_hash_for_preimage, preimage_commitment,
-    FederationBarkActionId, FederationBarkEvidenceAttestation,
+    ark_server_commitment, federation_bark_application, federation_bark_frost_applications,
+    federation_bark_next_actor, federation_bark_signer_set_for_attempt, payment_hash_for_preimage,
+    preimage_commitment, FederationBarkActionId, FederationBarkEvidenceAttestation,
     FederationBarkEvidenceAttestationRequest, FederationBarkEvidenceAttestationResponse,
     FederationBarkEvidenceBinding, FederationBarkEvidenceCertificate, FederationBarkEvidencePhase,
     FederationBarkFrostApplicationConfig, FederationBarkMemberObservation,
     FederationBarkObservationStatus, FederationBarkPolicyConfig,
     FederationBarkPrepareReceiveSecretRequest, FederationBarkReceiveAntiDosPolicy,
     FederationBarkReceiveIntent, FederationBarkReceiveProof, FederationBarkReceiveSecretBinding,
-    FederationBarkUnit, FederationBarkVtxoLocator, FEDERATION_BARK_OPERATION_VERSION,
+    FederationBarkRecoveryApplicationConfig, FederationBarkRecoverySetupConfig, FederationBarkUnit,
+    FederationBarkVtxoLocator, FEDERATION_BARK_OPERATION_VERSION,
     FEDERATION_MAX_BARK_EVIDENCE_ATTESTATION_REQUEST_BYTES,
 };
 use cdk_frost::rand_core::SeedableRng;
@@ -45,7 +49,7 @@ use crate::{
     FederatedBarkLocalConfig, FederatedBarkMaintenanceControls,
     FederatedBarkReceiveSecretAcceptedRef, FederatedBarkReceiveSecretEncryptionKey,
     FederatedBarkReceiveSecretStore, FederatedBarkReceiveSecretStoreConfig,
-    FederatedBarkStoreAvailability, ValidatedFederatedBarkConfig,
+    FederatedBarkRecoveryLocalConfig, FederatedBarkStoreAvailability, ValidatedFederatedBarkConfig,
     FEDERATED_BARK_RECEIVE_SECRET_ORPHAN_RETENTION_SECONDS,
 };
 
@@ -187,8 +191,22 @@ fn federated_config() -> FederationConfig {
         policy(),
     )
     .expect("Bark application");
+    let recovery = FederationBarkRecoveryApplicationConfig::new(
+        &config,
+        &root,
+        FederationBarkRecoverySetupConfig {
+            application_key_epoch: 1,
+            network: Network::Regtest,
+            minimum_confirmations: 2,
+            fee_policy_version: 1,
+        },
+    )
+    .expect("Bark recovery application");
+    let applications = federation_bark_frost_applications(&config, &root, bark, recovery)
+        .expect("Bark applications");
     config.frost_wallet = Some(
-        federation_frost_wallet_with_bark(&config, root, onchain, bark).expect("wallet config"),
+        FederationFrostWalletConfig::new(&config, root, Some(onchain), applications)
+            .expect("wallet config"),
     );
     config.validate().expect("federated config");
     config
@@ -232,6 +250,18 @@ fn bark_signer_attempts_rotate_deterministically_without_repeating() {
         vec![member(1), member(3)]
     );
     assert!(federation_bark_signer_set_for_attempt(&config, 4).is_err());
+    assert_eq!(
+        federation_bark_next_actor(&config, member(1)).expect("second actor"),
+        member(2)
+    );
+    assert_eq!(
+        federation_bark_next_actor(&config, member(2)).expect("third actor"),
+        member(3)
+    );
+    assert_eq!(
+        federation_bark_next_actor(&config, member(3)).expect("wrapped actor"),
+        member(1)
+    );
 }
 
 fn local_config(config: &FederationConfig) -> FederatedBarkLocalConfig {
@@ -275,6 +305,21 @@ fn local_config(config: &FederationConfig) -> FederatedBarkLocalConfig {
         },
         limits: FederatedBarkLimits::new(1, 1_000_000).expect("limits"),
         maintenance: FederatedBarkMaintenanceControls::default(),
+        recovery: FederatedBarkRecoveryLocalConfig {
+            chain_source: ChainSource::Esplora(EsploraConfig {
+                url: "https://chain.example.invalid".to_string(),
+                parallel_requests: 1,
+                request_timeout_secs: 1,
+                max_retries: 0,
+            }),
+            storage_root: "/private/operator/recovery-wallet".into(),
+            sync_interval: std::time::Duration::from_secs(1),
+            observation_source: FederatedChainSourceDescriptor::new(
+                FederatedChainSourceScope::Independent,
+                "test-source",
+            )
+            .expect("observation source"),
+        },
     }
 }
 

@@ -1,15 +1,20 @@
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cdk::cdk_payment::Event;
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use cdk::federation::{
     FederationAddressAllocationScope, FederationAddressKeychain, FederationAllocatedAddressRef,
-    FederationChainObservation, FederationChainSourceDescriptor, FederationChainSourceScope,
-    FederationDepositConfirmation, FederationDepositObservation, FederationDepositReorgObservation,
-    FederationOperation, FederationOperationStatus, FederationPaymentObservation,
-    FederationPaymentObservationReport, FederationPaymentObservationReportSummary,
-    FederationWalletUtxoState,
+    FederationChainSourceDescriptor, FederationChainSourceScope, FederationDepositConfirmation,
+    FederationDepositObservation, FederationDepositReorgObservation, FederationWalletUtxoState,
+};
+use cdk::federation::{
+    FederationChainObservation, FederationOperation, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationReport,
+    FederationPaymentObservationReportSummary,
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::{MeltQuoteState, MintQuoteState};
@@ -62,6 +67,7 @@ impl FederationPaymentWorkerFailureBackoff {
     }
 }
 
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 fn confirmation_matches_known_anchor(
     block: Option<(cdk_common::bitcoin::BlockHash, u32)>,
     confirmation: Option<FederationDepositConfirmation>,
@@ -74,11 +80,13 @@ fn confirmation_matches_known_anchor(
     }
 }
 
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 fn reorg_disconnection_is_proven(
     still_confirmed_in_block: bool,
-    membership: cdk_bdk::FederatedBlockMembership,
+    membership: cdk_bitcoin_wallet::FederatedBlockMembership,
 ) -> bool {
-    !still_confirmed_in_block && membership == cdk_bdk::FederatedBlockMembership::Disconnected
+    !still_confirmed_in_block
+        && membership == cdk_bitcoin_wallet::FederatedBlockMembership::Disconnected
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +107,7 @@ impl Default for FederationPaymentObserver {
 }
 
 impl FederationPaymentObserver {
+    #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
     pub(crate) async fn observe_onchain_wallets(
         &self,
         state: &MintState,
@@ -113,11 +122,23 @@ impl FederationPaymentObserver {
         let canonical = state.mint.federation_chain_observation_state().await?;
         let observer = runtime.member_id();
         let mut submitted = 0_usize;
+        let mut wallets = Vec::<(cdk_bitcoin_wallet::FederatedDescriptorWallet, bool)>::new();
 
-        for wallet in state.federation.onchain_wallets() {
-            if wallet.ensure_ready(0).await.is_err() {
-                continue;
-            }
+        #[cfg(feature = "federation-bdk")]
+        wallets.extend(
+            state
+                .federation
+                .onchain_wallets()
+                .iter()
+                .cloned()
+                .map(|wallet| (wallet, false)),
+        );
+        #[cfg(feature = "federation-bark")]
+        if let Some(bark) = state.federation.bark_runtime() {
+            wallets.push((bark.recovery_wallet().as_ref().clone(), true));
+        }
+
+        for (wallet, synchronize_locally) in wallets {
             let wallet_scope = wallet.scope();
             let application_id = cdk::federation::FederationFrostApplicationId::from_bytes(
                 wallet_scope.application_id(),
@@ -129,18 +150,49 @@ impl FederationPaymentObserver {
             let Some(allocation_wallet) = allocations.wallet(scope) else {
                 continue;
             };
-            let application = &wallet_config.cdk_onchain_application;
-            if application.application_id != scope.application_id
-                || application.application_key_epoch != scope.application_key_epoch
-            {
-                return Err(cdk::Error::Internal.into());
+            wallet
+                .reconcile_revealed_counters(
+                    allocation_wallet.external_next_index,
+                    allocation_wallet.internal_next_index,
+                )
+                .await
+                .map_err(|_| cdk::Error::Internal)?;
+            if synchronize_locally && wallet.sync_once().await.is_err() {
+                continue;
             }
+            if wallet.ensure_ready(0).await.is_err() {
+                continue;
+            }
+            let minimum_confirmations = wallet_config
+                .cdk_onchain_application
+                .as_ref()
+                .filter(|application| {
+                    application.application_id == scope.application_id
+                        && application.application_key_epoch == scope.application_key_epoch
+                })
+                .map(|application| application.confirmation_policy.minimum_confirmations);
+            #[cfg(feature = "federation-bark")]
+            let minimum_confirmations = match minimum_confirmations {
+                Some(value) => Some(value),
+                None => cdk_federation_bark::federation_bark_recovery_application(
+                    runtime.public_config(),
+                )
+                .map_err(|_| cdk::Error::Internal)?
+                .filter(|application| {
+                    application.application_id() == scope.application_id
+                        && application.application_key_epoch() == scope.application_key_epoch
+                })
+                .map(|application| application.minimum_confirmations()),
+            };
+            let Some(minimum_confirmations) = minimum_confirmations else {
+                return Err(cdk::Error::Internal);
+            };
             let source = FederationChainSourceDescriptor::new(
                 match wallet.observation_source().scope {
-                    cdk_bdk::FederatedChainSourceScope::Independent => {
+                    cdk_bitcoin_wallet::FederatedChainSourceScope::Independent => {
                         FederationChainSourceScope::Independent
                     }
-                    cdk_bdk::FederatedChainSourceScope::Shared => {
+                    cdk_bitcoin_wallet::FederatedChainSourceScope::Shared => {
                         FederationChainSourceScope::Shared
                     }
                 },
@@ -154,10 +206,10 @@ impl FederationPaymentObserver {
 
             for output in &outputs {
                 let keychain = match output.keychain {
-                    cdk_bdk::FederatedWalletKeychain::External => {
+                    cdk_bitcoin_wallet::FederatedWalletKeychain::External => {
                         FederationAddressKeychain::External
                     }
-                    cdk_bdk::FederatedWalletKeychain::Internal => {
+                    cdk_bitcoin_wallet::FederatedWalletKeychain::Internal => {
                         FederationAddressKeychain::Internal
                     }
                 };
@@ -175,7 +227,7 @@ impl FederationPaymentObserver {
                             block_height: confirmation.block_height,
                             confirmation_depth: confirmation
                                 .confirmation_depth
-                                .min(application.confirmation_policy.minimum_confirmations),
+                                .min(minimum_confirmations),
                         });
                 let canonical_utxo = canonical.utxo(output.outpoint);
                 let observation_epoch = match canonical_utxo {
@@ -296,6 +348,11 @@ impl FederationPaymentObserver {
             }
         }
         Ok(submitted)
+    }
+
+    #[cfg(not(any(feature = "federation-bdk", feature = "federation-bark")))]
+    async fn observe_onchain_wallets(&self, _state: &MintState) -> Result<usize, cdk::Error> {
+        Ok(0)
     }
 
     pub(crate) async fn observe_mint_quotes(
@@ -781,8 +838,11 @@ impl FederationPaymentObserver {
     }
 
     pub(crate) async fn run_round(&self, state: &MintState) -> Result<usize, cdk::Error> {
-        let mut submitted = self.observe_onchain_wallets(state).await?;
-        submitted = submitted.saturating_add(self.scheduled_quotes(state).await?);
+        #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+        let submitted = self.observe_onchain_wallets(state).await?;
+        #[cfg(not(any(feature = "federation-bdk", feature = "federation-bark")))]
+        let submitted = 0_usize;
+        let submitted = submitted.saturating_add(self.scheduled_quotes(state).await?);
 
         Ok(submitted)
     }
@@ -1198,8 +1258,8 @@ mod tests {
     #[test]
     fn reorg_requires_positive_local_chain_disconnection_evidence() {
         for membership in [
-            cdk_bdk::FederatedBlockMembership::Connected,
-            cdk_bdk::FederatedBlockMembership::Unknown,
+            cdk_bitcoin_wallet::FederatedBlockMembership::Connected,
+            cdk_bitcoin_wallet::FederatedBlockMembership::Unknown,
         ] {
             assert!(
                 !reorg_disconnection_is_proven(false, membership),
@@ -1208,11 +1268,11 @@ mod tests {
         }
         assert!(reorg_disconnection_is_proven(
             false,
-            cdk_bdk::FederatedBlockMembership::Disconnected
+            cdk_bitcoin_wallet::FederatedBlockMembership::Disconnected
         ));
         assert!(!reorg_disconnection_is_proven(
             true,
-            cdk_bdk::FederatedBlockMembership::Disconnected
+            cdk_bitcoin_wallet::FederatedBlockMembership::Disconnected
         ));
     }
 

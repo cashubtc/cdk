@@ -22,18 +22,27 @@ use cdk_common::{Amount, PublicKey};
 #[cfg(feature = "federation-bark")]
 use cdk_federation_bark::{
     ark_server_commitment, federation_bark_application, federation_bark_application_id,
-    federation_bark_exit_allocation_quote, federation_bark_signer_set_for_attempt,
-    validate_federation_bark_operation, FederationBarkActionKind, FederationBarkActionPlan,
-    FederationBarkActionRecord, FederationBarkActionTransition, FederationBarkArtifact,
-    FederationBarkArtifactKind, FederationBarkDigest, FederationBarkEvidencePhase,
-    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkProjectionSnapshot,
-    FederationBarkReceiveIntent, FederationBarkSemanticPhase, FederationBarkVtxoInput,
-    FederationBarkVtxoLocator, FederationBarkVtxoState, FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU,
+    federation_bark_cpfp_allocation_quote, federation_bark_exit_allocation_quote,
+    federation_bark_next_actor, federation_bark_recovery_application,
+    federation_bark_signer_set_for_attempt, validate_federation_bark_operation,
+    FederationBarkActionKind, FederationBarkActionPlan, FederationBarkActionRecord,
+    FederationBarkActionTransition, FederationBarkArtifact, FederationBarkArtifactKind,
+    FederationBarkCpfpPackageSet, FederationBarkCpfpPublication, FederationBarkDigest,
+    FederationBarkEvidencePhase, FederationBarkObservationStatus, FederationBarkOperation,
+    FederationBarkProjectionSnapshot, FederationBarkReceiveIntent, FederationBarkRecoveryState,
+    FederationBarkSemanticPhase, FederationBarkVtxoInput, FederationBarkVtxoLocator,
+    FederationBarkVtxoState, FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU,
 };
 use tracing::instrument;
 use uuid::Uuid;
 
 use crate::mint::{Mint, QuoteId};
+
+#[cfg(feature = "federation-bark")]
+use super::{
+    CHAIN_OBSERVATION_PRIMARY_NAMESPACE, FEDERATION_BARK_RECOVERY_SECONDARY_NAMESPACE,
+    FEDERATION_BARK_RECOVERY_STATE_KEY,
+};
 
 #[cfg(feature = "federation-bark")]
 pub(super) use self::bark_validation::*;
@@ -129,6 +138,7 @@ impl Mint {
                         | FederationBarkSemanticPhase::RefreshPlanned
                         | FederationBarkSemanticPhase::ExitPlanned
                         | FederationBarkSemanticPhase::ExitRegistered
+                        | FederationBarkSemanticPhase::ExitPublished
                 ) {
                     return Err(bark_state_error(
                         "signing retry does not follow a custody phase",
@@ -153,10 +163,18 @@ impl Mint {
                     .ok_or_else(|| bark_state_error("signing retry attempt overflow"))?;
                 let signer_set =
                     federation_bark_signer_set_for_attempt(config.public_config(), attempt)?;
+                let fallback_actor =
+                    federation_bark_next_actor(config.public_config(), action.actor)?;
+                if transition.actor != action.actor && transition.actor != fallback_actor {
+                    return Err(bark_state_error(
+                        "signing retry actor is not the current or next canonical actor",
+                    ));
+                }
                 let expected = FederationBarkActionTransition::signing_attempt_advanced(
                     plan_operation_id,
                     action.latest_operation_id,
                     &plan,
+                    transition.actor,
                     attempt,
                     signer_set,
                 )?;
@@ -1318,6 +1336,14 @@ impl Mint {
                     &plan,
                 )?;
                 validate_exit_registered_result(&snapshot, &plan, transition)?;
+                validate_bark_recovery_package_set(
+                    self,
+                    &config,
+                    plan_entry.operation_id,
+                    &plan,
+                    transition,
+                )
+                .await?;
             }
             FederationBarkOperation::ActionTransition(transition)
                 if transition.phase == FederationBarkSemanticPhase::ExitPublished =>
@@ -1349,6 +1375,7 @@ impl Mint {
                     ));
                 }
                 validate_exit_published_result(&plan, transition)?;
+                validate_bark_recovery_publication(self, &snapshot, transition).await?;
             }
             FederationBarkOperation::ActionTransition(transition)
                 if transition.phase == FederationBarkSemanticPhase::ExitConfirmed =>
@@ -1372,7 +1399,7 @@ impl Mint {
                     transition,
                     FederationBarkActionKind::EmergencyExit,
                 )?;
-                if action.phase != FederationBarkSemanticPhase::ExitPublished
+                if action_effective_phase(action) != FederationBarkSemanticPhase::ExitPublished
                     || transition.predecessor_operation_id != action.latest_operation_id
                 {
                     return Err(bark_state_error(
@@ -1405,11 +1432,22 @@ impl Mint {
                         "exit confirmation has not reached the accepted member threshold",
                     ));
                 }
-                let FederationBarkOperation::ActionTransition(published) = &action.operation else {
-                    return Err(bark_state_error(
-                        "exit confirmation predecessor is not a publication",
-                    ));
-                };
+                let published = snapshot
+                    .transitions
+                    .iter()
+                    .find_map(|record| match &record.operation {
+                        FederationBarkOperation::ActionTransition(published)
+                            if record.action_id == action.action_id
+                                && published.phase
+                                    == FederationBarkSemanticPhase::ExitPublished =>
+                        {
+                            Some(published)
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        bark_state_error("exit confirmation predecessor has no publication")
+                    })?;
                 validate_exit_confirmed_result(&snapshot, &plan, published, transition)?;
             }
             FederationBarkOperation::ActionTransition(transition)
@@ -1808,20 +1846,20 @@ impl Mint {
             .frost_wallet
             .as_ref()
             .ok_or(Error::Internal)?;
-        let onchain = &frost_wallet.cdk_onchain_application;
+        let recovery = federation_bark_recovery_application(config.public_config())?
+            .ok_or_else(|| bark_state_error("Bark recovery application is missing"))?;
         let expected_quote = federation_bark_exit_allocation_quote(expected_action);
         let scope = FederationAddressAllocationScope {
-            application_id: onchain.application_id,
-            application_key_epoch: onchain.application_key_epoch,
+            application_id: recovery.application_id(),
+            application_key_epoch: recovery.application_key_epoch(),
         };
         let allocation = allocations
             .allocation(scope, &expected_quote)
             .ok_or_else(|| bark_state_error("exit destination allocation is missing"))?;
-        let expected_script = frost_wallet.derive_cdk_onchain_script(
+        let expected_script = recovery.derive_script(
             config.public_config(),
-            onchain.application_id,
-            onchain.application_key_epoch,
-            FederationAddressKeychain::Internal,
+            &frost_wallet.root,
+            true,
             allocation.derivation_index,
         )?;
         let mut expected_vtxo_artifacts = records
@@ -1865,20 +1903,20 @@ impl Mint {
             || request.action_id != expected_action
             || request.predecessor_operation_id != predecessor
             || request.inputs != expected_inputs
-            || request.destination.application_id != onchain.application_id
-            || request.destination.application_key_epoch != onchain.application_key_epoch
+            || request.destination.application_id != recovery.application_id()
+            || request.destination.application_key_epoch != recovery.application_key_epoch()
             || request.destination.quote != expected_quote
             || request.destination.keychain != FederationAddressKeychain::Internal
             || request.destination.derivation_index != allocation.derivation_index
             || request.destination_script != expected_script.as_bytes()
-            || request.network != onchain.network
+            || request.network != recovery.network()
             || request.network != application.network
             || request.fee_rate_sat_per_kwu != FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU
             || request.fee_bound != fee_bound
             || request.minimum_recovered != plan.external_amount
             || request.trigger_height != trigger_height
             || request.minimum_expiry != minimum_expiry
-            || request.minimum_confirmations != onchain.confirmation_policy.minimum_confirmations
+            || request.minimum_confirmations != recovery.minimum_confirmations()
             || request.external_id != plan.external_id
             || request.attempt != attempt
             || actual_vtxo_artifacts != expected_vtxo_artifacts
@@ -1886,7 +1924,7 @@ impl Mint {
             || invalid_artifact
         {
             return Err(bark_state_error(
-                "emergency exit differs from its reservation, BDK destination, or fee policy",
+                "emergency exit differs from its Bark recovery destination or fee policy",
             ));
         }
         Ok(())
@@ -1955,6 +1993,20 @@ impl Mint {
                 .map_err(|_| Error::Internal)?;
                 for row in bark_projection.materialized_rows()? {
                     snapshot.push(row);
+                }
+                if let Some(bytes) = db
+                    .kv_read(
+                        CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
+                        FEDERATION_BARK_RECOVERY_SECONDARY_NAMESPACE,
+                        FEDERATION_BARK_RECOVERY_STATE_KEY,
+                    )
+                    .await?
+                {
+                    for row in
+                        FederationBarkRecoveryState::from_bytes(&bytes)?.materialized_rows()?
+                    {
+                        snapshot.push(row);
+                    }
                 }
             }
         }
@@ -2110,6 +2162,169 @@ impl Mint {
 }
 
 #[cfg(feature = "federation-bark")]
+async fn validate_bark_recovery_package_set(
+    mint: &Mint,
+    config: &super::FederationRuntimeConfig,
+    plan_operation_id: FederationOperationId,
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    let package_sets = transition
+        .artifacts
+        .iter()
+        .filter_map(|artifact| FederationBarkCpfpPackageSet::from_artifact(artifact).ok())
+        .collect::<Vec<_>>();
+    let [package_set] = package_sets.as_slice() else {
+        return Err(bark_state_error(
+            "exit registration has no exact recovery package set",
+        ));
+    };
+    if package_set.plan_operation_id != plan_operation_id
+        || package_set.action_id != plan.action_id
+        || package_set.actor != transition.actor
+        || package_set.attempt != transition.attempt
+        || package_set.signer_set != transition.signer_set
+        || package_set
+            .packages
+            .iter()
+            .any(|package| package.fee_ceiling_sat != u64::from(plan.fee_bound))
+    {
+        return Err(bark_state_error(
+            "recovery package set differs from the accepted exit plan",
+        ));
+    }
+    let wallet = config
+        .public_config()
+        .frost_wallet
+        .as_ref()
+        .ok_or(Error::Internal)?;
+    let recovery = federation_bark_recovery_application(config.public_config())?
+        .ok_or_else(|| bark_state_error("Bark recovery application is missing"))?;
+    let scope = FederationAddressAllocationScope {
+        application_id: recovery.application_id(),
+        application_key_epoch: recovery.application_key_epoch(),
+    };
+    let allocations = mint.federation_address_allocation_state().await?;
+    let chain_state = mint.federation_chain_observation_state().await?;
+    for package in &package_set.packages {
+        let expected_quote =
+            federation_bark_cpfp_allocation_quote(plan.action_id, package.parent.compute_txid());
+        let allocation = allocations
+            .allocation(scope, &expected_quote)
+            .ok_or_else(|| bark_state_error("recovery CPFP change allocation is missing"))?;
+        package.change.validate_allocation(allocation)?;
+        let expected_change = recovery.derive_script(
+            config.public_config(),
+            &wallet.root,
+            true,
+            allocation.derivation_index,
+        )?;
+        if package.change.quote != expected_quote
+            || package.change.scope() != scope
+            || package.change.keychain != FederationAddressKeychain::Internal
+            || package.change_script != expected_change.as_bytes()
+        {
+            return Err(bark_state_error(
+                "recovery CPFP change differs from its accepted allocation",
+            ));
+        }
+        for input in &package.recovery_inputs {
+            let utxo = chain_state
+                .utxo(input.outpoint)
+                .ok_or_else(|| bark_state_error("recovery CPFP input is missing"))?;
+            let expected_script = recovery.derive_script(
+                config.public_config(),
+                &wallet.root,
+                false,
+                input.allocation.derivation_index,
+            )?;
+            if utxo.state != cdk_common::federation::FederationWalletUtxoState::Spendable
+                || utxo.liability_alarm
+                || utxo.txout != input.previous_output
+                || utxo.allocation != input.allocation
+                || input.allocation.scope() != scope
+                || input.allocation.keychain != FederationAddressKeychain::External
+                || input.previous_output.script_pubkey != expected_script
+            {
+                return Err(bark_state_error(
+                    "recovery CPFP input is not an accepted spendable recovery output",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "federation-bark")]
+async fn validate_bark_recovery_publication(
+    mint: &Mint,
+    snapshot: &FederationBarkProjectionSnapshot,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    let registered_operation_id = snapshot
+        .transitions
+        .iter()
+        .find(|record| {
+            record.action_id == transition.action_id
+                && record.phase == FederationBarkSemanticPhase::ExitRegistered
+        })
+        .map(|record| record.operation_id)
+        .ok_or_else(|| bark_state_error("exit publication has no accepted registration"))?;
+    let registered_entry = mint
+        .localstore()
+        .get_federation_journal_entry_by_operation_id(registered_operation_id)
+        .await?
+        .ok_or(Error::Internal)?;
+    let FederationBarkOperation::ActionTransition(registered) =
+        bark_operation(&registered_entry.envelope.operation)?
+    else {
+        return Err(bark_state_error(
+            "exit recovery registration is not a transition",
+        ));
+    };
+    let package_sets = registered
+        .artifacts
+        .iter()
+        .filter_map(|artifact| FederationBarkCpfpPackageSet::from_artifact(artifact).ok())
+        .collect::<Vec<_>>();
+    let publications = transition
+        .artifacts
+        .iter()
+        .filter_map(|artifact| FederationBarkCpfpPublication::from_artifact(artifact).ok())
+        .collect::<Vec<_>>();
+    let ([package_set], [publication]) = (package_sets.as_slice(), publications.as_slice()) else {
+        return Err(bark_state_error(
+            "exit publication does not bind one accepted recovery package set",
+        ));
+    };
+    let expected =
+        FederationBarkCpfpPublication::new(package_set, publication.signed_children.clone())?;
+    if publication != &expected {
+        return Err(bark_state_error(
+            "exit publication differs from its accepted recovery package set",
+        ));
+    }
+    let chain_state = mint.federation_chain_observation_state().await?;
+    if package_set
+        .packages
+        .iter()
+        .flat_map(|package| &package.recovery_inputs)
+        .any(|input| {
+            chain_state.utxo(input.outpoint).is_none_or(|utxo| {
+                utxo.state != cdk_common::federation::FederationWalletUtxoState::Reserved
+                    || utxo.txout != input.previous_output
+                    || utxo.allocation != input.allocation
+            })
+        })
+    {
+        return Err(bark_state_error(
+            "exit publication recovery inputs are not reserved",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "federation-bark")]
 mod bark_validation {
     use super::*;
 
@@ -2142,7 +2357,7 @@ mod bark_validation {
             || transition.quote.is_some()
             || transition.plan_operation_id != plan_operation_id
             || transition.payment_hash.is_some()
-            || transition.actor != plan.actor
+            || transition.actor != action.actor
             || transition.attempt != action.attempt
             || transition.signer_set != expected_signers
             || transition.external_id != plan.external_id

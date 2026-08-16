@@ -797,6 +797,7 @@ async fn replay_readiness_does_not_override_a_newer_catching_up_state() {
     );
 }
 
+#[cfg(feature = "federation-bdk")]
 #[tokio::test]
 async fn catching_up_member_blocks_wallet_observer_and_broadcaster_work() {
     let (state, _, peer_private) = federation_route_state().await;

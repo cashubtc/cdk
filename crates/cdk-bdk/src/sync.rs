@@ -57,9 +57,41 @@ impl CdkBdk {
     }
 
     pub(crate) async fn sync_wallet(&self, cancel_token: CancellationToken) -> Result<(), Error> {
-        self.wallet_engine
-            .chain_source
-            .sync_wallet(self, cancel_token)
-            .await
+        let interval = std::time::Duration::from_secs(self.sync_interval_secs);
+        let mut ticker = tokio::time::interval(interval);
+        let mut consecutive_failures = 0_u32;
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => return Ok(()),
+                _ = ticker.tick() => {
+                    match self.wallet_engine.sync_once().await {
+                        Ok(()) => {
+                            if consecutive_failures > 0 {
+                                tracing::info!(
+                                    recovered_after = consecutive_failures,
+                                    "BDK wallet synchronization recovered"
+                                );
+                            }
+                            consecutive_failures = 0;
+                            ticker.reset_after(interval);
+                            self.run_reconciliation().await;
+                        }
+                        Err(error) => {
+                            consecutive_failures = consecutive_failures.saturating_add(1);
+                            log_sync_failure(
+                                "BDK wallet synchronization failed",
+                                &error,
+                                consecutive_failures,
+                            );
+                            let exponent = consecutive_failures.saturating_sub(1).min(6);
+                            let delay = interval
+                                .saturating_mul(1_u32 << exponent)
+                                .min(std::time::Duration::from_secs(300));
+                            ticker.reset_after(delay);
+                        }
+                    }
+                }
+            }
+        }
     }
 }

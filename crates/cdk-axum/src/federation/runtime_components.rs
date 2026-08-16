@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cdk::federation::MemberId;
+#[cfg(feature = "federation-bdk")]
 use cdk::mint::Mint;
 
 use super::frost_signing::FederationFrostSigningRuntime;
@@ -216,14 +217,14 @@ pub(super) struct FederationDkgCoordinator {
 #[derive(Clone, Default)]
 #[allow(missing_debug_implementations)]
 pub(super) struct FederationWalletReconciler {
+    #[cfg(feature = "federation-bdk")]
     pub(super) onchain_wallets: Vec<cdk_bdk::FederatedBdkWallet>,
     pub(super) frost_signing: Option<FederationFrostSigningRuntime>,
     #[cfg(feature = "federation-bark")]
     pub(super) bark: Option<Arc<cdk_bark::FederatedBarkRuntime>>,
     #[cfg(feature = "federation-bark")]
     pub(super) bark_incoming: Arc<tokio::sync::Mutex<()>>,
-    #[cfg(feature = "federation-bark")]
-    pub(super) bark_maintenance: Arc<tokio::sync::Mutex<()>>,
+    #[cfg(feature = "federation-bdk")]
     bdk_degraded_reason: std::sync::Arc<tokio::sync::RwLock<Option<String>>>,
 }
 
@@ -233,6 +234,7 @@ impl FederationWalletReconciler {
     /// and is returned so the caller can log it; a success clears the
     /// degraded state. The degraded state never participates in the
     /// deterministic consensus application decision.
+    #[cfg(feature = "federation-bdk")]
     pub(super) async fn reconcile(&self, mint: &Mint) -> anyhow::Result<()> {
         match crate::reconcile_federation_onchain_wallets(mint, &self.onchain_wallets).await {
             Ok(()) => {
@@ -256,12 +258,14 @@ impl FederationWalletReconciler {
     /// Typed reason this member is BDK-degraded, when reconciliation last
     /// failed. While set, local FROST signing must stay blocked; it never
     /// affects the deterministic consensus application decision.
+    #[cfg(feature = "federation-bdk")]
     pub(super) async fn bdk_degraded_reason(&self) -> Option<String> {
         self.bdk_degraded_reason.read().await.clone()
     }
 
     /// Record or clear the BDK-degraded reason after a reconciliation
     /// failure or recovery.
+    #[cfg(feature = "federation-bdk")]
     pub(super) async fn set_bdk_degraded_reason(&self, reason: Option<String>) {
         *self.bdk_degraded_reason.write().await = reason;
     }
@@ -286,7 +290,7 @@ impl FederationRuntimeComponents {
         sync: Option<FederationSyncHandle>,
         dkg_auto_start_config: Option<Arc<FederationDkgAutoStartConfig>>,
         dkg_member_admission: Option<FederationDkgMemberAdmissionHandle>,
-        onchain_wallets: Vec<cdk_bdk::FederatedBdkWallet>,
+        #[cfg(feature = "federation-bdk")] onchain_wallets: Vec<cdk_bdk::FederatedBdkWallet>,
         frost_signing: Option<FederationFrostSigningRuntime>,
         #[cfg(feature = "federation-bark")] bark: Option<Arc<cdk_bark::FederatedBarkRuntime>>,
     ) -> Self {
@@ -297,14 +301,14 @@ impl FederationRuntimeComponents {
                 member_admission: dkg_member_admission,
             },
             wallet: FederationWalletReconciler {
+                #[cfg(feature = "federation-bdk")]
                 onchain_wallets,
                 frost_signing,
                 #[cfg(feature = "federation-bark")]
                 bark,
                 #[cfg(feature = "federation-bark")]
                 bark_incoming: Arc::new(tokio::sync::Mutex::new(())),
-                #[cfg(feature = "federation-bark")]
-                bark_maintenance: Arc::new(tokio::sync::Mutex::new(())),
+                #[cfg(feature = "federation-bdk")]
                 bdk_degraded_reason: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
             },
             ..Default::default()
@@ -314,6 +318,7 @@ impl FederationRuntimeComponents {
     /// Seed the startup BDK-degraded reason after a failed startup
     /// reconciliation; the member starts degraded with local signing blocked
     /// instead of failing startup.
+    #[cfg(feature = "federation-bdk")]
     pub(crate) async fn set_startup_bdk_degraded_reason(&self, reason: Option<String>) {
         self.wallet.set_bdk_degraded_reason(reason).await;
     }
@@ -325,6 +330,7 @@ impl FederationRuntimeComponents {
 pub(super) struct FederationRuntimeFaultHarness {
     pub(super) fail_next_pending_operation_persistence: Arc<AtomicBool>,
     pub(super) fail_next_finalization_persistence: Arc<AtomicBool>,
+    #[cfg(feature = "federation-bdk")]
     pub(super) fail_next_onchain_reconciliation: Arc<AtomicBool>,
     pub(super) permanent_federation_apply_contention: Arc<AtomicBool>,
     pub(super) suppress_next_terminal_response_publication: Arc<AtomicBool>,

@@ -1,0 +1,36 @@
+[package]
+name = "cdk-bitcoin-wallet"
+version.workspace = true
+edition.workspace = true
+authors = ["CDK Developers"]
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Backend-neutral persisted BDK descriptor wallet for CDK"
+
+[features]
+default = ["bitcoin-rpc", "esplora"]
+bitcoin-rpc = ["dep:bdk_bitcoind_rpc"]
+electrum = ["dep:bdk_electrum"]
+esplora = ["dep:bdk_esplora"]
+payment-adapter = ["cdk-common/mint"]
+
+[dependencies]
+bdk_electrum = { version = "0.24.0", default-features = false, features = ["use-rustls-ring"], optional = true }
+bdk_wallet = { version = "3.0.0", default-features = false, features = ["std", "rusqlite", "keys-bip39"] }
+bdk_bitcoind_rpc = { version = "0.21.0", default-features = false, optional = true }
+bdk_esplora = { version = "0.22.1", default-features = false, features = ["async-https-rustls", "tokio"], optional = true }
+cdk-common.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

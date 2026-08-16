@@ -223,7 +223,10 @@ impl Mint {
             .frost_wallet
             .as_ref()
             .ok_or_else(|| invalid("signed transaction has no FROST wallet config"))?;
-        let application = &wallet.cdk_onchain_application;
+        let application = wallet
+            .cdk_onchain_application
+            .as_ref()
+            .ok_or_else(|| invalid("signed transaction has no CDK on-chain application"))?;
         if application.root_key_epoch != accepted.proposal.scope.root_key_epoch
             || application.application_id != accepted.proposal.scope.application_id
             || application.application_key_epoch != accepted.proposal.scope.application_key_epoch

@@ -1,13 +1,18 @@
-use cdk::federation::{FederationBarkVirtualMusigPartialRequest, FederationFrostCommitmentRequest};
+#[cfg(feature = "federation-bark")]
+use cdk::federation::FederationBarkVirtualMusigPartialRequest;
+use cdk::federation::FederationFrostCommitmentRequest;
 use cdk_frost::{
     advance_dkg, derive_application_public, finish_dkg, start_dkg, ApplicationAuthorization,
-    ApplicationRegistration, AuthorizationRequest, AuthorizedSigningRequest, CustodyProtocol,
-    DkgContext, DkgRound1Package, DkgRound2Package, MemoryNonceStore, ParticipantKeyManager,
-    RootKeyEpoch, SecretEncryptionKey, SigningAuthorizationScope, SigningDerivation,
-    SigningSessionContext, ThresholdDhRequest, VirtualMusigTranscript,
+    ApplicationRegistration, AuthorizationRequest, AuthorizedSigningRequest, DkgContext,
+    DkgRound1Package, DkgRound2Package, MemoryNonceStore, ParticipantKeyManager, RootKeyEpoch,
+    SecretEncryptionKey, SigningAuthorizationScope, SigningDerivation, SigningSessionContext,
 };
+#[cfg(feature = "federation-bark")]
+use cdk_frost::{CustodyProtocol, ThresholdDhRequest, VirtualMusigTranscript};
 use cdk_frost_bip32::application_registration;
+#[cfg(feature = "federation-bark")]
 use musig2::secp::Scalar as MusigScalar;
+#[cfg(feature = "federation-bark")]
 use musig2::{BinaryEncoding, SecNonce};
 
 use super::*;
@@ -557,6 +562,7 @@ async fn frost_coordinator_rejects_threshold_minus_one_before_transport() {
         .is_err());
 }
 
+#[cfg(feature = "federation-bark")]
 #[tokio::test]
 async fn bark_custody_transport_rotates_attempts_and_retries_exact_results() {
     let (public_config, first, second, third) = transport_config_three();
@@ -834,11 +840,12 @@ async fn bark_custody_transport_rotates_attempts_and_retries_exact_results() {
         .expect_err("stale delayed attempt must remain rejected");
 }
 
+#[cfg(feature = "federation-bark")]
 #[test]
 fn bark_custody_authorization_tracks_attempt_across_durable_checkpoints() {
     use cdk::federation::{FederationBarkActionKind as Kind, FederationBarkSemanticPhase as Phase};
 
-    let is_current = super::super::frost_signing::bark_custody_attempt_is_current;
+    let is_current = cdk::federation::federation_bark_custody_attempt_is_current;
     assert!(is_current(
         Kind::IncomingClaim,
         Phase::SigningAttemptAdvanced,

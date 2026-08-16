@@ -171,6 +171,9 @@ pub enum Error {
     /// The accepted refresh or exit action could not be executed safely.
     #[error("federated Bark maintenance execution failed")]
     MaintenanceExecutionFailed,
+    /// Bark's separate recovery application has no accepted spendable fee reserve.
+    #[error("federated Bark recovery fee reserve is insufficient")]
+    RecoveryFeeReserveInsufficient,
     /// Accepted maintenance evidence could not be validated or replayed.
     #[error("federated Bark maintenance reconciliation failed")]
     MaintenanceReconciliationFailed,

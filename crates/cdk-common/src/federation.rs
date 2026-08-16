@@ -116,9 +116,9 @@ pub use self::dkg_driver::{
 pub use self::frost_config::{
     FederationCdkOnchainFrostAuthorizationAdapter, FederationFrostApplicationConfig,
     FederationFrostApplicationId, FederationFrostExtensionApplicationConfig,
-    FederationFrostLegacyExtensionApplicationConfig, FederationFrostRootPrivateConfig,
-    FederationFrostRootPublicConfig, FederationFrostSealedStorageMetadata,
-    FederationFrostWalletConfig, FederationOnchainConfirmationPolicy,
+    FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig,
+    FederationFrostSealedStorageMetadata, FederationFrostWalletConfig,
+    FederationOnchainConfirmationPolicy,
 };
 pub use self::frost_dkg::{
     FederationDualDkgResult, FederationFrostDkgConfirmationRequest, FederationFrostDkgContext,

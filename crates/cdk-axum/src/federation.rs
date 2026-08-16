@@ -48,6 +48,7 @@ mod bark_observer;
 mod bark_outgoing;
 #[cfg(feature = "federation-bark")]
 mod bark_secret;
+#[cfg(feature = "federation-bdk")]
 mod broadcast;
 mod catch_up_routes;
 mod checkpoint_catch_up;
@@ -70,6 +71,7 @@ mod status_routes;
 mod sync_config;
 mod sync_loop;
 mod transport;
+#[cfg(feature = "federation-bdk")]
 mod wallet_liveness;
 pub(crate) mod wallet_operation_publisher;
 
@@ -98,6 +100,7 @@ use self::bark_custody::{
 };
 #[cfg(feature = "federation-bark")]
 use self::bark_secret::{post_bark_evidence_attestation, post_bark_receive_secret};
+#[cfg(feature = "federation-bdk")]
 pub(crate) use self::broadcast::FederationTransactionBroadcaster;
 use self::catch_up_routes::post_journal;
 use self::checkpoint_routes::{
@@ -128,7 +131,10 @@ pub(crate) use self::node_runtime::{
     apply_federation_journal_entry_for_replay, FederationNodeRuntime,
 };
 #[cfg(feature = "federation-bark")]
-use self::operator_routes::{post_bark_action_retry, post_bark_reconcile};
+use self::operator_routes::{
+    post_bark_action_retry, post_bark_reconcile, post_bark_recovery_address,
+};
+#[cfg(feature = "federation-bdk")]
 use self::operator_routes::{post_wallet_rebroadcast, post_wallet_transaction_status};
 use self::payment_observation::payment_observation_report_summaries;
 pub(crate) use self::payment_observation::FederationPaymentObserver;
@@ -180,6 +186,7 @@ pub(super) fn bark_application(
 #[cfg(feature = "iroh")]
 pub use self::transport::federation_transport_with_iroh_node;
 pub use self::transport::{default_federation_transport, FederationTransport};
+#[cfg(feature = "federation-bdk")]
 pub(crate) use self::wallet_liveness::FederationWalletLivenessWorker;
 #[cfg(test)]
 use cdk::federation::{
@@ -423,14 +430,6 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .route("/checkpoints/quorum", post(post_checkpoint_quorum))
         .route("/checkpoints/audit", post(post_checkpoint_audit))
         .route("/local-status", post(post_local_status))
-        .route(
-            "/wallet/transactions/status",
-            post(post_wallet_transaction_status),
-        )
-        .route(
-            "/wallet/transactions/rebroadcast",
-            post(post_wallet_rebroadcast),
-        )
         .route("/operations", post(post_operation))
         .route("/aleph-bft/activity", post(post_aleph_bft_activity))
         .route("/aleph-bft/messages", post(post_aleph_bft_network_message))
@@ -446,10 +445,21 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
                 cdk::federation::FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
             )),
         );
+    #[cfg(feature = "federation-bdk")]
+    let router = router
+        .route(
+            "/wallet/transactions/status",
+            post(post_wallet_transaction_status),
+        )
+        .route(
+            "/wallet/transactions/rebroadcast",
+            post(post_wallet_rebroadcast),
+        );
     #[cfg(feature = "federation-bark")]
     let router = router
         .merge(bark_secret_router)
         .route("/bark/reconcile", post(post_bark_reconcile))
+        .route("/bark/recovery/address", post(post_bark_recovery_address))
         .route("/bark/actions/retry", post(post_bark_action_retry));
     router
 }

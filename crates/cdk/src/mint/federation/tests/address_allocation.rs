@@ -76,7 +76,12 @@ pub(super) fn attach_address_application(
     .expect("valid test CDK on-chain application");
     let application_id = application.application_id;
     runtime.public_config.frost_wallet = Some(
-        FederationFrostWalletConfig::new(&runtime.public_config, root, application)
+        FederationFrostWalletConfig::new(
+            &runtime.public_config,
+            root,
+            Some(application),
+            Default::default(),
+        )
             .expect("valid test FROST wallet"),
     );
     application_id

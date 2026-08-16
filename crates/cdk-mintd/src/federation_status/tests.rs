@@ -19,6 +19,7 @@ use cdk_common::federation::{
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut22::AuthToken;
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
+#[cfg(feature = "federation-bark")]
 use cdk_federation_bark::{
     FederationBarkActionId, FederationBarkActionKind, FederationBarkActionStatus,
     FederationBarkDigest, FederationBarkOperatorStatus, FederationBarkProtocolStatus,
@@ -1135,6 +1136,7 @@ fn wallet_status_line_reports_fixed_phases_without_sensitive_material() {
     }
 }
 
+#[cfg(feature = "federation-bark")]
 fn bark_operator_fixture() -> FederationBarkOperatorStatus {
     FederationBarkOperatorStatus {
         version: 1,
@@ -1194,6 +1196,7 @@ fn bark_operator_fixture() -> FederationBarkOperatorStatus {
     }
 }
 
+#[cfg(feature = "federation-bark")]
 #[test]
 fn bark_status_line_reports_risk_without_sensitive_material() {
     let status = bark_operator_fixture();
@@ -1215,6 +1218,7 @@ fn bark_status_line_reports_risk_without_sensitive_material() {
     }
 }
 
+#[cfg(feature = "federation-bark")]
 #[test]
 fn ready_guard_rejects_bark_projection_lag() {
     let (public_config, _) = status_fixture();

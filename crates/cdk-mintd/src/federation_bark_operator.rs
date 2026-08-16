@@ -9,11 +9,15 @@ use cdk_common::federation::{
 };
 use cdk_federation_bark::{
     FederationBarkActionId, FederationBarkReconcileRequest, FederationBarkReconcileResponse,
+    FederationBarkRecoveryAddressRequest, FederationBarkRecoveryAddressResponse,
     FederationBarkRetryRequest, FederationBarkRetryResponse,
 };
 use cdk_http_client::Transport;
 
-use crate::cli::{CLIArgs, FederationBarkReconcileArgs, FederationBarkRetryArgs};
+use crate::cli::{
+    CLIArgs, FederationBarkReconcileArgs, FederationBarkRecoveryAddressArgs,
+    FederationBarkRetryArgs,
+};
 
 pub(crate) async fn run_reconcile_command(
     cli_args: &CLIArgs,
@@ -98,6 +102,54 @@ pub(crate) async fn run_retry_command(
         response.phase_before.as_str(),
         response.phase_after.as_str(),
         response.advanced,
+    );
+    Ok(())
+}
+
+pub(crate) async fn run_recovery_address_command(
+    cli_args: &CLIArgs,
+    args: &FederationBarkRecoveryAddressArgs,
+) -> Result<()> {
+    let payload = FederationBarkRecoveryAddressRequest::new(args.reserve_id.clone());
+    payload.validate()?;
+    let (public, private) = load_configs(
+        cli_args,
+        &args.public_config,
+        &args.private_config,
+        "federation bark-recovery-address",
+    )?;
+    let member = target_member(&public, &private, args.member)?;
+    let request = FederationSignedRequest::new_signed(
+        public.federation_id,
+        member.member_id,
+        operator_sequence(),
+        FederationRestMessageKind::ApplicationWalletAddress,
+        payload,
+        &private,
+    )?;
+    let url = member.federation_api_url.join_paths(&[
+        "federation",
+        "v1",
+        "bark",
+        "recovery",
+        "address",
+    ])?;
+    let response: FederationBarkRecoveryAddressResponse =
+        crate::federation_operator_transport(cli_args)
+            .await?
+            .http_post(url, None, &request)
+            .await?;
+    if response.version != FEDERATION_REST_API_VERSION || response.reserve_id != args.reserve_id {
+        bail!("member returned a mismatched Bark recovery address response");
+    }
+    println!(
+        "member {} Bark recovery reserve {}: address={} application={} key_epoch={} derivation_index={}",
+        member.member_id,
+        response.reserve_id,
+        response.address,
+        response.application_id,
+        response.application_key_epoch,
+        response.derivation_index,
     );
     Ok(())
 }

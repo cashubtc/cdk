@@ -6,12 +6,11 @@ use bdk_bitcoind_rpc::{BlockEvent, Emitter, NO_EXPECTED_MEMPOOL_TXS};
 use bdk_wallet::bitcoin::{Block, Transaction};
 use bdk_wallet::chain::BlockId;
 use tokio::sync::{mpsc, Mutex};
-use tokio::time::{interval, Duration};
-use tokio_util::sync::CancellationToken;
+use tokio::time::Duration;
 
 use crate::chain::{BitcoinRpcConfig, BroadcastErrorKind, BroadcastFailure, BroadcastOutcome};
 use crate::error::Error;
-use crate::{BdkWalletEngine, CdkBdk, WalletWithDb};
+use crate::{BdkWalletEngine, WalletWithDb};
 
 pub(crate) fn initial_checkpoint(config: &BitcoinRpcConfig) -> Result<BlockId, Error> {
     let client = Client::new(
@@ -49,12 +48,6 @@ pub(crate) fn initial_checkpoint(config: &BitcoinRpcConfig) -> Result<BlockId, E
 const MIN_BITCOIN_RPC_BACKOFF: Duration = Duration::from_secs(5);
 const MAX_BITCOIN_RPC_BACKOFF: Duration = Duration::from_secs(300);
 const RPC_BLOCK_CHANNEL_CAPACITY: usize = 2;
-
-fn next_bitcoin_rpc_backoff(backoff: &mut Duration) -> Duration {
-    let current = *backoff;
-    *backoff = (*backoff * 2).min(MAX_BITCOIN_RPC_BACKOFF);
-    current
-}
 
 fn build_bitcoin_rpc_client(config: &BitcoinRpcConfig) -> Result<Client, BitcoinRpcError> {
     config
@@ -177,86 +170,6 @@ async fn stream_bitcoin_rpc_blocks(
     }
     producer_result?;
     Ok(applied)
-}
-
-pub(crate) async fn sync_bitcoin_rpc(
-    cdk_bdk: &CdkBdk,
-    config: &BitcoinRpcConfig,
-    cancel_token: CancellationToken,
-) -> Result<(), Error> {
-    let mut sync_interval = interval(Duration::from_secs(cdk_bdk.sync_interval_secs));
-    let apply_chunk_size = cdk_bdk.sync_config.apply_chunk_size.max(1);
-    let warn_ms = cdk_bdk.sync_config.lock_hold_warn_ms;
-    let configured_interval = Duration::from_secs(cdk_bdk.sync_interval_secs);
-    let initial_backoff = configured_interval.max(MIN_BITCOIN_RPC_BACKOFF);
-    let mut consecutive_failures: u32 = 0;
-    let mut backoff = initial_backoff;
-
-    tracing::info!(
-        interval_secs = cdk_bdk.sync_interval_secs,
-        "Starting continuous block monitoring via Bitcoin RPC"
-    );
-    loop {
-        tokio::select! {
-            _ = cancel_token.cancelled() => {
-                tracing::info!("Wallet sync cancelled via cancel token");
-                break;
-            }
-            _ = sync_interval.tick() => {
-                // Snapshot the wallet checkpoint under a brief lock.
-                let checkpoint = {
-                    let w = cdk_bdk.wallet_engine.wallet_with_db.lock().await;
-                    w.wallet.latest_checkpoint()
-                };
-                let any_applied = match stream_bitcoin_rpc_blocks(
-                    &cdk_bdk.wallet_engine.wallet_with_db,
-                    checkpoint,
-                    config,
-                    apply_chunk_size,
-                    warn_ms,
-                )
-                .await
-                {
-                    Ok(applied) => applied,
-                    Err(error) => {
-                        consecutive_failures = consecutive_failures.saturating_add(1);
-                        crate::sync::log_sync_failure(
-                            "Bitcoin RPC synchronization failed",
-                            &error,
-                            consecutive_failures,
-                        );
-                        let retry_delay = next_bitcoin_rpc_backoff(&mut backoff);
-                        sync_interval.reset_after(retry_delay);
-                        continue;
-                    }
-                };
-
-                if any_applied {
-                    let tip = {
-                        let w = cdk_bdk.wallet_engine.wallet_with_db.lock().await;
-                        w.wallet.latest_checkpoint().block_id()
-                    };
-                    tracing::info!(
-                        "Synced to new tip {} at height {}",
-                        tip.hash,
-                        tip.height
-                    );
-                }
-
-                if consecutive_failures > 0 {
-                    tracing::info!(
-                        recovered_after = consecutive_failures,
-                        "Bitcoin RPC sync recovered"
-                    );
-                }
-                consecutive_failures = 0;
-                backoff = initial_backoff;
-
-                cdk_bdk.run_reconciliation().await;
-            }
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn classify_bitcoin_rpc_broadcast_message(message: &str) -> BroadcastErrorKind {

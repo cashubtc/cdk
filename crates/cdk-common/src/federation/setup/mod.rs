@@ -1059,7 +1059,7 @@ impl FederationSetupFrostApplication {
 pub struct FederationSetupFrostPolicy {
     /// Initial reusable-root epoch.
     pub root_key_epoch: u64,
-    /// Canonically ordered enabled applications.
+    /// Canonically ordered enabled applications, which may be empty.
     pub applications: Vec<FederationSetupFrostApplication>,
 }
 
@@ -1084,26 +1084,13 @@ impl FederationSetupFrostPolicy {
         if self.root_key_epoch == 0 {
             return Err(invalid("FROST root key epoch must be non-zero"));
         }
-        if self.applications.is_empty() {
-            return Err(invalid(
-                "at least the CDK on-chain FROST application is required",
-            ));
-        }
         let application_keys = self
             .applications
             .iter()
             .map(FederationSetupFrostApplication::canonical_bytes)
             .collect::<Vec<_>>();
-        if !is_strictly_sorted(&application_keys)
-            || self
-                .applications
-                .first()
-                .map(FederationSetupFrostApplication::tag)
-                != Some(1)
-        {
-            return Err(invalid(
-                "FROST applications must be unique, canonical, and include CDK on-chain",
-            ));
+        if !is_strictly_sorted(&application_keys) {
+            return Err(invalid("FROST applications must be unique and canonical"));
         }
         for application in &self.applications {
             application.validate(network)?;

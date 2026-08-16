@@ -5,7 +5,6 @@ use bdk_wallet::bitcoin::Transaction;
 use bdk_wallet::chain::BlockId;
 use cdk_common::redact::url_for_logs;
 use serde::{Deserialize, Serialize};
-use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
 
@@ -21,10 +20,12 @@ pub const MAX_ESPLORA_MAX_RETRIES: usize = 6;
 pub const MAX_ESPLORA_PARALLEL_REQUESTS: usize = 16;
 
 #[cfg(feature = "bitcoin-rpc")]
+/// Bitcoin Core RPC chain-source implementation.
 pub mod bitcoin_rpc;
 #[cfg(feature = "electrum")]
 pub mod electrum;
 #[cfg(feature = "esplora")]
+/// Esplora chain-source implementation.
 pub mod esplora;
 
 /// Configuration for connecting to Bitcoin RPC
@@ -292,29 +293,6 @@ impl ChainSource {
         }
     }
 
-    pub async fn sync_wallet(
-        &self,
-        cdk_bdk: &crate::CdkBdk,
-        cancel_token: CancellationToken,
-    ) -> Result<(), Error> {
-        match self {
-            #[cfg(feature = "esplora")]
-            ChainSource::Esplora(config) => {
-                esplora::sync_esplora(cdk_bdk, config, cancel_token).await
-            }
-            #[cfg(feature = "electrum")]
-            ChainSource::Electrum(config) => {
-                electrum::sync_electrum(cdk_bdk, config, cancel_token).await
-            }
-            #[cfg(feature = "bitcoin-rpc")]
-            ChainSource::BitcoinRpc(config) => {
-                bitcoin_rpc::sync_bitcoin_rpc(cdk_bdk, config, cancel_token).await
-            }
-            #[allow(unreachable_patterns)]
-            _ => unreachable!("ChainSource must have at least one feature enabled"),
-        }
-    }
-
     pub(crate) async fn broadcast(
         &self,
         tx: Transaction,
@@ -331,6 +309,7 @@ impl ChainSource {
         }
     }
 
+    /// Fetch a local fee-rate estimate for the requested confirmation target.
     pub async fn fetch_fee_rate(&self, target_blocks: u16) -> Result<f64, Error> {
         match self {
             #[cfg(feature = "esplora")]

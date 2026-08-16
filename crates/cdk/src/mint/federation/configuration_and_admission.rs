@@ -28,7 +28,9 @@ use cdk_common::federation::{
 };
 #[cfg(feature = "federation-bark")]
 use cdk_federation_bark::{
-    validate_federation_bark_operation, FederationBarkEvidenceCertificate, FederationBarkOperation,
+    validate_federation_bark_operation, FederationBarkCpfpPackageSet,
+    FederationBarkCpfpPublication, FederationBarkEvidenceCertificate, FederationBarkOperation,
+    FederationBarkRecoveryState, FederationBarkSemanticPhase,
 };
 use cdk_common::mint::{
     MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
@@ -204,7 +206,12 @@ impl FederationRuntimeConfig {
                 reason: "federation has no accepted FROST wallet configuration".to_string(),
             }
         })?;
-        Ok(&wallet.cdk_onchain_application)
+        wallet.cdk_onchain_application.as_ref().ok_or_else(|| {
+            FederationError::AddressAllocationInvalid {
+                reason: "federation has no CDK on-chain payment application".to_string(),
+            }
+            .into()
+        })
     }
 
     /// Resolve the versioned outgoing settlement policy for an accepted wallet scope.
@@ -217,7 +224,10 @@ impl FederationRuntimeConfig {
             .frost_wallet
             .as_ref()
             .ok_or(Error::Internal)?;
-        let application = &wallet.cdk_onchain_application;
+        let application = wallet
+            .cdk_onchain_application
+            .as_ref()
+            .ok_or_else(|| Error::Custom("CDK on-chain payments are disabled".to_string()))?;
         if application.root_key_epoch != scope.root_key_epoch
             || application.application_id != scope.application_id
             || application.application_key_epoch != scope.application_key_epoch
@@ -269,12 +279,26 @@ impl FederationRuntimeConfig {
                 reason: "federation has no accepted FROST wallet configuration".to_string(),
             }
         })?;
-        let application = &wallet.cdk_onchain_application;
-        if application.application_id != operation.application_id
-            || application.application_key_epoch != operation.application_key_epoch
-        {
+        let cdk_application_matches = wallet
+            .cdk_onchain_application
+            .as_ref()
+            .is_some_and(|application| {
+                application.application_id == operation.application_id
+                    && application.application_key_epoch == operation.application_key_epoch
+            });
+        #[cfg(feature = "federation-bark")]
+        let bark_recovery_matches =
+            cdk_federation_bark::federation_bark_recovery_application(&self.public_config)?
+                .is_some_and(|application| {
+                    application.application_id() == operation.application_id
+                        && application.application_key_epoch() == operation.application_key_epoch
+                });
+        #[cfg(not(feature = "federation-bark"))]
+        let bark_recovery_matches = false;
+        if !cdk_application_matches && !bark_recovery_matches {
             return Err(FederationError::AddressAllocationInvalid {
-                reason: "allocation references an unknown CDK application epoch".to_string(),
+                reason: "allocation references an unknown descriptor application epoch"
+                    .to_string(),
             }
             .into());
         }

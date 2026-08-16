@@ -6,16 +6,18 @@ use std::str::FromStr;
 use cdk_common::federation::{
     FederationCdkOnchainFrostAuthorizationAdapter, FederationConfig, FederationDkgCeremonyId,
     FederationFrostApplicationConfig, FederationFrostDkgContext, FederationFrostRootPrivateConfig,
-    FederationFrostRootPublicConfig, FederationFrostRootRecord,
+    FederationFrostRootPublicConfig, FederationFrostRootRecord, FederationFrostWalletConfig,
     FederationOnchainConfirmationPolicy, FederationSetupAuthorizationHash, MemberConfigPublic,
     MemberId, ThresholdParams,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::SecretKey;
 use cdk_federation_bark::{
-    federation_bark_application, federation_frost_wallet_with_bark,
+    federation_bark_application, federation_bark_frost_applications,
     FederationBarkFrostApplicationConfig, FederationBarkFrostRegistrationAdapter,
     FederationBarkPolicyConfig, FederationBarkReceiveAntiDosPolicy,
+    FederationBarkRecoveryApplicationConfig, FederationBarkRecoveryFrostAuthorizationAdapter,
+    FederationBarkRecoverySetupConfig,
 };
 use cdk_frost::rand_core::SeedableRng;
 use cdk_frost::{advance_dkg, finish_dkg, start_dkg, ParticipantKeyManager, SecretEncryptionKey};
@@ -167,9 +169,27 @@ fn bark_registration_is_distinct_persistent_and_derived_by_each_member() {
         bark_policy(),
     )
     .expect("Bark application");
+    let recovery_application = FederationBarkRecoveryApplicationConfig::new(
+        &config,
+        &root,
+        FederationBarkRecoverySetupConfig {
+            application_key_epoch: 1,
+            network: bitcoin::Network::Regtest,
+            minimum_confirmations: 2,
+            fee_policy_version: 1,
+        },
+    )
+    .expect("Bark recovery application");
     assert_ne!(
         cdk_application.derived_group_key,
         bark_application.derived_group_key
+    );
+    assert_ne!(
+        bark_application.derived_group_key,
+        recovery_application
+            .derived_public_package(&config, &root)
+            .expect("recovery public package")
+            .group_key()
     );
 
     let expected_public = bark_application
@@ -199,14 +219,45 @@ fn bark_registration_is_distinct_persistent_and_derived_by_each_member() {
             )
             .expect("register Bark");
         assert_eq!(member_bark, expected_public);
+        let member_recovery = manager
+            .register_application(
+                FederationBarkRecoveryFrostAuthorizationAdapter::new(&recovery_application)
+                    .expect("Bark recovery adapter"),
+            )
+            .expect("register Bark recovery");
+        assert_eq!(
+            member_recovery,
+            recovery_application
+                .derived_public_package(&config, &root)
+                .expect("recovery public package")
+        );
     }
 
+    let applications = federation_bark_frost_applications(
+        &config,
+        &root,
+        bark_application.clone(),
+        recovery_application,
+    )
+    .expect("Bark applications");
+    let mut bark_only = config.clone();
+    bark_only.frost_wallet = Some(
+        FederationFrostWalletConfig::new(&bark_only, root.clone(), None, applications.clone())
+            .expect("Bark-only wallet"),
+    );
+    bark_only.validate().expect("Bark-only config");
+    assert!(bark_only
+        .frost_wallet
+        .as_ref()
+        .expect("Bark-only wallet")
+        .cdk_onchain_application
+        .is_none());
     config.frost_wallet = Some(
-        federation_frost_wallet_with_bark(
+        FederationFrostWalletConfig::new(
             &config,
             root.clone(),
-            cdk_application,
-            bark_application.clone(),
+            Some(cdk_application),
+            applications,
         )
         .expect("Bark-capable wallet"),
     );
@@ -222,33 +273,6 @@ fn bark_registration_is_distinct_persistent_and_derived_by_each_member() {
         bark_application
     );
 
-    let mut legacy_value = serde_json::to_value(&config).expect("public config value");
-    let wallet = legacy_value
-        .get_mut("frost_wallet")
-        .and_then(serde_json::Value::as_object_mut)
-        .expect("FROST wallet object");
-    wallet
-        .shift_remove("extension_applications")
-        .expect("generic extension field");
-    wallet.insert(
-        "bark_application".to_string(),
-        serde_json::to_value(&bark_application).expect("legacy Bark application"),
-    );
-    let legacy_json = serde_json::to_string(&legacy_value).expect("legacy public config JSON");
-    let legacy_restored: FederationConfig =
-        serde_json::from_str(&legacy_json).expect("legacy public config decode");
-    legacy_restored.validate().expect("legacy public config");
-    assert_eq!(
-        federation_bark_application(&legacy_restored)
-            .expect("legacy Bark application lookup")
-            .expect("legacy Bark application"),
-        bark_application
-    );
-    assert_eq!(
-        serde_json::to_string(&legacy_restored).expect("legacy public config re-encode"),
-        legacy_json,
-        "established public-config field order and digest bytes must remain stable",
-    );
     assert!(bark_application
         .open_public_adapter(&config, &root, bitcoin::Network::Signet, server, 1, 1,)
         .is_err());

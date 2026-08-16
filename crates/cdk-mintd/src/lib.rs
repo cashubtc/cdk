@@ -88,7 +88,7 @@ mod config_migration;
 mod config_service;
 mod config_store;
 pub mod env_vars;
-#[cfg(feature = "federation")]
+#[cfg(feature = "federation-bdk")]
 mod federated_bdk_backend;
 #[cfg(feature = "federation")]
 mod federation_backup;
@@ -115,7 +115,7 @@ mod federation_smoke;
 #[cfg(feature = "federation")]
 mod federation_status;
 mod secret;
-#[cfg(feature = "federation")]
+#[cfg(feature = "federation-bdk")]
 mod federation_wallet_operator;
 #[cfg(feature = "iroh")]
 mod iroh_runtime;
@@ -273,19 +273,26 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                 cli::FederationCommand::Status(status) => {
                     federation_status::run_status_command(args, status).await?;
                 }
+                #[cfg(feature = "federation-bdk")]
                 cli::FederationCommand::WalletStatus(status) => {
                     federation_status::run_status_command(args, status).await?;
                 }
+                #[cfg(feature = "federation-bdk")]
                 cli::FederationCommand::TransactionStatus(transaction) => {
                     federation_wallet_operator::run_transaction_status_command(args, transaction)
                         .await?;
                 }
+                #[cfg(feature = "federation-bdk")]
                 cli::FederationCommand::Rebroadcast(rebroadcast) => {
                     federation_wallet_operator::run_rebroadcast_command(args, rebroadcast).await?;
                 }
                 #[cfg(feature = "federation-bark")]
                 cli::FederationCommand::BarkReconcile(reconcile) => {
                     federation_bark_operator::run_reconcile_command(args, reconcile).await?;
+                }
+                #[cfg(feature = "federation-bark")]
+                cli::FederationCommand::BarkRecoveryAddress(address) => {
+                    federation_bark_operator::run_recovery_address_command(args, address).await?;
                 }
                 #[cfg(feature = "federation-bark")]
                 cli::FederationCommand::BarkRetry(retry) => {
@@ -1417,6 +1424,7 @@ fn configure_federation(
         public_config,
         federation.allow_development_payment_observation_policy,
     )?;
+    #[cfg(feature = "federation-bdk")]
     validate_federated_bdk_startup(settings, public_config)?;
     #[cfg(feature = "federation-bark")]
     validate_federated_bark_startup(settings, public_config)?;
@@ -1568,6 +1576,7 @@ fn warn_federated_wallet_startup_risks(
     federation: &config::Federation,
     public_config: &FederationConfig,
 ) {
+    #[cfg(feature = "federation-bdk")]
     if federation.onchain_wallet.enabled && federation.onchain_wallet.chain_source_scope == "shared"
     {
         tracing::warn!(
@@ -1588,7 +1597,7 @@ fn warn_federated_wallet_startup_risks(
     }
 }
 
-#[cfg(feature = "federation")]
+#[cfg(feature = "federation-bdk")]
 fn validate_federated_bdk_startup(
     settings: &config::Settings,
     public_config: &FederationConfig,
@@ -1632,7 +1641,10 @@ fn validate_federated_bdk_startup(
         anyhow!("federated-bdk requires an activated public FROST wallet configuration")
     })?;
     frost_wallet.validate(public_config)?;
-    let application = &frost_wallet.cdk_onchain_application;
+    let application = frost_wallet
+        .cdk_onchain_application
+        .as_ref()
+        .ok_or_else(|| anyhow!("federated-bdk requires the CDK on-chain FROST application"))?;
     let network = wallet.network.as_deref().ok_or_else(|| {
         anyhow!("federation.onchain_wallet.network must be explicitly configured")
     })?;
@@ -1656,7 +1668,7 @@ fn validate_federated_bdk_startup(
     Ok(())
 }
 
-#[cfg(feature = "federation")]
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 fn parse_federation_bitcoin_network(value: &str) -> Result<bitcoin::Network> {
     match value.to_ascii_lowercase().as_str() {
         "mainnet" | "bitcoin" => Ok(bitcoin::Network::Bitcoin),
@@ -1831,7 +1843,7 @@ fn federation_peer_sync_config(settings: &config::Settings) -> cdk_axum::Federat
     }
 }
 
-#[cfg(feature = "federation")]
+#[cfg(feature = "federation-bdk")]
 fn federation_bdk_local_config(
     settings: &config::Settings,
     work_dir: &Path,
@@ -1923,6 +1935,62 @@ fn federation_bark_local_config(
         .receive_secret_database_path
         .clone()
         .unwrap_or_else(|| data_directory.join("receive-secrets.redb"));
+    let recovery_chain_source = if let Some(esplora_url) = wallet.esplora_url.as_ref() {
+        cdk_bark::ChainSource::Esplora(cdk_bark::EsploraConfig {
+            url: esplora_url.clone(),
+            parallel_requests: 1,
+            request_timeout_secs: 15,
+            max_retries: 3,
+        })
+    } else {
+        let address = wallet
+            .bitcoind_address
+            .as_deref()
+            .ok_or_else(|| anyhow!("federation.bark recovery requires a chain source"))?;
+        let address = url::Url::parse(address)
+            .context("federation.bark.bitcoind_address must be an HTTP URL")?;
+        let host = address
+            .host_str()
+            .ok_or_else(|| anyhow!("federation.bark.bitcoind_address has no host"))?
+            .to_string();
+        let port = address
+            .port_or_known_default()
+            .ok_or_else(|| anyhow!("federation.bark.bitcoind_address has no port"))?;
+        let (user, password) = match (
+            wallet.bitcoind_user.as_ref(),
+            wallet.bitcoind_password.as_ref(),
+            wallet.bitcoind_cookiefile.as_ref(),
+        ) {
+            (Some(user), Some(password), _) => (user.clone(), password.clone()),
+            (None, None, Some(cookie_path)) => {
+                let cookie = std::fs::read_to_string(cookie_path)
+                    .context("failed to read federation.bark bitcoind cookie")?;
+                let (user, password) = cookie.trim().split_once(':').ok_or_else(|| {
+                    anyhow!("federation.bark bitcoind cookie has invalid contents")
+                })?;
+                (user.to_string(), password.to_string())
+            }
+            _ => bail!("federation.bark bitcoind recovery requires user/password or cookie auth"),
+        };
+        cdk_bark::ChainSource::BitcoinRpc(cdk_bark::BitcoinRpcConfig {
+            host,
+            port,
+            user,
+            password,
+            request_timeout_secs: 15,
+        })
+    };
+    recovery_chain_source.validate()?;
+    let recovery_observation_source = cdk_bark::FederatedChainSourceDescriptor::new(
+        cdk_bark::FederatedChainSourceScope::Independent,
+        recovery_chain_source.opaque_source_id(),
+    )?;
+    let recovery = cdk_bark::FederatedBarkRecoveryLocalConfig {
+        chain_source: recovery_chain_source,
+        storage_root: data_directory.join("recovery-wallet"),
+        sync_interval: std::time::Duration::from_secs(30),
+        observation_source: recovery_observation_source,
+    };
     let bindings = cdk_bark::FederatedBarkLocalBindings {
         federation_id: runtime.federation_id(),
         network: application.network,
@@ -1970,6 +2038,7 @@ fn federation_bark_local_config(
             automatic_refresh: wallet.automatic_refresh,
             automatic_emergency_exit: wallet.automatic_emergency_exit,
         },
+        recovery,
     )?))
 }
 
@@ -1982,7 +2051,7 @@ fn decode_fixed_hex<const N: usize>(value: &str, field: &'static str) -> Result<
         .map_err(|bytes: Vec<u8>| anyhow!("{field} must contain {N} bytes, found {}", bytes.len()))
 }
 
-#[cfg(feature = "federation")]
+#[cfg(feature = "federation-bdk")]
 fn federation_chain_source(
     wallet: &config::FederationOnchainWallet,
 ) -> Result<cdk_bdk::ChainSource> {
@@ -2397,11 +2466,11 @@ async fn configure_payment_backends(
                 let fake = MetricsMintPayment::new(fake);
 
                 let fake = Arc::new(fake);
-                #[cfg(feature = "federation-test-utils")]
+                #[cfg(all(feature = "federation-test-utils", feature = "federation-bdk"))]
                 let use_lightning_only = settings.onchain.as_ref().is_some_and(|onchain| {
                     onchain.onchain_backend == config::OnchainBackend::FederatedBdk
                 });
-                #[cfg(not(feature = "federation-test-utils"))]
+                #[cfg(not(all(feature = "federation-test-utils", feature = "federation-bdk")))]
                 let use_lightning_only = false;
 
                 if use_lightning_only {
@@ -2628,7 +2697,7 @@ async fn configure_onchain_backend_with_wallet_info(
                 )
                 .await?;
             }
-            #[cfg(feature = "federation")]
+            #[cfg(feature = "federation-bdk")]
             OnchainBackend::FederatedBdk => {
                 let federation = settings.federation.as_ref().ok_or_else(|| {
                     anyhow!("federated-bdk selected but [federation] config is missing")
@@ -3507,13 +3576,14 @@ impl PreparedMintd {
         }
 
     #[cfg(all(feature = "federation", feature = "federation-bark"))]
-    let v1_service = cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg_and_wallets_with_transport(
+    let (v1_service, federation_bark_maintenance) = cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg_and_wallets_with_transport_and_bark_lifecycle(
         Arc::clone(&mint),
         cache,
         custom_methods,
         settings.info.enable_info_page.unwrap_or(true),
         federation_peer_sync_config(settings),
         federation_dkg_auto_start_config(settings)?,
+        #[cfg(feature = "federation-bdk")]
         federation_bdk_local_config(settings, work_dir)?,
         federation_bark_local_config(
             settings,
@@ -3524,7 +3594,7 @@ impl PreparedMintd {
         federation_transport,
     )
     .await?;
-    #[cfg(all(feature = "federation", not(feature = "federation-bark")))]
+    #[cfg(all(feature = "federation-bdk", not(feature = "federation-bark")))]
     let v1_service = cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg_and_wallet_with_transport(
         Arc::clone(&mint),
         cache,
@@ -3536,6 +3606,22 @@ impl PreparedMintd {
         federation_transport,
     )
     .await?;
+    #[cfg(all(
+        feature = "federation",
+        not(feature = "federation-bdk"),
+        not(feature = "federation-bark")
+    ))]
+    let v1_service =
+        cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg_with_transport(
+            Arc::clone(&mint),
+            cache,
+            custom_methods,
+            settings.info.enable_info_page.unwrap_or(true),
+            federation_peer_sync_config(settings),
+            federation_dkg_auto_start_config(settings)?,
+            federation_transport,
+        )
+        .await?;
     #[cfg(not(feature = "federation"))]
     let v1_service = cdk_axum::create_mint_router_with_custom_cache(
         Arc::clone(&mint),
@@ -5335,7 +5421,7 @@ engine = "sqlite"
         sync_config.validate().expect("valid sync config");
     }
 
-    #[cfg(feature = "federation")]
+    #[cfg(feature = "federation-bdk")]
     #[test]
     fn federation_bdk_config_is_local_redacted_and_fail_closed() {
         let work_dir = tempfile::tempdir().expect("work dir");
@@ -5416,7 +5502,7 @@ engine = "sqlite"
             .is_none());
     }
 
-    #[cfg(all(feature = "federation", feature = "bdk"))]
+    #[cfg(feature = "federation-bdk")]
     #[test]
     fn federated_bdk_startup_rejects_mixed_or_incomplete_custody_config() {
         use crate::config::{Bdk, Onchain, OnchainBackend};
@@ -5467,7 +5553,7 @@ engine = "sqlite"
         assert!(disabled.to_string().contains("enabled=true"));
     }
 
-    #[cfg(feature = "federation")]
+    #[cfg(feature = "federation-bdk")]
     #[test]
     fn federation_public_esplora_config_is_compatible_and_bounded() {
         let work_dir = tempfile::tempdir().expect("work dir");

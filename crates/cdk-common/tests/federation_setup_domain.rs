@@ -9,9 +9,9 @@ use bitcoin::base64::Engine as _;
 use bitcoin::hashes::{sha256, Hash};
 use cdk_common::federation::{
     FederationCheckpointPolicy, FederationConfig, FederationDkgCeremonyId, FederationDkgKeysetSpec,
-    FederationError, FederationFrostDkgContext, FederationPaymentObservationPolicy,
-    FederationSetupApproval, FederationSetupAuthorizationHash, FederationSetupBitcoinNetwork,
-    FederationSetupCoordinatorPublicKey, FederationSetupEnrollment,
+    FederationError, FederationFrostApplicationId, FederationFrostDkgContext,
+    FederationPaymentObservationPolicy, FederationSetupApproval, FederationSetupAuthorizationHash,
+    FederationSetupBitcoinNetwork, FederationSetupCoordinatorPublicKey, FederationSetupEnrollment,
     FederationSetupFrostApplication, FederationSetupFrostPolicy, FederationSetupId,
     FederationSetupInvitation, FederationSetupInvitationCapability, FederationSetupInvitationId,
     FederationSetupInvitationRecord, FederationSetupLocalRole, FederationSetupManifest,
@@ -29,6 +29,30 @@ const SETUP_ID_BYTES: [u8; 32] = [7; 32];
 const COORDINATOR_SECRET: u16 = 60_000;
 const NOW_UNIX: u64 = 1_900_000_000;
 const URL_POLICY: FederationSetupUrlPolicy = FederationSetupUrlPolicy::RequireSecureTransport;
+
+#[test]
+fn frost_policy_does_not_require_the_cdk_onchain_application() {
+    let empty =
+        FederationSetupFrostPolicy::new(1, Vec::new(), FederationSetupBitcoinNetwork::Regtest)
+            .expect("wallet-free FROST root policy");
+    assert!(empty.applications.is_empty());
+
+    let extension = FederationSetupFrostApplication::Extension {
+        application_id: FederationFrostApplicationId::from_bytes([42; 32])
+            .expect("extension application ID"),
+        application_key_epoch: 1,
+        derivation_version: 1,
+        authorization_policy: [43; 32],
+        configuration: serde_json::json!({"backend": "independent"}),
+    };
+    let extension_only = FederationSetupFrostPolicy::new(
+        1,
+        vec![extension.clone()],
+        FederationSetupBitcoinNetwork::Regtest,
+    )
+    .expect("extension-only FROST policy");
+    assert_eq!(extension_only.applications, vec![extension]);
+}
 
 #[test]
 fn constructors_canonicalize_keysets_and_manifest_round_trips() {

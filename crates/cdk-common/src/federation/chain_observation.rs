@@ -1003,6 +1003,41 @@ impl FederationChainObservationState {
         self.validate()
     }
 
+    /// Atomically mark an exact set of sticky reservations as spent.
+    ///
+    /// Application-specific reservation ownership must be checked by the
+    /// caller in the same durable transaction before invoking this neutral
+    /// lifecycle transition.
+    pub fn spend_reserved_utxos(&mut self, outpoints: &[OutPoint]) -> Result<()> {
+        if outpoints.is_empty() {
+            return Err(invalid_state("wallet spent reservation set is empty"));
+        }
+        let unique = outpoints.iter().copied().collect::<BTreeSet<_>>();
+        if unique.len() != outpoints.len() {
+            return Err(invalid_state(
+                "wallet spent reservation set contains duplicates",
+            ));
+        }
+        for outpoint in outpoints {
+            let utxo = self
+                .utxos
+                .get(&outpoint.to_string())
+                .ok_or_else(|| invalid_state("spent reservation references an unknown UTXO"))?;
+            if utxo.state != FederationWalletUtxoState::Reserved {
+                return Err(invalid_state(
+                    "spent reservation references a non-reserved wallet UTXO",
+                ));
+            }
+        }
+        for outpoint in outpoints {
+            self.utxos
+                .get_mut(&outpoint.to_string())
+                .ok_or_else(|| invalid_state("spent reservation wallet UTXO disappeared"))?
+                .state = FederationWalletUtxoState::Spent;
+        }
+        self.validate()
+    }
+
     /// Build stable state-digest rows for UTXOs and all accepted evidence.
     pub fn materialized_rows(&self) -> Result<Vec<FederationMaterializedStateRow>> {
         self.validate()?;
@@ -2373,5 +2408,43 @@ mod tests {
             "post-liability fields never adopt a minority set"
         );
         assert!(utxo.conflicting_observers.contains(&member(3)));
+    }
+
+    #[test]
+    fn reservation_lifecycle_accepts_only_exact_state_transitions() {
+        let mut state = FederationChainObservationState::new();
+        for (operation, observer) in [(2, 1), (3, 2)] {
+            let evidence = observation(
+                observer,
+                Some(block(9, 100, 2)),
+                FederationChainSourceScope::Independent,
+            );
+            apply(&mut state, &evidence, operation);
+        }
+
+        let reserved = outpoint(3);
+        state.reserve_utxos(&[reserved]).expect("reserve spendable");
+        assert_eq!(
+            state.utxo(reserved).expect("reserved UTXO").state,
+            FederationWalletUtxoState::Reserved
+        );
+        assert!(state.reserve_utxos(&[reserved]).is_err());
+        assert!(state.spend_reserved_utxos(&[outpoint(99)]).is_err());
+
+        state
+            .spend_reserved_utxos(&[reserved])
+            .expect("spend exact reservation");
+        assert_eq!(
+            state.utxo(reserved).expect("spent UTXO").state,
+            FederationWalletUtxoState::Spent
+        );
+        assert!(state.spend_reserved_utxos(&[reserved]).is_err());
+        assert!(state.reserve_utxos(&[reserved]).is_err());
+
+        let bytes = state.to_bytes().expect("state bytes");
+        assert_eq!(
+            FederationChainObservationState::from_bytes(&bytes).expect("state replay"),
+            state
+        );
     }
 }

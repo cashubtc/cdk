@@ -24,7 +24,16 @@ use cdk::nuts::CurrencyUnit;
 ))]
 use cdk::types::FeeReserve;
 
-use crate::config::{self, Settings};
+#[cfg(any(
+    feature = "cln",
+    feature = "fakewallet",
+    feature = "grpc-processor",
+    feature = "ldk-node",
+    feature = "lnbits",
+    feature = "lnd"
+))]
+use crate::config;
+use crate::config::Settings;
 #[cfg(feature = "cln")]
 use crate::expand_path;
 

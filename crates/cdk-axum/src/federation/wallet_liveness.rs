@@ -141,9 +141,9 @@ impl FederationWalletLivenessWorker {
         let Some(runtime) = state.mint.federation_config() else {
             return Ok(0);
         };
-        let Some(wallet_config) = runtime.public_config().frost_wallet.as_ref() else {
+        if runtime.public_config().frost_wallet.is_none() {
             return Ok(0);
-        };
+        }
         if state.federation.onchain_wallets().is_empty()
             || state.federation.frost_signing().is_none()
         {
@@ -298,7 +298,6 @@ impl FederationWalletLivenessWorker {
             }
             let proposal_id = accepted.proposal.proposal_id()?;
             active_work.insert(LivenessWorkId::Signing(proposal_id));
-            let application = &wallet_config.cdk_onchain_application;
             if application.root_key_epoch != accepted.proposal.scope.root_key_epoch
                 || application.application_id != accepted.proposal.scope.application_id
                 || application.application_key_epoch
@@ -578,7 +577,7 @@ impl FederationWalletLivenessWorker {
             .frost_wallet
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("FROST wallet configuration is unavailable"))?;
-        let application = &wallet_config.cdk_onchain_application;
+        let application = runtime.cdk_onchain_application()?;
         if application.root_key_epoch != accepted.proposal.scope.root_key_epoch
             || application.application_id != accepted.proposal.scope.application_id
             || application.application_key_epoch != accepted.proposal.scope.application_key_epoch

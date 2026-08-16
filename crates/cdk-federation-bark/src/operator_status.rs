@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use cdk_common::federation::{FederationError, MemberId, Result, FEDERATION_REST_API_VERSION};
+use cdk_common::federation::{
+    FederationError, FederationFrostApplicationId, MemberId, Result, FEDERATION_REST_API_VERSION,
+};
 
 use crate::{
     FederationBarkActionId, FederationBarkActionKind, FederationBarkDigest,
@@ -11,6 +13,9 @@ use crate::{
 
 /// Status schema version for the private federated Bark operator view.
 pub const FEDERATION_BARK_OPERATOR_STATUS_VERSION: u16 = 1;
+
+const FEDERATION_MAX_BARK_RECOVERY_RESERVE_ID_BYTES: usize = 64;
+const BARK_RECOVERY_RESERVE_QUOTE_PREFIX: &str = "bark-recovery-reserve/";
 
 /// Replay-only request to reconcile accepted Bark state into the local wallet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +109,72 @@ pub struct FederationBarkRetryResponse {
     pub phase_after: FederationBarkSemanticPhase,
     /// Number of consensus-visible operations submitted by this bounded step.
     pub advanced: u64,
+}
+
+/// Idempotent request for one Bark-owned recovery fee-reserve address.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkRecoveryAddressRequest {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Operator-chosen idempotency key for this reserve allocation.
+    pub reserve_id: String,
+}
+
+impl FederationBarkRecoveryAddressRequest {
+    /// Construct one address request with a stable operator idempotency key.
+    #[must_use]
+    pub fn new(reserve_id: impl Into<String>) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            reserve_id: reserve_id.into(),
+        }
+    }
+
+    /// Validate the private API version and bounded allocation identity.
+    pub fn validate(&self) -> Result<()> {
+        validate_rest_version(self.version)?;
+        if self.reserve_id.is_empty()
+            || self.reserve_id.len() > FEDERATION_MAX_BARK_RECOVERY_RESERVE_ID_BYTES
+            || !self
+                .reserve_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(FederationError::ApplicationOperationInvalid {
+                reason: "Bark recovery reserve id must be 1-64 ASCII letters, digits, '-' or '_'"
+                    .to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Consensus allocation quote derived from the idempotency key.
+    pub fn allocation_quote(&self) -> Result<String> {
+        self.validate()?;
+        Ok(format!(
+            "{BARK_RECOVERY_RESERVE_QUOTE_PREFIX}{}",
+            self.reserve_id
+        ))
+    }
+}
+
+/// Bark-owned address that operators can fund for bounded CPFP recovery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkRecoveryAddressResponse {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Stable operator allocation identity.
+    pub reserve_id: String,
+    /// Bark recovery FROST application identity.
+    pub application_id: FederationFrostApplicationId,
+    /// Bark recovery application key epoch.
+    pub application_key_epoch: u64,
+    /// Accepted external derivation index.
+    pub derivation_index: u32,
+    /// Network-checked Bitcoin address.
+    pub address: String,
 }
 
 fn validate_rest_version(version: u16) -> Result<()> {
@@ -268,6 +339,24 @@ mod tests {
         assert!(FederationBarkRetryRequest::new(action_id, true)
             .validate()
             .is_ok());
+    }
+
+    #[test]
+    fn recovery_reserve_request_is_bounded_and_idempotent() {
+        let request = FederationBarkRecoveryAddressRequest::new("operator_batch_7");
+        assert_eq!(
+            request.allocation_quote().expect("allocation quote"),
+            "bark-recovery-reserve/operator_batch_7"
+        );
+        assert!(FederationBarkRecoveryAddressRequest::new("")
+            .validate()
+            .is_err());
+        assert!(FederationBarkRecoveryAddressRequest::new("contains/slash")
+            .validate()
+            .is_err());
+        assert!(FederationBarkRecoveryAddressRequest::new("x".repeat(65))
+            .validate()
+            .is_err());
     }
 
     #[test]

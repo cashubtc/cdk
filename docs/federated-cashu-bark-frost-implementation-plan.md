@@ -41,6 +41,7 @@ Related documents:
 
 - `docs/federated-cashu-implementation-plan.md`
 - `docs/federated-cashu-bdk-frost-implementation-plan.md`
+- `docs/federated-bdk-bark-decoupling-plan.md`
 - `bark:cdk-implementation-plan.md`
 
 ## Implementation progress

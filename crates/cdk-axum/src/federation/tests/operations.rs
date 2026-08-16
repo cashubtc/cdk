@@ -1597,6 +1597,7 @@ async fn aleph_bft_finalization_persistence_failure_leaves_runtime_unchanged() {
     assert_eq!(responses.len(), 1);
 }
 
+#[cfg(feature = "federation-bdk")]
 #[tokio::test]
 async fn onchain_reconciliation_failure_does_not_halt_finalized_application() {
     let session = start_two_member_aleph_bft_live_session(fast_aleph_bft_live_session_options(

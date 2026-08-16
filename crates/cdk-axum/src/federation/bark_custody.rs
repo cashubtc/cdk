@@ -29,19 +29,36 @@ use super::{admit_private_request, federation_error_response, federation_runtime
 pub(crate) struct FederatedBarkCustodyPeerClient {
     client: super::peer_client::FederationRestPeerClient<super::FederationTransport>,
     public_config: FederationConfig,
-    public: DerivedPublicPackage,
+    custody_public: DerivedPublicPackage,
+    recovery_public: DerivedPublicPackage,
 }
 
 impl FederatedBarkCustodyPeerClient {
     pub(crate) fn new(
         client: super::peer_client::FederationRestPeerClient<super::FederationTransport>,
         public_config: FederationConfig,
-        public: DerivedPublicPackage,
+        custody_public: DerivedPublicPackage,
+        recovery_public: DerivedPublicPackage,
     ) -> Self {
         Self {
             client,
             public_config,
-            public,
+            custody_public,
+            recovery_public,
+        }
+    }
+
+    fn signing_public(
+        &self,
+        authorization: &AuthorizationRequest,
+    ) -> anyhow::Result<DerivedPublicPackage> {
+        let application_id = authorization.application_id();
+        if application_id == self.custody_public.registration().id() {
+            Ok(self.custody_public.clone())
+        } else if application_id == self.recovery_public.registration().id() {
+            Ok(self.recovery_public.clone())
+        } else {
+            anyhow::bail!("Bark requested an unregistered FROST application")
         }
     }
 }
@@ -54,12 +71,10 @@ impl cdk_bark::FederatedBarkCustodyClient for FederatedBarkCustodyPeerClient {
         derivation: &SigningDerivation,
         authorization: &AuthorizationRequest,
     ) -> anyhow::Result<cdk_frost::AggregateSignature> {
-        super::frost_signing::FederationFrostSigningCoordinator::new(
-            &self.client,
-            self.public.clone(),
-        )
-        .sign(&self.public_config, context, derivation, authorization)
-        .await
+        let public = self.signing_public(authorization)?;
+        super::frost_signing::FederationFrostSigningCoordinator::new(&self.client, public)
+            .sign(&self.public_config, context, derivation, authorization)
+            .await
     }
 
     async fn collect_virtual_musig_commitments(
@@ -68,7 +83,7 @@ impl cdk_bark::FederatedBarkCustodyClient for FederatedBarkCustodyPeerClient {
         derivation: &SigningDerivation,
         authorization: &AuthorizationRequest,
     ) -> anyhow::Result<VirtualMusigNonceCommitmentSet> {
-        FederationBarkCustodyCoordinator::new(&self.client, self.public.clone())
+        FederationBarkCustodyCoordinator::new(&self.client, self.custody_public.clone())
             .collect_virtual_musig_commitments(
                 &self.public_config,
                 context,
@@ -86,7 +101,7 @@ impl cdk_bark::FederatedBarkCustodyClient for FederatedBarkCustodyPeerClient {
         commitments: &VirtualMusigNonceCommitmentSet,
         transcript: &VirtualMusigTranscript,
     ) -> anyhow::Result<[u8; 32]> {
-        FederationBarkCustodyCoordinator::new(&self.client, self.public.clone())
+        FederationBarkCustodyCoordinator::new(&self.client, self.custody_public.clone())
             .collect_virtual_musig_partial(
                 &self.public_config,
                 context,
@@ -104,7 +119,7 @@ impl cdk_bark::FederatedBarkCustodyClient for FederatedBarkCustodyPeerClient {
         authorization: &AuthorizationRequest,
         reason: cdk_frost::NonceBurnReason,
     ) {
-        FederationBarkCustodyCoordinator::new(&self.client, self.public.clone())
+        FederationBarkCustodyCoordinator::new(&self.client, self.custody_public.clone())
             .abort_selected(&self.public_config, context, authorization, reason)
             .await;
     }

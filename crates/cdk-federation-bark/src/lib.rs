@@ -10,6 +10,8 @@ mod config;
 mod operation;
 mod operator_status;
 mod projection;
+mod recovery;
+mod recovery_config;
 mod secret;
 #[cfg(feature = "test-util")]
 #[doc(hidden)]
@@ -23,43 +25,45 @@ pub use self::certificate::{
     FEDERATION_MAX_BARK_EVIDENCE_ATTESTATION_REQUEST_BYTES,
 };
 pub use self::config::{
-    federation_bark_application, federation_bark_setup_application, federation_bark_setup_config,
-    federation_frost_wallet_with_bark, FederationBarkFrostApplicationConfig,
-    FederationBarkFrostRegistrationAdapter, FederationBarkPolicyConfig,
-    FederationBarkReceiveAntiDosPolicy, FederationBarkSetupConfig,
+    federation_bark_application, federation_bark_frost_applications,
+    federation_bark_setup_application, federation_bark_setup_config,
+    FederationBarkFrostApplicationConfig, FederationBarkFrostRegistrationAdapter,
+    FederationBarkPolicyConfig, FederationBarkReceiveAntiDosPolicy, FederationBarkSetupConfig,
 };
 pub use self::operation::{
     federation_bark_application_id, federation_bark_application_operation,
+    federation_bark_cpfp_allocation_quote, federation_bark_custody_attempt_is_current,
     federation_bark_custody_transcript_hash, federation_bark_description_hash,
     federation_bark_exit_allocation_quote, federation_bark_mailbox_scope,
-    federation_bark_receive_htlc_package_hash, federation_bark_receive_request_hash,
-    federation_bark_refresh_requires_recovery, federation_bark_signer_set_for_attempt,
-    register_federation_bark_wire_codec, validate_federation_bark_application_operation,
-    validate_federation_bark_lightning_send_expiry, validate_federation_bark_operation,
-    FederationBarkActionId, FederationBarkActionKind, FederationBarkActionPlan,
-    FederationBarkActionTransition, FederationBarkArtifact, FederationBarkArtifactKind,
-    FederationBarkAuthorizationReference, FederationBarkCertifiedReceiveHtlcs,
-    FederationBarkConflictKey, FederationBarkCustodyProtocol, FederationBarkDigest,
-    FederationBarkExitRequest, FederationBarkExternalId, FederationBarkFrostAuthorization,
-    FederationBarkMemberObservation, FederationBarkObservationStatus, FederationBarkOperation,
-    FederationBarkOperationKind, FederationBarkOperationRecord, FederationBarkReceiveIntent,
-    FederationBarkReceivePrepared, FederationBarkReceiveProof,
-    FederationBarkReceiveSecretAcknowledgement, FederationBarkRefreshRequest,
-    FederationBarkSemanticPhase, FederationBarkUnit, FederationBarkVtxoId, FederationBarkVtxoInput,
-    FederationBarkVtxoLocator, FederationBarkVtxoOutput, FederationBarkVtxoState,
-    FederationBarkVtxoTransition, FEDERATION_BARK_AUTHORIZATION_VERSION,
-    FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU, FEDERATION_BARK_OPERATION_VERSION,
-    FEDERATION_MAX_BARK_ARTIFACT_AGGREGATE_BYTES, FEDERATION_MAX_BARK_ARTIFACT_BYTES,
-    FEDERATION_MAX_BARK_AUTHORIZATION_BYTES, FEDERATION_MAX_BARK_COLLECTION_ENTRIES,
-    FEDERATION_MAX_BARK_DESCRIPTION_BYTES, FEDERATION_MAX_BARK_INVOICE_BYTES,
-    FEDERATION_MAX_BARK_LIGHTNING_SEND_EXPIRY_EXTENSION_BLOCKS,
+    federation_bark_next_actor, federation_bark_receive_htlc_package_hash,
+    federation_bark_receive_request_hash, federation_bark_refresh_requires_recovery,
+    federation_bark_signer_set_for_attempt, register_federation_bark_wire_codec,
+    validate_federation_bark_application_operation, validate_federation_bark_lightning_send_expiry,
+    validate_federation_bark_operation, FederationBarkActionId, FederationBarkActionKind,
+    FederationBarkActionPlan, FederationBarkActionTransition, FederationBarkArtifact,
+    FederationBarkArtifactKind, FederationBarkAuthorizationReference,
+    FederationBarkCertifiedReceiveHtlcs, FederationBarkConflictKey, FederationBarkCustodyProtocol,
+    FederationBarkDigest, FederationBarkExitRequest, FederationBarkExternalId,
+    FederationBarkFrostAuthorization, FederationBarkMemberObservation,
+    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkOperationKind,
+    FederationBarkOperationRecord, FederationBarkReceiveIntent, FederationBarkReceivePrepared,
+    FederationBarkReceiveProof, FederationBarkReceiveSecretAcknowledgement,
+    FederationBarkRefreshRequest, FederationBarkSemanticPhase, FederationBarkUnit,
+    FederationBarkVtxoId, FederationBarkVtxoInput, FederationBarkVtxoLocator,
+    FederationBarkVtxoOutput, FederationBarkVtxoState, FederationBarkVtxoTransition,
+    FEDERATION_BARK_AUTHORIZATION_VERSION, FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU,
+    FEDERATION_BARK_OPERATION_VERSION, FEDERATION_MAX_BARK_ARTIFACT_AGGREGATE_BYTES,
+    FEDERATION_MAX_BARK_ARTIFACT_BYTES, FEDERATION_MAX_BARK_AUTHORIZATION_BYTES,
+    FEDERATION_MAX_BARK_COLLECTION_ENTRIES, FEDERATION_MAX_BARK_DESCRIPTION_BYTES,
+    FEDERATION_MAX_BARK_INVOICE_BYTES, FEDERATION_MAX_BARK_LIGHTNING_SEND_EXPIRY_EXTENSION_BLOCKS,
     FEDERATION_MAX_BARK_OPERATION_BYTES, FEDERATION_MAX_BARK_REFRESH_INPUTS,
     FEDERATION_MAX_BARK_REFRESH_INPUT_ARTIFACT_BYTES,
 };
 pub use self::operator_status::{
     FederationBarkActionStatus, FederationBarkOperatorStatus, FederationBarkProtocolStatus,
     FederationBarkReceiveSecretCoverage, FederationBarkReconcileRequest,
-    FederationBarkReconcileResponse, FederationBarkRetryRequest, FederationBarkRetryResponse,
+    FederationBarkReconcileResponse, FederationBarkRecoveryAddressRequest,
+    FederationBarkRecoveryAddressResponse, FederationBarkRetryRequest, FederationBarkRetryResponse,
     FederationBarkVtxoStatusCount, FEDERATION_BARK_OPERATOR_STATUS_VERSION,
 };
 pub use self::projection::{
@@ -67,6 +71,18 @@ pub use self::projection::{
     FederationBarkDerivationAllocationRecord, FederationBarkObservationRecord,
     FederationBarkProjectionSnapshot, FederationBarkReservationRecord,
     FederationBarkTransitionRecord, FederationBarkVtxoRecord,
+};
+pub use self::recovery::{
+    FederationBarkCpfpPackage, FederationBarkCpfpPackageSet, FederationBarkCpfpPublication,
+    FederationBarkRecoveryFrostAuthorization, FederationBarkRecoveryFrostAuthorizationAdapter,
+    FederationBarkRecoveryInput, FederationBarkRecoveryReservation, FederationBarkRecoveryState,
+    FederationBarkValidatedRecoveryAuthorization,
+};
+pub use self::recovery_config::{
+    federation_bark_recovery_application, federation_bark_recovery_application_id,
+    federation_bark_recovery_setup_application, federation_bark_recovery_setup_config,
+    FederationBarkRecoveryApplicationConfig, FederationBarkRecoverySetupConfig,
+    FEDERATION_BARK_RECOVERY_APPLICATION_LABEL, FEDERATION_BARK_RECOVERY_DERIVATION_VERSION,
 };
 pub use self::secret::{
     ark_server_commitment, payment_hash_for_preimage, preimage_commitment,

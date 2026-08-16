@@ -93,6 +93,7 @@ const BARK_SIGNING_ATTEMPT_RESULT_DOMAIN: &[u8] = b"cdk/federation/bark-signing-
 const BARK_REFRESH_REQUEST_DOMAIN: &str = "cdk/federation/bark-refresh-request/v1";
 const BARK_EXIT_REQUEST_DOMAIN: &str = "cdk/federation/bark-exit-request/v1";
 const BARK_EXIT_ALLOCATION_QUOTE_PREFIX: &str = "bark-exit-";
+const BARK_CPFP_ALLOCATION_QUOTE_PREFIX: &str = "bark-cpfp-";
 
 /// Commit to the exact bounded transcript presented to a Bark custody method.
 pub fn federation_bark_custody_transcript_hash(bytes: &[u8]) -> Result<FederationBarkDigest> {
@@ -124,6 +125,15 @@ pub fn validate_federation_bark_lightning_send_expiry(
 #[must_use]
 pub fn federation_bark_exit_allocation_quote(action_id: FederationBarkActionId) -> String {
     format!("{BARK_EXIT_ALLOCATION_QUOTE_PREFIX}{action_id}")
+}
+
+/// Deterministic internal-change allocation label for one exit CPFP parent.
+#[must_use]
+pub fn federation_bark_cpfp_allocation_quote(
+    action_id: FederationBarkActionId,
+    parent_txid: bitcoin::Txid,
+) -> String {
+    format!("{BARK_CPFP_ALLOCATION_QUOTE_PREFIX}{action_id}-{parent_txid}")
 }
 
 fn invalid_bark(reason: impl Into<String>) -> FederationError {
@@ -875,6 +885,26 @@ pub fn federation_bark_signer_set_for_attempt(
     Ok(signer_set)
 }
 
+/// Select the next deterministic execution actor after an accepted actor.
+///
+/// This rotates once through the canonical member roster. It changes only who
+/// may drive an already accepted action; the plan, external id, inputs,
+/// outputs, fees, and package commitments remain unchanged.
+pub fn federation_bark_next_actor(
+    config: &FederationConfig,
+    current_actor: MemberId,
+) -> Result<MemberId> {
+    let members = config.members.keys().copied().collect::<Vec<_>>();
+    let current_index = members
+        .iter()
+        .position(|member| *member == current_actor)
+        .ok_or_else(|| invalid_bark("current Bark actor is not a federation member"))?;
+    if members.len() < 2 {
+        return Err(invalid_bark("Bark actor failover requires another member"));
+    }
+    Ok(members[(current_index + 1) % members.len()])
+}
+
 #[derive(Serialize)]
 struct FederationBarkLightningSendRequestBinding<'a> {
     domain: &'static str,
@@ -929,7 +959,7 @@ pub struct FederationBarkRefreshRequest {
     pub attempt: u32,
 }
 
-/// Canonical emergency-exit request into an allocated federated BDK script.
+/// Canonical emergency-exit request into an allocated Bark recovery script.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FederationBarkExitRequest {
@@ -943,7 +973,7 @@ pub struct FederationBarkExitRequest {
     pub predecessor_operation_id: FederationOperationId,
     /// Exact sorted exit inputs.
     pub inputs: Vec<FederationBarkVtxoInput>,
-    /// Consensus allocation owned by the existing federated BDK application.
+    /// Consensus allocation owned by Bark's recovery application.
     pub destination: FederationAllocatedAddressRef,
     /// Exact destination script committed by the allocation.
     #[serde(with = "hex_bytes")]
@@ -954,7 +984,7 @@ pub struct FederationBarkExitRequest {
     pub fee_rate_sat_per_kwu: u64,
     /// Maximum fee accepted for the final drain.
     pub fee_bound: Amount,
-    /// Minimum value that must arrive under federated BDK custody.
+    /// Minimum value that must arrive under Bark recovery custody.
     pub minimum_recovered: Amount,
     /// First height at which emergency exit execution is permitted.
     pub trigger_height: u32,
@@ -1012,6 +1042,45 @@ pub enum FederationBarkSemanticPhase {
     ExitConfirmed,
     /// Bounded member evidence was recorded.
     Observation,
+}
+
+/// Return whether one accepted action head authorizes the exact custody attempt.
+#[must_use]
+pub const fn federation_bark_custody_attempt_is_current(
+    kind: FederationBarkActionKind,
+    phase: FederationBarkSemanticPhase,
+    signing_retry_phase: Option<FederationBarkSemanticPhase>,
+    current_attempt: u32,
+    authorization_attempt: u32,
+) -> bool {
+    if current_attempt != authorization_attempt {
+        return false;
+    }
+    let effective_phase = match signing_retry_phase {
+        Some(phase) => phase,
+        None => phase,
+    };
+    match kind {
+        FederationBarkActionKind::IncomingClaim => matches!(
+            effective_phase,
+            FederationBarkSemanticPhase::ClaimPlanned
+                | FederationBarkSemanticPhase::ReceivePreimageDisclosed
+        ),
+        FederationBarkActionKind::LightningSend => {
+            matches!(effective_phase, FederationBarkSemanticPhase::SendPlanned)
+        }
+        FederationBarkActionKind::FailedSendRevocation => matches!(
+            effective_phase,
+            FederationBarkSemanticPhase::RevocationPlanned
+        ),
+        FederationBarkActionKind::Refresh => {
+            matches!(effective_phase, FederationBarkSemanticPhase::RefreshPlanned)
+        }
+        FederationBarkActionKind::EmergencyExit => matches!(
+            effective_phase,
+            FederationBarkSemanticPhase::ExitPlanned | FederationBarkSemanticPhase::ExitRegistered
+        ),
+    }
 }
 
 impl FederationBarkSemanticPhase {
@@ -1146,6 +1215,7 @@ struct FederationBarkSigningAttemptResultBinding<'a> {
     action_id: FederationBarkActionId,
     plan_operation_id: FederationOperationId,
     predecessor_operation_id: FederationOperationId,
+    actor: MemberId,
     attempt: u32,
     signer_set: &'a [MemberId],
     request_hash: FederationBarkDigest,
@@ -2191,7 +2261,7 @@ impl FederationBarkActionPlan {
         Ok(request)
     }
 
-    /// Bind the exact federated BDK recovery allocation, final-drain policy,
+    /// Bind the exact Bark recovery allocation, final-drain policy,
     /// immutable input VTXOs, and precomputed exit transaction packages.
     #[allow(clippy::too_many_arguments)]
     pub fn bind_emergency_exit_artifacts(
@@ -2626,6 +2696,7 @@ impl FederationBarkActionTransition {
         plan_operation_id: FederationOperationId,
         predecessor_operation_id: FederationOperationId,
         plan: &FederationBarkActionPlan,
+        actor: MemberId,
         attempt: u32,
         signer_set: Vec<MemberId>,
     ) -> Result<Self> {
@@ -2641,6 +2712,7 @@ impl FederationBarkActionTransition {
             action_id: plan.action_id,
             plan_operation_id,
             predecessor_operation_id,
+            actor,
             attempt,
             signer_set: &signer_set,
             request_hash,
@@ -2655,7 +2727,7 @@ impl FederationBarkActionTransition {
             action_id: plan.action_id,
             quote: plan.quote.clone(),
             phase: FederationBarkSemanticPhase::SigningAttemptAdvanced,
-            actor: plan.actor,
+            actor,
             plan_operation_id,
             predecessor_operation_id,
             payment_hash: plan.payment_hash,
@@ -2919,9 +2991,34 @@ impl FederationBarkActionTransition {
                     .iter()
                     .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
                     .count();
-                if !valid_shape || transaction_count == 0 || result_count != 1 {
+                let recovery_packages = self
+                    .artifacts
+                    .iter()
+                    .filter_map(|artifact| {
+                        crate::recovery::FederationBarkCpfpPackageSet::from_artifact(artifact).ok()
+                    })
+                    .collect::<Vec<_>>();
+                let recovery_is_bound = match recovery_packages.as_slice() {
+                    [packages] => {
+                        packages.action_id == self.action_id
+                            && packages.plan_operation_id == self.plan_operation_id
+                            && packages.actor == self.actor
+                            && packages.attempt == self.attempt
+                            && packages.signer_set == self.signer_set
+                            && packages.packages.iter().all(|package| {
+                                self.artifacts.iter().any(|artifact| {
+                                    artifact.kind == FederationBarkArtifactKind::Transaction
+                                        && artifact.bytes
+                                            == bitcoin::consensus::serialize(&package.parent)
+                                })
+                            })
+                    }
+                    _ => false,
+                };
+                if !valid_shape || transaction_count == 0 || result_count != 1 || !recovery_is_bound
+                {
                     return Err(invalid_bark(
-                        "exit registration must move reserved inputs to exiting and bind exact transactions",
+                        "exit registration must move reserved inputs to exiting and bind exact transactions and recovery packages",
                     ));
                 }
             }
@@ -2938,10 +3035,19 @@ impl FederationBarkActionTransition {
                         .iter()
                         .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
                         .count()
+                        != 1
+                    || self
+                        .artifacts
+                        .iter()
+                        .filter_map(|artifact| {
+                            crate::recovery::FederationBarkCpfpPublication::from_artifact(artifact)
+                                .ok()
+                        })
+                        .count()
                         != 1 =>
             {
                 return Err(invalid_bark(
-                    "exit publication must retain VTXO state and bind exact transaction evidence",
+                    "exit publication must retain VTXO state and bind exact transaction and CPFP evidence",
                 ));
             }
             FederationBarkSemanticPhase::ExitConfirmed => {

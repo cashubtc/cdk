@@ -1,28 +1,40 @@
 //! Authenticated, redacted operator routes for the federated on-chain wallet.
 
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use axum::extract::{Json, State};
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use axum::response::Response;
 #[cfg(feature = "federation-bark")]
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use cdk::federation::{
-    FederationBarkActionKind, FederationBarkActionRecord, FederationBarkReconcileRequest,
-    FederationBarkReconcileResponse, FederationBarkRetryRequest, FederationBarkRetryResponse,
-    FederationError,
+    FederationAddressAllocationScope, FederationAddressKeychain, FederationBarkActionKind,
+    FederationBarkActionRecord, FederationBarkReconcileRequest, FederationBarkReconcileResponse,
+    FederationBarkRecoveryAddressRequest, FederationBarkRecoveryAddressResponse,
+    FederationBarkRetryRequest, FederationBarkRetryResponse, FederationError,
 };
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use cdk::federation::{
-    FederationRestMessageKind, FederationSignedRequest, FederationWalletRebroadcastResponse,
-    FederationWalletTransactionRequest, FederationWalletTransactionStatus,
-    FEDERATION_REST_API_VERSION,
+    FederationRestMessageKind, FederationSignedRequest, FEDERATION_REST_API_VERSION,
+};
+#[cfg(feature = "federation-bdk")]
+use cdk::federation::{
+    FederationWalletRebroadcastResponse, FederationWalletTransactionRequest,
+    FederationWalletTransactionStatus,
 };
 #[cfg(feature = "federation-bark")]
 use cdk::mint::QuoteId;
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use tracing::instrument;
 
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use crate::MintState;
 
 #[cfg(feature = "federation-bark")]
 use super::anyhow_response;
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use super::{admit_private_request, cdk_error_response, federation_error_response};
 
+#[cfg(feature = "federation-bdk")]
 #[instrument(skip_all)]
 pub(super) async fn post_wallet_transaction_status(
     State(state): State<MintState>,
@@ -45,6 +57,7 @@ pub(super) async fn post_wallet_transaction_status(
     Ok(Json(status))
 }
 
+#[cfg(feature = "federation-bdk")]
 #[instrument(skip_all)]
 pub(super) async fn post_wallet_rebroadcast(
     State(state): State<MintState>,
@@ -81,6 +94,7 @@ pub(super) async fn post_wallet_rebroadcast(
     }))
 }
 
+#[cfg(feature = "federation-bdk")]
 async fn transaction_status(
     state: &MintState,
     proposal_id: cdk::federation::FederationTransactionProposalId,
@@ -205,6 +219,97 @@ pub(super) async fn post_bark_action_retry(
         phase_before,
         phase_after,
         advanced: u64::try_from(advanced).unwrap_or(u64::MAX),
+    }))
+}
+
+#[cfg(feature = "federation-bark")]
+#[instrument(skip_all)]
+pub(super) async fn post_bark_recovery_address(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationBarkRecoveryAddressRequest>>,
+) -> Result<Json<FederationBarkRecoveryAddressResponse>, Response> {
+    let kind = FederationRestMessageKind::ApplicationWalletAddress;
+    let verified = admit_private_request(&state, &payload, kind).await?;
+    payload
+        .payload
+        .validate()
+        .map_err(federation_error_response)?;
+    state
+        .ensure_federation_ready_for_authoritative_read()
+        .await
+        .map_err(cdk_error_response)?;
+    let federation = state
+        .mint
+        .federation_config()
+        .cloned()
+        .ok_or_else(|| cdk_error_response(cdk::Error::Internal))?;
+    let wallet = federation
+        .public_config()
+        .frost_wallet
+        .as_ref()
+        .ok_or_else(|| cdk_error_response(cdk::Error::Internal))?;
+    let recovery =
+        cdk::federation::federation_bark_recovery_application(federation.public_config())
+            .map_err(federation_error_response)?
+            .ok_or_else(|| cdk_error_response(cdk::Error::Internal))?;
+    let quote = payload
+        .payload
+        .allocation_quote()
+        .map_err(federation_error_response)?;
+    let scope = FederationAddressAllocationScope {
+        application_id: recovery.application_id(),
+        application_key_epoch: recovery.application_key_epoch(),
+    };
+    let allocation = match state
+        .mint
+        .federation_address_allocation(scope, &quote)
+        .await
+        .map_err(cdk_error_response)?
+    {
+        Some(allocation) => allocation,
+        None => {
+            let envelope = federation
+                .address_allocation_operation(
+                    &quote,
+                    recovery.application_id(),
+                    recovery.application_key_epoch(),
+                    FederationAddressKeychain::External,
+                )
+                .map_err(cdk_error_response)?;
+            state
+                .submit_federation_envelope(envelope)
+                .await
+                .map_err(cdk_error_response)?
+                .ensure_accepted()
+                .map_err(federation_error_response)?;
+            state
+                .mint
+                .federation_address_allocation(scope, &quote)
+                .await
+                .map_err(cdk_error_response)?
+                .ok_or_else(|| cdk_error_response(cdk::Error::Internal))?
+        }
+    };
+    let script = recovery
+        .derive_script(
+            federation.public_config(),
+            &wallet.root,
+            false,
+            allocation.derivation_index,
+        )
+        .map_err(federation_error_response)?;
+    let address = cdk_common::bitcoin::Address::from_script(&script, recovery.network())
+        .map_err(|_| cdk_error_response(cdk::Error::Internal))?;
+    state
+        .record_federation_sequence(kind, verified.sender(), verified.sequence())
+        .await;
+    Ok(Json(FederationBarkRecoveryAddressResponse {
+        version: FEDERATION_REST_API_VERSION,
+        reserve_id: payload.payload.reserve_id,
+        application_id: recovery.application_id(),
+        application_key_epoch: recovery.application_key_epoch(),
+        derivation_index: allocation.derivation_index,
+        address: address.to_string(),
     }))
 }
 

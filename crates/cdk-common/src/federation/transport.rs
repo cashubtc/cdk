@@ -73,6 +73,8 @@ pub enum FederationRestMessageKind {
     ApplicationReconcile,
     /// Retry one extension application's accepted action.
     ApplicationActionRetry,
+    /// Allocate one extension application's operator-funded wallet address.
+    ApplicationWalletAddress,
     /// Confirm that a peer is ready for the exact configured DKG ceremony.
     DkgReadiness,
     /// Publish a pre-reveal DKG commitment hash to a peer.
@@ -158,6 +160,7 @@ impl FederationRestMessageKind {
             Self::WalletRebroadcast => b"wallet_rebroadcast",
             Self::ApplicationReconcile => b"application_reconcile",
             Self::ApplicationActionRetry => b"application_action_retry",
+            Self::ApplicationWalletAddress => b"application_wallet_address",
             Self::DkgReadiness => b"dkg_readiness",
             Self::DkgCommitment => b"dkg_commitment",
             Self::DkgReveal => b"dkg_reveal",

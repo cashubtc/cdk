@@ -3,13 +3,15 @@ use std::str::FromStr;
 
 use cdk_common::federation::{
     generate_trusted_dealer_configs, FederationDkgCeremonyId, FederationDkgCommitmentRound,
-    FederationDkgKeysetSpec, FederationDkgTranscript, FederationDkgTranscriptSignature,
-    FederationFrostDkgContext, FederationFrostRootRecord, MemberId, ThresholdParams,
-    TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationDkgKeysetSpec, FederationDkgTranscript, FederationDkgTranscriptSignature, MemberId,
+    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
+#[cfg(feature = "federation-bdk")]
+use cdk_common::federation::{FederationFrostDkgContext, FederationFrostRootRecord};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut01::{evaluate_secret_key_coefficients, BlsSecretKey};
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
+#[cfg(feature = "federation-bdk")]
 use cdk_frost::{advance_dkg, finish_dkg, start_dkg, SecretEncryptionKey};
 
 use super::*;
@@ -285,6 +287,7 @@ fn dkg_completion_fixture(local_member: MemberId) -> DkgCompletionFixture {
     }
 }
 
+#[cfg(feature = "federation-bdk")]
 fn completed_frost_root(config: &FederationConfig) -> FederationFrostRootPublicConfig {
     let context =
         FederationFrostDkgContext::new(config, dkg_ceremony_id(), 1).expect("FROST DKG context");
@@ -712,6 +715,7 @@ async fn partial_activated_config_export_is_not_published() {
     );
 }
 
+#[cfg(feature = "federation-bdk")]
 #[test]
 fn completed_dual_dkg_bootstraps_one_cdk_onchain_application() {
     let fixture = dkg_completion_fixture(member_id(2));
@@ -742,7 +746,10 @@ fn completed_dual_dkg_bootstraps_one_cdk_onchain_application() {
         .frost_wallet
         .as_ref()
         .expect("FROST wallet");
-    let application = &wallet.cdk_onchain_application;
+    let application = wallet
+        .cdk_onchain_application
+        .as_ref()
+        .expect("CDK on-chain application");
     assert_eq!(application.network, bitcoin::Network::Regtest);
     assert_eq!(application.confirmation_policy.minimum_confirmations, 1);
     assert_eq!(application.fee_policy_version, 1);
@@ -767,6 +774,7 @@ fn completed_dual_dkg_bootstraps_one_cdk_onchain_application() {
     assert!(err.to_string().contains("existing wallet"));
 }
 
+#[cfg(all(feature = "federation-bdk", feature = "federation-bark"))]
 #[test]
 fn completed_dual_dkg_registers_bark_under_the_same_sealed_root() {
     let fixture = dkg_completion_fixture(member_id(2));
@@ -808,11 +816,20 @@ fn completed_dual_dkg_registers_bark_under_the_same_sealed_root() {
     let mut wrong_network = finalized.clone();
     let wrong_network_error = attach_initial_frost_bark_application(
         &mut wrong_network,
+        std::slice::from_ref(&root),
         FrostBarkBootstrap {
             network: bitcoin::Network::Signet,
             ark_server_public_key: server,
             application_key_epoch: 1,
             policy: policy.clone(),
+            recovery_minimum_confirmations: 1,
+            recovery_fee_policy_version: 1,
+        },
+        FederationBarkRecoverySetupConfig {
+            application_key_epoch: 1,
+            network: bitcoin::Network::Signet,
+            minimum_confirmations: 1,
+            fee_policy_version: 1,
         },
     )
     .expect_err("Bark recovery network mismatch fails closed");
@@ -824,11 +841,20 @@ fn completed_dual_dkg_registers_bark_under_the_same_sealed_root() {
         .is_none());
     attach_initial_frost_bark_application(
         &mut finalized,
+        std::slice::from_ref(&root),
         FrostBarkBootstrap {
             network: bitcoin::Network::Regtest,
             ark_server_public_key: server,
             application_key_epoch: 1,
             policy: policy.clone(),
+            recovery_minimum_confirmations: 1,
+            recovery_fee_policy_version: 1,
+        },
+        FederationBarkRecoverySetupConfig {
+            application_key_epoch: 1,
+            network: bitcoin::Network::Regtest,
+            minimum_confirmations: 1,
+            fee_policy_version: 1,
         },
     )
     .expect("register Bark application");
@@ -841,14 +867,28 @@ fn completed_dual_dkg_registers_bark_under_the_same_sealed_root() {
     let bark = federation_bark_application(&finalized.public_config)
         .expect("valid Bark application")
         .expect("Bark application");
-    assert_eq!(wallet.version, 2);
+    let recovery = federation_bark_recovery_application(&finalized.public_config)
+        .expect("valid Bark recovery application")
+        .expect("Bark recovery application");
+    let cdk_onchain = wallet
+        .cdk_onchain_application
+        .as_ref()
+        .expect("CDK on-chain application");
+    assert_eq!(wallet.version, 3);
     assert_eq!(bark.network, bitcoin::Network::Regtest);
     assert_eq!(bark.ark_server_public_key, server.serialize());
     assert_eq!(bark.policy, policy);
     assert_eq!(bark.root_key_epoch, wallet.root.root_key_epoch);
+    assert_eq!(recovery.network(), bitcoin::Network::Regtest);
+    assert_eq!(recovery.root_key_epoch(), wallet.root.root_key_epoch);
+    assert_ne!(bark.derived_group_key, cdk_onchain.derived_group_key);
     assert_ne!(
         bark.derived_group_key,
-        wallet.cdk_onchain_application.derived_group_key
+        recovery.extension().derived_group_key
+    );
+    assert_ne!(
+        cdk_onchain.derived_group_key,
+        recovery.extension().derived_group_key
     );
     finalized
         .private_config
@@ -857,17 +897,27 @@ fn completed_dual_dkg_registers_bark_under_the_same_sealed_root() {
 
     let error = attach_initial_frost_bark_application(
         &mut finalized,
+        std::slice::from_ref(&root),
         FrostBarkBootstrap {
             network: bitcoin::Network::Regtest,
             ark_server_public_key: server,
             application_key_epoch: 1,
             policy,
+            recovery_minimum_confirmations: 1,
+            recovery_fee_policy_version: 1,
+        },
+        FederationBarkRecoverySetupConfig {
+            application_key_epoch: 1,
+            network: bitcoin::Network::Regtest,
+            minimum_confirmations: 1,
+            fee_policy_version: 1,
         },
     )
     .expect_err("existing or wrong-network Bark registration fails closed");
     assert!(error.to_string().contains("existing Bark"));
 }
 
+#[cfg(feature = "federation-bdk")]
 #[test]
 fn frost_cdk_bootstrap_fails_closed_without_exactly_one_dual_dkg_root() {
     let fixture = dkg_completion_fixture(member_id(2));

@@ -9,6 +9,7 @@ use bark::custody::{KeySourceDescriptor, KeySourceKind};
 use bark::{Config as BarkConfig, WalletSeed};
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::Network;
+use cdk_bitcoin_wallet::{ChainSource, FederatedChainSourceDescriptor};
 use cdk_common::federation::{
     FederationConfig, FederationDkgSetupMethod, FederationFrostApplicationId, FederationId,
     MemberId,
@@ -246,6 +247,33 @@ pub struct FederatedBarkLocalConfig {
     pub limits: FederatedBarkLimits,
     /// Explicit member-local maintenance automation controls.
     pub maintenance: FederatedBarkMaintenanceControls,
+    /// Bark-owned threshold recovery wallet and independent chain policy.
+    pub recovery: FederatedBarkRecoveryLocalConfig,
+}
+
+/// Member-local storage and chain source for Bark's threshold recovery wallet.
+#[derive(Clone)]
+pub struct FederatedBarkRecoveryLocalConfig {
+    /// Local chain source used to observe fee reserves and publish recovery transactions.
+    pub chain_source: ChainSource,
+    /// Parent directory for the application-scoped recovery wallet database.
+    pub storage_root: PathBuf,
+    /// Delay between recovery-wallet synchronization attempts.
+    pub sync_interval: std::time::Duration,
+    /// Redacted source identity attached to consensus observations.
+    pub observation_source: FederatedChainSourceDescriptor,
+}
+
+impl fmt::Debug for FederatedBarkRecoveryLocalConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FederatedBarkRecoveryLocalConfig")
+            .field("chain_source", &self.chain_source.kind())
+            .field("storage_root", &"<redacted>")
+            .field("sync_interval", &self.sync_interval)
+            .field("source_scope", &self.observation_source.scope)
+            .finish()
+    }
 }
 
 impl FederatedBarkLocalConfig {
@@ -262,6 +290,7 @@ impl FederatedBarkLocalConfig {
         stores: FederatedBarkStoreAvailability,
         limits: FederatedBarkLimits,
         maintenance: FederatedBarkMaintenanceControls,
+        recovery: FederatedBarkRecoveryLocalConfig,
     ) -> Result<Self, Error> {
         let mut bark = BarkConfig::network_default(bindings.network);
         bark.server_address = connection.server_address;
@@ -304,6 +333,7 @@ impl FederatedBarkLocalConfig {
             },
             limits,
             maintenance,
+            recovery,
         })
     }
 }
@@ -322,6 +352,7 @@ impl fmt::Debug for FederatedBarkLocalConfig {
             .field("receive_secret_store", &self.receive_secret_store)
             .field("limits", &self.limits)
             .field("maintenance", &self.maintenance)
+            .field("recovery", &self.recovery)
             .finish()
     }
 }

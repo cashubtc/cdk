@@ -171,7 +171,7 @@ docker run --rm \
         export CARGO_TARGET_DIR=/work/target/linux-x86_64
         cargo build --locked --release -p cdk-mintd \
             --no-default-features \
-            --features sqlite,info-page,federation-bark,iroh,prometheus
+            --features sqlite,info-page,federation-bdk,federation-bark,iroh,prometheus
         "$CARGO_TARGET_DIR/release/cdk-mintd" --version
         "$CARGO_TARGET_DIR/release/cdk-mintd" federation setup create --help >/dev/null
         "$CARGO_TARGET_DIR/release/cdk-mintd" federation setup join --help >/dev/null
@@ -293,9 +293,15 @@ private_state_is_healthy() {
         --argjson members "$MEMBERS" \
         '.threshold_params.member_count == $members
          and .frost_wallet != null
+         and .frost_wallet.version == 3
          and .frost_wallet.cdk_onchain_application.network == $network
-         and .frost_wallet.bark_application != null
-         and .frost_wallet.bark_application.network == $network' \
+         and ((.frost_wallet.extension_applications // {}) | length) == 2
+         and ([.frost_wallet.extension_applications[].configuration] | any(
+             .network == $network and has("ark_server_public_key")
+         ))
+         and ([.frost_wallet.extension_applications[].configuration] | any(
+             .network == $network and has("minimum_confirmations")
+         ))' \
         "$public_config" >/dev/null || return 1
     timeout 60 bash scripts/nocean_federation_control.sh status \
         >"$status_output" 2>&1 || return 1

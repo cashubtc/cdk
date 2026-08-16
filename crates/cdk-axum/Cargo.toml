@@ -18,14 +18,20 @@ federation = [
     "dep:aleph-bft",
     "dep:parity-scale-codec",
     "dep:cdk-frost",
+]
+federation-bdk = [
+    "federation",
+    "dep:cdk-bitcoin-wallet",
     "dep:cdk-frost-bip32",
     "dep:cdk-bdk",
 ]
 federation-bark = [
     "federation",
+    "dep:cdk-bitcoin-wallet",
     "dep:cdk-bark",
     "dep:cdk-federation-bark",
     "dep:cdk-frost-bark",
+    "dep:cdk-frost-bip32",
     "cdk/federation-bark",
     "cdk-bark/federation-bark",
 ]
@@ -44,6 +50,7 @@ cdk = { workspace = true, features = [
     "mint",
 ]}
 cdk-common.workspace = true
+cdk-bitcoin-wallet = { workspace = true, optional = true }
 cdk-frost = { workspace = true, optional = true }
 cdk-frost-bark = { workspace = true, optional = true }
 cdk-frost-bip32 = { workspace = true, optional = true }

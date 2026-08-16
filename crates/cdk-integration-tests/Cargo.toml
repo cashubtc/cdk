@@ -12,6 +12,7 @@ repository = "https://github.com/cashubtc/cdk.git"
 [features]
 http_subscription = ["cdk/http_subscription"]
 bdk = ["cdk-mintd/bdk"]
+federation-bdk = ["cdk-mintd/federation-bdk"]
 
 [dependencies]
 async-trait.workspace = true

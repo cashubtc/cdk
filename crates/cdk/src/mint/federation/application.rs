@@ -68,6 +68,22 @@ struct FederationBarkResultObservationKey {
 #[cfg(feature = "federation-bark")]
 const FEDERATION_BARK_CERTIFICATE_OBSERVATION_ID_DOMAIN: &[u8] =
     b"cdk/federation/bark-certificate-observation-id/v1";
+#[cfg(feature = "federation-bark")]
+const FEDERATION_BARK_RECOVERY_SECONDARY_NAMESPACE: &str = "bark_recovery";
+#[cfg(feature = "federation-bark")]
+const FEDERATION_BARK_RECOVERY_STATE_KEY: &str = "state_v1";
+
+#[cfg(feature = "federation-bark")]
+enum FederationBarkRecoveryMutation {
+    Reserve {
+        package_set: FederationBarkCpfpPackageSet,
+    },
+    Publish {
+        package_set: FederationBarkCpfpPackageSet,
+        registered_operation_id: FederationOperationId,
+        publication: FederationBarkCpfpPublication,
+    },
+}
 
 #[cfg(feature = "federation-bark")]
 fn federation_bark_certificate_observation_id(
@@ -1270,6 +1286,9 @@ impl Mint {
             .find(|record| record.operation_id == entry.operation_id)
             .or_else(|| payment_records.last())
             .cloned();
+        let recovery_mutation = self
+            .federation_bark_recovery_mutation(operation)
+            .await?;
 
         if let Some(FederationPaymentObservation::MeltQuote(observation)) = representative
             .as_ref()
@@ -1306,6 +1325,14 @@ impl Mint {
             transaction
                 .apply_federation_application_operation(entry, application)
                 .await?;
+            if let Some(mutation) = recovery_mutation {
+                Self::apply_federation_bark_recovery_mutation(
+                    &mut transaction,
+                    entry,
+                    mutation,
+                )
+                .await?;
+            }
             for record in &payment_records {
                 transaction
                     .add_federation_payment_observation(record)
@@ -1346,6 +1373,183 @@ impl Mint {
         if let Some((quote, amount_paid)) = paid_notification {
             self.pubsub_manager.mint_quote_payment(&quote, amount_paid);
         }
+        Ok(())
+    }
+
+    #[cfg(feature = "federation-bark")]
+    async fn federation_bark_recovery_mutation(
+        &self,
+        operation: &FederationBarkOperation,
+    ) -> Result<Option<FederationBarkRecoveryMutation>, Error> {
+        let FederationBarkOperation::ActionTransition(transition) = operation else {
+            return Ok(None);
+        };
+        match transition.phase {
+            FederationBarkSemanticPhase::ExitRegistered => {
+                let package_sets = transition
+                    .artifacts
+                    .iter()
+                    .filter_map(|artifact| FederationBarkCpfpPackageSet::from_artifact(artifact).ok())
+                    .collect::<Vec<_>>();
+                let [package_set] = package_sets.as_slice() else {
+                    return Err(Error::Internal);
+                };
+                Ok(Some(FederationBarkRecoveryMutation::Reserve {
+                    package_set: package_set.clone(),
+                }))
+            }
+            FederationBarkSemanticPhase::ExitPublished => {
+                let publications = transition
+                    .artifacts
+                    .iter()
+                    .filter_map(|artifact| FederationBarkCpfpPublication::from_artifact(artifact).ok())
+                    .collect::<Vec<_>>();
+                let [publication] = publications.as_slice() else {
+                    return Err(Error::Internal);
+                };
+                let projection = self.federation_bark_projection_snapshot().await?;
+                let registered_operation_id = projection
+                    .transitions
+                    .iter()
+                    .find(|record| {
+                        record.action_id == transition.action_id
+                            && record.phase == FederationBarkSemanticPhase::ExitRegistered
+                    })
+                    .map(|record| record.operation_id)
+                    .ok_or(Error::Internal)?;
+                let registered_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(registered_operation_id)
+                    .await?
+                    .ok_or(Error::Internal)?;
+                let FederationBarkOperation::ActionTransition(registered) =
+                    projection::bark_operation(&registered_entry.envelope.operation)?
+                else {
+                    return Err(Error::Internal);
+                };
+                let package_sets = registered
+                    .artifacts
+                    .iter()
+                    .filter_map(|artifact| FederationBarkCpfpPackageSet::from_artifact(artifact).ok())
+                    .collect::<Vec<_>>();
+                let [package_set] = package_sets.as_slice() else {
+                    return Err(Error::Internal);
+                };
+                let expected = FederationBarkCpfpPublication::new(
+                    package_set,
+                    publication.signed_children.clone(),
+                )?;
+                if publication != &expected {
+                    return Err(Error::Internal);
+                }
+                Ok(Some(FederationBarkRecoveryMutation::Publish {
+                    package_set: package_set.clone(),
+                    registered_operation_id,
+                    publication: publication.clone(),
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    #[cfg(feature = "federation-bark")]
+    async fn apply_federation_bark_recovery_mutation(
+        transaction: &mut database::mint::DynMintTransaction,
+        entry: &FederationJournalEntry,
+        mutation: FederationBarkRecoveryMutation,
+    ) -> Result<(), Error> {
+        let chain_bytes = transaction
+            .kv_read(
+                CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
+                CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
+                CHAIN_OBSERVATION_STATE_KEY,
+            )
+            .await?;
+        let mut chain_state = match chain_bytes {
+            Some(bytes) => {
+                cdk_common::federation::FederationChainObservationState::from_bytes(&bytes)?
+            }
+            None => cdk_common::federation::FederationChainObservationState::new(),
+        };
+        let recovery_bytes = transaction
+            .kv_read(
+                CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
+                FEDERATION_BARK_RECOVERY_SECONDARY_NAMESPACE,
+                FEDERATION_BARK_RECOVERY_STATE_KEY,
+            )
+            .await?;
+        let mut recovery_state = match recovery_bytes {
+            Some(bytes) => FederationBarkRecoveryState::from_bytes(&bytes)?,
+            None => FederationBarkRecoveryState::new(),
+        };
+        match mutation {
+            FederationBarkRecoveryMutation::Reserve { package_set } => {
+                let outpoints = package_set
+                    .packages
+                    .iter()
+                    .flat_map(|package| &package.recovery_inputs)
+                    .map(|input| input.outpoint)
+                    .collect::<Vec<_>>();
+                if recovery_state.reserve(&package_set, entry.operation_id)? {
+                    chain_state.reserve_utxos(&outpoints)?;
+                } else if outpoints.iter().any(|outpoint| {
+                    chain_state.utxo(*outpoint).is_none_or(|utxo| {
+                        utxo.state
+                            != cdk_common::federation::FederationWalletUtxoState::Reserved
+                    })
+                }) {
+                    return Err(Error::Internal);
+                }
+            }
+            FederationBarkRecoveryMutation::Publish {
+                package_set,
+                registered_operation_id,
+                publication,
+            } => {
+                let expected = FederationBarkCpfpPublication::new(
+                    &package_set,
+                    publication.signed_children.clone(),
+                )?;
+                if publication != expected {
+                    return Err(Error::Internal);
+                }
+                let outpoints = package_set
+                    .packages
+                    .iter()
+                    .flat_map(|package| &package.recovery_inputs)
+                    .map(|input| input.outpoint)
+                    .collect::<Vec<_>>();
+                if recovery_state.publish(
+                    &package_set,
+                    registered_operation_id,
+                    entry.operation_id,
+                )? {
+                    chain_state.spend_reserved_utxos(&outpoints)?;
+                } else if outpoints.iter().any(|outpoint| {
+                    chain_state.utxo(*outpoint).is_none_or(|utxo| {
+                        utxo.state != cdk_common::federation::FederationWalletUtxoState::Spent
+                    })
+                }) {
+                    return Err(Error::Internal);
+                }
+            }
+        }
+        transaction
+            .kv_write(
+                CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
+                CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
+                CHAIN_OBSERVATION_STATE_KEY,
+                &chain_state.to_bytes()?,
+            )
+            .await?;
+        transaction
+            .kv_write(
+                CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
+                FEDERATION_BARK_RECOVERY_SECONDARY_NAMESPACE,
+                FEDERATION_BARK_RECOVERY_STATE_KEY,
+                &recovery_state.to_bytes()?,
+            )
+            .await?;
         Ok(())
     }
 

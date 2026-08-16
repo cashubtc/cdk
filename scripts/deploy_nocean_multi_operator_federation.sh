@@ -26,6 +26,7 @@ WALLET_SESSION="${WALLET_SESSION:-cdk-iroh-fed-wallet}"
 REQUIRE_UNIQUE_MACHINES="${REQUIRE_UNIQUE_MACHINES:-1}"
 STOP_LEGACY_SESSION="${STOP_LEGACY_SESSION:-0}"
 STOP_PRIOR_MULTI_OPERATOR_SESSIONS="${STOP_PRIOR_MULTI_OPERATOR_SESSIONS:-0}"
+MINTD_ONLY="${MINTD_ONLY:-0}"
 PRIOR_SESSION_PREFIX="${PRIOR_SESSION_PREFIX:-cdk-fed-operator}"
 STATUS_TIMEOUT_SECS="${STATUS_TIMEOUT_SECS:-1800}"
 STATUS_POLL_SECS="${STATUS_POLL_SECS:-3}"
@@ -106,6 +107,8 @@ Important overrides:
   STOP_LEGACY_SESSION      Stop cdk-federation before taking its public ports.
   STOP_PRIOR_MULTI_OPERATOR_SESSIONS
                             Stop PRIOR_SESSION_PREFIX-op-1..5 before startup.
+  MINTD_ONLY                Build and install only cdk-mintd; skip all
+                            server-side CLI, TUI, and wallet-smoke artifacts.
   PRIOR_SESSION_PREFIX     Previous operator session prefix to stop.
   PUBLIC_TRANSPORT         Must be iroh for this all-Iroh drill.
   FEDERATION_AMOUNTS       Comma-separated BLS denominations (default: all 64
@@ -377,6 +380,7 @@ build_linux_binaries() {
     docker run --rm \
         --platform "$DOCKER_PLATFORM" \
         --env "RUSTUP_TOOLCHAIN=$rust_version" \
+        --env "MINTD_ONLY=$MINTD_ONLY" \
         --mount "type=bind,src=$REPO_ROOT,dst=/work" \
         --mount "type=bind,src=$BARK_REPO_ROOT,dst=/bark-cdk,readonly" \
         --mount "type=volume,src=$CARGO_REGISTRY_VOLUME,dst=/usr/local/cargo/registry" \
@@ -389,14 +393,18 @@ build_linux_binaries() {
             export CARGO_TARGET_DIR=/work/target/linux-x86_64
             cargo build --locked --release -p cdk-mintd \
                 --no-default-features \
-                --features sqlite,info-page,federation-bark,iroh,prometheus
-            cargo build --locked --release -p cdk-cli \
-                --no-default-features --features federation,iroh
-            cargo build --locked --release \
-                --manifest-path scripts/fed-cdk-tui/Cargo.toml
+                --features sqlite,info-page,federation-bdk,federation-bark,iroh,prometheus
+            if [[ "$MINTD_ONLY" != "1" ]]; then
+                cargo build --locked --release -p cdk-cli \
+                    --no-default-features --features federation,iroh
+                cargo build --locked --release \
+                    --manifest-path scripts/fed-cdk-tui/Cargo.toml
+            fi
             "$CARGO_TARGET_DIR/release/cdk-mintd" federation setup create --help >/dev/null
-            "$CARGO_TARGET_DIR/release/cdk-cli" federation add --help >/dev/null
-            "$CARGO_TARGET_DIR/release/fed-cdk-tui" check --help >/dev/null
+            if [[ "$MINTD_ONLY" != "1" ]]; then
+                "$CARGO_TARGET_DIR/release/cdk-cli" federation add --help >/dev/null
+                "$CARGO_TARGET_DIR/release/fed-cdk-tui" check --help >/dev/null
+            fi
         '
 }
 
@@ -404,12 +412,15 @@ install_operators() {
     local mintd="$BUILD_TARGET_DIR/release/cdk-mintd"
     local cli="$BUILD_TARGET_DIR/release/cdk-cli"
     local tui="$BUILD_TARGET_DIR/release/fed-cdk-tui"
-    local mintd_hash cli_hash tui_hash member host dir env_file command iroh_url
-    [[ -x "$mintd" && -x "$cli" && -x "$tui" ]] \
-        || die "Linux build did not produce every required binary"
+    local mintd_hash cli_hash="" tui_hash="" member host dir env_file command iroh_url
+    [[ -x "$mintd" ]] || die "Linux build did not produce cdk-mintd"
     mintd_hash="$(sha256_file "$mintd")"
-    cli_hash="$(sha256_file "$cli")"
-    tui_hash="$(sha256_file "$tui")"
+    if [[ "$MINTD_ONLY" != "1" ]]; then
+        [[ -x "$cli" && -x "$tui" ]] \
+            || die "Linux build did not produce every client binary"
+        cli_hash="$(sha256_file "$cli")"
+        tui_hash="$(sha256_file "$tui")"
+    fi
     for member in $(seq 1 "$MEMBERS"); do
         host="$(member_host "$member")"
         dir="$(operator_dir "$member")"
@@ -428,7 +439,7 @@ install_operators() {
                 "$dir/bin/cdk-mintd.upload" "$dir/bin/cdk-mintd.upload" "$dir/bin/cdk-mintd"
             ssh "${SSH_OPTIONS[@]}" "$host" "$command"
         fi
-        if ((member == 1)); then
+        if [[ "$MINTD_ONLY" != "1" ]] && ((member == 1)); then
             printf -v command \
                 'test -x %q && test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q' \
                 "$dir/bin/fed-cdk-tui" "$dir/bin/fed-cdk-tui" "$tui_hash"
@@ -451,25 +462,35 @@ install_operators() {
         IROH_URLS[$((member - 1))]="$iroh_url"
         env_file="$STAGING_DIR/operator-$member.env"
         write_operator_env "$member" "$env_file"
-        printf -v command \
-            'test -x %q && test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q' \
-            "$dir/bin/cdk-cli" "$dir/bin/cdk-cli" "$cli_hash"
-        if ! ssh "${SSH_OPTIONS[@]}" "$host" "$command"; then
-            scp_retry "$cli" "$host:$dir/bin/cdk-cli.upload"
+        if [[ "$MINTD_ONLY" != "1" ]]; then
             printf -v command \
-                'test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q && chmod 755 %q && mv %q %q' \
-                "$dir/bin/cdk-cli.upload" "$cli_hash" \
-                "$dir/bin/cdk-cli.upload" "$dir/bin/cdk-cli.upload" "$dir/bin/cdk-cli"
-            ssh "${SSH_OPTIONS[@]}" "$host" "$command"
+                'test -x %q && test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q' \
+                "$dir/bin/cdk-cli" "$dir/bin/cdk-cli" "$cli_hash"
+            if ! ssh "${SSH_OPTIONS[@]}" "$host" "$command"; then
+                scp_retry "$cli" "$host:$dir/bin/cdk-cli.upload"
+                printf -v command \
+                    'test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q && chmod 755 %q && mv %q %q' \
+                    "$dir/bin/cdk-cli.upload" "$cli_hash" \
+                    "$dir/bin/cdk-cli.upload" "$dir/bin/cdk-cli.upload" "$dir/bin/cdk-cli"
+                ssh "${SSH_OPTIONS[@]}" "$host" "$command"
+            fi
         fi
         scp_retry "$OPERATOR_SCRIPT" \
             "$host:$dir/scripts/nocean_federation_operator.sh.upload"
-        scp_retry "$WALLET_SCRIPT" \
-            "$host:$dir/scripts/nocean_federation_wallet_smoke.sh.upload"
+        if [[ "$MINTD_ONLY" != "1" ]]; then
+            scp_retry "$WALLET_SCRIPT" \
+                "$host:$dir/scripts/nocean_federation_wallet_smoke.sh.upload"
+        fi
         scp_retry "$env_file" "$host:$dir/operator.env.upload"
-        printf -v command \
-            'set -eu; cd %q; chmod 755 scripts/*.upload; chmod 600 operator.env.upload; mv scripts/nocean_federation_operator.sh.upload scripts/nocean_federation_operator.sh; mv scripts/nocean_federation_wallet_smoke.sh.upload scripts/nocean_federation_wallet_smoke.sh; mv operator.env.upload operator.env' \
-            "$dir"
+        if [[ "$MINTD_ONLY" == "1" ]]; then
+            printf -v command \
+                'set -eu; cd %q; chmod 755 scripts/nocean_federation_operator.sh.upload; chmod 600 operator.env.upload; mv scripts/nocean_federation_operator.sh.upload scripts/nocean_federation_operator.sh; mv operator.env.upload operator.env' \
+                "$dir"
+        else
+            printf -v command \
+                'set -eu; cd %q; chmod 755 scripts/*.upload; chmod 600 operator.env.upload; mv scripts/nocean_federation_operator.sh.upload scripts/nocean_federation_operator.sh; mv scripts/nocean_federation_wallet_smoke.sh.upload scripts/nocean_federation_wallet_smoke.sh; mv operator.env.upload operator.env' \
+                "$dir"
+        fi
         ssh "${SSH_OPTIONS[@]}" "$host" "$command"
         remote_operator "$member" validate
     done
@@ -609,11 +630,20 @@ verify_public_config() {
         (.keysets[0].aggregate_keys | keys | sort)
     ' "$public_copy" >/dev/null \
         || die "public config does not contain the requested BLS denominations"
-    jq -e --arg network "$NETWORK" --arg ark "$BARK_ARK_SERVER_PUBLIC_KEY" \
-        '.frost_wallet.bark_application.network == $network and
-         .frost_wallet.bark_application.ark_server_public_key == $ark' \
+    jq -e --arg network "$NETWORK" --arg ark "$BARK_ARK_SERVER_PUBLIC_KEY" '
+        .frost_wallet.version == 3 and
+        .frost_wallet.cdk_onchain_application.network == $network and
+        ((.frost_wallet.extension_applications // {}) | length) == 2 and
+        ([.frost_wallet.extension_applications[].configuration] | any(
+            .network == $network and .ark_server_public_key == $ark
+        )) and
+        ([.frost_wallet.extension_applications[].configuration] | any(
+            .network == $network and .minimum_confirmations == 1 and
+            .fee_policy_version == 1
+        ))
+    ' \
         "$public_copy" >/dev/null \
-        || die "public config does not contain the accepted Bark Signet application"
+        || die "public config does not contain independent BDK, Bark custody, and Bark recovery applications"
 }
 
 verify_runtime_consensus() {
@@ -670,7 +700,8 @@ write_report() {
     mkdir -p "$(dirname "$REPORT_FILE")"
     jq -n \
         --arg revision "$revision" \
-        --argjson source_dirty "$source_dirty" \
+    --argjson source_dirty "$source_dirty" \
+        --argjson mintd_only "$MINTD_ONLY" \
         --arg topology "$topology_class" \
         --argjson members "$MEMBERS" \
         --argjson threshold "$THRESHOLD" \
@@ -737,11 +768,12 @@ write_report() {
                 encrypted_operator_local_backup_restore: true
             },
             wallet_smoke: {
-                federation_import_over_iroh: true,
-                threshold_mint_info_over_iroh: true,
+                federation_import_over_iroh: ($mintd_only == 0),
+                threshold_mint_info_over_iroh: ($mintd_only == 0),
                 advertised_payment_methods: ["bolt11", "onchain"],
                 empty_balance: true,
-                paid_operation: false
+                paid_operation: false,
+                skipped_for_mintd_only: ($mintd_only == 1)
             },
             timing_seconds: {dkg: $dkg_seconds, total: $total_seconds},
             resources: {
@@ -798,6 +830,8 @@ done
     || die "STOP_LEGACY_SESSION must be 0 or 1"
 [[ "$STOP_PRIOR_MULTI_OPERATOR_SESSIONS" == "0" || "$STOP_PRIOR_MULTI_OPERATOR_SESSIONS" == "1" ]] \
     || die "STOP_PRIOR_MULTI_OPERATOR_SESSIONS must be 0 or 1"
+[[ "$MINTD_ONLY" == "0" || "$MINTD_ONLY" == "1" ]] \
+    || die "MINTD_ONLY must be 0 or 1"
 [[ "$REMOTE_ROOT" =~ ^[A-Za-z0-9._/-]+$ && "$REMOTE_ROOT" != /* ]] \
     || die "REMOTE_ROOT must be a safe relative path"
 [[ "/$REMOTE_ROOT/" != *"/../"* ]] || die "REMOTE_ROOT must not contain '..'"
@@ -911,23 +945,25 @@ wait_for_public_runtime
 verify_runtime_consensus
 verify_http_listeners_disabled
 
-printf 'Running the normal federation wallet smoke in its own tmux session...\n'
-remote_wallet 1 session-run-wait smoke
+if [[ "$MINTD_ONLY" != "1" ]]; then
+    printf 'Running the normal federation wallet smoke in its own tmux session...\n'
+    remote_wallet 1 session-run-wait smoke
 
-printf 'Exercising a one-member outage and catch-up...\n'
-remote_operator 5 service-stop
-wait_for_public_member 5 down
-remote_wallet 1 session-run-wait offline-operation
-remote_operator 5 service-start active runtime
-deadline=$((SECONDS + STATUS_TIMEOUT_SECS))
-while ((SECONDS < deadline)); do
-    if remote_operator 5 runtime-status >/dev/null 2>&1; then
-        break
-    fi
-    sleep "$STATUS_POLL_SECS"
-done
-remote_operator 5 runtime-status >/dev/null \
-    || die "restarted member did not catch up before the timeout"
+    printf 'Exercising a one-member outage and catch-up...\n'
+    remote_operator 5 service-stop
+    wait_for_public_member 5 down
+    remote_wallet 1 session-run-wait offline-operation
+    remote_operator 5 service-start active runtime
+    deadline=$((SECONDS + STATUS_TIMEOUT_SECS))
+    while ((SECONDS < deadline)); do
+        if remote_operator 5 runtime-status >/dev/null 2>&1; then
+            break
+        fi
+        sleep "$STATUS_POLL_SECS"
+    done
+    remote_operator 5 runtime-status >/dev/null \
+        || die "restarted member did not catch up before the timeout"
+fi
 
 printf 'Exercising coordinated restart plus operator-local encrypted backup/restore...\n'
 service_all stop

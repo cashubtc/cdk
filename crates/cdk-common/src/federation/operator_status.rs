@@ -230,7 +230,11 @@ impl FederationWalletOperatorStatus {
         addresses.validate()?;
         chain.validate()?;
         transactions.validate()?;
-        let application = &wallet.cdk_onchain_application;
+        let application = wallet.cdk_onchain_application.as_ref().ok_or_else(|| {
+            FederationError::FrostConfigurationInvalid {
+                reason: "CDK on-chain application is not registered".to_string(),
+            }
+        })?;
         let address_scope = FederationAddressAllocationScope {
             application_id: application.application_id,
             application_key_epoch: application.application_key_epoch,

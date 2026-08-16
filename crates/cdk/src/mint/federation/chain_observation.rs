@@ -94,32 +94,69 @@ impl Mint {
                             reason: "deposit requires an accepted FROST wallet config".to_string(),
                         }
                     })?;
-                    let application = &wallet.cdk_onchain_application;
-                    if application.application_id != observation.allocation.application_id
-                        || application.application_key_epoch
-                            != observation.allocation.application_key_epoch
-                    {
-                        return Err(
-                            cdk_common::federation::FederationError::ChainObservationInvalid {
-                                reason: "deposit references an unknown application epoch"
-                                    .to_string(),
-                            }
-                            .into(),
-                        );
-                    }
-                    let expected_script = wallet.derive_cdk_onchain_script(
-                        public,
-                        observation.allocation.application_id,
-                        observation.allocation.application_key_epoch,
-                        observation.allocation.keychain,
-                        observation.allocation.derivation_index,
-                    )?;
+                    let cdk_application = wallet.cdk_onchain_application.as_ref().filter(
+                        |application| {
+                            application.application_id
+                                == observation.allocation.application_id
+                                && application.application_key_epoch
+                                    == observation.allocation.application_key_epoch
+                        },
+                    );
+                    let expected = cdk_application
+                        .map(|application| {
+                            wallet
+                                .derive_cdk_onchain_script(
+                                    public,
+                                    observation.allocation.application_id,
+                                    observation.allocation.application_key_epoch,
+                                    observation.allocation.keychain,
+                                    observation.allocation.derivation_index,
+                                )
+                                .map(|script| {
+                                    (
+                                        script,
+                                        application.confirmation_policy.minimum_confirmations,
+                                    )
+                                })
+                        })
+                        .transpose()?;
+                    #[cfg(feature = "federation-bark")]
+                    let expected = match expected {
+                        Some(expected) => Some(expected),
+                        None => cdk_federation_bark::federation_bark_recovery_application(public)?
+                            .filter(|application| {
+                                application.application_id()
+                                    == observation.allocation.application_id
+                                    && application.application_key_epoch()
+                                        == observation.allocation.application_key_epoch
+                            })
+                            .map(|application| {
+                                application
+                                    .derive_script(
+                                        public,
+                                        &wallet.root,
+                                        observation.allocation.keychain
+                                            == cdk_common::federation::FederationAddressKeychain::Internal,
+                                        observation.allocation.derivation_index,
+                                    )
+                                    .map(|script| {
+                                        (script, application.minimum_confirmations())
+                                    })
+                            })
+                            .transpose()?,
+                    };
+                    let (expected_script, minimum_confirmations) = expected.ok_or_else(|| {
+                        cdk_common::federation::FederationError::ChainObservationInvalid {
+                            reason: "deposit references an unknown descriptor application epoch"
+                                .to_string(),
+                        }
+                    })?;
                     state.apply_deposit(
                         observation,
                         allocation,
                         &expected_script,
                         required_observers,
-                        application.confirmation_policy.minimum_confirmations,
+                        minimum_confirmations,
                         entry.operation_id,
                         entry.index,
                     )?

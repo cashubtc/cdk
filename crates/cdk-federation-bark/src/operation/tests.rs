@@ -239,6 +239,7 @@ fn signing_retry_transition_is_canonical_and_preserves_action_identity() {
         plan_operation_id,
         predecessor,
         &plan,
+        plan.actor,
         2,
         vec![member(2), member(3)],
     )
@@ -247,12 +248,28 @@ fn signing_retry_transition_is_canonical_and_preserves_action_identity() {
         plan_operation_id,
         predecessor,
         &plan,
+        plan.actor,
         2,
         vec![member(2), member(3)],
     )
     .expect("exact retry replay");
+    let fallback = FederationBarkActionTransition::signing_attempt_advanced(
+        plan_operation_id,
+        predecessor,
+        &plan,
+        member(2),
+        2,
+        vec![member(2), member(3)],
+    )
+    .expect("actor replacement transition");
 
     assert_eq!(first, replay);
+    assert_eq!(fallback.actor, member(2));
+    assert_ne!(fallback.result_hash, first.result_hash);
+    assert_eq!(
+        FederationBarkOperation::ActionTransition(fallback).claimed_author(),
+        Some(member(2)),
+    );
     assert_eq!(first.external_id, plan.external_id);
     assert_eq!(
         first.request_hash,
@@ -1012,6 +1029,7 @@ fn predecessor_conflicts_still_reject_same_lineage_forks() {
         plan_operation_id,
         predecessor,
         &plan,
+        plan.actor,
         2,
         vec![member(2), member(3)],
     )
@@ -1020,6 +1038,7 @@ fn predecessor_conflicts_still_reject_same_lineage_forks() {
         plan_operation_id,
         predecessor,
         &plan,
+        plan.actor,
         3,
         vec![member(3), member(4)],
     )
@@ -1032,6 +1051,53 @@ fn predecessor_conflicts_still_reject_same_lineage_forks() {
     assert!(journal
         .append(envelope(FederationBarkOperation::ActionTransition(second)))
         .is_err());
+}
+
+#[test]
+fn accepted_actor_replacement_preserves_phase_and_changes_only_executor_attempt() {
+    let plan = refresh_plan();
+    let mut journal = InMemoryFederationJournal::new();
+    let plan_entry = match journal
+        .append(envelope(FederationBarkOperation::ActionPlan(plan.clone())))
+        .expect("append refresh plan")
+    {
+        FederationJournalAppendOutcome::Appended(entry)
+        | FederationJournalAppendOutcome::Duplicate(entry) => entry,
+    };
+    let action = crate::FederationBarkActionRecord::new(
+        &plan_entry,
+        &FederationBarkOperation::ActionPlan(plan.clone()),
+    )
+    .expect("initial action projection");
+    let retry = FederationBarkActionTransition::signing_attempt_advanced(
+        plan_entry.operation_id,
+        action.latest_operation_id,
+        &plan,
+        member(2),
+        2,
+        vec![member(2), member(3)],
+    )
+    .expect("actor replacement");
+    let retry_operation = FederationBarkOperation::ActionTransition(retry);
+    let retry_entry = match journal
+        .append(envelope(retry_operation.clone()))
+        .expect("append actor replacement")
+    {
+        FederationJournalAppendOutcome::Appended(entry)
+        | FederationJournalAppendOutcome::Duplicate(entry) => entry,
+    };
+    let advanced = action
+        .advanced(&retry_entry, &retry_operation)
+        .expect("advance action projection");
+
+    assert_eq!(advanced.actor, member(2));
+    assert_eq!(advanced.attempt, 2);
+    assert_eq!(
+        advanced.signing_retry_phase,
+        Some(FederationBarkSemanticPhase::RefreshPlanned)
+    );
+    assert_eq!(advanced.plan_operation_id, Some(plan_entry.operation_id));
+    assert_eq!(advanced.action_id, plan.action_id);
 }
 
 #[test]
@@ -1062,6 +1128,7 @@ fn objective_payment_success_can_be_published_by_an_authenticated_fallback() {
         operation_id(91),
         operation_id(92),
         &plan,
+        plan.actor,
         2,
         vec![member(2), member(3)],
     )

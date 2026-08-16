@@ -19,10 +19,7 @@ use cdk_frost_bip32::{
     application_chain_code, application_registration_for_epoch, FrostBip32,
     APPLICATION_DERIVATION_VERSION,
 };
-use serde::de::{MapAccess, Visitor};
-use serde::ser::{Error as _, SerializeMap};
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::value::RawValue;
 
 use super::{
     append_bytes, FederationAddressKeychain, FederationCdkOnchainFrostAuthorization,
@@ -33,9 +30,8 @@ use super::{
 const ROOT_CONFIG_VERSION: u16 = 2;
 const ROOT_PRIVATE_CONFIG_VERSION: u16 = 1;
 const APPLICATION_CONFIG_VERSION: u16 = 1;
-const WALLET_CONFIG_VERSION: u16 = 1;
+const WALLET_CONFIG_VERSION: u16 = 3;
 const EXTENSION_APPLICATION_CONFIG_VERSION: u16 = 1;
-const EXTENSION_WALLET_CONFIG_VERSION: u16 = 2;
 const CONFIRMATION_POLICY_VERSION: u16 = 1;
 const SEALED_STORAGE_VERSION: u16 = 1;
 const ROOT_CONFIG_DIGEST_DOMAIN: &[u8] = b"cdk/federation/frost-root-config/v1";
@@ -637,84 +633,6 @@ impl FederationFrostExtensionApplicationConfig {
     }
 }
 
-/// Opaque legacy application registration retained byte-for-byte during an upgrade.
-///
-/// The generic layer validates the common FROST registration metadata but does
-/// not interpret application-owned fields. Keeping the raw JSON also preserves
-/// the signed public-config digest while an application crate decodes its own
-/// previous schema.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct FederationFrostLegacyExtensionApplicationConfig(Box<RawValue>);
-
-impl PartialEq for FederationFrostLegacyExtensionApplicationConfig {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.get() == other.0.get()
-    }
-}
-
-impl Eq for FederationFrostLegacyExtensionApplicationConfig {}
-
-#[derive(Deserialize)]
-struct FederationFrostLegacyExtensionApplicationMetadata {
-    version: u16,
-    application_id: FederationFrostApplicationId,
-    application_key_epoch: u64,
-    root_key_epoch: u64,
-    derivation_version: u16,
-    authorization_policy: [u8; 32],
-    threshold: u16,
-    #[serde(with = "point_map_serde")]
-    verification_shares: BTreeMap<MemberId, [u8; 33]>,
-    #[serde(with = "point_serde")]
-    derived_group_key: [u8; 33],
-    #[serde(flatten)]
-    application_configuration: BTreeMap<String, serde_json::Value>,
-}
-
-impl FederationFrostLegacyExtensionApplicationConfig {
-    /// Decode the complete legacy value in the owning application crate.
-    pub fn decode<T>(&self) -> Result<T>
-    where
-        T: serde::de::DeserializeOwned,
-    {
-        serde_json::from_str(self.0.get()).map_err(FederationError::from)
-    }
-
-    fn extension(&self) -> Result<FederationFrostExtensionApplicationConfig> {
-        let legacy: FederationFrostLegacyExtensionApplicationMetadata = self.decode()?;
-        Ok(FederationFrostExtensionApplicationConfig {
-            version: legacy.version,
-            application_id: legacy.application_id,
-            application_key_epoch: legacy.application_key_epoch,
-            root_key_epoch: legacy.root_key_epoch,
-            derivation_version: legacy.derivation_version,
-            authorization_policy: legacy.authorization_policy,
-            threshold: legacy.threshold,
-            verification_shares: legacy.verification_shares,
-            derived_group_key: legacy.derived_group_key,
-            configuration: serde_json::to_value(legacy.application_configuration)?,
-        })
-    }
-
-    fn validate(
-        &self,
-        federation: &FederationConfig,
-        root: &FederationFrostRootPublicConfig,
-    ) -> Result<()> {
-        let extension = self.extension()?;
-        match extension.configuration.as_object() {
-            Some(configuration) if !configuration.is_empty() => {}
-            Some(_) | None => {
-                return Err(invalid_config(
-                    "legacy extension application configuration is empty",
-                ));
-            }
-        }
-        extension.validate(federation, root)
-    }
-}
-
 /// Reviewed CDK on-chain application adapter for the generic FROST key manager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FederationCdkOnchainFrostAuthorizationAdapter {
@@ -912,128 +830,20 @@ impl FederationFrostApplicationConfig {
 }
 
 /// Complete public reusable-root and CDK application configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationFrostWalletConfig {
     /// Aggregate schema version.
     pub version: u16,
     /// Immutable FROST root produced by the initial dual DKG.
     pub root: FederationFrostRootPublicConfig,
-    /// Immutable CDK on-chain application derived from the root.
-    pub cdk_onchain_application: FederationFrostApplicationConfig,
+    /// Optional immutable CDK on-chain payment application derived from the root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cdk_onchain_application: Option<FederationFrostApplicationConfig>,
     /// Feature-gated application registrations derived from the same root.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extension_applications:
         BTreeMap<FederationFrostApplicationId, FederationFrostExtensionApplicationConfig>,
-    /// Opaque legacy registrations accepted only for byte-preserving upgrades.
-    legacy_extension_applications:
-        BTreeMap<String, FederationFrostLegacyExtensionApplicationConfig>,
-}
-
-impl Serialize for FederationFrostWalletConfig {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let extension_fields = usize::from(!self.extension_applications.is_empty());
-        let mut map = serializer.serialize_map(Some(
-            3 + extension_fields + self.legacy_extension_applications.len(),
-        ))?;
-        map.serialize_entry("version", &self.version)?;
-        map.serialize_entry("root", &self.root)?;
-        map.serialize_entry("cdk_onchain_application", &self.cdk_onchain_application)?;
-        for (field, application) in &self.legacy_extension_applications {
-            let normalized: serde_json::Value =
-                serde_json::from_str(application.0.get()).map_err(S::Error::custom)?;
-            map.serialize_entry(field, &normalized)?;
-        }
-        if !self.extension_applications.is_empty() {
-            map.serialize_entry("extension_applications", &self.extension_applications)?;
-        }
-        map.end()
-    }
-}
-
-struct FederationFrostWalletConfigVisitor;
-
-impl<'de> Visitor<'de> for FederationFrostWalletConfigVisitor {
-    type Value = FederationFrostWalletConfig;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a FROST wallet configuration")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut version = None;
-        let mut root = None;
-        let mut cdk_onchain_application = None;
-        let mut extension_applications = None;
-        let mut legacy_extension_applications = BTreeMap::new();
-        while let Some(field) = map.next_key::<String>()? {
-            match field.as_str() {
-                "version" => read_once(&mut version, &field, &mut map)?,
-                "root" => read_once(&mut root, &field, &mut map)?,
-                "cdk_onchain_application" => {
-                    read_once(&mut cdk_onchain_application, &field, &mut map)?;
-                }
-                "extension_applications" => {
-                    read_once(&mut extension_applications, &field, &mut map)?;
-                }
-                _ if field.ends_with("_application") => {
-                    let application = map.next_value()?;
-                    if legacy_extension_applications
-                        .insert(field.clone(), application)
-                        .is_some()
-                    {
-                        return Err(de::Error::custom(format!("duplicate field {field}")));
-                    }
-                }
-                _ => return Err(de::Error::unknown_field(&field, FROST_WALLET_FIELDS)),
-            }
-        }
-        Ok(FederationFrostWalletConfig {
-            version: version.ok_or_else(|| de::Error::missing_field("version"))?,
-            root: root.ok_or_else(|| de::Error::missing_field("root"))?,
-            cdk_onchain_application: cdk_onchain_application
-                .ok_or_else(|| de::Error::missing_field("cdk_onchain_application"))?,
-            extension_applications: extension_applications.unwrap_or_default(),
-            legacy_extension_applications,
-        })
-    }
-}
-
-const FROST_WALLET_FIELDS: &[&str] = &[
-    "version",
-    "root",
-    "cdk_onchain_application",
-    "extension_applications",
-    "<application>_application",
-];
-
-fn read_once<'de, A, T>(
-    destination: &mut Option<T>,
-    field: &str,
-    map: &mut A,
-) -> std::result::Result<(), A::Error>
-where
-    A: MapAccess<'de>,
-    T: Deserialize<'de>,
-{
-    if destination.is_some() {
-        return Err(de::Error::custom(format!("duplicate field {field}")));
-    }
-    *destination = Some(map.next_value()?);
-    Ok(())
-}
-
-impl<'de> Deserialize<'de> for FederationFrostWalletConfig {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_map(FederationFrostWalletConfigVisitor)
-    }
 }
 
 impl FederationFrostWalletConfig {
@@ -1041,35 +851,17 @@ impl FederationFrostWalletConfig {
     pub fn new(
         federation: &FederationConfig,
         root: FederationFrostRootPublicConfig,
-        application: FederationFrostApplicationConfig,
-    ) -> Result<Self> {
-        let config = Self {
-            version: WALLET_CONFIG_VERSION,
-            root,
-            cdk_onchain_application: application,
-            extension_applications: BTreeMap::new(),
-            legacy_extension_applications: BTreeMap::new(),
-        };
-        config.validate(federation)?;
-        Ok(config)
-    }
-
-    /// Construct an aggregate config with separately owned application registrations.
-    pub fn new_with_extensions(
-        federation: &FederationConfig,
-        root: FederationFrostRootPublicConfig,
-        cdk_onchain_application: FederationFrostApplicationConfig,
+        cdk_onchain_application: Option<FederationFrostApplicationConfig>,
         extension_applications: BTreeMap<
             FederationFrostApplicationId,
             FederationFrostExtensionApplicationConfig,
         >,
     ) -> Result<Self> {
         let config = Self {
-            version: EXTENSION_WALLET_CONFIG_VERSION,
+            version: WALLET_CONFIG_VERSION,
             root,
             cdk_onchain_application,
             extension_applications,
-            legacy_extension_applications: BTreeMap::new(),
         };
         config.validate(federation)?;
         Ok(config)
@@ -1077,22 +869,29 @@ impl FederationFrostWalletConfig {
 
     /// Validate the immutable root and application derivation invariants.
     pub fn validate(&self, federation: &FederationConfig) -> Result<()> {
-        let expected_version = if self.extension_applications.is_empty()
-            && self.legacy_extension_applications.is_empty()
-        {
-            WALLET_CONFIG_VERSION
-        } else {
-            EXTENSION_WALLET_CONFIG_VERSION
-        };
-        if self.version != expected_version {
+        if self.version != WALLET_CONFIG_VERSION {
             return Err(invalid_config("unsupported FROST wallet config"));
         }
         self.root.validate(federation)?;
-        if self.cdk_onchain_application.root_key_epoch != self.root.root_key_epoch {
-            return Err(invalid_config("application references an unknown root"));
+        if self.cdk_onchain_application.is_none() && self.extension_applications.is_empty() {
+            return Err(invalid_config(
+                "FROST wallet config has no registered applications",
+            ));
         }
-        self.cdk_onchain_application
-            .validate(federation, &self.root)?;
+        if let Some(application) = &self.cdk_onchain_application {
+            if application.root_key_epoch != self.root.root_key_epoch {
+                return Err(invalid_config("application references an unknown root"));
+            }
+            if self
+                .extension_applications
+                .contains_key(&application.application_id)
+            {
+                return Err(invalid_config(
+                    "CDK application ID overlaps an extension application",
+                ));
+            }
+            application.validate(federation, &self.root)?;
+        }
         for (application_id, application) in &self.extension_applications {
             if *application_id != application.application_id {
                 return Err(invalid_config(
@@ -1100,15 +899,6 @@ impl FederationFrostWalletConfig {
                 ));
             }
             application.validate(federation, &self.root)?;
-        }
-        for application in self.legacy_extension_applications.values() {
-            application.validate(federation, &self.root)?;
-            let application_id = application.extension()?.application_id;
-            if self.extension_applications.contains_key(&application_id) {
-                return Err(invalid_config(
-                    "application is registered in both legacy and extension fields",
-                ));
-            }
         }
         Ok(())
     }
@@ -1134,15 +924,6 @@ impl FederationFrostWalletConfig {
         self.extension_applications.get(&application_id)
     }
 
-    /// Find one byte-preserved application registration from a previous schema.
-    #[must_use]
-    pub fn legacy_extension_application(
-        &self,
-        field_name: &str,
-    ) -> Option<&FederationFrostLegacyExtensionApplicationConfig> {
-        self.legacy_extension_applications.get(field_name)
-    }
-
     /// Derive the exact accepted P2TR script for one CDK application address.
     pub fn derive_cdk_onchain_script(
         &self,
@@ -1152,7 +933,10 @@ impl FederationFrostWalletConfig {
         keychain: FederationAddressKeychain,
         index: u32,
     ) -> Result<bitcoin::ScriptBuf> {
-        let application = &self.cdk_onchain_application;
+        let application = self
+            .cdk_onchain_application
+            .as_ref()
+            .ok_or_else(|| invalid_config("CDK application is not registered"))?;
         if application.application_id != application_id
             || application.application_key_epoch != application_key_epoch
         {

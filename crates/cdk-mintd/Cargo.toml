@@ -28,7 +28,9 @@ redis = ["cdk-axum/redis"]
 prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-axum/prometheus"]
 info-page = ["cdk-axum/info-page"]
 iroh = ["cdk/iroh", "cdk-axum/iroh", "dep:cdk-iroh"]
-federation = ["bdk", "cdk/federation", "cdk/wallet", "cdk-common/federation", "cdk-axum/federation", "cdk-sqlite?/federation", "cdk-sqlite?/wallet", "cdk-postgres?/federation"]
+federation = ["cdk/federation", "cdk/wallet", "cdk-common/federation", "cdk-axum/federation", "cdk-sqlite?/federation", "cdk-sqlite?/wallet", "cdk-postgres?/federation"]
+# Federated on-chain payments are independent from the base consensus runtime.
+federation-bdk = ["federation", "bdk", "cdk-axum/federation-bdk"]
 # Federated Bark is deliberately separate so ordinary federation builds do not
 # resolve or compile the Bark dependency graph.
 federation-bark = ["federation", "dep:cdk-bark", "dep:cdk-federation-bark", "cdk/federation-bark", "cdk-bark/federation-bark", "cdk-axum/federation-bark", "cdk-sqlite?/federation-bark", "cdk-postgres?/federation-bark"]

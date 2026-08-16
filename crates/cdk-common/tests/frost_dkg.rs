@@ -250,8 +250,13 @@ fn frost_wallet_configs_round_trip_derive_addresses_and_reject_wrong_bindings() 
         1,
     )
     .expect("application config");
-    let wallet = FederationFrostWalletConfig::new(&config, root.clone(), application.clone())
-        .expect("wallet config");
+    let wallet = FederationFrostWalletConfig::new(
+        &config,
+        root.clone(),
+        Some(application.clone()),
+        BTreeMap::new(),
+    )
+    .expect("wallet config");
     assert_eq!(
         root.digest().expect("root digest vector"),
         [
@@ -262,8 +267,8 @@ fn frost_wallet_configs_round_trip_derive_addresses_and_reject_wrong_bindings() 
     assert_eq!(
         wallet.digest().expect("wallet digest vector"),
         [
-            242, 165, 45, 177, 159, 4, 80, 180, 137, 163, 218, 25, 102, 135, 130, 195, 61, 147, 2,
-            65, 106, 8, 178, 169, 172, 187, 9, 137, 239, 219, 197, 61,
+            105, 51, 242, 231, 70, 109, 179, 43, 159, 180, 100, 249, 128, 232, 120, 44, 75, 200,
+            196, 186, 186, 112, 158, 246, 126, 136, 14, 111, 1, 46, 148, 212,
         ]
     );
     let base_digest = config.config_digest().expect("base config digest");
@@ -349,7 +354,7 @@ fn frost_wallet_configs_round_trip_derive_addresses_and_reject_wrong_bindings() 
         .is_err());
 
     assert_eq!(wallet.root, root);
-    assert_eq!(wallet.cdk_onchain_application, application);
+    assert_eq!(wallet.cdk_onchain_application, Some(application));
 
     let private_json = serde_json::to_string(&private).expect("private JSON");
     assert!(private_json.contains("encrypted_root_share"));

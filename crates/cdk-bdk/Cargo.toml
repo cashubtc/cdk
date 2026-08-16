@@ -12,9 +12,9 @@ readme = "README.md"
 
 [features]
 default = ["bitcoin-rpc", "electrum", "esplora"]
-bitcoin-rpc = ["dep:bdk_bitcoind_rpc"]
-electrum = ["dep:bdk_electrum"]
-esplora = ["dep:bdk_esplora"]
+bitcoin-rpc = ["dep:bdk_bitcoind_rpc", "cdk-bitcoin-wallet/bitcoin-rpc"]
+esplora = ["dep:bdk_esplora", "cdk-bitcoin-wallet/esplora"]
+electrum = ["cdk-bitcoin-wallet/electrum"]
 
 [dependencies]
 async-trait.workspace = true
@@ -23,6 +23,7 @@ bdk_bitcoind_rpc = { version = "0.22.0", default-features = false, optional = tr
 bdk_electrum = { version = "0.24.0", default-features = false, features = ["use-rustls-ring"], optional = true }
 bdk_esplora = { version = "0.22.1", default-features = false, features = ["async-https-rustls", "tokio"], optional = true }
 cdk-common = { workspace = true, features = ["mint"] }
+cdk-bitcoin-wallet = { workspace = true, features = ["payment-adapter"] }
 futures.workspace = true
 tokio.workspace = true 
 tokio-util.workspace = true

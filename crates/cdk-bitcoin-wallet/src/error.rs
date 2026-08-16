@@ -1,0 +1,291 @@
+//! Shared descriptor-wallet errors.
+
+use std::path::PathBuf;
+
+use cdk_common::CurrencyUnit;
+use thiserror::Error;
+use uuid::Uuid;
+
+/// CDK BDK onchain backend error
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Fee estimation failed
+    #[error("Fee estimation failed: {0}")]
+    FeeEstimationFailed(String),
+    /// Arithmetic overflow during fee estimation
+    #[error("Fee estimation overflow")]
+    FeeEstimationOverflow,
+    /// Fee estimation unavailable
+    #[error("Fee estimation unavailable")]
+    FeeEstimationUnavailable,
+    /// Wallet has no spendable UTXOs available for an onchain quote
+    #[error("No spendable UTXOs available for onchain payment quote")]
+    NoSpendableUtxos,
+    /// Start called but tasks are already running
+    #[error("Start called but background tasks are already running")]
+    AlreadyStarted,
+
+    /// Invalid backend configuration
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
+
+    /// Invalid public descriptor configuration
+    #[error("Invalid descriptor: {0}")]
+    InvalidDescriptor(String),
+
+    /// A persisted wallet database belongs to a different runtime namespace.
+    #[error("Wallet database namespace mismatch")]
+    WalletNamespaceMismatch,
+
+    /// The local federated wallet has not reached the required chain height.
+    #[error("Federated wallet chain view is not ready")]
+    FederatedWalletNotReady,
+
+    /// Local signing was attempted through a watch-only engine
+    #[error("Local signing is disabled for this watch-only wallet")]
+    LocalSigningDisabled,
+
+    /// An externally signed PSBT failed validation or finalization
+    #[error("Invalid external signature: {0}")]
+    ExternalSignature(String),
+
+    /// Unsupported payment type for onchain backend
+    #[error("Unsupported payment type for onchain backend")]
+    UnsupportedOnchain,
+
+    /// Wallet selected a `fee_index` outside the configured BDK fee options.
+    #[error("unknown fee_index {0}; expected one of the configured BDK fee options")]
+    UnknownFeeIndex(u32),
+
+    /// JSON error
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    /// Amount conversion error
+    #[error("Amount conversion error: {0}")]
+    AmountConversion(#[from] cdk_common::amount::Error),
+
+    /// A typed amount does not match the payment unit supplied to the backend.
+    #[error("Amount unit {actual} does not match payment unit {expected}")]
+    AmountUnitMismatch {
+        /// Unit supplied to the payment backend.
+        expected: CurrencyUnit,
+        /// Unit carried by the typed amount.
+        actual: CurrencyUnit,
+    },
+
+    /// An onchain payment amount cannot be represented as whole satoshis.
+    #[error("Onchain payment amount {amount_msat} msat is not a whole number of satoshis")]
+    FractionalSatoshiAmount {
+        /// Requested payment amount in millisatoshis.
+        amount_msat: u64,
+    },
+
+    /// Database error
+    #[error("Database error: {0}")]
+    Database(#[from] bdk_wallet::rusqlite::Error),
+
+    /// An existing-mint migration did not find the persisted BDK wallet.
+    #[error("Persisted BDK wallet database is missing at {path}")]
+    ExistingWalletMissing {
+        /// Expected BDK wallet database path.
+        path: PathBuf,
+    },
+
+    /// A BDK SQLite file exists but does not contain an initialized wallet.
+    #[error("Persisted BDK wallet database at {path} does not contain an initialized wallet")]
+    ExistingWalletNotInitialized {
+        /// BDK wallet database path.
+        path: PathBuf,
+    },
+
+    /// Wallet error
+    #[error("Wallet error: {0}")]
+    Wallet(String),
+
+    /// Bitcoin RPC error
+    #[cfg(feature = "bitcoin-rpc")]
+    #[error("Bitcoin RPC error: {0}")]
+    BitcoinRpc(#[from] bdk_bitcoind_rpc::bitcoincore_rpc::Error),
+
+    /// The Bitcoin Core chain tip could not be determined for a fresh wallet.
+    #[cfg(feature = "bitcoin-rpc")]
+    #[error("Failed to determine the Bitcoin Core chain tip for a fresh wallet: {source}")]
+    ChainTipFetchFailed {
+        /// Underlying Bitcoin Core RPC error.
+        #[source]
+        source: bdk_bitcoind_rpc::bitcoincore_rpc::Error,
+    },
+
+    /// The configured fresh-wallet rescan height is above the current chain tip.
+    #[error("Wallet rescan height {requested} is above the current chain tip {tip}")]
+    WalletRescanHeightTooHigh {
+        /// Configured rescan height.
+        requested: u32,
+        /// Current Bitcoin Core chain tip.
+        tip: u32,
+    },
+
+    /// Esplora error
+    #[error("Esplora error: {0}")]
+    Esplora(String),
+
+    /// Electrum error
+    #[cfg(feature = "electrum")]
+    #[error("Electrum error: {0}")]
+    Electrum(String),
+
+    /// Bip32 key derivation error
+    #[error("Bip32 key derivation error: {0}")]
+    Bip32(#[from] bdk_wallet::bitcoin::bip32::Error),
+
+    /// Key derivation error
+    #[error("Key derivation error: {0}")]
+    KeyDerivation(#[from] bdk_wallet::keys::KeyError),
+
+    /// Could not sign transaction
+    #[error("Could not sign transaction")]
+    CouldNotSign,
+
+    /// Path error
+    #[error("Path error")]
+    Path,
+
+    /// IO error
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// KV Store error
+    #[error("KV Store error: {0}")]
+    KvStore(#[from] cdk_common::database::Error),
+
+    /// Could not find matching output vout in transaction
+    #[error("Could not find matching output vout in transaction")]
+    VoutNotFound,
+
+    /// Send intent not found in storage
+    #[error("Send intent not found: {0}")]
+    SendIntentNotFound(Uuid),
+
+    /// Send batch not found in storage
+    #[error("Send batch not found: {0}")]
+    SendBatchNotFound(Uuid),
+
+    /// Send intent with quote id already exists in storage
+    #[error("Send intent already exists for quote id: {0}")]
+    DuplicateQuoteId(String),
+
+    /// Batch fee exceeds the combined max fee of all included intents
+    #[error("Batch fee {actual_fee} exceeds combined max fee {max_fee}")]
+    BatchFeeTooHigh {
+        /// Actual transaction fee in sats
+        actual_fee: u64,
+        /// Maximum combined fee from included intents
+        max_fee: u64,
+    },
+
+    /// Current fee estimate exceeds the max fee accepted by a melt quote.
+    #[error("Estimated fee {estimated_fee} exceeds max fee {max_fee}")]
+    EstimatedFeeTooHigh {
+        /// Current estimated fee reserve in sats
+        estimated_fee: u64,
+        /// Maximum fee accepted by the quote in sats
+        max_fee: u64,
+    },
+
+    /// No valid fee allocation exists for the batch
+    #[error("No valid fee allocation for batch")]
+    NoValidFeeAllocation,
+
+    /// Requested recipient output is below the dust limit for its script type
+    #[error("Requested output amount {amount} sats is below dust limit {dust_limit} sats")]
+    DustOutput {
+        /// Requested recipient amount in sats
+        amount: u64,
+        /// Minimum non-dust amount for the destination script in sats
+        dust_limit: u64,
+    },
+
+    /// Requested send amount is below the backend's configured minimum.
+    #[error("Requested send amount {amount} sats is below minimum {min} sats")]
+    AmountBelowMinimumSend {
+        /// Requested recipient amount in sats
+        amount: u64,
+        /// Configured minimum send amount in sats
+        min: u64,
+    },
+
+    /// Batch record is missing an output assignment for one of its member intents.
+    ///
+    /// This indicates a persistence invariant violation: every intent ID listed
+    /// in a Signed/Broadcast batch must have a corresponding assignment entry.
+    #[error("Batch {batch_id} is missing an output assignment for intent {intent_id}")]
+    BatchAssignmentMissing {
+        /// Batch that is missing the assignment
+        batch_id: Uuid,
+        /// Intent with no assignment entry
+        intent_id: Uuid,
+    },
+
+    /// Receive intent not found in storage
+    #[error("Receive intent not found: {0}")]
+    ReceiveIntentNotFound(Uuid),
+
+    /// Receive address not found in storage
+    #[error("Receive address not found: {0}")]
+    ReceiveAddressNotFound(String),
+
+    /// No unreserved receive address was found within the retry limit.
+    #[error("Could not reserve a fresh receive address after {attempts} attempts")]
+    ReceiveAddressReservationExhausted {
+        /// Number of addresses derived before giving up.
+        attempts: usize,
+    },
+
+    /// Database
+    #[error("Database error")]
+    BdkPersist,
+}
+
+#[cfg(feature = "payment-adapter")]
+impl From<Error> for cdk_common::payment::Error {
+    fn from(e: Error) -> Self {
+        Self::Onchain(Box::new(e))
+    }
+}
+
+impl Error {
+    /// Returns `true` when the error is a transient network / upstream
+    /// condition that is expected to resolve on retry.
+    ///
+    /// This is used by the sync supervisor to decide whether to continue
+    /// retrying on the next tick (transient) or to treat the failure as
+    /// part of the backoff/restart policy (non-transient).
+    pub fn is_transient(&self) -> bool {
+        match self {
+            // Chain-source I/O is always transient: network blips, reorg
+            // races, upstream 5xx, DNS/TLS timeouts, etc. The sync loop
+            // retries them on the next tick regardless of the specific
+            // sub-variant, so classifying the whole variant as transient
+            // is accurate for operational purposes.
+            #[cfg(feature = "bitcoin-rpc")]
+            Self::BitcoinRpc(_) => true,
+            #[cfg(feature = "electrum")]
+            Self::Electrum(_) => true,
+            Self::Esplora(_) => true,
+            Self::Io(e) => matches!(
+                e.kind(),
+                std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::NotConnected
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::Interrupted
+                    | std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::WouldBlock
+            ),
+            _ => false,
+        }
+    }
+}
