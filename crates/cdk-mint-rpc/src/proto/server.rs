@@ -23,13 +23,13 @@ use crate::keyset::keyset_service_server::{KeysetService, KeysetServiceServer};
 use crate::quote::quote_service_server::{QuoteService, QuoteServiceServer};
 use crate::wallet::wallet_service_server::{WalletService, WalletServiceServer};
 use crate::{
-    ContactInfo, GetInfoRequest, GetInfoResponse, GetQuoteTtlRequest, GetQuoteTtlResponse,
-    RotateNextKeysetRequest, RotateNextKeysetResponse, UpdateContactRequest,
+    ContactInfo, DynWalletInfoProvider, GetInfoRequest, GetInfoResponse, GetQuoteTtlRequest,
+    GetQuoteTtlResponse, RotateNextKeysetRequest, RotateNextKeysetResponse, UpdateContactRequest,
     UpdateDescriptionRequest, UpdateIconUrlRequest, UpdateMotdRequest, UpdateNameRequest,
     UpdateNut04QuoteRequest, UpdateNut04Request, UpdateNut05Request, UpdateQuoteTtlRequest,
-    UpdateResponse, UpdateTosUrlRequest, UpdateUrlRequest,
+    UpdateResponse, UpdateTosUrlRequest, UpdateUrlRequest, WalletAddressPage,
+    WalletTransactionPage,
 };
-use crate::{DynWalletInfoProvider, WalletAddressPage, WalletTransactionPage};
 
 const DEFAULT_TRANSACTION_LIMIT: u32 = 20;
 const MAX_TRANSACTION_LIMIT: u32 = 100;
