@@ -732,6 +732,7 @@ release m="":
     "-p cdk-redb"
     "-p cdk-signatory"
     "-p cdk-fake-wallet"
+    "-p cdk-nwc"
     "-p cdk"
     "-p cdk-supabase"
     "-p cdk-ffi"
