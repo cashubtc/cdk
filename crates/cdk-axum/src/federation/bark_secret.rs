@@ -63,13 +63,27 @@ where
                 *secret.as_bytes(),
             );
             async move {
-                self.client
-                    .prepare_bark_receive_secret(member, &request)
-                    .await
+                (
+                    member.member_id,
+                    self.client
+                        .prepare_bark_receive_secret(member, &request)
+                        .await,
+                )
             }
         }))
         .await;
-        acknowledgements.extend(results.into_iter().flatten());
+        for (member, result) in results {
+            match result {
+                Ok(acknowledgement) => acknowledgements.push(acknowledgement),
+                Err(error) => {
+                    tracing::warn!(
+                        member = %member,
+                        error = %error,
+                        "Bark receive-secret replication failed"
+                    );
+                }
+            }
+        }
         acknowledgements.sort_by_key(|acknowledgement| acknowledgement.member);
         if acknowledgements
             .windows(2)
