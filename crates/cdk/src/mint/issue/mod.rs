@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+use bitcoin::secp256k1::schnorr::Signature;
 use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
+use cdk_common::nutxx::{mint_quote_lookup_msg_to_sign, MAX_LOOKUP_PUBKEYS};
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions, CustomIncomingPaymentOptions,
     IncomingPaymentOptions, OnchainIncomingPaymentOptions, WaitPaymentResponse,
@@ -10,8 +12,9 @@ use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
 use cdk_common::{
     database, ensure_cdk, Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Error,
-    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteOnchainResponse, MintQuoteState,
-    MintRequest, MintResponse, NotificationPayload, PaymentMethod, PublicKey,
+    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteOnchainResponse, MintQuoteRequest,
+    MintQuoteResponse, MintQuoteState, MintRequest, MintResponse, NotificationPayload,
+    PaymentMethod, PublicKey,
 };
 use tracing::instrument;
 
@@ -19,8 +22,6 @@ use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
 use crate::Mint;
 
 mod auth;
-
-use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 
 /// Input enum to handle both single and batch mint formats (internal to CDK, not spec)
 #[derive(Debug, Clone)]
@@ -408,6 +409,73 @@ impl Mint {
         let result = async {
             let quotes = self.localstore.get_mint_quotes().await?;
             Ok(quotes)
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            metrics.record(result.is_ok());
+        }
+
+        result
+    }
+
+    /// Retrieves the mint quotes locked to a set of NUT-20 public keys [NUT-XX]
+    ///
+    /// Every pubkey must be accompanied by a signature proving control of the corresponding
+    /// private key; the request is rejected outright unless all of them verify.
+    ///
+    /// # Returns
+    /// * `Vec<MintQuoteResponse<QuoteId>>` - quotes locked to the requested pubkeys
+    /// * `Error` if any signature is missing or invalid, or database access fails
+    #[instrument(skip_all)]
+    pub async fn get_mint_quote_by_pubkey(
+        &self,
+        pubkeys: Vec<PublicKey>,
+        signatures: Vec<Signature>,
+    ) -> Result<Vec<MintQuoteResponse<QuoteId>>, Error> {
+        #[cfg(feature = "prometheus")]
+        let metrics = super::MintMetricGuard::new("mint_quotes_by_pubkeys");
+
+        // Anonymous callers reach this before any signature is checked, so bound the work a
+        // single request can ask for.
+        ensure_cdk!(
+            pubkeys.len() <= MAX_LOOKUP_PUBKEYS,
+            Error::BatchSizeExceeded {
+                actual: pubkeys.len(),
+                max: MAX_LOOKUP_PUBKEYS,
+            }
+        );
+
+        // NUT-XX: "The mint MUST reject the request unless every signature is valid." Checking
+        // the lengths match is what makes the zip below cover every pubkey.
+        ensure_cdk!(
+            pubkeys.len() == signatures.len(),
+            Error::SignatureMissingOrInvalid
+        );
+
+        let mint_pubkey = self.mint_info().await?.pubkey.ok_or(Error::MissingPubkey)?;
+
+        for (pubkey, signature) in pubkeys.iter().zip(signatures.iter()) {
+            // `verify` hashes its argument, so it takes the pre-image rather than the digest.
+            let msg = mint_quote_lookup_msg_to_sign(&mint_pubkey, pubkey);
+
+            pubkey.verify(&msg, signature).map_err(|e| {
+                tracing::error!("Failed to validate signature: {}", e);
+                Error::SignatureMissingOrInvalid
+            })?;
+        }
+
+        let result: Result<Vec<MintQuoteResponse<QuoteId>>, Error> = async {
+            let quotes = self.localstore.get_mint_quotes_by_pubkey(&pubkeys).await?;
+
+            // `TryFrom` is the shared conversion every other quote path uses; hand-rolling it
+            // here would drift the moment a response field is added.
+            quotes
+                .into_iter()
+                .map(MintQuoteResponse::try_from)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(Error::from)
         }
         .await;
 
