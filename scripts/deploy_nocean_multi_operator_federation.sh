@@ -297,7 +297,11 @@ wait_for_public_runtime() {
     while ((SECONDS < deadline)); do
         ready=0
         for member in $(seq 1 "$MEMBERS"); do
-            if remote_wallet 1 probe-url "$(public_mint_url "$member")" "$member" \
+            if [[ "$MINTD_ONLY" == "1" ]]; then
+                if remote_operator "$member" runtime-status >/dev/null 2>&1; then
+                    ready=$((ready + 1))
+                fi
+            elif remote_wallet 1 probe-url "$(public_mint_url "$member")" "$member" \
                 >/dev/null 2>&1; then
                 ready=$((ready + 1))
             fi
