@@ -191,8 +191,9 @@ jobs:
           # Remove workspace lints reference
           sed -i '/^\[lints\]/,/^$/s/^workspace = true//' cdk-kotlin/rust/Cargo.toml
 
-          # Add release profile
-          printf '\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-kotlin/rust/Cargo.toml
+          # Keep the symbol table until UniFFI has generated the Kotlin bindings.
+          # The build job strips the native library explicitly after generation.
+          printf '\n[profile.release]\nlto = true\nstrip = "debuginfo"\ncodegen-units = 1\n' >> cdk-kotlin/rust/Cargo.toml
 
           cat cdk-kotlin/gradle.properties
           echo "---"
