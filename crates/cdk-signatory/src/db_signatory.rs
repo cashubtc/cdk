@@ -15,18 +15,20 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
 use bitcoin::bip32::{DerivationPath, Xpriv};
+use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{self, Secp256k1};
 use cdk_common::database::MintKeyDatabaseTransaction;
 use cdk_common::dhke::{sign_message, verify_message};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
-use cdk_common::{database, Error, PublicKey};
+use cdk_common::{database, Error, PublicKey, SecretKey};
 use tokio::sync::{watch, Mutex};
 use tracing::instrument;
 
 use crate::common::{
     check_unit_string_collision, create_new_keyset, derivation_path_from_unit, init_keysets,
 };
+use crate::identity;
 use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
 
 /// Immutable in-memory view of the keysets, swapped atomically on every change.
@@ -72,6 +74,9 @@ pub struct DbSignatory {
     supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
     xpriv: Xpriv,
     xpub: PublicKey,
+    /// Private half of `xpub`, kept as the identity key that signs arbitrary
+    /// payloads. No keyset derives from it directly.
+    identity_key: SecretKey,
     /// Latest keyset snapshot, published on every reload (initial load and each
     /// rotation).
     keyset_updates: watch::Sender<SignatoryKeysets>,
@@ -97,6 +102,7 @@ impl DbSignatory {
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
 
         let xpub: PublicKey = xpriv.to_keypair(&secp_ctx).public_key().into();
+        let identity_key: SecretKey = xpriv.private_key.into();
         let (keyset_updates, _) = watch::channel(SignatoryKeysets {
             pubkey: xpub,
             keysets: vec![],
@@ -109,6 +115,7 @@ impl DbSignatory {
             custom_paths,
             supported_units,
             xpub,
+            identity_key,
             secp_ctx,
             xpriv,
             keyset_updates,
@@ -396,6 +403,11 @@ impl Signatory for DbSignatory {
             verify_message(&key_pair.secret_key, proof.c, proof.secret.as_bytes())?;
             Ok(())
         })
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn sign(&self, payload: Vec<u8>) -> Result<Signature, Error> {
+        identity::sign(&self.identity_key, &payload)
     }
 
     #[tracing::instrument(skip_all)]
@@ -726,6 +738,60 @@ mod test {
             "expected ExpiredKeyset error, got: {:?}",
             result
         );
+    }
+
+    #[tokio::test]
+    async fn sign_verifies_against_published_pubkey() {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let signatory = DbSignatory::new(
+            store,
+            b"test-seed-for-identity-signing",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .expect("DbSignatory::new");
+
+        let payload = b"an arbitrary stream of bytes".to_vec();
+        let signature = signatory.sign(payload.clone()).await.expect("sign");
+
+        let keysets = signatory.keysets().await.expect("keysets");
+        identity::verify(&keysets.pubkey, &payload, &signature)
+            .expect("signature must verify against the published pubkey");
+
+        assert!(
+            identity::verify(&keysets.pubkey, b"tampered", &signature).is_err(),
+            "a tampered payload must not verify"
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_key_is_stable_across_instances_with_the_same_seed() {
+        let seed = b"test-seed-for-stable-identity";
+        let make = || async {
+            let store = Arc::new(
+                cdk_sqlite::mint::memory::empty()
+                    .await
+                    .expect("in-memory db"),
+            );
+            DbSignatory::new(store, seed, Default::default(), Default::default())
+                .await
+                .expect("DbSignatory::new")
+        };
+
+        let first = make().await;
+        let second = make().await;
+
+        let payload = b"payload".to_vec();
+        let signature = first.sign(payload.clone()).await.expect("sign");
+        let peer_pubkey = second.keysets().await.expect("keysets").pubkey;
+
+        identity::verify(&peer_pubkey, &payload, &signature)
+            .expect("a peer with the same seed must hold the same identity key");
     }
 
     #[tokio::test]

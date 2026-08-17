@@ -2,6 +2,7 @@
 //! run the Signatory in another thread, isolated form the main CDK, communicating through messages
 use std::sync::Arc;
 
+use bitcoin::secp256k1::schnorr::Signature;
 use cdk_common::{BlindSignature, BlindedMessage, Error, Proof};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -16,6 +17,7 @@ enum Request {
         ),
     ),
     VerifyProof((Vec<Proof>, oneshot::Sender<Result<(), Error>>)),
+    Sign((Vec<u8>, oneshot::Sender<Result<Signature, Error>>)),
     Keysets(oneshot::Sender<Result<SignatoryKeysets, Error>>),
     SubscribeKeysets(oneshot::Sender<Result<watch::Receiver<SignatoryKeysets>, Error>>),
     RotateKeyset(
@@ -79,6 +81,12 @@ impl Service {
                         );
                     }
                 }
+                Request::Sign((payload, response)) => {
+                    let output = handler.sign(payload).await;
+                    if response.send(output).is_err() {
+                        tracing::error!("Error sending sign response: receiver dropped");
+                    }
+                }
                 Request::Keysets(response) => {
                     let output = handler.keysets().await;
                     if response.send(output).is_err() {
@@ -134,6 +142,17 @@ impl Signatory for Service {
     }
 
     #[tracing::instrument(skip_all)]
+    async fn sign(&self, payload: Vec<u8>) -> Result<Signature, Error> {
+        let (tx, rx) = oneshot::channel();
+        self.pipeline
+            .send(Request::Sign((payload, tx)))
+            .await
+            .map_err(|e| Error::SendError(e.to_string()))?;
+
+        rx.await.map_err(|e| Error::RecvError(e.to_string()))?
+    }
+
+    #[tracing::instrument(skip_all)]
     async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
         let (tx, rx) = oneshot::channel();
         self.pipeline
@@ -164,5 +183,38 @@ impl Signatory for Service {
             .map_err(|e| Error::SendError(e.to_string()))?;
 
         rx.await.map_err(|e| Error::RecvError(e.to_string()))?
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::db_signatory::DbSignatory;
+    use crate::identity;
+
+    #[tokio::test]
+    async fn sign_round_trips_through_the_actor() {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let inner = DbSignatory::new(
+            store,
+            b"test-seed-for-embedded-signing",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .expect("DbSignatory::new");
+
+        let service = Service::new(Arc::new(inner));
+
+        let payload = b"an arbitrary stream of bytes".to_vec();
+        let signature = service.sign(payload.clone()).await.expect("sign");
+
+        let pubkey = service.keysets().await.expect("keysets").pubkey;
+        identity::verify(&pubkey, &payload, &signature)
+            .expect("signature must verify against the published pubkey");
     }
 }
