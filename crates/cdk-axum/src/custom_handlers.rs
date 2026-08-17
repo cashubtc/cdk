@@ -104,11 +104,13 @@ async fn check_mint_quotes_for_route(
 ) -> Result<Vec<cdk::mint::MintQuoteResponse<QuoteId>>, cdk::Error> {
     #[cfg(feature = "federation")]
     if state.mint.federation_config().is_some() {
-        state
-            .federation
-            .payment_observer
-            .observe_mint_quotes(state, quote_ids)
-            .await?;
+        Box::pin(
+            state
+                .federation
+                .payment_observer
+                .observe_mint_quotes(state, quote_ids),
+        )
+        .await?;
         let mut responses = Vec::with_capacity(quote_ids.len());
         for quote_id in quote_ids {
             let quote = state
@@ -131,11 +133,13 @@ async fn check_melt_quote_for_route(
 ) -> Result<MeltQuoteResponse<QuoteId>, cdk::Error> {
     #[cfg(feature = "federation")]
     if state.mint.federation_config().is_some() {
-        state
-            .federation
-            .payment_observer
-            .observe_melt_quote(state, quote_id)
-            .await?;
+        Box::pin(
+            state
+                .federation
+                .payment_observer
+                .observe_melt_quote(state, quote_id),
+        )
+        .await?;
         return federation_melt_response_from_store(state, quote_id).await;
     }
 
@@ -349,11 +353,13 @@ async fn ensure_federation_mint_quotes_paid_for_signing(
         crate::federation::latency::FederationLatencyPhase::MintPaymentWait,
     );
     let result = async {
-        state
-            .federation
-            .payment_observer
-            .observe_mint_quotes(state, &quote_ids)
-            .await?;
+        Box::pin(
+            state
+                .federation
+                .payment_observer
+                .observe_mint_quotes(state, &quote_ids),
+        )
+        .await?;
 
         let wait_timeout = state
             .federation
@@ -428,11 +434,13 @@ async fn submit_federation_mint_quote_operation(
         mint_quote_response_to_string(response),
     );
     state.submit_federation_envelope(envelope).await?;
-    match state
-        .federation
-        .payment_observer
-        .observe_mint_quotes(state, std::slice::from_ref(response.quote()))
-        .await
+    match Box::pin(
+        state
+            .federation
+            .payment_observer
+            .observe_mint_quotes(state, std::slice::from_ref(response.quote())),
+    )
+    .await
     {
         Ok(submitted) if submitted > 0 => {
             tracing::debug!(
@@ -912,7 +920,7 @@ pub async fn get_check_melt_custom_quote(
         .await
         .map_err(into_response)?;
 
-    let quote = check_melt_quote_for_route(&state, &quote_id)
+    let quote = Box::pin(check_melt_quote_for_route(&state, &quote_id))
         .await
         .map_err(into_response)?;
 
@@ -926,7 +934,7 @@ async fn process_melt_request(
     payload: &cdk::nuts::MeltRequest<QuoteId>,
 ) -> Result<MeltQuoteResponse<QuoteId>, cdk::Error> {
     #[cfg(feature = "federation")]
-    if let Some(response) = process_federation_melt_request(state, payload).await? {
+    if let Some(response) = Box::pin(process_federation_melt_request(state, payload)).await? {
         return Ok(response);
     }
 
@@ -965,11 +973,13 @@ async fn process_federation_melt_request(
     );
     let result = async {
         state.submit_federation_envelope(envelope).await?;
-        if let Err(err) = state
-            .federation
-            .payment_observer
-            .observe_melt_quote(state, payload.quote())
-            .await
+        if let Err(err) = Box::pin(
+            state
+                .federation
+                .payment_observer
+                .observe_melt_quote(state, payload.quote()),
+        )
+        .await
         {
             tracing::debug!(
                 quote = %payload.quote(),
@@ -2270,9 +2280,7 @@ mod tests {
         for _ in 0..100 {
             #[cfg(feature = "federation")]
             if state.mint.federation_config().is_some() {
-                if state
-                    .mint
-                    .probe_federation_mint_quote_payment(&quote.quote)
+                if Box::pin(state.mint.probe_federation_mint_quote_payment(&quote.quote))
                     .await
                     .expect("mint payment probe")
                     .is_some()
@@ -2320,9 +2328,7 @@ mod tests {
         );
         finalize_local_test_operation(state, envelope).await;
         for _ in 0..100 {
-            if state
-                .mint
-                .probe_federation_mint_quote_payment(&quote_id)
+            if Box::pin(state.mint.probe_federation_mint_quote_payment(&quote_id))
                 .await
                 .expect("mint payment probe")
                 .is_some()
@@ -2338,9 +2344,7 @@ mod tests {
     #[cfg(feature = "federation")]
     async fn create_federation_observed_paid_bolt11_quote(state: &MintState) -> QuoteId {
         let quote_id = create_federation_paid_bolt11_quote(state).await;
-        let observation = state
-            .mint
-            .probe_federation_mint_quote_payment(&quote_id)
+        let observation = Box::pin(state.mint.probe_federation_mint_quote_payment(&quote_id))
             .await
             .expect("mint payment probe")
             .expect("paid mint payment observation");
@@ -2924,10 +2928,12 @@ mod tests {
 
             let mut observed_payment = None;
             for state in &self.states {
-                if let Some(observation) = state
-                    .mint
-                    .probe_federation_melt_quote_payment(request.quote())
-                    .await?
+                if let Some(observation) = Box::pin(
+                    state
+                        .mint
+                        .probe_federation_melt_quote_payment(request.quote()),
+                )
+                .await?
                 {
                     observed_payment = Some(observation);
                     break;
@@ -3164,7 +3170,7 @@ mod tests {
             let request =
                 cdk::nuts::MeltRequest::<QuoteId>::try_from(request).map_err(cdk::Error::from)?;
             if let Some(coordinator) = &self.melt_coordinator {
-                coordinator.settle_paid_once(&request).await?;
+                Box::pin(coordinator.settle_paid_once(&request)).await?;
             } else {
                 let config = self
                     .state

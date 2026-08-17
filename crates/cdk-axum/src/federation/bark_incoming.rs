@@ -297,8 +297,16 @@ pub(super) async fn advance_federated_bark_mint_quote(
     state: &MintState,
     quote_id: &QuoteId,
     observer_fallback_round: u32,
+    wait_for_backend_update: bool,
 ) -> Result<FederationPaymentAdvancement, cdk::Error> {
-    advance_federated_bark_mint_quote_inner(state, quote_id, observer_fallback_round, None).await
+    advance_federated_bark_mint_quote_inner(
+        state,
+        quote_id,
+        observer_fallback_round,
+        None,
+        wait_for_backend_update,
+    )
+    .await
 }
 
 pub(super) async fn advance_federated_bark_mint_quote_from_evidence_delivery(
@@ -311,6 +319,7 @@ pub(super) async fn advance_federated_bark_mint_quote_from_evidence_delivery(
         quote_id,
         collector_fallback_round,
         Some(collector_fallback_round),
+        false,
     )
     .await
 }
@@ -320,6 +329,7 @@ async fn advance_federated_bark_mint_quote_inner(
     quote_id: &QuoteId,
     observer_fallback_round: u32,
     collector_fallback_round_override: Option<u32>,
+    wait_for_backend_update: bool,
 ) -> Result<FederationPaymentAdvancement, cdk::Error> {
     let _guard = state.federation.bark_incoming_lock().lock().await;
     let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
@@ -458,7 +468,11 @@ async fn advance_federated_bark_mint_quote_inner(
                         action.action_id.to_string(),
                         super::latency::FederationLatencyBackend::Bark,
                         super::latency::FederationLatencyDirection::Incoming,
-                        super::latency::FederationLatencyPhase::BarkReceiveHtlcObservation,
+                        if wait_for_backend_update {
+                            super::latency::FederationLatencyPhase::BarkReceiveServerWait
+                        } else {
+                            super::latency::FederationLatencyPhase::BarkReceiveHtlcObservation
+                        },
                     );
                     let observation_result = runtime
                         .observe_receive_htlcs(
@@ -467,6 +481,7 @@ async fn advance_federated_bark_mint_quote_inner(
                             prepared,
                             1,
                             is_receive_actor,
+                            wait_for_backend_update,
                         )
                         .await;
                     let observation_outcome = match &observation_result {
@@ -478,7 +493,11 @@ async fn advance_federated_bark_mint_quote_inner(
                     let Some((observation, transition)) =
                         observation_result.map_err(|_| bark_unavailable())?
                     else {
-                        return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
+                        return Ok(if wait_for_backend_update {
+                            FederationPaymentAdvancement::AwaitingBackendNotification
+                        } else {
+                            FederationPaymentAdvancement::AwaitingExternalEvidence
+                        });
                     };
                     (observation, is_evidence_collector.then_some(transition))
                 }

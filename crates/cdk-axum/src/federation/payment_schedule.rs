@@ -19,6 +19,7 @@ const MINT_REQUEST_COOLDOWN_MS: u64 = 5_000;
 const ATTEMPT_LEASE_MS: u64 = 15_000;
 const FEDERATION_REPAIR_DELAY_MS: u64 = 60_000;
 const OBSERVER_FALLBACK_DELAY_MS: u64 = 6_000;
+const BACKEND_NOTIFICATION_RECONNECT_DELAY_MS: u64 = 100;
 const JITTER_PERCENT: u64 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -71,6 +72,8 @@ impl FederationPaymentQuote {
 pub(super) enum FederationPaymentAdvancement {
     Progressed,
     AwaitingExternalEvidence,
+    #[cfg_attr(not(feature = "federation-bark"), allow(dead_code))]
+    AwaitingBackendNotification,
     AwaitingFederationEvidence,
     #[cfg_attr(not(feature = "federation-bark"), allow(dead_code))]
     AwaitingObserverFallback,
@@ -83,6 +86,12 @@ pub(super) enum FederationPaymentObservationTrigger {
     Requested,
     BackendNotified,
     OperationAccepted(u64),
+}
+
+impl FederationPaymentObservationTrigger {
+    pub(super) const fn wait_for_backend_update(self) -> bool {
+        !matches!(self, Self::BackendNotified)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,10 +201,21 @@ impl FederationPaymentObservationSchedule {
 
         let previous_wait = schedule.wait;
         let previous_next_attempt_at_ms = schedule.next_attempt_at_ms;
-        if schedule.wait == PersistedPaymentWait::ObserverFallback
-            && now_ms >= schedule.next_attempt_at_ms
-        {
-            schedule.observer_fallback_round = schedule.observer_fallback_round.saturating_add(1);
+        match schedule.wait {
+            PersistedPaymentWait::ObserverFallback if now_ms >= schedule.next_attempt_at_ms => {
+                schedule.observer_fallback_round =
+                    schedule.observer_fallback_round.saturating_add(1);
+            }
+            PersistedPaymentWait::BackendNotification
+                if schedule.next_observer_fallback_at_ms > 0
+                    && now_ms >= schedule.next_observer_fallback_at_ms =>
+            {
+                schedule.observer_fallback_round =
+                    schedule.observer_fallback_round.saturating_add(1);
+                schedule.next_observer_fallback_at_ms =
+                    now_ms.saturating_add(OBSERVER_FALLBACK_DELAY_MS);
+            }
+            _ => {}
         }
         schedule.generation = schedule.generation.saturating_add(1);
         schedule.last_attempt_at_ms = now_ms;
@@ -244,6 +264,7 @@ impl FederationPaymentObservationSchedule {
         schedule.lease_until_ms = 0;
         if made_progress {
             schedule.observer_fallback_round = 0;
+            schedule.next_observer_fallback_at_ms = 0;
         }
         if let Some(index) = last_processed_operation_index {
             schedule.last_processed_operation_index = Some(
@@ -257,10 +278,12 @@ impl FederationPaymentObservationSchedule {
                 schedule.wait = PersistedPaymentWait::Ready;
                 schedule.consecutive_no_progress = 0;
                 schedule.observer_fallback_round = 0;
+                schedule.next_observer_fallback_at_ms = 0;
                 schedule.next_attempt_at_ms = now_ms;
             }
             FederationPaymentAdvancement::AwaitingExternalEvidence => {
                 schedule.wait = PersistedPaymentWait::External;
+                schedule.next_observer_fallback_at_ms = 0;
                 schedule.consecutive_no_progress = if made_progress {
                     1
                 } else {
@@ -275,13 +298,25 @@ impl FederationPaymentObservationSchedule {
                 );
                 schedule.next_attempt_at_ms = now_ms.saturating_add(delay);
             }
+            FederationPaymentAdvancement::AwaitingBackendNotification => {
+                schedule.wait = PersistedPaymentWait::BackendNotification;
+                schedule.consecutive_no_progress = 0;
+                if schedule.next_observer_fallback_at_ms == 0 {
+                    schedule.next_observer_fallback_at_ms =
+                        now_ms.saturating_add(OBSERVER_FALLBACK_DELAY_MS);
+                }
+                schedule.next_attempt_at_ms =
+                    now_ms.saturating_add(BACKEND_NOTIFICATION_RECONNECT_DELAY_MS);
+            }
             FederationPaymentAdvancement::AwaitingFederationEvidence => {
                 schedule.wait = PersistedPaymentWait::Federation;
                 schedule.observer_fallback_round = 0;
+                schedule.next_observer_fallback_at_ms = 0;
                 schedule.next_attempt_at_ms = now_ms.saturating_add(FEDERATION_REPAIR_DELAY_MS);
             }
             FederationPaymentAdvancement::AwaitingObserverFallback => {
                 schedule.wait = PersistedPaymentWait::ObserverFallback;
+                schedule.next_observer_fallback_at_ms = 0;
                 schedule.consecutive_no_progress = 0;
                 schedule.next_attempt_at_ms = if !made_progress
                     && permit.previous_wait == PersistedPaymentWait::ObserverFallback
@@ -374,6 +409,7 @@ enum PersistedPaymentWait {
     #[default]
     Ready,
     External,
+    BackendNotification,
     Federation,
     ObserverFallback,
 }
@@ -391,6 +427,8 @@ struct PersistedPaymentSchedule {
     last_processed_operation_index: Option<u64>,
     #[serde(default)]
     observer_fallback_round: u32,
+    #[serde(default)]
+    next_observer_fallback_at_ms: u64,
 }
 
 impl PersistedPaymentSchedule {
@@ -560,6 +598,7 @@ mod tests {
             wait: PersistedPaymentWait::External,
             last_processed_operation_index: None,
             observer_fallback_round: 0,
+            next_observer_fallback_at_ms: 0,
         };
 
         assert!(!schedule.is_due(FederationPaymentObservationTrigger::Scheduled, 0, 6_000));
@@ -670,6 +709,61 @@ mod tests {
             .filter(Option::is_some)
             .count();
         assert_eq!(permits, 1);
+    }
+
+    #[tokio::test]
+    async fn backend_notification_wait_reconnects_without_external_backoff() {
+        let db: DynMintDatabase = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("sqlite database"),
+        );
+        let quote = FederationPaymentQuote::melt(QuoteId::new());
+        let schedule = FederationPaymentObservationSchedule::default();
+        let permit = schedule
+            .claim(
+                &db,
+                &quote,
+                FederationPaymentObservationTrigger::Scheduled,
+                1_000,
+            )
+            .await
+            .expect("claim")
+            .expect("permit");
+
+        schedule
+            .finish(
+                &db,
+                permit,
+                member_id(),
+                FederationPaymentAdvancement::AwaitingBackendNotification,
+                false,
+                Some(1),
+                2_000,
+            )
+            .await
+            .expect("finish notification wait");
+
+        let persisted = load_schedules(&db).await.expect("load schedule");
+        let persisted = persisted
+            .quotes
+            .get(&quote.schedule_key())
+            .expect("quote schedule");
+        assert_eq!(persisted.wait, PersistedPaymentWait::BackendNotification);
+        assert_eq!(persisted.next_attempt_at_ms, 2_100);
+        assert_eq!(persisted.next_observer_fallback_at_ms, 8_000);
+
+        let fallback = schedule
+            .claim(
+                &db,
+                &quote,
+                FederationPaymentObservationTrigger::Scheduled,
+                8_000,
+            )
+            .await
+            .expect("claim fallback")
+            .expect("fallback permit");
+        assert_eq!(fallback.observer_fallback_round(), 1);
     }
 
     #[tokio::test]

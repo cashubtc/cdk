@@ -2,7 +2,7 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::str::FromStr;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use cdk::cdk_payment::Event;
 #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
@@ -34,6 +34,7 @@ const FEDERATION_PAYMENT_IDLE_DEADLINE: std::time::Duration =
 const FEDERATION_PAYMENT_MAX_ADVANCEMENTS_PER_WAKE: usize = 8;
 const FEDERATION_PAYMENT_SCAN_LIMIT_PER_KIND: usize = 4;
 const FEDERATION_PAYMENT_WAKE_CAPACITY: usize = 256;
+const FEDERATION_PAYMENT_CONCURRENT_QUOTE_TASKS: usize = 16;
 /// Per-quote backend probe deadline.
 ///
 /// One hung or slow backend call must never occupy the sequential observer
@@ -46,6 +47,14 @@ const FEDERATION_PAYMENT_WORKER_FAILURE_BACKOFF_INITIAL: std::time::Duration =
     std::time::Duration::from_secs(1);
 const FEDERATION_PAYMENT_WORKER_FAILURE_BACKOFF_MAX: std::time::Duration =
     std::time::Duration::from_secs(30);
+
+type FederationPaymentProbeFuture<'a> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<Option<FederationPaymentObservation>, cdk::Error>>
+            + Send
+            + 'a,
+    >,
+>;
 
 #[derive(Debug, Default)]
 struct FederationPaymentWorkerFailureBackoff {
@@ -89,10 +98,54 @@ fn reorg_disconnection_is_proven(
         && membership == cdk_bitcoin_wallet::FederatedBlockMembership::Disconnected
 }
 
+#[cfg(feature = "federation-bark")]
+fn advance_bark_mint_quote<'a>(
+    state: &'a MintState,
+    quote_id: &'a QuoteId,
+    observer_fallback_round: u32,
+    wait_for_backend_update: bool,
+) -> std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<FederationPaymentAdvancement, cdk::Error>>
+            + Send
+            + 'a,
+    >,
+> {
+    Box::pin(super::bark_incoming::advance_federated_bark_mint_quote(
+        state,
+        quote_id,
+        observer_fallback_round,
+        wait_for_backend_update,
+    ))
+}
+
+#[cfg(feature = "federation-bark")]
+fn advance_bark_melt_quote<'a>(
+    state: &'a MintState,
+    quote_id: &'a QuoteId,
+    observer_fallback_round: u32,
+    wait_for_backend_update: bool,
+) -> std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<FederationPaymentAdvancement, cdk::Error>>
+            + Send
+            + 'a,
+    >,
+> {
+    Box::pin(super::bark_outgoing::advance_federated_bark_melt_quote(
+        state,
+        quote_id,
+        observer_fallback_round,
+        wait_for_backend_update,
+    ))
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct FederationPaymentObserver {
     schedule: FederationPaymentObservationSchedule,
-    accepted_operation_wakes: tokio::sync::broadcast::Sender<(FederationPaymentQuote, u64)>,
+    accepted_operation_wakes:
+        tokio::sync::broadcast::Sender<(FederationPaymentQuote, u64, Instant)>,
+    quote_tasks: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl Default for FederationPaymentObserver {
@@ -102,6 +155,9 @@ impl Default for FederationPaymentObserver {
         Self {
             schedule: FederationPaymentObservationSchedule::default(),
             accepted_operation_wakes,
+            quote_tasks: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                FEDERATION_PAYMENT_CONCURRENT_QUOTE_TASKS,
+            )),
         }
     }
 }
@@ -402,12 +458,123 @@ impl FederationPaymentObserver {
             .cloned()
             .map(FederationPaymentQuote::mint)
             .collect::<Vec<_>>();
-        Box::pin(self.drive_quotes(
+        Box::pin(self.drive_or_dispatch_quotes(
             state,
-            &quotes,
+            quotes,
             FederationPaymentObservationTrigger::Requested,
+            Instant::now(),
         ))
         .await
+    }
+
+    async fn drive_or_dispatch_quotes(
+        &self,
+        state: &MintState,
+        quotes: Vec<FederationPaymentQuote>,
+        trigger: FederationPaymentObservationTrigger,
+        queued_at: Instant,
+    ) -> Result<usize, cdk::Error> {
+        let mut direct = Vec::with_capacity(quotes.len());
+        let mut background = Vec::new();
+        for quote in quotes {
+            if self.quote_uses_bark(state, &quote).await? {
+                background.push(quote);
+            } else {
+                direct.push(quote);
+            }
+        }
+
+        let submitted = Box::pin(self.drive_quotes(state, &direct, trigger)).await?;
+        Ok(submitted.saturating_add(self.dispatch_quotes(state, background, trigger, queued_at)))
+    }
+
+    async fn quote_uses_bark(
+        &self,
+        state: &MintState,
+        quote: &FederationPaymentQuote,
+    ) -> Result<bool, cdk::Error> {
+        #[cfg(feature = "federation-bark")]
+        {
+            if state.federation.bark_runtime().is_none() {
+                return Ok(false);
+            }
+            let uses_bark = match quote.kind {
+                FederationPaymentQuoteKind::Mint => state
+                    .mint
+                    .localstore()
+                    .get_mint_quote(&quote.id)
+                    .await?
+                    .is_some_and(|quote| quote.payment_method.is_bolt11()),
+                FederationPaymentQuoteKind::Melt => state
+                    .mint
+                    .localstore()
+                    .get_melt_quote(&quote.id)
+                    .await?
+                    .is_some_and(|quote| quote.payment_method.is_bolt11()),
+            };
+            return Ok(uses_bark);
+        }
+        #[cfg(not(feature = "federation-bark"))]
+        {
+            let _ = (state, quote);
+            Ok(false)
+        }
+    }
+
+    fn dispatch_quotes(
+        &self,
+        state: &MintState,
+        quotes: Vec<FederationPaymentQuote>,
+        trigger: FederationPaymentObservationTrigger,
+        queued_at: Instant,
+    ) -> usize {
+        let mut dispatched = 0_usize;
+        for quote in quotes {
+            let Ok(permit) = self.quote_tasks.clone().try_acquire_owned() else {
+                tracing::debug!(
+                    "Federation payment quote task capacity reached; durable schedule will retry"
+                );
+                break;
+            };
+            let observer = self.clone();
+            let state = state.clone();
+            let correlation_id = quote.id.to_string();
+            let direction = match quote.kind {
+                FederationPaymentQuoteKind::Mint => {
+                    super::latency::FederationLatencyDirection::Incoming
+                }
+                FederationPaymentQuoteKind::Melt => {
+                    super::latency::FederationLatencyDirection::Outgoing
+                }
+            };
+            tokio::spawn(async move {
+                let _permit = permit;
+                super::latency::record_duration(
+                    super::latency::FederationLatencyCorrelation::Quote,
+                    &correlation_id,
+                    super::latency::FederationLatencyBackend::Bark,
+                    direction,
+                    super::latency::FederationLatencyPhase::PaymentCoordinatorDispatch,
+                    super::latency::FederationLatencyOutcome::Success,
+                    queued_at.elapsed(),
+                );
+                let quotes = [quote];
+                let work = Box::pin(observer.drive_quotes(&state, &quotes, trigger));
+                let result = std::panic::AssertUnwindSafe(work).catch_unwind().await;
+                match result {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => tracing::warn!(
+                        error = %error,
+                        "Federation payment quote task failed; durable schedule will retry"
+                    ),
+                    Err(_) => tracing::error!(
+                        "Federation payment quote task panicked; durable schedule will retry"
+                    ),
+                }
+            });
+            dispatched = dispatched.saturating_add(1);
+        }
+        dispatched
     }
 
     async fn drive_quotes(
@@ -478,7 +645,12 @@ impl FederationPaymentObserver {
             for completed_steps in 0..FEDERATION_PAYMENT_MAX_ADVANCEMENTS_PER_WAKE {
                 let before_operation_index = last_processed_operation_index;
                 advancement = self
-                    .advance_one_quote(state, quote, observer_fallback_round)
+                    .advance_one_quote(
+                        state,
+                        quote,
+                        observer_fallback_round,
+                        trigger.wait_for_backend_update(),
+                    )
                     .await?;
                 last_processed_operation_index =
                     db.get_federation_journal_tip().await?.map(|tip| tip.index);
@@ -515,6 +687,7 @@ impl FederationPaymentObserver {
                     super::latency::FederationLatencyOutcome::Success
                 }
                 FederationPaymentAdvancement::AwaitingExternalEvidence
+                | FederationPaymentAdvancement::AwaitingBackendNotification
                 | FederationPaymentAdvancement::AwaitingFederationEvidence
                 | FederationPaymentAdvancement::AwaitingObserverFallback => {
                     super::latency::FederationLatencyOutcome::Pending
@@ -557,6 +730,7 @@ impl FederationPaymentObserver {
         state: &'a MintState,
         quote: &'a FederationPaymentQuote,
         observer_fallback_round: u32,
+        wait_for_backend_update: bool,
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<Output = Result<FederationPaymentAdvancement, cdk::Error>>
@@ -565,12 +739,18 @@ impl FederationPaymentObserver {
         >,
     > {
         match quote.kind {
-            FederationPaymentQuoteKind::Mint => {
-                Box::pin(self.advance_one_mint_quote(state, &quote.id, observer_fallback_round))
-            }
-            FederationPaymentQuoteKind::Melt => {
-                Box::pin(self.advance_one_melt_quote(state, &quote.id, observer_fallback_round))
-            }
+            FederationPaymentQuoteKind::Mint => Box::pin(self.advance_one_mint_quote(
+                state,
+                &quote.id,
+                observer_fallback_round,
+                wait_for_backend_update,
+            )),
+            FederationPaymentQuoteKind::Melt => Box::pin(self.advance_one_melt_quote(
+                state,
+                &quote.id,
+                observer_fallback_round,
+                wait_for_backend_update,
+            )),
         }
     }
 
@@ -579,9 +759,10 @@ impl FederationPaymentObserver {
         state: &MintState,
         quote_id: &QuoteId,
         observer_fallback_round: u32,
+        wait_for_backend_update: bool,
     ) -> Result<FederationPaymentAdvancement, cdk::Error> {
         #[cfg(not(feature = "federation-bark"))]
-        let _ = observer_fallback_round;
+        let _ = (observer_fallback_round, wait_for_backend_update);
         let Some(quote) = state.mint.localstore().get_mint_quote(quote_id).await? else {
             return Ok(FederationPaymentAdvancement::Complete);
         };
@@ -590,39 +771,25 @@ impl FederationPaymentObserver {
         }
 
         #[cfg(feature = "federation-bark")]
-        let bark_advancement =
-            if quote.payment_method.is_bolt11() && state.federation.bark_runtime().is_some() {
-                match super::bark_incoming::advance_federated_bark_mint_quote(
-                    state,
-                    quote_id,
-                    observer_fallback_round,
-                )
-                .await
-                {
-                    Ok(FederationPaymentAdvancement::Progressed) => {
-                        return Ok(FederationPaymentAdvancement::Progressed);
-                    }
-                    Ok(advancement) => Some(advancement),
-                    Err(error) => {
-                        tracing::debug!(
-                            quote = %quote_id,
-                            error = %error,
-                            "federated Bark receive advancement left quote pending"
-                        );
-                        Some(FederationPaymentAdvancement::AwaitingExternalEvidence)
-                    }
-                }
-            } else {
-                None
-            };
-        #[cfg(not(feature = "federation-bark"))]
-        let bark_advancement = None;
-
-        #[cfg(feature = "federation-bark")]
         if quote.payment_method.is_bolt11() && state.federation.bark_runtime().is_some() {
-            return Ok(
-                bark_advancement.unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence)
-            );
+            return match advance_bark_mint_quote(
+                state,
+                quote_id,
+                observer_fallback_round,
+                wait_for_backend_update,
+            )
+            .await
+            {
+                Ok(advancement) => Ok(advancement),
+                Err(error) => {
+                    tracing::debug!(
+                        quote = %quote_id,
+                        error = %error,
+                        "federated Bark receive advancement left quote pending"
+                    );
+                    Ok(FederationPaymentAdvancement::AwaitingExternalEvidence)
+                }
+            };
         }
 
         let probe_backend = if quote.payment_method.is_onchain() {
@@ -630,65 +797,22 @@ impl FederationPaymentObserver {
         } else {
             super::latency::FederationLatencyBackend::Cashu
         };
-        let probe_timer = super::latency::FederationLatencyTimer::start(
-            super::latency::FederationLatencyCorrelation::Quote,
-            quote_id.to_string(),
+        let probe = Box::pin(async move {
+            state
+                .mint
+                .probe_federation_mint_quote_payment(quote_id)
+                .await
+                .map(|observation| observation.map(FederationPaymentObservation::MintQuote))
+        });
+        Self::probe_and_submit_quote(
+            state,
+            quote_id,
             probe_backend,
             super::latency::FederationLatencyDirection::Incoming,
-            super::latency::FederationLatencyPhase::BackendPaymentProbe,
-        );
-        let Some(observation) = ({
-            let probe = std::panic::AssertUnwindSafe(async {
-                state
-                    .mint
-                    .probe_federation_mint_quote_payment(quote_id)
-                    .await
-            })
-            .catch_unwind();
-            match tokio::time::timeout(FEDERATION_PAYMENT_OBSERVER_PROBE_DEADLINE, probe).await {
-                Ok(Ok(Ok(observation))) => {
-                    probe_timer.finish(super::latency::FederationLatencyOutcome::Success);
-                    observation
-                }
-                Ok(Ok(Err(err))) => {
-                    probe_timer.finish(super::latency::FederationLatencyOutcome::Error);
-                    tracing::debug!(
-                        quote = %quote_id,
-                        error = %err,
-                        "mint quote payment probe failed; quote left pending"
-                    );
-                    return Ok(bark_advancement
-                        .unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence));
-                }
-                Ok(Err(_panic)) => {
-                    probe_timer.finish(super::latency::FederationLatencyOutcome::Error);
-                    tracing::warn!(
-                        quote = %quote_id,
-                        "mint quote payment probe panicked; quote left pending"
-                    );
-                    return Ok(bark_advancement
-                        .unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence));
-                }
-                Err(_) => {
-                    probe_timer.finish(super::latency::FederationLatencyOutcome::Timeout);
-                    tracing::debug!(
-                        quote = %quote_id,
-                        "mint quote payment probe timed out; quote left pending"
-                    );
-                    return Ok(bark_advancement
-                        .unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence));
-                }
-            }
-        }) else {
-            return Ok(
-                bark_advancement.unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence)
-            );
-        };
-        if submit_observation(state, FederationPaymentObservation::MintQuote(observation)).await? {
-            Ok(FederationPaymentAdvancement::Progressed)
-        } else {
-            Ok(FederationPaymentAdvancement::AwaitingFederationEvidence)
-        }
+            "mint",
+            probe,
+        )
+        .await
     }
 
     pub(crate) async fn observe_melt_quote(
@@ -696,10 +820,11 @@ impl FederationPaymentObserver {
         state: &MintState,
         quote_id: &QuoteId,
     ) -> Result<bool, cdk::Error> {
-        let submitted = Box::pin(self.drive_quotes(
+        let submitted = Box::pin(self.drive_or_dispatch_quotes(
             state,
-            &[FederationPaymentQuote::melt(quote_id.clone())],
+            vec![FederationPaymentQuote::melt(quote_id.clone())],
             FederationPaymentObservationTrigger::Requested,
+            Instant::now(),
         ))
         .await?;
         Ok(submitted > 0)
@@ -710,9 +835,10 @@ impl FederationPaymentObserver {
         state: &MintState,
         quote_id: &QuoteId,
         observer_fallback_round: u32,
+        wait_for_backend_update: bool,
     ) -> Result<FederationPaymentAdvancement, cdk::Error> {
         #[cfg(not(feature = "federation-bark"))]
-        let _ = observer_fallback_round;
+        let _ = (observer_fallback_round, wait_for_backend_update);
         let Some(quote) = state.mint.localstore().get_melt_quote(quote_id).await? else {
             return Ok(FederationPaymentAdvancement::Complete);
         };
@@ -721,103 +847,118 @@ impl FederationPaymentObserver {
         }
 
         #[cfg(feature = "federation-bark")]
-        let bark_advancement =
-            if quote.payment_method.is_bolt11() && state.federation.bark_runtime().is_some() {
-                match super::bark_outgoing::advance_federated_bark_melt_quote(
-                    state,
-                    quote_id,
-                    observer_fallback_round,
-                )
-                .await
-                {
-                    Ok(FederationPaymentAdvancement::Progressed) => {
-                        return Ok(FederationPaymentAdvancement::Progressed);
-                    }
-                    Ok(advancement) => Some(advancement),
-                    Err(error) => {
-                        tracing::debug!(
-                            quote = %quote_id,
-                            error = %error,
-                            "federated Bark send planning left quote pending"
-                        );
-                        Some(FederationPaymentAdvancement::AwaitingExternalEvidence)
-                    }
-                }
-            } else {
-                None
-            };
-        #[cfg(not(feature = "federation-bark"))]
-        let bark_advancement = None;
-        #[cfg(feature = "federation-bark")]
         if quote.payment_method.is_bolt11() && state.federation.bark_runtime().is_some() {
-            return Ok(
-                bark_advancement.unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence)
-            );
+            return match advance_bark_melt_quote(
+                state,
+                quote_id,
+                observer_fallback_round,
+                wait_for_backend_update,
+            )
+            .await
+            {
+                Ok(advancement) => Ok(advancement),
+                Err(error) => {
+                    tracing::debug!(
+                        quote = %quote_id,
+                        error = %error,
+                        "federated Bark send planning left quote pending"
+                    );
+                    Ok(FederationPaymentAdvancement::AwaitingExternalEvidence)
+                }
+            };
         }
         let probe_backend = if quote.payment_method.is_onchain() {
             super::latency::FederationLatencyBackend::Bdk
         } else {
             super::latency::FederationLatencyBackend::Cashu
         };
-        let probe_timer = super::latency::FederationLatencyTimer::start(
-            super::latency::FederationLatencyCorrelation::Quote,
-            quote_id.to_string(),
+        let probe = Box::pin(async move {
+            state
+                .mint
+                .probe_federation_melt_quote_payment(quote_id)
+                .await
+                .map(|observation| observation.map(FederationPaymentObservation::MeltQuote))
+        });
+        Self::probe_and_submit_quote(
+            state,
+            quote_id,
             probe_backend,
             super::latency::FederationLatencyDirection::Outgoing,
-            super::latency::FederationLatencyPhase::BackendPaymentProbe,
-        );
-        let Some(observation) = ({
-            let probe = std::panic::AssertUnwindSafe(async {
-                state
-                    .mint
-                    .probe_federation_melt_quote_payment(quote_id)
-                    .await
-            })
-            .catch_unwind();
-            match tokio::time::timeout(FEDERATION_PAYMENT_OBSERVER_PROBE_DEADLINE, probe).await {
-                Ok(Ok(Ok(observation))) => {
-                    probe_timer.finish(super::latency::FederationLatencyOutcome::Success);
-                    observation
-                }
-                Ok(Ok(Err(err))) => {
-                    probe_timer.finish(super::latency::FederationLatencyOutcome::Error);
-                    tracing::debug!(
-                        quote = %quote_id,
-                        error = %err,
-                        "melt quote payment probe failed; quote left pending"
-                    );
-                    return Ok(bark_advancement
-                        .unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence));
-                }
-                Ok(Err(_panic)) => {
-                    probe_timer.finish(super::latency::FederationLatencyOutcome::Error);
-                    tracing::warn!(
-                        quote = %quote_id,
-                        "melt quote payment probe panicked; quote left pending"
-                    );
-                    return Ok(bark_advancement
-                        .unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence));
-                }
-                Err(_) => {
-                    probe_timer.finish(super::latency::FederationLatencyOutcome::Timeout);
-                    tracing::debug!(
-                        quote = %quote_id,
-                        "melt quote payment probe timed out; quote left pending"
-                    );
-                    return Ok(bark_advancement
-                        .unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence));
-                }
-            }
-        }) else {
-            return Ok(
-                bark_advancement.unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence)
+            "melt",
+            probe,
+        )
+        .await
+    }
+
+    fn probe_and_submit_quote<'a>(
+        state: &'a MintState,
+        quote_id: &'a QuoteId,
+        probe_backend: super::latency::FederationLatencyBackend,
+        direction: super::latency::FederationLatencyDirection,
+        quote_kind: &'static str,
+        probe: FederationPaymentProbeFuture<'a>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<FederationPaymentAdvancement, cdk::Error>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let probe_timer = super::latency::FederationLatencyTimer::start(
+                super::latency::FederationLatencyCorrelation::Quote,
+                quote_id.to_string(),
+                probe_backend,
+                direction,
+                super::latency::FederationLatencyPhase::BackendPaymentProbe,
             );
-        };
-        if submit_observation(state, FederationPaymentObservation::MeltQuote(observation)).await? {
-            Ok(FederationPaymentAdvancement::Progressed)
-        } else {
-            Ok(FederationPaymentAdvancement::AwaitingFederationEvidence)
-        }
+            let probe = Box::pin(std::panic::AssertUnwindSafe(probe).catch_unwind());
+            let observation =
+                match tokio::time::timeout(FEDERATION_PAYMENT_OBSERVER_PROBE_DEADLINE, probe).await
+                {
+                    Ok(Ok(Ok(Some(observation)))) => {
+                        probe_timer.finish(super::latency::FederationLatencyOutcome::Success);
+                        observation
+                    }
+                    Ok(Ok(Ok(None))) => {
+                        probe_timer.finish(super::latency::FederationLatencyOutcome::Success);
+                        return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
+                    }
+                    Ok(Ok(Err(error))) => {
+                        probe_timer.finish(super::latency::FederationLatencyOutcome::Error);
+                        tracing::debug!(
+                            quote = %quote_id,
+                            quote_kind,
+                            error = %error,
+                            "federation payment probe failed; quote left pending"
+                        );
+                        return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
+                    }
+                    Ok(Err(_panic)) => {
+                        probe_timer.finish(super::latency::FederationLatencyOutcome::Error);
+                        tracing::warn!(
+                            quote = %quote_id,
+                            quote_kind,
+                            "federation payment probe panicked; quote left pending"
+                        );
+                        return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
+                    }
+                    Err(_) => {
+                        probe_timer.finish(super::latency::FederationLatencyOutcome::Timeout);
+                        tracing::debug!(
+                            quote = %quote_id,
+                            quote_kind,
+                            "federation payment probe timed out; quote left pending"
+                        );
+                        return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
+                    }
+                };
+            if submit_observation(state, observation).await? {
+                Ok(FederationPaymentAdvancement::Progressed)
+            } else {
+                Ok(FederationPaymentAdvancement::AwaitingFederationEvidence)
+            }
+        })
     }
 
     pub(crate) async fn observe_event(
@@ -838,19 +979,21 @@ impl FederationPaymentObserver {
                 else {
                     return Ok(0);
                 };
-                self.drive_quotes(
+                Box::pin(self.drive_or_dispatch_quotes(
                     state,
-                    &[FederationPaymentQuote::mint(quote.id)],
+                    vec![FederationPaymentQuote::mint(quote.id)],
                     FederationPaymentObservationTrigger::BackendNotified,
-                )
+                    Instant::now(),
+                ))
                 .await
             }
             Event::PaymentSuccessful { quote_id, .. } | Event::PaymentFailed { quote_id, .. } => {
-                self.drive_quotes(
+                Box::pin(self.drive_or_dispatch_quotes(
                     state,
-                    &[FederationPaymentQuote::melt(quote_id)],
+                    vec![FederationPaymentQuote::melt(quote_id)],
                     FederationPaymentObservationTrigger::BackendNotified,
-                )
+                    Instant::now(),
+                ))
                 .await
             }
         }
@@ -921,11 +1064,12 @@ impl FederationPaymentObserver {
                     FederationPaymentQuoteKind::Melt => FederationPaymentQuote::melt(id.clone()),
                 };
                 submitted = submitted.saturating_add(
-                    self.drive_quotes(
+                    Box::pin(self.drive_or_dispatch_quotes(
                         state,
-                        &[quote],
+                        vec![quote],
                         FederationPaymentObservationTrigger::Scheduled,
-                    )
+                        Instant::now(),
+                    ))
                     .await?,
                 );
                 let next_cursor = match reaches_end && index.saturating_add(1) == ids.len() {
@@ -956,7 +1100,9 @@ impl FederationPaymentObserver {
         entry: &cdk::federation::FederationJournalEntry,
     ) {
         for quote in payment_wakes_for_entry(entry) {
-            let _ = self.accepted_operation_wakes.send((quote, entry.index));
+            let _ = self
+                .accepted_operation_wakes
+                .send((quote, entry.index, Instant::now()));
         }
     }
 
@@ -1018,14 +1164,15 @@ impl FederationPaymentObserver {
                             (changed.map(|_| 0).map_err(|_| cdk::Error::Internal), false)
                         }
                         wake = accepted_operation_wakes.recv() => match wake {
-                            Ok((quote, operation_index)) => (
-                                self.drive_quotes(
+                            Ok((quote, operation_index, queued_at)) => (
+                                Box::pin(self.drive_or_dispatch_quotes(
                                     &state,
-                                    &[quote],
+                                    vec![quote],
                                     FederationPaymentObservationTrigger::OperationAccepted(
                                         operation_index,
                                     ),
-                                ).await,
+                                    queued_at,
+                                )).await,
                                 false,
                             ),
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {

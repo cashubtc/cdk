@@ -3,6 +3,7 @@
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use bark::actions::lightning::receive::{
     minimum_lightning_receive_cltv_delta, LightningReceiveAntiDosMode,
@@ -77,6 +78,13 @@ use crate::{
     FederatedBarkLocalConfig, FederatedBarkMaintenanceControls, FederatedBarkReceiveSecretStore,
     FederatedBarkScope, ValidatedFederatedBarkConfig,
 };
+
+/// Keep one long-poll below the payment observer's durable attempt lease.
+///
+/// The Ark server normally wakes this immediately from its payment-update
+/// channel. Bounding it prevents abandoned invoices or stalled server calls
+/// from monopolizing a federation worker; the coordinator reconnects quickly.
+const BARK_PAYMENT_UPDATE_WAIT: Duration = Duration::from_secs(4);
 
 /// Whether member-local Bark state can serve an accepted frontier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1459,6 +1467,7 @@ impl FederatedBarkRuntime {
         accepted_plan: &FederationJournalEntry,
         accepted_htlcs: &FederationJournalEntry,
         observation_epoch: u64,
+        wait_for_update: bool,
     ) -> Result<FederatedBarkSendTerminalStatus, Error> {
         if observation_epoch == 0 {
             return Err(Error::SendReconciliationFailed);
@@ -1470,11 +1479,20 @@ impl FederatedBarkRuntime {
         )?;
         validate_send_transition_binding(&self.federation, accepted_plan, &plan, &htlcs)?;
         let bark_plan = self.validate_lightning_send_plan(quote, projection, &plan)?;
-        let status = self
-            .wallet
-            .poll_lightning_send(&bark_plan)
+        let status = if wait_for_update {
+            match tokio::time::timeout(
+                BARK_PAYMENT_UPDATE_WAIT,
+                self.wallet.wait_lightning_send(&bark_plan),
+            )
             .await
-            .map_err(|_| Error::SendReconciliationFailed)?;
+            {
+                Ok(status) => status,
+                Err(_) => self.wallet.poll_lightning_send(&bark_plan).await,
+            }
+        } else {
+            self.wallet.poll_lightning_send(&bark_plan).await
+        }
+        .map_err(|_| Error::SendReconciliationFailed)?;
         match status {
             FederationLightningSendStatus::Pending => Ok(FederatedBarkSendTerminalStatus::Pending),
             FederationLightningSendStatus::Missing => Ok(FederatedBarkSendTerminalStatus::Missing),
@@ -3083,6 +3101,7 @@ impl FederatedBarkRuntime {
         prepared: &FederationBarkReceivePrepared,
         observation_epoch: u64,
         prepare_if_accepted: bool,
+        wait_for_update: bool,
     ) -> Result<
         Option<(
             FederationBarkMemberObservation,
@@ -3094,18 +3113,27 @@ impl FederatedBarkRuntime {
             return Err(Error::ReceiveObservationFailed);
         }
         let receive = self.receive_plan(intent, prepared)?;
-        let observation = self
-            .wallet
-            .poll_lightning_receive(&receive)
+        let observation = if wait_for_update {
+            match tokio::time::timeout(
+                BARK_PAYMENT_UPDATE_WAIT,
+                self.wallet.wait_lightning_receive(&receive),
+            )
             .await
-            .map_err(|error| {
-                tracing::warn!(
-                    action_id = %intent.action_id,
-                    error = %error,
-                    "Federated Bark receive status poll failed"
-                );
-                Error::ReceiveObservationFailed
-            })?;
+            {
+                Ok(observation) => observation,
+                Err(_) => self.wallet.poll_lightning_receive(&receive).await,
+            }
+        } else {
+            self.wallet.poll_lightning_receive(&receive).await
+        }
+        .map_err(|error| {
+            tracing::warn!(
+                action_id = %intent.action_id,
+                error = %error,
+                "Federated Bark receive status observation failed"
+            );
+            Error::ReceiveObservationFailed
+        })?;
         let evidence = match observation.status {
             FederationLightningReceiveStatus::AwaitingPayment
             | FederationLightningReceiveStatus::Canceled => return Ok(None),

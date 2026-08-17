@@ -79,6 +79,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
     state: &MintState,
     quote_id: &QuoteId,
     observer_fallback_round: u32,
+    wait_for_backend_update: bool,
 ) -> Result<FederationPaymentAdvancement, cdk::Error> {
     let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
     let runtime = state
@@ -346,7 +347,11 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     action.action_id.to_string(),
                     super::latency::FederationLatencyBackend::Bark,
                     super::latency::FederationLatencyDirection::Outgoing,
-                    super::latency::FederationLatencyPhase::BarkLightningTerminalPoll,
+                    if wait_for_backend_update {
+                        super::latency::FederationLatencyPhase::BarkLightningServerWait
+                    } else {
+                        super::latency::FederationLatencyPhase::BarkLightningTerminalPoll
+                    },
                 );
                 let status_result = runtime
                     .observe_lightning_send_terminal(
@@ -355,6 +360,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
                         &plan_entry,
                         htlcs,
                         next_epoch,
+                        wait_for_backend_update,
                     )
                     .await;
                 let terminal_outcome = match &status_result {
@@ -389,7 +395,11 @@ pub(super) async fn advance_federated_bark_melt_quote(
                         action.action_id.to_string(),
                         super::latency::FederationLatencyBackend::Bark,
                         super::latency::FederationLatencyDirection::Outgoing,
-                        super::latency::FederationLatencyPhase::BarkLightningTerminalPoll,
+                        if wait_for_backend_update {
+                            super::latency::FederationLatencyPhase::BarkLightningServerWait
+                        } else {
+                            super::latency::FederationLatencyPhase::BarkLightningTerminalPoll
+                        },
                     );
                     let status_result = runtime
                         .observe_lightning_send_terminal(
@@ -398,6 +408,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
                             &plan_entry,
                             htlcs,
                             next_epoch,
+                            wait_for_backend_update,
                         )
                         .await;
                     let terminal_outcome = match &status_result {
@@ -414,12 +425,16 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 match status {
                     cdk_bark::FederatedBarkSendTerminalStatus::Pending
                     | cdk_bark::FederatedBarkSendTerminalStatus::Missing => {
-                        Ok(bark_outgoing_terminal_pending_wait(
-                            plan.actor,
-                            federation.member_id(),
-                            failed_observer_count,
-                            observer_fallback_round,
-                        ))
+                        Ok(if wait_for_backend_update {
+                            FederationPaymentAdvancement::AwaitingBackendNotification
+                        } else {
+                            bark_outgoing_terminal_pending_wait(
+                                plan.actor,
+                                federation.member_id(),
+                                failed_observer_count,
+                                observer_fallback_round,
+                            )
+                        })
                     }
                     cdk_bark::FederatedBarkSendTerminalStatus::Succeeded(transition) => {
                         submit_bark_operation(
