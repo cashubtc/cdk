@@ -3,9 +3,10 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 use super::{
-    BdkStorage, FailedSendAttemptRecord, FinalizedSendIntentRecord, BDK_NAMESPACE,
+    outpoint_to_key, BdkStorage, FailedSendAttemptRecord, FinalizedSendIntentRecord, BDK_NAMESPACE,
     FINALIZED_INTENT_NAMESPACE, FINALIZED_SEND_INTENT_QUOTE_ID_NAMESPACE, SEND_INTENT_NAMESPACE,
-    SEND_INTENT_QUOTE_ID_NAMESPACE,
+    SEND_INTENT_QUOTE_ID_NAMESPACE, SEND_OUTPOINT_QUOTE_ID_BACKFILL_KEY,
+    SEND_OUTPOINT_QUOTE_ID_NAMESPACE, STORAGE_MIGRATION_NAMESPACE,
 };
 use crate::error::Error;
 use crate::send::batch_transaction::record::{SendBatchRecord, SendBatchState};
@@ -70,6 +71,16 @@ impl BdkStorage {
         )
         .await
         .map_err(Error::from)?;
+        if let SendIntentState::AwaitingConfirmation { outpoint, .. } = &intent.state {
+            tx.kv_write(
+                BDK_NAMESPACE,
+                SEND_OUTPOINT_QUOTE_ID_NAMESPACE,
+                &outpoint_to_key(outpoint),
+                intent.quote_id.as_bytes(),
+            )
+            .await
+            .map_err(Error::from)?;
+        }
         tx.commit().await.map_err(Error::from)?;
         Ok(())
     }
@@ -157,6 +168,16 @@ impl BdkStorage {
         )
         .await
         .map_err(Error::from)?;
+        if let SendIntentState::AwaitingConfirmation { outpoint, .. } = &record.state {
+            tx.kv_write(
+                BDK_NAMESPACE,
+                SEND_OUTPOINT_QUOTE_ID_NAMESPACE,
+                &outpoint_to_key(outpoint),
+                record.quote_id.as_bytes(),
+            )
+            .await
+            .map_err(Error::from)?;
+        }
         tx.commit().await.map_err(Error::from)?;
         Ok(record)
     }
@@ -176,13 +197,55 @@ impl BdkStorage {
         intent_id: &Uuid,
         new_state: &SendIntentState,
     ) -> Result<(), Error> {
-        let key = intent_id.to_string();
-        if self.get_send_intent(intent_id).await?.is_none() {
+        let Some(mut intent) = self.get_send_intent(intent_id).await? else {
             return Err(Error::SendIntentNotFound(*intent_id));
-        }
+        };
+        let previous_outpoint = match &intent.state {
+            SendIntentState::AwaitingConfirmation { outpoint, .. } => Some(outpoint.clone()),
+            _ => None,
+        };
+        let new_outpoint = match new_state {
+            SendIntentState::AwaitingConfirmation { outpoint, .. } => Some(outpoint.clone()),
+            _ => None,
+        };
+        intent.state = new_state.clone();
 
-        self.update_record_state::<SendIntentRecord, SendIntentState>(&key, new_state)
+        let serialized = serde_json::to_vec(&intent)?;
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
             .await
+            .map_err(Error::from)?;
+        tx.kv_write(
+            BDK_NAMESPACE,
+            SEND_INTENT_NAMESPACE,
+            &intent_id.to_string(),
+            &serialized,
+        )
+        .await
+        .map_err(Error::from)?;
+        if let Some(outpoint) =
+            previous_outpoint.filter(|outpoint| Some(outpoint) != new_outpoint.as_ref())
+        {
+            tx.kv_remove(
+                BDK_NAMESPACE,
+                SEND_OUTPOINT_QUOTE_ID_NAMESPACE,
+                &outpoint_to_key(&outpoint),
+            )
+            .await
+            .map_err(Error::from)?;
+        }
+        if let Some(outpoint) = new_outpoint {
+            tx.kv_write(
+                BDK_NAMESPACE,
+                SEND_OUTPOINT_QUOTE_ID_NAMESPACE,
+                &outpoint_to_key(&outpoint),
+                intent.quote_id.as_bytes(),
+            )
+            .await
+            .map_err(Error::from)?;
+        }
+        tx.commit().await.map_err(Error::from)
     }
 
     /// Delete a send intent
@@ -206,6 +269,15 @@ impl BdkStorage {
         )
         .await
         .map_err(Error::from)?;
+        if let SendIntentState::AwaitingConfirmation { outpoint, .. } = intent.state {
+            tx.kv_remove(
+                BDK_NAMESPACE,
+                SEND_OUTPOINT_QUOTE_ID_NAMESPACE,
+                &outpoint_to_key(&outpoint),
+            )
+            .await
+            .map_err(Error::from)?;
+        }
         tx.commit().await.map_err(Error::from)?;
         Ok(())
     }
@@ -294,6 +366,95 @@ impl BdkStorage {
             .await
     }
 
+    /// Get all finalized send intent tombstones.
+    pub async fn get_all_finalized_send_intents(
+        &self,
+    ) -> Result<Vec<FinalizedSendIntentRecord>, Error> {
+        self.list_records::<FinalizedSendIntentRecord>().await
+    }
+
+    /// Look up a quote ID by the transaction output assigned to a send intent.
+    pub async fn get_quote_id_by_send_outpoint(
+        &self,
+        outpoint: &str,
+    ) -> Result<Option<String>, Error> {
+        let quote_id_bytes = self
+            .kv_store
+            .kv_read(
+                BDK_NAMESPACE,
+                SEND_OUTPOINT_QUOTE_ID_NAMESPACE,
+                &outpoint_to_key(outpoint),
+            )
+            .await
+            .map_err(Error::from)?;
+
+        match quote_id_bytes {
+            Some(quote_id_bytes) => String::from_utf8(quote_id_bytes)
+                .map(Some)
+                .map_err(|e| Error::Wallet(format!("Invalid quote-id index entry: {}", e))),
+            None => Ok(None),
+        }
+    }
+
+    /// Populate the send output quote index for records written by older versions.
+    pub(crate) async fn ensure_send_outpoint_quote_id_index(&self) -> Result<(), Error> {
+        if self
+            .kv_store
+            .kv_read(
+                BDK_NAMESPACE,
+                STORAGE_MIGRATION_NAMESPACE,
+                SEND_OUTPOINT_QUOTE_ID_BACKFILL_KEY,
+            )
+            .await
+            .map_err(Error::from)?
+            .is_some()
+        {
+            return Ok(());
+        }
+
+        let (send_intents, finalized_send_intents) = tokio::try_join!(
+            self.get_all_send_intents(),
+            self.get_all_finalized_send_intents(),
+        )?;
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(Error::from)?;
+
+        for intent in send_intents {
+            if let SendIntentState::AwaitingConfirmation { outpoint, .. } = intent.state {
+                tx.kv_write(
+                    BDK_NAMESPACE,
+                    SEND_OUTPOINT_QUOTE_ID_NAMESPACE,
+                    &outpoint_to_key(&outpoint),
+                    intent.quote_id.as_bytes(),
+                )
+                .await
+                .map_err(Error::from)?;
+            }
+        }
+        for intent in finalized_send_intents {
+            tx.kv_write(
+                BDK_NAMESPACE,
+                SEND_OUTPOINT_QUOTE_ID_NAMESPACE,
+                &outpoint_to_key(&intent.outpoint),
+                intent.quote_id.as_bytes(),
+            )
+            .await
+            .map_err(Error::from)?;
+        }
+        tx.kv_write(
+            BDK_NAMESPACE,
+            STORAGE_MIGRATION_NAMESPACE,
+            SEND_OUTPOINT_QUOTE_ID_BACKFILL_KEY,
+            b"complete",
+        )
+        .await
+        .map_err(Error::from)?;
+        tx.commit().await.map_err(Error::from)
+    }
+
     /// Look up a finalized intent tombstone by quote ID.
     pub async fn get_finalized_intent_by_quote_id(
         &self,
@@ -374,6 +535,14 @@ impl BdkStorage {
             FINALIZED_SEND_INTENT_QUOTE_ID_NAMESPACE,
             &intent.quote_id,
             record.intent_id.to_string().as_bytes(),
+        )
+        .await
+        .map_err(Error::from)?;
+        tx.kv_write(
+            BDK_NAMESPACE,
+            SEND_OUTPOINT_QUOTE_ID_NAMESPACE,
+            &outpoint_to_key(&record.outpoint),
+            record.quote_id.as_bytes(),
         )
         .await
         .map_err(Error::from)?;

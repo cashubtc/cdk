@@ -972,6 +972,18 @@ mod tests {
             Ok(crate::WalletTransactionPage {
                 transactions: vec![crate::wallet::WalletTransaction {
                     txid: format!("{offset}:{limit}"),
+                    inputs: vec![crate::wallet::WalletTransactionInput {
+                        txid: "previous-txid".to_string(),
+                        vout: 1,
+                        amount_sat: Some(42_000),
+                        address: Some("bcrt1qinput".to_string()),
+                    }],
+                    outputs: vec![crate::wallet::WalletTransactionOutput {
+                        vout: 2,
+                        address: "bcrt1qoutput".to_string(),
+                        amount_sat: 21_000,
+                        quote_id: Some("quote-id".to_string()),
+                    }],
                     ..Default::default()
                 }],
                 total: 7,
@@ -1085,6 +1097,16 @@ mod tests {
             .into_inner();
         assert_eq!(transactions.total, 7);
         assert_eq!(transactions.transactions[0].txid, "2:20");
+        let input = &transactions.transactions[0].inputs[0];
+        assert_eq!(input.txid, "previous-txid");
+        assert_eq!(input.vout, 1);
+        assert_eq!(input.amount_sat, Some(42_000));
+        assert_eq!(input.address.as_deref(), Some("bcrt1qinput"));
+        let output = &transactions.transactions[0].outputs[0];
+        assert_eq!(output.vout, 2);
+        assert_eq!(output.address, "bcrt1qoutput");
+        assert_eq!(output.amount_sat, 21_000);
+        assert_eq!(output.quote_id.as_deref(), Some("quote-id"));
 
         let addresses = server
             .list_addresses(Request::new(crate::wallet::ListAddressesRequest {

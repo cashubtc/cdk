@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_prost_build::configure()
         .protoc_arg("--experimental_allow_proto3_optional")
         .type_attribute(".", "#[allow(missing_docs)]")
+        .type_attribute("cdk_mint_wallet_v1.WalletTransaction", "#[derive(Eq)]")
         .field_attribute(".", "#[allow(missing_docs)]")
         .compile_protos(
             &["src/proto/cdk-mint-rpc.proto", "src/proto/wallet.proto"],
