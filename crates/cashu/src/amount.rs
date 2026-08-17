@@ -203,6 +203,12 @@ impl Amount<()> {
     /// Returns an error if the amount cannot be fully represented
     /// with the available denominations.
     pub fn split(&self, fee_and_amounts: &FeeAndAmounts) -> Result<Vec<Self>, Error> {
+        if fee_and_amounts.amounts.contains(&0) {
+            return Err(Error::InvalidAmount(
+                "denominations must be greater than zero".to_owned(),
+            ));
+        }
+
         let parts: Vec<Self> = fee_and_amounts
             .amounts
             .iter()
