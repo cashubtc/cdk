@@ -3670,6 +3670,24 @@ impl FederatedBarkRuntime {
         {
             return Err(Error::ReceiveClaimPlanInvalid);
         }
+        self.prepare_receive_claim_successor(&disclosed, accepted_preimage.operation_id, result)
+    }
+
+    /// Build the deterministic claim successor before the disclosure has
+    /// finalized, allowing both transitions to be ordered in one AlephBFT unit.
+    /// The caller must preserve this exact predecessor order atomically.
+    pub fn prepare_receive_claim_successor(
+        &self,
+        disclosed: &FederationBarkActionTransition,
+        disclosed_operation_id: FederationOperationId,
+        result: FederatedBarkReceiveClaimResult,
+    ) -> Result<FederationBarkActionTransition, Error> {
+        if disclosed.phase != FederationBarkSemanticPhase::ReceivePreimageDisclosed
+            || disclosed.action_id != result.action_id
+            || disclosed.plan_operation_id != result.plan_operation_id
+        {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        }
         let mut transitions = result.input_transitions;
         transitions.extend(result.output_transitions);
         transitions.sort();
@@ -3680,7 +3698,7 @@ impl FederatedBarkRuntime {
             phase: FederationBarkSemanticPhase::ReceiveClaimed,
             actor: self.member_id,
             plan_operation_id: result.plan_operation_id,
-            predecessor_operation_id: accepted_preimage.operation_id,
+            predecessor_operation_id: disclosed_operation_id,
             payment_hash: Some(result.payment_hash),
             attempt: result.attempt,
             signer_set: result.signer_set,
@@ -3690,7 +3708,7 @@ impl FederatedBarkRuntime {
             external_id: receive_external_id(
                 b"cdk/bark/receive-claimed-external/v1",
                 result.action_id,
-                accepted_preimage.operation_id,
+                disclosed_operation_id,
                 result.attempt,
             )?,
             artifacts: result.artifacts,

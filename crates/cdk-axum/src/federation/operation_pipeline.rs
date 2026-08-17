@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+#[cfg(feature = "federation-bark")]
+use cdk::federation::FederationAlephBftOrderedOperationGroup;
 use cdk::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
     FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
@@ -29,19 +31,54 @@ use super::node_runtime::{
 use super::FederationPeerSyncConfig;
 use crate::{FederationOperationNotificationStats, FederationOperationWaitRegistration};
 
+#[cfg(feature = "federation-bark")]
+fn validate_ordered_group_responses(
+    responses: &[FederationSubmitOperationResponse],
+) -> Result<(), cdk::Error> {
+    let Some(first) = responses.first() else {
+        return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+            reason: "ordered group produced no responses".to_string(),
+        }
+        .into());
+    };
+    let first_evidence = first.outcome.entry().consensus_evidence.ok_or_else(|| {
+        FederationError::AlephBftOrderedOperationGroupInvalid {
+            reason: "ordered group response is missing consensus evidence".to_string(),
+        }
+    })?;
+    for (offset, response) in responses.iter().enumerate() {
+        let evidence = response.outcome.entry().consensus_evidence.ok_or_else(|| {
+            FederationError::AlephBftOrderedOperationGroupInvalid {
+                reason: "ordered group response is missing consensus evidence".to_string(),
+            }
+        })?;
+        let expected_item_index = first_evidence
+            .item_index
+            .saturating_add(u64::try_from(offset).expect("group offset fits in u64"));
+        if evidence.session != first_evidence.session
+            || evidence.unit_finalization_index != first_evidence.unit_finalization_index
+            || evidence.unit_submitting_member != first_evidence.unit_submitting_member
+            || evidence.unit_index != first_evidence.unit_index
+            || evidence.item_index != expected_item_index
+        {
+            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+                reason: "ordered group did not finalize consecutively in one unit".to_string(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
 impl FederationNodeRuntime {
     pub(crate) async fn validate_envelope_admission(
         &self,
         envelope: &cdk::federation::FederationOperationEnvelope,
     ) -> Result<(), cdk::Error> {
+        self.validate_envelope_static_admission(envelope).await?;
         let Some(mint) = &self.mint else {
             return Ok(());
         };
-        let Some(config) = mint.effective_federation_config().await? else {
-            return Ok(());
-        };
-        envelope.verify_authorization(config.public_config())?;
-        config.validate_federated_operation_submission(&envelope.operation)?;
         if let cdk::federation::FederationOperation::TransactionSigned(signed) = &envelope.operation
         {
             mint.validate_federation_signed_transaction_submission(signed)
@@ -65,6 +102,21 @@ impl FederationNodeRuntime {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    pub(crate) async fn validate_envelope_static_admission(
+        &self,
+        envelope: &cdk::federation::FederationOperationEnvelope,
+    ) -> Result<(), cdk::Error> {
+        let Some(mint) = &self.mint else {
+            return Ok(());
+        };
+        let Some(config) = mint.effective_federation_config().await? else {
+            return Ok(());
+        };
+        envelope.verify_authorization(config.public_config())?;
+        config.validate_federated_operation_submission(&envelope.operation)?;
         Ok(())
     }
 
@@ -383,6 +435,156 @@ impl FederationNodeRuntime {
         result
     }
 
+    #[cfg(feature = "federation-bark")]
+    pub(crate) async fn submit_envelope_group(
+        &self,
+        envelopes: Vec<FederationOperationEnvelope>,
+    ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
+        if envelopes.is_empty() {
+            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+                reason: "ordered group cannot be empty".to_string(),
+            }
+            .into());
+        }
+        let operation_ids = envelopes
+            .iter()
+            .map(FederationOperationEnvelope::operation_id)
+            .collect::<Result<Vec<_>, _>>()?;
+        let sync_config = self.peer_sync_config.unwrap_or_default();
+        let notifications = self
+            .notifications
+            .as_ref()
+            .ok_or_else(|| runtime_unavailable("operation notifications"))?;
+        let consensus = self
+            .consensus
+            .as_ref()
+            .ok_or_else(|| runtime_unavailable("consensus"))?;
+        let mut consensus = consensus.lock().await;
+
+        let existing = operation_ids
+            .iter()
+            .map(|operation_id| {
+                consensus
+                    .journal()
+                    .entry_by_operation_id(*operation_id)
+                    .cloned()
+            })
+            .collect::<Vec<_>>();
+        if existing.iter().any(Option::is_some) {
+            if !existing.iter().all(Option::is_some) {
+                return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+                    reason: "ordered group is only partially present in the journal".to_string(),
+                }
+                .into());
+            }
+            let mut waits = Vec::with_capacity(existing.len());
+            for (operation_id, entry) in operation_ids.iter().copied().zip(existing) {
+                let entry = entry.expect("all ordered group entries were checked as present");
+                if matches!(
+                    entry.status(),
+                    FederationOperationStatus::Accepted | FederationOperationStatus::Applying
+                ) {
+                    waits.push(Some(notifications.register_waiter(
+                        operation_id,
+                        sync_config.response_waiter_limit,
+                    )?));
+                } else {
+                    waits.push(None);
+                }
+            }
+            let existing = operation_ids
+                .iter()
+                .map(|operation_id| {
+                    consensus
+                        .journal()
+                        .entry_by_operation_id(*operation_id)
+                        .cloned()
+                        .expect("all ordered group entries were checked as present")
+                })
+                .collect::<Vec<_>>();
+            drop(consensus);
+            let mut responses = Vec::with_capacity(operation_ids.len());
+            for ((operation_id, wait), entry) in
+                operation_ids.iter().copied().zip(waits).zip(existing)
+            {
+                let response = match wait {
+                    Some(wait) => {
+                        Self::wait_for_operation_acceptance(operation_id, sync_config, wait).await?
+                    }
+                    None => FederationSubmitOperationResponse::from_outcome(
+                        FederationJournalAppendOutcome::Duplicate(entry),
+                    ),
+                };
+                responses.push(response);
+            }
+            validate_ordered_group_responses(&responses)?;
+            return Ok(responses);
+        }
+
+        let queued_before = consensus.pending_mempool_len();
+        let prepared = consensus.prepare_aleph_bft_envelope_group(envelopes.clone())?;
+        let admission = prepared.admission();
+        let accepted_admission = admission == FederationConsensusItemAdmission::Accepted;
+        if accepted_admission
+            && queued_before.saturating_add(envelopes.len())
+                > sync_config.pending_mempool_item_limit
+        {
+            return Err(FederationError::PendingConsensusMempoolFull {
+                pending: queued_before,
+                max: sync_config.pending_mempool_item_limit,
+            }
+            .into());
+        }
+        let wait_registrations = operation_ids
+            .iter()
+            .map(|operation_id| {
+                notifications.register_waiter(*operation_id, sync_config.response_waiter_limit)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if accepted_admission {
+            let session_id = consensus.aleph_bft_status()?.session;
+            let ordered_group = FederationAlephBftOrderedOperationGroup {
+                operation_ids: operation_ids.clone(),
+            };
+            let pending = operation_ids
+                .iter()
+                .copied()
+                .zip(envelopes)
+                .map(
+                    |(operation_id, envelope)| FederationAlephBftPendingOperationRecord {
+                        operation_id,
+                        session_id,
+                        envelope,
+                        ordered_group: Some(ordered_group.clone()),
+                    },
+                )
+                .collect::<Vec<_>>();
+            self.persist_pending_operations(&pending).await?;
+        }
+        consensus.commit_prepared_aleph_bft_envelope_group(prepared);
+        drop(consensus);
+        for operation_id in &operation_ids {
+            self.mark_consensus_activity(*operation_id, true).await;
+            if accepted_admission {
+                super::aleph_bft_latency::record(
+                    super::aleph_bft_latency::CdkAlephBftLatencyStage::SubmitQueued,
+                    [*operation_id],
+                );
+            }
+        }
+        #[cfg(test)]
+        self.finalize_unit_locally_for_test().await?;
+        let mut responses = Vec::with_capacity(operation_ids.len());
+        for (operation_id, wait_registration) in operation_ids.into_iter().zip(wait_registrations) {
+            responses.push(
+                Self::wait_for_operation_acceptance(operation_id, sync_config, wait_registration)
+                    .await?,
+            );
+        }
+        validate_ordered_group_responses(&responses)?;
+        Ok(responses)
+    }
+
     async fn submit_envelope_inner(
         &self,
         envelope: FederationOperationEnvelope,
@@ -470,6 +672,7 @@ impl FederationNodeRuntime {
                 operation_id,
                 session_id,
                 envelope,
+                ordered_group: None,
             })
             .await?;
         }
@@ -543,6 +746,13 @@ impl FederationNodeRuntime {
         &self,
         operation: FederationAlephBftPendingOperationRecord,
     ) -> Result<(), cdk::Error> {
+        self.persist_pending_operations(&[operation]).await
+    }
+
+    pub(crate) async fn persist_pending_operations(
+        &self,
+        operations: &[FederationAlephBftPendingOperationRecord],
+    ) -> Result<(), cdk::Error> {
         #[cfg(test)]
         if self
             .components
@@ -556,8 +766,10 @@ impl FederationNodeRuntime {
         }
         let db = self.active_mint()?.localstore();
         let mut tx = db.begin_transaction().await?;
-        tx.add_federation_aleph_bft_pending_operation(&operation)
-            .await?;
+        for operation in operations {
+            tx.add_federation_aleph_bft_pending_operation(operation)
+                .await?;
+        }
         tx.commit().await?;
         Ok(())
     }

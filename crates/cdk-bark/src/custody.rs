@@ -685,7 +685,13 @@ impl VtxoCustody for CdkFrostVtxoCustody {
                 &authorized.authorization,
             )
             .await
-            .map_err(|_| {
+            .map_err(|error| {
+                tracing::warn!(
+                    reason = %cdk_common::federation::redact_federation_operator_message(
+                        &error.to_string()
+                    ),
+                    "Federated Bark FROST signing attempt is unavailable"
+                );
                 self.mark_signer_unavailable();
                 Error::CustodySignerUnavailable
             })?;
@@ -712,7 +718,13 @@ impl VtxoCustody for CdkFrostVtxoCustody {
                 &authorized.authorization,
             )
             .await
-            .map_err(|_| {
+            .map_err(|error| {
+                tracing::warn!(
+                    reason = %cdk_common::federation::redact_federation_operator_message(
+                        &error.to_string()
+                    ),
+                    "Federated Bark MuSig2 commitment attempt is unavailable"
+                );
                 self.mark_signer_unavailable();
                 Error::CustodySignerUnavailable
             })?;
@@ -799,7 +811,17 @@ impl VtxoCustody for CdkFrostVtxoCustody {
                 &session.commitments,
                 &transcript,
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    reason = %cdk_common::federation::redact_federation_operator_message(
+                        &error.to_string()
+                    ),
+                    "Federated Bark MuSig2 signature attempt is unavailable"
+                );
+                self.mark_signer_unavailable();
+                error
+            })?;
         self.musig_sessions
             .lock()
             .map_err(|_| anyhow::anyhow!("Bark MuSig2 session lock is poisoned"))?

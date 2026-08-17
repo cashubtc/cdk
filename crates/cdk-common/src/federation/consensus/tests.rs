@@ -1114,6 +1114,139 @@ fn aleph_bft_data_provider_drains_bounded_batches_without_empty_units() {
 }
 
 #[test]
+fn aleph_bft_data_provider_never_splits_an_ordered_group() {
+    let federation_id = federation_id(13);
+    let mut provider = FederationAlephBftUnitDataProvider::with_limits(
+        federation_id,
+        member_id_value(2),
+        3,
+        FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
+        2,
+        FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
+    )
+    .expect("provider");
+    provider
+        .submit_item(FederationConsensusItem::ModuleFact(
+            FederationConsensusModuleFact::new("mint", "before-group", json!({})),
+        ))
+        .expect("submit leading item");
+    let first = mint_envelope(
+        federation_id,
+        "ordered-group-first",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let second = mint_envelope(
+        federation_id,
+        "ordered-group-second",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let operation_ids = vec![
+        first.operation_id().expect("first operation id"),
+        second.operation_id().expect("second operation id"),
+    ];
+    let prepared = provider
+        .prepare_item_group(vec![
+            FederationConsensusItem::operation(first),
+            FederationConsensusItem::operation(second),
+        ])
+        .expect("prepare ordered group");
+    assert_eq!(
+        provider.commit_item_group(prepared),
+        FederationConsensusItemAdmission::Accepted
+    );
+
+    let leading = provider
+        .next_unit_payload()
+        .expect("leading unit")
+        .expect("leading unit present");
+    assert_eq!(leading.items.len(), 1);
+    let grouped = provider
+        .next_unit_payload()
+        .expect("grouped unit")
+        .expect("grouped unit present");
+    assert_eq!(grouped.items.len(), 2);
+    assert_eq!(grouped.operation_ids, operation_ids);
+}
+
+#[test]
+fn aleph_bft_ordered_group_rejects_partial_duplicate_admission() {
+    let federation_id = federation_id(13);
+    let first = mint_envelope(
+        federation_id,
+        "ordered-group-duplicate",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let second = mint_envelope(
+        federation_id,
+        "ordered-group-new",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let mut provider = FederationAlephBftUnitDataProvider::new(federation_id, member_id(), 0);
+    provider
+        .submit_operation(first.clone())
+        .expect("submit existing operation");
+
+    assert!(matches!(
+        provider.prepare_item_group(vec![
+            FederationConsensusItem::operation(first),
+            FederationConsensusItem::operation(second),
+        ]),
+        Err(FederationError::AlephBftOrderedOperationGroupInvalid { .. })
+    ));
+    assert_eq!(provider.queued_len(), 1);
+}
+
+#[test]
+fn aleph_bft_ordered_group_finalizes_consecutively_in_one_unit() {
+    let federation_id = federation_id(13);
+    let first = mint_envelope(
+        federation_id,
+        "ordered-finalization-first",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let second = mint_envelope(
+        federation_id,
+        "ordered-finalization-second",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let operation_ids = vec![
+        first.operation_id().expect("first operation id"),
+        second.operation_id().expect("second operation id"),
+    ];
+    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id(), 0);
+    runtime
+        .submit_aleph_bft_envelope_group(vec![first, second])
+        .expect("submit ordered group");
+    let unit = runtime
+        .next_aleph_bft_unit_payload()
+        .expect("next unit")
+        .expect("unit present");
+    assert_eq!(unit.operation_ids, operation_ids);
+    let responses = runtime
+        .finalize_aleph_bft_unit(unit)
+        .expect("finalize ordered unit");
+    assert_eq!(responses.len(), 2);
+    let first_evidence = responses[0]
+        .outcome
+        .entry()
+        .consensus_evidence
+        .expect("first consensus evidence");
+    let second_evidence = responses[1]
+        .outcome
+        .entry()
+        .consensus_evidence
+        .expect("second consensus evidence");
+    assert_eq!(
+        first_evidence.unit_finalization_index,
+        second_evidence.unit_finalization_index
+    );
+    assert_eq!(
+        first_evidence.item_index.saturating_add(1),
+        second_evidence.item_index
+    );
+}
+
+#[test]
 fn aleph_bft_data_provider_empty_queue_repeated_polls_do_not_advance() {
     let federation_id = federation_id(13);
     let mut provider = FederationAlephBftUnitDataProvider::new(federation_id, member_id(), 11);

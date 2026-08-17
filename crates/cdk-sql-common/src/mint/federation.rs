@@ -64,12 +64,12 @@ use cdk_common::database::Error;
 use cdk_common::federation::FederationOperation;
 use cdk_common::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
-    FederationAlephBftPendingOperationRecord, FederationApplicationDigest,
-    FederationApplicationOperation, FederationApplicationState, FederationCheckpoint,
-    FederationCheckpointFrontier, FederationCheckpointId, FederationCheckpointKind,
-    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfigDigest,
-    FederationConfigSnapshot, FederationDkgActivationRequest, FederationDkgCeremonyId,
-    FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
+    FederationAlephBftOrderedOperationGroup, FederationAlephBftPendingOperationRecord,
+    FederationApplicationDigest, FederationApplicationOperation, FederationApplicationState,
+    FederationCheckpoint, FederationCheckpointFrontier, FederationCheckpointId,
+    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSignature,
+    FederationConfigDigest, FederationConfigSnapshot, FederationDkgActivationRequest,
+    FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationFinalizedItemDigest,
@@ -449,6 +449,20 @@ fn sql_member_id(column: Column) -> Result<MemberId, Error> {
         .map_err(|e| Error::Internal(format!("Invalid federation member id: {e}")))
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(super) struct StoredFederationAlephBftPendingEnvelope {
+    pub(super) envelope: FederationOperationEnvelope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) ordered_group: Option<FederationAlephBftOrderedOperationGroup>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum StoredFederationAlephBftPendingEnvelopeCompat {
+    Current(StoredFederationAlephBftPendingEnvelope),
+    Legacy(FederationOperationEnvelope),
+}
+
 fn sql_row_to_federation_aleph_bft_pending_operation(
     row: Vec<Column>,
 ) -> Result<FederationAlephBftPendingOperationRecord, Error> {
@@ -456,12 +470,18 @@ fn sql_row_to_federation_aleph_bft_pending_operation(
 
     let operation_id = FederationOperationId::from_hex(column_as_string!(&operation_id))
         .map_err(|e| Error::Internal(format!("Invalid federation operation ID: {e}")))?;
-    let envelope: FederationOperationEnvelope =
+    let stored: StoredFederationAlephBftPendingEnvelopeCompat =
         serde_json::from_str(&column_as_string!(&envelope_json)).map_err(|e| {
             Error::Internal(format!(
                 "Invalid federation AlephBFT pending operation envelope JSON: {e}"
             ))
         })?;
+    let (envelope, ordered_group) = match stored {
+        StoredFederationAlephBftPendingEnvelopeCompat::Current(stored) => {
+            (stored.envelope, stored.ordered_group)
+        }
+        StoredFederationAlephBftPendingEnvelopeCompat::Legacy(envelope) => (envelope, None),
+    };
     let computed_operation_id = envelope.operation_id().map_err(|e| {
         Error::Internal(format!(
             "Invalid federation AlephBFT pending operation envelope: {e}"
@@ -472,11 +492,25 @@ fn sql_row_to_federation_aleph_bft_pending_operation(
             "Federation AlephBFT pending operation ID mismatch: stored {operation_id}, envelope {computed_operation_id}"
         )));
     }
+    if ordered_group.as_ref().is_some_and(|group| {
+        group
+            .operation_ids
+            .iter()
+            .filter(|group_operation_id| **group_operation_id == operation_id)
+            .count()
+            != 1
+    }) {
+        return Err(Error::Internal(
+            "Federation AlephBFT pending ordered group does not contain its operation exactly once"
+                .to_string(),
+        ));
+    }
 
     Ok(FederationAlephBftPendingOperationRecord {
         operation_id,
         session_id: column_as_number!(session),
         envelope,
+        ordered_group,
     })
 }
 

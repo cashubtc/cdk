@@ -663,7 +663,12 @@ impl FederationWalletLivenessWorker {
             .into_iter()
             .map(|member| cdk_frost::MemberId::new(member.get()))
             .collect::<Result<Vec<_>, _>>()?;
+        let local_signing = state
+            .federation
+            .frost_signing()
+            .ok_or_else(|| anyhow::anyhow!("local FROST signing runtime is unavailable"))?;
         FederationFrostSigningCoordinator::new(client, public)
+            .with_local_signer(runtime.member_id(), &state.mint, local_signing)
             .sign_accepted_transaction(
                 state,
                 wallet,

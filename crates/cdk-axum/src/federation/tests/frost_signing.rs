@@ -171,6 +171,7 @@ async fn run_live_signing_case(
     .expect("retry authorization request");
 
     let transport = RouterFederationTransportRegistry::default();
+    let mut local_signer = None;
     for (index, (private, root)) in private_configs.iter().zip(roots).enumerate() {
         let mut manager = ParticipantKeyManager::with_nonce_store(
             root,
@@ -200,11 +201,16 @@ async fn run_live_signing_case(
         );
         let mut state =
             federation_route_state_for_private(public_config.clone(), private.clone()).await;
-        state.federation.set_frost_signing_for_test(Some(runtime));
+        state
+            .federation
+            .set_frost_signing_for_test(Some(runtime.clone()));
+        if index == 0 {
+            local_signer = Some((private.member_id, Arc::clone(&state.mint), runtime.clone()));
+        }
         let router = Router::new()
             .nest("/api/federation/v1", create_federation_router())
             .with_state(state);
-        if index < usize::from(threshold) {
+        if index > 0 && index < usize::from(threshold) {
             transport.insert(
                 public_config
                     .member(private.member_id)
@@ -238,49 +244,23 @@ async fn run_live_signing_case(
         &client,
         public.clone(),
     );
+    let (local_member_id, local_mint, local_runtime) =
+        local_signer.expect("first member local signer");
+    let coordinator =
+        coordinator.with_local_signer(local_member_id, local_mint.as_ref(), &local_runtime);
     let started = tokio::time::Instant::now();
-    if matches!(failure, SigningFailure::Commitment | SigningFailure::Share) {
+    if failure != SigningFailure::None {
         let path = match failure {
             SigningFailure::Commitment => "frost/signing/commitments",
             SigningFailure::Share => "frost/signing/packages",
-            SigningFailure::None | SigningFailure::AggregateResult => unreachable!(),
+            SigningFailure::AggregateResult => "frost/signing/results",
+            SigningFailure::None => unreachable!(),
         };
         transport.fail_post_responses_after_delivery(path, 1);
         coordinator
             .sign(&public_config, &context, &derivation, &authorization)
             .await
-            .expect_err("lost response must fail the first attempt");
-        coordinator
-            .sign(
-                &public_config,
-                &retry_context,
-                &derivation,
-                &retry_authorization,
-            )
-            .await
-            .expect("abort must burn ambiguous nonces before retry attempt");
-    } else if failure == SigningFailure::AggregateResult {
-        transport.fail_post_responses_after_delivery("frost/signing/results", 1);
-        coordinator
-            .sign(&public_config, &context, &derivation, &authorization)
-            .await
-            .expect_err("lost aggregate notification response must fail the coordinator");
-        let failover_client = FederationRestPeerClient::new(
-            transport,
-            &public_config,
-            private_configs
-                .last()
-                .expect("replacement coordinator config")
-                .clone(),
-        )
-        .expect("replacement coordinator client");
-        super::super::frost_signing::FederationFrostSigningCoordinator::new(
-            &failover_client,
-            public,
-        )
-        .sign(&public_config, &context, &derivation, &authorization)
-        .await
-        .expect("another member aggregates cached shares for the exact active attempt");
+            .expect("lost idempotent response must recover within the first signing attempt");
     } else {
         coordinator
             .sign(&public_config, &context, &derivation, &authorization)
@@ -342,7 +322,7 @@ async fn live_private_rest_frost_phases_wait_for_slowest_peer_not_sum() {
 }
 
 #[tokio::test]
-async fn lost_post_signer_response_burns_nonce_and_retry_attempt_succeeds() {
+async fn lost_commitment_response_recovers_in_same_frost_attempt() {
     let (public, first, second, third) = transport_config_three();
     run_live_signing_case(
         public,
@@ -355,7 +335,7 @@ async fn lost_post_signer_response_burns_nonce_and_retry_attempt_succeeds() {
 }
 
 #[tokio::test]
-async fn lost_share_response_burns_attempt_and_fresh_attempt_succeeds() {
+async fn lost_share_response_recovers_in_same_frost_attempt() {
     let (public, first, second, third) = transport_config_three();
     run_live_signing_case(
         public,
@@ -368,7 +348,7 @@ async fn lost_share_response_burns_attempt_and_fresh_attempt_succeeds() {
 }
 
 #[tokio::test]
-async fn another_member_aggregates_cached_shares_after_coordinator_loss() {
+async fn lost_aggregate_ack_recovers_in_same_frost_attempt() {
     let (public, first, second, third) = transport_config_three();
     run_live_signing_case(
         public,

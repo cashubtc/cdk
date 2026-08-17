@@ -3,7 +3,7 @@
 #![doc = include_str!("../README.md")]
 
 #[cfg(feature = "federation")]
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 #[cfg(feature = "federation")]
 use std::sync::Mutex;
@@ -1922,6 +1922,35 @@ impl MintState {
         Ok(response)
     }
 
+    #[cfg(feature = "federation-bark")]
+    pub(crate) async fn submit_federation_ordered_successor_group(
+        &self,
+        envelopes: Vec<FederationOperationEnvelope>,
+    ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
+        let Some(first) = envelopes.first() else {
+            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+                reason: "ordered successor group cannot be empty".to_string(),
+            }
+            .into());
+        };
+        self.validate_federation_envelope_admission(first).await?;
+        for successor in envelopes.iter().skip(1) {
+            self.federation
+                .validate_envelope_static_admission(successor)
+                .await?;
+        }
+        let operation_ids = envelopes
+            .iter()
+            .map(FederationOperationEnvelope::operation_id)
+            .collect::<Result<Vec<_>, _>>()?;
+        self.ensure_federation_ready_for_public_submit().await?;
+        let responses = self.federation.submit_envelope_group(envelopes).await?;
+        for (response, operation_id) in responses.iter().zip(operation_ids) {
+            validate_federation_submit_response(response, operation_id)?;
+        }
+        Ok(responses)
+    }
+
     async fn submit_coordinated_wallet_federation_envelope(
         &self,
         envelope: FederationOperationEnvelope,
@@ -3345,6 +3374,9 @@ async fn create_federation_runtime_state_with_wallet(
     #[cfg(feature = "federation-bark")]
     let bark = match local_bark_config {
         Some(local) => {
+            let local_signing = frost_signing.clone().ok_or_else(|| {
+                anyhow::anyhow!("federated Bark requires a local FROST signing runtime")
+            })?;
             let wallet = config
                 .public_config()
                 .frost_wallet
@@ -3374,6 +3406,9 @@ async fn create_federation_runtime_state_with_wallet(
                     config.public_config().clone(),
                     custody_public,
                     recovery_public,
+                    config.member_id(),
+                    Arc::clone(mint),
+                    local_signing,
                 ),
             );
             Some(
@@ -3572,10 +3607,16 @@ async fn create_federation_runtime_state_with_wallet(
             .await?;
     }
     tx.commit().await?;
-    for pending in db
+    let pending_operations = db
         .get_federation_aleph_bft_pending_operations(session_id)
-        .await?
-    {
+        .await?;
+    let pending_by_id = pending_operations
+        .iter()
+        .cloned()
+        .map(|pending| (pending.operation_id, pending))
+        .collect::<BTreeMap<_, _>>();
+    let mut recovered_groups = BTreeSet::new();
+    for pending in pending_operations {
         let operation_id = pending.envelope.operation_id()?;
         if operation_id != pending.operation_id {
             return Err(cdk::Error::Custom(format!(
@@ -3584,18 +3625,82 @@ async fn create_federation_runtime_state_with_wallet(
             ))
             .into());
         }
-        if consensus
-            .journal()
-            .entry_by_operation_id(pending.operation_id)
-            .is_some()
-            || db
-                .get_federation_journal_entry_by_operation_id(pending.operation_id)
-                .await?
+        let Some(group) = pending.ordered_group.clone() else {
+            if consensus
+                .journal()
+                .entry_by_operation_id(pending.operation_id)
                 .is_some()
+                || db
+                    .get_federation_journal_entry_by_operation_id(pending.operation_id)
+                    .await?
+                    .is_some()
+            {
+                continue;
+            }
+            consensus.submit_aleph_bft_envelope(pending.envelope)?;
+            continue;
+        };
+        if group.operation_ids.is_empty()
+            || group
+                .operation_ids
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .len()
+                != group.operation_ids.len()
         {
+            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+                reason: "persisted ordered group is empty or contains duplicate IDs".to_string(),
+            }
+            .into());
+        }
+        let group_key = group.operation_ids[0];
+        if !recovered_groups.insert(group_key) {
             continue;
         }
-        consensus.submit_aleph_bft_envelope(pending.envelope)?;
+        let mut envelopes = Vec::with_capacity(group.operation_ids.len());
+        let mut finalized = Vec::with_capacity(group.operation_ids.len());
+        for group_operation_id in &group.operation_ids {
+            let member = pending_by_id.get(group_operation_id).ok_or_else(|| {
+                FederationError::AlephBftOrderedOperationGroupInvalid {
+                    reason: "persisted ordered group is incomplete".to_string(),
+                }
+            })?;
+            if member.session_id != session_id || member.ordered_group.as_ref() != Some(&group) {
+                return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+                    reason: "persisted ordered group metadata is inconsistent".to_string(),
+                }
+                .into());
+            }
+            let computed = member.envelope.operation_id()?;
+            if computed != *group_operation_id || computed != member.operation_id {
+                return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+                    reason: "persisted ordered group operation ID is inconsistent".to_string(),
+                }
+                .into());
+            }
+            finalized.push(
+                consensus
+                    .journal()
+                    .entry_by_operation_id(*group_operation_id)
+                    .is_some()
+                    || db
+                        .get_federation_journal_entry_by_operation_id(*group_operation_id)
+                        .await?
+                        .is_some(),
+            );
+            envelopes.push(member.envelope.clone());
+        }
+        if finalized.iter().any(|is_finalized| *is_finalized) {
+            if !finalized.iter().all(|is_finalized| *is_finalized) {
+                return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+                    reason: "persisted ordered group is only partially finalized".to_string(),
+                }
+                .into());
+            }
+            continue;
+        }
+        consensus.submit_aleph_bft_envelope_group(envelopes)?;
     }
     let entries = consensus.journal().entries().to_vec();
     if !used_checkpoint {

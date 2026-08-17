@@ -467,6 +467,16 @@ pub struct FederationAlephBftPendingOperationRecord {
     pub session_id: u64,
     /// Canonical operation envelope to replay into the local AlephBFT queue.
     pub envelope: FederationOperationEnvelope,
+    /// Ordered group that must be reconstructed into one AlephBFT unit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordered_group: Option<FederationAlephBftOrderedOperationGroup>,
+}
+
+/// Durable identity and order for operations that must share one AlephBFT unit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationAlephBftOrderedOperationGroup {
+    /// Operation IDs in their required in-unit application order.
+    pub operation_ids: Vec<FederationOperationId>,
 }
 
 /// Stable generation identifier for one ordered recovery-barrier request.
@@ -980,11 +990,27 @@ impl FederationPreparedAlephBftSubmission {
     }
 }
 
+/// Non-mutating admission decision for one indivisible ordered operation group.
+#[derive(Debug)]
+#[must_use = "prepared submission group must be persisted and committed or explicitly discarded"]
+pub struct FederationPreparedAlephBftSubmissionGroup {
+    items: Vec<PreparedFederationConsensusItem>,
+    admission: FederationConsensusItemAdmission,
+}
+
+impl FederationPreparedAlephBftSubmissionGroup {
+    /// Return the deterministic admission decision shared by every group item.
+    #[must_use]
+    pub fn admission(&self) -> FederationConsensusItemAdmission {
+        self.admission
+    }
+}
+
 /// Bounded pending-item queue for consensus data providers.
 #[derive(Debug, Clone)]
 pub(crate) struct FederationConsensusItemQueue {
     max_item_bytes: usize,
-    pending: VecDeque<FederationConsensusItem>,
+    pending: VecDeque<Vec<FederationConsensusItem>>,
     pending_operation_ids: BTreeSet<FederationOperationId>,
     pending_conflict_keys: HashMap<FederationOperationConflictKey, FederationOperationId>,
 }
@@ -1016,7 +1042,7 @@ impl FederationConsensusItemQueue {
     /// Return the number of queued items.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.pending.len()
+        self.pending.iter().map(Vec::len).sum()
     }
 
     /// Return whether a recovery barrier is waiting for unit construction.
@@ -1024,11 +1050,12 @@ impl FederationConsensusItemQueue {
     pub fn has_recovery_barrier(&self) -> bool {
         self.pending
             .iter()
+            .flatten()
             .any(|item| matches!(item, FederationConsensusItem::RecoveryBarrier(_)))
     }
 
     fn has_recovery_barrier_covering(&self, requested: &FederationRecoveryBarrier) -> bool {
-        self.pending.iter().any(|item| match item {
+        self.pending.iter().flatten().any(|item| match item {
             FederationConsensusItem::RecoveryBarrier(pending) => {
                 recovery_barrier_covers(pending, requested)
             }
@@ -1098,7 +1125,87 @@ impl FederationConsensusItemQueue {
             }
         }
 
-        self.pending.push_back(prepared.item);
+        self.pending.push_back(vec![prepared.item]);
+        prepared.admission
+    }
+
+    fn prepare_group(
+        &self,
+        items: Vec<FederationConsensusItem>,
+    ) -> Result<FederationPreparedAlephBftSubmissionGroup> {
+        if items.is_empty() {
+            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+                reason: "ordered group cannot be empty".to_string(),
+            });
+        }
+        let mut operation_ids = self.pending_operation_ids.clone();
+        let mut conflict_keys = self.pending_conflict_keys.clone();
+        let mut prepared_items = Vec::with_capacity(items.len());
+        for item in items {
+            item.ensure_within_size_limit(self.max_item_bytes)?;
+            let metadata = pending_consensus_item_operation_metadata(&item)?;
+            let admission = match &metadata {
+                Some((operation_id, _)) if operation_ids.contains(operation_id) => {
+                    FederationConsensusItemAdmission::DuplicateOperation
+                }
+                Some((operation_id, item_conflict_keys)) => {
+                    for conflict_key in item_conflict_keys {
+                        if let Some(existing_operation_id) = conflict_keys.get(conflict_key) {
+                            return Err(FederationError::ConflictingOperation {
+                                conflict_key: serde_json::to_string(conflict_key)?,
+                                existing_operation_id: existing_operation_id.to_string(),
+                                attempted_operation_id: operation_id.to_string(),
+                            });
+                        }
+                    }
+                    operation_ids.insert(*operation_id);
+                    for conflict_key in item_conflict_keys {
+                        conflict_keys.insert(conflict_key.clone(), *operation_id);
+                    }
+                    FederationConsensusItemAdmission::Accepted
+                }
+                None => FederationConsensusItemAdmission::Accepted,
+            };
+            prepared_items.push(PreparedFederationConsensusItem {
+                item,
+                metadata,
+                admission,
+            });
+        }
+        let admission = prepared_items[0].admission;
+        if prepared_items
+            .iter()
+            .any(|item| item.admission != admission)
+        {
+            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+                reason: "ordered group must be entirely new or entirely pending".to_string(),
+            });
+        }
+        Ok(FederationPreparedAlephBftSubmissionGroup {
+            items: prepared_items,
+            admission,
+        })
+    }
+
+    fn commit_group(
+        &mut self,
+        prepared: FederationPreparedAlephBftSubmissionGroup,
+    ) -> FederationConsensusItemAdmission {
+        if prepared.admission == FederationConsensusItemAdmission::DuplicateOperation {
+            return prepared.admission;
+        }
+        let mut items = Vec::with_capacity(prepared.items.len());
+        for prepared_item in prepared.items {
+            if let Some((operation_id, conflict_keys)) = prepared_item.metadata {
+                self.pending_operation_ids.insert(operation_id);
+                for conflict_key in conflict_keys {
+                    self.pending_conflict_keys
+                        .insert(conflict_key, operation_id);
+                }
+            }
+            items.push(prepared_item.item);
+        }
+        self.pending.push_back(items);
         prepared.admission
     }
 
@@ -1106,12 +1213,20 @@ impl FederationConsensusItemQueue {
     #[cfg(test)]
     pub fn drain_batch(&mut self, limit: usize) -> Vec<FederationConsensusItem> {
         let mut batch = Vec::new();
-        for _ in 0..limit {
-            let Some(item) = self.pending.pop_front() else {
+        while batch.len() < limit {
+            let Some(group) = self.pending.front() else {
                 break;
             };
-            self.release_pending_operation_metadata(&item);
-            batch.push(item);
+            if group.len() > limit.saturating_sub(batch.len()) {
+                break;
+            }
+            let Some(group) = self.pending.pop_front() else {
+                break;
+            };
+            for item in group {
+                self.release_pending_operation_metadata(&item);
+                batch.push(item);
+            }
         }
         batch
     }
@@ -1129,30 +1244,54 @@ impl FederationConsensusItemQueue {
         let mut batch = Vec::new();
         let mut batch_bytes = 0usize;
 
-        for _ in 0..max_items {
-            let Some(item) = self.pending.front() else {
+        while batch.len() < max_items {
+            let Some(group) = self.pending.front() else {
                 break;
             };
-            let item_size = item.canonical_size()?;
-            if item_size > max_bytes {
+            if group.len() > max_items {
                 if batch.is_empty() {
-                    return Err(FederationError::ConsensusItemTooLarge {
-                        actual: item_size,
-                        max: max_bytes,
+                    return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+                        reason: format!(
+                            "ordered group has {} items, exceeding unit limit {max_items}",
+                            group.len()
+                        ),
                     });
                 }
                 break;
             }
-            if !batch.is_empty() && batch_bytes.saturating_add(item_size) > max_bytes {
+            if group.len() > max_items.saturating_sub(batch.len()) {
                 break;
             }
-
-            let Some(item) = self.pending.pop_front() else {
+            let group_bytes = group.iter().try_fold(0usize, |total, item| {
+                Ok::<_, FederationError>(total.saturating_add(item.canonical_size()?))
+            })?;
+            if group_bytes > max_bytes {
+                if batch.is_empty() {
+                    if group.len() == 1 {
+                        return Err(FederationError::ConsensusItemTooLarge {
+                            actual: group_bytes,
+                            max: max_bytes,
+                        });
+                    }
+                    return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+                        reason: format!(
+                            "ordered group body is {group_bytes} bytes, exceeding unit limit {max_bytes}"
+                        ),
+                    });
+                }
+                break;
+            }
+            if !batch.is_empty() && batch_bytes.saturating_add(group_bytes) > max_bytes {
+                break;
+            }
+            let Some(group) = self.pending.pop_front() else {
                 break;
             };
-            self.release_pending_operation_metadata(&item);
-            batch_bytes = batch_bytes.saturating_add(item_size);
-            batch.push(item);
+            for item in group {
+                self.release_pending_operation_metadata(&item);
+                batch.push(item);
+            }
+            batch_bytes = batch_bytes.saturating_add(group_bytes);
         }
 
         Ok(batch)
@@ -1332,6 +1471,40 @@ impl FederationAlephBftUnitDataProvider {
         prepared: PreparedFederationConsensusItem,
     ) -> FederationConsensusItemAdmission {
         self.queue.commit(prepared)
+    }
+
+    fn prepare_item_group(
+        &self,
+        items: Vec<FederationConsensusItem>,
+    ) -> Result<FederationPreparedAlephBftSubmissionGroup> {
+        if items.len() > self.max_items_per_unit {
+            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+                reason: format!(
+                    "ordered group has {} items, exceeding unit limit {}",
+                    items.len(),
+                    self.max_items_per_unit
+                ),
+            });
+        }
+        let body_bytes = items.iter().try_fold(0usize, |total, item| {
+            Ok::<_, FederationError>(total.saturating_add(item.canonical_size()?))
+        })?;
+        if body_bytes > self.max_unit_body_bytes {
+            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+                reason: format!(
+                    "ordered group body is {body_bytes} bytes, exceeding unit limit {}",
+                    self.max_unit_body_bytes
+                ),
+            });
+        }
+        self.queue.prepare_group(items)
+    }
+
+    fn commit_item_group(
+        &mut self,
+        prepared: FederationPreparedAlephBftSubmissionGroup,
+    ) -> FederationConsensusItemAdmission {
+        self.queue.commit_group(prepared)
     }
 
     /// Return the next non-empty unit payload, or `None` when no item is ready.
@@ -2522,10 +2695,10 @@ impl FederationConsensusRuntime {
     /// Begin a later AlephBFT session and requeue local items from units that
     /// were dispatched but not finalized before the previous session ended.
     pub fn begin_session_requeue_pending_finalization(&mut self, session: u64) -> Result<usize> {
-        let pending_items = self
+        let pending_units = self
             .pending_finalization_units
             .values()
-            .flat_map(|items| items.iter().cloned())
+            .cloned()
             .collect::<Vec<_>>();
 
         self.finalization_handler.begin_session(session)?;
@@ -2535,9 +2708,13 @@ impl FederationConsensusRuntime {
         self.pending_finalization_conflict_keys.clear();
 
         let mut requeued = 0usize;
-        for item in pending_items {
-            if self.data_provider.submit_item(item)? == FederationConsensusItemAdmission::Accepted {
-                requeued = requeued.saturating_add(1);
+        for unit in pending_units {
+            let item_count = unit.len();
+            let prepared = self.data_provider.prepare_item_group(unit)?;
+            if self.data_provider.commit_item_group(prepared)
+                == FederationConsensusItemAdmission::Accepted
+            {
+                requeued = requeued.saturating_add(item_count);
             }
         }
 
@@ -2592,6 +2769,74 @@ impl FederationConsensusRuntime {
         prepared: FederationPreparedAlephBftSubmission,
     ) -> FederationConsensusItemAdmission {
         self.data_provider.commit_operation(prepared.item)
+    }
+
+    fn prepare_operation_group(
+        &self,
+        envelopes: Vec<FederationOperationEnvelope>,
+    ) -> Result<FederationPreparedAlephBftSubmissionGroup> {
+        if envelopes.is_empty() {
+            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+                reason: "ordered group cannot be empty".to_string(),
+            });
+        }
+        let metadata = envelopes
+            .iter()
+            .map(pending_operation_metadata_from_envelope)
+            .collect::<Result<Vec<_>>>()?;
+        let pending_finalization = metadata
+            .iter()
+            .map(|(operation_id, _)| {
+                self.pending_finalization_operation_ids
+                    .contains(operation_id)
+            })
+            .collect::<Vec<_>>();
+        if pending_finalization.iter().any(|pending| *pending) {
+            if !pending_finalization.iter().all(|pending| *pending) {
+                return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
+                    reason: "ordered group must be entirely new or entirely pending".to_string(),
+                });
+            }
+            let items = envelopes
+                .into_iter()
+                .zip(metadata)
+                .map(|(envelope, metadata)| PreparedFederationConsensusItem {
+                    item: FederationConsensusItem::operation(envelope),
+                    metadata: Some(metadata),
+                    admission: FederationConsensusItemAdmission::DuplicateOperation,
+                })
+                .collect();
+            return Ok(FederationPreparedAlephBftSubmissionGroup {
+                items,
+                admission: FederationConsensusItemAdmission::DuplicateOperation,
+            });
+        }
+        for (operation_id, conflict_keys) in &metadata {
+            for conflict_key in conflict_keys {
+                if let Some(existing_operation_id) =
+                    self.pending_finalization_conflict_keys.get(conflict_key)
+                {
+                    return Err(FederationError::ConflictingOperation {
+                        conflict_key: serde_json::to_string(conflict_key)?,
+                        existing_operation_id: existing_operation_id.to_string(),
+                        attempted_operation_id: operation_id.to_string(),
+                    });
+                }
+            }
+        }
+        self.data_provider.prepare_item_group(
+            envelopes
+                .into_iter()
+                .map(FederationConsensusItem::operation)
+                .collect(),
+        )
+    }
+
+    fn commit_prepared_operation_group(
+        &mut self,
+        prepared: FederationPreparedAlephBftSubmissionGroup,
+    ) -> FederationConsensusItemAdmission {
+        self.data_provider.commit_item_group(prepared)
     }
 
     /// Queue one recovery barrier unless pending work already covers its frontier.
@@ -3053,6 +3298,15 @@ impl FederationConsensusRuntime {
         self.submit_operation(envelope)
     }
 
+    /// Queue one indivisible ordered operation group for unit construction.
+    pub fn submit_aleph_bft_envelope_group(
+        &mut self,
+        envelopes: Vec<FederationOperationEnvelope>,
+    ) -> Result<FederationConsensusItemAdmission> {
+        let prepared = self.prepare_operation_group(envelopes)?;
+        Ok(self.commit_prepared_operation_group(prepared))
+    }
+
     /// Validate one operation admission without mutating the runtime.
     pub fn prepare_aleph_bft_envelope(
         &self,
@@ -3070,6 +3324,27 @@ impl FederationConsensusRuntime {
         prepared: FederationPreparedAlephBftSubmission,
     ) -> FederationConsensusItemAdmission {
         self.commit_prepared_operation(prepared)
+    }
+
+    /// Validate an indivisible ordered operation group without mutating the runtime.
+    ///
+    /// Every operation is admitted together and the data provider will never
+    /// split the group across AlephBFT units.
+    pub fn prepare_aleph_bft_envelope_group(
+        &self,
+        envelopes: Vec<FederationOperationEnvelope>,
+    ) -> Result<FederationPreparedAlephBftSubmissionGroup> {
+        self.prepare_operation_group(envelopes)
+    }
+
+    /// Commit one prepared indivisible ordered operation group.
+    ///
+    /// The group must come from this runtime with no intervening mutation.
+    pub fn commit_prepared_aleph_bft_envelope_group(
+        &mut self,
+        prepared: FederationPreparedAlephBftSubmissionGroup,
+    ) -> FederationConsensusItemAdmission {
+        self.commit_prepared_operation_group(prepared)
     }
 
     /// Queue one bounded recovery barrier for AlephBFT ordering.

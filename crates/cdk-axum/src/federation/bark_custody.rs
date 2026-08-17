@@ -1,5 +1,7 @@
 //! Authenticated private transport for Bark-specific FROST custody protocols.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use axum::extract::{Json, State};
 use axum::response::Response;
@@ -31,6 +33,9 @@ pub(crate) struct FederatedBarkCustodyPeerClient {
     public_config: FederationConfig,
     custody_public: DerivedPublicPackage,
     recovery_public: DerivedPublicPackage,
+    local_member_id: cdk::federation::MemberId,
+    mint: Arc<cdk::mint::Mint>,
+    local_signing: super::frost_signing::FederationFrostSigningRuntime,
 }
 
 impl FederatedBarkCustodyPeerClient {
@@ -39,12 +44,18 @@ impl FederatedBarkCustodyPeerClient {
         public_config: FederationConfig,
         custody_public: DerivedPublicPackage,
         recovery_public: DerivedPublicPackage,
+        local_member_id: cdk::federation::MemberId,
+        mint: Arc<cdk::mint::Mint>,
+        local_signing: super::frost_signing::FederationFrostSigningRuntime,
     ) -> Self {
         Self {
             client,
             public_config,
             custody_public,
             recovery_public,
+            local_member_id,
+            mint,
+            local_signing,
         }
     }
 
@@ -80,6 +91,7 @@ impl cdk_bark::FederatedBarkCustodyClient for FederatedBarkCustodyPeerClient {
             super::latency::FederationLatencyDirection::Internal,
         );
         super::frost_signing::FederationFrostSigningCoordinator::new(&self.client, public)
+            .with_local_signer(self.local_member_id, &self.mint, &self.local_signing)
             .sign_with_latency(
                 &self.public_config,
                 context,
@@ -97,6 +109,7 @@ impl cdk_bark::FederatedBarkCustodyClient for FederatedBarkCustodyPeerClient {
         authorization: &AuthorizationRequest,
     ) -> anyhow::Result<VirtualMusigNonceCommitmentSet> {
         FederationBarkCustodyCoordinator::new(&self.client, self.custody_public.clone())
+            .with_local_signer(self.local_member_id, &self.mint, &self.local_signing)
             .collect_virtual_musig_commitments(
                 &self.public_config,
                 context,
@@ -115,6 +128,7 @@ impl cdk_bark::FederatedBarkCustodyClient for FederatedBarkCustodyPeerClient {
         transcript: &VirtualMusigTranscript,
     ) -> anyhow::Result<[u8; 32]> {
         FederationBarkCustodyCoordinator::new(&self.client, self.custody_public.clone())
+            .with_local_signer(self.local_member_id, &self.mint, &self.local_signing)
             .collect_virtual_musig_partial(
                 &self.public_config,
                 context,
@@ -133,6 +147,7 @@ impl cdk_bark::FederatedBarkCustodyClient for FederatedBarkCustodyPeerClient {
         reason: cdk_frost::NonceBurnReason,
     ) {
         FederationBarkCustodyCoordinator::new(&self.client, self.custody_public.clone())
+            .with_local_signer(self.local_member_id, &self.mint, &self.local_signing)
             .abort_selected(&self.public_config, context, authorization, reason)
             .await;
     }
@@ -144,6 +159,14 @@ impl cdk_bark::FederatedBarkCustodyClient for FederatedBarkCustodyPeerClient {
 pub(crate) struct FederationBarkCustodyCoordinator<'a, T> {
     client: &'a super::peer_client::FederationRestPeerClient<T>,
     public: DerivedPublicPackage,
+    local_signer: Option<FederationBarkLocalSigner<'a>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FederationBarkLocalSigner<'a> {
+    member_id: cdk::federation::MemberId,
+    mint: &'a cdk::mint::Mint,
+    runtime: &'a super::frost_signing::FederationFrostSigningRuntime,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -156,7 +179,25 @@ where
         client: &'a super::peer_client::FederationRestPeerClient<T>,
         public: DerivedPublicPackage,
     ) -> Self {
-        Self { client, public }
+        Self {
+            client,
+            public,
+            local_signer: None,
+        }
+    }
+
+    fn with_local_signer(
+        mut self,
+        member_id: cdk::federation::MemberId,
+        mint: &'a cdk::mint::Mint,
+        runtime: &'a super::frost_signing::FederationFrostSigningRuntime,
+    ) -> Self {
+        self.local_signer = Some(FederationBarkLocalSigner {
+            member_id,
+            mint,
+            runtime,
+        });
+        self
     }
 
     /// Collect one durable virtual MuSig2 nonce from every accepted signer.
@@ -175,9 +216,26 @@ where
                 let request = request.clone();
                 async move {
                     let member = member_for_signer(public_config, signer)?;
-                    self.client
-                        .request_bark_virtual_musig_commitment(member, &request)
-                        .await
+                    match self
+                        .local_signer
+                        .filter(|local| local.member_id == member.member_id)
+                    {
+                        Some(local) => local
+                            .runtime
+                            .commit_bark_virtual_musig(
+                                local.mint,
+                                context,
+                                derivation,
+                                authorization,
+                            )
+                            .await
+                            .map_err(anyhow::Error::from),
+                        None => {
+                            self.client
+                                .request_bark_virtual_musig_commitment(member, &request)
+                                .await
+                        }
+                    }
                 }
             })
             .buffer_unordered(self.parallel_limit(context))
@@ -245,10 +303,29 @@ where
                     commitments,
                     transcript,
                 );
-                self.client
-                    .request_bark_virtual_musig_partial(member, &request)
-                    .await
-                    .map(|partial| (commitment.clone(), partial))
+                match self
+                    .local_signer
+                    .filter(|local| local.member_id == member.member_id)
+                {
+                    Some(local) => local
+                        .runtime
+                        .sign_bark_virtual_musig(
+                            local.mint,
+                            context,
+                            commitment.nonce_id(),
+                            authorization,
+                            commitments,
+                            transcript,
+                        )
+                        .await
+                        .map_err(anyhow::Error::from)
+                        .map(|partial| (commitment.clone(), partial)),
+                    None => self
+                        .client
+                        .request_bark_virtual_musig_partial(member, &request)
+                        .await
+                        .map(|partial| (commitment.clone(), partial)),
+                }
             })
             .buffer_unordered(self.parallel_limit(context))
             .try_collect::<Vec<_>>()
@@ -292,9 +369,27 @@ where
                 let payload = payload.clone();
                 async move {
                     let member = member_for_signer(public_config, signer)?;
-                    self.client
-                        .request_bark_threshold_dh_share(member, &payload)
-                        .await
+                    match self
+                        .local_signer
+                        .filter(|local| local.member_id == member.member_id)
+                    {
+                        Some(local) => local
+                            .runtime
+                            .bark_threshold_dh(
+                                local.mint,
+                                context,
+                                derivation,
+                                authorization,
+                                request,
+                            )
+                            .await
+                            .map_err(anyhow::Error::from),
+                        None => {
+                            self.client
+                                .request_bark_threshold_dh_share(member, &payload)
+                                .await
+                        }
+                    }
                 }
             })
             .buffer_unordered(self.parallel_limit(context))
@@ -371,6 +466,16 @@ where
                     let Some(member) = public_config.member(member_id) else {
                         return;
                     };
+                    if let Some(local) = self
+                        .local_signer
+                        .filter(|local| local.member_id == member.member_id)
+                    {
+                        let _ = local
+                            .runtime
+                            .abort_bark_custody(local.mint, context, authorization, reason)
+                            .await;
+                        return;
+                    }
                     let _ = self.client.abort_bark_custody(member, &request).await;
                 }
             })

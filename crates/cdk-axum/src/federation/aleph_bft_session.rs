@@ -2120,6 +2120,7 @@ mod tests {
             operation_id,
             session_id: 7,
             envelope,
+            ordered_group: None,
         };
         let other_envelope = FederationOperationEnvelope::new(
             FederationId::from_bytes([8; 32]),
@@ -2133,6 +2134,7 @@ mod tests {
                 .expect("other pending operation id"),
             session_id: 8,
             envelope: other_envelope,
+            ordered_group: None,
         };
         let mut tx = db.begin_transaction().await.expect("pending operation tx");
         tx.add_federation_aleph_bft_pending_operation(&pending)

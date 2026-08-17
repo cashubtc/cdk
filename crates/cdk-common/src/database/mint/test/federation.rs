@@ -9,14 +9,14 @@ use crate::database::mint::{
 };
 use crate::error::{Error, ErrorResponse};
 use crate::federation::{
-    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
-    FederationApplicationDigest, FederationApplicationState, FederationCheckpoint,
-    FederationCheckpointFrontier, FederationCheckpointKind, FederationCheckpointQuorum,
-    FederationCheckpointSignature, FederationConfig, FederationConfigDigest,
-    FederationConfigSnapshot, FederationConsensusItem, FederationConsensusRuntime,
-    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
-    FederationDkgCeremonyState, FederationDkgCommitmentRound, FederationDkgKeysetSpec,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationAlephBftOrderedOperationGroup, FederationAlephBftPendingOperationRecord,
+    FederationAlephBftUnitPayload, FederationApplicationDigest, FederationApplicationState,
+    FederationCheckpoint, FederationCheckpointFrontier, FederationCheckpointKind,
+    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfig,
+    FederationConfigDigest, FederationConfigSnapshot, FederationConsensusItem,
+    FederationConsensusRuntime, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgCommitmentRound,
+    FederationDkgKeysetSpec, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
     FederationDkgPublicCeremony, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
     FederationDkgSetupState, FederationDkgTranscript, FederationDkgTranscriptSignature,
@@ -1516,12 +1516,16 @@ where
         operation_id,
         session_id: 3,
         envelope,
+        ordered_group: Some(FederationAlephBftOrderedOperationGroup {
+            operation_ids: vec![operation_id],
+        }),
     };
     let other_envelope = mint_quote_envelope("pending-b", 8);
     let other_session = FederationAlephBftPendingOperationRecord {
         operation_id: other_envelope.operation_id().expect("other operation id"),
         session_id: 4,
         envelope: other_envelope,
+        ordered_group: None,
     };
 
     assert!(db
@@ -1546,6 +1550,7 @@ where
     assert_eq!(session_three.len(), 1);
     assert_eq!(session_three[0].operation_id, pending.operation_id);
     assert_eq!(session_three[0].session_id, pending.session_id);
+    assert_eq!(session_three[0].ordered_group, pending.ordered_group);
     assert_eq!(
         session_three[0]
             .envelope
@@ -1614,6 +1619,7 @@ where
         operation_id: stale_envelope.operation_id().expect("stale operation id"),
         session_id: 4,
         envelope: stale_envelope,
+        ordered_group: None,
     };
     let mut tx = db
         .begin_transaction()
@@ -1630,6 +1636,7 @@ where
         operation_id: future_envelope.operation_id().expect("future operation id"),
         session_id: 6,
         envelope: future_envelope,
+        ordered_group: None,
     };
     let mut tx = db
         .begin_transaction()

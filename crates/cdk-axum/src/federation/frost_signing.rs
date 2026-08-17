@@ -28,6 +28,7 @@ use cdk::federation::{
     FederationFrostCommitmentResponse, FederationFrostSignatureShareResponse,
     FederationFrostSigningAbortRequest, FederationFrostSigningAck,
     FederationFrostSigningPackageRequest, FederationRestMessageKind, FederationSignedRequest,
+    MemberConfigPublic,
 };
 use cdk::mint::{FederationRuntimeConfig, Mint};
 use cdk_frost::{
@@ -126,6 +127,14 @@ impl FrostLatencyContext {
 pub(crate) struct FederationFrostSigningCoordinator<'a, T> {
     client: &'a super::peer_client::FederationRestPeerClient<T>,
     public: DerivedPublicPackage,
+    local_signer: Option<FederationFrostLocalSigner<'a>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FederationFrostLocalSigner<'a> {
+    member_id: cdk::federation::MemberId,
+    mint: &'a Mint,
+    runtime: &'a FederationFrostSigningRuntime,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -138,7 +147,28 @@ where
         client: &'a super::peer_client::FederationRestPeerClient<T>,
         public: DerivedPublicPackage,
     ) -> Self {
-        Self { client, public }
+        Self {
+            client,
+            public,
+            local_signer: None,
+        }
+    }
+
+    /// Use the member-local signer runtime without routing back through the
+    /// member's own private REST endpoint. The local path invokes the same
+    /// authorization validator and durable nonce store as the REST handlers.
+    pub(crate) fn with_local_signer(
+        mut self,
+        member_id: cdk::federation::MemberId,
+        mint: &'a Mint,
+        runtime: &'a FederationFrostSigningRuntime,
+    ) -> Self {
+        self.local_signer = Some(FederationFrostLocalSigner {
+            member_id,
+            mint,
+            runtime,
+        });
+        self
     }
 
     /// Run both rounds, verify every response, aggregate, and notify signers.
@@ -227,8 +257,23 @@ where
             super::latency::FederationLatencyPhase::FrostCommitmentRound,
         );
         let commitment_results = join_all(signer_members.iter().map(|(_, member)| {
-            self.client
-                .request_frost_commitment(member, &commitment_request)
+            let commitment_request = commitment_request.clone();
+            async move {
+                match self
+                    .local_signer
+                    .filter(|local| local.member_id == member.member_id)
+                {
+                    Some(local) => local
+                        .runtime
+                        .commit(local.mint, context, derivation, authorization)
+                        .await
+                        .map_err(anyhow::Error::from),
+                    None => {
+                        self.request_frost_commitment_resilient(member, &commitment_request)
+                            .await
+                    }
+                }
+            }
         }))
         .await;
         let mut commitments = Vec::with_capacity(signer_members.len());
@@ -277,11 +322,33 @@ where
             direction,
             super::latency::FederationLatencyPhase::FrostSignatureRound,
         );
-        let share_results =
-            join_all(signing_packages.iter().map(|(member, package)| {
-                self.client.request_frost_signature_share(member, package)
-            }))
-            .await;
+        let share_results = join_all(signing_packages.iter().map(|(member, package)| async move {
+            match self
+                .local_signer
+                .filter(|local| local.member_id == member.member_id)
+            {
+                Some(local) => {
+                    let (decoded_context, nonce_id, decoded_authorization, commitments) =
+                        package.decode(public_config.federation_id, member.member_id)?;
+                    local
+                        .runtime
+                        .sign(
+                            local.mint,
+                            &decoded_context,
+                            nonce_id,
+                            &decoded_authorization,
+                            &commitments,
+                        )
+                        .await
+                        .map_err(anyhow::Error::from)
+                }
+                None => {
+                    self.request_frost_signature_share_resilient(member, package)
+                        .await
+                }
+            }
+        }))
+        .await;
         let mut shares = Vec::with_capacity(signing_packages.len());
         let mut share_error = None;
         for result in share_results {
@@ -324,8 +391,29 @@ where
             signature,
         );
         let result_notifications = join_all(signer_members.iter().map(|(_, member)| {
-            self.client
-                .notify_frost_aggregate_result(member, &notification)
+            let notification = notification.clone();
+            async move {
+                match self
+                    .local_signer
+                    .filter(|local| local.member_id == member.member_id)
+                {
+                    Some(local) => local
+                        .runtime
+                        .record_aggregate(
+                            local.mint,
+                            context,
+                            authorization,
+                            package_hash,
+                            signature,
+                        )
+                        .await
+                        .map_err(anyhow::Error::from),
+                    None => {
+                        self.notify_frost_aggregate_result_resilient(member, &notification)
+                            .await
+                    }
+                }
+            }
         }))
         .await;
         let result_error = result_notifications.into_iter().find_map(Result::err);
@@ -509,9 +597,110 @@ where
             let Some(member) = public_config.member(member_id) else {
                 continue;
             };
+            if let Some(local) = self
+                .local_signer
+                .filter(|local| local.member_id == member.member_id)
+            {
+                let _ = local
+                    .runtime
+                    .abort(local.mint, context, authorization, reason)
+                    .await;
+                continue;
+            }
             let _ = self.client.abort_frost_signing(member, &request).await;
         }
     }
+
+    async fn request_frost_commitment_resilient(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationFrostCommitmentRequest,
+    ) -> anyhow::Result<NonceCommitment> {
+        match self.client.request_frost_commitment(member, request).await {
+            Err(error) if frost_transport_error_is_retryable(&error) => {
+                tracing::debug!(
+                    member = %member.member_id,
+                    "Retrying the same idempotent FROST commitment session after a transport error"
+                );
+                self.client.request_frost_commitment(member, request).await
+            }
+            result => result,
+        }
+    }
+
+    async fn request_frost_signature_share_resilient(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationFrostSigningPackageRequest,
+    ) -> anyhow::Result<SignatureShare> {
+        match self
+            .client
+            .request_frost_signature_share(member, request)
+            .await
+        {
+            Err(error) if frost_transport_error_is_retryable(&error) => {
+                tracing::debug!(
+                    member = %member.member_id,
+                    "Retrying the same idempotent FROST signature session after a transport error"
+                );
+                self.client
+                    .request_frost_signature_share(member, request)
+                    .await
+            }
+            result => result,
+        }
+    }
+
+    async fn notify_frost_aggregate_result_resilient(
+        &self,
+        member: &MemberConfigPublic,
+        notification: &FederationFrostAggregateResultNotification,
+    ) -> anyhow::Result<()> {
+        match self
+            .client
+            .notify_frost_aggregate_result(member, notification)
+            .await
+        {
+            Err(error) if frost_transport_error_is_retryable(&error) => {
+                tracing::debug!(
+                    member = %member.member_id,
+                    "Retrying the same FROST aggregate result after a transport error"
+                );
+                self.client
+                    .notify_frost_aggregate_result(member, notification)
+                    .await
+            }
+            result => result,
+        }
+    }
+}
+
+fn frost_transport_error_is_retryable(error: &anyhow::Error) -> bool {
+    error.chain().any(|source| {
+        if let Some(peer_error) =
+            source.downcast_ref::<super::peer_client::FederationRestPeerClientError>()
+        {
+            return matches!(
+                peer_error,
+                super::peer_client::FederationRestPeerClientError::RequestTimeout { .. }
+            );
+        }
+        match source.downcast_ref::<cdk_http_client::HttpError>() {
+            Some(
+                cdk_http_client::HttpError::Connection(_)
+                | cdk_http_client::HttpError::Timeout
+                | cdk_http_client::HttpError::Proxy(_)
+                | cdk_http_client::HttpError::Other(_),
+            ) => true,
+            Some(cdk_http_client::HttpError::Status { status, .. }) => *status >= 500,
+            Some(
+                cdk_http_client::HttpError::Serialization(_)
+                | cdk_http_client::HttpError::ResponseTooLarge { .. }
+                | cdk_http_client::HttpError::Build(_),
+            )
+            | None => false,
+        }
+    })
 }
 
 /// One participant's long-lived, application-neutral FROST key boundary.

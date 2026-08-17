@@ -1,18 +1,19 @@
 //! Consensus-first orchestration for federated Bark incoming BOLT11 quotes.
 
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cdk::federation::{
     ark_server_commitment, federation_bark_description_hash, federation_bark_mailbox_scope,
     payment_hash_for_preimage, preimage_commitment, FederationBarkActionId,
-    FederationBarkEvidenceAttestationRequest, FederationBarkEvidenceBinding,
-    FederationBarkEvidenceCertificate, FederationBarkEvidencePhase,
+    FederationBarkActionTransition, FederationBarkEvidenceAttestationRequest,
+    FederationBarkEvidenceBinding, FederationBarkEvidenceCertificate, FederationBarkEvidencePhase,
     FederationBarkMemberObservation, FederationBarkObservationStatus, FederationBarkOperation,
     FederationBarkReceiveIntent, FederationBarkReceivePrepared, FederationBarkReceiveProof,
     FederationBarkReceiveSecretBinding, FederationBarkSemanticPhase, FederationBarkUnit,
-    FederationBarkVtxoLocator, FederationId, FederationOperationId,
-    FederationPaymentObservationContext, MemberConfigPublic, FEDERATION_BARK_OPERATION_VERSION,
-    FEDERATION_MAX_DERIVATION_INDEX,
+    FederationBarkVtxoLocator, FederationBarkVtxoState, FederationError, FederationId,
+    FederationOperationId, FederationPaymentObservationContext, MemberConfigPublic,
+    FEDERATION_BARK_OPERATION_VERSION, FEDERATION_MAX_DERIVATION_INDEX,
 };
 use cdk::mint::{MintQuoteRequest, MintQuoteResponse, QuoteId};
 use cdk::nuts::CurrencyUnit;
@@ -32,6 +33,64 @@ use super::peer_client::FederationRestPeerClient;
 const FEDERATION_BARK_RECEIVE_INTENT_LIFETIME_SECONDS: u64 = 7 * 24 * 60 * 60;
 const FEDERATION_BARK_RECEIVE_EXPIRY_GRACE_SECONDS: u64 = 15 * 60;
 const FEDERATION_BARK_QUOTE_ID_DOMAIN: &[u8] = b"cdk-federation-bark-quote-id-v1";
+
+fn validate_atomic_receive_claim_group(
+    disclosed: &FederationBarkActionTransition,
+    disclosed_operation_id: FederationOperationId,
+    claimed: &FederationBarkActionTransition,
+) -> Result<(), cdk::Error> {
+    let invalid = || FederationError::ApplicationOperationInvalid {
+        reason: "atomic Bark receive claim is not the exact disclosure successor".to_string(),
+    };
+    if disclosed.phase != FederationBarkSemanticPhase::ReceivePreimageDisclosed
+        || claimed.phase != FederationBarkSemanticPhase::ReceiveClaimed
+        || claimed.action_id != disclosed.action_id
+        || claimed.quote != disclosed.quote
+        || claimed.actor != disclosed.actor
+        || claimed.plan_operation_id != disclosed.plan_operation_id
+        || claimed.predecessor_operation_id != disclosed_operation_id
+        || claimed.payment_hash != disclosed.payment_hash
+        || claimed.attempt != disclosed.attempt
+        || claimed.signer_set != disclosed.signer_set
+        || claimed.request_hash != disclosed.result_hash
+    {
+        return Err(invalid().into());
+    }
+    let disclosed_inputs = disclosed
+        .vtxo_transitions
+        .iter()
+        .map(|transition| (transition.vtxo_id, transition))
+        .collect::<BTreeMap<_, _>>();
+    let claimed_inputs = claimed
+        .vtxo_transitions
+        .iter()
+        .filter(|transition| {
+            transition.previous_state == Some(FederationBarkVtxoState::PendingSpend)
+                && transition.new_state == FederationBarkVtxoState::Spent
+        })
+        .map(|transition| (transition.vtxo_id, transition))
+        .collect::<BTreeMap<_, _>>();
+    if disclosed_inputs.len() != disclosed.vtxo_transitions.len()
+        || claimed_inputs.len() != disclosed_inputs.len()
+    {
+        return Err(invalid().into());
+    }
+    for (vtxo_id, disclosure) in disclosed_inputs {
+        let Some(claim) = claimed_inputs.get(&vtxo_id) else {
+            return Err(invalid().into());
+        };
+        if disclosure.previous_state != Some(FederationBarkVtxoState::Reserved)
+            || disclosure.new_state != FederationBarkVtxoState::PendingSpend
+            || claim.locator != disclosure.locator
+            || claim.amount != disclosure.amount
+            || claim.expiry_height != disclosure.expiry_height
+            || claim.artifact_hash != disclosure.artifact_hash
+        {
+            return Err(invalid().into());
+        }
+    }
+    Ok(())
+}
 
 async fn receive_transition_entry(
     state: &MintState,
@@ -664,32 +723,63 @@ async fn advance_federated_bark_mint_quote_inner(
                     result,
                 } => {
                     let claimed_amount = result.amount();
-                    let accepted_preimage =
-                        if effective_phase == FederationBarkSemanticPhase::ClaimPlanned {
-                            let envelope =
-                                federation.operation_envelope(super::bark_federation_operation(
-                                    FederationBarkOperation::ActionTransition(preimage_disclosed),
-                                )?);
-                            let response = state.submit_federation_envelope(envelope).await?;
-                            response.ensure_accepted()?;
-                            response.outcome.entry().clone()
-                        } else {
-                            receive_transition_entry(
-                                state,
-                                &projection,
-                                action.action_id,
-                                FederationBarkSemanticPhase::ReceivePreimageDisclosed,
+                    let (claimed, response) = if effective_phase
+                        == FederationBarkSemanticPhase::ClaimPlanned
+                    {
+                        let disclosed_envelope =
+                            federation.operation_envelope(super::bark_federation_operation(
+                                FederationBarkOperation::ActionTransition(
+                                    preimage_disclosed.clone(),
+                                ),
+                            )?);
+                        let disclosed_operation_id = disclosed_envelope.operation_id()?;
+                        let claimed = runtime
+                            .prepare_receive_claim_successor(
+                                &preimage_disclosed,
+                                disclosed_operation_id,
+                                *result,
                             )
-                            .await?
+                            .map_err(|_| bark_unavailable())?;
+                        validate_atomic_receive_claim_group(
+                            &preimage_disclosed,
+                            disclosed_operation_id,
+                            &claimed,
+                        )?;
+                        let claimed_envelope =
+                            federation.operation_envelope(super::bark_federation_operation(
+                                FederationBarkOperation::ActionTransition(claimed.clone()),
+                            )?);
+                        let responses = state
+                            .submit_federation_ordered_successor_group(vec![
+                                disclosed_envelope,
+                                claimed_envelope,
+                            ])
+                            .await?;
+                        let [disclosed_response, claimed_response] = responses.as_slice() else {
+                            return Err(bark_unavailable());
                         };
-                    let claimed = runtime
-                        .finalize_receive_claim(&accepted_preimage, *result)
-                        .map_err(|_| bark_unavailable())?;
-                    let envelope = federation.operation_envelope(super::bark_federation_operation(
-                        FederationBarkOperation::ActionTransition(claimed.clone()),
-                    )?);
-                    let response = state.submit_federation_envelope(envelope).await?;
-                    response.ensure_accepted()?;
+                        disclosed_response.ensure_accepted()?;
+                        claimed_response.ensure_accepted()?;
+                        (claimed, claimed_response.clone())
+                    } else {
+                        let accepted_preimage = receive_transition_entry(
+                            state,
+                            &projection,
+                            action.action_id,
+                            FederationBarkSemanticPhase::ReceivePreimageDisclosed,
+                        )
+                        .await?;
+                        let claimed = runtime
+                            .finalize_receive_claim(&accepted_preimage, *result)
+                            .map_err(|_| bark_unavailable())?;
+                        let envelope =
+                            federation.operation_envelope(super::bark_federation_operation(
+                                FederationBarkOperation::ActionTransition(claimed.clone()),
+                            )?);
+                        let response = state.submit_federation_envelope(envelope).await?;
+                        response.ensure_accepted()?;
+                        (claimed, response)
+                    };
                     let observation = FederationBarkMemberObservation {
                         version: FEDERATION_BARK_OPERATION_VERSION,
                         action_id: claimed.action_id,

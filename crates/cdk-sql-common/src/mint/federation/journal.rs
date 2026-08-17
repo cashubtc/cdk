@@ -1519,6 +1519,19 @@ where
                 operation.operation_id, computed_operation_id
             )));
         }
+        if operation.ordered_group.as_ref().is_some_and(|group| {
+            group
+                .operation_ids
+                .iter()
+                .filter(|operation_id| **operation_id == operation.operation_id)
+                .count()
+                != 1
+        }) {
+            return Err(Error::Internal(format!(
+                "Federation AlephBFT pending ordered group does not contain operation {} exactly once",
+                operation.operation_id
+            )));
+        }
 
         let active_session_row = query(
             r#"
@@ -1564,7 +1577,13 @@ where
         )?
         .bind("operation_id", operation.operation_id.to_string())
         .bind("session", operation.session_id as i64)
-        .bind("envelope_json", serde_json::to_string(&operation.envelope)?)
+        .bind(
+            "envelope_json",
+            serde_json::to_string(&StoredFederationAlephBftPendingEnvelope {
+                envelope: operation.envelope.clone(),
+                ordered_group: operation.ordered_group.clone(),
+            })?,
+        )
         .execute(&self.inner)
         .await?;
 

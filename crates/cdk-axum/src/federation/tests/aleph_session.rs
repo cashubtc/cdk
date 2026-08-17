@@ -1527,6 +1527,7 @@ async fn aleph_bft_restart_finalizes_atomically_rebound_pending_operations() {
             operation_id: first_operation_id,
             session_id: 0,
             envelope: first_envelope,
+            ordered_group: None,
         },
     )
     .await
@@ -1536,6 +1537,7 @@ async fn aleph_bft_restart_finalizes_atomically_rebound_pending_operations() {
             operation_id: second_operation_id,
             session_id: 0,
             envelope: second_envelope,
+            ordered_group: None,
         },
     )
     .await

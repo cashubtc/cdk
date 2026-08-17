@@ -89,12 +89,14 @@ pub use self::config::{
 };
 pub use self::consensus::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
-    FederationAlephBftFinalizedUnitOutcome, FederationAlephBftPendingOperationRecord,
-    FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload, FederationConsensusDefaultItem,
-    FederationConsensusItem, FederationConsensusItemAdmission, FederationConsensusModuleFact,
+    FederationAlephBftFinalizedUnitOutcome, FederationAlephBftOrderedOperationGroup,
+    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitBodyHash,
+    FederationAlephBftUnitPayload, FederationConsensusDefaultItem, FederationConsensusItem,
+    FederationConsensusItemAdmission, FederationConsensusModuleFact,
     FederationConsensusRecoveryBase, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
     FederationPreparedAlephBftFinalization, FederationPreparedAlephBftSubmission,
-    FederationRecoveryBarrier, FederationRecoveryBarrierId, FederationVerifiedOperationAdmission,
+    FederationPreparedAlephBftSubmissionGroup, FederationRecoveryBarrier,
+    FederationRecoveryBarrierId, FederationVerifiedOperationAdmission,
     FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION, FEDERATION_CONSENSUS_ITEM_VERSION,
     FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
     FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
@@ -910,6 +912,12 @@ pub enum FederationError {
     /// An AlephBFT unit must contain at least one consensus item.
     #[error("Federation AlephBFT unit cannot be empty")]
     EmptyAlephBftUnit,
+    /// One ordered operation group cannot be represented safely in one unit.
+    #[error("Federation AlephBFT ordered operation group is invalid: {reason}")]
+    AlephBftOrderedOperationGroupInvalid {
+        /// Stable validation reason without operation payloads.
+        reason: String,
+    },
     /// An AlephBFT unit belongs to a different finalization session.
     #[error("Federation AlephBFT unit session mismatch: expected={expected}, found={found}")]
     AlephBftUnitSessionMismatch {
