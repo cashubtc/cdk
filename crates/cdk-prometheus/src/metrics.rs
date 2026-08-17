@@ -653,6 +653,7 @@ pub struct CdkMetrics {
     federation_checkpoint_duration: HistogramVec,
     federation_performance_work_total: IntCounterVec,
     federation_performance_operation_duration: HistogramVec,
+    federation_transaction_phase_duration: HistogramVec,
 }
 
 #[derive(Debug)]
@@ -695,6 +696,7 @@ struct FederationMetricCollectors {
     checkpoint_duration: HistogramVec,
     performance_work_total: IntCounterVec,
     performance_operation_duration: HistogramVec,
+    transaction_phase_duration: HistogramVec,
 }
 
 impl CdkMetrics {
@@ -789,6 +791,7 @@ impl CdkMetrics {
             federation_performance_work_total: federation_metrics.performance_work_total,
             federation_performance_operation_duration: federation_metrics
                 .performance_operation_duration,
+            federation_transaction_phase_duration: federation_metrics.transaction_phase_duration,
         })
     }
 
@@ -1322,6 +1325,19 @@ impl CdkMetrics {
         )?;
         registry.register(Box::new(federation_performance_operation_duration.clone()))?;
 
+        let federation_transaction_phase_duration = HistogramVec::new(
+            prometheus::HistogramOpts::new(
+                "cdk_federation_transaction_phase_duration_seconds",
+                "Federated transaction phase duration grouped by fixed backend, direction, phase, and outcome",
+            )
+            .buckets(vec![
+                0.000_01, 0.000_05, 0.000_1, 0.000_5, 0.001, 0.005, 0.01, 0.05, 0.1, 0.25,
+                0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0,
+            ]),
+            &["backend", "direction", "phase", "outcome"],
+        )?;
+        registry.register(Box::new(federation_transaction_phase_duration.clone()))?;
+
         Ok(FederationMetricCollectors {
             consensus_operation_count: federation_consensus_operation_count,
             sync_ready: federation_sync_ready,
@@ -1362,6 +1378,7 @@ impl CdkMetrics {
             checkpoint_duration: federation_checkpoint_duration,
             performance_work_total: federation_performance_work_total,
             performance_operation_duration: federation_performance_operation_duration,
+            transaction_phase_duration: federation_transaction_phase_duration,
         })
     }
 
@@ -1797,6 +1814,24 @@ impl CdkMetrics {
             .with_label_values(&[operation.as_str(), outcome.as_str()])
             .observe(duration_seconds);
     }
+
+    /// Record one fixed federated transaction phase duration.
+    ///
+    /// Callers must use bounded, compile-time label domains. Correlation IDs,
+    /// quote IDs, payment hashes, transaction IDs, and peer IDs belong in
+    /// structured traces rather than Prometheus labels.
+    pub fn record_federation_transaction_phase_duration(
+        &self,
+        backend: &str,
+        direction: &str,
+        phase: &str,
+        outcome: &str,
+        duration_seconds: f64,
+    ) {
+        self.federation_transaction_phase_duration
+            .with_label_values(&[backend, direction, phase, outcome])
+            .observe(duration_seconds);
+    }
 }
 
 impl Default for CdkMetrics {
@@ -2112,6 +2147,32 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(labels, vec!["operation", "outcome"]);
         }
+    }
+
+    #[test]
+    fn federation_transaction_phase_metric_uses_only_bounded_labels() {
+        let metrics = CdkMetrics::new().expect("metrics should be created");
+
+        metrics.record_federation_transaction_phase_duration(
+            "bark",
+            "outgoing",
+            "bark_lightning_initiation",
+            "success",
+            0.125,
+        );
+
+        let families = metrics.federation_transaction_phase_duration.collect();
+        assert_eq!(families.len(), 1);
+        assert_eq!(families[0].get_metric().len(), 1);
+        let metric = &families[0].get_metric()[0];
+        let labels = metric
+            .get_label()
+            .iter()
+            .map(|label| label.name())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, vec!["backend", "direction", "outcome", "phase"]);
+        assert_eq!(metric.get_histogram().get_sample_count(), 1);
+        assert_eq!(metric.get_histogram().get_sample_sum(), 0.125);
     }
 
     #[test]

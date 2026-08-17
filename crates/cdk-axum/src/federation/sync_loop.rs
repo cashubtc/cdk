@@ -1547,6 +1547,72 @@ where
         }
 
         let local_full_status = local_peer_status(state).await?;
+        if state.federation.live_session_active().await
+            && !state.federation.live_session_replay_ready().await
+            && local_full_status.aleph_bft_session == peer_status.aleph_bft_session
+            && local_full_status.has_same_application_state(&peer_status)
+            && aleph_bft_session_has_progress(&peer_status)
+            && aleph_bft_frontier_is_ahead(&local_full_status, &peer_status)
+        {
+            let local_backup = state
+                .mint
+                .localstore()
+                .get_federation_aleph_bft_backup_metadata(peer_status.aleph_bft_session)
+                .await?;
+            let probe_timer = super::latency::FederationLatencyTimer::start(
+                super::latency::FederationLatencyCorrelation::Session,
+                peer_status.aleph_bft_session.to_string(),
+                super::latency::FederationLatencyBackend::AlephBft,
+                super::latency::FederationLatencyDirection::Incoming,
+                super::latency::FederationLatencyPhase::AlephBftBackupProbe,
+            );
+            let probe = self
+                .aleph_bft_backup(
+                    member,
+                    FederationAlephBftBackupRequest::new(
+                        peer_status.aleph_bft_session,
+                        local_backup.chunk_count,
+                    ),
+                )
+                .await;
+            probe_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+                probe.is_ok(),
+            ));
+            let probe = probe?;
+            if !probe.chunks.is_empty() {
+                tracing::warn!(
+                    member_id = %member.member_id,
+                    session = peer_status.aleph_bft_session,
+                    local_backup_chunks = local_backup.chunk_count,
+                    peer_suffix_chunks = probe.chunks.len(),
+                    "Replacing an incomplete live AlephBFT backup from a quorum-compatible peer"
+                );
+                super::stop_current_federation_aleph_bft_session_for_catch_up(state).await;
+                let recovery_timer = super::latency::FederationLatencyTimer::start(
+                    super::latency::FederationLatencyCorrelation::Session,
+                    peer_status.aleph_bft_session.to_string(),
+                    super::latency::FederationLatencyBackend::AlephBft,
+                    super::latency::FederationLatencyDirection::Incoming,
+                    super::latency::FederationLatencyPhase::AlephBftBackupRecovery,
+                );
+                let recovered = self
+                    .recover_aleph_bft_backup_from_member(
+                        state,
+                        member,
+                        peer_status.aleph_bft_session,
+                        true,
+                    )
+                    .await;
+                recovery_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+                    recovered.is_ok(),
+                ));
+                if let Some(recovered_backup_status) = recovered? {
+                    peer_status = recovered_backup_status;
+                }
+            }
+        }
+
+        let local_full_status = local_peer_status(state).await?;
         if !state.federation.live_session_active().await
             && local_full_status.has_same_application_state(&peer_status)
             && aleph_bft_session_has_progress(&peer_status)
@@ -1719,6 +1785,22 @@ fn aleph_bft_session_has_progress(status: &FederationPeerStatus) -> bool {
         .any(|next_unit_index| *next_unit_index > 0)
 }
 
+fn aleph_bft_frontier_is_ahead(
+    local_status: &FederationPeerStatus,
+    peer_status: &FederationPeerStatus,
+) -> bool {
+    peer_status.aleph_bft_next_unit_index_by_member.iter().any(
+        |(member_id, peer_next_unit_index)| {
+            *peer_next_unit_index
+                > local_status
+                    .aleph_bft_next_unit_index_by_member
+                    .get(member_id)
+                    .copied()
+                    .unwrap_or_default()
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1741,5 +1823,39 @@ mod tests {
 
         status.aleph_bft_next_unit_index_by_member.insert(member, 1);
         assert!(aleph_bft_session_has_progress(&status));
+    }
+
+    #[test]
+    fn aleph_bft_frontier_detects_any_peer_suffix() {
+        let first = MemberId::new(1).expect("first member");
+        let second = MemberId::new(2).expect("second member");
+        let federation_id = cdk::federation::FederationId::from_bytes([1; 32]);
+        let local = FederationPeerStatus::new(
+            federation_id,
+            first,
+            0,
+            None,
+            cdk::federation::FederationJournalDigest::genesis(),
+        )
+        .with_aleph_bft_next_unit_index_by_member(BTreeMap::from([(first, 4), (second, 7)]));
+        let equal = FederationPeerStatus::new(
+            federation_id,
+            second,
+            0,
+            None,
+            cdk::federation::FederationJournalDigest::genesis(),
+        )
+        .with_aleph_bft_next_unit_index_by_member(BTreeMap::from([(first, 4), (second, 7)]));
+        let ahead = FederationPeerStatus::new(
+            federation_id,
+            second,
+            0,
+            None,
+            cdk::federation::FederationJournalDigest::genesis(),
+        )
+        .with_aleph_bft_next_unit_index_by_member(BTreeMap::from([(first, 4), (second, 8)]));
+
+        assert!(!aleph_bft_frontier_is_ahead(&local, &equal));
+        assert!(aleph_bft_frontier_is_ahead(&local, &ahead));
     }
 }

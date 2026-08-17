@@ -884,16 +884,41 @@ where
                     },
                     _ = interval.tick() => None,
                 };
-                match run_cdk_aleph_bft_network_pump_tick_with_retry_queue_and_first_outbound(
-                    &mut network_handle,
-                    &pump_keychain,
-                    &client,
-                    pump_config,
-                    &mut retry_queue,
-                    first_outbound,
-                )
-                .await
-                {
+                let has_pump_work = first_outbound.is_some()
+                    || !retry_queue.is_empty()
+                    || network_handle.outbound_queue_len() > 0;
+                let pump_timer = has_pump_work.then(|| {
+                    crate::federation::latency::FederationLatencyTimer::start(
+                        crate::federation::latency::FederationLatencyCorrelation::Session,
+                        pump_config.session_id.to_string(),
+                        crate::federation::latency::FederationLatencyBackend::AlephBft,
+                        crate::federation::latency::FederationLatencyDirection::Internal,
+                        crate::federation::latency::FederationLatencyPhase::AlephBftNetworkPump,
+                    )
+                });
+                let pump_result =
+                    run_cdk_aleph_bft_network_pump_tick_with_retry_queue_and_first_outbound(
+                        &mut network_handle,
+                        &pump_keychain,
+                        &client,
+                        pump_config,
+                        &mut retry_queue,
+                        first_outbound,
+                    )
+                    .await;
+                let pump_outcome = match &pump_result {
+                    Ok(outcome)
+                        if outcome.messages_drained > 0 || outcome.retry_messages_drained > 0 =>
+                    {
+                        crate::federation::latency::FederationLatencyOutcome::Success
+                    }
+                    Ok(_) => crate::federation::latency::FederationLatencyOutcome::Skipped,
+                    Err(_) => crate::federation::latency::FederationLatencyOutcome::Error,
+                };
+                if let Some(pump_timer) = pump_timer {
+                    pump_timer.finish(pump_outcome);
+                }
+                match pump_result {
                     Ok(outcome) => {
                         #[cfg(test)]
                         crate::federation::aleph_bft_latency::record_network_pump_tick(
@@ -905,6 +930,23 @@ where
                             network_handle.outbound_queue_len(),
                         );
                         if outcome.messages_drained > 0 || outcome.retry_messages_drained > 0 {
+                            tracing::trace!(
+                                target: "cdk_axum::federation::aleph_bft_latency",
+                                stage = "network_pump_tick",
+                                session_id = pump_config.session_id,
+                                messages_drained = outcome.messages_drained,
+                                retry_messages_drained = outcome.retry_messages_drained,
+                                encoded_bytes = outcome.encoded_bytes,
+                                remote_accepted_members = outcome.remote_accepted_members.len(),
+                                remote_failed_members = outcome.remote_failed_members.len(),
+                                remote_requeued_members = outcome.remote_requeued_members.len(),
+                                remote_skipped_members = outcome.remote_skipped_members.len(),
+                                retry_queue_len = outcome.retry_queue_len,
+                                retry_deliveries_dropped = outcome.retry_deliveries_dropped,
+                                outbound_queue_len = network_handle.outbound_queue_len(),
+                                reached_idle = outcome.reached_idle,
+                                "AlephBFT network pump latency sample"
+                            );
                             let remote_failed_members = outcome.remote_failed_members.len();
                             let remote_requeued_members = outcome.remote_requeued_members.len();
                             let remote_skipped_members = outcome.remote_skipped_members.len();

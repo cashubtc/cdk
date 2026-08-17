@@ -189,6 +189,20 @@ impl<'a> PendingMelt<'a> {
 
                     match state {
                         MeltQuoteState::Paid => {
+                            // A federated WebSocket is connected to one member, whose
+                            // notification can contain only that member's change signature
+                            // share. Confirm through the federated connector so threshold
+                            // shares are collected and aggregated before proof validation.
+                            if wallet.mint_connector().confirm_paid_melt_notification() {
+                                match self.reconcile_melt_status(state).await {
+                                    WaitStep::Terminal(result) => return result,
+                                    WaitStep::Continue(pending) => {
+                                        self = pending;
+                                        continue;
+                                    }
+                                }
+                            }
+
                             // TODO: Remove this workaround once Nutshell 0.18.3+ is widely deployed
                             //
                             // Per NUT-05, mints SHOULD include change in WebSocket notifications when
@@ -261,7 +275,7 @@ impl<'a> PendingMelt<'a> {
                                 continue;
                             }
 
-                            match self.reconcile_non_paid_status(state).await {
+                            match self.reconcile_melt_status(state).await {
                                 WaitStep::Terminal(result) => return result,
                                 WaitStep::Continue(pending) => {
                                     self = pending;
@@ -280,7 +294,7 @@ impl<'a> PendingMelt<'a> {
         }
     }
 
-    /// Reconcile a non-`Paid` subscription event against the mint's HTTP
+    /// Reconcile a subscription event against the mint's HTTP
     /// melt-quote status.
     ///
     /// A subscription (WebSocket) event can report `Failed`/`Unpaid`/`Unknown`
@@ -298,7 +312,7 @@ impl<'a> PendingMelt<'a> {
     ///
     /// The caller is expected to have already handled the case where the
     /// subscription event itself carries a payment proof.
-    async fn reconcile_non_paid_status(self, ws_state: MeltQuoteState) -> WaitStep<'a> {
+    async fn reconcile_melt_status(self, ws_state: MeltQuoteState) -> WaitStep<'a> {
         let quote_id = self.saga.quote().id.clone();
         let wallet = self.saga.wallet;
         let operation_id = self.saga.state_data.operation_id;
@@ -3405,10 +3419,7 @@ mod tests {
             ..bolt11_status(&quote_id, MeltQuoteState::Paid, None)
         }));
 
-        let result = match pending
-            .reconcile_non_paid_status(MeltQuoteState::Unpaid)
-            .await
-        {
+        let result = match pending.reconcile_melt_status(MeltQuoteState::Unpaid).await {
             WaitStep::Terminal(result) => result,
             WaitStep::Continue(_) => panic!("expected terminal outcome"),
         };
@@ -3542,9 +3553,7 @@ mod tests {
         )));
 
         assert!(matches!(
-            pending
-                .reconcile_non_paid_status(MeltQuoteState::Unknown)
-                .await,
+            pending.reconcile_melt_status(MeltQuoteState::Unknown).await,
             WaitStep::Continue(_)
         ));
 
@@ -3566,9 +3575,7 @@ mod tests {
         )));
 
         assert!(matches!(
-            pending
-                .reconcile_non_paid_status(MeltQuoteState::Failed)
-                .await,
+            pending.reconcile_melt_status(MeltQuoteState::Failed).await,
             WaitStep::Continue(_)
         ));
     }
@@ -3584,10 +3591,7 @@ mod tests {
             None,
         )));
 
-        let mut pending = match pending
-            .reconcile_non_paid_status(MeltQuoteState::Failed)
-            .await
-        {
+        let mut pending = match pending.reconcile_melt_status(MeltQuoteState::Failed).await {
             WaitStep::Continue(pending) => pending,
             WaitStep::Terminal(_) => panic!("unexpired unpaid quote must remain pending"),
         };
@@ -3603,10 +3607,7 @@ mod tests {
             None,
         )));
 
-        match pending
-            .reconcile_non_paid_status(MeltQuoteState::Unpaid)
-            .await
-        {
+        match pending.reconcile_melt_status(MeltQuoteState::Unpaid).await {
             WaitStep::Terminal(result) => {
                 assert!(matches!(result, Err(Error::PaymentFailed)));
             }
@@ -3686,9 +3687,7 @@ mod tests {
         )));
 
         assert!(matches!(
-            pending
-                .reconcile_non_paid_status(MeltQuoteState::Failed)
-                .await,
+            pending.reconcile_melt_status(MeltQuoteState::Failed).await,
             WaitStep::Continue(_)
         ));
 
@@ -3713,10 +3712,7 @@ mod tests {
             None,
         )));
 
-        match pending
-            .reconcile_non_paid_status(MeltQuoteState::Unpaid)
-            .await
-        {
+        match pending.reconcile_melt_status(MeltQuoteState::Unpaid).await {
             WaitStep::Terminal(result) => assert!(result.is_err()),
             WaitStep::Continue(_) => panic!("expected terminal outcome"),
         }

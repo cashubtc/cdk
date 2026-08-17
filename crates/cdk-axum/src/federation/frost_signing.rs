@@ -94,6 +94,32 @@ struct CoordinatedFrostSignature {
     package_hash: [u8; 32],
 }
 
+#[derive(Debug, Clone)]
+/// Correlation metadata for one application-neutral FROST signing request.
+pub(crate) struct FrostLatencyContext {
+    correlation: super::latency::FederationLatencyCorrelation,
+    correlation_id: String,
+    backend: super::latency::FederationLatencyBackend,
+    direction: super::latency::FederationLatencyDirection,
+}
+
+impl FrostLatencyContext {
+    /// Construct bounded latency metadata without exposing it to consensus.
+    pub(crate) fn new(
+        correlation: super::latency::FederationLatencyCorrelation,
+        correlation_id: impl Into<String>,
+        backend: super::latency::FederationLatencyBackend,
+        direction: super::latency::FederationLatencyDirection,
+    ) -> Self {
+        Self {
+            correlation,
+            correlation_id: correlation_id.into(),
+            backend,
+            direction,
+        }
+    }
+}
+
 /// Application-neutral coordinator for one exact selected signer set.
 #[derive(Debug)]
 #[cfg_attr(not(test), allow(dead_code))]
@@ -124,7 +150,28 @@ where
         authorization: &AuthorizationRequest,
     ) -> anyhow::Result<cdk_frost::AggregateSignature> {
         Ok(self
-            .sign_with_audit(public_config, context, derivation, authorization)
+            .sign_with_audit(public_config, context, derivation, authorization, None)
+            .await?
+            .signature)
+    }
+
+    /// Run both rounds while attributing their latency to the calling backend.
+    pub(crate) async fn sign_with_latency(
+        &self,
+        public_config: &cdk::federation::FederationConfig,
+        context: &SigningSessionContext,
+        derivation: &SigningDerivation,
+        authorization: &AuthorizationRequest,
+        latency: &FrostLatencyContext,
+    ) -> anyhow::Result<cdk_frost::AggregateSignature> {
+        Ok(self
+            .sign_with_audit(
+                public_config,
+                context,
+                derivation,
+                authorization,
+                Some(latency),
+            )
             .await?
             .signature)
     }
@@ -135,6 +182,7 @@ where
         context: &SigningSessionContext,
         derivation: &SigningDerivation,
         authorization: &AuthorizationRequest,
+        latency: Option<&FrostLatencyContext>,
     ) -> anyhow::Result<CoordinatedFrostSignature> {
         if context.signer_set().len() < usize::from(self.public.threshold()) {
             anyhow::bail!("FROST signer set is below threshold");
@@ -152,6 +200,32 @@ where
                 Ok((*signer, member))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
+        let default_correlation_id =
+            cdk::federation::FederationOperationId::from_bytes(context.session_id().to_bytes())
+                .to_string();
+        let (correlation, correlation_id, backend, direction) = latency.map_or(
+            (
+                super::latency::FederationLatencyCorrelation::Operation,
+                default_correlation_id.as_str(),
+                super::latency::FederationLatencyBackend::Consensus,
+                super::latency::FederationLatencyDirection::Internal,
+            ),
+            |latency| {
+                (
+                    latency.correlation,
+                    latency.correlation_id.as_str(),
+                    latency.backend,
+                    latency.direction,
+                )
+            },
+        );
+        let commitment_timer = super::latency::FederationLatencyTimer::start(
+            correlation,
+            correlation_id.to_owned(),
+            backend,
+            direction,
+            super::latency::FederationLatencyPhase::FrostCommitmentRound,
+        );
         let commitment_results = join_all(signer_members.iter().map(|(_, member)| {
             self.client
                 .request_frost_commitment(member, &commitment_request)
@@ -166,6 +240,9 @@ where
                 Err(_) => {}
             }
         }
+        commitment_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+            commitment_error.is_none(),
+        ));
         if let Some(error) = commitment_error {
             self.abort_selected(
                 public_config,
@@ -193,6 +270,13 @@ where
                 Ok((*member, package))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
+        let share_timer = super::latency::FederationLatencyTimer::start(
+            correlation,
+            correlation_id.to_owned(),
+            backend,
+            direction,
+            super::latency::FederationLatencyPhase::FrostSignatureRound,
+        );
         let share_results =
             join_all(signing_packages.iter().map(|(member, package)| {
                 self.client.request_frost_signature_share(member, package)
@@ -207,6 +291,9 @@ where
                 Err(_) => {}
             }
         }
+        share_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+            share_error.is_none(),
+        ));
         if let Some(error) = share_error {
             self.abort_selected(
                 public_config,
@@ -298,6 +385,12 @@ where
             .mint
             .federation_transaction_signing_authorization(proposal_id)
             .await?;
+        let latency = FrostLatencyContext::new(
+            super::latency::FederationLatencyCorrelation::Proposal,
+            proposal_id.to_string(),
+            super::latency::FederationLatencyBackend::Bdk,
+            super::latency::FederationLatencyDirection::Outgoing,
+        );
         let runtime = state
             .mint
             .federation_config()
@@ -350,6 +443,7 @@ where
                     &context,
                     derived.signing_derivation(),
                     &authorization,
+                    Some(&latency),
                 )
                 .await?;
             signatures.push(result.signature.to_bytes());

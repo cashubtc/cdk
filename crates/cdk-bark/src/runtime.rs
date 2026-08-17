@@ -4,7 +4,9 @@ use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use bark::actions::lightning::receive::LightningReceiveAntiDosMode;
+use bark::actions::lightning::receive::{
+    minimum_lightning_receive_cltv_delta, LightningReceiveAntiDosMode,
+};
 use bark::ark::lightning::{Invoice, PaymentHash, Preimage};
 use bark::ark::mailbox::MailboxIdentifier;
 use bark::ark::ProtocolEncoding;
@@ -398,6 +400,12 @@ impl FederatedBarkRuntime {
             .require_ark_info()
             .await
             .map_err(|_| Error::ArkCapabilityMismatch)?;
+        let safe_receive_cltv_delta = minimum_lightning_receive_cltv_delta(
+            ark_info.vtxo_exit_delta,
+            ark_info.htlc_expiry_delta,
+            wallet.config(),
+        )
+        .map_err(|_| Error::ArkCapabilityMismatch)?;
         let minimum_outgoing_fee_bound = validated
             .policy()
             .maximum_outgoing_fee(cdk_common::Amount::from(limits.minimum_sat()))
@@ -408,7 +416,10 @@ impl FederatedBarkRuntime {
             || ark_info.fees.lightning_receive.base_fee != bitcoin::Amount::ZERO
             || ark_info.fees.lightning_receive.ppm.0 != 0
             || u32::from(ark_info.max_user_invoice_cltv_delta)
-                < validated.policy().minimum_incoming_cltv_delta
+                < validated
+                    .policy()
+                    .minimum_incoming_cltv_delta
+                    .max(u32::from(safe_receive_cltv_delta))
             || u32::from(ark_info.htlc_send_expiry_delta)
                 < validated.policy().minimum_outgoing_cltv_delta
             || ark_info.fees.lightning_send.base_fee.to_sat()
@@ -2903,6 +2914,33 @@ impl FederatedBarkRuntime {
             return Err(Error::SendPlanInvalid);
         }
         Ok((bolt11, amount, fee))
+    }
+
+    /// Return the minimum safe CLTV delta for a new federated receive intent.
+    ///
+    /// This combines the accepted federation floor with Bark's unilateral-exit
+    /// safety calculation using the Ark server's advertised timelock deltas.
+    pub async fn minimum_receive_cltv_delta(&self) -> Result<u32, Error> {
+        let ark_info = self
+            .bark_wallet
+            .require_ark_info()
+            .await
+            .map_err(|_| Error::ArkCapabilityMismatch)?;
+        let safe_delta = minimum_lightning_receive_cltv_delta(
+            ark_info.vtxo_exit_delta,
+            ark_info.htlc_expiry_delta,
+            self.bark_wallet.config(),
+        )
+        .map_err(|_| Error::ArkCapabilityMismatch)?;
+        let minimum = self
+            .application
+            .policy
+            .minimum_incoming_cltv_delta
+            .max(u32::from(safe_delta));
+        if minimum > u32::from(ark_info.max_user_invoice_cltv_delta) {
+            return Err(Error::ArkCapabilityMismatch);
+        }
+        Ok(minimum)
     }
 
     /// Perform the sole Ark invoice RPC for an already accepted receive intent.

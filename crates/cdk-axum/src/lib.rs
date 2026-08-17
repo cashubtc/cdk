@@ -1637,6 +1637,35 @@ impl MintState {
         application_key_epoch: u64,
         keychain: FederationAddressKeychain,
     ) -> Result<String, cdk::Error> {
+        let timer = crate::federation::latency::FederationLatencyTimer::start(
+            crate::federation::latency::FederationLatencyCorrelation::Quote,
+            quote.to_owned(),
+            crate::federation::latency::FederationLatencyBackend::Bdk,
+            crate::federation::latency::FederationLatencyDirection::Internal,
+            crate::federation::latency::FederationLatencyPhase::BdkAddressAllocation,
+        );
+        let result = self
+            .allocate_federation_onchain_address_inner(
+                quote,
+                application_id,
+                application_key_epoch,
+                keychain,
+            )
+            .await;
+        timer.finish(
+            crate::federation::latency::FederationLatencyOutcome::from_success(result.is_ok()),
+        );
+        result
+    }
+
+    #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+    async fn allocate_federation_onchain_address_inner(
+        &self,
+        quote: &str,
+        application_id: FederationFrostApplicationId,
+        application_key_epoch: u64,
+        keychain: FederationAddressKeychain,
+    ) -> Result<String, cdk::Error> {
         if let Some(address) = self
             .reveal_accepted_federation_onchain_address(
                 quote,
@@ -3866,6 +3895,20 @@ fn initialize_accepted_federation_onchain_wallets(
             }
             let sync_wallet = wallet.clone();
             let sync_interval = local_config.sync_interval;
+            let sync_correlation_id = cdk::federation::FederationOperationId::from_bytes(
+                application.application_id.to_bytes(),
+            )
+            .to_string();
+            tracing::trace!(
+                target: "cdk_axum::federation::transaction_latency",
+                event = "configuration",
+                correlation = "wallet",
+                correlation_id = %sync_correlation_id,
+                backend = "bdk",
+                phase = "onchain_wallet_sync",
+                sync_interval_ms = u64::try_from(sync_interval.as_millis()).unwrap_or(u64::MAX),
+                "Federated wallet latency configuration"
+            );
             tokio::spawn(async move {
                 const MAX_SYNC_RETRY_BACKOFF: std::time::Duration =
                     std::time::Duration::from_secs(300);
@@ -3874,7 +3917,20 @@ fn initialize_accepted_federation_onchain_wallets(
                 let mut delay = std::time::Duration::ZERO;
                 loop {
                     tokio::time::sleep(delay).await;
-                    match sync_wallet.sync_once().await {
+                    let sync_timer = crate::federation::latency::FederationLatencyTimer::start(
+                        crate::federation::latency::FederationLatencyCorrelation::Wallet,
+                        sync_correlation_id.clone(),
+                        crate::federation::latency::FederationLatencyBackend::Bdk,
+                        crate::federation::latency::FederationLatencyDirection::Internal,
+                        crate::federation::latency::FederationLatencyPhase::OnchainWalletSync,
+                    );
+                    let sync_result = sync_wallet.sync_once().await;
+                    sync_timer.finish(
+                        crate::federation::latency::FederationLatencyOutcome::from_success(
+                            sync_result.is_ok(),
+                        ),
+                    );
+                    match sync_result {
                         Ok(()) => {
                             delay = sync_interval;
                             retry_backoff = initial_backoff;

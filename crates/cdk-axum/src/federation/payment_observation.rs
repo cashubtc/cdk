@@ -112,6 +112,27 @@ impl FederationPaymentObserver {
         &self,
         state: &MintState,
     ) -> Result<usize, cdk::Error> {
+        let correlation_id = state
+            .mint
+            .federation_config()
+            .map(|runtime| runtime.member_id().to_string())
+            .unwrap_or_else(|| "disabled".to_string());
+        let timer = super::latency::FederationLatencyTimer::start(
+            super::latency::FederationLatencyCorrelation::Wallet,
+            correlation_id,
+            super::latency::FederationLatencyBackend::Bdk,
+            super::latency::FederationLatencyDirection::Incoming,
+            super::latency::FederationLatencyPhase::BdkWalletScan,
+        );
+        let result = self.observe_onchain_wallets_inner(state).await;
+        timer.finish(super::latency::FederationLatencyOutcome::from_success(
+            result.is_ok(),
+        ));
+        result
+    }
+
+    #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+    async fn observe_onchain_wallets_inner(&self, state: &MintState) -> Result<usize, cdk::Error> {
         let Some(runtime) = state.mint.federation_config() else {
             return Ok(0);
         };
@@ -157,8 +178,24 @@ impl FederationPaymentObserver {
                 )
                 .await
                 .map_err(|_| cdk::Error::Internal)?;
-            if synchronize_locally && wallet.sync_once().await.is_err() {
-                continue;
+            if synchronize_locally {
+                let sync_timer = super::latency::FederationLatencyTimer::start(
+                    super::latency::FederationLatencyCorrelation::Wallet,
+                    cdk::federation::FederationOperationId::from_bytes(
+                        scope.application_id.to_bytes(),
+                    )
+                    .to_string(),
+                    super::latency::FederationLatencyBackend::Bark,
+                    super::latency::FederationLatencyDirection::Internal,
+                    super::latency::FederationLatencyPhase::OnchainWalletSync,
+                );
+                let sync_result = wallet.sync_once().await;
+                sync_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+                    sync_result.is_ok(),
+                ));
+                if sync_result.is_err() {
+                    continue;
+                }
             }
             if wallet.ensure_ready(0).await.is_err() {
                 continue;
@@ -423,6 +460,21 @@ impl FederationPaymentObserver {
             let mut observer_fallback_round = permit.observer_fallback_round();
             let mut last_processed_operation_index =
                 db.get_federation_journal_tip().await?.map(|tip| tip.index);
+            let direction = match quote.kind {
+                FederationPaymentQuoteKind::Mint => {
+                    super::latency::FederationLatencyDirection::Incoming
+                }
+                FederationPaymentQuoteKind::Melt => {
+                    super::latency::FederationLatencyDirection::Outgoing
+                }
+            };
+            let round_timer = super::latency::FederationLatencyTimer::start(
+                super::latency::FederationLatencyCorrelation::Quote,
+                quote.id.to_string(),
+                super::latency::FederationLatencyBackend::Cashu,
+                direction,
+                super::latency::FederationLatencyPhase::PaymentObservationRound,
+            );
             for completed_steps in 0..FEDERATION_PAYMENT_MAX_ADVANCEMENTS_PER_WAKE {
                 let before_operation_index = last_processed_operation_index;
                 advancement = self
@@ -455,6 +507,20 @@ impl FederationPaymentObserver {
                     current_unix_time_ms(),
                 )
                 .await?;
+            let round_outcome = match advancement {
+                FederationPaymentAdvancement::Complete => {
+                    super::latency::FederationLatencyOutcome::Success
+                }
+                FederationPaymentAdvancement::Progressed => {
+                    super::latency::FederationLatencyOutcome::Success
+                }
+                FederationPaymentAdvancement::AwaitingExternalEvidence
+                | FederationPaymentAdvancement::AwaitingFederationEvidence
+                | FederationPaymentAdvancement::AwaitingObserverFallback => {
+                    super::latency::FederationLatencyOutcome::Pending
+                }
+            };
+            round_timer.finish(round_outcome);
         }
         if trigger == FederationPaymentObservationTrigger::Requested {
             self.wait_for_active_attempts(&db, &active_quotes, &mut schedule_changes)
@@ -524,30 +590,31 @@ impl FederationPaymentObserver {
         }
 
         #[cfg(feature = "federation-bark")]
-        let bark_advancement = if state.federation.bark_runtime().is_some() {
-            match super::bark_incoming::advance_federated_bark_mint_quote(
-                state,
-                quote_id,
-                observer_fallback_round,
-            )
-            .await
-            {
-                Ok(FederationPaymentAdvancement::Progressed) => {
-                    return Ok(FederationPaymentAdvancement::Progressed);
+        let bark_advancement =
+            if quote.payment_method.is_bolt11() && state.federation.bark_runtime().is_some() {
+                match super::bark_incoming::advance_federated_bark_mint_quote(
+                    state,
+                    quote_id,
+                    observer_fallback_round,
+                )
+                .await
+                {
+                    Ok(FederationPaymentAdvancement::Progressed) => {
+                        return Ok(FederationPaymentAdvancement::Progressed);
+                    }
+                    Ok(advancement) => Some(advancement),
+                    Err(error) => {
+                        tracing::debug!(
+                            quote = %quote_id,
+                            error = %error,
+                            "federated Bark receive advancement left quote pending"
+                        );
+                        Some(FederationPaymentAdvancement::AwaitingExternalEvidence)
+                    }
                 }
-                Ok(advancement) => Some(advancement),
-                Err(error) => {
-                    tracing::debug!(
-                        quote = %quote_id,
-                        error = %error,
-                        "federated Bark receive advancement left quote pending"
-                    );
-                    Some(FederationPaymentAdvancement::AwaitingExternalEvidence)
-                }
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
         #[cfg(not(feature = "federation-bark"))]
         let bark_advancement = None;
 
@@ -558,6 +625,18 @@ impl FederationPaymentObserver {
             );
         }
 
+        let probe_backend = if quote.payment_method.is_onchain() {
+            super::latency::FederationLatencyBackend::Bdk
+        } else {
+            super::latency::FederationLatencyBackend::Cashu
+        };
+        let probe_timer = super::latency::FederationLatencyTimer::start(
+            super::latency::FederationLatencyCorrelation::Quote,
+            quote_id.to_string(),
+            probe_backend,
+            super::latency::FederationLatencyDirection::Incoming,
+            super::latency::FederationLatencyPhase::BackendPaymentProbe,
+        );
         let Some(observation) = ({
             let probe = std::panic::AssertUnwindSafe(async {
                 state
@@ -567,8 +646,12 @@ impl FederationPaymentObserver {
             })
             .catch_unwind();
             match tokio::time::timeout(FEDERATION_PAYMENT_OBSERVER_PROBE_DEADLINE, probe).await {
-                Ok(Ok(Ok(observation))) => observation,
+                Ok(Ok(Ok(observation))) => {
+                    probe_timer.finish(super::latency::FederationLatencyOutcome::Success);
+                    observation
+                }
                 Ok(Ok(Err(err))) => {
+                    probe_timer.finish(super::latency::FederationLatencyOutcome::Error);
                     tracing::debug!(
                         quote = %quote_id,
                         error = %err,
@@ -578,6 +661,7 @@ impl FederationPaymentObserver {
                         .unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence));
                 }
                 Ok(Err(_panic)) => {
+                    probe_timer.finish(super::latency::FederationLatencyOutcome::Error);
                     tracing::warn!(
                         quote = %quote_id,
                         "mint quote payment probe panicked; quote left pending"
@@ -586,6 +670,7 @@ impl FederationPaymentObserver {
                         .unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence));
                 }
                 Err(_) => {
+                    probe_timer.finish(super::latency::FederationLatencyOutcome::Timeout);
                     tracing::debug!(
                         quote = %quote_id,
                         "mint quote payment probe timed out; quote left pending"
@@ -636,30 +721,31 @@ impl FederationPaymentObserver {
         }
 
         #[cfg(feature = "federation-bark")]
-        let bark_advancement = if state.federation.bark_runtime().is_some() {
-            match super::bark_outgoing::advance_federated_bark_melt_quote(
-                state,
-                quote_id,
-                observer_fallback_round,
-            )
-            .await
-            {
-                Ok(FederationPaymentAdvancement::Progressed) => {
-                    return Ok(FederationPaymentAdvancement::Progressed);
+        let bark_advancement =
+            if quote.payment_method.is_bolt11() && state.federation.bark_runtime().is_some() {
+                match super::bark_outgoing::advance_federated_bark_melt_quote(
+                    state,
+                    quote_id,
+                    observer_fallback_round,
+                )
+                .await
+                {
+                    Ok(FederationPaymentAdvancement::Progressed) => {
+                        return Ok(FederationPaymentAdvancement::Progressed);
+                    }
+                    Ok(advancement) => Some(advancement),
+                    Err(error) => {
+                        tracing::debug!(
+                            quote = %quote_id,
+                            error = %error,
+                            "federated Bark send planning left quote pending"
+                        );
+                        Some(FederationPaymentAdvancement::AwaitingExternalEvidence)
+                    }
                 }
-                Ok(advancement) => Some(advancement),
-                Err(error) => {
-                    tracing::debug!(
-                        quote = %quote_id,
-                        error = %error,
-                        "federated Bark send planning left quote pending"
-                    );
-                    Some(FederationPaymentAdvancement::AwaitingExternalEvidence)
-                }
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
         #[cfg(not(feature = "federation-bark"))]
         let bark_advancement = None;
         #[cfg(feature = "federation-bark")]
@@ -668,6 +754,18 @@ impl FederationPaymentObserver {
                 bark_advancement.unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence)
             );
         }
+        let probe_backend = if quote.payment_method.is_onchain() {
+            super::latency::FederationLatencyBackend::Bdk
+        } else {
+            super::latency::FederationLatencyBackend::Cashu
+        };
+        let probe_timer = super::latency::FederationLatencyTimer::start(
+            super::latency::FederationLatencyCorrelation::Quote,
+            quote_id.to_string(),
+            probe_backend,
+            super::latency::FederationLatencyDirection::Outgoing,
+            super::latency::FederationLatencyPhase::BackendPaymentProbe,
+        );
         let Some(observation) = ({
             let probe = std::panic::AssertUnwindSafe(async {
                 state
@@ -677,8 +775,12 @@ impl FederationPaymentObserver {
             })
             .catch_unwind();
             match tokio::time::timeout(FEDERATION_PAYMENT_OBSERVER_PROBE_DEADLINE, probe).await {
-                Ok(Ok(Ok(observation))) => observation,
+                Ok(Ok(Ok(observation))) => {
+                    probe_timer.finish(super::latency::FederationLatencyOutcome::Success);
+                    observation
+                }
                 Ok(Ok(Err(err))) => {
+                    probe_timer.finish(super::latency::FederationLatencyOutcome::Error);
                     tracing::debug!(
                         quote = %quote_id,
                         error = %err,
@@ -688,6 +790,7 @@ impl FederationPaymentObserver {
                         .unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence));
                 }
                 Ok(Err(_panic)) => {
+                    probe_timer.finish(super::latency::FederationLatencyOutcome::Error);
                     tracing::warn!(
                         quote = %quote_id,
                         "melt quote payment probe panicked; quote left pending"
@@ -696,6 +799,7 @@ impl FederationPaymentObserver {
                         .unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence));
                 }
                 Err(_) => {
+                    probe_timer.finish(super::latency::FederationLatencyOutcome::Timeout);
                     tracing::debug!(
                         quote = %quote_id,
                         "melt quote payment probe timed out; quote left pending"

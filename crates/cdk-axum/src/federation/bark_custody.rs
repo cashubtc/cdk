@@ -72,8 +72,21 @@ impl cdk_bark::FederatedBarkCustodyClient for FederatedBarkCustodyPeerClient {
         authorization: &AuthorizationRequest,
     ) -> anyhow::Result<cdk_frost::AggregateSignature> {
         let public = self.signing_public(authorization)?;
+        let latency = super::frost_signing::FrostLatencyContext::new(
+            super::latency::FederationLatencyCorrelation::Session,
+            cdk::federation::FederationOperationId::from_bytes(context.session_id().to_bytes())
+                .to_string(),
+            super::latency::FederationLatencyBackend::Bark,
+            super::latency::FederationLatencyDirection::Internal,
+        );
         super::frost_signing::FederationFrostSigningCoordinator::new(&self.client, public)
-            .sign(&self.public_config, context, derivation, authorization)
+            .sign_with_latency(
+                &self.public_config,
+                context,
+                derivation,
+                authorization,
+                &latency,
+            )
             .await
     }
 

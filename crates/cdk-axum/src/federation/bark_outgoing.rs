@@ -94,9 +94,18 @@ pub(super) async fn advance_federated_bark_melt_quote(
     if quote.state != MeltQuoteState::Pending {
         return Ok(FederationPaymentAdvancement::Complete);
     }
-    let projection = crate::federation_bark_ready_projection(&state.mint, runtime)
-        .await
-        .map_err(|_| cdk::Error::Internal)?;
+    let projection_timer = super::latency::FederationLatencyTimer::start(
+        super::latency::FederationLatencyCorrelation::Quote,
+        quote_id.to_string(),
+        super::latency::FederationLatencyBackend::Bark,
+        super::latency::FederationLatencyDirection::Outgoing,
+        super::latency::FederationLatencyPhase::BarkProjectionReady,
+    );
+    let projection_result = crate::federation_bark_ready_projection(&state.mint, runtime).await;
+    projection_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+        projection_result.is_ok(),
+    ));
+    let projection = projection_result.map_err(|_| cdk::Error::Internal)?;
     let quote_label = quote_id.to_string();
     let existing_action = projection.actions.iter().find(|action| {
         action.quote.as_deref() == Some(quote_label.as_str())
@@ -217,15 +226,25 @@ pub(super) async fn advance_federated_bark_melt_quote(
                         &plan_entry,
                     )
                     .await?;
-                let transition = match runtime
+                let htlc_timer = super::latency::FederationLatencyTimer::start(
+                    super::latency::FederationLatencyCorrelation::Action,
+                    action.action_id.to_string(),
+                    super::latency::FederationLatencyBackend::Bark,
+                    super::latency::FederationLatencyDirection::Outgoing,
+                    super::latency::FederationLatencyPhase::BarkHtlcCosigning,
+                );
+                let htlc_result = runtime
                     .execute_lightning_send_htlcs(
                         &quote,
                         &projection,
                         &plan_entry,
                         &authorization_entry,
                     )
-                    .await
-                {
+                    .await;
+                htlc_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+                    htlc_result.is_ok(),
+                ));
+                let transition = match htlc_result {
                     Ok(transition) => transition,
                     Err(cdk_bark::Error::CustodySignerUnavailable) => {
                         let retry = runtime
@@ -305,12 +324,31 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     next_observation_epoch(&projection, action.action_id, federation.member_id())?;
                 let is_actor = plan.actor == federation.member_id();
                 if is_actor {
-                    runtime
+                    let initiation_timer = super::latency::FederationLatencyTimer::start(
+                        super::latency::FederationLatencyCorrelation::Action,
+                        action.action_id.to_string(),
+                        super::latency::FederationLatencyBackend::Bark,
+                        super::latency::FederationLatencyDirection::Outgoing,
+                        super::latency::FederationLatencyPhase::BarkLightningInitiation,
+                    );
+                    let initiation_result = runtime
                         .initiate_lightning_send(&quote, &projection, &plan_entry, htlcs)
-                        .await
-                        .map_err(|_| cdk::Error::Internal)?;
+                        .await;
+                    initiation_timer.finish(
+                        super::latency::FederationLatencyOutcome::from_success(
+                            initiation_result.is_ok(),
+                        ),
+                    );
+                    initiation_result.map_err(|_| cdk::Error::Internal)?;
                 }
-                let mut status = runtime
+                let terminal_timer = super::latency::FederationLatencyTimer::start(
+                    super::latency::FederationLatencyCorrelation::Action,
+                    action.action_id.to_string(),
+                    super::latency::FederationLatencyBackend::Bark,
+                    super::latency::FederationLatencyDirection::Outgoing,
+                    super::latency::FederationLatencyPhase::BarkLightningTerminalPoll,
+                );
+                let status_result = runtime
                     .observe_lightning_send_terminal(
                         &quote,
                         &projection,
@@ -318,14 +356,42 @@ pub(super) async fn advance_federated_bark_melt_quote(
                         htlcs,
                         next_epoch,
                     )
-                    .await
-                    .map_err(|_| cdk::Error::Internal)?;
+                    .await;
+                let terminal_outcome = match &status_result {
+                    Ok(cdk_bark::FederatedBarkSendTerminalStatus::Pending)
+                    | Ok(cdk_bark::FederatedBarkSendTerminalStatus::Missing) => {
+                        super::latency::FederationLatencyOutcome::Pending
+                    }
+                    Ok(_) => super::latency::FederationLatencyOutcome::Success,
+                    Err(_) => super::latency::FederationLatencyOutcome::Error,
+                };
+                terminal_timer.finish(terminal_outcome);
+                let mut status = status_result.map_err(|_| cdk::Error::Internal)?;
                 if fallback_may_initiate(is_actor, &status) {
-                    runtime
+                    let initiation_timer = super::latency::FederationLatencyTimer::start(
+                        super::latency::FederationLatencyCorrelation::Action,
+                        action.action_id.to_string(),
+                        super::latency::FederationLatencyBackend::Bark,
+                        super::latency::FederationLatencyDirection::Outgoing,
+                        super::latency::FederationLatencyPhase::BarkLightningInitiation,
+                    );
+                    let initiation_result = runtime
                         .initiate_lightning_send(&quote, &projection, &plan_entry, htlcs)
-                        .await
-                        .map_err(|_| cdk::Error::Internal)?;
-                    status = runtime
+                        .await;
+                    initiation_timer.finish(
+                        super::latency::FederationLatencyOutcome::from_success(
+                            initiation_result.is_ok(),
+                        ),
+                    );
+                    initiation_result.map_err(|_| cdk::Error::Internal)?;
+                    let terminal_timer = super::latency::FederationLatencyTimer::start(
+                        super::latency::FederationLatencyCorrelation::Action,
+                        action.action_id.to_string(),
+                        super::latency::FederationLatencyBackend::Bark,
+                        super::latency::FederationLatencyDirection::Outgoing,
+                        super::latency::FederationLatencyPhase::BarkLightningTerminalPoll,
+                    );
+                    let status_result = runtime
                         .observe_lightning_send_terminal(
                             &quote,
                             &projection,
@@ -333,8 +399,17 @@ pub(super) async fn advance_federated_bark_melt_quote(
                             htlcs,
                             next_epoch,
                         )
-                        .await
-                        .map_err(|_| cdk::Error::Internal)?;
+                        .await;
+                    let terminal_outcome = match &status_result {
+                        Ok(cdk_bark::FederatedBarkSendTerminalStatus::Pending)
+                        | Ok(cdk_bark::FederatedBarkSendTerminalStatus::Missing) => {
+                            super::latency::FederationLatencyOutcome::Pending
+                        }
+                        Ok(_) => super::latency::FederationLatencyOutcome::Success,
+                        Err(_) => super::latency::FederationLatencyOutcome::Error,
+                    };
+                    terminal_timer.finish(terminal_outcome);
+                    status = status_result.map_err(|_| cdk::Error::Internal)?;
                 }
                 match status {
                     cdk_bark::FederatedBarkSendTerminalStatus::Pending
@@ -419,7 +494,14 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 }
                 let next_epoch =
                     next_observation_epoch(&projection, action.action_id, federation.member_id())?;
-                let observation = runtime
+                let validation_timer = super::latency::FederationLatencyTimer::start(
+                    super::latency::FederationLatencyCorrelation::Action,
+                    action.action_id.to_string(),
+                    super::latency::FederationLatencyBackend::Bark,
+                    super::latency::FederationLatencyDirection::Outgoing,
+                    super::latency::FederationLatencyPhase::BarkResultValidation,
+                );
+                let observation_result = runtime
                     .apply_lightning_send_succeeded(
                         &quote,
                         &projection,
@@ -427,8 +509,11 @@ pub(super) async fn advance_federated_bark_melt_quote(
                         &success_entry,
                         next_epoch,
                     )
-                    .await
-                    .map_err(|_| cdk::Error::Internal)?;
+                    .await;
+                validation_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+                    observation_result.is_ok(),
+                ));
+                let observation = observation_result.map_err(|_| cdk::Error::Internal)?;
                 submit_bark_operation(
                     state,
                     federation.operation_envelope(super::bark_federation_operation(
@@ -630,11 +715,22 @@ pub(super) async fn advance_federated_bark_melt_quote(
         .copied()
         .take(usize::from(application.threshold))
         .collect::<Vec<_>>();
-    let expires_at = runtime
-        .lightning_send_expiry_height()
-        .await
-        .map_err(|_| cdk::Error::InvalidPaymentRequest)?;
-    let plan = runtime
+    let plan_timer = super::latency::FederationLatencyTimer::start(
+        super::latency::FederationLatencyCorrelation::Quote,
+        quote_id.to_string(),
+        super::latency::FederationLatencyBackend::Bark,
+        super::latency::FederationLatencyDirection::Outgoing,
+        super::latency::FederationLatencyPhase::BarkSendPlanPreparation,
+    );
+    let expires_at_result = runtime.lightning_send_expiry_height().await;
+    let expires_at = match expires_at_result {
+        Ok(expires_at) => expires_at,
+        Err(_) => {
+            plan_timer.finish(super::latency::FederationLatencyOutcome::Error);
+            return Err(cdk::Error::InvalidPaymentRequest);
+        }
+    };
+    let plan_result = runtime
         .propose_lightning_send(
             &quote,
             predecessor_operation_id,
@@ -646,7 +742,11 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 expires_at,
             },
         )
-        .map_err(|_| cdk::Error::InvalidPaymentRequest)?;
+        .map_err(|_| cdk::Error::InvalidPaymentRequest);
+    plan_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+        plan_result.is_ok(),
+    ));
+    let plan = plan_result?;
     if plan.kind != FederationBarkActionKind::LightningSend {
         return Err(cdk::Error::Internal);
     }

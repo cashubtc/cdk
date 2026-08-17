@@ -271,13 +271,25 @@ async fn process_federation_swap(
         return Ok(None);
     };
     let envelope = config.swap_operation(payload.clone())?;
-    let response = state.submit_federation_envelope(envelope).await?;
-    Ok(Some(
+    let operation_id = envelope.operation_id()?;
+    let timer = crate::federation::latency::FederationLatencyTimer::start(
+        crate::federation::latency::FederationLatencyCorrelation::Operation,
+        operation_id.to_string(),
+        crate::federation::latency::FederationLatencyBackend::Cashu,
+        crate::federation::latency::FederationLatencyDirection::Internal,
+        crate::federation::latency::FederationLatencyPhase::CashuSwap,
+    );
+    let result = async {
+        let response = state.submit_federation_envelope(envelope).await?;
         state
             .mint
             .persisted_swap_share_response(response.operation_id, payload)
-            .await?,
-    ))
+            .await
+    }
+    .await;
+    timer
+        .finish(crate::federation::latency::FederationLatencyOutcome::from_success(result.is_ok()));
+    result.map(Some)
 }
 
 /// Restores blind signature for a set of outputs.

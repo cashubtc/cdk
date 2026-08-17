@@ -64,6 +64,17 @@ pub type RateLimitedTorHttpClient =
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait MintConnector: Debug {
+    /// Whether a paid WebSocket melt notification must be confirmed through
+    /// the connector's authoritative melt-status endpoint before finalizing.
+    ///
+    /// A connector should return `true` when a WebSocket notification can be
+    /// emitted by a source that is less authoritative than its status
+    /// response. For example, a federation member can notify before the
+    /// connector has collected and aggregated threshold signature shares.
+    fn confirm_paid_melt_notification(&self) -> bool {
+        false
+    }
+
     /// Create an auth connector using the same underlying transport when possible.
     fn auth_connector(
         &self,

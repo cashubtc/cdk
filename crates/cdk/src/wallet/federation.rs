@@ -2002,6 +2002,10 @@ fn validate_melt_quote_response(
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl MintConnector for FederatedMintConnector {
+    fn confirm_paid_melt_notification(&self) -> bool {
+        true
+    }
+
     async fn connect_websocket(
         &self,
         url: &str,

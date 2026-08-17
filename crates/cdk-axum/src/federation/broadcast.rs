@@ -52,6 +52,45 @@ impl FederationTransactionBroadcaster {
         proposal_id: Option<FederationTransactionProposalId>,
         ignore_local_retry_delay: bool,
     ) -> Result<usize, cdk::Error> {
+        let (correlation, correlation_id) = match proposal_id {
+            Some(proposal_id) => (
+                super::latency::FederationLatencyCorrelation::Proposal,
+                proposal_id.to_string(),
+            ),
+            None => (
+                super::latency::FederationLatencyCorrelation::Wallet,
+                state
+                    .mint
+                    .federation_config()
+                    .map(|runtime| runtime.member_id().to_string())
+                    .unwrap_or_else(|| "disabled".to_string()),
+            ),
+        };
+        let timer = super::latency::FederationLatencyTimer::start(
+            correlation,
+            correlation_id,
+            super::latency::FederationLatencyBackend::Bdk,
+            super::latency::FederationLatencyDirection::Outgoing,
+            super::latency::FederationLatencyPhase::BdkBroadcastRound,
+        );
+        let result = self
+            .run_matching_inner(state, proposal_id, ignore_local_retry_delay)
+            .await;
+        let outcome = match &result {
+            Ok(submitted) if *submitted > 0 => super::latency::FederationLatencyOutcome::Success,
+            Ok(_) => super::latency::FederationLatencyOutcome::Skipped,
+            Err(_) => super::latency::FederationLatencyOutcome::Error,
+        };
+        timer.finish(outcome);
+        result
+    }
+
+    async fn run_matching_inner(
+        &self,
+        state: &MintState,
+        proposal_id: Option<FederationTransactionProposalId>,
+        ignore_local_retry_delay: bool,
+    ) -> Result<usize, cdk::Error> {
         let Some(runtime) = state.mint.federation_config() else {
             return Ok(0);
         };
@@ -115,7 +154,19 @@ impl FederationTransactionBroadcaster {
                 .checked_add(1)
                 .ok_or_else(|| cdk::Error::Custom("broadcast attempt overflow".to_string()))?;
 
-            if let Some(confirmation) = wallet.transaction_confirmation(signed.txid).await {
+            let confirmation_timer = super::latency::FederationLatencyTimer::start(
+                super::latency::FederationLatencyCorrelation::Proposal,
+                signed.proposal_id.to_string(),
+                super::latency::FederationLatencyBackend::Bdk,
+                super::latency::FederationLatencyDirection::Outgoing,
+                super::latency::FederationLatencyPhase::BdkConfirmationPoll,
+            );
+            let confirmation = wallet.transaction_confirmation(signed.txid).await;
+            confirmation_timer.finish(match confirmation {
+                Some(_) => super::latency::FederationLatencyOutcome::Success,
+                None => super::latency::FederationLatencyOutcome::Pending,
+            });
+            if let Some(confirmation) = confirmation {
                 let observation = FederationTransactionBroadcastObservation {
                     proposal_id: signed.proposal_id,
                     txid: signed.txid,
@@ -151,8 +202,18 @@ impl FederationTransactionBroadcaster {
                     "durable signed transaction bytes changed before broadcast".to_string(),
                 ));
             }
-            let (result, detail, delay) =
-                classify_broadcast_attempt(wallet.engine().broadcast_classified(transaction).await);
+            let broadcast_timer = super::latency::FederationLatencyTimer::start(
+                super::latency::FederationLatencyCorrelation::Proposal,
+                signed.proposal_id.to_string(),
+                super::latency::FederationLatencyBackend::Bdk,
+                super::latency::FederationLatencyDirection::Outgoing,
+                super::latency::FederationLatencyPhase::BdkBroadcast,
+            );
+            let backend_result = wallet.engine().broadcast_classified(transaction).await;
+            broadcast_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+                backend_result.is_ok(),
+            ));
+            let (result, detail, delay) = classify_broadcast_attempt(backend_result);
             let observation = FederationTransactionBroadcastObservation {
                 proposal_id: signed.proposal_id,
                 txid: signed.txid,

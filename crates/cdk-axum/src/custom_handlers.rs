@@ -287,19 +287,41 @@ async fn process_federation_mint_input(
     state: &MintState,
     input: &cdk::mint::MintInput,
 ) -> Result<Option<MintResponse>, cdk::Error> {
-    state.ensure_federation_ready_for_public_submit().await?;
-    ensure_federation_mint_quotes_paid_for_signing(state, input).await?;
-
-    let Some(operation_id) = submit_federation_mint_operation(state, input.clone()).await? else {
+    if state.mint.federation_config().is_none() {
         return Ok(None);
-    };
+    }
+    let correlation_id = input
+        .quote_ids()
+        .first()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "quote-less-mint".to_string());
+    let timer = crate::federation::latency::FederationLatencyTimer::start(
+        crate::federation::latency::FederationLatencyCorrelation::Quote,
+        correlation_id,
+        crate::federation::latency::FederationLatencyBackend::Cashu,
+        crate::federation::latency::FederationLatencyDirection::Incoming,
+        crate::federation::latency::FederationLatencyPhase::CashuMint,
+    );
+    let result = async {
+        state.ensure_federation_ready_for_public_submit().await?;
+        ensure_federation_mint_quotes_paid_for_signing(state, input).await?;
 
-    Ok(Some(
-        state
-            .mint
-            .persisted_mint_share_response(operation_id, input)
-            .await?,
-    ))
+        let Some(operation_id) = submit_federation_mint_operation(state, input.clone()).await?
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(
+            state
+                .mint
+                .persisted_mint_share_response(operation_id, input)
+                .await?,
+        ))
+    }
+    .await;
+    timer
+        .finish(crate::federation::latency::FederationLatencyOutcome::from_success(result.is_ok()));
+    result
 }
 
 #[cfg(feature = "federation")]
@@ -316,23 +338,45 @@ async fn ensure_federation_mint_quotes_paid_for_signing(
         return Ok(());
     }
 
-    state
-        .federation
-        .payment_observer
-        .observe_mint_quotes(state, &quote_ids)
-        .await?;
+    let timer = crate::federation::latency::FederationLatencyTimer::start(
+        crate::federation::latency::FederationLatencyCorrelation::Quote,
+        quote_ids
+            .first()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "quote-less-mint".to_string()),
+        crate::federation::latency::FederationLatencyBackend::Cashu,
+        crate::federation::latency::FederationLatencyDirection::Incoming,
+        crate::federation::latency::FederationLatencyPhase::MintPaymentWait,
+    );
+    let result = async {
+        state
+            .federation
+            .payment_observer
+            .observe_mint_quotes(state, &quote_ids)
+            .await?;
 
-    let wait_timeout = state
-        .federation
-        .peer_sync_config
-        .unwrap_or_default()
-        .operation_submission_timeout;
-    tokio::time::timeout(
-        wait_timeout,
-        wait_for_federation_mint_quotes_paid_locally(state, &quote_ids),
-    )
-    .await
-    .map_err(|_| cdk::Error::PendingQuote)?
+        let wait_timeout = state
+            .federation
+            .peer_sync_config
+            .unwrap_or_default()
+            .operation_submission_timeout;
+        tokio::time::timeout(
+            wait_timeout,
+            wait_for_federation_mint_quotes_paid_locally(state, &quote_ids),
+        )
+        .await
+        .map_err(|_| cdk::Error::PendingQuote)?
+    }
+    .await;
+    let outcome = match &result {
+        Ok(()) => crate::federation::latency::FederationLatencyOutcome::Success,
+        Err(cdk::Error::PendingQuote) => {
+            crate::federation::latency::FederationLatencyOutcome::Timeout
+        }
+        Err(_) => crate::federation::latency::FederationLatencyOutcome::Error,
+    };
+    timer.finish(outcome);
+    result
 }
 
 #[cfg(feature = "federation")]
@@ -912,26 +956,39 @@ async fn process_federation_melt_request(
         return Ok(None);
     };
     let envelope = config.melt_operation(payload.clone())?;
-    state.submit_federation_envelope(envelope).await?;
-    if let Err(err) = state
-        .federation
-        .payment_observer
-        .observe_melt_quote(state, payload.quote())
-        .await
-    {
-        tracing::debug!(
-            quote = %payload.quote(),
-            "Immediate federation melt payment observation deferred: {}",
-            err
-        );
-    }
-    if federation_melt_quote_is_failed_terminal(state, payload.quote()).await? {
-        return Err(cdk::Error::PaymentFailed);
-    }
+    let timer = crate::federation::latency::FederationLatencyTimer::start(
+        crate::federation::latency::FederationLatencyCorrelation::Quote,
+        payload.quote().to_string(),
+        crate::federation::latency::FederationLatencyBackend::Cashu,
+        crate::federation::latency::FederationLatencyDirection::Outgoing,
+        crate::federation::latency::FederationLatencyPhase::CashuMelt,
+    );
+    let result = async {
+        state.submit_federation_envelope(envelope).await?;
+        if let Err(err) = state
+            .federation
+            .payment_observer
+            .observe_melt_quote(state, payload.quote())
+            .await
+        {
+            tracing::debug!(
+                quote = %payload.quote(),
+                "Immediate federation melt payment observation deferred: {}",
+                err
+            );
+        }
+        if federation_melt_quote_is_failed_terminal(state, payload.quote()).await? {
+            return Err(cdk::Error::PaymentFailed);
+        }
 
-    Ok(Some(
-        federation_melt_response_from_store(state, payload.quote()).await?,
-    ))
+        Ok(Some(
+            federation_melt_response_from_store(state, payload.quote()).await?,
+        ))
+    }
+    .await;
+    timer
+        .finish(crate::federation::latency::FederationLatencyOutcome::from_success(result.is_ok()));
+    result
 }
 
 #[cfg(feature = "federation")]

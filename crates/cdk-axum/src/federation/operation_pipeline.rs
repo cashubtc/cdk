@@ -352,9 +352,44 @@ impl FederationNodeRuntime {
         &self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
+        let operation_id = envelope.operation_id()?;
+        let operation_kind = envelope.operation.kind().to_string();
+        tracing::trace!(
+            target: "cdk_axum::federation::transaction_latency",
+            event = "classification",
+            correlation = "operation",
+            correlation_id = %operation_id,
+            operation_kind = %operation_kind,
+            "Federated consensus operation classified"
+        );
+        let timer = super::latency::FederationLatencyTimer::start(
+            super::latency::FederationLatencyCorrelation::Operation,
+            operation_id.to_string(),
+            super::latency::FederationLatencyBackend::Consensus,
+            super::latency::FederationLatencyDirection::Internal,
+            super::latency::FederationLatencyPhase::ConsensusSubmission,
+        );
+        let result = self.submit_envelope_inner(envelope, operation_id).await;
+        let outcome = match &result {
+            Ok(response)
+                if response.outcome.entry().status() == FederationOperationStatus::Rejected =>
+            {
+                super::latency::FederationLatencyOutcome::Error
+            }
+            Ok(_) => super::latency::FederationLatencyOutcome::Success,
+            Err(_) => super::latency::FederationLatencyOutcome::Error,
+        };
+        timer.finish(outcome);
+        result
+    }
+
+    async fn submit_envelope_inner(
+        &self,
+        envelope: FederationOperationEnvelope,
+        operation_id: FederationOperationId,
+    ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
         #[cfg(feature = "prometheus")]
         let operation_label = envelope.operation.kind().to_string();
-        let operation_id = envelope.operation_id()?;
         let sync_config = self.peer_sync_config.unwrap_or_default();
         let notifications = self
             .notifications

@@ -135,6 +135,37 @@ impl FederationWalletLivenessWorker {
     where
         T: Transport,
     {
+        let correlation_id = state
+            .mint
+            .federation_config()
+            .map(|runtime| runtime.member_id().to_string())
+            .unwrap_or_else(|| "disabled".to_string());
+        let timer = super::latency::FederationLatencyTimer::start(
+            super::latency::FederationLatencyCorrelation::Wallet,
+            correlation_id,
+            super::latency::FederationLatencyBackend::Bdk,
+            super::latency::FederationLatencyDirection::Outgoing,
+            super::latency::FederationLatencyPhase::BdkLivenessRound,
+        );
+        let result = self.run_round_inner(state, client, now_epoch_millis).await;
+        let outcome = match &result {
+            Ok(advanced) if *advanced > 0 => super::latency::FederationLatencyOutcome::Success,
+            Ok(_) => super::latency::FederationLatencyOutcome::Skipped,
+            Err(_) => super::latency::FederationLatencyOutcome::Error,
+        };
+        timer.finish(outcome);
+        result
+    }
+
+    async fn run_round_inner<T>(
+        &self,
+        state: &MintState,
+        client: &FederationRestPeerClient<T>,
+        now_epoch_millis: u128,
+    ) -> Result<usize, cdk::Error>
+    where
+        T: Transport,
+    {
         let Ok(_round) = self.inner.round.try_lock() else {
             return Ok(0);
         };
@@ -215,10 +246,20 @@ impl FederationWalletLivenessWorker {
                 self.set_activity(FederationWalletLivenessActivity::Proposing)
                     .await;
                 self.increment_proposal_attempts().await;
-                match self
+                let proposal_timer = super::latency::FederationLatencyTimer::start(
+                    super::latency::FederationLatencyCorrelation::Batch,
+                    batch.batch_id.to_string(),
+                    super::latency::FederationLatencyBackend::Bdk,
+                    super::latency::FederationLatencyDirection::Outgoing,
+                    super::latency::FederationLatencyPhase::BdkProposalPreparation,
+                );
+                let proposal_result = self
                     .propose_transaction(state, runtime, &chain_state, &transaction_state, &batch)
-                    .await
-                {
+                    .await;
+                proposal_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+                    proposal_result.is_ok(),
+                ));
+                match proposal_result {
                     Ok(()) => {
                         self.clear_retry(LivenessWorkId::Proposal(batch.batch_id))
                             .await;
@@ -325,10 +366,20 @@ impl FederationWalletLivenessWorker {
             self.set_activity(FederationWalletLivenessActivity::Signing)
                 .await;
             self.increment_signing_attempts().await;
-            match self
+            let signing_timer = super::latency::FederationLatencyTimer::start(
+                super::latency::FederationLatencyCorrelation::Proposal,
+                proposal_id.to_string(),
+                super::latency::FederationLatencyBackend::Bdk,
+                super::latency::FederationLatencyDirection::Outgoing,
+                super::latency::FederationLatencyPhase::BdkTransactionFinalization,
+            );
+            let signing_result = self
                 .sign_transaction(state, client, accepted, attempt, plan.signer_set)
-                .await
-            {
+                .await;
+            signing_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+                signing_result.is_ok(),
+            ));
+            match signing_result {
                 Ok(()) => {
                     self.clear_retry(work).await;
                     advanced = advanced.saturating_add(1);
@@ -434,15 +485,33 @@ impl FederationWalletLivenessWorker {
             .ok_or_else(|| cdk::Error::Custom("transaction batch has no fee target".to_string()))?;
         let target_blocks = u16::try_from(target_blocks)
             .map_err(|_| cdk::Error::Custom("fee target exceeds u16".to_string()))?;
+        let fee_timer = super::latency::FederationLatencyTimer::start(
+            super::latency::FederationLatencyCorrelation::Batch,
+            batch.batch_id.to_string(),
+            super::latency::FederationLatencyBackend::Bdk,
+            super::latency::FederationLatencyDirection::Outgoing,
+            super::latency::FederationLatencyPhase::BdkFeeEstimation,
+        );
         let fee_rate_sat_per_vb =
             bounded_fee_rate(policy, wallet.fetch_fee_rate_sat_per_vb(target_blocks)).await;
+        fee_timer.finish(super::latency::FederationLatencyOutcome::Success);
         let fee_rate = FeeRate::from_sat_per_vb(fee_rate_sat_per_vb)
             .ok_or_else(|| cdk::Error::Custom("invalid first-release fee rate".to_string()))?;
-        let psbt = wallet
+        let psbt_timer = super::latency::FederationLatencyTimer::start(
+            super::latency::FederationLatencyCorrelation::Batch,
+            batch.batch_id.to_string(),
+            super::latency::FederationLatencyBackend::Bdk,
+            super::latency::FederationLatencyDirection::Outgoing,
+            super::latency::FederationLatencyPhase::BdkPsbtBuild,
+        );
+        let psbt_result = wallet
             .engine()
             .build_federated_psbt(&recipients, fee_rate, change_script.clone(), &outpoints)
-            .await
-            .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+            .await;
+        psbt_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+            psbt_result.is_ok(),
+        ));
+        let psbt = psbt_result.map_err(|error| cdk::Error::Custom(error.to_string()))?;
         let by_outpoint = spendable
             .iter()
             .map(|utxo| (utxo.outpoint, *utxo))
@@ -653,8 +722,16 @@ impl FederationWalletLivenessWorker {
             .ok_or_else(|| cdk::Error::Custom("replacement has no fee target".to_string()))?;
         let target_blocks = u16::try_from(target_blocks)
             .map_err(|_| cdk::Error::Custom("fee target exceeds u16".to_string()))?;
+        let fee_timer = super::latency::FederationLatencyTimer::start(
+            super::latency::FederationLatencyCorrelation::Proposal,
+            original_id.to_string(),
+            super::latency::FederationLatencyBackend::Bdk,
+            super::latency::FederationLatencyDirection::Outgoing,
+            super::latency::FederationLatencyPhase::BdkFeeEstimation,
+        );
         let estimated_sat_per_vb =
             bounded_fee_rate(policy, wallet.fetch_fee_rate_sat_per_vb(target_blocks)).await;
+        fee_timer.finish(super::latency::FederationLatencyOutcome::Success);
         let maximum_fee = batch.intents.iter().try_fold(0_u64, |sum, intent| {
             sum.checked_add(intent.maximum_fee_sat)
                 .ok_or_else(|| cdk::Error::Custom("replacement fee cap overflow".to_string()))

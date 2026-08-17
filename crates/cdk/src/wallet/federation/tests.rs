@@ -1683,6 +1683,19 @@ fn federated_mint_connector_rejects_invalid_invite_code() {
 }
 
 #[test]
+fn federated_mint_connector_confirms_paid_websocket_melts() {
+    let bundle = threshold_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let connector = FederatedMintConnector::new(
+        bundle.public_config.clone(),
+        member_connectors(&bundle, &outputs),
+    )
+    .expect("federated mint connector");
+
+    assert!(connector.confirm_paid_melt_notification());
+}
+
+#[test]
 fn federated_mint_connector_rejects_unsupported_wallet_protocol_version() {
     let bundle = threshold_bundle();
     let outputs = blinded_outputs(&bundle);

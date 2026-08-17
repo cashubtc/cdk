@@ -249,8 +249,7 @@ impl<D> CdkAlephBftNetworkHandle<D> {
         self.outgoing.try_recv().ok()
     }
 
-    /// Return the current outbound bridge depth for scoped test diagnostics.
-    #[cfg(test)]
+    /// Return the current outbound bridge depth for diagnostics.
     pub(crate) fn outbound_queue_len(&self) -> usize {
         self.outgoing.len()
     }

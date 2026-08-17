@@ -64,6 +64,44 @@ async fn collect_bark_evidence_certificate(
     required: u16,
     collector_fallback_round: u32,
 ) -> Result<Option<FederationBarkEvidenceCertificate>, cdk::Error> {
+    let timer = super::latency::FederationLatencyTimer::start(
+        super::latency::FederationLatencyCorrelation::Action,
+        intent.action_id.to_string(),
+        super::latency::FederationLatencyBackend::Bark,
+        super::latency::FederationLatencyDirection::Incoming,
+        super::latency::FederationLatencyPhase::BarkEvidenceCollection,
+    );
+    let result = collect_bark_evidence_certificate_inner(
+        state,
+        intent,
+        phase,
+        evidence_operation_id,
+        attempt,
+        observation,
+        required,
+        collector_fallback_round,
+    )
+    .await;
+    let outcome = match &result {
+        Ok(Some(_)) => super::latency::FederationLatencyOutcome::Success,
+        Ok(None) => super::latency::FederationLatencyOutcome::Pending,
+        Err(_) => super::latency::FederationLatencyOutcome::Error,
+    };
+    timer.finish(outcome);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn collect_bark_evidence_certificate_inner(
+    state: &MintState,
+    intent: &FederationBarkReceiveIntent,
+    phase: FederationBarkEvidencePhase,
+    evidence_operation_id: FederationOperationId,
+    attempt: u32,
+    observation: &FederationBarkMemberObservation,
+    required: u16,
+    collector_fallback_round: u32,
+) -> Result<Option<FederationBarkEvidenceCertificate>, cdk::Error> {
     let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
     let (binding, _) = persist_local_bark_evidence_attestation(
         state,
@@ -290,9 +328,18 @@ async fn advance_federated_bark_mint_quote_inner(
         .bark_runtime()
         .ok_or_else(bark_unavailable)?;
     let quote = quote_id.to_string();
-    let projection = crate::federation_bark_ready_projection(&state.mint, runtime)
-        .await
-        .map_err(|_| bark_unavailable())?;
+    let projection_timer = super::latency::FederationLatencyTimer::start(
+        super::latency::FederationLatencyCorrelation::Quote,
+        quote_id.to_string(),
+        super::latency::FederationLatencyBackend::Bark,
+        super::latency::FederationLatencyDirection::Incoming,
+        super::latency::FederationLatencyPhase::BarkProjectionReady,
+    );
+    let projection_result = crate::federation_bark_ready_projection(&state.mint, runtime).await;
+    projection_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+        projection_result.is_ok(),
+    ));
+    let projection = projection_result.map_err(|_| bark_unavailable())?;
     let Some(action) = projection
         .actions
         .iter()
@@ -406,7 +453,14 @@ async fn advance_federated_bark_mint_quote_inner(
                     (observation, transition)
                 }
                 None => {
-                    let Some((observation, transition)) = runtime
+                    let observation_timer = super::latency::FederationLatencyTimer::start(
+                        super::latency::FederationLatencyCorrelation::Action,
+                        action.action_id.to_string(),
+                        super::latency::FederationLatencyBackend::Bark,
+                        super::latency::FederationLatencyDirection::Incoming,
+                        super::latency::FederationLatencyPhase::BarkReceiveHtlcObservation,
+                    );
+                    let observation_result = runtime
                         .observe_receive_htlcs(
                             &intent,
                             prepared_record.operation_id,
@@ -414,8 +468,15 @@ async fn advance_federated_bark_mint_quote_inner(
                             1,
                             is_receive_actor,
                         )
-                        .await
-                        .map_err(|_| bark_unavailable())?
+                        .await;
+                    let observation_outcome = match &observation_result {
+                        Ok(Some(_)) => super::latency::FederationLatencyOutcome::Success,
+                        Ok(None) => super::latency::FederationLatencyOutcome::Pending,
+                        Err(_) => super::latency::FederationLatencyOutcome::Error,
+                    };
+                    observation_timer.finish(observation_outcome);
+                    let Some((observation, transition)) =
+                        observation_result.map_err(|_| bark_unavailable())?
                     else {
                         return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
                     };
@@ -530,10 +591,20 @@ async fn advance_federated_bark_mint_quote_inner(
                     &plan_entry,
                 )
                 .await?;
-            let outcome = match runtime
+            let claim_timer = super::latency::FederationLatencyTimer::start(
+                super::latency::FederationLatencyCorrelation::Action,
+                action.action_id.to_string(),
+                super::latency::FederationLatencyBackend::Bark,
+                super::latency::FederationLatencyDirection::Incoming,
+                super::latency::FederationLatencyPhase::BarkReceiveClaim,
+            );
+            let claim_result = runtime
                 .execute_receive_claim(&intent, prepared, plan_entry.clone(), authorization_entry)
-                .await
-            {
+                .await;
+            claim_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+                claim_result.is_ok(),
+            ));
+            let outcome = match claim_result {
                 Ok(outcome) => outcome,
                 Err(cdk_bark::Error::CustodySignerUnavailable) => {
                     let retry = runtime
@@ -620,10 +691,21 @@ async fn advance_federated_bark_mint_quote_inner(
                         claimed.attempt,
                         &observation,
                     )?;
-                    runtime
-                        .acknowledge_receive_claim(&intent, prepared)
-                        .await
-                        .map_err(|_| bark_unavailable())?;
+                    let acknowledge_timer = super::latency::FederationLatencyTimer::start(
+                        super::latency::FederationLatencyCorrelation::Action,
+                        action.action_id.to_string(),
+                        super::latency::FederationLatencyBackend::Bark,
+                        super::latency::FederationLatencyDirection::Incoming,
+                        super::latency::FederationLatencyPhase::BarkReceiveAcknowledge,
+                    );
+                    let acknowledge_result =
+                        runtime.acknowledge_receive_claim(&intent, prepared).await;
+                    acknowledge_timer.finish(
+                        super::latency::FederationLatencyOutcome::from_success(
+                            acknowledge_result.is_ok(),
+                        ),
+                    );
+                    acknowledge_result.map_err(|_| bark_unavailable())?;
                     Ok(FederationPaymentAdvancement::Progressed)
                 }
             }
@@ -784,9 +866,18 @@ pub(crate) async fn advance_federated_bark_receive_intent(
         .federation
         .bark_runtime()
         .ok_or_else(bark_unavailable)?;
-    let projection = crate::federation_bark_ready_projection(&state.mint, runtime)
-        .await
-        .map_err(|_| bark_unavailable())?;
+    let projection_timer = super::latency::FederationLatencyTimer::start(
+        super::latency::FederationLatencyCorrelation::Action,
+        action_id.to_string(),
+        super::latency::FederationLatencyBackend::Bark,
+        super::latency::FederationLatencyDirection::Incoming,
+        super::latency::FederationLatencyPhase::BarkProjectionReady,
+    );
+    let projection_result = crate::federation_bark_ready_projection(&state.mint, runtime).await;
+    projection_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+        projection_result.is_ok(),
+    ));
+    let projection = projection_result.map_err(|_| bark_unavailable())?;
     let action = projection
         .actions
         .iter()
@@ -973,7 +1064,14 @@ async fn accepted_invoice(
             .ok_or_else(bark_unavailable)?,
     )
     .map_err(|_| bark_unavailable())?;
-    intent.secret_acknowledgements = FederationBarkReceiveSecretCoordinator::new(&peer_client)
+    let secret_timer = super::latency::FederationLatencyTimer::start(
+        super::latency::FederationLatencyCorrelation::Action,
+        intent.action_id.to_string(),
+        super::latency::FederationLatencyBackend::Bark,
+        super::latency::FederationLatencyDirection::Incoming,
+        super::latency::FederationLatencyPhase::BarkSecretReplication,
+    );
+    let secret_result = FederationBarkReceiveSecretCoordinator::new(&peer_client)
         .distribute(
             federation.public_config(),
             &binding,
@@ -981,8 +1079,11 @@ async fn accepted_invoice(
             &remote_members,
             vec![local_acknowledgement],
         )
-        .await
-        .map_err(|_| bark_unavailable())?;
+        .await;
+    secret_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+        secret_result.is_ok(),
+    ));
+    intent.secret_acknowledgements = secret_result.map_err(|_| bark_unavailable())?;
     intent
         .validate_secret_acknowledgements(federation.public_config())
         .map_err(cdk::Error::from)?;
@@ -1023,6 +1124,10 @@ async fn fresh_intent(
         .ok_or_else(bark_unavailable)?;
     let application =
         super::bark_application(federation.public_config()).map_err(|_| bark_unavailable())?;
+    let minimum_cltv_delta = runtime
+        .minimum_receive_cltv_delta()
+        .await
+        .map_err(|_| bark_unavailable())?;
     let next_index = projection
         .derivation_allocations
         .iter()
@@ -1073,7 +1178,7 @@ async fn fresh_intent(
         ark_server: ark_server_commitment(&application.ark_server_public_key)
             .map_err(cdk::Error::from)?,
         network: application.network,
-        minimum_cltv_delta: application.policy.minimum_incoming_cltv_delta,
+        minimum_cltv_delta,
         fee_policy_version: 1,
         anti_dos_policy_version: 1,
         receive_proof: FederationBarkReceiveProof::NoProof,
@@ -1115,10 +1220,20 @@ async fn prepare_and_accept_invoice(
             },
         )
         .map_err(|_| bark_unavailable())?;
-    let prepared = runtime
+    let invoice_timer = super::latency::FederationLatencyTimer::start(
+        super::latency::FederationLatencyCorrelation::Action,
+        intent.action_id.to_string(),
+        super::latency::FederationLatencyBackend::Bark,
+        super::latency::FederationLatencyDirection::Incoming,
+        super::latency::FederationLatencyPhase::BarkInvoicePreparation,
+    );
+    let prepared_result = runtime
         .prepare_receive_invoice(execution_actor, intent_operation_id, intent)
-        .await
-        .map_err(|_| bark_unavailable())?;
+        .await;
+    invoice_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+        prepared_result.is_ok(),
+    ));
+    let prepared = prepared_result.map_err(|_| bark_unavailable())?;
     let envelope = federation.operation_envelope(super::bark_federation_operation(
         FederationBarkOperation::ReceivePrepared(prepared.clone()),
     )?);
