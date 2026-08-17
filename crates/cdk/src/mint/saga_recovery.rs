@@ -850,17 +850,6 @@ mod tests {
         assert_eq!(persisted_quote.state, MeltQuoteState::Paid);
     }
 
-    /// Regression test (Loupe #95): the on-demand recovery path must not
-    /// compensate a melt quote that was already settled *internally*
-    /// (melt-to-mint on the same mint).
-    ///
-    /// `attempt_internal_settlement` credits the recipient's mint quote and
-    /// moves the saga to `PaymentAttempted` while the payer's input proofs are
-    /// still `Pending` (finalization has not happened yet). If recovery runs in
-    /// this window with a non-`Paid` payment status (the backend never saw the
-    /// payment), compensating would return the payer's proofs while the mint
-    /// quote stays credited — ecash created from nothing. The guard must
-    /// finalize instead.
     #[tokio::test]
     async fn test_failed_outcome_for_internal_settlement_finalizes_not_rolls_back() {
         use std::str::FromStr;
@@ -993,8 +982,6 @@ mod tests {
         assert_saga_not_exists(&mint, &operation_id).await;
     }
 
-    /// Regression test (Loupe #143): a stale terminal failure must not roll
-    /// back a saga that a concurrent finalizer already moved to `Finalizing`.
     #[tokio::test]
     async fn test_failed_outcome_does_not_rollback_finalizing_saga() {
         let fake_description = FakeInvoiceDescription {

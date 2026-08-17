@@ -82,6 +82,27 @@ pub async fn list_wallet_transactions(
                 .map(|timestamp| timestamp.to_string())
                 .unwrap_or_else(|| "none".to_string()),
         );
+        for input in transaction.inputs {
+            println!(
+                "  input: txid {}, vout {}, amount: {}, address: {}",
+                input.txid,
+                input.vout,
+                input
+                    .amount_sat
+                    .map(|amount| format!("{amount} sat"))
+                    .unwrap_or_else(|| "unknown".to_string()),
+                input.address.as_deref().unwrap_or("unknown"),
+            );
+        }
+        for output in transaction.outputs {
+            println!(
+                "  output: vout {}, address: {}, amount: {} sat, quote_id: {}",
+                output.vout,
+                output.address,
+                output.amount_sat,
+                output.quote_id.as_deref().unwrap_or("none"),
+            );
+        }
     }
 
     Ok(())

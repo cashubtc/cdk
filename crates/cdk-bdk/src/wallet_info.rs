@@ -34,6 +34,10 @@ pub struct WalletBalance {
 pub struct WalletTransaction {
     /// Transaction ID.
     pub txid: String,
+    /// Inputs spent by this transaction in input order.
+    pub inputs: Vec<WalletTransactionInput>,
+    /// Non-change payment outputs in transaction output order.
+    pub outputs: Vec<WalletTransactionOutput>,
     /// Value received by wallet scripts in satoshis.
     pub received_sat: u64,
     /// Value spent from wallet inputs in satoshis.
@@ -48,6 +52,32 @@ pub struct WalletTransaction {
     pub confirmation_time: Option<u64>,
     /// First-seen timestamp, when known for an unconfirmed transaction.
     pub first_seen: Option<u64>,
+}
+
+/// An input spent by a wallet transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalletTransactionInput {
+    /// Transaction ID containing the previous output.
+    pub txid: String,
+    /// Index of the previous output.
+    pub vout: u32,
+    /// Value of the previous output in satoshis, when known.
+    pub amount_sat: Option<u64>,
+    /// Address of the previous output, when it belongs to the wallet.
+    pub address: Option<String>,
+}
+
+/// A payment output belonging to a wallet transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalletTransactionOutput {
+    /// Transaction output index.
+    pub vout: u32,
+    /// Bitcoin address in network-specific display encoding.
+    pub address: String,
+    /// Output value in satoshis.
+    pub amount_sat: u64,
+    /// Quote associated with this output, when managed by the payment backend.
+    pub quote_id: Option<String>,
 }
 
 /// BDK keychain containing a revealed address.
@@ -109,6 +139,7 @@ impl CdkBdk {
         offset: usize,
         limit: usize,
     ) -> Result<WalletPage<WalletTransaction>, Error> {
+        self.storage.ensure_send_outpoint_quote_id_index().await?;
         let wallet_with_db = self.wallet_with_db.lock().await;
         let wallet = &wallet_with_db.wallet;
         let transactions = wallet.transactions_sort_by(|left, right| {
@@ -120,7 +151,7 @@ impl CdkBdk {
         let total = u64::try_from(transactions.len())
             .map_err(|_| Error::Wallet("Transaction count exceeds u64".to_string()))?;
 
-        let items = transactions
+        let mut items = transactions
             .into_iter()
             .skip(offset)
             .take(limit)
@@ -133,6 +164,56 @@ impl CdkBdk {
                     .map_err(|_| Error::Wallet("Received value exceeds i64".to_string()))?;
                 let sent_signed = i64::try_from(sent_sat)
                     .map_err(|_| Error::Wallet("Sent value exceeds i64".to_string()))?;
+                let is_outgoing = sent_sat > 0;
+                let inputs = tx
+                    .input
+                    .iter()
+                    .map(|input| {
+                        let outpoint = input.previous_output;
+                        let previous_output = wallet.tx_graph().get_txout(outpoint);
+                        let amount_sat = previous_output.map(|output| output.value.to_sat());
+                        let address = previous_output
+                            .filter(|output| wallet.is_mine(output.script_pubkey.clone()))
+                            .and_then(|output| {
+                                Address::from_script(output.script_pubkey.as_script(), self.network)
+                                    .ok()
+                            })
+                            .map(|address| address.to_string());
+
+                        WalletTransactionInput {
+                            txid: outpoint.txid.to_string(),
+                            vout: outpoint.vout,
+                            amount_sat,
+                            address,
+                        }
+                    })
+                    .collect();
+                let outputs = tx
+                    .output
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, output)| {
+                        let is_wallet_output = wallet.is_mine(output.script_pubkey.clone());
+                        is_outgoing != is_wallet_output
+                    })
+                    .filter_map(|(vout, output)| {
+                        Address::from_script(output.script_pubkey.as_script(), self.network)
+                            .ok()
+                            .map(|address| (vout, output, address))
+                    })
+                    .map(|(vout, output, address)| {
+                        let vout = u32::try_from(vout).map_err(|_| {
+                            Error::Wallet("Transaction output index exceeds u32".to_string())
+                        })?;
+                        let address = address.to_string();
+                        Ok(WalletTransactionOutput {
+                            vout,
+                            address,
+                            amount_sat: output.value.to_sat(),
+                            quote_id: None,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, Error>>()?;
 
                 let (confirmation_height, confirmation_time, first_seen) =
                     match transaction.chain_position {
@@ -146,6 +227,8 @@ impl CdkBdk {
 
                 Ok(WalletTransaction {
                     txid: transaction.tx_node.txid.to_string(),
+                    inputs,
+                    outputs,
                     received_sat,
                     sent_sat,
                     fee_sat: wallet.calculate_fee(tx).ok().map(|fee| fee.to_sat()),
@@ -156,6 +239,25 @@ impl CdkBdk {
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
+        drop(wallet_with_db);
+
+        for transaction in &mut items {
+            for output in &mut transaction.outputs {
+                output.quote_id = match transaction.sent_sat > 0 {
+                    true => {
+                        let outpoint = format!("{}:{}", transaction.txid, output.vout);
+                        self.storage
+                            .get_quote_id_by_send_outpoint(&outpoint)
+                            .await?
+                    }
+                    false => {
+                        self.storage
+                            .get_quote_id_by_receive_address(&output.address)
+                            .await?
+                    }
+                };
+            }
+        }
 
         Ok(WalletPage { items, total })
     }

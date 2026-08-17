@@ -2935,13 +2935,6 @@ async fn test_rollback_melt_quote_duplicate_failure_is_idempotent() {
     assert_saga_not_exists(&mint, &operation_id).await;
 }
 
-/// Regression test (Loupe #136): a stale compensation from an already
-/// rolled-back saga must not clobber a later retry of the same quote.
-///
-/// One path rolls back saga A (making the quote and proofs retryable), the
-/// client immediately retries the same quote with the same proofs as saga B,
-/// and then a delayed in-process `RemoveMeltSetup` from saga A executes. The
-/// stale compensation must be a no-op because saga A no longer exists.
 #[tokio::test]
 async fn test_stale_remove_melt_setup_does_not_clobber_retry() {
     use super::compensation::{CompensatingAction, RemoveMeltSetup};
@@ -3028,15 +3021,6 @@ async fn test_stale_remove_melt_setup_does_not_clobber_retry() {
     assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
 }
 
-/// Regression test (Loupe #193): an indeterminate follow-up status after a
-/// payment error must keep the melt reserved instead of returning proofs to
-/// the payer.
-///
-/// `handle_payment_error` performs a backend status check after `make_payment`
-/// returns an error. `Unknown` is still an in-flight / indeterminate state:
-/// the backend may not know yet whether the payment settled. Treating that
-/// follow-up as `Failed` would compensate the saga immediately, returning
-/// proofs that can still be consumed if the payment later succeeds.
 #[tokio::test]
 async fn test_unknown_follow_up_after_payment_error_keeps_proofs_pending() {
     use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};

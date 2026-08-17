@@ -26,6 +26,15 @@ pub const SEND_INTENT_NAMESPACE: &str = "send_intent";
 /// Secondary namespace for send intent quote id index
 pub const SEND_INTENT_QUOTE_ID_NAMESPACE: &str = "send_intent_quote_id";
 
+/// Secondary namespace for send output quote id index (outpoint -> quote_id)
+pub const SEND_OUTPOINT_QUOTE_ID_NAMESPACE: &str = "send_outpoint_quote_id";
+
+/// Secondary namespace for one-time BDK storage migrations.
+pub const STORAGE_MIGRATION_NAMESPACE: &str = "storage_migration";
+
+/// Marker for the send output quote id index backfill.
+pub const SEND_OUTPOINT_QUOTE_ID_BACKFILL_KEY: &str = "send_outpoint_quote_id_v1";
+
 /// Secondary namespace for send batches
 pub const SEND_BATCH_NAMESPACE: &str = "send_batch";
 
@@ -675,6 +684,13 @@ mod tests {
             .await
             .expect("get tombstone")
             .is_some());
+        assert_eq!(
+            storage
+                .get_quote_id_by_send_outpoint("txid:0")
+                .await
+                .expect("lookup finalized output quote"),
+            Some(quote_id.clone())
+        );
 
         // A new intent for the SAME quote ID should NOT be allowed
         let mut second = make_pending_intent(Uuid::new_v4());
@@ -910,6 +926,124 @@ mod tests {
             }
             other => panic!("Expected AwaitingConfirmation, got {:?}", other),
         }
+        assert_eq!(
+            storage
+                .get_quote_id_by_send_outpoint("abc123:0")
+                .await
+                .expect("lookup output quote"),
+            Some("quote-confirm".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_outpoint_quote_index_tracks_state_changes() {
+        let storage = test_storage().await;
+        let intent_id = Uuid::new_v4();
+        let intent = make_pending_intent(intent_id);
+        storage
+            .create_send_intent_if_absent(&intent)
+            .await
+            .expect("store intent");
+
+        storage
+            .update_send_intent(
+                &intent_id,
+                &SendIntentState::AwaitingConfirmation {
+                    batch_id: Uuid::new_v4(),
+                    txid: "indexed-txid".to_string(),
+                    outpoint: "indexed-txid:2".to_string(),
+                    fee_contribution_sat: 300,
+                    created_at: 1_700_000_000,
+                },
+            )
+            .await
+            .expect("mark intent awaiting confirmation");
+        assert_eq!(
+            storage
+                .get_quote_id_by_send_outpoint("indexed-txid:2")
+                .await
+                .expect("lookup indexed output"),
+            Some(intent.quote_id.clone())
+        );
+
+        storage
+            .update_send_intent(
+                &intent_id,
+                &SendIntentState::Pending {
+                    created_at: 1_700_000_000,
+                },
+            )
+            .await
+            .expect("revert intent to pending");
+        assert_eq!(
+            storage
+                .get_quote_id_by_send_outpoint("indexed-txid:2")
+                .await
+                .expect("lookup removed output index"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn test_backfill_send_outpoint_quote_id_index() {
+        let storage = test_storage().await;
+        let active_intent = SendIntentRecord {
+            intent_id: Uuid::new_v4(),
+            quote_id: "active-legacy-quote".to_string(),
+            address: "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            amount_sat: 75_000,
+            max_fee_amount_sat: 2_000,
+            tier: PaymentTier::Standard,
+            metadata: PaymentMetadata::default(),
+            state: SendIntentState::AwaitingConfirmation {
+                batch_id: Uuid::new_v4(),
+                txid: "active-legacy-txid".to_string(),
+                outpoint: "active-legacy-txid:0".to_string(),
+                fee_contribution_sat: 300,
+                created_at: 1_700_000_000,
+            },
+        };
+        let finalized_intent = FinalizedSendIntentRecord {
+            intent_id: Uuid::new_v4(),
+            quote_id: "finalized-legacy-quote".to_string(),
+            total_spent_sat: 76_000,
+            outpoint: "finalized-legacy-txid:1".to_string(),
+            finalized_at: 1_700_000_001,
+        };
+        storage
+            .put_record(&active_intent)
+            .await
+            .expect("store legacy active intent");
+        storage
+            .put_record(&finalized_intent)
+            .await
+            .expect("store legacy finalized intent");
+
+        assert_eq!(
+            storage
+                .get_quote_id_by_send_outpoint("active-legacy-txid:0")
+                .await
+                .expect("lookup missing active index"),
+            None
+        );
+        storage
+            .ensure_send_outpoint_quote_id_index()
+            .await
+            .expect("backfill output quote index");
+        assert_eq!(
+            storage
+                .get_quote_id_by_send_outpoint("active-legacy-txid:0")
+                .await
+                .expect("lookup active index"),
+            Some(active_intent.quote_id)
+        );
+        assert_eq!(
+            storage
+                .get_quote_id_by_send_outpoint("finalized-legacy-txid:1")
+                .await
+                .expect("lookup finalized index"),
+            Some(finalized_intent.quote_id)
+        );
     }
 
     #[tokio::test]

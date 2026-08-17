@@ -45,6 +45,10 @@ message ListTransactionsRequest {
 message WalletTransaction {
     // Transaction ID in display encoding.
     string txid = 1;
+    // Inputs spent by this transaction, in input order.
+    repeated WalletTransactionInput inputs = 10;
+    // Non-change payment outputs in transaction output order.
+    repeated WalletTransactionOutput outputs = 9;
     // Value sent to wallet scripts, including change.
     uint64 received_sat = 2;
     // Value consumed from wallet inputs.
@@ -59,6 +63,28 @@ message WalletTransaction {
     optional uint64 confirmation_time = 7;
     // First-seen timestamp, when known for an unconfirmed transaction.
     optional uint64 first_seen = 8;
+}
+
+message WalletTransactionInput {
+    // Previous outpoint transaction ID in display encoding.
+    string txid = 1;
+    // Previous outpoint output index.
+    uint32 vout = 2;
+    // Value of the previous output, when known to the wallet.
+    optional uint64 amount_sat = 3;
+    // Address of the previous output, when it belongs to the wallet.
+    optional string address = 4;
+}
+
+message WalletTransactionOutput {
+    // Transaction output index.
+    uint32 vout = 1;
+    // Bitcoin address in network-specific display encoding.
+    string address = 2;
+    // Output value in satoshis.
+    uint64 amount_sat = 3;
+    // Quote associated with this output, when managed by the payment backend.
+    optional string quote_id = 4;
 }
 
 message ListTransactionsResponse {

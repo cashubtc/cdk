@@ -252,6 +252,26 @@ impl cdk_mint_rpc::WalletInfoProvider for BdkWalletInfoProvider {
                 .into_iter()
                 .map(|transaction| cdk_mint_rpc::wallet::WalletTransaction {
                     txid: transaction.txid,
+                    inputs: transaction
+                        .inputs
+                        .into_iter()
+                        .map(|input| cdk_mint_rpc::wallet::WalletTransactionInput {
+                            txid: input.txid,
+                            vout: input.vout,
+                            amount_sat: input.amount_sat,
+                            address: input.address,
+                        })
+                        .collect(),
+                    outputs: transaction
+                        .outputs
+                        .into_iter()
+                        .map(|output| cdk_mint_rpc::wallet::WalletTransactionOutput {
+                            vout: output.vout,
+                            address: output.address,
+                            amount_sat: output.amount_sat,
+                            quote_id: output.quote_id,
+                        })
+                        .collect(),
                     received_sat: transaction.received_sat,
                     sent_sat: transaction.sent_sat,
                     fee_sat: transaction.fee_sat,

@@ -57,6 +57,7 @@ pub mod wallet_info;
 
 pub use crate::wallet_info::{
     WalletAddress, WalletBalance, WalletKeychain, WalletPage, WalletTransaction,
+    WalletTransactionInput, WalletTransactionOutput,
 };
 
 /// Wrapper struct that combines wallet and database to prevent deadlocks
@@ -472,6 +473,7 @@ impl MintPayment for CdkBdk {
 
         self.recover_receive_saga().await?;
         self.recover_send_saga().await?;
+        self.storage.ensure_send_outpoint_quote_id_index().await?;
 
         let cancel = CancellationToken::new();
 
@@ -1073,6 +1075,15 @@ mod tests {
         assert_eq!(transactions.items[0].balance_delta_sat, 42_000);
         assert_eq!(transactions.items[0].confirmation_height, None);
         assert_eq!(transactions.items[0].first_seen, Some(0));
+        assert_eq!(
+            transactions.items[0].inputs,
+            vec![WalletTransactionInput {
+                txid: Txid::all_zeros().to_string(),
+                vout: 0,
+                amount_sat: None,
+                address: None,
+            }]
+        );
 
         let addresses = backend
             .wallet_addresses(0, 20)
@@ -1080,6 +1091,15 @@ mod tests {
             .expect("list addresses");
         assert_eq!(addresses.total, 1);
         assert!(addresses.items[0].used);
+        assert_eq!(
+            transactions.items[0].outputs,
+            vec![WalletTransactionOutput {
+                vout: 0,
+                address: addresses.items[0].address.clone(),
+                amount_sat: 42_000,
+                quote_id: None,
+            }]
+        );
         assert_eq!(addresses.items[0].balance_sat, 42_000);
         assert_eq!(addresses.items[0].confirmed_balance_sat, 0);
 
@@ -1089,6 +1109,259 @@ mod tests {
             .expect("list empty transaction page");
         assert_eq!(empty_page.total, 1);
         assert!(empty_page.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn wallet_info_pairs_unconfirmed_incoming_output_with_quote_id() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
+        fund_backend_wallet(&backend, 42_000).await;
+        let address = backend
+            .wallet_addresses(0, 20)
+            .await
+            .expect("list addresses")
+            .items[0]
+            .address
+            .clone();
+        backend
+            .storage
+            .track_receive_address(&address, "mint-quote")
+            .await
+            .expect("track receive address");
+
+        let transactions = backend
+            .wallet_transactions(0, 20)
+            .await
+            .expect("list transactions");
+        assert_eq!(
+            transactions.items[0].outputs,
+            vec![WalletTransactionOutput {
+                vout: 0,
+                address,
+                amount_sat: 42_000,
+                quote_id: Some("mint-quote".to_string()),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn wallet_info_pairs_batched_outputs_with_quote_ids() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
+        let funding_txids = fund_backend_wallet_transactions(&backend, &[20_000, 22_000]).await;
+        let funding_address = backend
+            .wallet_addresses(0, 20)
+            .await
+            .expect("list funding address")
+            .items[0]
+            .address
+            .clone();
+        let first_address = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string();
+        let second_address = "bcrt1q6rhpng9evdsfnn833a4f4vej0asu6dk5srld6x".to_string();
+
+        let mut wallet_with_db = backend.wallet_with_db.lock().await;
+        let first_recipient_script = bdk_wallet::bitcoin::Address::from_str(&first_address)
+            .expect("valid address")
+            .require_network(Network::Regtest)
+            .expect("regtest address")
+            .script_pubkey();
+        let second_recipient_script = bdk_wallet::bitcoin::Address::from_str(&second_address)
+            .expect("valid address")
+            .require_network(Network::Regtest)
+            .expect("regtest address")
+            .script_pubkey();
+        let change_script = wallet_with_db
+            .wallet
+            .reveal_next_address(KeychainKind::Internal)
+            .address
+            .script_pubkey();
+        let spending_transaction = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: funding_txids
+                .iter()
+                .rev()
+                .map(|txid| TxIn {
+                    previous_output: OutPoint::new(*txid, 0),
+                    script_sig: Default::default(),
+                    sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                    witness: Witness::new(),
+                })
+                .collect(),
+            output: vec![
+                TxOut {
+                    value: bdk_wallet::bitcoin::Amount::from_sat(20_000),
+                    script_pubkey: first_recipient_script,
+                },
+                TxOut {
+                    value: bdk_wallet::bitcoin::Amount::from_sat(10_000),
+                    script_pubkey: second_recipient_script,
+                },
+                TxOut {
+                    value: bdk_wallet::bitcoin::Amount::from_sat(11_900),
+                    script_pubkey: change_script,
+                },
+            ],
+        };
+        let spending_txid = spending_transaction.compute_txid();
+        wallet_with_db
+            .wallet
+            .apply_unconfirmed_txs([(spending_transaction, 1)]);
+        wallet_with_db
+            .persist()
+            .expect("persist spending transaction");
+        drop(wallet_with_db);
+
+        let batch_id = Uuid::new_v4();
+        let intents = [
+            (Uuid::new_v4(), "quote-first", &first_address, 20_000, 0),
+            (Uuid::new_v4(), "quote-second", &second_address, 10_000, 1),
+        ];
+        for (intent_id, quote_id, address, amount_sat, vout) in &intents {
+            backend
+                .storage
+                .create_send_intent_if_absent(
+                    &crate::send::payment_intent::record::SendIntentRecord {
+                        intent_id: *intent_id,
+                        quote_id: quote_id.to_string(),
+                        address: address.to_string(),
+                        amount_sat: *amount_sat,
+                        max_fee_amount_sat: 1_000,
+                        tier: PaymentTier::Immediate,
+                        metadata: PaymentMetadata::default(),
+                        state: crate::send::payment_intent::record::SendIntentState::AwaitingConfirmation {
+                            batch_id,
+                            txid: spending_txid.to_string(),
+                            outpoint: format!("{spending_txid}:{vout}"),
+                            fee_contribution_sat: 50,
+                            created_at: 0,
+                        },
+                    },
+                )
+                .await
+                .expect("store send intent");
+        }
+
+        let transactions = backend
+            .wallet_transactions(0, 20)
+            .await
+            .expect("list transactions");
+
+        assert_eq!(transactions.total, 3);
+        assert_eq!(
+            transactions.items[0].inputs,
+            vec![
+                WalletTransactionInput {
+                    txid: funding_txids[1].to_string(),
+                    vout: 0,
+                    amount_sat: Some(22_000),
+                    address: Some(funding_address.clone()),
+                },
+                WalletTransactionInput {
+                    txid: funding_txids[0].to_string(),
+                    vout: 0,
+                    amount_sat: Some(20_000),
+                    address: Some(funding_address),
+                },
+            ]
+        );
+        assert_eq!(
+            transactions.items[0].outputs,
+            vec![
+                WalletTransactionOutput {
+                    vout: 0,
+                    address: first_address.clone(),
+                    amount_sat: 20_000,
+                    quote_id: Some("quote-first".to_string()),
+                },
+                WalletTransactionOutput {
+                    vout: 1,
+                    address: second_address.clone(),
+                    amount_sat: 10_000,
+                    quote_id: Some("quote-second".to_string()),
+                },
+            ]
+        );
+        assert_eq!(transactions.items[0].sent_sat, 42_000);
+        assert_eq!(transactions.items[0].received_sat, 11_900);
+
+        for (intent_id, quote_id, _, amount_sat, vout) in &intents {
+            backend
+                .storage
+                .finalize_send_intent(
+                    intent_id,
+                    &FinalizedSendIntentRecord {
+                        intent_id: *intent_id,
+                        quote_id: quote_id.to_string(),
+                        total_spent_sat: *amount_sat + 50,
+                        outpoint: format!("{spending_txid}:{vout}"),
+                        finalized_at: 0,
+                    },
+                )
+                .await
+                .expect("finalize send intent");
+        }
+
+        let finalized_transactions = backend
+            .wallet_transactions(0, 20)
+            .await
+            .expect("list transactions after intent finalization");
+        assert_eq!(
+            finalized_transactions.items[0]
+                .outputs
+                .iter()
+                .map(|output| output.quote_id.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("quote-first"), Some("quote-second")]
+        );
+    }
+
+    #[tokio::test]
+    async fn wallet_info_reports_multiple_incoming_outputs_in_vout_order() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
+        let mut wallet_with_db = backend.wallet_with_db.lock().await;
+        let output_script = wallet_with_db
+            .wallet
+            .reveal_next_address(KeychainKind::External)
+            .address
+            .script_pubkey();
+        let funding_transaction = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::all_zeros(), 0),
+                script_sig: Default::default(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: vec![
+                TxOut {
+                    value: bdk_wallet::bitcoin::Amount::from_sat(21_000),
+                    script_pubkey: output_script.clone(),
+                },
+                TxOut {
+                    value: bdk_wallet::bitcoin::Amount::from_sat(21_000),
+                    script_pubkey: output_script,
+                },
+            ],
+        };
+        wallet_with_db
+            .wallet
+            .apply_unconfirmed_txs([(funding_transaction, 0)]);
+        wallet_with_db
+            .persist()
+            .expect("persist funding transaction");
+        drop(wallet_with_db);
+
+        let transactions = backend
+            .wallet_transactions(0, 20)
+            .await
+            .expect("list transactions");
+
+        assert_eq!(transactions.total, 1);
+        assert_eq!(transactions.items[0].outputs.len(), 2);
+        assert_eq!(transactions.items[0].outputs[0].vout, 0);
+        assert_eq!(transactions.items[0].outputs[0].amount_sat, 21_000);
+        assert_eq!(transactions.items[0].outputs[1].vout, 1);
+        assert_eq!(transactions.items[0].outputs[1].amount_sat, 21_000);
     }
 
     #[tokio::test]
