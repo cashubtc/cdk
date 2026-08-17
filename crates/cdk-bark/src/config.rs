@@ -303,7 +303,7 @@ impl FederatedBarkLocalConfig {
         bark.bitcoind_address = connection.bitcoind_address;
         bark.bitcoind_cookiefile = connection.bitcoind_cookiefile;
         bark.bitcoind_user = connection.bitcoind_user;
-        bark.bitcoind_pass = connection.bitcoind_pass;
+        bark.bitcoind_pass = connection.bitcoind_pass.map(bark::secret::Secret::new);
         bark.vtxo_refresh_expiry_threshold = bindings.policy.refresh_before_expiry_blocks;
         bark.vtxo_exit_margin = bindings
             .policy
