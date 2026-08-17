@@ -47,12 +47,8 @@ fuzz_target!(|arb: TokenV4Arb| {
     // 1. V4 -> V3 -> V4 round-trip.
     // ---------------------------------------------------------------------
     let v3: TokenV3 = v4_original.clone().into();
-    let v4_roundtrip = match TokenV4::try_from(v3.clone()) {
-        Ok(v) => v,
-        // If conversion fails at all, the generator invariants are broken.
-        // Bail silently rather than panic.
-        Err(_) => return,
-    };
+    let v4_roundtrip = TokenV4::try_from(v3.clone())
+        .expect("generated single-mint token with a unit must convert back to V4");
 
     // Mint URL must survive.
     assert_eq!(v4_original.mint_url, v4_roundtrip.mint_url);

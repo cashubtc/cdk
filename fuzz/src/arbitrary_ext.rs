@@ -7,6 +7,7 @@
 //! Wrappers expose the inner value via `into_inner()` and `as_inner()` for
 //! ergonomic use inside `fuzz_target!` bodies.
 
+use std::collections::HashSet;
 use std::str::FromStr;
 
 use cashu::mint_url::MintUrl;
@@ -19,7 +20,7 @@ use cashu::nuts::nut10::{Kind, SecretData, SpendingConditions};
 use cashu::nuts::nut11::{P2PKWitness, SigFlag};
 use cashu::nuts::nut12::ProofDleq;
 use cashu::nuts::nut14::HTLCWitness;
-use cashu::nuts::Conditions;
+use cashu::nuts::{Conditions, Nut10SecretRequest, SupportedMethod, Transport, TransportType};
 use cashu::secret::Secret as SecretString;
 use cashu::{Amount, Id, Nut10Secret, PaymentRequest, PublicKey, SecretKey};
 use libfuzzer_sys::arbitrary::{self, Arbitrary, Unstructured};
@@ -256,12 +257,9 @@ mod hex {
     }
 }
 
-/// Always produce a concrete, non-empty tag vec for HTLC secrets.
-fn cond_to_tags(_c: &Conditions) -> Vec<Vec<String>> {
-    // We rely on `Conditions` already being well-formed; HTLC secret-data
-    // only needs *any* tag list here. Leave it empty so `verify_htlc` reads
-    // straight from the hash field.
-    Vec::new()
+/// Convert generated conditions into their NUT-10 tag representation.
+fn cond_to_tags(c: &Conditions) -> Vec<Vec<String>> {
+    c.clone().into()
 }
 
 /// Wrapper around [`Conditions`].
@@ -476,6 +474,7 @@ impl<'a> Arbitrary<'a> for TokenV4Arb {
         // Eq semantics for "duplicate" (V3 includes keyset_id, V4 does
         // not), so ensuring globally-unique secrets keeps the two
         // `value()` implementations in sync for the differential fuzzer.
+        let mut used_secrets = HashSet::new();
         let mut disambiguator: u64 = 0;
         for _ in 0..num_groups {
             let keyset_id = IdArb::arbitrary(u)?.into_inner();
@@ -483,10 +482,21 @@ impl<'a> Arbitrary<'a> for TokenV4Arb {
             let mut proofs: Vec<ProofV4> = Vec::with_capacity(num_proofs);
             for _ in 0..num_proofs {
                 let p = ProofArb::arbitrary(u)?.into_inner();
-                // Disambiguate the secret to guarantee global uniqueness
-                // within this token without altering the secret's overall
-                // shape (classic hex vs NUT-10 JSON).
-                let disambiguated = SecretString::new(format!("{}#{}", p.secret, disambiguator));
+                // Preserve valid classic and NUT-10 secrets. Only replace an
+                // actual duplicate, using a valid 32-byte classic secret, so
+                // aggregate spending-condition helpers retain deep coverage.
+                let secret_text = p.secret.to_string();
+                let disambiguated = if used_secrets.insert(secret_text) {
+                    p.secret
+                } else {
+                    loop {
+                        let candidate = format!("{disambiguator:064x}");
+                        disambiguator = disambiguator.wrapping_add(1);
+                        if used_secrets.insert(candidate.clone()) {
+                            break SecretString::new(candidate);
+                        }
+                    }
+                };
                 disambiguator = disambiguator.wrapping_add(1);
                 let pv4 = ProofV4 {
                     amount: p.amount,
@@ -590,6 +600,17 @@ impl<'a> Arbitrary<'a> for TokenArb {
 // PaymentRequest wrapper
 // ---------------------------------------------------------------------------
 
+fn short_string<'a>(u: &mut Unstructured<'a>, max_chars: usize) -> arbitrary::Result<String> {
+    Ok(String::arbitrary(u)?
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, ' ' | '-' | '_' | ':' | '/' | '.')
+        })
+        .take(max_chars)
+        .collect())
+}
+
 /// Wrapper around [`PaymentRequest`].
 #[derive(Debug, Clone)]
 pub struct PaymentRequestArb(pub PaymentRequest);
@@ -603,9 +624,13 @@ impl PaymentRequestArb {
 
 impl<'a> Arbitrary<'a> for PaymentRequestArb {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        let payment_id: Option<String> = u.arbitrary()?;
+        let payment_id = if u.ratio(1, 2)? {
+            Some(short_string(u, 32)?)
+        } else {
+            None
+        };
         let amount: Option<u64> = u.arbitrary()?;
-        let unit: Option<CurrencyUnit> = if u.ratio(1, 2)? {
+        let unit: Option<CurrencyUnit> = if amount.is_some() || u.ratio(1, 2)? {
             Some(CurrencyUnitArb::arbitrary(u)?.into_inner())
         } else {
             None
@@ -616,7 +641,64 @@ impl<'a> Arbitrary<'a> for PaymentRequestArb {
         let mints: Vec<MintUrl> = (0..num_mints)
             .map(|_| MintUrlArb::arbitrary(u).map(|m| m.into_inner()))
             .collect::<Result<_, _>>()?;
-        let description: Option<String> = u.arbitrary()?;
+        let description = if u.ratio(1, 2)? {
+            Some(short_string(u, 64)?)
+        } else {
+            None
+        };
+        let num_methods = u.int_in_range(0..=2)?;
+        let supported_methods = (0..num_methods)
+            .map(|_| {
+                let method = match u.int_in_range(0..=3)? {
+                    0 => "bolt11".to_string(),
+                    1 => "bolt12".to_string(),
+                    2 => "onchain".to_string(),
+                    _ => short_string(u, 16)?,
+                };
+                let fee = Option::<u64>::arbitrary(u)?.map(Amount::from);
+                Ok(SupportedMethod { method, fee })
+            })
+            .collect::<arbitrary::Result<Vec<_>>>()?;
+        let num_transports = u.int_in_range(0..=2)?;
+        let transports = (0..num_transports)
+            .map(|_| {
+                let transport_type = match bool::arbitrary(u)? {
+                    true => TransportType::Nostr,
+                    false => TransportType::HttpPost,
+                };
+                let target = match transport_type {
+                    // NUT-26 requires a valid NIP-19 nprofile for Nostr
+                    // transports. This vector encodes a 32-byte zero pubkey.
+                    TransportType::Nostr => {
+                        "nprofile1qqsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq8uzqt"
+                            .to_string()
+                    }
+                    TransportType::HttpPost => short_string(u, 64)?,
+                };
+                Ok(Transport {
+                    _type: transport_type,
+                    target,
+                    tags: Vec::new(),
+                })
+            })
+            .collect::<arbitrary::Result<Vec<_>>>()?;
+        let nut10 = if u.ratio(1, 3)? {
+            let kind = match bool::arbitrary(u)? {
+                true => Kind::P2PK,
+                false => Kind::HTLC,
+            };
+            let data = match kind {
+                Kind::P2PK => PublicKeyArb::arbitrary(u)?.into_inner().to_hex(),
+                Kind::HTLC => hex::encode_lower_bytes(&<[u8; 32]>::arbitrary(u)?),
+            };
+            Some(Nut10SecretRequest::new(
+                kind,
+                data,
+                None::<Vec<Vec<String>>>,
+            ))
+        } else {
+            None
+        };
 
         Ok(Self(PaymentRequest {
             payment_id,
@@ -625,10 +707,10 @@ impl<'a> Arbitrary<'a> for PaymentRequestArb {
             single_use,
             mints,
             mint_preferred,
-            supported_methods: Vec::new(),
+            supported_methods,
             description,
-            transports: Vec::new(),
-            nut10: None,
+            transports,
+            nut10,
         }))
     }
 }

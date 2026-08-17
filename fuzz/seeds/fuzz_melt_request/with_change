@@ -1,0 +1,1 @@
+{"quote":"quote-id","inputs":[{"id":"009a1f293253e41e","amount":2,"secret":"407915bc212be61a77e3e6d2aeb4c727980bda51cd06a6afc29e2861768a7837","C":"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"}],"outputs":[{"amount":0,"id":"00bfa73302d12ffd","B_":"038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"}],"prefer_async":true,"fee_index":0}

@@ -18,8 +18,8 @@ use cashu::nuts::nut11::SigFlag;
 use cashu::nuts::nut14::HTLCWitness;
 use cashu::nuts::Conditions;
 use cashu::secret::Secret as SecretString;
-use cashu::{Amount, Id, Nut10Secret, Proof, PublicKey};
-use cdk_fuzz::pubkey_from;
+use cashu::{Amount, Id, Nut10Secret, Proof, PublicKey, SecretKey, SpendingConditions};
+use cdk_fuzz::{pubkey_from, secret_key_from};
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 
@@ -44,6 +44,9 @@ struct Input {
     c_seed: [u8; 32],
     keyset_id_bytes: [u8; 8],
     extra_tag: Option<(String, String)>,
+    // 0 exercises arbitrary rejection, 1 a valid receiver path, and 2 a
+    // valid expired-refund path.
+    valid_mode: u8,
 }
 
 impl<'a> Arbitrary<'a> for Input {
@@ -82,6 +85,7 @@ impl<'a> Arbitrary<'a> for Input {
             c_seed: u.arbitrary()?,
             keyset_id_bytes: u.arbitrary()?,
             extra_tag: Option::<(String, String)>::arbitrary(u)?,
+            valid_mode: u.arbitrary()?,
         })
     }
 }
@@ -94,7 +98,150 @@ fn sig_flag_from(b: u8) -> SigFlag {
     }
 }
 
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn unique_keys(seeds: &[[u8; 32]]) -> Vec<SecretKey> {
+    let mut keys = Vec::new();
+    for seed in seeds.iter().copied() {
+        let key = secret_key_from(seed);
+        if keys
+            .iter()
+            .all(|existing: &SecretKey| existing.public_key() != key.public_key())
+        {
+            keys.push(key);
+        }
+    }
+    keys
+}
+
 fuzz_target!(|input: Input| {
+    let keyset_id = Id::from_bytes(&input.keyset_id_bytes)
+        .unwrap_or_else(|_| Id::from_str("00deadbeef123456").expect("valid id"));
+
+    match input.valid_mode % 3 {
+        1 => {
+            let preimage = hex_encode(&input.c_seed);
+            let signing_keys = unique_keys(&input.pubkey_seeds);
+            let required_sigs = match signing_keys.is_empty() {
+                true => 0,
+                false => 1 + input.amount % signing_keys.len() as u64,
+            };
+            let conditions = match signing_keys.is_empty() {
+                true => None,
+                false => Some(Conditions {
+                    locktime: None,
+                    pubkeys: Some(signing_keys.iter().map(SecretKey::public_key).collect()),
+                    refund_keys: None,
+                    num_sigs: Some(required_sigs),
+                    sig_flag: SigFlag::SigInputs,
+                    num_sigs_refund: None,
+                }),
+            };
+            let spending = SpendingConditions::new_htlc(preimage.clone(), conditions)
+                .expect("32-byte preimage must create HTLC conditions");
+            let nut10: Nut10Secret = spending.into();
+            let secret: SecretString = nut10
+                .try_into()
+                .expect("generated valid HTLC conditions must serialize");
+            let signatures = signing_keys
+                .iter()
+                .take(required_sigs as usize)
+                .map(|key| {
+                    key.sign(secret.as_bytes())
+                        .expect("valid key must sign HTLC secret")
+                        .to_string()
+                })
+                .collect::<Vec<_>>();
+            let mut proof = Proof {
+                amount: Amount::from(input.amount),
+                keyset_id,
+                secret,
+                c: pubkey_from(input.c_seed),
+                witness: Some(Witness::HTLCWitness(HTLCWitness {
+                    preimage,
+                    signatures: (!signatures.is_empty()).then_some(signatures),
+                })),
+                dleq: None,
+                p2pk_e: None,
+            };
+            assert!(
+                proof.verify_htlc().is_ok(),
+                "generated HTLC receiver path must verify"
+            );
+
+            let mut corrupted_preimage = input.c_seed;
+            corrupted_preimage[0] ^= 1;
+            proof.witness = Some(Witness::HTLCWitness(HTLCWitness {
+                preimage: hex_encode(&corrupted_preimage),
+                signatures: None,
+            }));
+            assert!(
+                proof.verify_htlc().is_err(),
+                "incorrect preimage must not satisfy receiver conditions"
+            );
+            return;
+        }
+        2 => {
+            let preimage = hex_encode(&input.c_seed);
+            let mut refund_keys = unique_keys(&input.refund_key_seeds);
+            if refund_keys.is_empty() {
+                refund_keys.push(secret_key_from(input.c_seed));
+            }
+            let required_sigs = 1 + input.amount % refund_keys.len() as u64;
+            let conditions = Conditions {
+                locktime: Some(0),
+                pubkeys: None,
+                refund_keys: Some(refund_keys.iter().map(SecretKey::public_key).collect()),
+                num_sigs: None,
+                sig_flag: SigFlag::SigInputs,
+                num_sigs_refund: Some(required_sigs),
+            };
+            let spending = SpendingConditions::new_htlc(preimage, Some(conditions))
+                .expect("valid refund conditions must create an HTLC");
+            let nut10: Nut10Secret = spending.into();
+            let secret: SecretString = nut10
+                .try_into()
+                .expect("generated valid HTLC refund conditions must serialize");
+            let signatures = refund_keys
+                .iter()
+                .take(required_sigs as usize)
+                .map(|key| {
+                    key.sign(secret.as_bytes())
+                        .expect("valid refund key must sign HTLC secret")
+                        .to_string()
+                })
+                .collect();
+            let mut incorrect_preimage = input.c_seed;
+            incorrect_preimage[0] ^= 1;
+            let proof = Proof {
+                amount: Amount::from(input.amount),
+                keyset_id,
+                secret,
+                c: pubkey_from(input.c_seed),
+                witness: Some(Witness::HTLCWitness(HTLCWitness {
+                    preimage: hex_encode(&incorrect_preimage),
+                    signatures: Some(signatures),
+                })),
+                dleq: None,
+                p2pk_e: None,
+            };
+            assert!(
+                proof.verify_htlc().is_ok(),
+                "expired HTLC refund path with enough signatures must verify"
+            );
+            return;
+        }
+        _ => {}
+    }
+
     let pubkeys: Vec<PublicKey> = input
         .pubkey_seeds
         .iter()
@@ -156,9 +303,6 @@ fuzz_target!(|input: Input| {
     };
 
     let c_point = pubkey_from(input.c_seed);
-    let keyset_id = Id::from_bytes(&input.keyset_id_bytes)
-        .unwrap_or_else(|_| Id::from_str("00deadbeef123456").expect("valid id"));
-
     let witness = Witness::HTLCWitness(HTLCWitness {
         preimage: input.preimage.clone(),
         signatures: input.witness_sigs.clone(),

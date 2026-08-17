@@ -2,11 +2,11 @@
 
 use std::str::FromStr;
 
-use libfuzzer_sys::fuzz_target;
-
 use cashu::nuts::nut10::Secret as Nut10Secret;
-use cashu::nuts::nut11::{Conditions, SpendingConditions};
+use cashu::nuts::Conditions;
 use cashu::secret::Secret;
+use cashu::SpendingConditions;
+use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &str| {
     // Fuzz HTLC creation with preimage (hex string validation)

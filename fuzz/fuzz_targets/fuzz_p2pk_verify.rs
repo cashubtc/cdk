@@ -18,7 +18,9 @@ use cashu::nuts::nut10::SecretData;
 use cashu::nuts::nut11::{P2PKWitness, SigFlag};
 use cashu::nuts::Conditions;
 use cashu::secret::Secret as SecretString;
-use cashu::{Amount, BlindedMessage, Id, Nut10Secret, Proof, PublicKey, SpendingConditions};
+use cashu::{
+    Amount, BlindedMessage, Id, Nut10Secret, Proof, PublicKey, SecretKey, SpendingConditions,
+};
 use cdk_fuzz::{pubkey_from, secret_key_from};
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
@@ -46,6 +48,8 @@ struct Input {
     keyset_id_bytes: [u8; 8],
     // Blinded-message path inputs.
     required_sigs: u64,
+    // Alternate between generated-valid and arbitrary-invalid verification.
+    valid_case: bool,
 }
 
 impl<'a> Arbitrary<'a> for Input {
@@ -79,6 +83,7 @@ impl<'a> Arbitrary<'a> for Input {
             amount: u.arbitrary()?,
             keyset_id_bytes: u.arbitrary()?,
             required_sigs: u.arbitrary()?,
+            valid_case: u.arbitrary()?,
         })
     }
 }
@@ -95,11 +100,20 @@ fuzz_target!(|input: Input| {
     let receiver_sk = secret_key_from(input.receiver_sk_bytes);
     let receiver_pk = receiver_sk.public_key();
 
-    let extra_pubkeys: Vec<PublicKey> = input
-        .extra_pubkey_seeds
+    let mut signing_keys: Vec<SecretKey> = vec![receiver_sk];
+    for seed in input.extra_pubkey_seeds.iter().copied() {
+        let secret_key = secret_key_from(seed);
+        if signing_keys
+            .iter()
+            .all(|existing| existing.public_key() != secret_key.public_key())
+        {
+            signing_keys.push(secret_key);
+        }
+    }
+    let extra_pubkeys: Vec<PublicKey> = signing_keys
         .iter()
-        .copied()
-        .map(pubkey_from)
+        .skip(1)
+        .map(SecretKey::public_key)
         .collect();
     let refund_keys: Vec<PublicKey> = input
         .refund_key_seeds
@@ -107,6 +121,77 @@ fuzz_target!(|input: Input| {
         .copied()
         .map(pubkey_from)
         .collect();
+
+    let keyset_id = Id::from_bytes(&input.keyset_id_bytes)
+        .unwrap_or_else(|_| Id::from_str("00deadbeef123456").expect("valid id"));
+
+    if input.valid_case {
+        let required_sigs = 1 + input.required_sigs % signing_keys.len() as u64;
+        let conditions = Conditions {
+            locktime: None,
+            pubkeys: if extra_pubkeys.is_empty() {
+                None
+            } else {
+                Some(extra_pubkeys.clone())
+            },
+            refund_keys: None,
+            num_sigs: Some(required_sigs),
+            sig_flag: SigFlag::SigInputs,
+            num_sigs_refund: None,
+        };
+        let spending = SpendingConditions::new_p2pk(receiver_pk, Some(conditions));
+        let nut10: Nut10Secret = spending.into();
+        let secret: SecretString = nut10
+            .try_into()
+            .expect("generated valid P2PK conditions must serialize");
+        let mut proof = Proof {
+            amount: Amount::from(input.amount),
+            keyset_id,
+            secret,
+            c: receiver_pk,
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        };
+        for key in signing_keys.iter().take(required_sigs as usize).cloned() {
+            proof
+                .sign_p2pk(key)
+                .expect("valid signing key must sign a P2PK proof");
+        }
+        assert!(
+            proof.verify_p2pk().is_ok(),
+            "generated P2PK proof must satisfy its signature threshold"
+        );
+
+        let mut corrupted = proof.clone();
+        corrupted.witness = Some(Witness::P2PKWitness(P2PKWitness {
+            signatures: vec!["00".to_string()],
+        }));
+        assert!(
+            corrupted.verify_p2pk().is_err(),
+            "malformed signatures must not satisfy P2PK conditions"
+        );
+
+        let mut blinded = BlindedMessage::new(
+            Amount::from(input.amount),
+            keyset_id,
+            pubkey_from(input.receiver_sk_bytes),
+        );
+        for key in signing_keys.iter().take(required_sigs as usize).cloned() {
+            blinded
+                .sign_p2pk(key)
+                .expect("valid signing key must sign a blinded message");
+        }
+        let pubkeys = signing_keys
+            .iter()
+            .map(SecretKey::public_key)
+            .collect::<Vec<_>>();
+        assert!(
+            blinded.verify_p2pk(&pubkeys, required_sigs).is_ok(),
+            "generated blinded-message signatures must verify"
+        );
+        return;
+    }
 
     // Build Conditions directly via struct literal so we can exercise past
     // locktimes and weird thresholds that `Conditions::new` would reject.
@@ -155,9 +240,6 @@ fuzz_target!(|input: Input| {
 
     // Any well-formed 33-byte compressed pubkey for `C`. Reuse receiver_pk.
     let c_point = receiver_pk;
-
-    let keyset_id = Id::from_bytes(&input.keyset_id_bytes)
-        .unwrap_or_else(|_| Id::from_str("00deadbeef123456").expect("valid id"));
 
     let witness = Witness::P2PKWitness(P2PKWitness {
         signatures: input.witness_sigs.clone(),

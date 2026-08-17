@@ -46,6 +46,35 @@ jobs:
       - name: typos
         run: nix develop --fallback -i -L .#stable --command typos
 
+  fuzz-check:
+    name: "Fuzz targets compile and smoke test"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Compile every fuzz target and run seeded smoke tests
+        run: |
+          nix develop --fallback -i -L .#nightly --command bash -c '
+            set -euo pipefail
+            cargo check --manifest-path fuzz/Cargo.toml --bins
+            cd fuzz
+            corpus_root="${{ runner.temp }}/cdk-fuzz-corpus"
+            mkdir -p "$corpus_root/proof" "$corpus_root/payment-request" "$corpus_root/artifacts"
+            cargo fuzz run fuzz_proof "$corpus_root/proof" seeds/fuzz_proof -- \
+              -max_total_time=5 -artifact_prefix="$corpus_root/artifacts/"
+            cargo fuzz run fuzz_payment_request_bech32 \
+              "$corpus_root/payment-request" seeds/fuzz_payment_request_bech32 -- \
+              -max_total_time=5 -artifact_prefix="$corpus_root/artifacts/"
+          '
+
   # Warm the shared Crane dependency derivation on each physical NixOS runner.
   # The ephemeral nspawn job containers use the host Nix daemon/store, but
   # cdk-runner-01 and cdk-runner-02 do not share a store with each other.
