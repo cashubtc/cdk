@@ -1496,6 +1496,7 @@ mod tests {
     use std::str::FromStr;
     use std::sync::Arc;
 
+    use bitcoin::secp256k1::schnorr::Signature;
     use cdk_common::melt::MeltQuoteRequest;
     use cdk_common::mint::{OperationKind, SagaStateEnum};
     use cdk_common::nut00::KnownMethod;
@@ -1559,6 +1560,10 @@ mod tests {
         }
 
         async fn verify_proofs(&self, _proofs: Vec<cdk_common::Proof>) -> Result<(), Error> {
+            Err(Error::Custom("unsupported in mock".to_string()))
+        }
+
+        async fn sign(&self, _payload: Vec<u8>) -> Result<Signature, Error> {
             Err(Error::Custom("unsupported in mock".to_string()))
         }
 
@@ -1967,6 +1972,10 @@ mod tests {
 
         async fn verify_proofs(&self, proofs: Vec<cdk_common::Proof>) -> Result<(), Error> {
             self.inner.verify_proofs(proofs).await
+        }
+
+        async fn sign(&self, payload: Vec<u8>) -> Result<Signature, Error> {
+            self.inner.sign(payload).await
         }
 
         async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
