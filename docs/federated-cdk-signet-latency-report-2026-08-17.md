@@ -327,3 +327,112 @@ After implementing recovery gating and event-driven wakeups:
 The federation's cryptographic and consensus work is not the main source of end-to-end payment latency. AlephBFT contributes a consistent roughly one-second floor to normal Cashu state changes. Bark latency is dominated by coordinator scheduling and the external payment path. BDK end-to-end latency is overwhelmingly block-bound, while its current recovery loop creates avoidable FROST and CPU load during that wait.
 
 The immediate correctness fixes preserve backend independence and require no new consensus messages. The next optimization should be BDK recovery gating/backoff, followed by event-driven Bark coordination. Consensus parameter tuning should remain last and evidence-driven.
+
+## Post-optimization Signet validation
+
+The event-driven Bark changes were deployed as a rolling upgrade to all five
+members of the v3 Dublin federation. All members returned to healthy and ready,
+with zero operation lag, healthy BDK chain state, ready Bark state, and no
+recovery action required.
+
+The implementation now:
+
+- detaches authoritative Bark work from threshold HTTP request cancellation;
+- wakes bounded background quote work immediately;
+- uses Bark's server-side `wait=true` send and receive APIs with a bounded wait,
+  a fast reconnect, and a deterministic fallback scan; and
+- records coordinator dispatch, Bark server wait, and receive-server wait as
+  separate bounded-cardinality latency phases.
+
+This follows Second's recommendation to use the wait API to eliminate client
+polling and improve responsiveness, documented in the
+[Second changelog](https://docs.second.tech/changelog/changelog/).
+
+### Structured result table
+
+| Flow | Result | End-to-end | External Bark/Lightning | CDK-controlled result | Target |
+|---|---:|---:|---:|---:|---:|
+| Incoming Bolt11 mint | Success, 1,000 sat issued | About 344 s from Wavelength dispatch to local ecash record | 336 s until Wavelength reported completion | About 8 s from external completion to local ecash record | Missed `<5 s` |
+| Outgoing Bolt11 melt | External payment failed; proofs safely restored | 205.61 s | Ark server remained pending and then returned failure | About 2.9 s to prepare, threshold-sign, and initiate the payment | Met `<5 s` before external wait |
+
+The incoming external interval is measured from Wavelength's durable activity
+timestamps. The CDK wallet transaction was recorded eight seconds after
+Wavelength marked the Lightning send complete. The member quote became issued
+about six seconds after that external timestamp, followed by roughly two
+seconds of client-side completion.
+
+The outgoing controlled critical path consisted of:
+
+| Phase | Measured time |
+|---|---:|
+| Bark send-plan preparation | 106 ms |
+| FROST HTLC cosigning | 2.687 s |
+| Bark Lightning initiation calls | 73 ms total |
+| Coordinator dispatch | 7 ms mean per dispatch |
+| Projection readiness | 14 ms mean per check |
+| Approximate controlled time before Ark wait | 2.9 s |
+
+The Ark server declared the outgoing Lightning payment failed after its long
+pending interval. CDK then reached the durable compensated state and restored
+the wallet's proofs. This is a valid safety result but not a successful outgoing
+latency sample, so it must not be represented as proof that successful
+end-to-end melts meet the target.
+
+### What the optimization fixed
+
+The earlier approximately 15-second coordinator pickup delay is gone. Dispatch
+is now measured in milliseconds. Cancellation of a losing threshold HTTP
+request can no longer cancel the member that holds the authoritative Bark work
+lease. Bark notification waits are bounded and do not occupy request handlers.
+
+The outgoing pre-server path is now below five seconds even with a 2.687-second
+FROST signing round. This confirms that wakeup latency was the largest
+CDK-controlled outgoing delay.
+
+### Why incoming is still above five seconds
+
+The successful incoming action used these ordered journal phases after the
+receive HTLC became actionable:
+
+1. `claim_planned`;
+2. `signing_attempt_advanced` after the first custody signer set was
+   unavailable;
+3. `receive_preimage_disclosed`;
+4. `receive_claimed`;
+5. threshold payment evidence and paid-quote materialization; and
+6. the client Cashu mint operation.
+
+The successful receive claim itself took 998 ms, after one failed 776 ms signer
+attempt. Evidence collection took 427 ms, and the Cashu mint handler averaged
+1.197 s across the five members. The remaining wall time is dominated by the
+sequential AlephBFT finality boundaries between these safety phases, not by
+coordinator pickup.
+
+### Next optimization boundary
+
+Do not remove quorum evidence or return proofs before finality. The clean next
+step is to reduce serial finality boundaries while preserving the existing
+journal records and recovery invariants. The best candidates are:
+
+1. avoid a `signing_attempt_advanced` round when the action plan's first signer
+   set is available, and improve signer availability so the first attempt is
+   normally successful;
+2. investigate an ordered consensus batch for the successful
+   `receive_preimage_disclosed` and `receive_claimed` records, preserving both
+   records and their replay order while paying one network-finality cost; and
+3. collect threshold receive evidence as early as safely possible, then submit
+   one certified terminal transition rather than introducing a later periodic
+   pickup boundary.
+
+These changes require focused protocol tests because payment observations must
+remain quorum-backed and deterministic. Reducing the number of journal records,
+trusting the actor's local result, or marking a quote paid before threshold
+evidence would violate the implementation contract.
+
+### Resource sample
+
+During the 205.61-second outgoing attempt, each member consumed 18.6-21.2 CPU
+seconds and RSS increased by 1.1-3.2 MB. The longer incoming observation window
+consumed 31.4-37.7 CPU seconds per member and RSS increased by 5.0-7.5 MB. These
+windows include ordinary federation work and retries for older receive actions,
+so they are upper-bound operational samples rather than per-payment CPU costs.
