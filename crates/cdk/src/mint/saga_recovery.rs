@@ -86,9 +86,10 @@ async fn process_melt_saga_outcome_inner(
     match payment_response.status {
         MeltQuoteState::Paid => {
             // Persist the paid handoff before releasing an acquired dispatch
-            // lock. When contended, the live owner holds the saga row through
-            // dispatch, so finalization serializes on that row after its own
-            // pending or paid handoff commits.
+            // lock. When contended, finalization proceeds by locking the saga
+            // row: a live dispatcher deliberately does not hold that row across
+            // the external call and must re-read it before compensating. This
+            // lets a trusted positive event durably preempt a stale failure.
             match super::melt::shared::try_acquire_melt_dispatch_lock(db, &quote.id).await? {
                 super::melt::shared::DispatchLockAttempt::Acquired(mut tx) => {
                     match tx.get_saga_for_update(&saga.operation_id).await? {
@@ -113,7 +114,7 @@ async fn process_melt_saga_outcome_inner(
                 }
                 super::melt::shared::DispatchLockAttempt::Contended => {
                     tracing::info!(
-                        "Melt quote {} dispatch lock is contended; finalizing paid outcome after the live owner releases it (saga {})",
+                        "Melt quote {} dispatch lock is contended; using the trusted paid outcome to preempt any later dispatch rollback (saga {})",
                         quote.id,
                         saga.operation_id
                     );
@@ -154,7 +155,10 @@ async fn persist_pending_after_dispatch(
 ) -> Result<(), Error> {
     match super::melt::shared::try_acquire_melt_dispatch_lock(db, &quote.id).await? {
         super::melt::shared::DispatchLockAttempt::Acquired(mut tx) => {
-            let Some(saga) = tx.get_saga(&stale_saga.operation_id).await? else {
+            // Lock the saga row: this transaction goes on to persist the
+            // pending marker, so the existence read and the write must observe
+            // the same row (every other mutation path uses `get_saga_for_update`).
+            let Some(saga) = tx.get_saga_for_update(&stale_saga.operation_id).await? else {
                 tx.rollback().await?;
                 *quote = db
                     .get_melt_quote(&quote.id)

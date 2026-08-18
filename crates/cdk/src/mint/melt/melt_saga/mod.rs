@@ -773,14 +773,23 @@ impl MeltSaga<SetupComplete> {
 
         match dispatch_lock {
             Some(mut tx) => {
-                let Some(mut saga) = tx.get_saga_for_update(&self.operation_id).await? else {
+                // Read through the regular pool: the transaction-level saga
+                // getter locks the row on SQL backends, which would prevent a
+                // trusted Paid event from preempting this in-flight dispatch.
+                let Some(saga) = self
+                    .db
+                    .get_melt_saga_by_quote_id(&self.state_data.quote.id)
+                    .await?
+                else {
                     tx.rollback().await?;
                     return Err(Error::UnknownPaymentState);
                 };
-                if !matches!(
-                    saga.state,
-                    SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
-                ) {
+                if saga.operation_id != self.operation_id
+                    || !matches!(
+                        saga.state,
+                        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
+                    )
+                {
                     tx.rollback().await?;
                     return Err(Error::UnknownPaymentState);
                 }
@@ -795,6 +804,24 @@ impl MeltSaga<SetupComplete> {
                         return Err(err);
                     }
                 };
+
+                // Do not hold the saga row lock across the external payment
+                // call. A trusted Paid event must be able to persist the
+                // finalization handoff while dispatch is in flight. Re-locking
+                // and re-reading here makes that handoff authoritative: if the
+                // event advanced or completed the saga, this stale dispatcher
+                // must not compensate based on its own terminal response.
+                let Some(mut saga) = tx.get_saga_for_update(&self.operation_id).await? else {
+                    tx.rollback().await?;
+                    return Err(Error::UnknownPaymentState);
+                };
+                if !matches!(
+                    saga.state,
+                    SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
+                ) {
+                    tx.rollback().await?;
+                    return Err(Error::UnknownPaymentState);
+                }
 
                 match response.status {
                     MeltQuoteState::Paid => {
@@ -917,6 +944,21 @@ impl MeltSaga<SetupComplete> {
                 "Payment was initially {} but verification returned {}. Keeping the initial status for safety.",
                 pay.status,
                 check_response.status
+            );
+            return Ok(pay);
+        }
+
+        // An Ok response with a terminal negative status is the backend's
+        // authoritative outcome, unlike an Err whose dispatch phase is
+        // unknown. A positive or in-flight follow-up overrides it, but a
+        // missing/Unknown observation does not erase that terminal result.
+        if matches!(pay.status, MeltQuoteState::Unpaid | MeltQuoteState::Failed)
+            && check_response.status == MeltQuoteState::Unknown
+        {
+            tracing::warn!(
+                "Payment backend returned authoritative {} for quote {}, but verification returned Unknown. Keeping the terminal response.",
+                pay.status,
+                self.state_data.quote.id
             );
             return Ok(pay);
         }

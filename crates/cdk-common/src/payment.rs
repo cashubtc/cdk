@@ -574,7 +574,13 @@ pub struct MakePaymentResponse {
     pub payment_lookup_id: PaymentIdentifier,
     /// Payment proof
     pub payment_proof: Option<String>,
-    /// Status
+    /// Status.
+    ///
+    /// When this response is returned by [`MintPayment::make_payment`],
+    /// [`MeltQuoteState::Failed`] and [`MeltQuoteState::Unpaid`] are treated as
+    /// authoritative terminal outcomes. Backends must return
+    /// [`MeltQuoteState::Pending`], [`MeltQuoteState::Unknown`], or an error if
+    /// they are uncertain whether payment dispatch can still settle.
     pub status: MeltQuoteState,
     /// Total amount spent, including fees. Only authoritative when `status`
     /// is [`MeltQuoteState::Paid`]; otherwise backends return `0`.
