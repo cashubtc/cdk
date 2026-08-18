@@ -419,6 +419,7 @@ impl MintPayment for Cln {
         let mut partial_amount: Option<u64> = None;
         let mut amount_msat: Option<u64> = None;
         let payment_lookup_id: PaymentIdentifier;
+        let mut bolt12_claim: Option<(QuoteId, [u8; 32])> = None;
 
         let mut cln_client = self.cln_client().await?;
 
@@ -501,6 +502,7 @@ impl MintPayment for Cln {
                 self.check_outgoing_unpaided(&payment_identifier).await?;
                 self.write_bolt12_quote_payment_hash(&quote_id, &payment_hash)
                     .await?;
+                bolt12_claim = Some((quote_id, payment_hash));
                 payment_lookup_id = quote_payment_identifier;
 
                 max_fee_msat = bolt12_options
@@ -547,6 +549,13 @@ impl MintPayment for Cln {
             },
             Err(err) => {
                 tracing::error!("Could not pay invoice with xpay: {}", err);
+                // Release a claimed BOLT12 quote binding when the payment is
+                // terminally failed so a retry can claim the quote again.
+                // Ambiguous payment states keep the binding.
+                if let Some((quote_id, payment_hash)) = bolt12_claim {
+                    self.release_failed_bolt12_claim(&quote_id, &payment_hash)
+                        .await;
+                }
                 return Err(Error::ClnRpc(err).into());
             }
         };
@@ -759,6 +768,7 @@ impl MintPayment for Cln {
         &self,
         payment_identifier: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err> {
+        let mut bolt12_binding: Option<(QuoteId, [u8; 32])> = None;
         let (payment_hash, missing_payment_state) = match payment_identifier {
             PaymentIdentifier::PaymentHash(hash) | PaymentIdentifier::Bolt12PaymentHash(hash) => {
                 (*hash, MeltQuoteState::Unknown)
@@ -769,6 +779,7 @@ impl MintPayment for Cln {
                 .map_err(payment::Error::from)?
             {
                 Bolt12QuotePaymentHashLookup::Found(payment_hash) => {
+                    bolt12_binding = Some((quote_id.clone(), payment_hash));
                     (payment_hash, MeltQuoteState::Unpaid)
                 }
                 Bolt12QuotePaymentHashLookup::Missing => {
@@ -807,6 +818,23 @@ impl MintPayment for Cln {
         match select_cln_payment(&listpays_response.pays) {
             Some(pays_response) => {
                 let status = cln_pays_status_to_mint_state(pays_response.status);
+
+                // A terminally failed payment can never complete: release the
+                // quote binding so a retry can claim the quote again. The
+                // removal is value-matched, so a stale check cannot erase a
+                // newer binding.
+                if status == MeltQuoteState::Failed {
+                    if let Some((quote_id, payment_hash)) = bolt12_binding {
+                        if let Err(err) = self
+                            .release_bolt12_quote_payment_hash(&quote_id, &payment_hash)
+                            .await
+                        {
+                            tracing::warn!(
+                                "CLN: could not release failed BOLT12 binding for quote {quote_id}: {err}"
+                            );
+                        }
+                    }
+                }
 
                 Ok(MakePaymentResponse {
                     payment_lookup_id: payment_identifier.clone(),
@@ -848,6 +876,12 @@ impl Cln {
             .map_err(|_| Error::InvalidHash)
     }
 
+    /// Binds the BOLT12 quote id to the fetched invoice's payment hash.
+    ///
+    /// The binding is write-once: the first dispatch for a quote claims it
+    /// atomically, so a duplicate or concurrent dispatch is rejected before
+    /// any funds move. Repeating the same payment hash is an idempotent
+    /// no-op for recovery.
     async fn write_bolt12_quote_payment_hash(
         &self,
         quote_id: &QuoteId,
@@ -861,7 +895,63 @@ impl Cln {
             .await
             .map_err(|e| Error::Database(e.to_string()))?;
 
-        tx.kv_write(
+        let written = tx
+            .kv_write_if_absent(
+                CLN_KV_PRIMARY_NAMESPACE,
+                CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+                &key,
+                value.as_bytes(),
+            )
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        if written {
+            tx.commit()
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?;
+            return Ok(());
+        }
+
+        let existing = tx
+            .kv_read(
+                CLN_KV_PRIMARY_NAMESPACE,
+                CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+                &key,
+            )
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+        tx.rollback()
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        match existing {
+            Some(existing) if existing.as_slice() == value.as_bytes() => Ok(()),
+            _ => Err(Error::Bolt12QuoteBindingConflict {
+                quote_id: quote_id.to_string(),
+            }),
+        }
+    }
+
+    /// Releases the BOLT12 quote binding when it still holds `payment_hash`.
+    ///
+    /// Called when the bound payment is terminally failed so a retry can claim
+    /// the quote again. The removal is value-matched: a binding that has been
+    /// replaced since the caller read it is never deleted, so a stale releaser
+    /// cannot erase an in-flight dispatch.
+    async fn release_bolt12_quote_payment_hash(
+        &self,
+        quote_id: &QuoteId,
+        payment_hash: &[u8; 32],
+    ) -> Result<(), Error> {
+        let key = Self::bolt12_quote_payment_hash_key(quote_id)?;
+        let value = hex::encode(payment_hash);
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        tx.kv_remove_if_equals(
             CLN_KV_PRIMARY_NAMESPACE,
             CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
             &key,
@@ -874,6 +964,37 @@ impl Cln {
             .map_err(|e| Error::Database(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// Releases a claimed BOLT12 quote binding when the bound payment is
+    /// terminally failed, so a retry can claim the quote again. Best-effort:
+    /// ambiguous payment states and check failures keep the binding.
+    async fn release_failed_bolt12_claim(&self, quote_id: &QuoteId, payment_hash: &[u8; 32]) {
+        match self
+            .check_outgoing_payment(&PaymentIdentifier::Bolt12PaymentHash(*payment_hash))
+            .await
+        {
+            Ok(response) if response.status == MeltQuoteState::Failed => {
+                if let Err(err) = self
+                    .release_bolt12_quote_payment_hash(quote_id, payment_hash)
+                    .await
+                {
+                    tracing::warn!(
+                        "CLN: could not release failed BOLT12 binding for quote {quote_id}: {err}"
+                    );
+                }
+            }
+            Ok(_) => {
+                tracing::warn!(
+                    "CLN: keeping BOLT12 binding for quote {quote_id}: payment state is not terminally failed"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "CLN: could not check state of failed BOLT12 payment for quote {quote_id}: {err}"
+                );
+            }
+        }
     }
 
     async fn read_bolt12_quote_payment_hash(
@@ -1296,6 +1417,32 @@ mod tests {
             Ok(())
         }
 
+        async fn kv_remove_if_equals(
+            &mut self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+            key: &str,
+            expected: &[u8],
+        ) -> Result<bool, DatabaseError> {
+            let key = memory_kv_key(primary_namespace, secondary_namespace, key);
+
+            let current = match self.writes.get(&key) {
+                Some(pending) => pending.clone(),
+                None => {
+                    let entries = self.entries.lock().map_err(|_| memory_kv_lock_error())?;
+                    entries.get(&key).cloned()
+                }
+            };
+
+            match current {
+                Some(current) if current == expected => {
+                    self.writes.insert(key, None);
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        }
+
         async fn kv_list(
             &mut self,
             primary_namespace: &str,
@@ -1496,18 +1643,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bolt12_quote_payment_hash_write_overwrites_existing_mapping() {
+    async fn bolt12_quote_payment_hash_repeat_of_same_hash_is_idempotent() {
         let cln = test_cln_with_memory_kv();
         let quote_id = QuoteId::new();
-        let first_payment_hash = [1; 32];
-        let second_payment_hash = [2; 32];
+        let payment_hash = [1; 32];
 
-        cln.write_bolt12_quote_payment_hash(&quote_id, &first_payment_hash)
+        cln.write_bolt12_quote_payment_hash(&quote_id, &payment_hash)
             .await
             .expect("first payment hash should be written");
-        cln.write_bolt12_quote_payment_hash(&quote_id, &second_payment_hash)
+        cln.write_bolt12_quote_payment_hash(&quote_id, &payment_hash)
             .await
-            .expect("second payment hash should be written");
+            .expect("repeating the same payment hash must succeed for recovery");
 
         let stored_payment_hash = cln
             .read_bolt12_quote_payment_hash(&quote_id)
@@ -1516,6 +1662,123 @@ mod tests {
 
         assert_eq!(
             stored_payment_hash,
+            Bolt12QuotePaymentHashLookup::Found(payment_hash)
+        );
+    }
+
+    #[tokio::test]
+    async fn bolt12_quote_payment_hash_binding_is_write_once() {
+        let cln = test_cln_with_memory_kv();
+        let quote_id = QuoteId::new();
+        let first_payment_hash = [1; 32];
+        let second_payment_hash = [2; 32];
+
+        cln.write_bolt12_quote_payment_hash(&quote_id, &first_payment_hash)
+            .await
+            .expect("first payment hash should be written");
+
+        let err = cln
+            .write_bolt12_quote_payment_hash(&quote_id, &second_payment_hash)
+            .await
+            .expect_err("a conflicting payment hash must be rejected");
+        assert!(
+            matches!(err, Error::Bolt12QuoteBindingConflict { .. }),
+            "unexpected error: {err}"
+        );
+
+        let stored_payment_hash = cln
+            .read_bolt12_quote_payment_hash(&quote_id)
+            .await
+            .expect("payment hash should be read");
+
+        assert_eq!(
+            stored_payment_hash,
+            Bolt12QuotePaymentHashLookup::Found(first_payment_hash),
+            "the first binding must be retained"
+        );
+    }
+
+    #[tokio::test]
+    async fn bolt12_quote_payment_hash_concurrent_claims_have_single_winner() {
+        let kv_store = Arc::new(MemoryKvStore::default());
+        let first_cln = test_cln_with_kv(kv_store.clone());
+        let second_cln = test_cln_with_kv(kv_store);
+        let quote_id = QuoteId::new();
+        let first_payment_hash = [1; 32];
+        let second_payment_hash = [2; 32];
+
+        let (first_result, second_result) = tokio::join!(
+            first_cln.write_bolt12_quote_payment_hash(&quote_id, &first_payment_hash),
+            second_cln.write_bolt12_quote_payment_hash(&quote_id, &second_payment_hash),
+        );
+
+        let outcomes = [&first_result, &second_result];
+        let winners = outcomes.iter().filter(|result| result.is_ok()).count();
+        let conflicts = outcomes
+            .iter()
+            .filter(|result| matches!(result, Err(Error::Bolt12QuoteBindingConflict { .. })))
+            .count();
+
+        assert_eq!(winners, 1, "exactly one dispatch may claim the quote");
+        assert_eq!(conflicts, 1, "the losing dispatch must be rejected");
+
+        let winner_hash = if first_result.is_ok() {
+            first_payment_hash
+        } else {
+            second_payment_hash
+        };
+        let stored_payment_hash = first_cln
+            .read_bolt12_quote_payment_hash(&quote_id)
+            .await
+            .expect("payment hash should be read");
+        assert_eq!(
+            stored_payment_hash,
+            Bolt12QuotePaymentHashLookup::Found(winner_hash),
+            "the stored binding must belong to the winning dispatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn bolt12_quote_payment_hash_release_removes_only_matching_binding() {
+        let cln = test_cln_with_memory_kv();
+        let quote_id = QuoteId::new();
+        let first_payment_hash = [1; 32];
+        let second_payment_hash = [2; 32];
+
+        cln.write_bolt12_quote_payment_hash(&quote_id, &first_payment_hash)
+            .await
+            .expect("first payment hash should be written");
+
+        // A stale value must not remove the binding
+        cln.release_bolt12_quote_payment_hash(&quote_id, &second_payment_hash)
+            .await
+            .expect("release with a stale value should succeed as a no-op");
+        assert_eq!(
+            cln.read_bolt12_quote_payment_hash(&quote_id)
+                .await
+                .expect("payment hash should be read"),
+            Bolt12QuotePaymentHashLookup::Found(first_payment_hash),
+            "a mismatched release must not remove the binding"
+        );
+
+        // Releasing the bound hash frees the quote for a retry
+        cln.release_bolt12_quote_payment_hash(&quote_id, &first_payment_hash)
+            .await
+            .expect("release should succeed");
+        assert_eq!(
+            cln.read_bolt12_quote_payment_hash(&quote_id)
+                .await
+                .expect("payment hash should be read"),
+            Bolt12QuotePaymentHashLookup::Missing
+        );
+
+        cln.write_bolt12_quote_payment_hash(&quote_id, &second_payment_hash)
+            .await
+            .expect("quote must be claimable again after a release");
+        assert_eq!(
+            cln.read_bolt12_quote_payment_hash(&quote_id)
+                .await
+                .expect("payment hash should be read"),
             Bolt12QuotePaymentHashLookup::Found(second_payment_hash)
         );
     }

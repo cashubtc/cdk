@@ -156,6 +156,39 @@ where
     Ok(())
 }
 
+/// Generic implementation of kv_remove_if_equals for transactions
+#[cfg(feature = "mint")]
+pub(crate) async fn kv_remove_if_equals_in_transaction<RM>(
+    conn: &ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
+    primary_namespace: &str,
+    secondary_namespace: &str,
+    key: &str,
+    expected: &[u8],
+) -> Result<bool, Error>
+where
+    RM: DatabasePool,
+{
+    // Validate parameters according to KV store requirements
+    validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
+    let affected = query(
+        r#"
+        DELETE FROM kv_store
+        WHERE primary_namespace = :primary_namespace
+        AND secondary_namespace = :secondary_namespace
+        AND key = :key
+        AND value = :expected
+        "#,
+    )?
+    .bind("primary_namespace", primary_namespace.to_owned())
+    .bind("secondary_namespace", secondary_namespace.to_owned())
+    .bind("key", key.to_owned())
+    .bind("expected", expected.to_vec())
+    .execute(conn)
+    .await?;
+
+    Ok(affected == 1)
+}
+
 /// Generic implementation of kv_list for transactions
 #[cfg(feature = "mint")]
 pub(crate) async fn kv_list_in_transaction<RM>(

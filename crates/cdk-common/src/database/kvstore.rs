@@ -109,6 +109,21 @@ pub trait KVStoreTransaction<Error>: DbTransactionFinalizer<Err = Error> {
         key: &str,
     ) -> Result<(), Error>;
 
+    /// Remove value from key-value store only when it currently equals
+    /// `expected`.
+    ///
+    /// Returns `true` when the value was removed and `false` when the key
+    /// does not exist or holds a different value. Implementations must
+    /// perform the check-and-remove atomically (for example
+    /// `DELETE ... WHERE value = ?` with a rows-affected check).
+    async fn kv_remove_if_equals(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+        expected: &[u8],
+    ) -> Result<bool, Error>;
+
     /// List keys in a namespace
     async fn kv_list(
         &mut self,

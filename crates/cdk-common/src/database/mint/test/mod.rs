@@ -256,6 +256,87 @@ where
     assert_eq!(stored.as_deref(), Some(expected));
 }
 
+/// Test atomic value-matched removal within transactions, including
+/// concurrent contenders
+pub async fn kvstore_remove_if_equals<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + KVStoreDatabase<Err = crate::database::Error>,
+{
+    const PRIMARY: &str = "remove_if_equals_test";
+    const SECONDARY: &str = "reservation";
+
+    // Removal only happens when the stored value matches.
+    {
+        let mut tx = Database::begin_transaction(&db).await.unwrap();
+        tx.kv_write(PRIMARY, SECONDARY, "key1", b"first")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    {
+        let mut tx = Database::begin_transaction(&db).await.unwrap();
+        assert!(!tx
+            .kv_remove_if_equals(PRIMARY, SECONDARY, "key1", b"wrong")
+            .await
+            .unwrap());
+        assert!(!tx
+            .kv_remove_if_equals(PRIMARY, SECONDARY, "missing", b"first")
+            .await
+            .unwrap());
+        tx.commit().await.unwrap();
+    }
+
+    let stored = db.kv_read(PRIMARY, SECONDARY, "key1").await.unwrap();
+    assert_eq!(stored, Some(b"first".to_vec()));
+
+    {
+        let mut tx = Database::begin_transaction(&db).await.unwrap();
+        assert!(tx
+            .kv_remove_if_equals(PRIMARY, SECONDARY, "key1", b"first")
+            .await
+            .unwrap());
+        tx.commit().await.unwrap();
+    }
+
+    let stored = db.kv_read(PRIMARY, SECONDARY, "key1").await.unwrap();
+    assert_eq!(stored, None);
+
+    // Concurrent contenders removing the same value: exactly one wins.
+    {
+        let mut tx = Database::begin_transaction(&db).await.unwrap();
+        tx.kv_write(PRIMARY, SECONDARY, "race", b"value")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    let left = async {
+        let mut tx = Database::begin_transaction(&db).await.unwrap();
+        let removed = tx
+            .kv_remove_if_equals(PRIMARY, SECONDARY, "race", b"value")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        removed
+    };
+    let right = async {
+        let mut tx = Database::begin_transaction(&db).await.unwrap();
+        let removed = tx
+            .kv_remove_if_equals(PRIMARY, SECONDARY, "race", b"value")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        removed
+    };
+
+    let (left, right) = tokio::join!(left, right);
+    assert_ne!(left, right);
+
+    let stored = db.kv_read(PRIMARY, SECONDARY, "race").await.unwrap();
+    assert_eq!(stored, None);
+}
+
 /// Unit test that is expected to be passed for a correct database implementation
 #[macro_export]
 macro_rules! mint_db_test {
@@ -266,6 +347,7 @@ macro_rules! mint_db_test {
             add_duplicate_proofs,
             kvstore_functionality,
             kvstore_write_if_absent,
+            kvstore_remove_if_equals,
             add_mint_quote,
             add_mint_quote_only_once,
             register_payments,

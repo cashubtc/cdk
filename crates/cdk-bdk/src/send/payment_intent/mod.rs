@@ -512,6 +512,43 @@ mod tests {
             Ok(())
         }
 
+        async fn kv_remove_if_equals(
+            &mut self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+            key: &str,
+            expected: &[u8],
+        ) -> Result<bool, DatabaseError> {
+            let map_key = (
+                primary_namespace.to_string(),
+                secondary_namespace.to_string(),
+                key.to_string(),
+            );
+
+            let current = self
+                .writes
+                .iter()
+                .rev()
+                .find(|(candidate, _)| candidate == &map_key)
+                .map(|(_, value)| value.clone())
+                .unwrap_or_else(|| {
+                    self.store
+                        .data
+                        .lock()
+                        .expect("lock racing kv store")
+                        .get(&map_key)
+                        .cloned()
+                });
+
+            match current {
+                Some(current) if current == expected => {
+                    self.writes.push((map_key, None));
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        }
+
         async fn kv_list(
             &mut self,
             primary_namespace: &str,

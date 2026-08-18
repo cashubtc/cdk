@@ -76,6 +76,23 @@ where
         .await
     }
 
+    async fn kv_remove_if_equals(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+        expected: &[u8],
+    ) -> Result<bool, Error> {
+        crate::keyvalue::kv_remove_if_equals_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+            expected,
+        )
+        .await
+    }
+
     async fn kv_list(
         &mut self,
         primary_namespace: &str,

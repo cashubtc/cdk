@@ -371,14 +371,25 @@ impl CdkLdkNode {
     }
 
     /// Best-effort removal of the pre-dispatch sentinel after a send that did
-    /// not dispatch. If removal fails the sentinel remains and the payment
-    /// resolves as `Pending`, keeping the melt proofs reserved.
+    /// not dispatch. The removal is value-matched: a recorded payment id is
+    /// never deleted, so recovery keeps resolving the quote to its payment.
+    /// If removal fails the sentinel remains and the payment resolves as
+    /// `Pending`, keeping the melt proofs reserved.
     async fn cleanup_bolt12_dispatch_sentinel(&self, quote_id: &QuoteId) {
-        if let Err(err) = delete_bolt12_quote_payment_id(&self.kv_store, quote_id).await {
-            tracing::warn!(
-                "Could not remove BOLT12 dispatch sentinel for quote {quote_id}: {err}. \
-                 The payment will remain Pending."
-            );
+        match delete_bolt12_quote_payment_id_if_matches(&self.kv_store, quote_id, b"").await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::debug!(
+                    "BOLT12 dispatch sentinel for quote {quote_id} was not removed: \
+                     the binding no longer holds the sentinel"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "Could not remove BOLT12 dispatch sentinel for quote {quote_id}: {err}. \
+                     The payment will remain Pending."
+                );
+            }
         }
     }
 
@@ -1038,12 +1049,14 @@ impl MintPayment for CdkLdkNode {
                     }
                 };
 
-                // Write the pre-dispatch sentinel before attempting the send so
-                // a crash during dispatch is distinguishable from "never
-                // dispatched" (mirrors cdk-cln's pre-dispatch bolt12 quote
-                // mapping). The payment must not be attempted unless this
-                // marker is durable.
-                write_bolt12_quote_payment_id(&self.kv_store, &quote_id, None).await?;
+                // Claim the quote with an absent-only sentinel write before
+                // attempting the send: a duplicate or concurrent dispatch for
+                // the same quote is rejected here, before any funds move. The
+                // sentinel also keeps a crash during dispatch distinguishable
+                // from "never dispatched" (mirrors cdk-cln's pre-dispatch
+                // bolt12 quote mapping). The payment must not be attempted
+                // unless this marker is durable.
+                claim_bolt12_quote_dispatch(&self.kv_store, &quote_id).await?;
 
                 let payment_id = match bolt12_options.melt_options {
                     Some(MeltOptions::Amountless { amountless }) => {
@@ -1085,12 +1098,12 @@ impl MintPayment for CdkLdkNode {
                 };
 
                 // Record the payment id so QuoteId lookups resolve to the
-                // dispatched payment. Best-effort: if this write fails the
+                // dispatched payment. The write is conditional on owning the
+                // dispatch claim. Best-effort: if this write fails the
                 // sentinel remains and the payment resolves as Pending, keeping
                 // the melt proofs reserved.
                 if let Err(err) =
-                    write_bolt12_quote_payment_id(&self.kv_store, &quote_id, Some(&payment_id))
-                        .await
+                    record_bolt12_quote_payment_id(&self.kv_store, &quote_id, &payment_id).await
                 {
                     tracing::error!(
                         "Could not record BOLT12 payment id for quote {quote_id}: {err}. \
@@ -1118,6 +1131,10 @@ impl MintPayment for CdkLdkNode {
                                 payment_kind = ?details.kind,
                                 "Bolt12 payment failed"
                             );
+                            // The payment is terminally failed: release the
+                            // claim so a retry can dispatch the quote again.
+                            release_bolt12_failed_dispatch(&self.kv_store, &quote_id, &payment_id)
+                                .await;
                             break details;
                         }
                         PaymentStatus::Pending => {
@@ -1298,7 +1315,22 @@ impl MintPayment for CdkLdkNode {
                     .resolve()
                 {
                     Bolt12QuotePaymentIdResolution::PaymentId(payment_id) => {
-                        self.inner.payment(&payment_id)
+                        let payment_details = self.inner.payment(&payment_id);
+                        // A terminally failed payment can never move again:
+                        // release the claim so a retry can dispatch the quote
+                        // again. The removal is value-matched, so a stale
+                        // check cannot erase a newer binding.
+                        if let Some(details) = &payment_details {
+                            if details.status == PaymentStatus::Failed {
+                                release_bolt12_failed_dispatch(
+                                    &self.kv_store,
+                                    quote_id,
+                                    &payment_id,
+                                )
+                                .await;
+                            }
+                        }
+                        payment_details
                     }
                     Bolt12QuotePaymentIdResolution::Status(status) => {
                         return Ok(MakePaymentResponse {
@@ -1349,23 +1381,97 @@ fn bolt12_quote_payment_id_key(quote_id: &QuoteId) -> Result<String, Error> {
     }
 }
 
-/// Records the bolt12 melt quote id -> payment id mapping.
+/// Claims the bolt12 melt quote id for dispatch by writing the pre-dispatch
+/// sentinel.
 ///
-/// `payment_id` of `None` writes the pre-dispatch sentinel: it marks that
+/// The claim is an atomic absent-only insert: the first dispatch attempt for
+/// a quote owns it, and a duplicate or concurrent `make_payment` is rejected
+/// before any funds move — whether the existing record is another in-flight
+/// sentinel or an already recorded payment id. The sentinel also marks that
 /// `send` is about to be attempted so a crash during dispatch is
 /// distinguishable from "never dispatched" (mirrors cdk-cln's pre-dispatch
 /// bolt12 quote mapping).
-async fn write_bolt12_quote_payment_id(
+async fn claim_bolt12_quote_dispatch(
     kv_store: &DynKVStore,
     quote_id: &QuoteId,
-    payment_id: Option<&PaymentId>,
 ) -> Result<(), Error> {
     let key = bolt12_quote_payment_id_key(quote_id)?;
-    let value = payment_id.map(|id| hex::encode(id.0)).unwrap_or_default();
     let mut tx = kv_store
         .begin_transaction()
         .await
         .map_err(|e| Error::Database(e.to_string()))?;
+
+    let claimed = tx
+        .kv_write_if_absent(
+            LDK_KV_PRIMARY_NAMESPACE,
+            LDK_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+            &key,
+            b"",
+        )
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?;
+
+    if claimed {
+        tx.commit()
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+        return Ok(());
+    }
+
+    tx.rollback()
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?;
+    Err(Error::Bolt12QuoteAlreadyClaimed {
+        quote_id: quote_id.to_string(),
+    })
+}
+
+/// Records the bolt12 melt quote id -> payment id mapping after dispatch.
+///
+/// The write is conditional on owning the dispatch claim: the current record
+/// must be the empty sentinel written by [`claim_bolt12_quote_dispatch`].
+/// Re-recording the same payment id is an idempotent no-op for recovery; any
+/// other state is rejected.
+async fn record_bolt12_quote_payment_id(
+    kv_store: &DynKVStore,
+    quote_id: &QuoteId,
+    payment_id: &PaymentId,
+) -> Result<(), Error> {
+    let key = bolt12_quote_payment_id_key(quote_id)?;
+    let value = hex::encode(payment_id.0);
+    let mut tx = kv_store
+        .begin_transaction()
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?;
+
+    let existing = tx
+        .kv_read(
+            LDK_KV_PRIMARY_NAMESPACE,
+            LDK_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+            &key,
+        )
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?;
+
+    match existing {
+        // Owned pre-dispatch sentinel: replace it with the payment id below.
+        Some(existing) if existing.is_empty() => {}
+        // Recovery repeat of an already recorded binding.
+        Some(existing) if existing.as_slice() == value.as_bytes() => {
+            tx.rollback()
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?;
+            return Ok(());
+        }
+        _ => {
+            tx.rollback()
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?;
+            return Err(Error::Bolt12QuoteAlreadyClaimed {
+                quote_id: quote_id.to_string(),
+            });
+        }
+    }
 
     tx.kv_write(
         LDK_KV_PRIMARY_NAMESPACE,
@@ -1435,29 +1541,64 @@ async fn read_bolt12_quote_payment_id(
     Ok(Bolt12QuotePaymentIdLookup::Found(PaymentId(payment_id)))
 }
 
-/// Removes the bolt12 melt quote id -> payment id mapping
-async fn delete_bolt12_quote_payment_id(
+/// Removes the bolt12 melt quote id mapping only when it still holds
+/// `expected`.
+///
+/// The removal is value-matched: a binding that has been replaced since the
+/// caller read it is never deleted, so a stale releaser cannot erase an
+/// in-flight dispatch or a newly recorded payment id. Returns `true` when
+/// the binding was removed.
+async fn delete_bolt12_quote_payment_id_if_matches(
     kv_store: &DynKVStore,
     quote_id: &QuoteId,
-) -> Result<(), Error> {
+    expected: &[u8],
+) -> Result<bool, Error> {
     let key = bolt12_quote_payment_id_key(quote_id)?;
     let mut tx = kv_store
         .begin_transaction()
         .await
         .map_err(|e| Error::Database(e.to_string()))?;
 
-    tx.kv_remove(
-        LDK_KV_PRIMARY_NAMESPACE,
-        LDK_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
-        &key,
-    )
-    .await
-    .map_err(|e| Error::Database(e.to_string()))?;
+    let removed = tx
+        .kv_remove_if_equals(
+            LDK_KV_PRIMARY_NAMESPACE,
+            LDK_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+            &key,
+            expected,
+        )
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?;
     tx.commit()
         .await
         .map_err(|e| Error::Database(e.to_string()))?;
 
-    Ok(())
+    Ok(removed)
+}
+
+/// Releases the dispatch claim for a terminally failed payment so the quote
+/// can be claimed again by a retry. Best-effort: if the release fails the
+/// binding remains and the quote stays claimed.
+async fn release_bolt12_failed_dispatch(
+    kv_store: &DynKVStore,
+    quote_id: &QuoteId,
+    payment_id: &PaymentId,
+) {
+    // The binding holds the recorded payment id, or still the dispatch
+    // sentinel when the record write failed.
+    let recorded = hex::encode(payment_id.0);
+    for expected in [recorded.as_bytes(), b"".as_slice()] {
+        match delete_bolt12_quote_payment_id_if_matches(kv_store, quote_id, expected).await {
+            Ok(true) => return,
+            Ok(false) => continue,
+            Err(err) => {
+                tracing::warn!(
+                    "Could not release failed BOLT12 dispatch for quote {quote_id}: {err}. \
+                     The quote will remain claimed."
+                );
+                return;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1666,9 +1807,10 @@ mod tests {
         std::sync::Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap())
     }
 
-    /// The mapping must resolve Missing before any dispatch, Found after the
-    /// payment id is recorded, and Dispatching (indeterminate) while only the
-    /// pre-dispatch sentinel exists.
+    /// The mapping must resolve Missing before any dispatch, Dispatching
+    /// (indeterminate) while only the pre-dispatch sentinel exists, and Found
+    /// after the payment id is recorded. Sentinel cleanup returns to Missing;
+    /// a recorded payment id is never deleted.
     #[tokio::test]
     async fn bolt12_quote_payment_id_mapping_lifecycle() {
         let kv_store = test_kv_store().await;
@@ -1683,7 +1825,7 @@ mod tests {
         );
 
         // Pre-dispatch sentinel
-        write_bolt12_quote_payment_id(&kv_store, &quote_id, None)
+        claim_bolt12_quote_dispatch(&kv_store, &quote_id)
             .await
             .unwrap();
         assert_eq!(
@@ -1696,7 +1838,7 @@ mod tests {
 
         // Record the payment id
         let payment_id = PaymentId([7; 32]);
-        write_bolt12_quote_payment_id(&kv_store, &quote_id, Some(&payment_id))
+        record_bolt12_quote_payment_id(&kv_store, &quote_id, &payment_id)
             .await
             .unwrap();
         assert_eq!(
@@ -1706,15 +1848,228 @@ mod tests {
             Bolt12QuotePaymentIdLookup::Found(payment_id)
         );
 
-        // Removal returns to Missing (failed dispatch cleanup)
-        delete_bolt12_quote_payment_id(&kv_store, &quote_id)
+        // Sentinel cleanup never removes a recorded payment id
+        let removed = delete_bolt12_quote_payment_id_if_matches(&kv_store, &quote_id, b"")
             .await
             .unwrap();
+        assert!(!removed, "sentinel removal must not match a payment id");
+        assert_eq!(
+            read_bolt12_quote_payment_id(&kv_store, &quote_id)
+                .await
+                .unwrap(),
+            Bolt12QuotePaymentIdLookup::Found(payment_id),
+            "a recorded payment id must survive sentinel cleanup"
+        );
+
+        // A stale value does not remove the binding either
+        let other_payment_id = PaymentId([9; 32]);
+        let other = hex::encode(other_payment_id.0);
+        let removed =
+            delete_bolt12_quote_payment_id_if_matches(&kv_store, &quote_id, other.as_bytes())
+                .await
+                .unwrap();
+        assert!(!removed, "a mismatched value must not remove the binding");
+        assert_eq!(
+            read_bolt12_quote_payment_id(&kv_store, &quote_id)
+                .await
+                .unwrap(),
+            Bolt12QuotePaymentIdLookup::Found(payment_id)
+        );
+
+        // Removing the recorded payment id releases the quote
+        let recorded = hex::encode(payment_id.0);
+        let removed =
+            delete_bolt12_quote_payment_id_if_matches(&kv_store, &quote_id, recorded.as_bytes())
+                .await
+                .unwrap();
+        assert!(removed);
         assert_eq!(
             read_bolt12_quote_payment_id(&kv_store, &quote_id)
                 .await
                 .unwrap(),
             Bolt12QuotePaymentIdLookup::Missing
+        );
+    }
+
+    /// Failed-dispatch cleanup removes the sentinel so the quote can be
+    /// claimed again.
+    #[tokio::test]
+    async fn bolt12_quote_dispatch_cleanup_releases_claim() {
+        let kv_store = test_kv_store().await;
+        let quote_id = QuoteId::new();
+
+        claim_bolt12_quote_dispatch(&kv_store, &quote_id)
+            .await
+            .unwrap();
+        let removed = delete_bolt12_quote_payment_id_if_matches(&kv_store, &quote_id, b"")
+            .await
+            .unwrap();
+        assert!(removed);
+
+        assert_eq!(
+            read_bolt12_quote_payment_id(&kv_store, &quote_id)
+                .await
+                .unwrap(),
+            Bolt12QuotePaymentIdLookup::Missing
+        );
+
+        claim_bolt12_quote_dispatch(&kv_store, &quote_id)
+            .await
+            .expect("quote must be claimable again after sentinel cleanup");
+    }
+
+    /// A terminally failed dispatch releases the claim whether the binding
+    /// holds the recorded payment id or still the sentinel, so a retry can
+    /// dispatch the quote again.
+    #[tokio::test]
+    async fn bolt12_quote_failed_dispatch_release_allows_retry() {
+        let kv_store = test_kv_store().await;
+
+        // Binding holds the recorded payment id
+        let quote_id = QuoteId::new();
+        let payment_id = PaymentId([7; 32]);
+        claim_bolt12_quote_dispatch(&kv_store, &quote_id)
+            .await
+            .unwrap();
+        record_bolt12_quote_payment_id(&kv_store, &quote_id, &payment_id)
+            .await
+            .unwrap();
+
+        release_bolt12_failed_dispatch(&kv_store, &quote_id, &payment_id).await;
+        assert_eq!(
+            read_bolt12_quote_payment_id(&kv_store, &quote_id)
+                .await
+                .unwrap(),
+            Bolt12QuotePaymentIdLookup::Missing
+        );
+        claim_bolt12_quote_dispatch(&kv_store, &quote_id)
+            .await
+            .expect("quote must be claimable again after a failed dispatch");
+
+        // Binding still holds the sentinel (record write failed)
+        let quote_id = QuoteId::new();
+        claim_bolt12_quote_dispatch(&kv_store, &quote_id)
+            .await
+            .unwrap();
+
+        release_bolt12_failed_dispatch(&kv_store, &quote_id, &payment_id).await;
+        assert_eq!(
+            read_bolt12_quote_payment_id(&kv_store, &quote_id)
+                .await
+                .unwrap(),
+            Bolt12QuotePaymentIdLookup::Missing
+        );
+    }
+
+    /// A dispatch claim is write-once: a second claim is rejected while the
+    /// sentinel exists and after the payment id is recorded.
+    #[tokio::test]
+    async fn bolt12_quote_dispatch_claim_is_write_once() {
+        let kv_store = test_kv_store().await;
+        let quote_id = QuoteId::new();
+
+        claim_bolt12_quote_dispatch(&kv_store, &quote_id)
+            .await
+            .unwrap();
+
+        let err = claim_bolt12_quote_dispatch(&kv_store, &quote_id)
+            .await
+            .expect_err("a duplicate dispatch must not claim the quote");
+        assert!(
+            matches!(err, Error::Bolt12QuoteAlreadyClaimed { .. }),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            read_bolt12_quote_payment_id(&kv_store, &quote_id)
+                .await
+                .unwrap(),
+            Bolt12QuotePaymentIdLookup::Dispatching,
+            "the original sentinel must be retained"
+        );
+
+        let payment_id = PaymentId([7; 32]);
+        record_bolt12_quote_payment_id(&kv_store, &quote_id, &payment_id)
+            .await
+            .unwrap();
+
+        let err = claim_bolt12_quote_dispatch(&kv_store, &quote_id)
+            .await
+            .expect_err("a repeat dispatch after recording must be rejected");
+        assert!(
+            matches!(err, Error::Bolt12QuoteAlreadyClaimed { .. }),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            read_bolt12_quote_payment_id(&kv_store, &quote_id)
+                .await
+                .unwrap(),
+            Bolt12QuotePaymentIdLookup::Found(payment_id),
+            "the recorded payment id must be retained"
+        );
+    }
+
+    /// Concurrent dispatch claims for one quote have exactly one winner.
+    #[tokio::test]
+    async fn bolt12_quote_dispatch_concurrent_claims_have_single_winner() {
+        let kv_store = test_kv_store().await;
+        let quote_id = QuoteId::new();
+
+        let (first_result, second_result) = tokio::join!(
+            claim_bolt12_quote_dispatch(&kv_store, &quote_id),
+            claim_bolt12_quote_dispatch(&kv_store, &quote_id),
+        );
+
+        let outcomes = [first_result, second_result];
+        let winners = outcomes.iter().filter(|result| result.is_ok()).count();
+        let conflicts = outcomes
+            .iter()
+            .filter(|result| matches!(result, Err(Error::Bolt12QuoteAlreadyClaimed { .. })))
+            .count();
+
+        assert_eq!(winners, 1, "exactly one dispatch may claim the quote");
+        assert_eq!(conflicts, 1, "the losing dispatch must be rejected");
+    }
+
+    /// Recording a payment id requires owning the dispatch claim; repeating
+    /// the same payment id is idempotent and a conflicting one is rejected.
+    #[tokio::test]
+    async fn bolt12_quote_payment_id_recording_requires_claim() {
+        let kv_store = test_kv_store().await;
+        let quote_id = QuoteId::new();
+        let payment_id = PaymentId([7; 32]);
+        let other_payment_id = PaymentId([9; 32]);
+
+        let err = record_bolt12_quote_payment_id(&kv_store, &quote_id, &payment_id)
+            .await
+            .expect_err("recording without a dispatch claim must be rejected");
+        assert!(
+            matches!(err, Error::Bolt12QuoteAlreadyClaimed { .. }),
+            "unexpected error: {err}"
+        );
+
+        claim_bolt12_quote_dispatch(&kv_store, &quote_id)
+            .await
+            .unwrap();
+        record_bolt12_quote_payment_id(&kv_store, &quote_id, &payment_id)
+            .await
+            .unwrap();
+        record_bolt12_quote_payment_id(&kv_store, &quote_id, &payment_id)
+            .await
+            .expect("re-recording the same payment id must succeed for recovery");
+
+        let err = record_bolt12_quote_payment_id(&kv_store, &quote_id, &other_payment_id)
+            .await
+            .expect_err("a conflicting payment id must be rejected");
+        assert!(
+            matches!(err, Error::Bolt12QuoteAlreadyClaimed { .. }),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            read_bolt12_quote_payment_id(&kv_store, &quote_id)
+                .await
+                .unwrap(),
+            Bolt12QuotePaymentIdLookup::Found(payment_id),
+            "the first payment id must be retained"
         );
     }
 
