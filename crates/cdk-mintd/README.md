@@ -566,6 +566,10 @@ cdk-mint-cli get-info --addr https://127.0.0.1:8086 --tls-dir /path/to/tls
 - `CDK_MINTD_DATABASE_URL`: PostgreSQL connection string
 - `CDK_MINTD_POSTGRES_URL`: Canonical PostgreSQL connection variable.
 
+SQLite is intended for a single `cdk-mintd` process. WAL mode allows readers
+to continue during writes, but it does not coordinate payment dispatch across
+processes. Use PostgreSQL when multiple mint replicas share a database.
+
 Other environment variables are read only when explicitly named by an
 `env:VARIABLE` secret reference in the persisted document. They do not act as
 automatic operational overrides. The legacy `--config` and `--seed-file` flags

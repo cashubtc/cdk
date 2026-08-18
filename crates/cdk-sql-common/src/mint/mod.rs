@@ -13,10 +13,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::database::{self, DbTransactionFinalizer, Error, MintDatabase};
+use cdk_common::QuoteId;
 
 use crate::common::migrate;
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
-use crate::pool::{DatabasePool, Pool, PooledResource};
+use crate::pool::{DatabaseConfig, DatabasePool, Pool, PooledResource};
+use crate::stmt::query;
 
 mod auth;
 mod completed_operations;
@@ -44,6 +46,7 @@ where
     RM: DatabasePool + 'static,
 {
     pub(crate) pool: Arc<Pool<RM>>,
+    dispatch_pool: Option<Arc<Pool<RM>>>,
 }
 
 /// SQL Transaction Writer
@@ -55,6 +58,17 @@ where
     pub(crate) inner: ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
 }
 
+/// Sorted, deduplicated advisory lock keys for a batch of quotes.
+fn quote_lock_keys(quote_ids: &[QuoteId]) -> Vec<String> {
+    let mut keys = quote_ids
+        .iter()
+        .map(|quote_id| format!("cdk:quote:{quote_id}"))
+        .collect::<Vec<_>>();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
 impl<RM> SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
@@ -64,11 +78,42 @@ where
     where
         X: Into<RM::Config>,
     {
-        let pool = Pool::new(db.into());
+        let config = db.into();
+        let configured_max_size = config.max_size();
+        let (pool, dispatch_pool) =
+            if RM::Connection::name() == "postgres" && configured_max_size >= 2 {
+                // Keep long-lived payment dispatches from consuming the pool used
+                // for quote checks, payment events, and recovery. Both pools share
+                // the configured connection budget.
+                let dispatch_pool_size = (configured_max_size / 4).clamp(1, 8);
+                let regular_pool_size = configured_max_size - dispatch_pool_size;
+                (
+                    Pool::new_with_max_size(config.clone(), regular_pool_size),
+                    Some(Pool::new_with_max_size(config, dispatch_pool_size)),
+                )
+            } else {
+                (Pool::new(config), None)
+            };
 
         Self::migrate(pool.get().await.map_err(|e| Error::Database(Box::new(e)))?).await?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            dispatch_pool,
+        })
+    }
+
+    async fn begin_transaction_from_pool(
+        pool: &Arc<Pool<RM>>,
+    ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {
+        let tx = SQLTransaction {
+            inner: ConnectionWithTransaction::new(
+                pool.get().await.map_err(|e| Error::Database(Box::new(e)))?,
+            )
+            .await?,
+        };
+
+        Ok(Box::new(tx))
     }
 
     /// Migrate
@@ -80,8 +125,79 @@ where
     }
 }
 
+impl<RM> SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    /// Take quote advisory locks in one statement and stable key order.
+    async fn take_quote_locks(&mut self, quote_ids: &[QuoteId]) -> Result<bool, Error> {
+        if quote_ids.is_empty() || RM::Connection::name() != "postgres" {
+            return Ok(false);
+        }
+
+        query(
+            r#"
+            SELECT pg_advisory_xact_lock(hashtextextended(key, 0))
+            FROM (
+                SELECT key FROM unnest(ARRAY[:keys]::TEXT[]) AS t(key) ORDER BY key
+            ) sorted
+            "#,
+        )?
+        .bind_vec("keys", quote_lock_keys(quote_ids))?
+        .execute(&self.inner)
+        .await?;
+
+        Ok(true)
+    }
+
+    /// Attempt quote advisory locks without waiting, in stable key order.
+    async fn try_take_quote_locks(
+        &mut self,
+        quote_ids: &[QuoteId],
+    ) -> Result<database::mint::QuoteLockAttempt, Error> {
+        if quote_ids.is_empty() || RM::Connection::name() != "postgres" {
+            return Ok(database::mint::QuoteLockAttempt::Unsupported);
+        }
+
+        // Rows that fail to lock are returned; rows that succeed are locked
+        // until the transaction ends. The caller rolls back on `Contended`,
+        // releasing any partial acquisitions.
+        let missed = query(
+            r#"
+            SELECT key FROM (
+                SELECT key FROM unnest(ARRAY[:keys]::TEXT[]) AS t(key) ORDER BY key
+            ) sorted
+            WHERE NOT pg_try_advisory_xact_lock(hashtextextended(key, 0))
+            "#,
+        )?
+        .bind_vec("keys", quote_lock_keys(quote_ids))?
+        .fetch_all(&self.inner)
+        .await?;
+
+        Ok(if missed.is_empty() {
+            database::mint::QuoteLockAttempt::Acquired
+        } else {
+            database::mint::QuoteLockAttempt::Contended
+        })
+    }
+}
+
 #[async_trait]
-impl<RM> database::MintTransaction<Error> for SQLTransaction<RM> where RM: DatabasePool + 'static {}
+impl<RM> database::MintTransaction<Error> for SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    async fn lock_quotes(&mut self, quote_ids: &[QuoteId]) -> Result<bool, Error> {
+        self.take_quote_locks(quote_ids).await
+    }
+
+    async fn try_lock_quotes(
+        &mut self,
+        quote_ids: &[QuoteId],
+    ) -> Result<database::mint::QuoteLockAttempt, Error> {
+        self.try_take_quote_locks(quote_ids).await
+    }
+}
 
 #[async_trait]
 impl<RM> DbTransactionFinalizer for SQLTransaction<RM>
@@ -126,17 +242,14 @@ where
     async fn begin_transaction(
         &self,
     ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {
-        let tx = SQLTransaction {
-            inner: ConnectionWithTransaction::new(
-                self.pool
-                    .get()
-                    .await
-                    .map_err(|e| Error::Database(Box::new(e)))?,
-            )
-            .await?,
-        };
+        Self::begin_transaction_from_pool(&self.pool).await
+    }
 
-        Ok(Box::new(tx))
+    async fn begin_dispatch_transaction(
+        &self,
+    ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {
+        let pool = self.dispatch_pool.as_ref().unwrap_or(&self.pool);
+        Self::begin_transaction_from_pool(pool).await
     }
 }
 
@@ -440,5 +553,20 @@ mod tests {
             gauge_value("cdk_mint_in_flight_requests", &in_flight_labels),
             in_flight_before
         );
+    }
+}
+
+#[cfg(test)]
+mod quote_lock_tests {
+    use super::*;
+
+    #[test]
+    fn quote_lock_keys_are_sorted_and_deduplicated() {
+        let first = QuoteId::BASE64("YQ==".to_owned());
+        let second = QuoteId::BASE64("Yg==".to_owned());
+        let mut expected = vec![format!("cdk:quote:{first}"), format!("cdk:quote:{second}")];
+        expected.sort();
+
+        assert_eq!(quote_lock_keys(&[second.clone(), first, second]), expected);
     }
 }
