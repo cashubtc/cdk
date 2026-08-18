@@ -2,7 +2,6 @@
 
 #![doc = include_str!("../README.md")]
 
-use std::fs;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -11,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
+use std::{fmt, fs};
 
 use async_trait::async_trait;
 use bdk_wallet::bitcoin::Network;
@@ -158,6 +158,23 @@ pub struct CdkBdk {
 }
 
 impl CdkBdk {
+    fn outgoing_payment_failure_response(
+        unit: &CurrencyUnit,
+        quote_id: &cdk_common::QuoteId,
+        reason: impl fmt::Display,
+    ) -> MakePaymentResponse {
+        tracing::warn!(
+            quote_id = %quote_id,
+            "BDK rejected onchain payment before dispatch: {reason}"
+        );
+        MakePaymentResponse {
+            payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
+            payment_proof: None,
+            status: MeltQuoteState::Failed,
+            total_spent: Amount::new(0, unit.clone()),
+        }
+    }
+
     fn ensure_supported_payment_unit(
         unit: &CurrencyUnit,
     ) -> Result<(), cdk_common::payment::Error> {
@@ -617,8 +634,6 @@ impl MintPayment for CdkBdk {
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        Self::ensure_supported_payment_unit(unit)?;
-
         let onchain_options = match options {
             OutgoingPaymentOptions::Onchain(o) => o,
             _ => return Err(cdk_common::payment::Error::UnsupportedPaymentOption),
@@ -628,30 +643,72 @@ impl MintPayment for CdkBdk {
         let amount = onchain_options.amount;
         let quote_id = onchain_options.quote_id;
 
-        let amount_sat = Self::payment_amount_to_sat(unit, &amount)?;
-        self.validate_send_amount(&address, amount_sat)?;
+        if let Err(err) = Self::ensure_supported_payment_unit(unit) {
+            return Ok(Self::outgoing_payment_failure_response(
+                unit, &quote_id, err,
+            ));
+        }
+
+        let amount_sat = match Self::payment_amount_to_sat(unit, &amount) {
+            Ok(amount_sat) => amount_sat,
+            Err(err) => {
+                return Ok(Self::outgoing_payment_failure_response(
+                    unit, &quote_id, err,
+                ));
+            }
+        };
+        if let Err(err) = self.validate_send_amount(&address, amount_sat) {
+            return Ok(Self::outgoing_payment_failure_response(
+                unit, &quote_id, err,
+            ));
+        }
 
         let max_fee_sat = match onchain_options.max_fee_amount {
-            Some(max_fee) => Self::fee_limit_to_sat(unit, &max_fee)?,
+            Some(max_fee) => match Self::fee_limit_to_sat(unit, &max_fee) {
+                Ok(max_fee_sat) => max_fee_sat,
+                Err(err) => {
+                    return Ok(Self::outgoing_payment_failure_response(
+                        unit, &quote_id, err,
+                    ));
+                }
+            },
             None => 1_000,
         };
         // Resolve the wallet-selected `fee_index` back to a configured tier.
         // Older callers that omit `fee_index` continue to default to
         // Immediate.
-        let tier = self
+        let tier = match self
             .batch_config
             .tier_for_fee_index(onchain_options.fee_index)
-            .map_err(Error::UnknownFeeIndex)?;
+            .map_err(Error::UnknownFeeIndex)
+        {
+            Ok(tier) => tier,
+            Err(err) => {
+                return Ok(Self::outgoing_payment_failure_response(
+                    unit, &quote_id, err,
+                ));
+            }
+        };
         let metadata = PaymentMetadata::from_optional_json(onchain_options.metadata.as_deref());
-        let fee_estimate = self
+        let fee_estimate = match self
             .estimate_onchain_fee_reserve(&address, amount_sat, tier)
-            .await?;
+            .await
+        {
+            Ok(fee_estimate) => fee_estimate,
+            Err(err) => {
+                return Ok(Self::outgoing_payment_failure_response(
+                    unit, &quote_id, err,
+                ));
+            }
+        };
         if fee_estimate.raw_fee_sat > max_fee_sat {
-            return Err(Error::EstimatedFeeTooHigh {
+            let err = Error::EstimatedFeeTooHigh {
                 estimated_fee: fee_estimate.raw_fee_sat,
                 max_fee: max_fee_sat,
-            }
-            .into());
+            };
+            return Ok(Self::outgoing_payment_failure_response(
+                unit, &quote_id, err,
+            ));
         }
 
         crate::send::payment_intent::SendIntent::new(
@@ -1828,6 +1885,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_make_payment_returns_failed_for_unknown_fee_index() {
+        let backend = build_test_instance(5).await;
+        let (quote_id, mut options) = onchain_options_for(10_000);
+        let OutgoingPaymentOptions::Onchain(onchain) = &mut options else {
+            panic!("expected onchain options");
+        };
+        onchain.fee_index = Some(99);
+
+        let response = backend
+            .make_payment(&CurrencyUnit::Sat, options)
+            .await
+            .expect("definitive pre-dispatch rejection should return a payment response");
+
+        assert_authoritative_failure_response(response, quote_id.clone(), CurrencyUnit::Sat);
+        assert!(
+            backend
+                .storage
+                .get_send_intent_by_quote_id(&quote_id.to_string())
+                .await
+                .expect("lookup send intent by quote id")
+                .is_none(),
+            "unknown fee index rejection must not leave a pending send intent behind"
+        );
+    }
+
+    #[tokio::test]
     async fn test_make_payment_omitted_fee_index_defaults_to_immediate() {
         let batch_config = BatchConfig {
             fee_options: vec![PaymentTier::Immediate, PaymentTier::Economy],
@@ -1901,7 +1984,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_make_payment_rechecks_current_fee_against_max_fee() {
+    async fn test_make_payment_returns_failed_when_current_fee_exceeds_max_fee() {
         let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
         fund_backend_wallet(&backend, 100_000).await;
         let (quote_id, mut options) = onchain_options_for(10_000);
@@ -1910,18 +1993,12 @@ mod tests {
         };
         onchain.max_fee_amount = Some(Amount::new(1, CurrencyUnit::Sat));
 
-        let err = backend
+        let response = backend
             .make_payment(&CurrencyUnit::Sat, options)
             .await
-            .expect_err("payment should be rejected when current fee exceeds max");
+            .expect("definitive pre-dispatch rejection should return a payment response");
 
-        let cdk_common::payment::Error::Onchain(inner) = err else {
-            panic!("expected onchain error");
-        };
-        match inner.downcast_ref::<Error>() {
-            Some(Error::EstimatedFeeTooHigh { max_fee, .. }) => assert_eq!(*max_fee, 1),
-            other => panic!("expected EstimatedFeeTooHigh, got {other:?}"),
-        }
+        assert_authoritative_failure_response(response, quote_id.clone(), CurrencyUnit::Sat);
 
         assert!(
             backend
@@ -1992,6 +2069,20 @@ mod tests {
         }))
     }
 
+    fn assert_authoritative_failure_response(
+        response: MakePaymentResponse,
+        quote_id: QuoteId,
+        unit: CurrencyUnit,
+    ) {
+        assert_eq!(
+            response.payment_lookup_id,
+            PaymentIdentifier::QuoteId(quote_id)
+        );
+        assert_eq!(response.status, MeltQuoteState::Failed);
+        assert_eq!(response.total_spent, Amount::new(0, unit));
+        assert!(response.payment_proof.is_none());
+    }
+
     #[tokio::test]
     async fn test_get_payment_quote_converts_fee_options_to_msat() {
         let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
@@ -2046,25 +2137,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_make_payment_rejects_fractional_satoshi_amount() {
+    async fn test_make_payment_returns_failed_for_fractional_satoshi_amount() {
         let backend = build_test_instance(5).await;
         let quote_id = QuoteId::UUID(Uuid::new_v4());
         let options = onchain_options_for_msat(quote_id.clone(), 10_000_001, 10_000_000);
 
-        let err = backend
+        let response = backend
             .make_payment(&CurrencyUnit::Msat, options)
             .await
-            .expect_err("fractional-satoshi payment should be rejected");
+            .expect("definitive pre-dispatch rejection should return a payment response");
 
-        let cdk_common::payment::Error::Onchain(inner) = err else {
-            panic!("expected onchain error");
-        };
-        assert!(matches!(
-            inner.downcast_ref::<Error>(),
-            Some(Error::FractionalSatoshiAmount {
-                amount_msat: 10_000_001
-            })
-        ));
+        assert_authoritative_failure_response(response, quote_id.clone(), CurrencyUnit::Msat);
         assert!(backend
             .storage
             .get_send_intent_by_quote_id(&quote_id.to_string())
@@ -2074,7 +2157,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_make_payment_rejects_mismatched_fee_unit() {
+    async fn test_make_payment_returns_failed_for_mismatched_fee_unit() {
         let backend = build_test_instance(5).await;
         let quote_id = QuoteId::UUID(Uuid::new_v4());
         let mut options = onchain_options_for_msat(quote_id.clone(), 10_000_000, 10_000_000);
@@ -2083,21 +2166,12 @@ mod tests {
         };
         onchain.max_fee_amount = Some(Amount::new(10_000, CurrencyUnit::Sat));
 
-        let err = backend
+        let response = backend
             .make_payment(&CurrencyUnit::Msat, options)
             .await
-            .expect_err("mismatched fee unit should be rejected");
+            .expect("definitive pre-dispatch rejection should return a payment response");
 
-        let cdk_common::payment::Error::Onchain(inner) = err else {
-            panic!("expected onchain error");
-        };
-        assert!(matches!(
-            inner.downcast_ref::<Error>(),
-            Some(Error::AmountUnitMismatch {
-                expected: CurrencyUnit::Msat,
-                actual: CurrencyUnit::Sat,
-            })
-        ));
+        assert_authoritative_failure_response(response, quote_id.clone(), CurrencyUnit::Msat);
         assert!(backend
             .storage
             .get_send_intent_by_quote_id(&quote_id.to_string())
@@ -2154,23 +2228,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_make_payment_rejects_dust_output_without_persisting_intent() {
+    async fn test_make_payment_returns_failed_for_dust_without_persisting_intent() {
         let backend = build_test_instance(5).await;
         let (quote_id, options) = onchain_options_for(1);
 
-        let err = backend
+        let response = backend
             .make_payment(&CurrencyUnit::Sat, options)
             .await
-            .expect_err("dust output should be rejected before enqueue");
+            .expect("definitive pre-dispatch rejection should return a payment response");
 
-        let cdk_common::payment::Error::Onchain(inner) = err else {
-            panic!("expected onchain error");
-        };
-
-        let backend_err = inner
-            .downcast_ref::<Error>()
-            .expect("expected cdk-bdk backend error");
-        assert!(matches!(backend_err, Error::DustOutput { .. }));
+        assert_authoritative_failure_response(response, quote_id.clone(), CurrencyUnit::Sat);
         assert!(
             backend
                 .storage
@@ -2209,29 +2276,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_make_payment_rejects_amount_below_minimum_send_without_persisting_intent() {
+    async fn test_make_payment_returns_failed_below_minimum_without_persisting_intent() {
         let backend = build_test_instance(5).await;
         let (quote_id, options) = onchain_options_for(545);
 
-        let err = backend
+        let response = backend
             .make_payment(&CurrencyUnit::Sat, options)
             .await
-            .expect_err("amount below configured minimum should be rejected before enqueue");
+            .expect("definitive pre-dispatch rejection should return a payment response");
 
-        let cdk_common::payment::Error::Onchain(inner) = err else {
-            panic!("expected onchain error");
-        };
-
-        let backend_err = inner
-            .downcast_ref::<Error>()
-            .expect("expected cdk-bdk backend error");
-        assert!(matches!(
-            backend_err,
-            Error::AmountBelowMinimumSend {
-                amount: 545,
-                min: 546
-            }
-        ));
+        assert_authoritative_failure_response(response, quote_id.clone(), CurrencyUnit::Sat);
         assert!(
             backend
                 .storage
