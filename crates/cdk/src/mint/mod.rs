@@ -1114,7 +1114,7 @@ impl Mint {
 
         let payment_response = mint.check_melt_payment_status(&quote).await?;
 
-        saga_recovery::process_melt_saga_outcome(
+        saga_recovery::process_melt_saga_failure_event(
             &saga,
             &mut quote,
             &payment_response,
