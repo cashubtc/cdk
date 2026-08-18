@@ -184,6 +184,78 @@ where
     assert_eq!(stored, expected);
 }
 
+/// Test atomic insert-if-absent within transactions, including concurrent contenders
+pub async fn kvstore_write_if_absent<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + KVStoreDatabase<Err = crate::database::Error>,
+{
+    const PRIMARY: &str = "write_if_absent_test";
+    const SECONDARY: &str = "reservation";
+
+    // First insert wins and is committed.
+    {
+        let mut tx = Database::begin_transaction(&db).await.unwrap();
+        assert!(tx
+            .kv_write_if_absent(PRIMARY, SECONDARY, "key1", b"first")
+            .await
+            .unwrap());
+        tx.commit().await.unwrap();
+    }
+
+    // A conflicting insert in a later transaction loses and rolls back cleanly.
+    {
+        let mut tx = Database::begin_transaction(&db).await.unwrap();
+        assert!(!tx
+            .kv_write_if_absent(PRIMARY, SECONDARY, "key1", b"second")
+            .await
+            .unwrap());
+        tx.rollback().await.unwrap();
+    }
+
+    let stored = db.kv_read(PRIMARY, SECONDARY, "key1").await.unwrap();
+    assert_eq!(stored, Some(b"first".to_vec()));
+
+    // Concurrent contenders for the same key: exactly one wins, and the
+    // stored value is the winner's.
+    let left = async {
+        let mut tx = Database::begin_transaction(&db).await.unwrap();
+        let won = tx
+            .kv_write_if_absent(PRIMARY, SECONDARY, "race", b"left")
+            .await
+            .unwrap();
+        if won {
+            tx.commit().await.unwrap();
+        } else {
+            tx.rollback().await.unwrap();
+        }
+        won
+    };
+    let right = async {
+        let mut tx = Database::begin_transaction(&db).await.unwrap();
+        let won = tx
+            .kv_write_if_absent(PRIMARY, SECONDARY, "race", b"right")
+            .await
+            .unwrap();
+        if won {
+            tx.commit().await.unwrap();
+        } else {
+            tx.rollback().await.unwrap();
+        }
+        won
+    };
+
+    let (left, right) = tokio::join!(left, right);
+    assert_ne!(left, right);
+
+    let stored = db.kv_read(PRIMARY, SECONDARY, "race").await.unwrap();
+    let expected = if left {
+        b"left".as_slice()
+    } else {
+        b"right".as_slice()
+    };
+    assert_eq!(stored.as_deref(), Some(expected));
+}
+
 /// Unit test that is expected to be passed for a correct database implementation
 #[macro_export]
 macro_rules! mint_db_test {
@@ -193,6 +265,7 @@ macro_rules! mint_db_test {
             add_and_find_proofs,
             add_duplicate_proofs,
             kvstore_functionality,
+            kvstore_write_if_absent,
             add_mint_quote,
             add_mint_quote_only_once,
             register_payments,

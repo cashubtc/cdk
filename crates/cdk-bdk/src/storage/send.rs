@@ -62,14 +62,20 @@ impl BdkStorage {
         )
         .await
         .map_err(Error::from)?;
-        tx.kv_write(
-            BDK_NAMESPACE,
-            SEND_INTENT_QUOTE_ID_NAMESPACE,
-            &intent.quote_id,
-            intent.intent_id.to_string().as_bytes(),
-        )
-        .await
-        .map_err(Error::from)?;
+        // Reserve the quote id atomically with the record write.
+        let reserved = tx
+            .kv_write_if_absent(
+                BDK_NAMESPACE,
+                SEND_INTENT_QUOTE_ID_NAMESPACE,
+                &intent.quote_id,
+                intent.intent_id.to_string().as_bytes(),
+            )
+            .await
+            .map_err(Error::from)?;
+        if !reserved {
+            tx.rollback().await.map_err(Error::from)?;
+            return Err(Error::DuplicateQuoteId(intent.quote_id.clone()));
+        }
         tx.commit().await.map_err(Error::from)?;
         Ok(())
     }
@@ -137,14 +143,20 @@ impl BdkStorage {
                 state: intent.state.clone(),
             }
         } else {
-            tx.kv_write(
-                BDK_NAMESPACE,
-                SEND_INTENT_QUOTE_ID_NAMESPACE,
-                &intent.quote_id,
-                intent.intent_id.to_string().as_bytes(),
-            )
-            .await
-            .map_err(Error::from)?;
+            // Reserve the quote id atomically with the record write.
+            let reserved = tx
+                .kv_write_if_absent(
+                    BDK_NAMESPACE,
+                    SEND_INTENT_QUOTE_ID_NAMESPACE,
+                    &intent.quote_id,
+                    intent.intent_id.to_string().as_bytes(),
+                )
+                .await
+                .map_err(Error::from)?;
+            if !reserved {
+                tx.rollback().await.map_err(Error::from)?;
+                return Err(Error::DuplicateQuoteId(intent.quote_id.clone()));
+            }
             intent.clone()
         };
 

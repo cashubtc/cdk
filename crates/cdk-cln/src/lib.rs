@@ -1256,6 +1256,32 @@ mod tests {
             Ok(())
         }
 
+        async fn kv_write_if_absent(
+            &mut self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+            key: &str,
+            value: &[u8],
+        ) -> Result<bool, DatabaseError> {
+            let key = memory_kv_key(primary_namespace, secondary_namespace, key);
+
+            let exists = match self.writes.get(&key) {
+                Some(pending) => pending.is_some(),
+                None => {
+                    let entries = self.entries.lock().map_err(|_| memory_kv_lock_error())?;
+                    entries.contains_key(&key)
+                }
+            };
+
+            if exists {
+                return Ok(false);
+            }
+
+            self.writes.insert(key, Some(value.to_vec()));
+
+            Ok(true)
+        }
+
         async fn kv_remove(
             &mut self,
             primary_namespace: &str,

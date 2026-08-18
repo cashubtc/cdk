@@ -332,13 +332,249 @@ pub(crate) enum SendIntentAny {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex as StdMutex};
 
+    use async_trait::async_trait;
+    use cdk_common::database::{
+        DbTransactionFinalizer, Error as DatabaseError, KVStore, KVStoreDatabase,
+        KVStoreTransaction,
+    };
     use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
     use cdk_common::{Amount, CurrencyUnit, MeltQuoteState};
+    use tokio::sync::Barrier;
 
     use super::*;
-    use crate::storage::BdkStorage;
+    use crate::storage::{BdkStorage, SEND_INTENT_QUOTE_ID_NAMESPACE};
+
+    type KvKey = (String, String, String);
+
+    /// KV store that lets two concurrent transactions both observe a missing
+    /// quote-id index entry before either writes. `kv_write_if_absent` is
+    /// atomic across transactions, mirroring the SQL backend.
+    #[derive(Clone)]
+    struct RacingKvStore {
+        data: Arc<StdMutex<HashMap<KvKey, Vec<u8>>>>,
+        reservations: Arc<StdMutex<HashSet<KvKey>>>,
+        index_read_barrier: Arc<Barrier>,
+    }
+
+    impl RacingKvStore {
+        fn new(parties: usize) -> Self {
+            Self {
+                data: Arc::new(StdMutex::new(HashMap::new())),
+                reservations: Arc::new(StdMutex::new(HashSet::new())),
+                index_read_barrier: Arc::new(Barrier::new(parties)),
+            }
+        }
+    }
+
+    struct RacingTransaction {
+        store: RacingKvStore,
+        writes: Vec<(KvKey, Option<Vec<u8>>)>,
+        reserved: Vec<KvKey>,
+    }
+
+    #[async_trait]
+    impl DbTransactionFinalizer for RacingTransaction {
+        type Err = DatabaseError;
+
+        async fn commit(self: Box<Self>) -> Result<(), Self::Err> {
+            let mut data = self.store.data.lock().expect("lock racing kv store");
+            for (key, value) in self.writes {
+                if let Some(value) = value {
+                    data.insert(key, value);
+                } else {
+                    data.remove(&key);
+                }
+            }
+            Ok(())
+        }
+
+        async fn rollback(self: Box<Self>) -> Result<(), Self::Err> {
+            let mut reservations = self.store.reservations.lock().expect("lock reservations");
+            for key in &self.reserved {
+                reservations.remove(key);
+            }
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl KVStoreTransaction<DatabaseError> for RacingTransaction {
+        async fn kv_read(
+            &mut self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+            key: &str,
+        ) -> Result<Option<Vec<u8>>, DatabaseError> {
+            let map_key = (
+                primary_namespace.to_string(),
+                secondary_namespace.to_string(),
+                key.to_string(),
+            );
+            let value = self
+                .writes
+                .iter()
+                .rev()
+                .find(|(candidate, _)| candidate == &map_key)
+                .map(|(_, value)| value.clone())
+                .unwrap_or_else(|| {
+                    self.store
+                        .data
+                        .lock()
+                        .expect("lock racing kv store")
+                        .get(&map_key)
+                        .cloned()
+                });
+
+            if secondary_namespace == SEND_INTENT_QUOTE_ID_NAMESPACE {
+                self.store.index_read_barrier.wait().await;
+            }
+
+            Ok(value)
+        }
+
+        async fn kv_write(
+            &mut self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+            key: &str,
+            value: &[u8],
+        ) -> Result<(), DatabaseError> {
+            self.writes.push((
+                (
+                    primary_namespace.to_string(),
+                    secondary_namespace.to_string(),
+                    key.to_string(),
+                ),
+                Some(value.to_vec()),
+            ));
+            Ok(())
+        }
+
+        async fn kv_write_if_absent(
+            &mut self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+            key: &str,
+            value: &[u8],
+        ) -> Result<bool, DatabaseError> {
+            let map_key = (
+                primary_namespace.to_string(),
+                secondary_namespace.to_string(),
+                key.to_string(),
+            );
+
+            let exists = match self
+                .writes
+                .iter()
+                .rev()
+                .find(|(candidate, _)| candidate == &map_key)
+            {
+                Some((_, pending)) => pending.is_some(),
+                None => {
+                    let data = self.store.data.lock().expect("lock racing kv store");
+                    let reservations = self.store.reservations.lock().expect("lock reservations");
+                    data.contains_key(&map_key) || reservations.contains(&map_key)
+                }
+            };
+
+            if exists {
+                return Ok(false);
+            }
+
+            self.store
+                .reservations
+                .lock()
+                .expect("lock reservations")
+                .insert(map_key.clone());
+            self.reserved.push(map_key.clone());
+            self.writes.push((map_key, Some(value.to_vec())));
+
+            Ok(true)
+        }
+
+        async fn kv_remove(
+            &mut self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+            key: &str,
+        ) -> Result<(), DatabaseError> {
+            self.writes.push((
+                (
+                    primary_namespace.to_string(),
+                    secondary_namespace.to_string(),
+                    key.to_string(),
+                ),
+                None,
+            ));
+            Ok(())
+        }
+
+        async fn kv_list(
+            &mut self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+        ) -> Result<Vec<String>, DatabaseError> {
+            self.store
+                .kv_list(primary_namespace, secondary_namespace)
+                .await
+        }
+    }
+
+    #[async_trait]
+    impl KVStoreDatabase for RacingKvStore {
+        type Err = DatabaseError;
+
+        async fn kv_read(
+            &self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+            key: &str,
+        ) -> Result<Option<Vec<u8>>, Self::Err> {
+            Ok(self
+                .data
+                .lock()
+                .expect("lock racing kv store")
+                .get(&(
+                    primary_namespace.to_string(),
+                    secondary_namespace.to_string(),
+                    key.to_string(),
+                ))
+                .cloned())
+        }
+
+        async fn kv_list(
+            &self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+        ) -> Result<Vec<String>, Self::Err> {
+            Ok(self
+                .data
+                .lock()
+                .expect("lock racing kv store")
+                .keys()
+                .filter(|(primary, secondary, _)| {
+                    primary == primary_namespace && secondary == secondary_namespace
+                })
+                .map(|(_, _, key)| key.clone())
+                .collect())
+        }
+    }
+
+    #[async_trait]
+    impl KVStore for RacingKvStore {
+        async fn begin_transaction(
+            &self,
+        ) -> Result<Box<dyn KVStoreTransaction<Self::Err> + Send + Sync>, DatabaseError> {
+            Ok(Box::new(RacingTransaction {
+                store: self.clone(),
+                writes: Vec::new(),
+                reserved: Vec::new(),
+            }))
+        }
+    }
 
     /// Helper: create an in-memory KVStore-backed BdkStorage for tests
     async fn test_storage() -> BdkStorage {
@@ -346,6 +582,41 @@ mod tests {
             .await
             .expect("in-memory db");
         BdkStorage::new(Arc::new(db))
+    }
+
+    #[tokio::test]
+    async fn concurrent_duplicate_quote_creates_only_one_intent() {
+        let storage = BdkStorage::new(Arc::new(RacingKvStore::new(2)));
+        let create = || {
+            SendIntent::new(
+                &storage,
+                "quote-race".to_string(),
+                "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+                10_000,
+                500,
+                PaymentTier::Immediate,
+                PaymentMetadata::default(),
+            )
+        };
+
+        let (first, second) = tokio::join!(create(), create());
+
+        let success_count = usize::from(first.is_ok()) + usize::from(second.is_ok());
+        assert_eq!(success_count, 1, "only one intent per quote id");
+
+        let duplicate_count = [&first, &second]
+            .iter()
+            .filter(
+                |result| matches!(result, Err(Error::DuplicateQuoteId(id)) if id == "quote-race"),
+            )
+            .count();
+        assert_eq!(duplicate_count, 1, "loser must get DuplicateQuoteId");
+
+        let records = storage
+            .get_all_send_intents()
+            .await
+            .expect("list send intents");
+        assert_eq!(records.len(), 1, "only one intent record may be persisted");
     }
 
     #[tokio::test]

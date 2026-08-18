@@ -87,6 +87,20 @@ pub trait KVStoreTransaction<Error>: DbTransactionFinalizer<Err = Error> {
         value: &[u8],
     ) -> Result<(), Error>;
 
+    /// Write value to key-value store only when the key does not exist.
+    ///
+    /// Returns `true` when the value was written and `false` when the key
+    /// already exists. Implementations must perform the check-and-insert
+    /// atomically (for example `INSERT ... ON CONFLICT DO NOTHING` with a
+    /// rows-affected check).
+    async fn kv_write_if_absent(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+        value: &[u8],
+    ) -> Result<bool, Error>;
+
     /// Remove value from key-value store
     async fn kv_remove(
         &mut self,
