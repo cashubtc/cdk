@@ -1,7 +1,8 @@
 //! Cashu Mint
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
@@ -11,13 +12,14 @@ use cdk_common::database::{self, DynMintAuthDatabase, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
+use cdk_common::stream::{BackoffPolicy, SupervisedStream};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::MintMetricGuard;
-use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
-use futures::StreamExt;
+use cdk_signatory::signatory::{Signatory, SignatoryKeySet, SignatoryKeysets};
+use futures::{Stream, StreamExt};
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{watch, Mutex, Notify};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::instrument;
 
@@ -31,8 +33,8 @@ mod builder;
 mod check_spendable;
 mod issue;
 mod keysets;
-mod ln;
 mod melt;
+mod payment_backend;
 mod proofs;
 mod saga_recovery;
 mod start_up_check;
@@ -71,6 +73,22 @@ pub struct Mint {
     oidc_client: Option<OidcClient>,
     /// In-memory keyset
     keysets: Arc<ArcSwap<Vec<SignatoryKeySet>>>,
+    /// Serializes writes to `keysets`.
+    ///
+    /// Both a mint-initiated `rotate_keyset` and the signatory subscription
+    /// drain task replace the snapshot. Holding this lock across "read the
+    /// freshest signatory snapshot, then store it" makes the last write always
+    /// the newest one, so a stale snapshot can never overwrite a newer one.
+    keyset_store_lock: Arc<Mutex<()>>,
+    /// Serializes live melt dispatch and reconciliation for each quote within
+    /// this mint process.
+    ///
+    /// The database remains the source of truth. This guard only closes the
+    /// single-instance window where a status check could observe `Unpaid`,
+    /// compensate the saga, and then let an already-running task dispatch the
+    /// payment. Weak entries avoid retaining every quote id for the lifetime
+    /// of the mint.
+    melt_quote_locks: Arc<Mutex<HashMap<QuoteId, Weak<Mutex<()>>>>>,
     /// Background task management
     task_state: Arc<Mutex<TaskState>>,
     /// Maximum number of inputs allowed per transaction
@@ -92,9 +110,135 @@ struct TaskState {
     shutdown_notify: Option<Arc<Notify>>,
     /// Handle to the main supervisor task
     supervisor_handle: Option<JoinHandle<Result<(), Error>>>,
+    /// Handle to the keyset drain task
+    keyset_drain_handle: Option<JoinHandle<()>>,
+    /// Keyset subscription retained from construction, drained once by the first
+    /// `start()`. `None` after it has been taken; a restart re-subscribes.
+    keyset_updates: Option<watch::Receiver<SignatoryKeysets>>,
+}
+
+/// Supervised subscription to a single payment processor's event stream.
+///
+/// Holds the state the handlers need as fields, so `on_message` reads
+/// `&self.field` instead of the closure-based supervisor's per-item cloning.
+struct PaymentWaiter {
+    /// Identifies the processor in the supervisor's logs (unit and method).
+    name: String,
+    mint: Arc<Mint>,
+    processor: DynMintPayment,
+    localstore: DynMintDatabase,
+    pubsub_manager: Arc<PubSubManager>,
+}
+
+#[async_trait::async_trait]
+impl SupervisedStream for PaymentWaiter {
+    type Item = cdk_common::payment::Event;
+    // `DynMintPayment::wait_payment_event` fails with `Error`; its stream is
+    // already decoded and never yields a stream-level error, so wrap items in
+    // `Ok` with an `Infallible` error to satisfy the `Result` item contract.
+    type ConnectError = Error;
+    type StreamError = std::convert::Infallible;
+    type Stream = Pin<Box<dyn Stream<Item = Result<Self::Item, Self::StreamError>> + Send>>;
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn backoff_policy(&self) -> BackoffPolicy {
+        // Keep `initial` short so payment-detection latency stays low when a
+        // healthy backend cycles its stream (that fixed floor is the wait after
+        // every close); the cap only throttles a backend that keeps refusing
+        // connections. See `BackoffPolicy` for the full semantics.
+        BackoffPolicy {
+            initial_connect_backoff: Duration::from_millis(250),
+            max_connect_backoff: Duration::from_secs(30),
+        }
+    }
+
+    async fn connect(&mut self) -> Result<Self::Stream, Error> {
+        let stream = self.processor.wait_payment_event().await?;
+        Ok(Box::pin(stream.map(Ok::<_, std::convert::Infallible>)))
+    }
+
+    async fn on_message(&mut self, event: Self::Item) {
+        match event {
+            cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {
+                if let Err(e) = Mint::handle_payment_notification(
+                    &self.localstore,
+                    &self.pubsub_manager,
+                    wait_payment_response,
+                )
+                .await
+                {
+                    tracing::warn!("Payment notification error: {:?}", e);
+                }
+            }
+            cdk_common::payment::Event::PaymentSuccessful { quote_id, details } => {
+                tracing::info!(
+                    "Outgoing payment confirmed for quote {}: status {}",
+                    quote_id,
+                    details.status,
+                );
+
+                if let Err(e) = Mint::handle_successful_melt_payment_event(
+                    &self.mint,
+                    &self.localstore,
+                    &self.pubsub_manager,
+                    &quote_id,
+                    details,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        "Failed to process successful payment event for quote {}: {}",
+                        quote_id,
+                        e
+                    );
+                }
+            }
+            cdk_common::payment::Event::PaymentFailed { quote_id, reason } => {
+                tracing::warn!("Outgoing payment failed for quote {}: {}", quote_id, reason,);
+
+                if let Err(e) = Mint::handle_failed_melt_payment_event(
+                    &self.mint,
+                    &self.localstore,
+                    &self.pubsub_manager,
+                    &quote_id,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        "Failed to process failed payment event for quote {}: {}",
+                        quote_id,
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    async fn on_shutdown(&mut self) {
+        // The loop stopped because shutdown fired; run the teardown the old
+        // inner and outer shutdown arms performed.
+        self.processor.cancel_payment_event_stream();
+    }
 }
 
 impl Mint {
+    /// Returns the process-local coordination lock for a melt quote.
+    pub(super) async fn melt_quote_lock(&self, quote_id: &QuoteId) -> Arc<Mutex<()>> {
+        let mut locks = self.melt_quote_locks.lock().await;
+
+        if let Some(lock) = locks.get(quote_id).and_then(Weak::upgrade) {
+            return lock;
+        }
+
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(quote_id.clone(), Arc::downgrade(&lock));
+        lock
+    }
+
     /// Create new [`Mint`] without authentication
     pub async fn new(
         mint_info: MintInfo,
@@ -149,24 +293,34 @@ impl Mint {
         max_inputs: usize,
         max_outputs: usize,
     ) -> Result<Self, Error> {
-        let keysets = signatory.keysets().await?;
-        if !keysets
+        // Subscribe up front and bootstrap the in-memory snapshot from the same
+        // receiver that keeps it fresh. `borrow_and_update` pins the receiver
+        // cursor to this snapshot, so any signatory rotation that lands before
+        // `start()` spawns the drain task makes the loop's first `changed()`
+        // return immediately instead of being silently skipped.
+        let mut keyset_updates = signatory.subscribe_keysets().await?;
+        let keysets = keyset_updates.borrow_and_update().clone();
+        let active_keys = keysets
             .keysets
             .iter()
-            .any(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
-        {
-            return Err(Error::NoActiveKeyset);
+            .filter(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
+            .count();
+        // The signatory may not report an active keyset yet (for example a
+        // remote signatory that is still connecting). Start anyway and let the
+        // keyset drain task install keysets if they arrive over the
+        // subscription; endpoints return keyset errors until then.
+        if active_keys == 0 {
+            tracing::warn!(
+                "Signatory {} has no active keysets yet; starting without them",
+                signatory.name(),
+            );
+        } else {
+            tracing::info!(
+                "Using Signatory {} with {} active keys",
+                signatory.name(),
+                active_keys,
+            );
         }
-
-        tracing::info!(
-            "Using Signatory {} with {} active keys",
-            signatory.name(),
-            keysets
-                .keysets
-                .iter()
-                .filter(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
-                .count()
-        );
 
         // Persist missing pubkey early to avoid losing it on next boot and ensure stable identity across restarts
         let mut computed_info = mint_info;
@@ -245,7 +399,12 @@ impl Mint {
             payment_processors,
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
-            task_state: Arc::new(Mutex::new(TaskState::default())),
+            keyset_store_lock: Arc::new(Mutex::new(())),
+            melt_quote_locks: Arc::new(Mutex::new(HashMap::new())),
+            task_state: Arc::new(Mutex::new(TaskState {
+                keyset_updates: Some(keyset_updates),
+                ..Default::default()
+            })),
             max_inputs,
             max_outputs,
         })
@@ -276,7 +435,7 @@ impl Mint {
 
         // Recover from incomplete melt sagas
         // This cleans up incomplete melt operations using persisted saga state
-        // Now includes checking payment status with LN backend to determine
+        // Now includes checking payment status with the payment backend to determine
         // whether to finalize (if paid) or compensate (if failed/unpaid)
         if let Err(e) = self.recover_from_incomplete_melt_sagas().await {
             tracing::error!("Failed to recover incomplete melt sagas: {}", e);
@@ -339,9 +498,81 @@ impl Mint {
             .await
         });
 
+        // Keyset refresh: drain signatory keyset updates into the in-memory
+        // keysets. A signatory-side rotation reaches the mint here without a
+        // restart or a mint-initiated rotate.
+        //
+        // The receiver is normally the one retained from construction, whose
+        // cursor is pinned to the bootstrapped snapshot. On a restart after
+        // `stop()` that receiver was already consumed, so re-subscribe. A fresh
+        // `subscribe()` marks the current value as seen, so the re-subscribe
+        // branch applies the current snapshot immediately before waiting for the
+        // next change; the retained branch does not, since construction already
+        // seeded the same snapshot into the ArcSwap.
+        let keyset_updates = match task_state.keyset_updates.take() {
+            Some(rx) => Some(rx),
+            None => match self.signatory.subscribe_keysets().await {
+                Ok(mut rx) => {
+                    let _store = self.keyset_store_lock.lock().await;
+                    let current = rx.borrow_and_update().keysets.clone();
+                    if !current.is_empty() {
+                        self.keysets.store(Arc::new(current));
+                    }
+                    Some(rx)
+                }
+                Err(err) => {
+                    tracing::warn!("Could not subscribe to signatory keyset updates: {}", err);
+                    None
+                }
+            },
+        };
+
+        let keyset_drain_handle = if let Some(mut keyset_updates) = keyset_updates {
+            let keysets = self.keysets.clone();
+            let keyset_store_lock = Arc::clone(&self.keyset_store_lock);
+            let shutdown = shutdown_notify.clone();
+            Some(tokio::spawn(async move {
+                // Register the shutdown waiter once and hold it across
+                // iterations. A fresh `shutdown.notified()` per loop would be
+                // dropped whenever the `changed` branch wins the select,
+                // deregistering the waiter for the duration of the handler. A
+                // `notify_waiters()` from `stop()` in that window buffers
+                // nothing, so it would be lost and the next `notified()` would
+                // wait forever, hanging `stop()` on the drain handle. A single
+                // pinned future stays registered, so shutdown is never missed.
+                let shutdown_wait = shutdown.notified();
+                tokio::pin!(shutdown_wait);
+                loop {
+                    tokio::select! {
+                        _ = &mut shutdown_wait => break,
+                        changed = keyset_updates.changed() => {
+                            if changed.is_err() {
+                                // Signatory dropped the sender; stop draining.
+                                break;
+                            }
+                            // Serialize with mint-initiated rotations: read the
+                            // freshest snapshot and store it under the lock, so a
+                            // concurrent rotate cannot land a stale snapshot after
+                            // this newer one.
+                            let _store = keyset_store_lock.lock().await;
+                            let updated =
+                                keyset_updates.borrow_and_update().keysets.clone();
+                            if updated.is_empty() {
+                                continue;
+                            }
+                            keysets.store(Arc::new(updated));
+                        }
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+
         // Store the handles
         task_state.shutdown_notify = Some(shutdown_notify);
         task_state.supervisor_handle = Some(supervisor_handle);
+        task_state.keyset_drain_handle = keyset_drain_handle;
 
         // Give the background task a tiny bit of time to start waiting
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -365,6 +596,7 @@ impl Mint {
         // Take the handles out of the state
         let shutdown_notify = task_state.shutdown_notify.take();
         let supervisor_handle = task_state.supervisor_handle.take();
+        let keyset_drain_handle = task_state.keyset_drain_handle.take();
 
         // If nothing to stop, return early
         let (shutdown_notify, supervisor_handle) = match (shutdown_notify, supervisor_handle) {
@@ -395,6 +627,13 @@ impl Mint {
                 Err(Error::Internal)
             }
         };
+
+        // Wait for the keyset drain task to complete
+        if let Some(handle) = keyset_drain_handle {
+            if let Err(join_error) = handle.await {
+                tracing::error!("Keyset drain task panicked: {:?}", join_error);
+            }
+        }
 
         // Stop all payment processors
         self.stop_payment_processors().await?;
@@ -563,6 +802,35 @@ impl Mint {
         Ok(())
     }
 
+    /// Set mint info and quote TTL atomically.
+    #[instrument(skip_all)]
+    pub async fn set_mint_info_and_quote_ttl(
+        &self,
+        mint_info: MintInfo,
+        quote_ttl: QuoteTTL,
+    ) -> Result<(), Error> {
+        tracing::info!("Updating mint info and quote TTL");
+        let mint_info_bytes = serde_json::to_vec(&mint_info)?;
+        let quote_ttl_bytes = serde_json::to_vec(&quote_ttl)?;
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.kv_write(
+            CDK_MINT_PRIMARY_NAMESPACE,
+            CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+            CDK_MINT_CONFIG_KV_KEY,
+            &mint_info_bytes,
+        )
+        .await?;
+        tx.kv_write(
+            CDK_MINT_PRIMARY_NAMESPACE,
+            CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+            CDK_MINT_QUOTE_TTL_KV_KEY,
+            &quote_ttl_bytes,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Get quote ttl
     #[instrument(skip_all)]
     pub async fn quote_ttl(&self) -> Result<QuoteTTL, Error> {
@@ -649,6 +917,7 @@ impl Mint {
             tracing::info!("Starting payment wait task for {:?}", key);
 
             // Clone for the spawned task
+            let name = format!("payment processor {:?} {:?}", key.method, key.unit);
             let mint = Arc::clone(&mint);
             let processor = Arc::clone(processor);
             let localstore = Arc::clone(&localstore);
@@ -657,6 +926,7 @@ impl Mint {
 
             join_set.spawn(async move {
                 let result = Self::wait_for_processor_payments(
+                    name,
                     mint,
                     processor,
                     localstore,
@@ -701,104 +971,23 @@ impl Mint {
     /// Handles payment waiting for a single processor
     #[instrument(skip_all)]
     async fn wait_for_processor_payments(
+        name: String,
         mint: Arc<Mint>,
         processor: DynMintPayment,
         localstore: DynMintDatabase,
         pubsub_manager: Arc<PubSubManager>,
         shutdown: Arc<Notify>,
     ) -> Result<(), Error> {
-        let shutdown_future = shutdown.notified();
-        tokio::pin!(shutdown_future);
-
-        loop {
-            tokio::select! {
-                _ = &mut shutdown_future => {
-                    processor.cancel_payment_event_stream();
-                    break;
-                }
-                result = processor.wait_payment_event() => {
-                    match result {
-                        Ok(mut stream) => {
-                            loop {
-                                tokio::select! {
-                                    _ = &mut shutdown_future => {
-                                        processor.cancel_payment_event_stream();
-                                        return Ok(());
-                                    }
-                                    maybe_event = stream.next() => {
-                                        let Some(event) = maybe_event else {
-                                            break;
-                                        };
-
-                                        match event {
-                                            cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {
-                                                if let Err(e) = Self::handle_payment_notification(
-                                                    &localstore,
-                                                    &pubsub_manager,
-                                                    wait_payment_response,
-                                                ).await {
-                                                    tracing::warn!("Payment notification error: {:?}", e);
-                                                }
-                                            }
-                                            cdk_common::payment::Event::PaymentSuccessful { quote_id, details } => {
-                                                tracing::info!(
-                                                    "Outgoing payment confirmed for quote {}: status {}",
-                                                    quote_id,
-                                                    details.status,
-                                                );
-
-                                                if let Err(e) = Self::handle_successful_melt_payment_event(
-                                                    &mint,
-                                                    &localstore,
-                                                    &pubsub_manager,
-                                                    &quote_id,
-                                                    details,
-                                                )
-                                                .await
-                                                {
-                                                    tracing::warn!(
-                                                        "Failed to process successful payment event for quote {}: {}",
-                                                        quote_id,
-                                                        e
-                                                    );
-                                                }
-                                            }
-                                            cdk_common::payment::Event::PaymentFailed { quote_id, reason } => {
-                                                tracing::warn!(
-                                                    "Outgoing payment failed for quote {}: {}",
-                                                    quote_id,
-                                                    reason,
-                                                );
-
-                                                if let Err(e) = Self::handle_failed_melt_payment_event(
-                                                    &mint,
-                                                    &localstore,
-                                                    &pubsub_manager,
-                                                    &quote_id,
-                                                )
-                                                .await
-                                                {
-                                                    tracing::warn!(
-                                                        "Failed to process failed payment event for quote {}: {}",
-                                                        quote_id,
-                                                        e
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Err(e) => {
-                            tracing::warn!("Failed to get payment stream: {}", e);
-                            tokio::time::sleep(Duration::from_secs(5)).await;
-                        }
-                    }
-                }
-            }
-        }
+        let mut waiter = PaymentWaiter {
+            name,
+            mint,
+            processor,
+            localstore,
+            pubsub_manager,
+        };
+        // `supervise` owns the reconnect/backoff/shutdown loop and runs
+        // `on_shutdown` (which cancels the backend stream) on the way out.
+        waiter.supervise(shutdown.notified()).await;
         Ok(())
     }
 
@@ -810,6 +999,9 @@ impl Mint {
         quote_id: &QuoteId,
         payment_response: cdk_common::payment::MakePaymentResponse,
     ) -> Result<(), Error> {
+        let quote_lock = mint.melt_quote_lock(quote_id).await;
+        let _quote_guard = quote_lock.lock_owned().await;
+
         let Some(mut quote) = localstore.get_melt_quote(quote_id).await? else {
             tracing::warn!("Outgoing payment event for unknown quote {}", quote_id);
             return Ok(());
@@ -872,6 +1064,9 @@ impl Mint {
         pubsub_manager: &Arc<PubSubManager>,
         quote_id: &QuoteId,
     ) -> Result<(), Error> {
+        let quote_lock = mint.melt_quote_lock(quote_id).await;
+        let _quote_guard = quote_lock.lock_owned().await;
+
         let Some(mut quote) = localstore.get_melt_quote(quote_id).await? else {
             tracing::warn!("Outgoing payment event for unknown quote {}", quote_id);
             return Ok(());
@@ -1308,8 +1503,10 @@ mod tests {
     use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
     use cdk_common::PaymentMethod;
     use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
-    use cdk_signatory::signatory::RotateKeyArguments;
+    use cdk_signatory::db_signatory::DbSignatory;
+    use cdk_signatory::signatory::{RotateKeyArguments, SignatoryKeysets};
     use cdk_sqlite::mint::memory::new_with_state;
+    use tokio::sync::watch;
 
     use super::*;
     use crate::mint::melt::melt_saga::{MeltSaga, PaymentOutcome};
@@ -1326,6 +1523,575 @@ mod tests {
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
+    }
+
+    /// A stand-in for the in-memory signatory whose keyset subscription is
+    /// driven by the test. Injected snapshots are delivered verbatim through
+    /// `subscribe_keysets`, so the mint's drain task can be exercised in
+    /// isolation from `DbSignatory`'s rotation logic.
+    struct MockSignatory {
+        updates: watch::Sender<SignatoryKeysets>,
+    }
+
+    impl MockSignatory {
+        fn new(initial: SignatoryKeysets) -> Self {
+            let (updates, _) = watch::channel(initial);
+            Self { updates }
+        }
+
+        /// Inject a new keyset snapshot through the subscription.
+        fn push(&self, keysets: SignatoryKeysets) {
+            self.updates.send_replace(keysets);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Signatory for MockSignatory {
+        fn name(&self) -> String {
+            "mock".to_string()
+        }
+
+        async fn blind_sign(
+            &self,
+            _blinded_messages: Vec<BlindedMessage>,
+        ) -> Result<Vec<BlindSignature>, Error> {
+            Err(Error::Custom("unsupported in mock".to_string()))
+        }
+
+        async fn verify_proofs(&self, _proofs: Vec<cdk_common::Proof>) -> Result<(), Error> {
+            Err(Error::Custom("unsupported in mock".to_string()))
+        }
+
+        async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
+            Ok(self.updates.borrow().clone())
+        }
+
+        async fn subscribe_keysets(&self) -> Result<watch::Receiver<SignatoryKeysets>, Error> {
+            Ok(self.updates.subscribe())
+        }
+
+        async fn rotate_keyset(&self, _args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
+            Err(Error::Custom("unsupported in mock".to_string()))
+        }
+    }
+
+    /// Produce a sequence of valid, distinct keyset snapshots by rotating a real
+    /// `DbSignatory` `count` times and reading the full set after each rotation.
+    /// Each rotation makes a new active Sat keyset, so the snapshots differ.
+    async fn rotated_snapshots(count: usize) -> Vec<SignatoryKeysets> {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let signatory = DbSignatory::new(
+            store,
+            b"mock-signatory-seed",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .expect("DbSignatory::new");
+
+        let amounts = vec![1, 2, 4, 8];
+        let mut snapshots = Vec::with_capacity(count);
+        for _ in 0..count {
+            signatory
+                .rotate_keyset(RotateKeyArguments {
+                    unit: CurrencyUnit::Sat,
+                    amounts: amounts.clone(),
+                    input_fee_ppk: 0,
+                    keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                    final_expiry: None,
+                })
+                .await
+                .expect("rotate_keyset");
+            snapshots.push(signatory.keysets().await.expect("keysets"));
+        }
+        snapshots
+    }
+
+    /// The id of the active Sat keyset in a snapshot.
+    fn active_sat_id(snapshot: &SignatoryKeysets) -> Id {
+        snapshot
+            .keysets
+            .iter()
+            .find(|k| k.active && k.unit == CurrencyUnit::Sat)
+            .expect("snapshot should have an active Sat keyset")
+            .id
+    }
+
+    /// Build a mint around an arbitrary signatory, with a fresh empty store.
+    async fn create_mint_with_signatory(signatory: Arc<dyn Signatory + Send + Sync>) -> Mint {
+        let localstore = Arc::new(
+            new_with_state(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                MintInfo::default(),
+            )
+            .await
+            .unwrap(),
+        );
+
+        Mint::new(
+            MintInfo::default(),
+            signatory,
+            localstore,
+            HashMap::new(),
+            1000,
+            1000,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn mock_injection_updates_mint_keysets() {
+        let snaps = rotated_snapshots(2).await;
+        let next = snaps[1].clone();
+        let new_id = active_sat_id(&next);
+
+        let mock = Arc::new(MockSignatory::new(snaps[0].clone()));
+        let mint = create_mint_with_signatory(mock.clone()).await;
+        mint.start().await.expect("mint should start");
+
+        let before: Vec<Id> = mint.keysets.load().iter().map(|k| k.id).collect();
+        assert!(
+            !before.contains(&new_id),
+            "injected keyset id must not exist before injection"
+        );
+
+        // Inject a new snapshot straight through the subscription.
+        mock.push(next);
+
+        let applied = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint.keysets.load().iter().any(|k| k.id == new_id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            applied.is_ok(),
+            "injected keyset did not reach the mint in time"
+        );
+
+        mint.stop().await.expect("mint should stop");
+    }
+
+    #[tokio::test]
+    async fn mock_injection_latest_wins() {
+        let snaps = rotated_snapshots(3).await;
+        let b = snaps[1].clone();
+        let c = snaps[2].clone();
+        let c_id = active_sat_id(&c);
+        let c_len = c.keysets.len();
+
+        let mock = Arc::new(MockSignatory::new(snaps[0].clone()));
+        let mint = create_mint_with_signatory(mock.clone()).await;
+        mint.start().await.expect("mint should start");
+
+        // Two injections back-to-back: the watch keeps only the latest, so the
+        // mint must settle on C even if B is never observed.
+        mock.push(b);
+        mock.push(c);
+
+        let converged = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint.keysets.load().iter().any(|k| k.id == c_id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            converged.is_ok(),
+            "mint did not converge to the latest snapshot"
+        );
+        assert_eq!(
+            mint.keysets.load().len(),
+            c_len,
+            "mint should settle on the latest snapshot, not an earlier one"
+        );
+
+        mint.stop().await.expect("mint should stop");
+    }
+
+    #[tokio::test]
+    async fn empty_snapshot_is_ignored() {
+        let snaps = rotated_snapshots(2).await;
+        let seed = snaps[0].clone();
+        let next = snaps[1].clone();
+        let next_id = active_sat_id(&next);
+        let seed_pubkey = seed.pubkey;
+        let seed_ids: Vec<Id> = seed.keysets.iter().map(|k| k.id).collect();
+
+        let mock = Arc::new(MockSignatory::new(seed));
+        let mint = create_mint_with_signatory(mock.clone()).await;
+        mint.start().await.expect("mint should start");
+
+        // An empty snapshot must be dropped by the drain guard: the mint
+        // keysets stay untouched.
+        mock.push(SignatoryKeysets {
+            pubkey: seed_pubkey,
+            keysets: vec![],
+        });
+        // Give the drain task time to observe and discard the empty snapshot.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let current: Vec<Id> = mint.keysets.load().iter().map(|k| k.id).collect();
+        assert_eq!(
+            current, seed_ids,
+            "empty snapshot must not change the mint keysets"
+        );
+
+        // A valid snapshot after the empty one still propagates: the guard must
+        // not wedge the drain loop.
+        mock.push(next);
+        let applied = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint.keysets.load().iter().any(|k| k.id == next_id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            applied.is_ok(),
+            "valid snapshot after an empty one should still propagate"
+        );
+
+        mint.stop().await.expect("mint should stop");
+    }
+
+    /// A mint may boot before any active keyset exists (for example a remote
+    /// signatory still connecting). Construction and `start()` must succeed
+    /// rather than failing with `NoActiveKeyset`, and keysets that arrive later
+    /// over the subscription must install without a restart.
+    #[tokio::test]
+    async fn mint_starts_without_active_keysets_then_installs_them() {
+        // A snapshot to install later; reuse its pubkey for the empty bootstrap
+        // snapshot so both carry the same signatory identity.
+        let snap = rotated_snapshots(1).await.remove(0);
+        let new_id = active_sat_id(&snap);
+
+        // Bootstrap from a snapshot with no keysets at all. This used to return
+        // Error::NoActiveKeyset from the constructor.
+        let mock = Arc::new(MockSignatory::new(SignatoryKeysets {
+            pubkey: snap.pubkey,
+            keysets: vec![],
+        }));
+        let mint = create_mint_with_signatory(mock.clone()).await;
+        mint.start()
+            .await
+            .expect("mint should start with no active keysets");
+
+        assert!(
+            mint.keysets.load().is_empty(),
+            "no keysets should be present before any arrive"
+        );
+
+        // Keysets arriving over the subscription install without a restart.
+        mock.push(snap);
+        let applied = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint
+                    .keysets
+                    .load()
+                    .iter()
+                    .any(|k| k.id == new_id && k.active)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            applied.is_ok(),
+            "keysets that arrive after an empty start should install"
+        );
+
+        mint.stop().await.expect("mint should stop");
+    }
+
+    /// Regression test for the bootstrap/subscribe race: a rotation that lands
+    /// between mint construction and `start()` must still reach the mint.
+    ///
+    /// The subscription is now both the bootstrap and the update source, so the
+    /// snapshot pushed in that window is delivered by the drain task's first
+    /// `changed()`. Under the old two-phase bootstrap (unary `keysets()` in the
+    /// constructor, `subscribe_keysets()` later in `start()`) this snapshot was
+    /// silently skipped until the next rotation, and this test would time out.
+    #[tokio::test]
+    async fn rotation_between_construction_and_start_is_not_missed() {
+        let snaps = rotated_snapshots(2).await;
+        let next = snaps[1].clone();
+        let new_id = active_sat_id(&next);
+
+        let mock = Arc::new(MockSignatory::new(snaps[0].clone()));
+        let mint = create_mint_with_signatory(mock.clone()).await;
+
+        // The mint bootstrapped snapshot A. Rotate to B *before* start() spawns
+        // the drain task: this is exactly the window the old bootstrap missed.
+        assert!(
+            !mint.keysets.load().iter().any(|k| k.id == new_id),
+            "bootstrapped snapshot must not already contain the rotated keyset"
+        );
+        mock.push(next);
+
+        mint.start().await.expect("mint should start");
+
+        // No push after start(): the mint must converge to B purely from the
+        // snapshot that landed in the construction-to-start window.
+        let applied = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint.keysets.load().iter().any(|k| k.id == new_id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            applied.is_ok(),
+            "snapshot pushed before start() did not reach the mint"
+        );
+
+        mint.stop().await.expect("mint should stop");
+    }
+
+    /// A restart after `stop()` re-subscribes (the retained receiver was
+    /// consumed by the first `start()`) and must catch up on any snapshot that
+    /// landed while the drain task was stopped.
+    #[tokio::test]
+    async fn restart_catches_up_on_missed_rotation() {
+        let snaps = rotated_snapshots(2).await;
+        let next = snaps[1].clone();
+        let new_id = active_sat_id(&next);
+
+        let mock = Arc::new(MockSignatory::new(snaps[0].clone()));
+        let mint = create_mint_with_signatory(mock.clone()).await;
+
+        mint.start().await.expect("mint should start");
+        mint.stop().await.expect("mint should stop");
+
+        // Rotate while stopped: the drain task is gone, so the ArcSwap is stale.
+        mock.push(next);
+
+        mint.start().await.expect("mint should restart");
+
+        let applied = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint.keysets.load().iter().any(|k| k.id == new_id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            applied.is_ok(),
+            "restart did not catch up on the snapshot pushed while stopped"
+        );
+
+        mint.stop().await.expect("mint should stop");
+    }
+
+    /// A single armed pause point for a `GatedSignatory::keysets` call.
+    struct Gate {
+        reached: tokio::sync::oneshot::Sender<()>,
+        release: tokio::sync::oneshot::Receiver<()>,
+    }
+
+    /// Wraps a real `DbSignatory`, delegating every call, but lets a test hold a
+    /// single `keysets()` call open: it reads the current snapshot, signals the
+    /// test, then blocks until released and returns the snapshot it read. This
+    /// reproduces the window where `Mint::rotate_keyset` has read a snapshot but
+    /// not yet stored it while another rotation lands, which without the shared
+    /// store lock let a stale write clobber a newer one in the keyset ArcSwap.
+    struct GatedSignatory {
+        inner: Arc<DbSignatory>,
+        gate: Mutex<Option<Gate>>,
+    }
+
+    impl GatedSignatory {
+        fn new(inner: Arc<DbSignatory>) -> Self {
+            Self {
+                inner,
+                gate: Mutex::new(None),
+            }
+        }
+
+        /// Arm the next `keysets()` call to pause. Returns a receiver that fires
+        /// once the call has read its snapshot, and a sender that releases it.
+        async fn arm(
+            &self,
+        ) -> (
+            tokio::sync::oneshot::Receiver<()>,
+            tokio::sync::oneshot::Sender<()>,
+        ) {
+            let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            *self.gate.lock().await = Some(Gate {
+                reached: reached_tx,
+                release: release_rx,
+            });
+            (reached_rx, release_tx)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Signatory for GatedSignatory {
+        fn name(&self) -> String {
+            self.inner.name()
+        }
+
+        async fn blind_sign(
+            &self,
+            blinded_messages: Vec<BlindedMessage>,
+        ) -> Result<Vec<BlindSignature>, Error> {
+            self.inner.blind_sign(blinded_messages).await
+        }
+
+        async fn verify_proofs(&self, proofs: Vec<cdk_common::Proof>) -> Result<(), Error> {
+            self.inner.verify_proofs(proofs).await
+        }
+
+        async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
+            let snapshot = self.inner.keysets().await?;
+            let gate = self.gate.lock().await.take();
+            if let Some(gate) = gate {
+                let _ = gate.reached.send(());
+                let _ = gate.release.await;
+            }
+            Ok(snapshot)
+        }
+
+        async fn subscribe_keysets(&self) -> Result<watch::Receiver<SignatoryKeysets>, Error> {
+            self.inner.subscribe_keysets().await
+        }
+
+        async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
+            self.inner.rotate_keyset(args).await
+        }
+    }
+
+    /// Regression test for the two-writer keyset race. A mint-initiated rotation
+    /// reads the signatory snapshot and then stores it, while the subscription
+    /// drain task also stores every published snapshot. If a newer rotation is
+    /// drained between the mint rotation's read and its store, the stale store
+    /// must not clobber the newer snapshot.
+    ///
+    /// The gate holds the mint rotation's `keysets()` read open while an
+    /// out-of-band rotation on another unit lands and is drained. When the
+    /// rotation resumes and stores its now-stale read, the shared store lock
+    /// serializes it with the drain so the newest snapshot still wins. Without
+    /// the lock the stale store sticks and this test times out.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rotate_store_does_not_clobber_newer_drained_snapshot() {
+        let amounts: Vec<u64> = (0..4).map(|i| 2u64.pow(i)).collect();
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::Sat, (0u64, amounts.clone()));
+        supported_units.insert(CurrencyUnit::Msat, (0u64, amounts.clone()));
+
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let inner = Arc::new(
+            DbSignatory::new(
+                store,
+                b"gated-signatory-seed",
+                supported_units.clone(),
+                Default::default(),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+        // Seed an active keyset for each unit.
+        for (unit, (fee, amts)) in &supported_units {
+            inner
+                .rotate_keyset(RotateKeyArguments {
+                    unit: unit.clone(),
+                    amounts: amts.clone(),
+                    input_fee_ppk: *fee,
+                    keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                    final_expiry: None,
+                })
+                .await
+                .expect("seed rotate");
+        }
+
+        let gated = Arc::new(GatedSignatory::new(inner));
+        let mint = create_mint_with_signatory(gated.clone()).await;
+        mint.start().await.expect("mint should start");
+
+        // Arm the gate, then start a mint-initiated Sat rotation. It commits the
+        // new Sat keyset, then reads a snapshot that still predates the Msat
+        // rotation below, and blocks before storing it.
+        let (reached, release) = gated.arm().await;
+        let mint_c = mint.clone();
+        let amts = amounts.clone();
+        let rotate = tokio::spawn(async move {
+            mint_c
+                .rotate_keyset(CurrencyUnit::Sat, amts, 0, true, None)
+                .await
+        });
+
+        // Wait until the rotation has read its soon-to-be-stale snapshot.
+        reached.await.expect("rotation reached the gate");
+
+        // Land an out-of-band Msat rotation; the drain applies the newer
+        // snapshot while the mint rotation is still parked at the gate.
+        let rotated_msat = mint
+            .signatory
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::Msat,
+                amounts: amounts.clone(),
+                input_fee_ppk: 0,
+                keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                final_expiry: None,
+            })
+            .await
+            .expect("out-of-band msat rotate");
+
+        // Release the parked rotation; its stale store must not win.
+        release.send(()).expect("release the gate");
+        let sat_info = rotate.await.expect("join").expect("mint rotate");
+
+        // The cache must converge to hold BOTH the new Sat and the new Msat
+        // keyset. A stale rotate store drops the drained Msat keyset and never
+        // recovers, so this loop would time out.
+        let converged = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let ids: Vec<Id> = mint.keysets.load().iter().map(|k| k.id).collect();
+                if ids.contains(&sat_info.id) && ids.contains(&rotated_msat.id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            converged.is_ok(),
+            "stale rotate store clobbered the newer drained Msat keyset"
+        );
+
+        mint.stop().await.expect("mint should stop");
     }
 
     async fn create_mint(config: MintConfig<'_>) -> Mint {
@@ -1626,8 +2392,13 @@ mod tests {
         tx.update_melt_quote_state(&mut stored_quote, MeltQuoteState::Paid, None)
             .await
             .unwrap();
-        tx.update_saga(
-            &operation_id,
+        let mut saga = tx
+            .get_saga_for_update(&operation_id)
+            .await
+            .unwrap()
+            .expect("saga should exist");
+        tx.update_acquired_saga(
+            &mut saga,
             SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentAttempted),
         )
         .await
@@ -1786,6 +2557,59 @@ mod tests {
             rotation_result,
             Err(Error::UnitStringCollision(_currency_unit))
         ));
+    }
+
+    #[tokio::test]
+    async fn signatory_rotation_propagates_to_mint() {
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..8).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts.clone()));
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+        mint.start().await.expect("mint should start");
+
+        let before: Vec<Id> = mint.keysets.load().iter().map(|k| k.id).collect();
+
+        // Rotate directly on the signatory, out of band from the mint. Without
+        // the keyset subscription the mint would never see this new keyset.
+        let rotated = mint
+            .signatory
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::default(),
+                amounts,
+                input_fee_ppk: 0,
+                keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                final_expiry: None,
+            })
+            .await
+            .expect("rotate_keyset");
+
+        assert!(
+            !before.contains(&rotated.id),
+            "rotated keyset should be new"
+        );
+
+        // The drain task should observe the pushed update and store it, so
+        // polling the in-memory keysets eventually sees the rotated keyset.
+        let applied = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint.keysets.load().iter().any(|k| k.id == rotated.id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            applied.is_ok(),
+            "signatory rotation did not propagate to the mint in time"
+        );
+
+        mint.stop().await.expect("mint should stop");
     }
 
     #[tokio::test]

@@ -7,7 +7,7 @@ license.workspace = true
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
 rust-version.workspace = true # MSRV
-description = "CDK ln backend for cdk-ldk-node"
+description = "CDK payment backend for cdk-ldk-node"
 readme = "README.md"
 
 [dependencies]
@@ -31,6 +31,9 @@ rust-embed = "8.5.0"
 serde_urlencoded = "0.7"
 bip39.workspace = true
 web-time.workspace = true
+
+[dev-dependencies]
+cdk-sqlite.workspace = true
 
 [lints]
 workspace = true

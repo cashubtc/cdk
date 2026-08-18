@@ -2,6 +2,7 @@
 
 #![doc = include_str!("../README.md")]
 
+use std::fmt;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,9 +11,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bip39::Mnemonic;
 use cdk_common::common::FeeReserve;
+use cdk_common::database::DynKVStore;
 use cdk_common::payment::{self, *};
+use cdk_common::redact::url_for_logs;
 use cdk_common::util::{hex, unix_time};
-use cdk_common::{Amount, CurrencyUnit, MeltOptions, MeltQuoteState};
+use cdk_common::{Amount, CurrencyUnit, MeltOptions, MeltQuoteState, QuoteId};
 use futures::{Stream, StreamExt};
 use ldk_node::bitcoin::hashes::Hash;
 use ldk_node::bitcoin::Network;
@@ -35,6 +38,59 @@ mod error;
 mod log;
 mod web;
 
+/// Primary KV namespace for the ldk-node backend's durable bookkeeping
+const LDK_KV_PRIMARY_NAMESPACE: &str = "cdk_ldk_node_lightning_backend";
+/// Secondary KV namespace holding the bolt12 melt quote id -> payment id
+/// mapping used to resolve `PaymentIdentifier::QuoteId` lookups
+const LDK_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE: &str = "bolt12_outgoing_payments";
+
+/// Result of looking up the payment id recorded for a bolt12 melt quote
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bolt12QuotePaymentIdLookup {
+    /// A payment id was recorded: the payment was dispatched and is tracked
+    Found(PaymentId),
+    /// The dispatch sentinel is present: `send` was started but no payment id
+    /// was recorded (crash during dispatch, or dispatch errored before the
+    /// sentinel could be cleaned up). The payment state is indeterminate.
+    Dispatching,
+    /// No record exists: the payment was never dispatched
+    Missing,
+    /// A record exists but cannot be parsed
+    Malformed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bolt12QuotePaymentIdResolution {
+    PaymentId(PaymentId),
+    Status(MeltQuoteState),
+}
+
+impl Bolt12QuotePaymentIdLookup {
+    fn resolve(self) -> Bolt12QuotePaymentIdResolution {
+        match self {
+            Self::Found(payment_id) => Bolt12QuotePaymentIdResolution::PaymentId(payment_id),
+            // Dispatch was attempted but no payment id was recorded. Pending
+            // prevents the live melt saga from compensating an indeterminate
+            // payment after a dispatch-ambiguous error.
+            Self::Dispatching => Bolt12QuotePaymentIdResolution::Status(MeltQuoteState::Pending),
+            // Without the pre-dispatch sentinel, the payment was never sent.
+            Self::Missing => Bolt12QuotePaymentIdResolution::Status(MeltQuoteState::Unpaid),
+            // Corrupt bookkeeping cannot establish any payment state.
+            Self::Malformed => Bolt12QuotePaymentIdResolution::Status(MeltQuoteState::Unknown),
+        }
+    }
+}
+
+/// Whether an LDK BOLT12 send error can occur after dispatch was accepted.
+///
+/// In `ldk-node` 0.7, [`ldk_node::NodeError::PersistenceFailed`] can be returned
+/// while persisting the payment record after `ChannelManager::pay_for_offer`
+/// accepted the payment. All other errors returned by the BOLT12 send methods
+/// occur before dispatch or after `pay_for_offer` rejected the attempt.
+fn bolt12_send_error_has_ambiguous_dispatch(err: &ldk_node::NodeError) -> bool {
+    matches!(err, ldk_node::NodeError::PersistenceFailed)
+}
+
 /// CDK Lightning backend using LDK Node
 ///
 /// Provides Lightning Network functionality for CDK with support for Cashu operations.
@@ -43,6 +99,7 @@ mod web;
 pub struct CdkLdkNode {
     inner: Arc<Node>,
     fee_reserve: FeeReserve,
+    kv_store: DynKVStore,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
     sender: tokio::sync::broadcast::Sender<WaitPaymentResponse>,
@@ -51,8 +108,8 @@ pub struct CdkLdkNode {
     web_addr: Option<SocketAddr>,
 }
 
-impl std::fmt::Debug for CdkLdkNode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for CdkLdkNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CdkLdkNode")
             .field("fee_reserve", &self.fee_reserve)
             .field("web_addr", &self.web_addr)
@@ -63,7 +120,7 @@ impl std::fmt::Debug for CdkLdkNode {
 /// Configuration for connecting to Bitcoin RPC
 ///
 /// Contains the necessary connection parameters for Bitcoin Core RPC interface.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BitcoinRpcConfig {
     /// Bitcoin RPC server hostname or IP address
     pub host: String,
@@ -75,11 +132,22 @@ pub struct BitcoinRpcConfig {
     pub password: String,
 }
 
+impl fmt::Debug for BitcoinRpcConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BitcoinRpcConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// Source of blockchain data for the Lightning node
 ///
 /// Specifies how the node should connect to the Bitcoin network to retrieve
 /// blockchain information and broadcast transactions.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ChainSource {
     /// Use an Esplora server for blockchain data
     ///
@@ -95,11 +163,21 @@ pub enum ChainSource {
     BitcoinRpc(BitcoinRpcConfig),
 }
 
+impl fmt::Debug for ChainSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Esplora(url) => f.debug_tuple("Esplora").field(&url_for_logs(url)).finish(),
+            Self::Electrum(url) => f.debug_tuple("Electrum").field(&url_for_logs(url)).finish(),
+            Self::BitcoinRpc(config) => f.debug_tuple("BitcoinRpc").field(config).finish(),
+        }
+    }
+}
+
 /// Source of Lightning network gossip data
 ///
 /// Specifies how the node should learn about the Lightning Network topology
 /// and routing information.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum GossipSource {
     /// Learn gossip through peer-to-peer connections
     ///
@@ -110,8 +188,19 @@ pub enum GossipSource {
     /// Contains the URL of the RGS server for compressed gossip data
     RapidGossipSync(String),
 }
+
+impl fmt::Debug for GossipSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::P2P => f.write_str("P2P"),
+            Self::RapidGossipSync(url) => f
+                .debug_tuple("RapidGossipSync")
+                .field(&url_for_logs(url))
+                .finish(),
+        }
+    }
+}
 /// A builder for an [`CdkLdkNode`] instance.
-#[derive(Debug)]
 pub struct CdkLdkNodeBuilder {
     network: Network,
     chain_source: ChainSource,
@@ -119,9 +208,25 @@ pub struct CdkLdkNodeBuilder {
     log_dir_path: Option<String>,
     storage_dir_path: String,
     fee_reserve: FeeReserve,
+    kv_store: DynKVStore,
     listening_addresses: Vec<SocketAddress>,
     seed: Option<Mnemonic>,
     announcement_addresses: Option<Vec<SocketAddress>>,
+}
+
+impl std::fmt::Debug for CdkLdkNodeBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CdkLdkNodeBuilder")
+            .field("network", &self.network)
+            .field("chain_source", &self.chain_source)
+            .field("gossip_source", &self.gossip_source)
+            .field("log_dir_path", &self.log_dir_path)
+            .field("storage_dir_path", &self.storage_dir_path)
+            .field("fee_reserve", &self.fee_reserve)
+            .field("listening_addresses", &self.listening_addresses)
+            .field("announcement_addresses", &self.announcement_addresses)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CdkLdkNodeBuilder {
@@ -133,6 +238,7 @@ impl CdkLdkNodeBuilder {
         storage_dir_path: String,
         fee_reserve: FeeReserve,
         listening_addresses: Vec<SocketAddress>,
+        kv_store: DynKVStore,
     ) -> Self {
         Self {
             network,
@@ -140,6 +246,7 @@ impl CdkLdkNodeBuilder {
             gossip_source,
             storage_dir_path,
             fee_reserve,
+            kv_store,
             listening_addresses,
             seed: None,
             announcement_addresses: None,
@@ -235,6 +342,7 @@ impl CdkLdkNodeBuilder {
         Ok(CdkLdkNode {
             inner: node.into(),
             fee_reserve: self.fee_reserve,
+            kv_store: self.kv_store,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             sender,
@@ -260,6 +368,18 @@ impl CdkLdkNode {
     /// the system to automatically assign an available port
     pub fn default_web_addr() -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], 8091))
+    }
+
+    /// Best-effort removal of the pre-dispatch sentinel after a send that did
+    /// not dispatch. If removal fails the sentinel remains and the payment
+    /// resolves as `Pending`, keeping the melt proofs reserved.
+    async fn cleanup_bolt12_dispatch_sentinel(&self, quote_id: &QuoteId) {
+        if let Err(err) = delete_bolt12_quote_payment_id(&self.kv_store, quote_id).await {
+            tracing::warn!(
+                "Could not remove BOLT12 dispatch sentinel for quote {quote_id}: {err}. \
+                 The payment will remain Pending."
+            );
+        }
     }
 
     fn make_payment_response_from_details(
@@ -784,7 +904,9 @@ impl MintPayment for CdkLdkNode {
                 };
 
                 Ok(PaymentQuoteResponse {
-                    request_lookup_id: None,
+                    request_lookup_id: Some(PaymentIdentifier::QuoteId(
+                        bolt12_options.quote_id.clone(),
+                    )),
                     amount,
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
@@ -895,6 +1017,8 @@ impl MintPayment for CdkLdkNode {
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
                 let offer = bolt12_options.offer;
+                let quote_id = bolt12_options.quote_id.clone();
+                let quote_payment_identifier = PaymentIdentifier::QuoteId(quote_id.clone());
 
                 let send_params = match bolt12_options
                     .max_fee_amount
@@ -914,25 +1038,65 @@ impl MintPayment for CdkLdkNode {
                     }
                 };
 
+                // Write the pre-dispatch sentinel before attempting the send so
+                // a crash during dispatch is distinguishable from "never
+                // dispatched" (mirrors cdk-cln's pre-dispatch bolt12 quote
+                // mapping). The payment must not be attempted unless this
+                // marker is durable.
+                write_bolt12_quote_payment_id(&self.kv_store, &quote_id, None).await?;
+
                 let payment_id = match bolt12_options.melt_options {
-                    Some(MeltOptions::Amountless { amountless }) => self
-                        .inner
-                        .bolt12_payment()
-                        .send_using_amount(
+                    Some(MeltOptions::Amountless { amountless }) => {
+                        self.inner.bolt12_payment().send_using_amount(
                             &offer,
                             amountless.amount_msat.into(),
                             None,
                             None,
                             send_params,
                         )
-                        .map_err(Error::LdkNode)?,
+                    }
                     None => self
                         .inner
                         .bolt12_payment()
-                        .send(&offer, None, None, send_params)
-                        .map_err(Error::LdkNode)?,
-                    _ => return Err(payment::Error::UnsupportedPaymentOption),
+                        .send(&offer, None, None, send_params),
+                    _ => {
+                        self.cleanup_bolt12_dispatch_sentinel(&quote_id).await;
+                        return Err(payment::Error::UnsupportedPaymentOption);
+                    }
                 };
+
+                let payment_id = match payment_id {
+                    Ok(payment_id) => payment_id,
+                    Err(err) => {
+                        match bolt12_send_error_has_ambiguous_dispatch(&err) {
+                            true => {
+                                tracing::warn!(
+                                    quote_id = %quote_id,
+                                    "LDK payment persistence failed after BOLT12 send; retaining \
+                                     the dispatch sentinel because the payment may have been dispatched"
+                                );
+                            }
+                            false => {
+                                self.cleanup_bolt12_dispatch_sentinel(&quote_id).await;
+                            }
+                        }
+                        return Err(Error::LdkNode(err).into());
+                    }
+                };
+
+                // Record the payment id so QuoteId lookups resolve to the
+                // dispatched payment. Best-effort: if this write fails the
+                // sentinel remains and the payment resolves as Pending, keeping
+                // the melt proofs reserved.
+                if let Err(err) =
+                    write_bolt12_quote_payment_id(&self.kv_store, &quote_id, Some(&payment_id))
+                        .await
+                {
+                    tracing::error!(
+                        "Could not record BOLT12 payment id for quote {quote_id}: {err}. \
+                         The payment will remain Pending until manual intervention."
+                    );
+                }
 
                 // Check payment status for up to 10 seconds
                 let start = std::time::Instant::now();
@@ -971,7 +1135,7 @@ impl MintPayment for CdkLdkNode {
 
                 Self::make_payment_response_from_details(
                     unit,
-                    PaymentIdentifier::PaymentId(payment_id.0),
+                    quote_payment_identifier,
                     &payment_details,
                 )
             }
@@ -1128,6 +1292,24 @@ impl MintPayment for CdkLdkNode {
                 }))
             }
             PaymentIdentifier::PaymentId(id) => self.inner.payment(&PaymentId(*id)),
+            PaymentIdentifier::QuoteId(quote_id) => {
+                match read_bolt12_quote_payment_id(&self.kv_store, quote_id)
+                    .await?
+                    .resolve()
+                {
+                    Bolt12QuotePaymentIdResolution::PaymentId(payment_id) => {
+                        self.inner.payment(&payment_id)
+                    }
+                    Bolt12QuotePaymentIdResolution::Status(status) => {
+                        return Ok(MakePaymentResponse {
+                            payment_lookup_id: request_lookup_id.clone(),
+                            payment_proof: None,
+                            status,
+                            total_spent: Amount::new(0, CurrencyUnit::Msat),
+                        });
+                    }
+                }
+            }
             _ => {
                 return Ok(MakePaymentResponse {
                     payment_lookup_id: request_lookup_id.clone(),
@@ -1159,9 +1341,174 @@ impl Drop for CdkLdkNode {
     }
 }
 
+/// KV key for the bolt12 melt quote id -> payment id mapping
+fn bolt12_quote_payment_id_key(quote_id: &QuoteId) -> Result<String, Error> {
+    match quote_id {
+        QuoteId::UUID(uuid) => Ok(uuid.to_string()),
+        QuoteId::BASE64(_) => Err(Error::InvalidQuoteId),
+    }
+}
+
+/// Records the bolt12 melt quote id -> payment id mapping.
+///
+/// `payment_id` of `None` writes the pre-dispatch sentinel: it marks that
+/// `send` is about to be attempted so a crash during dispatch is
+/// distinguishable from "never dispatched" (mirrors cdk-cln's pre-dispatch
+/// bolt12 quote mapping).
+async fn write_bolt12_quote_payment_id(
+    kv_store: &DynKVStore,
+    quote_id: &QuoteId,
+    payment_id: Option<&PaymentId>,
+) -> Result<(), Error> {
+    let key = bolt12_quote_payment_id_key(quote_id)?;
+    let value = payment_id.map(|id| hex::encode(id.0)).unwrap_or_default();
+    let mut tx = kv_store
+        .begin_transaction()
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?;
+
+    tx.kv_write(
+        LDK_KV_PRIMARY_NAMESPACE,
+        LDK_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+        &key,
+        value.as_bytes(),
+    )
+    .await
+    .map_err(|e| Error::Database(e.to_string()))?;
+    tx.commit()
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Reads the bolt12 melt quote id -> payment id mapping
+async fn read_bolt12_quote_payment_id(
+    kv_store: &DynKVStore,
+    quote_id: &QuoteId,
+) -> Result<Bolt12QuotePaymentIdLookup, Error> {
+    let key = bolt12_quote_payment_id_key(quote_id)?;
+    let Some(stored) = kv_store
+        .kv_read(
+            LDK_KV_PRIMARY_NAMESPACE,
+            LDK_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+            &key,
+        )
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?
+    else {
+        return Ok(Bolt12QuotePaymentIdLookup::Missing);
+    };
+
+    if stored.is_empty() {
+        return Ok(Bolt12QuotePaymentIdLookup::Dispatching);
+    }
+
+    let payment_id_hex = match String::from_utf8(stored) {
+        Ok(payment_id_hex) => payment_id_hex,
+        Err(err) => {
+            tracing::warn!(
+                "LDK: invalid UTF-8 in BOLT12 payment id mapping for quote {quote_id}: {err}"
+            );
+            return Ok(Bolt12QuotePaymentIdLookup::Malformed);
+        }
+    };
+
+    let payment_id_bytes = match hex::decode(&payment_id_hex) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::warn!(
+                "LDK: invalid hex in BOLT12 payment id mapping for quote {quote_id}: {err}"
+            );
+            return Ok(Bolt12QuotePaymentIdLookup::Malformed);
+        }
+    };
+
+    let payment_id: [u8; 32] = match payment_id_bytes.try_into() {
+        Ok(payment_id) => payment_id,
+        Err(_) => {
+            tracing::warn!("LDK: invalid payment id length in BOLT12 mapping for quote {quote_id}");
+            return Ok(Bolt12QuotePaymentIdLookup::Malformed);
+        }
+    };
+
+    Ok(Bolt12QuotePaymentIdLookup::Found(PaymentId(payment_id)))
+}
+
+/// Removes the bolt12 melt quote id -> payment id mapping
+async fn delete_bolt12_quote_payment_id(
+    kv_store: &DynKVStore,
+    quote_id: &QuoteId,
+) -> Result<(), Error> {
+    let key = bolt12_quote_payment_id_key(quote_id)?;
+    let mut tx = kv_store
+        .begin_transaction()
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?;
+
+    tx.kv_remove(
+        LDK_KV_PRIMARY_NAMESPACE,
+        LDK_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+        &key,
+    )
+    .await
+    .map_err(|e| Error::Database(e.to_string()))?;
+    tx.commit()
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bitcoin_rpc_debug_redacts_password() {
+        let source = ChainSource::BitcoinRpc(BitcoinRpcConfig {
+            host: "127.0.0.1".to_string(),
+            port: 8332,
+            user: "rpc-user".to_string(),
+            password: "rpc-password-secret".to_string(),
+        });
+
+        let debug = format!("{source:?}");
+
+        assert!(debug.contains("127.0.0.1"));
+        assert!(debug.contains("rpc-user"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("rpc-password-secret"));
+    }
+
+    #[test]
+    fn chain_source_debug_redacts_url_credentials() {
+        for source in [
+            ChainSource::Esplora("https://esplora-user:esplora-secret@example.com/api".to_string()),
+            ChainSource::Electrum(
+                "ssl://electrum-user:electrum-secret@example.com:50002".to_string(),
+            ),
+        ] {
+            let debug = format!("{source:?}");
+
+            assert!(debug.contains("example.com"));
+            assert!(!debug.contains("-user"));
+            assert!(!debug.contains("-secret"));
+        }
+    }
+
+    #[test]
+    fn gossip_source_debug_redacts_url_credentials() {
+        let source = GossipSource::RapidGossipSync(
+            "https://rgs-user:rgs-secret@example.com/snapshot".to_string(),
+        );
+
+        let debug = format!("{source:?}");
+
+        assert!(debug.contains("https://example.com/snapshot"));
+        assert!(!debug.contains("rgs-user"));
+        assert!(!debug.contains("rgs-secret"));
+    }
 
     fn test_payment_details(status: PaymentStatus, amount_msat: Option<u64>) -> PaymentDetails {
         PaymentDetails {
@@ -1232,7 +1579,7 @@ mod tests {
         )
         .expect_err("paid payment details without amount should fail");
 
-        assert!(matches!(err, payment::Error::Lightning(_)));
+        assert!(matches!(err, payment::Error::Backend(_)));
     }
 
     #[test]
@@ -1272,5 +1619,132 @@ mod tests {
 
         assert_eq!(selected.id, PaymentId([2; 32]));
         assert_eq!(selected.status, PaymentStatus::Failed);
+    }
+
+    #[test]
+    fn bolt12_persistence_failure_has_ambiguous_dispatch() {
+        assert!(bolt12_send_error_has_ambiguous_dispatch(
+            &ldk_node::NodeError::PersistenceFailed
+        ));
+
+        for not_dispatched in [
+            ldk_node::NodeError::NotRunning,
+            ldk_node::NodeError::UnsupportedCurrency,
+            ldk_node::NodeError::InvalidOffer,
+            ldk_node::NodeError::InvalidAmount,
+            ldk_node::NodeError::DuplicatePayment,
+            ldk_node::NodeError::InvoiceRequestCreationFailed,
+            ldk_node::NodeError::PaymentSendingFailed,
+        ] {
+            assert!(
+                !bolt12_send_error_has_ambiguous_dispatch(&not_dispatched),
+                "{not_dispatched} must be treated as not dispatched"
+            );
+        }
+    }
+
+    #[test]
+    fn bolt12_quote_payment_id_lookup_resolution_is_safe() {
+        assert_eq!(
+            Bolt12QuotePaymentIdLookup::Dispatching.resolve(),
+            Bolt12QuotePaymentIdResolution::Status(MeltQuoteState::Pending),
+            "an indeterminate dispatch must keep melt proofs reserved"
+        );
+        assert_eq!(
+            Bolt12QuotePaymentIdLookup::Missing.resolve(),
+            Bolt12QuotePaymentIdResolution::Status(MeltQuoteState::Unpaid),
+            "a missing sentinel means the payment was never dispatched"
+        );
+        assert_eq!(
+            Bolt12QuotePaymentIdLookup::Malformed.resolve(),
+            Bolt12QuotePaymentIdResolution::Status(MeltQuoteState::Unknown),
+            "corrupt bookkeeping must remain indeterminate"
+        );
+    }
+
+    async fn test_kv_store() -> DynKVStore {
+        std::sync::Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap())
+    }
+
+    /// The mapping must resolve Missing before any dispatch, Found after the
+    /// payment id is recorded, and Dispatching (indeterminate) while only the
+    /// pre-dispatch sentinel exists.
+    #[tokio::test]
+    async fn bolt12_quote_payment_id_mapping_lifecycle() {
+        let kv_store = test_kv_store().await;
+        let quote_id = QuoteId::new();
+
+        assert_eq!(
+            read_bolt12_quote_payment_id(&kv_store, &quote_id)
+                .await
+                .unwrap(),
+            Bolt12QuotePaymentIdLookup::Missing,
+            "no record must resolve as never dispatched"
+        );
+
+        // Pre-dispatch sentinel
+        write_bolt12_quote_payment_id(&kv_store, &quote_id, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_bolt12_quote_payment_id(&kv_store, &quote_id)
+                .await
+                .unwrap(),
+            Bolt12QuotePaymentIdLookup::Dispatching,
+            "sentinel must resolve as indeterminate, never terminal"
+        );
+
+        // Record the payment id
+        let payment_id = PaymentId([7; 32]);
+        write_bolt12_quote_payment_id(&kv_store, &quote_id, Some(&payment_id))
+            .await
+            .unwrap();
+        assert_eq!(
+            read_bolt12_quote_payment_id(&kv_store, &quote_id)
+                .await
+                .unwrap(),
+            Bolt12QuotePaymentIdLookup::Found(payment_id)
+        );
+
+        // Removal returns to Missing (failed dispatch cleanup)
+        delete_bolt12_quote_payment_id(&kv_store, &quote_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_bolt12_quote_payment_id(&kv_store, &quote_id)
+                .await
+                .unwrap(),
+            Bolt12QuotePaymentIdLookup::Missing
+        );
+    }
+
+    /// A corrupted mapping must resolve as indeterminate (`Malformed`), never
+    /// as a terminal state that could trigger compensation.
+    #[tokio::test]
+    async fn bolt12_quote_payment_id_mapping_malformed_is_indeterminate() {
+        let kv_store = test_kv_store().await;
+        let quote_id = QuoteId::new();
+        let key = bolt12_quote_payment_id_key(&quote_id).unwrap();
+
+        for corrupt in ["not-hex", "0102", "zz"] {
+            let mut tx = kv_store.begin_transaction().await.unwrap();
+            tx.kv_write(
+                LDK_KV_PRIMARY_NAMESPACE,
+                LDK_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+                &key,
+                corrupt.as_bytes(),
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+
+            assert_eq!(
+                read_bolt12_quote_payment_id(&kv_store, &quote_id)
+                    .await
+                    .unwrap(),
+                Bolt12QuotePaymentIdLookup::Malformed,
+                "corrupt value {corrupt} must be indeterminate"
+            );
+        }
     }
 }

@@ -288,6 +288,7 @@ impl HttpClientBuilder {
 
     /// Build the HTTP client.
     pub fn build(self) -> Response<HttpClient> {
+        super::install_rustls_crypto_provider();
         let mut builder =
             reqwest::Client::builder().danger_accept_invalid_certs(self.accept_invalid_certs);
         if self.no_redirects {

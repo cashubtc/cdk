@@ -34,7 +34,7 @@
 //! # }
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::future::{Future, IntoFuture};
 use std::pin::Pin;
@@ -43,8 +43,8 @@ use std::time::Duration;
 
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
-    MeltQuote, MeltSagaState, OperationData, Transaction, TransactionDirection, WalletSaga,
-    WalletSagaState,
+    CrossMintTransferQuote, MeltQuote, MeltSagaState, OperationData, Transaction,
+    TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
 };
 use cdk_common::{Error, MeltQuoteState, PaymentMethod, ProofsMethods, State};
 use tracing::instrument;
@@ -352,8 +352,10 @@ impl<'a> PendingMelt<'a> {
                         return WaitStep::Continue(self);
                     }
 
-                    self.saga.handle_failure().await;
-                    WaitStep::Terminal(Err(Error::PaymentFailed))
+                    match self.saga.handle_failure().await {
+                        Ok(()) => WaitStep::Terminal(Err(Error::PaymentFailed)),
+                        Err(error) => WaitStep::Terminal(Err(error)),
+                    }
                 }
             },
             Err(err) => {
@@ -816,6 +818,235 @@ impl Debug for PreparedMelt<'_> {
 }
 
 impl Wallet {
+    async fn persist_cross_mint_transfer_quote(
+        &self,
+        target_wallet: &Wallet,
+        quote: CrossMintTransferQuote,
+    ) -> Result<CrossMintTransferQuote, Error> {
+        target_wallet
+            .localstore
+            .add_mint_quote(quote.mint_quote.clone())
+            .await?;
+
+        if let Err(error) = self
+            .localstore
+            .add_melt_quote(quote.melt_quote.clone())
+            .await
+        {
+            if let Err(cleanup_error) = target_wallet
+                .localstore
+                .remove_mint_quote(&quote.mint_quote.id)
+                .await
+            {
+                tracing::warn!(
+                    "Failed to remove mint quote {} after melt quote persistence failed: {}",
+                    quote.mint_quote.id,
+                    cleanup_error
+                );
+            }
+
+            return Err(Error::Database(error));
+        }
+
+        Ok(quote)
+    }
+
+    /// Create quotes for transferring the maximum amount allowed by the source
+    /// balance and both mints' advertised BOLT11 limits.
+    ///
+    /// The destination wallet creates a BOLT11 mint quote and this wallet asks
+    /// its mint for the corresponding melt quote. Because the melt fee reserve
+    /// can depend on the invoice amount, the method repeats this process until
+    /// the destination amount fits the source balance after both the melt fee
+    /// reserve and the input fee for all unspent source proofs.
+    ///
+    /// The returned plan assumes all currently unspent source proofs are used.
+    /// To preserve that accounting, prepare the melt with
+    /// [`Wallet::prepare_melt_proofs`] and confirm it with
+    /// [`MeltConfirmOptions::skip_swap`].
+    ///
+    /// The melt fee is a reserve. If the actual Lightning fee is lower, the
+    /// source mint can return the difference as change, so a successful melt
+    /// may leave a small source balance.
+    ///
+    /// The returned plan covers one Lightning payment. If an advertised quote
+    /// maximum is below the source balance, complete the plan and call this
+    /// method again to transfer the remaining balance.
+    ///
+    /// # Remote side effects
+    ///
+    /// Finding the maximum can require several probes because the source mint's
+    /// fee reserve is only known after the destination mint creates an invoice.
+    /// Every probe creates a mint quote at the destination and a melt quote at
+    /// the source. Only the returned pair is persisted locally; the other remote
+    /// quotes cannot be cancelled and remain at their mints until they expire.
+    /// Avoid calling this method speculatively or in an unbounded loop.
+    #[instrument(skip_all)]
+    pub async fn cross_mint_transfer_quote_max(
+        &self,
+        target_wallet: &Wallet,
+    ) -> Result<CrossMintTransferQuote, Error> {
+        const MAX_QUOTE_ATTEMPTS: usize = u64::BITS as usize;
+
+        ensure_cdk!(self.unit == target_wallet.unit, Error::UnsupportedUnit);
+
+        let proofs = self.get_unspent_proofs().await?;
+        let balance = proofs.total_amount()?;
+        ensure_cdk!(balance > Amount::ZERO, Error::InsufficientFunds);
+
+        let input_fee = self.get_proofs_fee(&proofs).await?.total;
+        let available_for_payment = balance
+            .checked_sub(input_fee)
+            .ok_or(Error::InsufficientFunds)?;
+        ensure_cdk!(
+            available_for_payment > Amount::ZERO,
+            Error::InsufficientFunds
+        );
+
+        let method = PaymentMethod::Known(KnownMethod::Bolt11);
+        let source_mint_info = self.load_mint_info().await?;
+        let target_mint_info = target_wallet.load_mint_info().await?;
+        let source_settings = source_mint_info
+            .nuts
+            .nut05
+            .get_settings(&self.unit, &method);
+        let target_settings = target_mint_info
+            .nuts
+            .nut04
+            .get_settings(&target_wallet.unit, &method);
+        let minimum_amount = source_settings
+            .as_ref()
+            .and_then(|settings| settings.min_amount)
+            .into_iter()
+            .chain(
+                target_settings
+                    .as_ref()
+                    .and_then(|settings| settings.min_amount),
+            )
+            .max()
+            .unwrap_or(Amount::ONE)
+            .max(Amount::ONE);
+        let maximum_amount = source_settings
+            .as_ref()
+            .and_then(|settings| settings.max_amount)
+            .into_iter()
+            .chain(
+                target_settings
+                    .as_ref()
+                    .and_then(|settings| settings.max_amount),
+            )
+            .fold(available_for_payment, Amount::min);
+        ensure_cdk!(maximum_amount >= minimum_amount, Error::InsufficientFunds);
+
+        let mut amount = maximum_amount;
+        let mut attempted_amounts = HashSet::new();
+        let mut best_feasible: Option<CrossMintTransferQuote> = None;
+        let mut lowest_infeasible: Option<Amount> = None;
+
+        for _ in 0..MAX_QUOTE_ATTEMPTS {
+            attempted_amounts.insert(amount);
+
+            let mint_quote = target_wallet
+                .request_mint_quote(method.clone(), Some(amount), None, None)
+                .await?;
+            let melt_quote = self
+                .request_melt_bolt11_quote(mint_quote.request.clone(), None)
+                .await?;
+
+            tracing::debug!(
+                attempt = attempted_amounts.len(),
+                amount = %amount,
+                destination_mint_quote_id = %mint_quote.id,
+                source_melt_quote_id = %melt_quote.id,
+                "Created remote quote pair while searching for maximum cross-mint transfer"
+            );
+
+            let total_required = melt_quote
+                .amount
+                .checked_add(melt_quote.fee_reserve)
+                .and_then(|required| required.checked_add(input_fee))
+                .ok_or(Error::AmountOverflow)?;
+            let plan = CrossMintTransferQuote {
+                mint_quote,
+                melt_quote,
+                input_fee,
+            };
+
+            match total_required.cmp(&balance) {
+                std::cmp::Ordering::Equal => {
+                    return self
+                        .persist_cross_mint_transfer_quote(target_wallet, plan)
+                        .await;
+                }
+                std::cmp::Ordering::Less => {
+                    if best_feasible
+                        .as_ref()
+                        .is_none_or(|best| plan.melt_quote.amount > best.melt_quote.amount)
+                    {
+                        best_feasible = Some(plan.clone());
+                    }
+                }
+                std::cmp::Ordering::Greater => {
+                    lowest_infeasible = Some(
+                        lowest_infeasible
+                            .map(|current| current.min(amount))
+                            .unwrap_or(amount),
+                    );
+                }
+            }
+
+            if total_required <= balance && amount == maximum_amount {
+                return self
+                    .persist_cross_mint_transfer_quote(target_wallet, plan)
+                    .await;
+            }
+
+            let estimated_amount = available_for_payment.checked_sub(plan.melt_quote.fee_reserve);
+            let mut next_amount = estimated_amount
+                .unwrap_or_else(|| Amount::from(amount.to_u64() / 2))
+                .clamp(minimum_amount, maximum_amount);
+            if let (Some(best), Some(upper)) = (&best_feasible, lowest_infeasible) {
+                let lower = best.melt_quote.amount;
+                let lower_value = lower.to_u64();
+                let upper_value = upper.to_u64();
+                if upper_value.saturating_sub(lower_value) <= 1 {
+                    return self
+                        .persist_cross_mint_transfer_quote(target_wallet, best.clone())
+                        .await;
+                }
+
+                if next_amount <= lower
+                    || next_amount >= upper
+                    || attempted_amounts.contains(&next_amount)
+                {
+                    next_amount = Amount::from(lower_value + (upper_value - lower_value) / 2);
+                }
+            }
+
+            ensure_cdk!(next_amount > Amount::ZERO, Error::InsufficientFunds);
+
+            if attempted_amounts.contains(&next_amount) {
+                return match best_feasible {
+                    Some(best) => {
+                        self.persist_cross_mint_transfer_quote(target_wallet, best)
+                            .await
+                    }
+                    None => Err(Error::InsufficientFunds),
+                };
+            }
+
+            amount = next_amount;
+        }
+
+        match best_feasible {
+            Some(best) => {
+                self.persist_cross_mint_transfer_quote(target_wallet, best)
+                    .await
+            }
+            None => Err(Error::InsufficientFunds),
+        }
+    }
+
     fn melt_saga_metadata(
         &self,
         saga: &WalletSaga,
@@ -1382,24 +1613,24 @@ impl Wallet {
                     .and_then(|amount| amount.checked_sub(change_total))
                     .ok_or(Error::AmountOverflow)?;
 
-                self.localstore
-                    .add_transaction(Transaction {
-                        mint_url: self.mint_url.clone(),
-                        direction: TransactionDirection::Outgoing,
-                        amount,
-                        fee,
-                        unit: quote.unit.clone(),
-                        ys: pending_proofs.ys()?,
-                        timestamp: unix_time(),
-                        memo: None,
-                        metadata,
-                        quote_id: Some(quote.id.clone()),
-                        payment_request: Some(quote.request.clone()),
-                        payment_proof,
-                        payment_method: Some(quote.payment_method.clone()),
-                        saga_id: Some(operation_id),
-                    })
-                    .await?;
+                self.upsert_transaction(Transaction {
+                    mint_url: self.mint_url.clone(),
+                    direction: TransactionDirection::Outgoing,
+                    amount,
+                    fee,
+                    unit: quote.unit.clone(),
+                    ys: pending_proofs.ys()?,
+                    timestamp: unix_time(),
+                    memo: None,
+                    metadata,
+                    quote_id: Some(quote.id.clone()),
+                    payment_request: Some(quote.request.clone()),
+                    payment_proof,
+                    payment_method: Some(quote.payment_method.clone()),
+                    saga_id: Some(operation_id),
+                    status: TransactionStatus::Completed,
+                })
+                .await?;
             }
         }
         Ok(())
@@ -1792,11 +2023,19 @@ mod tests {
     use std::str::FromStr;
     use std::sync::Arc;
 
-    use cdk_common::nuts::{CurrencyUnit, RestoreResponse, State};
+    use bitcoin::hashes::sha256::Hash as Sha256Hash;
+    use bitcoin::hashes::Hash;
+    use bitcoin::secp256k1::{Secp256k1, SecretKey};
+    use cdk_common::nut23::QuoteState;
+    use cdk_common::nuts::{CurrencyUnit, KeySet, MintQuoteBolt11Response, RestoreResponse, State};
     use cdk_common::wallet::{
         MeltOperationData, MeltSagaState, OperationData, WalletSaga, WalletSagaState,
     };
-    use cdk_common::{Id, MeltQuoteBolt11Response, MeltQuoteResponse};
+    use cdk_common::{
+        Id, MeltQuoteBolt11Response, MeltQuoteCreateResponse, MeltQuoteResponse, MintQuoteRequest,
+        MintQuoteResponse,
+    };
+    use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
 
     use super::*;
     use crate::wallet::saga::test_utils::{
@@ -1804,8 +2043,524 @@ mod tests {
     };
     use crate::wallet::test_utils::{
         create_test_wallet_with_mock, create_test_wallet_with_mock_http_subscription,
-        test_melt_quote, test_proof, MockMintConnector,
+        make_inactive_keyset, test_keyset, test_melt_quote, test_mint_info, test_proof,
+        MockMintConnector,
     };
+
+    type TestWalletDatabase =
+        Arc<dyn cdk_common::database::WalletDatabase<cdk_common::database::Error> + Send + Sync>;
+
+    struct CrossMintTransferTestFixture {
+        source_db: TestWalletDatabase,
+        target_db: TestWalletDatabase,
+        source_wallet: Wallet,
+        target_wallet: Wallet,
+        source_connector: Arc<MockMintConnector>,
+        target_connector: Arc<MockMintConnector>,
+        source_url: crate::mint_url::MintUrl,
+    }
+
+    impl CrossMintTransferTestFixture {
+        async fn new(source_unit: CurrencyUnit, target_unit: CurrencyUnit) -> Self {
+            let source_db = create_test_db().await;
+            let target_db = create_test_db().await;
+            let source_connector = Arc::new(MockMintConnector::new());
+            let target_connector = Arc::new(MockMintConnector::new());
+            let source_url = crate::mint_url::MintUrl::from_str("https://source.example.com")
+                .expect("valid source URL");
+            let target_url = crate::mint_url::MintUrl::from_str("https://target.example.com")
+                .expect("valid target URL");
+            let seed = [42; 64];
+
+            let source_wallet = crate::wallet::WalletBuilder::new()
+                .mint_url(source_url.clone())
+                .unit(source_unit)
+                .localstore(source_db.clone())
+                .seed(seed)
+                .shared_client(source_connector.clone())
+                .build()
+                .expect("source wallet");
+            let target_wallet = crate::wallet::WalletBuilder::new()
+                .mint_url(target_url)
+                .unit(target_unit)
+                .localstore(target_db.clone())
+                .seed(seed)
+                .shared_client(target_connector.clone())
+                .build()
+                .expect("target wallet");
+
+            Self {
+                source_db,
+                target_db,
+                source_wallet,
+                target_wallet,
+                source_connector,
+                target_connector,
+                source_url,
+            }
+        }
+
+        async fn set_source_proofs(&self, proofs: &[(Id, u64)]) {
+            let proof_infos = proofs
+                .iter()
+                .map(|(keyset_id, amount)| {
+                    test_proof_info(*keyset_id, *amount, self.source_url.clone(), State::Unspent)
+                })
+                .collect();
+            self.source_db
+                .update_proofs(proof_infos, vec![])
+                .await
+                .expect("store source proofs");
+        }
+
+        fn set_source_keysets(&self, keysets: Vec<KeySet>) {
+            self.source_connector.set_mint_keys_response(Ok(keysets));
+        }
+
+        fn set_source_melt_limits(&self, min_amount: u64, max_amount: u64) {
+            let mut mint_info = test_mint_info();
+            let settings = mint_info
+                .nuts
+                .nut05
+                .methods
+                .iter_mut()
+                .find(|settings| {
+                    settings.method == PaymentMethod::Known(KnownMethod::Bolt11)
+                        && settings.unit == CurrencyUnit::Sat
+                })
+                .expect("test mint info has BOLT11 sat melt settings");
+            settings.min_amount = Some(Amount::from(min_amount));
+            settings.max_amount = Some(Amount::from(max_amount));
+            self.source_connector.set_mint_info_response(Ok(mint_info));
+        }
+
+        fn set_target_mint_limits(&self, min_amount: u64, max_amount: u64) {
+            let mut mint_info = test_mint_info();
+            let settings = mint_info
+                .nuts
+                .nut04
+                .methods
+                .iter_mut()
+                .find(|settings| {
+                    settings.method == PaymentMethod::Known(KnownMethod::Bolt11)
+                        && settings.unit == CurrencyUnit::Sat
+                })
+                .expect("test mint info has BOLT11 sat mint settings");
+            settings.min_amount = Some(Amount::from(min_amount));
+            settings.max_amount = Some(Amount::from(max_amount));
+            self.target_connector.set_mint_info_response(Ok(mint_info));
+        }
+
+        fn queue_quotes(&self, quotes: &[(u64, u64)]) {
+            for (amount, fee_reserve) in quotes {
+                self.target_connector
+                    .push_post_mint_quote_response(Ok(mint_quote_response(Amount::from(*amount))));
+                self.source_connector
+                    .push_post_melt_quote_response(Ok(melt_quote_response(
+                        Amount::from(*amount),
+                        Amount::from(*fee_reserve),
+                    )));
+            }
+        }
+    }
+
+    fn invoice_for_amount(amount: Amount) -> String {
+        let private_key =
+            SecretKey::from_slice(&[42; 32]).expect("valid fixed private key for test invoice");
+        let payment_hash = Sha256Hash::hash(&amount.to_u64().to_be_bytes());
+        let payment_secret = PaymentSecret([21; 32]);
+
+        InvoiceBuilder::new(Currency::Bitcoin)
+            .description("cross-mint transfer test".to_string())
+            .payment_hash(payment_hash)
+            .payment_secret(payment_secret)
+            .amount_milli_satoshis(amount.to_u64() * 1_000)
+            .current_timestamp()
+            .min_final_cltv_expiry_delta(144)
+            .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
+            .expect("test invoice should build")
+            .to_string()
+    }
+
+    fn mint_quote_response(amount: Amount) -> MintQuoteResponse<String> {
+        MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+            quote: format!("mint-quote-{}", amount),
+            request: invoice_for_amount(amount),
+            amount: Some(amount),
+            unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
+            state: QuoteState::Unpaid,
+            expiry: Some(2_000_000_000),
+            pubkey: None,
+        })
+    }
+
+    fn melt_quote_response(amount: Amount, fee_reserve: Amount) -> MeltQuoteCreateResponse<String> {
+        MeltQuoteCreateResponse::Bolt11(MeltQuoteBolt11Response {
+            quote: format!("melt-quote-{}", amount),
+            amount,
+            fee_reserve,
+            state: MeltQuoteState::Unpaid,
+            expiry: 2_000_000_000,
+            payment_preimage: None,
+            change: None,
+            request: None,
+            unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+        })
+    }
+
+    #[tokio::test]
+    async fn cross_mint_transfer_quote_max_converges_with_melt_and_input_fees() {
+        let fixture = CrossMintTransferTestFixture::new(CurrencyUnit::Sat, CurrencyUnit::Sat).await;
+        fixture
+            .set_source_proofs(&[(crate::wallet::test_utils::test_keyset_id(), 1_000)])
+            .await;
+        fixture.queue_quotes(&[(999, 1_200), (499, 9), (990, 9)]);
+
+        let quote = fixture
+            .source_wallet
+            .cross_mint_transfer_quote_max(&fixture.target_wallet)
+            .await
+            .expect("maximum cross-mint transfer quote");
+
+        assert_eq!(quote.mint_quote.amount, Some(Amount::from(990)));
+        assert_eq!(quote.melt_quote.amount, Amount::from(990));
+        assert_eq!(quote.melt_quote.fee_reserve, Amount::from(9));
+        assert_eq!(quote.input_fee, Amount::ONE);
+        assert!(quote.mint_quote.secret_key.is_some());
+
+        let stored_mint_quotes = fixture
+            .target_db
+            .get_mint_quotes()
+            .await
+            .expect("stored target mint quotes");
+        assert_eq!(stored_mint_quotes, vec![quote.mint_quote.clone()]);
+        let stored_melt_quotes = fixture
+            .source_db
+            .get_melt_quotes()
+            .await
+            .expect("stored source melt quotes");
+        assert_eq!(stored_melt_quotes, vec![quote.melt_quote.clone()]);
+
+        let requested_amounts = fixture
+            .target_connector
+            .post_mint_quote_requests()
+            .into_iter()
+            .map(|request| match request {
+                MintQuoteRequest::Bolt11(request) => request.amount,
+                _ => panic!("expected bolt11 mint quote"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            requested_amounts,
+            vec![Amount::from(999), Amount::from(499), Amount::from(990)]
+        );
+        assert_eq!(fixture.source_connector.post_melt_quote_requests().len(), 3);
+
+        let prepared = fixture
+            .source_wallet
+            .prepare_melt_proofs(
+                &quote.melt_quote.id,
+                fixture
+                    .source_wallet
+                    .get_unspent_proofs()
+                    .await
+                    .expect("source proofs"),
+                HashMap::new(),
+            )
+            .await
+            .expect("prepare maximum cross-mint transfer");
+        assert_eq!(prepared.input_fee_without_swap(), Amount::ONE);
+        assert_eq!(prepared.change_amount_without_swap(), Amount::ZERO);
+        prepared
+            .cancel()
+            .await
+            .expect("cancel prepared cross-mint transfer");
+    }
+
+    #[tokio::test]
+    async fn cross_mint_transfer_quote_max_respects_source_melt_maximum() {
+        let fixture = CrossMintTransferTestFixture::new(CurrencyUnit::Sat, CurrencyUnit::Sat).await;
+        fixture.set_source_melt_limits(1, 600);
+        fixture
+            .set_source_proofs(&[(crate::wallet::test_utils::test_keyset_id(), 1_000)])
+            .await;
+        fixture.queue_quotes(&[(600, 5)]);
+
+        let quote = fixture
+            .source_wallet
+            .cross_mint_transfer_quote_max(&fixture.target_wallet)
+            .await
+            .expect("quote capped by source melt maximum");
+
+        assert_eq!(quote.melt_quote.amount, Amount::from(600));
+        assert!(matches!(
+            &fixture.target_connector.post_mint_quote_requests()[..],
+            [MintQuoteRequest::Bolt11(request)] if request.amount == Amount::from(600)
+        ));
+    }
+
+    #[tokio::test]
+    async fn cross_mint_transfer_quote_max_respects_target_mint_maximum() {
+        let fixture = CrossMintTransferTestFixture::new(CurrencyUnit::Sat, CurrencyUnit::Sat).await;
+        fixture.set_target_mint_limits(1, 600);
+        fixture
+            .set_source_proofs(&[(crate::wallet::test_utils::test_keyset_id(), 1_000)])
+            .await;
+        fixture.queue_quotes(&[(600, 5)]);
+
+        let quote = fixture
+            .source_wallet
+            .cross_mint_transfer_quote_max(&fixture.target_wallet)
+            .await
+            .expect("quote capped by target mint maximum");
+
+        assert_eq!(quote.mint_quote.amount, Some(Amount::from(600)));
+        assert!(matches!(
+            &fixture.target_connector.post_mint_quote_requests()[..],
+            [MintQuoteRequest::Bolt11(request)] if request.amount == Amount::from(600)
+        ));
+    }
+
+    #[tokio::test]
+    async fn cross_mint_transfer_quote_max_rejects_balance_below_quote_minimum() {
+        let fixture = CrossMintTransferTestFixture::new(CurrencyUnit::Sat, CurrencyUnit::Sat).await;
+        fixture.set_source_melt_limits(40, 500_000);
+        fixture.set_target_mint_limits(100, 500_000);
+        fixture
+            .set_source_proofs(&[(crate::wallet::test_utils::test_keyset_id(), 90)])
+            .await;
+
+        let error = fixture
+            .source_wallet
+            .cross_mint_transfer_quote_max(&fixture.target_wallet)
+            .await
+            .expect_err("balance below quote minimum should be rejected");
+
+        assert!(matches!(error, Error::InsufficientFunds));
+        assert!(fixture
+            .target_connector
+            .post_mint_quote_requests()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn cross_mint_transfer_quote_max_does_not_persist_failed_search_probes() {
+        let fixture = CrossMintTransferTestFixture::new(CurrencyUnit::Sat, CurrencyUnit::Sat).await;
+        fixture
+            .set_source_proofs(&[(crate::wallet::test_utils::test_keyset_id(), 1_000)])
+            .await;
+        fixture
+            .target_connector
+            .push_post_mint_quote_response(Ok(mint_quote_response(Amount::from(999))));
+        fixture
+            .source_connector
+            .push_post_melt_quote_response(Ok(melt_quote_response(
+                Amount::from(999),
+                Amount::from(1_200),
+            )));
+        fixture
+            .target_connector
+            .push_post_mint_quote_response(Ok(mint_quote_response(Amount::from(499))));
+        fixture
+            .source_connector
+            .push_post_melt_quote_response(Err(Error::Custom("test quote failure".to_string())));
+
+        let error = fixture
+            .source_wallet
+            .cross_mint_transfer_quote_max(&fixture.target_wallet)
+            .await
+            .expect_err("quote search should fail");
+
+        assert!(matches!(error, Error::Custom(message) if message == "test quote failure"));
+        assert!(fixture
+            .target_db
+            .get_mint_quotes()
+            .await
+            .expect("stored target mint quotes")
+            .is_empty());
+        assert!(fixture
+            .source_db
+            .get_melt_quotes()
+            .await
+            .expect("stored source melt quotes")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn cross_mint_transfer_quote_max_rolls_back_partial_persistence() {
+        let fixture = CrossMintTransferTestFixture::new(CurrencyUnit::Sat, CurrencyUnit::Sat).await;
+        fixture
+            .set_source_proofs(&[(crate::wallet::test_utils::test_keyset_id(), 100)])
+            .await;
+        fixture.queue_quotes(&[(99, 0)]);
+
+        let mut conflicting_quote = test_melt_quote();
+        conflicting_quote.id = "melt-quote-99".to_string();
+        conflicting_quote.mint_url = Some(fixture.source_url.clone());
+        fixture
+            .source_db
+            .add_melt_quote(conflicting_quote.clone())
+            .await
+            .expect("store conflicting melt quote");
+        fixture
+            .source_db
+            .add_melt_quote(conflicting_quote)
+            .await
+            .expect("advance conflicting melt quote version");
+
+        let error = fixture
+            .source_wallet
+            .cross_mint_transfer_quote_max(&fixture.target_wallet)
+            .await
+            .expect_err("selected melt quote persistence should conflict");
+
+        assert!(matches!(
+            error,
+            Error::Database(cdk_common::database::Error::ConcurrentUpdate)
+        ));
+        assert!(fixture
+            .target_db
+            .get_mint_quotes()
+            .await
+            .expect("stored target mint quotes")
+            .is_empty());
+        assert_eq!(
+            fixture
+                .source_db
+                .get_melt_quotes()
+                .await
+                .expect("stored source melt quotes")
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_mint_transfer_quote_max_returns_best_feasible_amount() {
+        let fixture = CrossMintTransferTestFixture::new(CurrencyUnit::Sat, CurrencyUnit::Sat).await;
+        fixture
+            .set_source_proofs(&[(crate::wallet::test_utils::test_keyset_id(), 100)])
+            .await;
+        fixture.queue_quotes(&[(99, 2), (97, 1), (98, 2)]);
+
+        let quote = fixture
+            .source_wallet
+            .cross_mint_transfer_quote_max(&fixture.target_wallet)
+            .await
+            .expect("best feasible cross-mint transfer quote");
+
+        assert_eq!(quote.melt_quote.amount, Amount::from(97));
+        assert_eq!(quote.melt_quote.fee_reserve, Amount::ONE);
+        assert_eq!(quote.input_fee, Amount::ONE);
+
+        let prepared = fixture
+            .source_wallet
+            .prepare_melt_proofs(
+                &quote.melt_quote.id,
+                fixture
+                    .source_wallet
+                    .get_unspent_proofs()
+                    .await
+                    .expect("source proofs"),
+                HashMap::new(),
+            )
+            .await
+            .expect("prepare best feasible cross-mint transfer");
+        assert_eq!(prepared.change_amount_without_swap(), Amount::ONE);
+        prepared
+            .cancel()
+            .await
+            .expect("cancel best feasible cross-mint transfer");
+    }
+
+    #[tokio::test]
+    async fn cross_mint_transfer_quote_max_rejects_empty_balance() {
+        let fixture = CrossMintTransferTestFixture::new(CurrencyUnit::Sat, CurrencyUnit::Sat).await;
+
+        let error = fixture
+            .source_wallet
+            .cross_mint_transfer_quote_max(&fixture.target_wallet)
+            .await
+            .expect_err("empty balance should be rejected");
+
+        assert!(matches!(error, Error::InsufficientFunds));
+        assert!(fixture
+            .target_connector
+            .post_mint_quote_requests()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn cross_mint_transfer_quote_max_rejects_currency_unit_mismatch() {
+        let fixture =
+            CrossMintTransferTestFixture::new(CurrencyUnit::Sat, CurrencyUnit::Msat).await;
+
+        let error = fixture
+            .source_wallet
+            .cross_mint_transfer_quote_max(&fixture.target_wallet)
+            .await
+            .expect_err("currency unit mismatch should be rejected");
+
+        assert!(matches!(error, Error::UnsupportedUnit));
+        assert!(fixture
+            .target_connector
+            .post_mint_quote_requests()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn cross_mint_transfer_quote_max_accounts_for_fees_across_keysets() {
+        let fixture = CrossMintTransferTestFixture::new(CurrencyUnit::Sat, CurrencyUnit::Sat).await;
+        let default_keyset = test_keyset();
+        let mut expensive_keyset = make_inactive_keyset();
+        expensive_keyset.input_fee_ppk = 900;
+        expensive_keyset.id = Id::v2_from_data(
+            &expensive_keyset.keys,
+            &expensive_keyset.unit,
+            expensive_keyset.input_fee_ppk,
+            expensive_keyset.final_expiry,
+        );
+        fixture.set_source_keysets(vec![default_keyset.clone(), expensive_keyset.clone()]);
+        fixture
+            .set_source_proofs(&[(default_keyset.id, 600), (expensive_keyset.id, 400)])
+            .await;
+        fixture.queue_quotes(&[(998, 8), (990, 8)]);
+
+        let quote = fixture
+            .source_wallet
+            .cross_mint_transfer_quote_max(&fixture.target_wallet)
+            .await
+            .expect("maximum cross-mint transfer quote across keysets");
+
+        assert_eq!(quote.melt_quote.amount, Amount::from(990));
+        assert_eq!(quote.melt_quote.fee_reserve, Amount::from(8));
+        assert_eq!(quote.input_fee, Amount::from(2));
+
+        let prepared = fixture
+            .source_wallet
+            .prepare_melt_proofs(
+                &quote.melt_quote.id,
+                fixture
+                    .source_wallet
+                    .get_unspent_proofs()
+                    .await
+                    .expect("source proofs"),
+                HashMap::new(),
+            )
+            .await
+            .expect("prepare maximum cross-mint transfer across keysets");
+        assert_eq!(prepared.input_fee_without_swap(), Amount::from(2));
+        assert_eq!(prepared.change_amount_without_swap(), Amount::ZERO);
+        prepared
+            .cancel()
+            .await
+            .expect("cancel maximum cross-mint transfer across keysets");
+    }
 
     #[tokio::test]
     async fn test_cancel_prepared_melt_reverts_reserved_proofs() {
@@ -2677,6 +3432,61 @@ mod tests {
         let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
         assert_eq!(stored[0].state, State::Unspent);
         assert!(db.get_saga(&operation_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_stale_failure_preserves_spent_proof() {
+        let (db, proof_y, operation_id, mock_client, pending) = pending_bolt11_melt(false).await;
+        let quote_id = pending.saga.quote().id.clone();
+
+        db.update_proofs_state(vec![proof_y], State::Spent)
+            .await
+            .unwrap();
+        mock_client.set_melt_quote_status_response(Ok(bolt11_status(
+            &quote_id,
+            MeltQuoteState::Failed,
+            None,
+        )));
+
+        assert!(matches!(
+            pending
+                .reconcile_non_paid_status(MeltQuoteState::Failed)
+                .await,
+            WaitStep::Terminal(Err(Error::PaymentFailed))
+        ));
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored[0].state, State::Spent);
+        assert_eq!(stored[0].used_by_operation, Some(operation_id));
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_stale_failure_preserves_newer_proof_owner() {
+        let (db, proof_y, _operation_id, mock_client, pending) = pending_bolt11_melt(false).await;
+        let quote_id = pending.saga.quote().id.clone();
+        let newer_operation_id = uuid::Uuid::new_v4();
+
+        let mut stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        stored[0].state = State::Reserved;
+        stored[0].used_by_operation = Some(newer_operation_id);
+        db.update_proofs(stored, vec![]).await.unwrap();
+
+        mock_client.set_melt_quote_status_response(Ok(bolt11_status(
+            &quote_id,
+            MeltQuoteState::Failed,
+            None,
+        )));
+
+        assert!(matches!(
+            pending
+                .reconcile_non_paid_status(MeltQuoteState::Failed)
+                .await,
+            WaitStep::Terminal(Err(Error::PaymentFailed))
+        ));
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored[0].state, State::Reserved);
+        assert_eq!(stored[0].used_by_operation, Some(newer_operation_id));
     }
 
     #[tokio::test]

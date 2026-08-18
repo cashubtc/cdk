@@ -20,7 +20,7 @@ mod backend;
 mod config;
 
 pub use self::backend::*;
-pub use self::config::Config;
+pub use self::config::{Backend, Config};
 
 #[async_trait::async_trait]
 /// Cache storage for the HTTP cache.

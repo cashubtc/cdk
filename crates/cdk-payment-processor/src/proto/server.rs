@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use cdk_common::grpc::create_version_check_interceptor;
 use cdk_common::payment::{IncomingPaymentOptions, MintPayment};
-use cdk_common::{CurrencyUnit, QuoteId};
+use cdk_common::{CurrencyUnit, PublicKey, QuoteId};
 use futures::{Stream, StreamExt};
 use lightning::offers::offer::Offer;
 use tokio::sync::{mpsc, Notify};
@@ -231,6 +231,18 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                     ),
                     None => None,
                 };
+                if opts.quote_id.is_empty() {
+                    return Err(Status::invalid_argument(
+                        "Missing quote_id in Custom options",
+                    ));
+                }
+                let quote_id = parse_quote_id(&opts.quote_id)?;
+                let pubkey = opts
+                    .pubkey
+                    .as_deref()
+                    .map(PublicKey::from_str)
+                    .transpose()
+                    .map_err(|_| Status::invalid_argument("Invalid pubkey in Custom options"))?;
                 IncomingPaymentOptions::Custom(Box::new(
                     cdk_common::payment::CustomIncomingPaymentOptions {
                         method: "".to_string(),
@@ -238,6 +250,8 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         amount,
                         unix_expiry: opts.unix_expiry,
                         extra_json: opts.extra_json,
+                        quote_id,
+                        pubkey,
                     },
                 ))
             }

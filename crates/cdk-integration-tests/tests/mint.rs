@@ -462,12 +462,15 @@ async fn test_builder_does_not_replace_all_expired_keysets() {
     // Mutate final_expiry to be in the past via localstore upsert.
     drop(mint);
     {
-        let mut info = KeysDatabase::get_keyset_info(&*localstore, &new_keyset.id)
+        let mut tx = KeysDatabase::begin_transaction(&*localstore).await.unwrap();
+        let mut info = tx
+            .get_keyset_infos()
             .await
             .unwrap()
+            .into_iter()
+            .find(|k| k.id == new_keyset.id)
             .expect("rotated keyset should be present in localstore");
         info.final_expiry = Some(unix_time().saturating_sub(1));
-        let mut tx = KeysDatabase::begin_transaction(&*localstore).await.unwrap();
         tx.add_keyset_info(info).await.unwrap();
         tx.commit().await.unwrap();
     }

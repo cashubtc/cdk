@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use tokio::time::timeout;
 
+use crate::terminal::escape_control;
 use crate::utils::get_or_create_wallet;
 
 #[derive(Args, Serialize, Deserialize)]
@@ -74,13 +75,13 @@ pub async fn mint(
 
                 println!(
                     "Quote: id={}, state={}, amount={}, expiry={}",
-                    quote.id,
+                    escape_control(&quote.id),
                     quote.state,
                     quote.amount.map_or("none".to_string(), |a| a.to_string()),
                     quote.expiry
                 );
 
-                println!("Please pay: {}", quote.request);
+                println!("Please pay: {}", escape_control(&quote.request));
 
                 quote
             }
@@ -103,12 +104,12 @@ pub async fn mint(
 
                 println!(
                     "Quote: id={}, amount={}, expiry={}",
-                    quote.id,
+                    escape_control(&quote.id),
                     quote.amount.map_or("none".to_string(), |a| a.to_string()),
                     quote.expiry
                 );
 
-                println!("Please pay: {}", quote.request);
+                println!("Please pay: {}", escape_control(&quote.request));
 
                 quote
             }
@@ -118,8 +119,12 @@ pub async fn mint(
                     .mint_quote(payment_method.clone(), amount.map(|a| a.into()), None, None)
                     .await?;
 
-                println!("Quote: id={}, expiry={}", quote.id, quote.expiry);
-                println!("Send sats to: {}", quote.request);
+                println!(
+                    "Quote: id={}, expiry={}",
+                    escape_control(&quote.id),
+                    quote.expiry
+                );
+                println!("Send sats to: {}", escape_control(&quote.request));
 
                 quote
             }
@@ -137,12 +142,12 @@ pub async fn mint(
 
                 println!(
                     "Quote: id={}, amount={}, expiry={}",
-                    quote.id,
+                    escape_control(&quote.id),
                     quote.amount.map_or("none".to_string(), |a| a.to_string()),
                     quote.expiry
                 );
 
-                println!("Please pay: {}", quote.request);
+                println!("Please pay: {}", escape_control(&quote.request));
 
                 quote
             }

@@ -6,7 +6,7 @@
 
 use cdk_common::wallet::{
     MeltOperationData, MeltSagaState, OperationData, Transaction, TransactionDirection,
-    TransactionId, WalletSaga,
+    TransactionId, TransactionStatus, WalletSaga, WalletSagaState,
 };
 use cdk_common::{Amount, MeltQuoteState};
 use tracing::instrument;
@@ -36,6 +36,14 @@ impl Wallet {
         &self,
         saga: &WalletSaga,
     ) -> Result<Option<FinalizedMelt>, Error> {
+        // Callers enumerate sagas and then await while processing them. Always
+        // reload this operation so a stale snapshot cannot compensate a saga
+        // that another task has advanced or completed.
+        let saga = match self.localstore.get_saga(&saga.id).await? {
+            Some(saga) => saga,
+            None => return Ok(None),
+        };
+
         let state = match &saga.state {
             cdk_common::wallet::WalletSagaState::Melt(s) => s,
             _ => {
@@ -64,7 +72,12 @@ impl Wallet {
                     "Melt saga {} in ProofsReserved state - compensating",
                     saga.id
                 );
-                self.compensate_melt(&saga.id).await?;
+                if !self
+                    .claim_and_compensate_melt(&saga.id, &[MeltSagaState::ProofsReserved])
+                    .await?
+                {
+                    return Ok(None);
+                }
                 Ok(Some(FinalizedMelt::new(
                     data.quote_id.clone(),
                     MeltQuoteState::Unpaid,
@@ -95,6 +108,40 @@ impl Wallet {
         saga_id: &uuid::Uuid,
         data: &MeltOperationData,
     ) -> Result<Option<FinalizedMelt>, Error> {
+        if let Some(final_proof_ys) = data
+            .final_proof_ys
+            .as_ref()
+            .filter(|proof_ys| !proof_ys.is_empty())
+        {
+            let transaction_id = TransactionId::from_saga_id(*saga_id);
+            if self
+                .localstore
+                .get_transaction(transaction_id)
+                .await?
+                .is_none()
+            {
+                let quote = self.localstore.get_melt_quote(&data.quote_id).await?;
+                self.upsert_transaction(Transaction {
+                    mint_url: self.mint_url.clone(),
+                    direction: TransactionDirection::Outgoing,
+                    amount: data.amount,
+                    fee: data.fee_reserve,
+                    unit: self.unit.clone(),
+                    ys: final_proof_ys.clone(),
+                    timestamp: unix_time(),
+                    memo: None,
+                    metadata: data.metadata.clone(),
+                    quote_id: Some(data.quote_id.clone()),
+                    payment_request: quote.as_ref().map(|quote| quote.request.clone()),
+                    payment_proof: None,
+                    payment_method: quote.map(|quote| quote.payment_method),
+                    saga_id: Some(*saga_id),
+                    status: TransactionStatus::Pending,
+                })
+                .await?;
+            }
+        }
+
         // Check quote state with the mint
         match self.internal_check_melt_status(&data.quote_id).await {
             Ok(quote_status) => match quote_status.state() {
@@ -121,7 +168,15 @@ impl Wallet {
                     }
                     // Payment failed - compensate and return FinalizedMelt with failed state
                     tracing::info!("Melt saga {} - payment failed, compensating", saga_id);
-                    self.compensate_melt(saga_id).await?;
+                    if !self
+                        .claim_and_compensate_melt(
+                            saga_id,
+                            &[MeltSagaState::MeltRequested, MeltSagaState::PaymentPending],
+                        )
+                        .await?
+                    {
+                        return Ok(None);
+                    }
                     Ok(Some(FinalizedMelt::new(
                         data.quote_id.clone(),
                         quote_status.state(),
@@ -190,14 +245,14 @@ impl Wallet {
         }
 
         let proof_ys: Vec<_> = melt_input_proofs.iter().map(|p| p.y).collect();
-        let transaction_id = TransactionId::new(proof_ys.clone());
+        let transaction_id = TransactionId::from_saga_id(*saga_id);
         let status_payment_proof = quote_status.payment_proof();
         if let Some(existing_transaction) = self.localstore.get_transaction(transaction_id).await? {
             let is_recovered_melt = existing_transaction.direction
                 == TransactionDirection::Outgoing
                 && existing_transaction.quote_id.as_deref() == Some(data.quote_id.as_str());
 
-            if is_recovered_melt {
+            if is_recovered_melt && existing_transaction.status == TransactionStatus::Completed {
                 self.localstore
                     .update_proofs_state(proof_ys, State::Spent)
                     .await?;
@@ -346,24 +401,24 @@ impl Wallet {
             self.localstore.add_melt_quote(quote).await?;
         }
 
-        self.localstore
-            .add_transaction(Transaction {
-                mint_url: self.mint_url.clone(),
-                direction: TransactionDirection::Outgoing,
-                amount: data.amount,
-                fee: fee_paid,
-                unit: self.unit.clone(),
-                ys: proof_ys,
-                timestamp: unix_time(),
-                memo: None,
-                metadata: data.metadata.clone(),
-                quote_id: Some(data.quote_id.clone()),
-                payment_request,
-                payment_proof: payment_proof.clone(),
-                payment_method,
-                saga_id: Some(*saga_id),
-            })
-            .await?;
+        self.upsert_transaction(Transaction {
+            mint_url: self.mint_url.clone(),
+            direction: TransactionDirection::Outgoing,
+            amount: data.amount,
+            fee: fee_paid,
+            unit: self.unit.clone(),
+            ys: proof_ys,
+            timestamp: unix_time(),
+            memo: None,
+            metadata: data.metadata.clone(),
+            quote_id: Some(data.quote_id.clone()),
+            payment_request,
+            payment_proof: payment_proof.clone(),
+            payment_method,
+            saga_id: Some(*saga_id),
+            status: TransactionStatus::Completed,
+        })
+        .await?;
 
         if let Err(e) = self.localstore.release_melt_quote(saga_id).await {
             tracing::warn!(
@@ -387,6 +442,8 @@ impl Wallet {
 
     /// Compensate a melt saga by releasing proofs and the melt quote.
     async fn compensate_melt(&self, saga_id: &uuid::Uuid) -> Result<(), Error> {
+        self.mark_transaction_failed(*saga_id).await?;
+
         // Release melt quote (best-effort, continue on error)
         if let Err(e) = (ReleaseMeltQuote {
             localstore: self.localstore.clone(),
@@ -416,6 +473,40 @@ impl Wallet {
 
         Ok(())
     }
+
+    /// Claim a persisted melt saga before compensating it.
+    ///
+    /// The no-op state update is an optimistic-locking claim. A stale caller
+    /// loses the claim if another task advanced the saga after it was read.
+    pub(super) async fn claim_and_compensate_melt(
+        &self,
+        saga_id: &uuid::Uuid,
+        expected_states: &[MeltSagaState],
+    ) -> Result<bool, Error> {
+        let mut saga = match self.localstore.get_saga(saga_id).await? {
+            Some(saga) => saga,
+            None => return Ok(false),
+        };
+
+        if saga.mint_url != self.mint_url || saga.unit != self.unit {
+            return Ok(false);
+        }
+
+        let WalletSagaState::Melt(current_state) = saga.state else {
+            return Ok(false);
+        };
+        if !expected_states.contains(&current_state) {
+            return Ok(false);
+        }
+
+        saga.update_state(WalletSagaState::Melt(current_state));
+        if !self.localstore.update_saga(saga).await? {
+            return Ok(false);
+        }
+
+        self.compensate_melt(saga_id).await?;
+        Ok(true)
+    }
 }
 
 #[cfg(test)]
@@ -427,7 +518,7 @@ mod tests {
     use cdk_common::nuts::{CurrencyUnit, PaymentMethod, State};
     use cdk_common::wallet::{
         MeltOperationData, MeltSagaState, OperationData, Transaction, TransactionDirection,
-        WalletSaga, WalletSagaState,
+        TransactionStatus, WalletSaga, WalletSagaState,
     };
     use cdk_common::{Amount, MeltQuoteBolt11Response, MeltQuoteState, RestoreResponse};
 
@@ -529,6 +620,70 @@ mod tests {
 
         // Saga should be deleted
         assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_recover_melt_reloads_stale_proofs_reserved_snapshot() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+        let quote_id = format!("test_melt_quote_{}", uuid::Uuid::new_v4());
+
+        let mut proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Pending);
+        proof_info.used_by_operation = Some(saga_id);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let stale_saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Melt(MeltSagaState::ProofsReserved),
+            Amount::from(100),
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::Melt(MeltOperationData {
+                quote_id: quote_id.clone(),
+                amount: Amount::from(100),
+                fee_reserve: Amount::from(10),
+                counter_start: None,
+                counter_end: None,
+                change_amount: None,
+                metadata: HashMap::new(),
+                final_proof_ys: Some(vec![proof_y]),
+                change_blinded_messages: None,
+            }),
+        );
+        db.add_saga(stale_saga.clone()).await.unwrap();
+
+        let mut advanced_saga = stale_saga.clone();
+        advanced_saga.update_state(WalletSagaState::Melt(MeltSagaState::MeltRequested));
+        assert!(db.update_saga(advanced_saga).await.unwrap());
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+            quote: quote_id,
+            state: MeltQuoteState::Pending,
+            expiry: 9999999999,
+            fee_reserve: Amount::from(10),
+            amount: Amount::from(100),
+            request: Some("lnbc100...".to_string()),
+            payment_preimage: None,
+            change: None,
+            unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
+        }));
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let result = wallet.resume_melt_saga(&stale_saga).await.unwrap();
+        assert!(result.is_none());
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored[0].state, State::Pending);
+        assert_eq!(stored[0].used_by_operation, Some(saga_id));
+        assert!(matches!(
+            db.get_saga(&saga_id).await.unwrap().map(|saga| saga.state),
+            Some(WalletSagaState::Melt(MeltSagaState::MeltRequested))
+        ));
     }
 
     #[tokio::test]
@@ -882,6 +1037,7 @@ mod tests {
             payment_proof: Some("original proof".to_string()),
             payment_method: Some(payment_method),
             saga_id: Some(saga_id),
+            status: TransactionStatus::Completed,
         })
         .await
         .unwrap();
@@ -915,6 +1071,7 @@ mod tests {
         assert_eq!(transactions.len(), 1);
         assert_eq!(transactions[0].timestamp, 42);
         assert_eq!(transactions[0].fee, Amount::from(50));
+        assert_eq!(transactions[0].status, TransactionStatus::Completed);
         assert_eq!(transactions[0].memo.as_deref(), Some("original memo"));
         assert_eq!(transactions[0].metadata, existing_metadata);
         assert_eq!(
@@ -991,6 +1148,7 @@ mod tests {
             payment_proof: Some("transaction proof".to_string()),
             payment_method: Some(payment_method),
             saga_id: Some(saga_id),
+            status: TransactionStatus::Completed,
         })
         .await
         .unwrap();
@@ -1035,7 +1193,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recover_melt_paid_ignores_existing_incoming_transaction() {
+    async fn test_recover_melt_paid_preserves_existing_incoming_transaction() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
@@ -1088,6 +1246,7 @@ mod tests {
             payment_proof: None,
             payment_method: None,
             saga_id: Some(uuid::Uuid::new_v4()),
+            status: TransactionStatus::Completed,
         })
         .await
         .unwrap();
@@ -1120,7 +1279,11 @@ mod tests {
             .list_transactions(Some(TransactionDirection::Incoming))
             .await
             .unwrap();
-        assert!(incoming_transactions.is_empty());
+        assert_eq!(incoming_transactions.len(), 1);
+        assert_eq!(
+            incoming_transactions[0].memo.as_deref(),
+            Some("original incoming")
+        );
 
         let outgoing_transactions = wallet
             .list_transactions(Some(TransactionDirection::Outgoing))
@@ -1855,7 +2018,7 @@ mod tests {
                 counter_end: None,
                 change_amount: None,
                 metadata: HashMap::new(),
-                final_proof_ys: None,
+                final_proof_ys: Some(vec![proof_y]),
                 change_blinded_messages: None,
             }),
         );
@@ -1904,6 +2067,9 @@ mod tests {
 
         // Saga should be deleted
         assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].status, TransactionStatus::Failed);
     }
 
     #[tokio::test]
@@ -1936,7 +2102,7 @@ mod tests {
                 counter_end: None,
                 change_amount: None,
                 metadata: HashMap::new(),
-                final_proof_ys: None,
+                final_proof_ys: Some(vec![proof_y]),
                 change_blinded_messages: None,
             }),
         );
@@ -1977,5 +2143,8 @@ mod tests {
 
         // Saga should still exist
         assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].status, TransactionStatus::Pending);
     }
 }

@@ -5,53 +5,48 @@ Kotlin/JVM and Android bindings for the [Cashu Development Kit](https://github.c
 ## Module Architecture
 
 ```
-cdk-jvm              Core Kotlin bindings + JNA native loading
-cdk-jvm-natives      Combined desktop native library JAR
-cdk-android          Android wrapper with 64-bit jniLibs
+cdk-jvm       Generated Kotlin bindings + JNA native loading (not published)
+cdk-android   Self-contained Android library (published to Maven Central)
 ```
 
-**Dependency graph:**
+Both modules use [JNA](https://github.com/java-native-access/jna) to load the
+native Rust library. `cdk-jvm` holds the generated Kotlin sources and is used
+for desktop development and tests; it is **not** published. `cdk-android`
+compiles those same sources directly into its AAR and bundles pre-built `.so`
+files for the `arm64-v8a` and `x86_64` Android ABIs, so the published artifact
+is self-contained.
 
-```
-cdk-android ──api──> cdk-jvm
-cdk-jvm-natives      (standalone — native binaries only)
-```
-
-`cdk-jvm` contains the generated Kotlin sources and uses [JNA](https://github.com/java-native-access/jna) to load the native Rust library at runtime. `cdk-jvm-natives` provides Linux x86-64, Linux ARM64, and macOS Apple Silicon libraries in one JAR; JNA selects the matching directory at runtime. `cdk-android` depends on `cdk-jvm` and bundles pre-built `.so` files for the `arm64-v8a` and `x86_64` Android ABIs.
+Only Android is published to Maven Central. Desktop JVM users build from source
+(see [Building from Source](#building-from-source)). This keeps the published
+footprint within Maven Central's per-organization publishing limits.
 
 ## Maven Artifacts
 
-All artifacts are published under `org.cashudevkit`:
+Published under `org.cashudevkit`:
 
 | Artifact | Description |
 |---|---|
-| `cdk-jvm` | Kotlin bindings (required) |
-| `cdk-jvm-natives` | Desktop native libs for Linux x86-64/ARM64 and macOS Apple Silicon |
-| `cdk-android` | Android library (includes 64-bit device and emulator ABIs) |
+| `cdk-android` | Self-contained Android library (bindings + `arm64-v8a`/`x86_64` jniLibs) |
 
-Older releases used one `cdk-jvm-<platform>` coordinate per desktop target.
-Starting with the first release containing this change, use `cdk-jvm-natives`
-instead. The historical coordinates remain available for their existing versions.
+Releases up to and including 0.17.x also published `cdk-jvm` and
+`cdk-jvm-natives` for desktop JVM use. Those coordinates remain available for
+their existing versions but are no longer published for new releases.
 
 ## Installation
-
-### JVM
-
-```kotlin
-dependencies {
-    implementation("org.cashudevkit:cdk-jvm:VERSION")
-    runtimeOnly("org.cashudevkit:cdk-jvm-natives:VERSION")
-}
-```
 
 ### Android
 
 ```kotlin
 dependencies {
     implementation("org.cashudevkit:cdk-android:VERSION")
-    // cdk-jvm is included transitively
 }
 ```
+
+### Desktop JVM
+
+Not published to Maven Central. Build the bindings and native library from
+source (see [Building from Source](#building-from-source)) and depend on the
+local `cdk-jvm` module.
 
 ## Quick Start
 
@@ -108,11 +103,10 @@ just test-kotlin
 
 ## CI/CD — Publishing Workflow
 
-The `kotlin-publish.yml` workflow (in the CDK monorepo) builds native binaries
-for the supported JVM and Android platforms, syncs sources to `cdk-kotlin`,
-publishes to Maven Central, and creates a tagged GitHub release. The three Maven
-artifacts are uploaded in one direct Central Portal deployment with redundant
-checksum files removed. The following secrets and variables must be configured
+The `kotlin-publish.yml` workflow (in the CDK monorepo) builds the Android
+native binaries, syncs sources to `cdk-kotlin`, publishes to Maven Central, and
+creates a tagged GitHub release. The `cdk-android` artifact is uploaded in one
+direct Central Portal deployment with redundant checksum files removed. The following secrets and variables must be configured
 in the **CDK monorepo** repository settings (Settings → Secrets and variables →
 Actions).
 

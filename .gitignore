@@ -37,8 +37,7 @@ fuzz/corpus/
 # Swift SPM (generated for local testing)
 Package.swift
 Package.resolved
-Sources/Cdk/
-Sources/cdk_ffiFFI/
+/Sources/
 
 # Python ffi
 __pycache__
@@ -53,7 +52,9 @@ local.properties
 *.iml
 *.ipr
 *.iws
-bin/
+# Generated tool output dirs (do not ignore Rust package sources under src/bin/)
+/bin/
+**/build/bin/
 gen/
 out/
 bindings/kotlin/cdk-jvm/src/main/kotlin/uniffi/

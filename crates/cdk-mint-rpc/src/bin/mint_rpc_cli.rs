@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Result};
 use cdk_common::grpc::{VersionInterceptor, VERSION_HEADER};
 use cdk_mint_rpc::cdk_mint_client::CdkMintClient;
+use cdk_mint_rpc::keyset::keyset_service_client::KeysetServiceClient;
 use cdk_mint_rpc::mint_rpc_cli::subcommands;
+use cdk_mint_rpc::quote::quote_service_client::QuoteServiceClient;
+use cdk_mint_rpc::wallet::wallet_service_client::WalletServiceClient;
 use cdk_mint_rpc::GetInfoRequest;
 use clap::{Parser, Subcommand};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
@@ -100,10 +103,17 @@ enum Commands {
     UpdateQuoteTtl(subcommands::UpdateQuoteTtlCommand),
     /// Get quote ttl
     GetQuoteTtl,
-    /// Update Nut04 quote
-    UpdateNut04QuoteState(subcommands::UpdateNut04QuoteCommand),
+    /// Update mint quote state
+    #[command(alias = "update-nut04-quote-state")]
+    UpdateMintQuoteState(subcommands::UpdateMintQuoteStateCommand),
     /// Rotate next keyset
     RotateNextKeyset(subcommands::RotateNextKeysetCommand),
+    /// Get the BDK on-chain wallet balance
+    GetWalletBalance,
+    /// List BDK on-chain wallet transactions
+    ListWalletTransactions(subcommands::WalletPaginationCommand),
+    /// List addresses revealed by the BDK on-chain wallet
+    ListWalletAddresses(subcommands::WalletPaginationCommand),
 }
 
 #[tokio::main]
@@ -153,10 +163,12 @@ async fn main() -> Result<()> {
             .await?
     };
 
-    // Create client with version header interceptor
+    // Shared version header interceptor
     let interceptor =
         VersionInterceptor::new(VERSION_HEADER, cdk_common::MINT_RPC_PROTOCOL_VERSION);
-    let mut client = CdkMintClient::with_interceptor(channel, interceptor);
+    let mut client = CdkMintClient::with_interceptor(channel.clone(), interceptor.clone());
+    let mut wallet_client =
+        WalletServiceClient::with_interceptor(channel.clone(), interceptor.clone());
 
     match cli.command {
         Commands::GetInfo => {
@@ -229,16 +241,29 @@ async fn main() -> Result<()> {
             subcommands::update_nut05(&mut client, &sub_command_args).await?;
         }
         Commands::GetQuoteTtl => {
-            subcommands::get_quote_ttl(&mut client).await?;
+            let mut quote_client = QuoteServiceClient::with_interceptor(channel, interceptor);
+            subcommands::get_quote_ttl(&mut quote_client).await?;
         }
         Commands::UpdateQuoteTtl(sub_command_args) => {
-            subcommands::update_quote_ttl(&mut client, &sub_command_args).await?;
+            let mut quote_client = QuoteServiceClient::with_interceptor(channel, interceptor);
+            subcommands::update_quote_ttl(&mut quote_client, &sub_command_args).await?;
         }
-        Commands::UpdateNut04QuoteState(sub_command_args) => {
-            subcommands::update_nut04_quote_state(&mut client, &sub_command_args).await?;
+        Commands::UpdateMintQuoteState(sub_command_args) => {
+            let mut quote_client = QuoteServiceClient::with_interceptor(channel, interceptor);
+            subcommands::update_mint_quote_state(&mut quote_client, &sub_command_args).await?;
         }
         Commands::RotateNextKeyset(sub_command_args) => {
-            subcommands::rotate_next_keyset(&mut client, &sub_command_args).await?;
+            let mut keyset_client = KeysetServiceClient::with_interceptor(channel, interceptor);
+            subcommands::rotate_next_keyset(&mut keyset_client, &sub_command_args).await?;
+        }
+        Commands::GetWalletBalance => {
+            subcommands::get_wallet_balance(&mut wallet_client).await?;
+        }
+        Commands::ListWalletTransactions(args) => {
+            subcommands::list_wallet_transactions(&mut wallet_client, &args).await?;
+        }
+        Commands::ListWalletAddresses(args) => {
+            subcommands::list_wallet_addresses(&mut wallet_client, &args).await?;
         }
     }
 

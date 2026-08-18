@@ -7,6 +7,168 @@
 
 ## [Unreleased]
 
+## [0.18.0-rc.0](https://github.com/cashubtc/cdk/releases/tag/v0.18.0-rc.0)
+
+### Summary
+
+Version 0.18.0-rc.0 moves `cdk-mintd` to a database-authoritative configuration model and adds an explicit configuration lifecycle for validating, importing, applying, exporting, and rolling back mint settings. Mint operators **must migrate and initialize their v0.17 configuration before starting v0.18**.
+
+This release also adds NUT-16 animated QR tokens, deterministic NUT-12 DLEQ nonces and NUT-20 quote keys, maximum-balance cross-mint transfers, persistent per-mint wallet request pacing, Electrum support for the BDK and LDK backends, active/active signatory keyset sharing, wallet transaction lifecycle states, and focused keyset and quote management RPC services.
+
+Key highlights include:
+- **Required Mint Configuration Migration**: Existing operators must import their effective v0.17 TOML and environment configuration into the mint database before startup.
+- **Database Migrations**: Mint and wallet databases gain quote timestamps, keyset epochs, transaction states, canonical saga transaction IDs, and deterministic derivation counters.
+- **Wallet Reliability**: Request pacing, atomic proof reservations and wallet creation, transaction lifecycle tracking, and stronger saga recovery reduce ambiguous or partially persisted state.
+- **Protocol and Interoperability**: NUT-12 deterministic nonces, NUT-16 animated QR tokens, richer NUT-18 payment constraints, and payment-method-aware quote responses improve interoperability.
+- **Mint Operations**: Signatories can share keysets across instances, management RPCs are split into focused services, and BDK/LDK backends support Electrum.
+
+### Breaking Changes and Migrations
+
+- cdk-mintd: **BREAKING — REQUIRED MINT OPERATOR ACTION** - Configuration is now stored authoritatively in the primary mint database. Normal startup no longer reads `config.toml` or applies operational `CDK_MINTD_*` overrides. Before the first v0.18 start, stop the mint, back up its database and working directory, then run `cdk-mintd config migrate`, `config validate`, and `config init` as documented in the [v0.18 migration guide](docs/migrations/v0.18.md). Downgrading after v0.18 touches the database may require restoring that backup (#2242) ([asmo]).
+
+    ```bash
+    cdk-mintd config migrate --file /path/to/legacy-config.toml --output /path/to/migrated-config.toml
+    cdk-mintd config validate --file /path/to/migrated-config.toml
+    cdk-mintd config init --file /path/to/migrated-config.toml
+    cdk-mintd
+    ```
+
+- cdk-mintd: **BREAKING** - Lightning-specific configuration names are generalized to payment backends: `[ln]`/`[[ln]]` become `[payment_backend]`/`[[payment_backend]]`, `ln_backend` becomes `backend`, `CDK_MINTD_LN_*` becomes `CDK_MINTD_PAYMENT_BACKEND_*`, and `CDK_PAYMENT_PROCESSOR_LN_BACKEND` becomes `CDK_PAYMENT_PROCESSOR_BACKEND`. The migration command translates released v0.17 names automatically (#2354) ([asmo]).
+- cdk-mintd: **BREAKING** - Remote signatory settings move from `[info]` into `[signatory]`; plaintext management RPC and gRPC payment-processor connections now require an explicit `allow_insecure = true`. The migration command preserves released v0.17 behavior while making insecure operation explicit (#2141, #2138) ([prusnak]).
+- database: **DATABASE MIGRATION** - SQLite and PostgreSQL mint databases add `mint_quote.updated_at` and a keyset epoch used for coordinated rotations. Wallet SQLite/PostgreSQL databases add transaction status, re-key saga-managed transactions to canonical saga IDs, add deterministic derivation counters, and drop the unused `mint_quote.created_time` column. Equivalent Supabase and Redb migrations are applied where applicable. These migrations run when databases are opened; back up first and do not assume an older binary can safely open the migrated database (#2119, #2267, #2273, #2321, #2319) ([thesimplekid]/[asmo]/[crodas]/[vnprc]).
+- cdk: **BREAKING** - Wallet keyset APIs are consolidated around `keysets()`, `active_keyset()`, `keyset()`, and `set_keysets()`; the older load, fetch, refresh, and filtered keyset methods are removed from `Wallet` and `WalletTrait` (#2096) ([crodas]).
+- cdk: **BREAKING** - `WalletTrait` implementations must provide the `CrossMintTransferQuote` associated type and `cross_mint_transfer_quote_max()` (#2266) ([thesimplekid]).
+- cdk-common: **BREAKING** - `MintKeysDatabase` replaces autocommit keyset reads with epoch and transaction-scoped keyset operations for multi-instance signatories (#2273) ([crodas]).
+- cashu: **BREAKING** - Mint and melt quote response structs require a `method` field, and `MeltQuoteBolt12Response` is now distinct from `MeltQuoteBolt11Response` (#2178) ([asmo]/[thesimplekid]).
+- cashu: **BREAKING** - `BlindSignature::new()` and `MintRequest::sign()` now borrow `&SecretKey` instead of taking ownership (#2187) ([thesimplekid]).
+- cashu/cdk: **BREAKING** - The generic NUT-17 notification payload deserialization surface is replaced by raw JSON plus kind-aware decoding after the subscription kind is known; `WsResponseResult` is now the shared subscribe/unsubscribe acknowledgement struct (#2198, #2348) ([thesimplekid]).
+- cdk-bdk/cdk-ldk-node: **BREAKING** - Public `ChainSource` APIs add Electrum variants, exhaustive matches and struct literals must be updated, and Esplora configurations must provide an explicit URL (#2227) ([thesimplekid]).
+- cdk-http-client: **BREAKING** - `RequestBuilderExt` is removed; its fluent request methods are inherent on the selected request builder (#1608) ([lescuer97]/[thesimplekid]).
+- cdk-common: **BREAKING** - `payment::Error::Lightning` is renamed to `payment::Error::Backend`, and public mint/payment-backend configuration types use payment-backend rather than LN-specific names (#2354) ([asmo]).
+
+### Added
+
+- cashu: NUT-16 animated QR token encoding and fountain-fragment decoding, with matching FFI types and fuzz coverage (#2265) ([thesimplekid]).
+- cashu: Deterministic NUT-12 DLEQ nonce derivation with protocol test-vector coverage (#2122) ([thesimplekid]).
+- cdk: Deterministic NUT-20 quote signing keys backed by persistent per-wallet derivation counters (#2321) ([thesimplekid]).
+- cdk: Persistent token-bucket request pacing shared by mint origin and destination host, with builder, trait, and FFI configuration plus an explicit shutdown flush API (#2251, #2324, #2334, #2336, #2357) ([crodas]).
+- cdk: Maximum-balance Lightning transfer planning and CLI support for fixed or full-balance cross-mint transfers (#2266) ([thesimplekid]).
+- cdk: Wallet transaction lifecycle states (`pending`, `completed`, and `failed`) across database backends and FFI (#2267) ([asmo]).
+- cashu/cdk: NUT-18 payment requests support method-specific fees, preferred mints, strict mint constraints, and corresponding wallet/CLI routing (#2007) ([d4rp4t]/[thesimplekid]).
+- cdk-http-client: Bitreq as the lightweight default native HTTP backend, additive backend features, preconfigured/stateful transports, a WebSocket stream adapter, and stable transport DNS hooks (#1608, #2230) ([lescuer97]/[prusnak]/[thesimplekid]).
+- cdk-bdk/cdk-ldk-node: Electrum chain-source support for synchronization, broadcast, and fee estimation (#2227) ([thesimplekid]).
+- cdk-signatory: In-memory key serving, keyset subscription refresh, transactional derivation allocation, and opt-in active/active keyset sharing across instances (#2225, #2270, #2273) ([crodas]).
+- cdk-mint-rpc: New `KeysetService` and `QuoteService` management APIs, served alongside the legacy `CdkMint` service; the quote service uses typed states and returns effective TTLs (#2239, #2294) ([orangeshyguy21]).
+- cdk-payment-processor: Custom mint quote RPCs propagate the quote ID, public key, and optional amount (#2146, #2295) ([asmo]/[Dario]).
+- cdk-ffi: `mint_unissued_quotes` is exposed to language bindings (#2201) ([j-kon]).
+- cashu: Mint and melt settings expose their supported payment method names (#2120) ([thesimplekid]).
+
+### Changed
+
+- cdk-mintd: Added `config migrate`, `validate`, `init`, `show`, `apply`, `export`, and `rollback` commands, secret `env:`/`file:` references, signer identity validation, staged configuration activation, and one-generation rollback (#2242) ([asmo]).
+- cdk: Mint quote accounting follows NUT-04 counters with `amount_paid`, `amount_issued`, and `updated_at`; wallets ignore stale quote responses that would move accounting backwards (#2119) ([thesimplekid]).
+- cdk: Wallet keyset access returns complete keysets, supports explicit manual keysets, and gracefully falls back to cached metadata when refresh fails (#2096) ([crodas]).
+- cdk: Proof reservation is all-or-nothing and repository wallet creation is atomic per mint and unit (#2290, #2291) ([crodas]).
+- cdk: Custom currency units are normalized to lowercase (#2269) ([thesimplekid]).
+- cdk-http-client: Retriable HTTP requests use backoff, response size and redirect handling are hardened, BIP-353 DNS resolution uses the configured transport, and Tor WebSocket/auth/OIDC traffic stays on the configured transport (#1608, #2200, #2230, #2287) ([thesimplekid]/[prusnak]/[crodas]).
+- cdk-mint-rpc: The CLI quote-state command is renamed to `update-mint-quote-state` with the old spelling retained as an alias (#2294) ([orangeshyguy21]).
+- cdk-ldk-node: BOLT12 quote-to-payment lookup mappings are persisted for restart recovery (#2320) ([thesimplekid]).
+- cdk-mintd: Startup configuration is strictly validated, unknown fields and unsupported backends fail early, and environment/file precedence is materialized by the migration flow (#1962, #2242) ([asmo]).
+- cdk-cli: `mint-info` can query configured wallets without requiring a mint URL; terminal output escapes control characters (#1958, #2305) ([TheMhv]/[thesimplekid]).
+- security: Secret keys, credentials, chain URLs, transaction spans, FFI diagnostics, and other sensitive values are redacted from logs and debug output (#2305) ([thesimplekid]).
+
+### Fixed
+
+- cdk-axum: Batch mint quote status and custom melt quote routes reject quote IDs whose payment method does not match the requested route (#2108, #2163) ([prusnak]/[thesimplekid]).
+- cdk: Wallet melt cancellation and recovery recheck quote state before releasing proofs, preserve melt metadata, and release only the proofs owned by the cancelled operation (#2135, #2137, #2171) ([asmo]).
+- cdk: Ambiguous mint failures preserve proofs for recovery, offline sends cannot silently perform swaps, and NUT-20/29 signed-quote recovery retains its legacy fallback (#2176, #2308) ([asmo]/[thesimplekid]).
+- cdk: NUT-19 replay is constrained and WebSocket reconnects classify failures and back off instead of spinning (#2272) ([prusnak]).
+- cdk: Wallet mint public keys now round-trip using their stored binary encoding and invalid stored keys return errors instead of being treated as absent (#2318, #2360) ([vnprc]/[thesimplekid]).
+- cdk: Mint saga acquisition, recovery, concurrent database writes, and melt finalization use consistent ordering to avoid duplicate ownership and PostgreSQL deadlocks (#2328) ([thesimplekid]).
+- cdk: Auth wallet creation respects mint support, and auth, OIDC, Tor WebSocket, and BIP-353 requests use the configured transport to avoid proxy bypasses (#1608, #2200) ([thesimplekid]/[lescuer97]).
+- cdk-bdk: On-chain fee estimation returns checked errors instead of overflowing, and new Bitcoin Core wallets avoid unnecessary genesis scans (#2116, #2271) ([thesimplekid]).
+- cdk-sqlite: SQLCipher keys use parameterized `pragma_update`, so quotes and SQL metacharacters in passphrases are handled safely (#2099) ([kcres001]).
+- cdk: Mint keyset refresh tasks are awaited during shutdown, and signatory subscriptions refresh rotated keysets after reconnects (#2225) ([crodas]).
+- cdk: NUT-17 streams survive malformed or unsupported nested notifications and correlate shared acknowledgements by JSON-RPC request ID (#2348) ([thesimplekid]).
+- cdk-payment-processor: Optional custom quote amounts are preserved over gRPC (#2146) ([asmo]).
+
+### Removed
+
+- cdk-lnbits: Removed first-class LNbits backend support after its announced final support in v0.17; LNbits integrations can move to an external payment processor ([thesimplekid]).
+- cdk: Removed the superseded wallet keyset load/fetch/refresh APIs (#2096) ([crodas]).
+- cdk-http-client: Removed the public `RequestBuilderExt` import requirement (#1608) ([thesimplekid]).
+
+## [0.17.5](https://github.com/cashubtc/cdk/releases/tag/v0.17.5)
+
+### Added
+
+- cdk-mint-rpc: Add BDK wallet balance, transaction history, and address balance queries to the management RPC and CLI ([thesimplekid]).
+
+### Fixed
+
+- cdk: Keep quote status updates and melt settlement state consistent ([thesimplekid]).
+- cdk: Improve blind auth proof handling ([thesimplekid]).
+- cdk: Normalize payment backend error responses ([thesimplekid]).
+- cdk-bdk: Support millisatoshi-denominated melts when creating on-chain sends ([thesimplekid]).
+
+## [0.17.4](https://github.com/cashubtc/cdk/releases/tag/v0.17.4)
+
+### Added
+
+- cdk-cln: Use CLN `xpay` for outgoing Bolt11 and Bolt12 payments ([thesimplekid]).
+
+### Changed
+
+- cdk, cdk-ffi: Restore wallet repository units from persisted mint metadata without contacting configured mints during startup ([asmo]).
+
+### Fixed
+
+- cdk: Allow LNURL-pay invoice description hash mismatches while retaining strict invoice amount validation ([thesimplekid]).
+- cdk: Refresh mint quote snapshots after signing-key resolution to prevent optimistic-lock conflicts during single and batch minting ([thesimplekid]).
+- cdk: Migrate legacy npubcash signing keys only for provenance-confirmed quotes while preserving external keys and existing quote metadata ([thesimplekid]).
+
+## [0.17.3](https://github.com/cashubtc/cdk/releases/tag/v0.17.3)
+
+### Added
+
+- cdk, cdk-nwc, cdk-ffi: NIP-47 wallet service support with an NWC service crate, wallet integration, FFI bindings, example usage, and E2E coverage ([asmo]).
+- cdk-ffi: Waitable async on-chain melt confirmation APIs and live async melt coverage ([thesimplekid]).
+- ci: macOS 26 static build support ([asmo]).
+
+### Changed
+
+- cdk: Payment event streams now terminate more explicitly after final payment states ([thesimplekid]).
+
+### Fixed
+
+- cashu: Accept unknown fields in NUT-30 on-chain quote responses ([thesimplekid]).
+- cashu: Decode NUT-17 notification payloads according to the subscription kind ([thesimplekid]).
+- cdk: Record recovered melt transactions during wallet saga recovery ([thesimplekid]).
+- cdk: Remove finalized swap sagas during mint recovery cleanup ([thesimplekid]).
+- cdk: Return null expiry values for no-expiry Bolt12 mint quotes ([thesimplekid]).
+- cdk-ffi: Preserve prepared melt metadata across FFI conversions ([thesimplekid]).
+
+## [0.17.2](https://github.com/cashubtc/cdk/releases/tag/v0.17.2)
+
+### Added
+
+- cdk-ffi: Expose NUT-27 mint backup through wallet repository bindings ([thesimplekid]).
+
+### Fixed
+
+- cdk-cln, cdk-ldk-node: Prioritize payment hash status checks when resolving Lightning payment status ([thesimplekid]).
+- kotlin: Support Android 16 KB page sizes, use the Android JNA artifact for `cdk-android`, ship compatible Android JNA and x86 libraries, and parse Android ELF alignment exponents ([thesimplekid]).
+- swift: Add framework bundle metadata to Swift release artifacts ([thesimplekid]).
+
+## [0.17.1](https://github.com/cashubtc/cdk/releases/tag/v0.17.1)
+
+### Fixed
+
+- cdk: Token handling now decodes proofs from inactive keysets when redeeming or inspecting tokens ([thesimplekid]).
+- cdk: Issue saga recovery treats mint input and output limit errors as definitive failures instead of falling back to restore ([thesimplekid]).
+- cdk-cln: Persist CLN Bolt12 quote lookup IDs before payment so pending payments can be checked after restart ([thesimplekid]).
+- cdk-ldk-node: Release reserved proofs when pending LDK payments fail during melt recovery ([thesimplekid]).
+
 ## [0.17.0](https://github.com/cashubtc/cdk/releases/tag/v0.17.0)
 
 ### Summary
@@ -894,3 +1056,7 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [robwoodgate]: https://github.com/robwoodgate
 [GEET3001]: https://github.com/GEET3001
 [Dario]: https://github.com/zeugmaster
+[d4rp4t]: https://github.com/d4rp4t
+[orangeshyguy21]: https://github.com/orangeshyguy21
+[j-kon]: https://github.com/j-kon
+[kcres001]: https://github.com/kcres001

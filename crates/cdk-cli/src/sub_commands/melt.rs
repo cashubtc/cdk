@@ -12,6 +12,7 @@ use cdk_common::wallet::WalletKey;
 use clap::{Args, ValueEnum};
 use lightning::offers::offer::Offer;
 
+use crate::terminal::escape_control;
 use crate::utils::{get_number_input, get_or_create_wallet, get_user_input};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -208,7 +209,11 @@ pub async fn pay(
             for (index, (key, balance)) in balances_vec.iter().enumerate() {
                 println!(
                     "  {}: {} ({}) - {} {}",
-                    index, key.mint_url, key.unit, balance, unit
+                    index,
+                    escape_control(&key.mint_url.to_string()),
+                    escape_control(&key.unit.to_string()),
+                    balance,
+                    unit
                 );
             }
             println!("  {}: Any mint (auto-select best)", balances_vec.len());
@@ -285,7 +290,7 @@ pub async fn pay(
                 .await?;
 
             println!("Melt quote created:");
-            println!("  Quote ID: {}", quote.id);
+            println!("  Quote ID: {}", escape_control(&quote.id));
             println!("  Amount: {}", quote.amount);
             println!("  Fee Reserve: {}", quote.fee_reserve);
 
@@ -303,7 +308,7 @@ pub async fn pay(
                 melted.fee_paid()
             );
             if let Some(preimage) = melted.payment_proof() {
-                println!("Payment preimage: {}", preimage);
+                println!("Payment preimage: {}", escape_control(preimage));
             }
         }
         PaymentType::Bolt12 => {
@@ -357,7 +362,7 @@ pub async fn pay(
 
             // Display quote info
             println!("Melt quote created:");
-            println!("  Quote ID: {}", quote.id);
+            println!("  Quote ID: {}", escape_control(&quote.id));
             println!("  Amount: {}", quote.amount);
             println!("  Fee Reserve: {}", quote.fee_reserve);
             println!("  State: {}", quote.state);
@@ -375,7 +380,7 @@ pub async fn pay(
                 melted.fee_paid()
             );
             if let Some(preimage) = melted.payment_proof() {
-                println!("Payment preimage: {}", preimage);
+                println!("Payment preimage: {}", escape_control(preimage));
             }
         }
         PaymentType::Bip353 => {
@@ -417,7 +422,7 @@ pub async fn pay(
 
             // Display quote info
             println!("Melt quote created:");
-            println!("  Quote ID: {}", quote.id);
+            println!("  Quote ID: {}", escape_control(&quote.id));
             println!("  Amount: {}", quote.amount);
             println!("  Fee Reserve: {}", quote.fee_reserve);
             println!("  State: {}", quote.state);
@@ -435,7 +440,7 @@ pub async fn pay(
                 melted.fee_paid()
             );
             if let Some(preimage) = melted.payment_proof() {
-                println!("Payment preimage: {}", preimage);
+                println!("Payment preimage: {}", escape_control(preimage));
             }
         }
         PaymentType::Onchain => {
@@ -475,7 +480,7 @@ pub async fn pay(
             let quote = wallet.select_onchain_melt_quote(selected_quote).await?;
 
             println!("Melt quote selected:");
-            println!("  Quote ID: {}", quote.id);
+            println!("  Quote ID: {}", escape_control(&quote.id));
             println!("  Amount: {}", quote.amount);
             println!("  Fee Reserve: {}", quote.fee_reserve);
             println!("  Expiry: {}", quote.expiry);
@@ -496,7 +501,7 @@ pub async fn pay(
                 melted.fee_paid()
             );
             if let Some(payment_proof) = melted.payment_proof() {
-                println!("Payment proof: {}", payment_proof);
+                println!("Payment proof: {}", escape_control(payment_proof));
             }
         }
     }
@@ -528,7 +533,11 @@ async fn pay_mpp(
         for (i, (key, balance)) in balances_vec.iter().enumerate() {
             println!(
                 "  {}: {} ({}) - {} {}",
-                i, key.mint_url, key.unit, balance, unit
+                i,
+                escape_control(&key.mint_url.to_string()),
+                escape_control(&key.unit.to_string()),
+                balance,
+                unit
             );
         }
 
@@ -610,7 +619,11 @@ async fn pay_mpp(
             )
             .await?;
 
-        println!("  {} - Quote ID: {}", mint_url, quote.id);
+        println!(
+            "  {} - Quote ID: {}",
+            escape_control(&mint_url.to_string()),
+            escape_control(&quote.id)
+        );
         println!("    Amount: {}, Fee: {}", quote.amount, quote.fee_reserve);
         quotes.push((mint_url.clone(), wallet, quote));
     }
@@ -629,7 +642,7 @@ async fn pay_mpp(
 
         println!(
             "  {} - Paid: {}, Fee: {}",
-            mint_url,
+            escape_control(&mint_url.to_string()),
             melted.amount(),
             melted.fee_paid()
         );
@@ -637,12 +650,20 @@ async fn pay_mpp(
         total_fees += melted.fee_paid();
 
         if let Some(preimage) = melted.payment_proof() {
-            println!("    Preimage: {}", preimage);
+            println!("    Preimage: {}", escape_control(preimage));
         }
     }
 
-    println!("\nTotal paid: {} {}", total_paid, unit);
-    println!("Total fees: {} {}", total_fees, unit);
+    println!(
+        "\nTotal paid: {} {}",
+        total_paid,
+        escape_control(&unit.to_string())
+    );
+    println!(
+        "Total fees: {} {}",
+        total_fees,
+        escape_control(&unit.to_string())
+    );
 
     Ok(())
 }

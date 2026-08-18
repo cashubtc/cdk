@@ -3,6 +3,8 @@ use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, Proof};
 use cdk::wallet::WalletRepository;
 
+use crate::terminal::escape_control;
+
 pub async fn proofs(wallet_repository: &WalletRepository) -> Result<()> {
     list_proofs(wallet_repository).await?;
     Ok(())
@@ -17,7 +19,7 @@ async fn list_proofs(
 
     for (i, wallet) in wallets.iter().enumerate() {
         let mint_url = wallet.mint_url.clone();
-        println!("{i}: {mint_url}");
+        println!("{i}: {}", escape_control(&mint_url.to_string()));
         println!("|   Amount | Unit | State    | Secret                                                           | DLEQ proof included");
         println!("|----------|------|----------|------------------------------------------------------------------|--------------------");
 
@@ -27,9 +29,9 @@ async fn list_proofs(
             println!(
                 "| {:8} | {:4} | {:8} | {:64} | {}",
                 proof.amount,
-                wallet.unit,
+                escape_control(&wallet.unit.to_string()),
                 "unspent",
-                proof.secret,
+                escape_control(&proof.secret.to_string()),
                 proof.dleq.is_some()
             );
         }
@@ -40,9 +42,9 @@ async fn list_proofs(
             println!(
                 "| {:8} | {:4} | {:8} | {:64} | {}",
                 proof.amount,
-                wallet.unit,
+                escape_control(&wallet.unit.to_string()),
                 "pending",
-                proof.secret,
+                escape_control(&proof.secret.to_string()),
                 proof.dleq.is_some()
             );
         }
@@ -53,9 +55,9 @@ async fn list_proofs(
             println!(
                 "| {:8} | {:4} | {:8} | {:64} | {}",
                 proof.amount,
-                wallet.unit,
+                escape_control(&wallet.unit.to_string()),
                 "reserved",
-                proof.secret,
+                escape_control(&proof.secret.to_string()),
                 proof.dleq.is_some()
             );
         }

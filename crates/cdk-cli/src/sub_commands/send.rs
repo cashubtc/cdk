@@ -54,6 +54,12 @@ pub struct SendSubCommand {
     /// Amount to send
     #[arg(short, long)]
     amount: Option<u64>,
+    /// Display the token as an animated QR code (NUT-16)
+    ///
+    /// Loops QR frames until q or Ctrl+C is pressed; if the token fits a
+    /// single frame, one static QR is shown instead.
+    #[arg(long)]
+    animate: bool,
 }
 
 pub async fn send(
@@ -268,5 +274,127 @@ pub async fn send(
         }
     }
 
+    if sub_command_args.animate {
+        display_animated_qr(&token).await?;
+    }
+
     Ok(())
+}
+
+/// Display a token as an animated QR code (NUT-16)
+///
+/// Each UR fragment is rendered as one terminal QR frame. Multi-part tokens
+/// loop frames every 250 ms until Ctrl+C; a token that fits a single frame
+/// is rendered once as a static QR.
+async fn display_animated_qr(token: &cdk::nuts::Token) -> Result<()> {
+    const TERMINAL_MAX_FRAGMENT_LENGTH: usize = 100;
+
+    use std::io;
+    use std::time::Duration;
+
+    use qrcode::render::unicode;
+    use qrcode::QrCode;
+
+    // Terminal cells cannot render narrower than one column per QR module.
+    // Smaller UR fragments therefore produce smaller, easier-to-scan frames.
+    let mut encoder = token.ur_encoder(TERMINAL_MAX_FRAGMENT_LENGTH)?;
+
+    let render_frame = |part: &str| -> Result<String> {
+        let qr_payload = part.to_ascii_uppercase();
+        let code = QrCode::new(qr_payload.as_bytes())?;
+        Ok(code
+            .render::<unicode::Dense1x2>()
+            .dark_color(unicode::Dense1x2::Light)
+            .light_color(unicode::Dense1x2::Dark)
+            .build())
+    };
+
+    if encoder.is_single_fragment() {
+        println!("{}", render_frame(&encoder.next_part()?)?);
+        return Ok(());
+    }
+
+    println!(
+        "Displaying {} QR frames in a loop. Press q or Ctrl+C to stop.",
+        encoder.fragment_count()
+    );
+
+    // Raw mode reads single keypresses without Enter; note it also turns
+    // Ctrl+C into a key event instead of a signal
+    crossterm::terminal::enable_raw_mode()?;
+
+    let result = tokio::select! {
+        result = async {
+            loop {
+                let part = encoder.next_part()?;
+                let frame = render_frame(&part)?;
+                let mut stdout = io::stdout();
+                draw_animated_qr_frame(&mut stdout, &frame)?;
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        } => result,
+        _ = quit_key_pressed() => Ok(()),
+        _ = tokio::signal::ctrl_c() => Ok(()),
+    };
+
+    crossterm::terminal::disable_raw_mode()?;
+    println!("\nStopped QR animation.");
+    result
+}
+
+/// Draws a complete QR frame while the terminal is in raw mode.
+fn draw_animated_qr_frame(stdout: &mut impl std::io::Write, frame: &str) -> std::io::Result<()> {
+    use crossterm::SynchronizedUpdate;
+
+    // Raw mode disables the terminal's LF-to-CRLF translation. Add carriage
+    // returns explicitly so each rendered QR row starts in the first column.
+    let frame = frame.replace('\n', "\r\n");
+
+    // Synchronized updates prevent the terminal from displaying a partially
+    // drawn frame, which would make a changing QR code briefly unscannable.
+    stdout.sync_update(|stdout| {
+        crossterm::queue!(
+            stdout,
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+            crossterm::cursor::MoveTo(0, 0),
+            crossterm::style::Print(&frame)
+        )
+    })?
+}
+
+/// Waits until q (or Ctrl+C, delivered as a key event in raw mode) is pressed
+async fn quit_key_pressed() {
+    use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
+    use futures::StreamExt;
+
+    let mut events = EventStream::new();
+    while let Some(Ok(event)) = events.next().await {
+        let quit = matches!(event,
+            Event::Key(key)
+                if matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q'))
+                    || (key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)));
+        if quit {
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::draw_animated_qr_frame;
+
+    #[test]
+    fn animated_qr_rows_return_to_the_first_column() {
+        let mut output = Vec::new();
+
+        draw_animated_qr_frame(&mut output, "first row\nsecond row")
+            .expect("terminal frame should render");
+
+        let output = String::from_utf8(output).expect("terminal output should be UTF-8");
+        assert!(output.contains("first row\r\nsecond row"));
+        assert!(!output.contains("first row\nsecond row"));
+    }
 }

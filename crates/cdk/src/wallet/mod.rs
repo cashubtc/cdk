@@ -12,7 +12,7 @@ use cdk_common::database::{self, WalletDatabase};
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::{KeysetLoadPolicy, ProofInfo};
 use cdk_common::{PublicKey, SecretKey, SECP256K1};
-use getrandom::getrandom;
+use getrandom::fill;
 pub use mint_connector::http_client::{
     AuthHttpClient as BaseAuthHttpClient, HttpClient as BaseHttpClient,
 };
@@ -42,7 +42,9 @@ mod blind_signature;
 #[cfg(feature = "nostr")]
 mod nostr_backup;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
-pub use mint_connector::{TorAuthHttpClient, TorHttpClient};
+pub use mint_connector::{
+    RateLimitedTorAuthHttpClient, RateLimitedTorHttpClient, TorAuthHttpClient, TorHttpClient,
+};
 mod balance;
 mod builder;
 mod issue;
@@ -87,6 +89,7 @@ pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::{
     AuthHttpClient, HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector,
+    RateLimitConfig, RateLimiterManager, TokenBucket,
 };
 pub use mint_metadata_cache::MintMetadata;
 #[cfg(feature = "nostr")]
@@ -102,10 +105,25 @@ pub use recovery::RecoveryReport;
 pub use send::PreparedSend;
 #[cfg(all(feature = "npubcash", not(target_arch = "wasm32")))]
 pub use streams::npubcash::NpubCashProofStream;
-pub use types::{MeltQuote, MintQuote, SendKind};
+pub use types::{CrossMintTransferQuote, MeltQuote, MintQuote, SendKind};
 pub use wallet_repository::{TokenData, WalletConfig, WalletRepository, WalletRepositoryBuilder};
 
 use crate::nuts::nut00::ProofsMethods;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum DerivationCounterNamespace {
+    P2pk,
+    Nut20Quote,
+}
+
+impl DerivationCounterNamespace {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::P2pk => "p2pk",
+            Self::Nut20Quote => "nut20_quote",
+        }
+    }
+}
 
 /// CDK Wallet
 ///
@@ -140,6 +158,14 @@ pub struct Wallet {
     seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
+    /// Handle to the client-side rate limiter, when the wallet paces any of the
+    /// clients it builds.
+    ///
+    /// `None` when rate limiting was disabled, or when a custom client replaced
+    /// the transport and no rate-limited auth client remains. Cloning the manager
+    /// shares its per-host budgets, so this reconfigures the same limiter the
+    /// transport paces through.
+    rate_limiter: Option<RateLimiterManager>,
 }
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -171,7 +197,7 @@ impl From<WalletSubscription> for WalletParams {
     fn from(val: WalletSubscription) -> Self {
         let mut buffer = vec![0u8; 10];
 
-        getrandom(&mut buffer).expect("Failed to generate random bytes");
+        fill(&mut buffer).expect("Failed to generate random bytes");
 
         let id = Arc::new(
             buffer
@@ -278,6 +304,76 @@ impl Wallet {
             .seed(seed)
             .target_proof_count(target_proof_count.unwrap_or(3))
             .build()
+    }
+
+    /// Replace the client-side rate-limit configuration at runtime.
+    ///
+    /// Applies to every host the wallet's limiter paces, not only the mint: the
+    /// buckets already in use and any created later. That includes third-party
+    /// hosts the wallet's transport reaches, such as an LNURL service or an OIDC
+    /// provider.
+    ///
+    /// It is a no-op when the wallet paces nothing, either because rate limiting
+    /// was disabled ([`WalletBuilder::without_rate_limiting`]) or because a
+    /// custom client ([`WalletBuilder::client`]/[`WalletBuilder::shared_client`])
+    /// replaced the main transport and no rate-limited auth client remains. With
+    /// a custom main client plus a CAT it reconfigures only the blind-auth
+    /// client's pacing.
+    ///
+    /// When the wallet was built through a [`WalletRepository`], the limiter is
+    /// shared with every other wallet in that repository, so this reconfigures
+    /// pacing repository-wide.
+    ///
+    /// [`Wallet::is_rate_limited`] reports whether the call took effect, since
+    /// the no-op cases are otherwise silent.
+    pub fn set_rate_limiting_config(&self, config: RateLimitConfig) {
+        if let Some(limiter) = &self.rate_limiter {
+            limiter.set_config(config);
+        }
+    }
+
+    /// Disable client-side rate limiting at runtime.
+    ///
+    /// Has the same reach as [`Wallet::set_rate_limiting_config`]: every host the
+    /// wallet's limiter paces, repository-wide for a repository-built wallet, and
+    /// a no-op when the wallet paces nothing.
+    pub fn disable_rate_limiting(&self) {
+        if let Some(limiter) = &self.rate_limiter {
+            limiter.set_enabled(false);
+        }
+    }
+
+    /// Whether this wallet's requests are being paced right now.
+    ///
+    /// False both when pacing was turned off and when the wallet paces nothing
+    /// at all, which is the case [`Wallet::set_rate_limiting_config`] silently
+    /// ignores.
+    pub fn is_rate_limited(&self) -> bool {
+        self.rate_limiter
+            .as_ref()
+            .is_some_and(RateLimiterManager::is_enabled)
+    }
+
+    /// Wait until the rate-limit budget this wallet has drawn down has been
+    /// handed to storage.
+    ///
+    /// Persistence is otherwise best effort: the request path never waits for
+    /// the store, and dropping a wallet leaves the final write to a detached
+    /// background task. A caller that does not await this barrier can rebuild
+    /// the wallet, or tear down the runtime, before that write lands, and the
+    /// rebuilt wallet then starts with a full burst. Await it before dropping a
+    /// wallet whose budget must carry over.
+    ///
+    /// The wait is bounded, so a slow or hung store cannot hang shutdown; on
+    /// timeout the budget is simply not persisted.
+    ///
+    /// Has the same reach as [`Wallet::set_rate_limiting_config`]: every host
+    /// the wallet's limiter paces, repository-wide for a wallet built through a
+    /// [`WalletRepository`], and a no-op when the wallet paces nothing.
+    pub async fn flush_rate_limits(&self) {
+        if let Some(limiter) = &self.rate_limiter {
+            limiter.flush().await;
+        }
     }
 
     /// Subscribe to events
@@ -942,31 +1038,59 @@ impl Wallet {
 
     /// generates and stores public key in database
     pub async fn generate_public_key(&self) -> Result<PublicKey, Error> {
-        let public_keys = self.localstore.list_p2pk_keys().await?;
-
-        let mut last_derivation_index = 0;
-
-        for public_key in public_keys {
-            if public_key.derivation_index >= last_derivation_index {
-                last_derivation_index = public_key.derivation_index + 1;
-            }
-        }
+        let minimum_index = match self.localstore.latest_p2pk().await? {
+            Some(key) => key.derivation_index.checked_add(1).ok_or_else(|| {
+                Error::Custom("P2PK derivation index has been exhausted".to_owned())
+            })?,
+            None => 0,
+        };
+        let derivation_index = self
+            .reserve_derivation_index(DerivationCounterNamespace::P2pk, minimum_index)
+            .await?;
 
         let derivation_path = DerivationPath::from(vec![
             ChildNumber::from_hardened_idx(P2PK_PURPOSE)?,
             ChildNumber::from_hardened_idx(P2PK_ACCOUNT)?,
             ChildNumber::from_hardened_idx(0)?,
             ChildNumber::from_hardened_idx(0)?,
-            ChildNumber::from_normal_idx(last_derivation_index)?,
+            ChildNumber::from_normal_idx(derivation_index)?,
         ]);
 
         let pubkey = p2pk::generate_public_key(&derivation_path, &self.seed).await?;
 
         self.localstore
-            .add_p2pk_key(&pubkey, derivation_path, last_derivation_index)
+            .add_p2pk_key(&pubkey, derivation_path, derivation_index)
             .await?;
 
         Ok(pubkey)
+    }
+
+    pub(crate) async fn reserve_derivation_index(
+        &self,
+        namespace: DerivationCounterNamespace,
+        minimum_index: u32,
+    ) -> Result<u32, Error> {
+        let namespace = namespace.as_str();
+        let current_counter = self
+            .localstore
+            .increment_derivation_counter(namespace, 0)
+            .await?;
+        let catch_up = minimum_index.saturating_sub(current_counter);
+        let reservation_count = catch_up.checked_add(1).ok_or_else(|| {
+            Error::Custom(format!(
+                "Derivation counter namespace `{namespace}` has been exhausted"
+            ))
+        })?;
+        let next_counter = self
+            .localstore
+            .increment_derivation_counter(namespace, reservation_count)
+            .await?;
+
+        next_counter.checked_sub(1).ok_or_else(|| {
+            Error::Custom(format!(
+                "Derivation counter namespace `{namespace}` did not advance after reservation"
+            ))
+        })
     }
 
     /// gets public key by it's hex value

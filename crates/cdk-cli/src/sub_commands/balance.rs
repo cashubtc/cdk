@@ -7,6 +7,8 @@ use cdk::wallet::WalletRepository;
 use cdk::Amount;
 use cdk_common::wallet::WalletKey;
 
+use crate::terminal::escape_control;
+
 pub async fn balance(
     wallet_repository: &WalletRepository,
     unit: Option<&CurrencyUnit>,
@@ -24,12 +26,16 @@ pub async fn balance(
         println!();
         if unit_totals.len() == 1 {
             if let Some((unit, total)) = unit_totals.into_iter().next() {
-                println!("Total balance across all wallets: {} {}", total, unit);
+                println!(
+                    "Total balance across all wallets: {} {}",
+                    total,
+                    escape_control(&unit.to_string())
+                );
             }
         } else {
             println!("Total balance across all wallets:");
             for (unit, total) in &unit_totals {
-                println!("  {} {}", total, unit);
+                println!("  {} {}", total, escape_control(&unit.to_string()));
             }
         }
     }
@@ -51,7 +57,11 @@ pub async fn mint_balances(
         .enumerate()
     {
         let WalletKey { mint_url, unit } = wallet_key.clone();
-        println!("{i}: {mint_url} {amount} {unit}");
+        println!(
+            "{i}: {} {amount} {}",
+            escape_control(&mint_url.to_string()),
+            escape_control(&unit.to_string())
+        );
         wallets_vec.push((mint_url, unit, *amount))
     }
     Ok(wallets_vec)

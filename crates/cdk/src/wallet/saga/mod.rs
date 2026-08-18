@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use cdk_common::database::{self, WalletDatabase};
 use tracing::instrument;
 
-use crate::nuts::{PublicKey, State};
+use crate::nuts::PublicKey;
 use crate::Error;
 
 /// Trait for compensating actions in the saga pattern.
@@ -100,33 +100,26 @@ impl CompensatingAction for RevertProofReservation {
             self.proof_ys.len()
         );
 
-        // Fetch current states to avoid reverting proofs that were already spent
-        // (e.g. by a successful internal swap that occurred before a crash)
-        let current_proofs = if self.proof_ys.is_empty() {
-            vec![]
-        } else {
-            self.localstore
-                .get_proofs_by_ys(self.proof_ys.clone())
-                .await
-                .map_err(Error::Database)?
-        };
-
-        let mut proofs_to_revert: Vec<_> = current_proofs
-            .into_iter()
-            .filter(|p| p.state == State::Reserved || p.state == State::Pending)
-            .collect();
-
-        for proof in proofs_to_revert.iter_mut() {
-            proof.state = State::Unspent;
-            proof.used_by_operation = None;
+        // A missing saga means this compensation is stale or was already
+        // completed. Never mutate proofs from a stale in-memory action.
+        if self
+            .localstore
+            .get_saga(&self.saga_id)
+            .await
+            .map_err(Error::Database)?
+            .is_none()
+        {
+            return Ok(());
         }
 
-        if !proofs_to_revert.is_empty() {
-            self.localstore
-                .update_proofs(proofs_to_revert, vec![])
-                .await
-                .map_err(Error::Database)?;
-        }
+        // The database performs the ownership and live-state checks in the
+        // same write that releases the proofs. This prevents a stale
+        // compensation from overwriting a Spent proof or a reservation owned
+        // by a newer operation between a read and a write.
+        self.localstore
+            .release_proofs(&self.saga_id)
+            .await
+            .map_err(Error::Database)?;
 
         if let Err(e) = self.localstore.delete_saga(&self.saga_id).await {
             tracing::warn!(
@@ -224,6 +217,9 @@ pub mod test_utils {
 }
 
 #[cfg(test)]
+use crate::nuts::State;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -237,14 +233,19 @@ mod tests {
         let mint_url = test_utils::test_mint_url();
         let keyset_id = test_utils::test_keyset_id();
 
-        let proof_info =
-            test_utils::test_proof_info(keyset_id, 100, mint_url.clone(), State::Reserved);
-        let proof_y = proof_info.y;
-        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
-
         let saga = test_utils::test_simple_saga(mint_url);
         let saga_id = saga.id;
         db.add_saga(saga).await.unwrap();
+
+        let mut proof_info = test_utils::test_proof_info(
+            keyset_id,
+            100,
+            test_utils::test_mint_url(),
+            State::Reserved,
+        );
+        proof_info.used_by_operation = Some(saga_id);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
 
         let compensation = RevertProofReservation {
             localstore: db.clone(),
@@ -270,13 +271,13 @@ mod tests {
         let mint_url = test_utils::test_mint_url();
         let keyset_id = test_utils::test_keyset_id();
 
-        let proof_info =
+        let mut proof_info =
             test_utils::test_proof_info(keyset_id, 100, mint_url.clone(), State::Reserved);
-        let proof_y = proof_info.y;
-        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
-
         // Use a saga_id that doesn't exist
         let saga_id = uuid::Uuid::new_v4();
+        proof_info.used_by_operation = Some(saga_id);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
 
         let compensation = RevertProofReservation {
             localstore: db.clone(),
@@ -284,39 +285,40 @@ mod tests {
             saga_id,
         };
 
-        // Should succeed even without saga
+        // A stale compensation should no-op without its persisted saga.
         compensation.execute().await.unwrap();
 
-        // Proof should be Unspent
+        // Proof should remain reserved.
         let proofs = db
-            .get_proofs(None, None, Some(vec![State::Unspent]), None)
+            .get_proofs(None, None, Some(vec![State::Reserved]), None)
             .await
             .unwrap();
         assert_eq!(proofs.len(), 1);
     }
 
     #[tokio::test]
-    async fn test_revert_proof_reservation_only_affects_specified_proofs() {
+    async fn test_revert_proof_reservation_only_affects_owning_operation() {
         let db = test_utils::create_test_db().await;
         let mint_url = test_utils::test_mint_url();
         let keyset_id = test_utils::test_keyset_id();
 
-        // Create two reserved proofs
-        let proof_info_1 =
+        let saga = test_utils::test_simple_saga(mint_url.clone());
+        let saga_id = saga.id;
+        db.add_saga(saga).await.unwrap();
+
+        // Create two reserved proofs owned by different operations.
+        let mut proof_info_1 =
             test_utils::test_proof_info(keyset_id, 100, mint_url.clone(), State::Reserved);
-        let proof_info_2 =
+        proof_info_1.used_by_operation = Some(saga_id);
+        let mut proof_info_2 =
             test_utils::test_proof_info(keyset_id, 200, mint_url.clone(), State::Reserved);
+        proof_info_2.used_by_operation = Some(uuid::Uuid::new_v4());
         let proof_y_1 = proof_info_1.y;
         let proof_y_2 = proof_info_2.y;
         db.update_proofs(vec![proof_info_1, proof_info_2], vec![])
             .await
             .unwrap();
 
-        let saga = test_utils::test_simple_saga(mint_url);
-        let saga_id = saga.id;
-        db.add_saga(saga).await.unwrap();
-
-        // Only revert the first proof
         let compensation = RevertProofReservation {
             localstore: db.clone(),
             proof_ys: vec![proof_y_1],

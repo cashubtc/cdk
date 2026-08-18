@@ -33,7 +33,7 @@ tor = [
 prometheus = ["dep:cdk-prometheus"]
 
 [dependencies]
-arc-swap = "1.7.1"
+arc-swap.workspace = true
 cdk-common = { workspace = true, default-features = false }
 cbor-diag.workspace = true
 async-trait.workspace = true
@@ -70,7 +70,7 @@ tokio = { workspace = true, features = [
     "macros",
     "sync",
 ] }
-getrandom = { version = "0.2" }
+getrandom = { version = "0.4" }
 cdk-signatory = { workspace = true, features = ["grpc"], optional = true }
 # Tor dependencies (optional; enabled by feature "tor")
 rustls = { workspace = true, optional = true }
@@ -79,12 +79,12 @@ rustls = { workspace = true, optional = true }
 cdk-http-client = { workspace = true, default-features = false, optional = true }
 tokio = { workspace = true, default-features = false, features = ["rt", "macros", "sync", "time"] }
 cdk-signatory = { workspace = true, default-features = false }
-getrandom = { version = "0.2", features = ["js"] }
+getrandom = { version = "0.4", features = ["wasm_js"] }
 ring = { version = "0.17.14", features = ["wasm32_unknown_unknown_js"] }
 rustls = { workspace = true, optional = true }
 
 uuid = { workspace = true, features = ["js"] }
-gloo-timers = { version = "0.3", features = ["futures"] }
+gloo-timers = { workspace = true }
 
 [[example]]
 name = "mint-token"
@@ -190,7 +190,7 @@ bip39.workspace = true
 tracing-subscriber.workspace = true
 criterion.workspace = true
 anyhow.workspace = true
-nwc = { version = "0.44.0", default-features = false }
+nwc = { version = "0.45.0", default-features = false }
 serde_urlencoded = { version = "0.7", default-features = false }
 ureq = { version = "3.1.0", features = ["json"] }
 tokio = { workspace = true, features = ["full"] }

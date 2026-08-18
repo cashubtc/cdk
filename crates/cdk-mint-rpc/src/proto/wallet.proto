@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+package cdk_mint_wallet_v1;
+
+// Read-only information about the mint's on-chain wallet.
+service WalletService {
+    // Returns the wallet balance split by confirmation status.
+    rpc GetBalance(GetBalanceRequest) returns (GetBalanceResponse) {}
+    // Returns wallet transactions, newest first.
+    rpc ListTransactions(ListTransactionsRequest) returns (ListTransactionsResponse) {}
+    // Returns addresses that the wallet has revealed, in derivation order.
+    rpc ListAddresses(ListAddressesRequest) returns (ListAddressesResponse) {}
+}
+
+message GetBalanceRequest {
+}
+
+message GetBalanceResponse {
+    // Confirmed, spendable balance.
+    uint64 confirmed_sat = 1;
+    // Unconfirmed outputs created by a wallet transaction.
+    uint64 trusted_pending_sat = 2;
+    // Unconfirmed outputs received from an external wallet.
+    uint64 untrusted_pending_sat = 3;
+    // Confirmed coinbase outputs that are not mature yet.
+    uint64 immature_sat = 4;
+    // Confirmed plus trusted-pending balance.
+    uint64 trusted_spendable_sat = 5;
+    // All value currently visible to the wallet.
+    uint64 total_sat = 6;
+    // Bitcoin network used by the wallet, e.g. "bitcoin" or "regtest".
+    string network = 7;
+    // Height of the wallet's latest local chain checkpoint.
+    uint32 synced_height = 8;
+}
+
+message ListTransactionsRequest {
+    // Number of transactions to return. Zero uses the server default. The
+    // server rejects values above its maximum.
+    uint32 limit = 1;
+    // Number of transactions to skip from the newest transaction.
+    uint32 offset = 2;
+}
+
+message WalletTransaction {
+    // Transaction ID in display encoding.
+    string txid = 1;
+    // Value sent to wallet scripts, including change.
+    uint64 received_sat = 2;
+    // Value consumed from wallet inputs.
+    uint64 sent_sat = 3;
+    // Transaction fee when all previous outputs are known.
+    optional uint64 fee_sat = 4;
+    // Net effect on the wallet balance.
+    sint64 balance_delta_sat = 5;
+    // Confirmation block height, when confirmed.
+    optional uint32 confirmation_height = 6;
+    // Confirmation block timestamp, when confirmed.
+    optional uint64 confirmation_time = 7;
+    // First-seen timestamp, when known for an unconfirmed transaction.
+    optional uint64 first_seen = 8;
+}
+
+message ListTransactionsResponse {
+    // Requested page of transactions.
+    repeated WalletTransaction transactions = 1;
+    // Total relevant transactions before pagination.
+    uint64 total = 2;
+}
+
+message ListAddressesRequest {
+    // Number of addresses to return. Zero uses the server default. The server
+    // rejects values above its maximum.
+    uint32 limit = 1;
+    // Number of addresses to skip.
+    uint32 offset = 2;
+}
+
+enum KeychainKind {
+    KEYCHAIN_KIND_UNSPECIFIED = 0;
+    KEYCHAIN_KIND_EXTERNAL = 1;
+    KEYCHAIN_KIND_INTERNAL = 2;
+}
+
+message WalletAddress {
+    // Bitcoin address in network-specific display encoding.
+    string address = 1;
+    // Descriptor keychain containing the address.
+    KeychainKind keychain = 2;
+    // Child derivation index.
+    uint32 derivation_index = 3;
+    // Whether the address has appeared in a wallet transaction.
+    bool used = 4;
+    // Total current unspent balance assigned to this address.
+    uint64 balance_sat = 5;
+    // Confirmed current unspent balance assigned to this address.
+    uint64 confirmed_balance_sat = 6;
+}
+
+message ListAddressesResponse {
+    // Requested page of revealed addresses.
+    repeated WalletAddress addresses = 1;
+    // Total revealed addresses before pagination.
+    uint64 total = 2;
+}

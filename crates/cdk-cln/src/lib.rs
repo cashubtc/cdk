@@ -26,11 +26,11 @@ use cdk_common::util::{hex, unix_time};
 use cdk_common::{Bolt11Invoice, QuoteId};
 use cln_rpc::model::requests::{
     DecodeRequest, FetchinvoiceRequest, InvoiceRequest, ListinvoicesRequest, ListpaysRequest,
-    OfferRequest, PayRequest, WaitanyinvoiceRequest,
+    OfferRequest, WaitanyinvoiceRequest, XpayRequest,
 };
 use cln_rpc::model::responses::{
     DecodeResponse, InvoiceResponse, ListinvoicesInvoices, ListinvoicesInvoicesStatus,
-    ListpaysPays, ListpaysPaysStatus, PayStatus, WaitanyinvoiceResponse, WaitanyinvoiceStatus,
+    ListpaysPays, ListpaysPaysStatus, WaitanyinvoiceResponse, WaitanyinvoiceStatus,
 };
 use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny, Sha256};
 use cln_rpc::ClnRpc;
@@ -522,44 +522,31 @@ impl MintPayment for Cln {
         tracing::debug!("Attempting payment with max fee: {:?}", max_fee_msat);
 
         let cln_response = cln_client
-            .call_typed(&PayRequest {
-                bolt11: invoice,
+            .call_typed(&XpayRequest {
+                invstring: invoice,
                 amount_msat: amount_msat.map(CLN_Amount::from_msat),
+                dev_use_shadow: None,
                 label: None,
-                riskfactor: None,
-                maxfeepercent: None,
-                retry_for: None,
-                maxdelay: None,
-                exemptfee: None,
                 localinvreqid: None,
-                exclude: None,
+                maxdelay: None,
                 maxfee: max_fee_msat.map(CLN_Amount::from_msat),
-                description: None,
+                layers: None,
+                payer_note: None,
+                retry_for: None,
                 partial_msat: partial_amount.map(CLN_Amount::from_msat),
             })
             .await;
 
         let response = match cln_response {
-            Ok(pay_response) => {
-                let status = match pay_response.status {
-                    PayStatus::COMPLETE => MeltQuoteState::Paid,
-                    PayStatus::PENDING => MeltQuoteState::Pending,
-                    PayStatus::FAILED => MeltQuoteState::Failed,
-                };
-
-                MakePaymentResponse {
-                    payment_lookup_id,
-                    payment_proof: Some(hex::encode(pay_response.payment_preimage.to_vec())),
-                    status,
-                    total_spent: Amount::new(
-                        pay_response.amount_sent_msat.msat(),
-                        CurrencyUnit::Msat,
-                    )
+            Ok(pay_response) => MakePaymentResponse {
+                payment_lookup_id,
+                payment_proof: Some(hex::encode(pay_response.payment_preimage.to_vec())),
+                status: MeltQuoteState::Paid,
+                total_spent: Amount::new(pay_response.amount_sent_msat.msat(), CurrencyUnit::Msat)
                     .convert_to(unit)?,
-                }
-            }
+            },
             Err(err) => {
-                tracing::error!("Could not pay invoice: {}", err);
+                tracing::error!("Could not pay invoice with xpay: {}", err);
                 return Err(Error::ClnRpc(err).into());
             }
         };
@@ -669,7 +656,9 @@ impl MintPayment for Cln {
                         recurrence_base: None,
                         recurrence_limit: None,
                         recurrence_paywindow: None,
-                        recurrence_start_any_period: None,
+                        optional_recurrence: None,
+                        proportional_amount: None,
+                        fronting_nodes: None,
                     })
                     .await
                     .map_err(Error::from)?;

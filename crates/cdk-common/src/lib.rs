@@ -19,7 +19,7 @@ pub mod auth;
 pub const MINT_RPC_PROTOCOL_VERSION: &str = "1.0.0";
 
 /// Protocol version for gRPC Payment Processor communication
-pub const PAYMENT_PROCESSOR_PROTOCOL_VERSION: &str = "3.0.0";
+pub const PAYMENT_PROCESSOR_PROTOCOL_VERSION: &str = "4.0.0";
 
 #[cfg(feature = "grpc")]
 pub mod grpc;
@@ -34,8 +34,17 @@ pub mod mint_quote;
 #[cfg(feature = "mint")]
 pub mod payment;
 pub mod pub_sub;
+/// Client-side request rate limiting (GCRA token bucket + HTTP transport
+/// decorator).
+///
+/// Needs `wallet` for the KV-store persistence backend and `http` for the
+/// `Transport` trait it decorates.
+#[cfg(all(feature = "wallet", feature = "http"))]
+pub mod rate_limit;
+pub mod redact;
 #[cfg(feature = "mint")]
 pub mod state;
+pub mod stream;
 pub mod subscription;
 #[cfg(feature = "wallet")]
 pub mod wallet;

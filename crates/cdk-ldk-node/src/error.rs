@@ -29,6 +29,14 @@ pub enum Error {
     #[error("Invalid payment ID length")]
     InvalidPaymentIdLength,
 
+    /// Invalid quote id
+    #[error("Invalid quote id")]
+    InvalidQuoteId,
+
+    /// Database error
+    #[error("Database error: {0}")]
+    Database(String),
+
     /// Unknown invoice amount
     #[error("Unknown invoice amount")]
     UnknownInvoiceAmount,
@@ -84,6 +92,6 @@ pub enum Error {
 
 impl From<Error> for cdk_common::payment::Error {
     fn from(e: Error) -> Self {
-        Self::Lightning(Box::new(e))
+        Self::Backend(Box::new(e))
     }
 }

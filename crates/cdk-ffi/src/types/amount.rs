@@ -127,7 +127,9 @@ impl From<CdkCurrencyUnit> for CurrencyUnit {
             CdkCurrencyUnit::Usd => CurrencyUnit::Usd,
             CdkCurrencyUnit::Eur => CurrencyUnit::Eur,
             CdkCurrencyUnit::Auth => CurrencyUnit::Auth,
-            CdkCurrencyUnit::Custom(s) => CurrencyUnit::Custom { unit: s },
+            CdkCurrencyUnit::Custom(s) => CurrencyUnit::Custom {
+                unit: CdkCurrencyUnit::custom(s).to_string(),
+            },
             _ => CurrencyUnit::Sat, // Default for unknown units
         }
     }
@@ -141,7 +143,7 @@ impl From<CurrencyUnit> for CdkCurrencyUnit {
             CurrencyUnit::Usd => CdkCurrencyUnit::Usd,
             CurrencyUnit::Eur => CdkCurrencyUnit::Eur,
             CurrencyUnit::Auth => CdkCurrencyUnit::Auth,
-            CurrencyUnit::Custom { unit } => CdkCurrencyUnit::Custom(unit),
+            CurrencyUnit::Custom { unit } => CdkCurrencyUnit::custom(unit),
         }
     }
 }
@@ -180,5 +182,26 @@ impl From<cdk::amount::SplitTarget> for SplitTarget {
                 amounts: amounts.into_iter().map(Into::into).collect(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_currency_unit_is_lowercase_across_ffi_boundary() {
+        let ffi = CurrencyUnit::from(CdkCurrencyUnit::Custom("BADCOIN".into()));
+        assert_eq!(
+            ffi,
+            CurrencyUnit::Custom {
+                unit: "badcoin".to_string()
+            }
+        );
+
+        let cdk = CdkCurrencyUnit::from(CurrencyUnit::Custom {
+            unit: "BADCOIN".to_string(),
+        });
+        assert_eq!(cdk, CdkCurrencyUnit::Custom("badcoin".into()));
     }
 }

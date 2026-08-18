@@ -1,5 +1,6 @@
 //! Proof-related FFI types
 
+use std::fmt;
 use std::str::FromStr;
 
 use cdk::nuts::State as CdkState;
@@ -44,7 +45,7 @@ impl From<ProofState> for CdkState {
 }
 
 /// FFI-compatible Proof
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Proof {
     /// Proof amount
     pub amount: Amount,
@@ -60,6 +61,20 @@ pub struct Proof {
     pub dleq: Option<ProofDleq>,
     /// Optional P2BK Ephemeral Public Key (NUT-28)
     pub p2pk_e: Option<String>,
+}
+
+impl fmt::Debug for Proof {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Proof")
+            .field("amount", &self.amount)
+            .field("secret", &"[REDACTED]")
+            .field("c", &self.c)
+            .field("keyset_id", &self.keyset_id)
+            .field("witness", &self.witness)
+            .field("dleq", &self.dleq)
+            .field("p2pk_e", &self.p2pk_e)
+            .finish()
+    }
 }
 
 impl From<cdk::nuts::Proof> for Proof {
@@ -172,7 +187,7 @@ pub fn proof_sign_p2pk(proof: Proof, secret_key_hex: String) -> Result<Proof, Ff
 pub type Proofs = Vec<Proof>;
 
 /// FFI-compatible DLEQ proof for proofs
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct ProofDleq {
     /// e value (hex-encoded SecretKey)
     pub e: String,
@@ -180,6 +195,16 @@ pub struct ProofDleq {
     pub s: String,
     /// r value - blinding factor (hex-encoded SecretKey)
     pub r: String,
+}
+
+impl fmt::Debug for ProofDleq {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProofDleq")
+            .field("e", &"[REDACTED]")
+            .field("s", &"[REDACTED]")
+            .field("r", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// FFI-compatible DLEQ proof for blind signatures
@@ -364,7 +389,7 @@ pub fn encode_conditions(conditions: Conditions) -> Result<String, FfiError> {
 }
 
 /// FFI-compatible Witness
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
 pub enum Witness {
     /// P2PK Witness
     P2PK {
@@ -378,6 +403,25 @@ pub enum Witness {
         /// Optional signatures
         signatures: Option<Vec<String>>,
     },
+}
+
+impl fmt::Debug for Witness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::P2PK { signatures } => f
+                .debug_struct("P2PK")
+                .field("signatures", signatures)
+                .finish(),
+            Self::HTLC {
+                preimage: _,
+                signatures,
+            } => f
+                .debug_struct("HTLC")
+                .field("preimage", &"[REDACTED]")
+                .field("signatures", signatures)
+                .finish(),
+        }
+    }
 }
 
 impl From<cdk::nuts::Witness> for Witness {
@@ -581,4 +625,50 @@ pub fn decode_proof_state_update(json: String) -> Result<ProofStateUpdate, FfiEr
 #[uniffi::export]
 pub fn encode_proof_state_update(update: ProofStateUpdate) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&update)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn htlc_witness_debug_redacts_preimage() {
+        let secret = "htlc-witness-preimage";
+        let witness = Witness::HTLC {
+            preimage: secret.to_string(),
+            signatures: Some(vec!["public-signature".to_string()]),
+        };
+
+        let debug = format!("{witness:?}");
+
+        assert!(debug.contains("public-signature"));
+        assert!(!debug.contains(secret));
+        assert!(debug.contains("preimage: \"[REDACTED]\""));
+    }
+
+    #[test]
+    fn proof_debug_redacts_spending_secret_and_dleq_scalars() {
+        let proof = Proof {
+            amount: Amount::new(1),
+            secret: "spendable-proof-secret".to_string(),
+            c: "public-signature".to_string(),
+            keyset_id: "public-keyset-id".to_string(),
+            witness: None,
+            dleq: Some(ProofDleq {
+                e: "dleq-e-scalar".to_string(),
+                s: "dleq-s-scalar".to_string(),
+                r: "secret-blinding-factor".to_string(),
+            }),
+            p2pk_e: None,
+        };
+
+        let debug = format!("{proof:?}");
+
+        assert!(debug.contains("public-signature"));
+        assert!(debug.contains("public-keyset-id"));
+        assert!(!debug.contains("spendable-proof-secret"));
+        assert!(!debug.contains("dleq-e-scalar"));
+        assert!(!debug.contains("dleq-s-scalar"));
+        assert!(!debug.contains("secret-blinding-factor"));
+    }
 }

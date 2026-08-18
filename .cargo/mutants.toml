@@ -141,6 +141,10 @@ exclude_re = [
     "crates/cashu/src/nuts/nut18/payment_request.rs:.*PaymentRequest::builder",
     "crates/cashu/src/nuts/nut18/transport.rs:.*Transport::builder",
 
+    # Trivial builder setter; assigning the supplied collection has no
+    # independent behavior worth pinning to an implementation-level test.
+    "crates/cashu/src/nuts/nut18/payment_request.rs:.*PaymentRequestBuilder::supported_methods",
+
     # Length guard forced true is equivalent: non-2 array lengths still fail
     # either missing response lookup or tuple deserialization.
     "crates/cashu/src/nuts/nut17/mod.rs:.*items\\.len\\(\\) == 2 with true",
@@ -152,10 +156,6 @@ exclude_re = [
     # Target-before-kind transport data is ignored and remains invalid later
     # because no valid target is available for the decoded kind.
     "crates/cashu/src/nuts/nut26/encoding.rs:.*delete match arm None in PaymentRequest::decode_transport",
-
-    # Equivalent Nostr NIP tag encoding: the specialized "n" branch and the
-    # generic tag branch both encode the full tag tuple identically.
-    "crates/cashu/src/nuts/nut26/encoding.rs:499:.*replace >= with < in PaymentRequest::encode_transport",
 
     # Equivalent loop boundary: pos == data.len() enters then immediately breaks
     # on the inner type+length guard, same as exiting the loop.

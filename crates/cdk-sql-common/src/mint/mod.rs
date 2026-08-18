@@ -297,19 +297,19 @@ mod tests {
             metric
                 .get_label()
                 .iter()
-                .any(|label| label.get_name() == *name && label.get_value() == *value)
+                .any(|label| label.name() == *name && label.value() == *value)
         })
     }
 
     fn counter_value(name: &str, labels: &[(&str, &str)]) -> f64 {
         for family in METRICS.registry().gather() {
-            if family.get_name() != name {
+            if family.name() != name {
                 continue;
             }
 
             for metric in family.get_metric() {
                 if labels_match(metric, labels) {
-                    return metric.get_counter().get_value();
+                    return metric.get_counter().value();
                 }
             }
         }
@@ -319,13 +319,13 @@ mod tests {
 
     fn gauge_value(name: &str, labels: &[(&str, &str)]) -> f64 {
         for family in METRICS.registry().gather() {
-            if family.get_name() != name {
+            if family.name() != name {
                 continue;
             }
 
             for metric in family.get_metric() {
                 if labels_match(metric, labels) {
-                    return metric.get_gauge().get_value();
+                    return metric.get_gauge().value();
                 }
             }
         }
@@ -335,13 +335,13 @@ mod tests {
 
     fn histogram_count(name: &str, labels: &[(&str, &str)]) -> f64 {
         for family in METRICS.registry().gather() {
-            if family.get_name() != name {
+            if family.name() != name {
                 continue;
             }
 
             for metric in family.get_metric() {
                 if labels_match(metric, labels) {
-                    return metric.get_histogram().get_sample_count() as f64;
+                    return metric.get_histogram().sample_count() as f64;
                 }
             }
         }

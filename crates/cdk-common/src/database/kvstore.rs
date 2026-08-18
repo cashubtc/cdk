@@ -125,6 +125,27 @@ pub trait KVStoreDatabase {
     ) -> Result<Vec<String>, Self::Err>;
 }
 
+/// Key-value store capability for atomic compare-and-swap operations.
+///
+/// This is a separate capability because not every [`KVStoreDatabase`]
+/// backend can guarantee an atomic conditional write.
+#[async_trait]
+pub trait KVStoreCompareAndSwap: KVStoreDatabase {
+    /// Replaces a value only when its current value matches `expected`.
+    ///
+    /// An `expected` value of `None` inserts only when the key does not exist.
+    /// Returns `true` when the value was changed and `false` when the
+    /// expectation did not match.
+    async fn kv_compare_and_swap(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+        expected: Option<&[u8]>,
+        replacement: &[u8],
+    ) -> Result<bool, Self::Err>;
+}
+
 /// Key-Value Store trait combining read operations with transaction support
 #[async_trait]
 pub trait KVStore: KVStoreDatabase {

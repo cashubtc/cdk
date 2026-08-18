@@ -72,6 +72,9 @@ impl Lnd {
         cmd.arg("--noseedbackup");
         cmd.arg(format!("--listen={}", self.addr.to_string_lossy()));
         cmd.arg(format!("--externalip={}", self.addr.to_string_lossy()));
+        // The isolated regtest topology allows LDK to contact an LND onion-message
+        // introduction node without first opening a channel to it.
+        cmd.arg("--protocol.onion-msg-relay-all");
         //        panic!("{}", self.addr.to_string_lossy());
 
         // Send output to dev null

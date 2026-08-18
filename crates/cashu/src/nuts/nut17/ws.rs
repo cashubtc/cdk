@@ -8,21 +8,14 @@ use super::{NotificationPayload, Params};
 /// JSON RPC version
 pub const JSON_RPC_VERSION: &str = "2.0";
 
-/// The response to a subscription request
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The result returned after a subscription or unsubscription request.
+///
+/// NUT-17 uses the same result shape for both methods. Clients that need to
+/// distinguish them must correlate the response's JSON-RPC request ID with the
+/// request they sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "I: Serialize + DeserializeOwned")]
-pub struct WsSubscribeResponse<I> {
-    /// Status
-    pub status: String,
-    /// Subscription ID
-    #[serde(rename = "subId")]
-    pub sub_id: I,
-}
-
-/// The response to an unsubscription request
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound = "I: Serialize + DeserializeOwned")]
-pub struct WsUnsubscribeResponse<I> {
+pub struct WsResponseResult<I> {
     /// Status
     pub status: String,
     /// Subscription ID
@@ -67,29 +60,6 @@ pub struct RawNotificationInner<I> {
 
     /// The raw notification payload
     pub payload: serde_json::Value,
-}
-
-/// Responses from the web socket server
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound = "I: Serialize + DeserializeOwned")]
-#[serde(untagged)]
-pub enum WsResponseResult<I> {
-    /// A response to a subscription request
-    Subscribe(WsSubscribeResponse<I>),
-    /// Unsubscribe
-    Unsubscribe(WsUnsubscribeResponse<I>),
-}
-
-impl<I> From<WsSubscribeResponse<I>> for WsResponseResult<I> {
-    fn from(response: WsSubscribeResponse<I>) -> Self {
-        WsResponseResult::Subscribe(response)
-    }
-}
-
-impl<I> From<WsUnsubscribeResponse<I>> for WsResponseResult<I> {
-    fn from(response: WsUnsubscribeResponse<I>) -> Self {
-        WsResponseResult::Unsubscribe(response)
-    }
 }
 
 /// The request to unsubscribe
@@ -231,7 +201,37 @@ impl<I> From<(usize, Result<WsResponseResult<I>, WsErrorBody>)> for WsMessageOrR
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+
+    #[test]
+    fn response_result_uses_shared_nut17_acknowledgement_shape() {
+        let encoded = json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "status": "OK",
+                "subId": "sub-id"
+            },
+            "id": 7
+        });
+
+        let decoded: WsResponse<String> =
+            serde_json::from_value(encoded.clone()).expect("NUT-17 response");
+
+        assert_eq!(decoded.id, 7);
+        assert_eq!(
+            decoded.result,
+            WsResponseResult {
+                status: "OK".to_string(),
+                sub_id: "sub-id".to_string(),
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(decoded).expect("serialized NUT-17 response"),
+            encoded
+        );
+    }
 
     #[test]
     fn raw_ws_message_deserializes_notification_payload_as_json() {

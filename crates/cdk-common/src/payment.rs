@@ -1,4 +1,4 @@
-//! CDK Mint Lightning
+//! CDK mint payment backend interface
 
 use std::convert::Infallible;
 use std::pin::Pin;
@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::nuts::nut30::MeltQuoteOnchainFeeOption;
-use crate::nuts::{CurrencyUnit, MeltQuoteState};
+use crate::nuts::{CurrencyUnit, MeltQuoteState, PublicKey};
 use crate::{Amount, QuoteId};
 
 /// CDK Payment Error
@@ -44,9 +44,9 @@ pub enum Error {
     /// Invalid expiry
     #[error("Invalid expiry")]
     InvalidExpiry,
-    /// Lightning Error
+    /// Payment backend error
     #[error(transparent)]
-    Lightning(Box<dyn std::error::Error + Send + Sync>),
+    Backend(Box<dyn std::error::Error + Send + Sync>),
     /// Onchain Error
     #[error(transparent)]
     Onchain(Box<dyn std::error::Error + Send + Sync>),
@@ -231,6 +231,20 @@ pub struct CustomIncomingPaymentOptions {
     /// These fields are passed through to the payment processor for
     /// method-specific validation (e.g., ehash share).
     pub extra_json: Option<String>,
+    /// The mint's quote id for this mint quote. Generated before
+    /// `create_incoming_payment_request` is called, so backends whose rail is
+    /// keyed by the quote the wallet displays can register it up front and
+    /// use it as their stable correlation key — mirroring
+    /// [`OnchainIncomingPaymentOptions::quote_id`] and the melt-side
+    /// [`CustomOutgoingPaymentOptions::quote_id`].
+    pub quote_id: QuoteId,
+    /// NUT-20 locking pubkey of the quote, when the wallet supplied one.
+    ///
+    /// Lets backends enforce a locked-quotes-only policy at quote creation
+    /// for rails where the NUT-20 lock is the safety mechanism (the mint
+    /// itself only verifies signatures at mint time and does not require a
+    /// pubkey for custom methods).
+    pub pubkey: Option<PublicKey>,
 }
 
 /// Options for creating an onchain incoming payment request
@@ -422,7 +436,7 @@ impl OutgoingPaymentOptions {
 /// Mint payment trait
 #[async_trait]
 pub trait MintPayment {
-    /// Mint Lightning Error
+    /// Payment backend error
     type Err: Into<Error> + From<Error>;
 
     /// Start the payment processor
@@ -532,7 +546,7 @@ impl WaitPaymentResponse {
 /// Create incoming payment response
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateIncomingPaymentResponse {
-    /// Id that is used to look up the payment from the ln backend
+    /// Id that is used to look up the payment from the payment backend
     pub request_lookup_id: PaymentIdentifier,
     /// Payment request
     pub request: String,

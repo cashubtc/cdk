@@ -8,9 +8,9 @@ mod common;
 mod database;
 mod info;
 mod limits;
-mod ln;
 mod mint_info;
 mod onchain;
+mod payment_backend;
 mod signatory;
 
 mod auth;
@@ -24,8 +24,6 @@ mod fake_wallet;
 mod grpc_processor;
 #[cfg(feature = "ldk-node")]
 mod ldk_node;
-#[cfg(feature = "lnbits")]
-mod lnbits;
 #[cfg(feature = "lnd")]
 mod lnd;
 #[cfg(feature = "management-rpc")]
@@ -51,19 +49,17 @@ pub use grpc_processor::*;
 #[cfg(feature = "ldk-node")]
 pub use ldk_node::*;
 pub use limits::*;
-pub use ln::*;
-#[cfg(feature = "lnbits")]
-pub use lnbits::*;
 #[cfg(feature = "lnd")]
 pub use lnd::*;
 #[cfg(feature = "management-rpc")]
 pub use management_rpc::*;
 pub use mint_info::*;
 pub use onchain::*;
+pub use payment_backend::*;
 #[cfg(feature = "prometheus")]
 pub use prometheus::*;
 
-use crate::config::{DatabaseEngine, Ln, LnBackend, OnchainBackend, Settings};
+use crate::config::{DatabaseEngine, OnchainBackend, PaymentBackend, PaymentBackendType, Settings};
 
 impl Settings {
     pub fn from_env(&mut self) -> Result<Self> {
@@ -99,22 +95,23 @@ impl Settings {
         self.signatory = Some(self.signatory.clone().unwrap_or_default().from_env());
 
         self.mint_info = self.mint_info.clone().from_env();
-        // CDK_MINTD_LN_* env vars only apply when there is exactly one
-        // configured Lightning entry. Multi-backend setups must choose units
-        // and backends in the config file so env overrides do not collapse them.
-        match self.ln.len() {
+        // CDK_MINTD_PAYMENT_BACKEND_* env vars only apply when there is exactly
+        // one configured payment backend entry. Multi-backend setups must
+        // choose units and backends in the config file so env overrides do not
+        // collapse them.
+        match self.payment_backend.len() {
             0 => {
-                let ln = Ln::default().from_env();
-                if ln.ln_backend != LnBackend::None {
-                    self.ln.push(ln);
+                let backend = PaymentBackend::default().from_env();
+                if backend.backend != PaymentBackendType::None {
+                    self.payment_backend.push(backend);
                 }
             }
             1 => {
-                self.ln[0] = self.ln[0].clone().from_env();
+                self.payment_backend[0] = self.payment_backend[0].clone().from_env();
             }
             _ => {
                 tracing::warn!(
-                    "CDK_MINTD_LN_* environment variables ignored: multiple [[ln]] entries configured"
+                    "CDK_MINTD_PAYMENT_BACKEND_* environment variables ignored: multiple [[payment_backend]] entries configured"
                 );
             }
         }
@@ -158,16 +155,6 @@ impl Settings {
             }
         }
 
-        #[cfg(feature = "lnbits")]
-        {
-            let lnbits = self.lnbits.clone().unwrap_or_default().from_env();
-            if lnbits.admin_api_key.is_empty() {
-                self.lnbits = None;
-            } else {
-                self.lnbits = Some(lnbits);
-            }
-        }
-
         #[cfg(feature = "fakewallet")]
         {
             // Fake wallet has defaults so it is always Some if feature enabled
@@ -178,7 +165,7 @@ impl Settings {
                 fake_wallet.supported_units != vec![cdk::nuts::CurrencyUnit::Sat];
 
             if fake_wallet_supported_units_from_env || supported_units_configured {
-                self.expand_single_fake_wallet_ln_entry(&fake_wallet);
+                self.expand_single_fake_wallet_backend_entry(&fake_wallet);
             }
 
             self.fake_wallet = Some(fake_wallet);
@@ -211,9 +198,9 @@ impl Settings {
         {
             let grpc_processor = self.grpc_processor.clone().unwrap_or_default().from_env();
             let grpc_processor_configured = self
-                .ln
+                .payment_backend
                 .iter()
-                .any(|ln| ln.ln_backend == LnBackend::GrpcProcessor);
+                .any(|backend| backend.backend == PaymentBackendType::GrpcProcessor);
             if grpc_processor.supported_units.is_empty() && !grpc_processor_configured {
                 self.grpc_processor = None;
             } else {
@@ -231,34 +218,35 @@ impl Settings {
             }
         }
 
-        for ln in &self.ln {
-            match ln.ln_backend {
+        for payment_backend in &self.payment_backend {
+            match payment_backend.backend {
                 #[cfg(feature = "cln")]
-                LnBackend::Cln => {}
-                #[cfg(feature = "lnbits")]
-                LnBackend::LNbits => {}
+                PaymentBackendType::Cln => {}
                 #[cfg(feature = "fakewallet")]
-                LnBackend::FakeWallet => {}
+                PaymentBackendType::FakeWallet => {}
                 #[cfg(feature = "lnd")]
-                LnBackend::Lnd => {}
+                PaymentBackendType::Lnd => {}
                 #[cfg(feature = "ldk-node")]
-                LnBackend::LdkNode => {}
+                PaymentBackendType::LdkNode => {}
                 #[cfg(feature = "grpc-processor")]
-                LnBackend::GrpcProcessor => {}
-                LnBackend::None => {}
+                PaymentBackendType::GrpcProcessor => {}
+                PaymentBackendType::None => {}
                 #[allow(unreachable_patterns)]
-                _ => bail!("Selected Ln backend is not enabled in this build"),
+                _ => bail!("Selected payment backend is not enabled in this build"),
             }
         }
 
-        let has_lightning_backend = self.ln.iter().any(|ln| ln.ln_backend != LnBackend::None);
+        let has_payment_backend = self
+            .payment_backend
+            .iter()
+            .any(|backend| backend.backend != PaymentBackendType::None);
         let has_onchain_backend = self
             .onchain
             .as_ref()
             .map(|onchain| onchain.onchain_backend != OnchainBackend::None)
             .unwrap_or(false);
-        if !has_lightning_backend && !has_onchain_backend {
-            bail!("At least one payment backend (Lightning or On-chain) must be set");
+        if !has_payment_backend && !has_onchain_backend {
+            bail!("At least one payment backend must be set");
         }
 
         self.validate_backend_pairing()
@@ -268,15 +256,17 @@ impl Settings {
     }
 
     #[cfg(feature = "fakewallet")]
-    fn expand_single_fake_wallet_ln_entry(&mut self, fake_wallet: &crate::config::FakeWallet) {
-        let fake_wallet_ln_index = self
-            .ln
+    fn expand_single_fake_wallet_backend_entry(&mut self, fake_wallet: &crate::config::FakeWallet) {
+        let fake_wallet_backend_index = self
+            .payment_backend
             .iter()
             .enumerate()
-            .filter_map(|(index, ln)| (ln.ln_backend == LnBackend::FakeWallet).then_some(index))
+            .filter_map(|(index, backend)| {
+                (backend.backend == PaymentBackendType::FakeWallet).then_some(index)
+            })
             .collect::<Vec<_>>();
 
-        if fake_wallet_ln_index.len() != 1 {
+        if fake_wallet_backend_index.len() != 1 {
             return;
         }
 
@@ -291,13 +281,14 @@ impl Settings {
             return;
         }
 
-        let index = fake_wallet_ln_index[0];
-        let base_ln = self.ln[index].clone();
-        let expanded_ln = units.into_iter().map(|unit| Ln {
+        let index = fake_wallet_backend_index[0];
+        let base_backend = self.payment_backend[index].clone();
+        let expanded_backends = units.into_iter().map(|unit| PaymentBackend {
             unit,
-            ..base_ln.clone()
+            ..base_backend.clone()
         });
 
-        self.ln.splice(index..=index, expanded_ln);
+        self.payment_backend
+            .splice(index..=index, expanded_backends);
     }
 }

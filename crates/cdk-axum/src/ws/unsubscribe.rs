@@ -1,4 +1,4 @@
-use cdk::ws::{WsResponseResult, WsUnsubscribeRequest, WsUnsubscribeResponse};
+use cdk::ws::{WsResponseResult, WsUnsubscribeRequest};
 
 use super::{WsContext, WsError};
 
@@ -8,11 +8,10 @@ pub(crate) async fn handle(
 ) -> Result<WsResponseResult, WsError> {
     if let Some(handle) = context.subscriptions.remove(&req.sub_id) {
         handle.abort();
-        Ok(WsUnsubscribeResponse {
+        Ok(WsResponseResult {
             status: "OK".to_string(),
             sub_id: req.sub_id,
-        }
-        .into())
+        })
     } else {
         Err(WsError::InvalidParams)
     }

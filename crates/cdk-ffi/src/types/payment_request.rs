@@ -1,5 +1,6 @@
 //! Payment Request FFI types (NUT-18)
 
+use std::fmt;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,33 @@ pub struct Transport {
     pub target: String,
     /// Tags
     pub tags: Vec<Vec<String>>,
+}
+
+/// Supported payment method for a NUT-18 payment request
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct SupportedMethod {
+    /// Payment method name, such as "bolt11", "bolt12", or "onchain"
+    pub method: String,
+    /// Additional fee for payments from non-preferred mints
+    pub fee: Option<Amount>,
+}
+
+impl From<cdk::nuts::SupportedMethod> for SupportedMethod {
+    fn from(method: cdk::nuts::SupportedMethod) -> Self {
+        Self {
+            method: method.method,
+            fee: method.fee.map(Into::into),
+        }
+    }
+}
+
+impl From<SupportedMethod> for cdk::nuts::SupportedMethod {
+    fn from(method: SupportedMethod) -> Self {
+        Self {
+            method: method.method,
+            fee: method.fee.map(Into::into),
+        }
+    }
 }
 
 impl From<cdk::nuts::Transport> for Transport {
@@ -159,6 +187,21 @@ impl PaymentRequest {
         self.inner.mints.iter().map(|m| m.to_string()).collect()
     }
 
+    /// Get whether the mint list is preferred instead of strict.
+    pub fn mint_preferred(&self) -> Option<bool> {
+        self.inner.mint_preferred
+    }
+
+    /// Get the list of supported payment methods the mint must support
+    pub fn supported_methods(&self) -> Vec<SupportedMethod> {
+        self.inner
+            .supported_methods
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect()
+    }
+
     /// Get the description
     pub fn description(&self) -> Option<String> {
         self.inner.description.clone()
@@ -176,7 +219,7 @@ impl PaymentRequest {
 }
 
 /// Parameters for creating a NUT-18 payment request
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct CreateRequestParams {
     /// Optional amount to request (in smallest unit for the currency)
     pub amount: Option<u64>,
@@ -200,6 +243,27 @@ pub struct CreateRequestParams {
     pub nostr_relays: Option<Vec<String>>,
     /// Optional list of mint URLs the receiver trusts. If not provided, the wallet's current mints for the requested unit will be used.
     pub mints: Option<Vec<String>>,
+    /// Whether the mint list is preferred rather than required
+    pub mint_preferred: Option<bool>,
+}
+
+impl fmt::Debug for CreateRequestParams {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CreateRequestParams")
+            .field("amount", &self.amount)
+            .field("unit", &self.unit)
+            .field("description", &self.description)
+            .field("pubkeys", &self.pubkeys)
+            .field("num_sigs", &self.num_sigs)
+            .field("hash", &self.hash)
+            .field("preimage", &self.preimage.as_ref().map(|_| "[REDACTED]"))
+            .field("transport", &self.transport)
+            .field("http_url", &self.http_url)
+            .field("nostr_relays", &self.nostr_relays)
+            .field("mints", &self.mints)
+            .field("mint_preferred", &self.mint_preferred)
+            .finish()
+    }
 }
 
 impl Default for CreateRequestParams {
@@ -216,6 +280,7 @@ impl Default for CreateRequestParams {
             http_url: None,
             nostr_relays: None,
             mints: None,
+            mint_preferred: None,
         }
     }
 }
@@ -234,6 +299,7 @@ impl From<CreateRequestParams> for cdk::wallet::payment_request::CreateRequestPa
             http_url: params.http_url,
             nostr_relays: params.nostr_relays,
             mints: params.mints,
+            mint_preferred: params.mint_preferred,
         }
     }
 }
@@ -252,6 +318,7 @@ impl From<cdk::wallet::payment_request::CreateRequestParams> for CreateRequestPa
             http_url: params.http_url,
             nostr_relays: params.nostr_relays,
             mints: params.mints,
+            mint_preferred: params.mint_preferred,
         }
     }
 }
@@ -302,6 +369,16 @@ impl NostrWaitInfo {
     /// Get the recipient public key as a hex string
     pub fn pubkey(&self) -> String {
         self.inner.pubkey.to_hex()
+    }
+
+    /// Get the mint URLs accepted or preferred by the original payment request
+    pub fn mints(&self) -> Vec<String> {
+        self.inner.mints.iter().map(|m| m.to_string()).collect()
+    }
+
+    /// Get whether the original request's mint list is preferred instead of strict
+    pub fn mint_preferred(&self) -> Option<bool> {
+        self.inner.mint_preferred
     }
 }
 
@@ -373,6 +450,22 @@ impl core::fmt::Display for PaymentRequestPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_request_params_debug_redacts_preimage() {
+        let secret = "htlc-preimage";
+        let params = CreateRequestParams {
+            preimage: Some(secret.to_string()),
+            hash: Some("public-hash".to_string()),
+            ..Default::default()
+        };
+
+        let debug = format!("{params:?}");
+
+        assert!(debug.contains("public-hash"));
+        assert!(!debug.contains(secret));
+        assert!(debug.contains("preimage: Some(\"[REDACTED]\")"));
+    }
 
     #[test]
     fn test_payment_request_payload() {
@@ -503,6 +596,7 @@ mod tests {
         assert_eq!(params.num_sigs, 1);
         assert_eq!(params.transport, "none");
         assert!(params.amount.is_none());
+        assert!(params.mint_preferred.is_none());
     }
 
     #[test]
@@ -513,6 +607,7 @@ mod tests {
             description: Some("Test payment".to_string()),
             transport: "http".to_string(),
             http_url: Some("https://example.com/callback".to_string()),
+            mint_preferred: Some(true),
             ..Default::default()
         };
 
@@ -522,5 +617,10 @@ mod tests {
         assert_eq!(params.amount, decoded.amount);
         assert_eq!(params.unit, decoded.unit);
         assert_eq!(params.description, decoded.description);
+        assert_eq!(params.mint_preferred, decoded.mint_preferred);
+
+        let cdk_params: cdk::wallet::payment_request::CreateRequestParams = decoded.into();
+        let ffi_params: CreateRequestParams = cdk_params.into();
+        assert_eq!(ffi_params.mint_preferred, Some(true));
     }
 }

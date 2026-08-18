@@ -1,8 +1,12 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use anyhow::{bail, Result};
+use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
-use cdk::wallet::WalletRepository;
+use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
+use cdk::nuts::PaymentMethod;
+use cdk::wallet::{MeltConfirmOptions, WalletRepository};
 use cdk::Amount;
 use cdk_common::wallet::WalletKey;
 use clap::Args;
@@ -17,12 +21,64 @@ pub struct TransferSubCommand {
     /// Target mint URL to transfer to (optional - will prompt if not provided)
     #[arg(long)]
     target_mint: Option<String>,
-    /// Amount to transfer (optional - will prompt if not provided)
+    /// Amount received at the target; source-side Lightning and input fees are additional
     #[arg(short, long, conflicts_with = "full_balance")]
     amount: Option<u64>,
     /// Transfer all available balance from source mint
     #[arg(long, conflicts_with = "amount")]
     full_balance: bool,
+}
+
+fn fixed_transfer_fee_error(
+    source_balance: Amount,
+    amount: Amount,
+    fee_reserve: Amount,
+    required_before_input_fees: Amount,
+    unit: &cdk::nuts::CurrencyUnit,
+) -> anyhow::Error {
+    let maximum_before_input_fees = source_balance
+        .checked_sub(fee_reserve)
+        .unwrap_or(Amount::ZERO);
+
+    anyhow::anyhow!(
+        "Insufficient funds in source mint. Available: {} {}, Transfer amount: {} {}, \
+         Lightning fee reserve: {} {}, Minimum before input fees: {} {}. Input fees may \
+         increase the total; reduce the amount (maximum before input fees: {} {}) or use \
+         --full-balance.",
+        source_balance,
+        unit,
+        amount,
+        unit,
+        fee_reserve,
+        unit,
+        required_before_input_fees,
+        unit,
+        maximum_before_input_fees,
+        unit
+    )
+}
+
+fn ensure_fixed_transfer_fee_reserve(
+    source_balance: Amount,
+    amount: Amount,
+    fee_reserve: Amount,
+    unit: &cdk::nuts::CurrencyUnit,
+) -> Result<Amount> {
+    let required_before_input_fees = amount
+        .checked_add(fee_reserve)
+        .ok_or(cdk::Error::AmountOverflow)?;
+
+    if source_balance < required_before_input_fees {
+        return Err(fixed_transfer_fee_error(
+            source_balance,
+            amount,
+            fee_reserve,
+            required_before_input_fees,
+            unit,
+        ));
+    }
+
+    Ok(required_before_input_fees)
 }
 
 /// Helper function to select a mint from available mints
@@ -142,26 +198,67 @@ pub async fn transfer(
             source_balance, unit, source_mint_url, target_mint_url
         );
 
-        // Send all from source
-        let prepared = source_wallet
-            .prepare_send(source_balance, Default::default())
-            .await?;
-        let token = prepared.confirm(None).await?;
+        let mut source_balance_after = source_balance;
+        let mut received = Amount::ZERO;
+        let mut completed_transfers = 0_u64;
 
-        // Receive at target
-        let received = target_wallet
-            .receive(&token.to_string(), Default::default())
-            .await?;
+        loop {
+            let quote = match source_wallet
+                .cross_mint_transfer_quote_max(&target_wallet)
+                .await
+            {
+                Ok(quote) => quote,
+                Err(cdk::Error::InsufficientFunds) if completed_transfers > 0 => break,
+                Err(error) => return Err(error.into()),
+            };
+            let source_proofs = source_wallet.get_unspent_proofs().await?;
+            let prepared = source_wallet
+                .prepare_melt_proofs(&quote.melt_quote.id, source_proofs, HashMap::new())
+                .await?;
+            prepared
+                .confirm_with_options(MeltConfirmOptions::skip_swap())
+                .await?;
+            let received_proofs = target_wallet
+                .mint(&quote.mint_quote.id, SplitTarget::default(), None)
+                .await?;
+            received = received
+                .checked_add(received_proofs.total_amount()?)
+                .ok_or(cdk::Error::AmountOverflow)?;
 
-        let source_balance_after = source_wallet.total_balance().await?;
+            let next_source_balance = source_wallet.total_balance().await?;
+            if next_source_balance >= source_balance_after {
+                bail!(
+                    "Full-balance transfer made no progress; source balance remains {} {}",
+                    next_source_balance,
+                    unit
+                );
+            }
+
+            source_balance_after = next_source_balance;
+            completed_transfers += 1;
+
+            if source_balance_after == Amount::ZERO {
+                break;
+            }
+        }
+
         let target_balance_after = target_wallet.total_balance().await?;
+        let amount_sent = source_balance
+            .checked_sub(source_balance_after)
+            .unwrap_or(Amount::ZERO);
 
         println!("\nTransfer completed successfully!");
-        println!("Amount sent: {} {}", source_balance, unit);
+        println!("Amount sent: {} {}", amount_sent, unit);
         println!("Amount received: {} {}", received, unit);
-        let fees_paid = source_balance - received;
+        let fees_paid = amount_sent.checked_sub(received).unwrap_or(Amount::ZERO);
         if fees_paid > Amount::ZERO {
             println!("Fees paid: {} {}", fees_paid, unit);
+        }
+        if source_balance_after > Amount::ZERO {
+            println!(
+                "Remaining balance below transfer limits: {} {}",
+                source_balance_after, unit
+            );
         }
         println!("\nUpdated balances:");
         println!(
@@ -196,24 +293,60 @@ pub async fn transfer(
             amount, unit, source_mint_url, target_mint_url
         );
 
-        // Send from source
-        let prepared = source_wallet
-            .prepare_send(amount, Default::default())
+        let mint_quote = target_wallet
+            .mint_quote(
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                Some(amount),
+                None,
+                None,
+            )
             .await?;
-        let token = prepared.confirm(None).await?;
-
-        // Receive at target
-        let received = target_wallet
-            .receive(&token.to_string(), Default::default())
+        let melt_quote = source_wallet
+            .melt_quote(
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                &mint_quote.request,
+                None,
+                None,
+            )
             .await?;
+        let required_before_input_fees = ensure_fixed_transfer_fee_reserve(
+            source_balance,
+            amount,
+            melt_quote.fee_reserve,
+            unit,
+        )?;
+        let prepared = match source_wallet
+            .prepare_melt(&melt_quote.id, HashMap::new())
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(cdk::Error::InsufficientFunds) => {
+                return Err(fixed_transfer_fee_error(
+                    source_balance,
+                    amount,
+                    melt_quote.fee_reserve,
+                    required_before_input_fees,
+                    unit,
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        prepared.confirm().await?;
+        let received_proofs = target_wallet
+            .mint(&mint_quote.id, SplitTarget::default(), None)
+            .await?;
+        let received = received_proofs.total_amount()?;
 
         let source_balance_after = source_wallet.total_balance().await?;
         let target_balance_after = target_wallet.total_balance().await?;
+        let amount_sent = source_balance
+            .checked_sub(source_balance_after)
+            .unwrap_or(Amount::ZERO);
 
         println!("\nTransfer completed successfully!");
-        println!("Amount sent: {} {}", amount, unit);
+        println!("Amount sent: {} {}", amount_sent, unit);
         println!("Amount received: {} {}", received, unit);
-        let fees_paid = amount - received;
+        let fees_paid = amount_sent.checked_sub(received).unwrap_or(Amount::ZERO);
         if fees_paid > Amount::ZERO {
             println!("Fees paid: {} {}", fees_paid, unit);
         }
@@ -229,4 +362,38 @@ pub async fn transfer(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk::nuts::CurrencyUnit;
+
+    use super::*;
+
+    #[test]
+    fn fixed_transfer_requires_fee_headroom_beyond_requested_amount() {
+        let error = ensure_fixed_transfer_fee_reserve(
+            Amount::from(1_000),
+            Amount::from(1_000),
+            Amount::from(9),
+            &CurrencyUnit::Sat,
+        )
+        .expect_err("fee reserve should make the transfer unaffordable");
+
+        let message = error.to_string();
+        assert!(message.contains("Lightning fee reserve: 9 sat"));
+        assert!(message.contains("Minimum before input fees: 1009 sat"));
+        assert!(message.contains("--full-balance"));
+    }
+
+    #[test]
+    fn fixed_transfer_accepts_balance_covering_amount_and_fee_reserve() {
+        ensure_fixed_transfer_fee_reserve(
+            Amount::from(1_009),
+            Amount::from(1_000),
+            Amount::from(9),
+            &CurrencyUnit::Sat,
+        )
+        .expect("amount and fee reserve should fit");
+    }
 }

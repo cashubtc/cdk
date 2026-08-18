@@ -55,6 +55,58 @@ struct CdkTests {
         }
     }
 
+    private func rateLimitedWallet(_ rateLimit: RateLimit?) throws -> Wallet {
+        try Wallet(
+            mintUrl: "https://mint.example.com",
+            unit: .sat,
+            mnemonic: try generateMnemonic(),
+            store: .sqlite(path: ":memory:"),
+            config: WalletConfig(targetProofCount: nil, rateLimit: rateLimit)
+        )
+    }
+
+    @Test("Rate limit defaults to pacing")
+    func rateLimitDefaultsToPacing() throws {
+        // Omitting the field is the backwards-compatible spelling and must keep
+        // selecting the built-in default.
+        let omitted = try Wallet(
+            mintUrl: "https://mint.example.com",
+            unit: .sat,
+            mnemonic: try generateMnemonic(),
+            store: .sqlite(path: ":memory:"),
+            config: WalletConfig(targetProofCount: nil)
+        )
+        #expect(omitted.isRateLimited(), "An omitted rate limit should pace by default")
+
+        let explicit = try rateLimitedWallet(.default)
+        #expect(explicit.isRateLimited(), "Default should pace the wallet")
+    }
+
+    @Test("Rate limit can be disabled and re-enabled")
+    func rateLimitCanBeDisabledAndReEnabled() throws {
+        let wallet = try rateLimitedWallet(.disabled)
+        #expect(!wallet.isRateLimited(), "Disabled should not pace")
+
+        try wallet.setRateLimit(rateLimit: .default)
+        #expect(wallet.isRateLimited(), "A wallet built disabled should be re-enablable")
+    }
+
+    @Test("Custom rate limit paces the wallet")
+    func customRateLimitPaces() throws {
+        let wallet = try rateLimitedWallet(.custom(capacity: 5, refillPerMinute: 30))
+        #expect(wallet.isRateLimited(), "Custom should pace the wallet")
+    }
+
+    @Test("Zero rate limit values are rejected")
+    func zeroRateLimitValuesAreRejected() throws {
+        #expect(throws: (any Error).self) {
+            try rateLimitedWallet(.custom(capacity: 0, refillPerMinute: 30))
+        }
+        #expect(throws: (any Error).self) {
+            try rateLimitedWallet(.custom(capacity: 5, refillPerMinute: 0))
+        }
+    }
+
     @Test("Mint flow completes successfully")
     func mintFlow() async throws {
         let quote = try await wallet.mintQuote(

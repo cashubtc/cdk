@@ -23,16 +23,32 @@ use crate::OidcClient;
 pub mod http_client;
 pub mod transport;
 
+use transport::RateLimitedTransport;
+pub use transport::{RateLimitConfig, RateLimiterManager, TokenBucket};
+
 /// Auth HTTP Client with async transport
 pub type AuthHttpClient = http_client::AuthHttpClient<transport::Async>;
 /// Default Http Client with async transport (non-Tor)
 pub type HttpClient = http_client::HttpClient<transport::Async>;
+/// Rate-limited HTTP Client with async transport
+pub type RateLimitedHttpClient = http_client::HttpClient<RateLimitedTransport<transport::Async>>;
+/// Rate-limited Auth HTTP Client with async transport
+pub type RateLimitedAuthHttpClient =
+    http_client::AuthHttpClient<RateLimitedTransport<transport::Async>>;
 /// Tor Auth HTTP Client with async transport (only when `tor` feature is enabled and not on wasm32)
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub type TorAuthHttpClient = http_client::AuthHttpClient<transport::TorAsync>;
 /// Tor Http Client with async transport (only when `tor` feature is enabled and not on wasm32)
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub type TorHttpClient = http_client::HttpClient<transport::TorAsync>;
+/// Rate-limited Tor Auth HTTP Client with async transport (only when `tor` feature is enabled and not on wasm32)
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+pub type RateLimitedTorAuthHttpClient =
+    http_client::AuthHttpClient<RateLimitedTransport<transport::TorAsync>>;
+/// Rate-limited Tor Http Client with async transport (only when `tor` feature is enabled and not on wasm32)
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+pub type RateLimitedTorHttpClient =
+    http_client::HttpClient<RateLimitedTransport<transport::TorAsync>>;
 
 /// Interface that connects a wallet to a mint. Typically represents an [HttpClient].
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]

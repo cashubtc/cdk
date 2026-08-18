@@ -11,15 +11,14 @@ rust-version.workspace = true
 readme = "README.md"
 
 [features]
-default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet", "grpc-processor", "sqlite", "info-page", "bdk"]
+default = ["management-rpc", "cln", "lnd", "fakewallet", "grpc-processor", "sqlite", "info-page", "bdk"]
 # Database features - at least one must be enabled
 sqlite = ["dep:cdk-sqlite"]
 postgres = ["dep:cdk-postgres"]
-# Ensure at least one lightning backend is enabled
+# Ensure at least one payment backend is enabled
 management-rpc = ["cdk-mint-rpc"]
 cln = ["dep:cdk-cln"]
 lnd = ["dep:cdk-lnd"]
-lnbits = ["dep:cdk-lnbits"]
 fakewallet = ["dep:cdk-fake-wallet"]
 ldk-node = ["dep:cdk-ldk-node"]
 bdk = ["dep:cdk-bdk", "cdk-bdk/bitcoin-rpc", "cdk-bdk/electrum", "cdk-bdk/esplora"]
@@ -43,7 +42,6 @@ cdk-sqlite = { workspace = true, features = [
 cdk-common = {workspace = true, features = ["prometheus"]}
 cdk-postgres = { workspace = true, features = ["mint"], optional = true}
 cdk-cln = { workspace = true, optional = true }
-cdk-lnbits = { workspace = true, optional = true }
 cdk-lnd = { workspace = true, optional = true }
 cdk-ldk-node = { workspace = true, optional = true }
 cdk-fake-wallet = { workspace = true, optional = true }
@@ -62,7 +60,10 @@ tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 futures.workspace = true
 serde.workspace = true
+serde_ignored.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+toml = { workspace = true, features = ["parse"] }
 bip39.workspace = true
 tower-http = { workspace = true, features = ["compression-full", "decompression-full"] }
 tower.workspace = true

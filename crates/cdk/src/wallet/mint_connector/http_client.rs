@@ -1,5 +1,6 @@
 //! HTTP Mint client with pluggable transport
 use std::collections::HashSet;
+use std::fmt;
 use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
@@ -13,6 +14,7 @@ use cdk_http_client::HttpError;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tokio::sync::RwLock;
+use tokio::time::{sleep, timeout};
 use tracing::instrument;
 use url::Url;
 use web_time::{Duration, Instant};
@@ -32,6 +34,12 @@ use crate::wallet::auth::{AuthMintConnector, AuthWallet};
 use crate::OidcClient;
 
 type Cache = (u64, HashSet<(nut19::Method, nut19::Path)>);
+
+/// Delay before the first replay of a failed request.
+const HTTP_RETRY_INITIAL_BACKOFF: Duration = Duration::from_millis(50);
+
+/// Upper bound for the exponential backoff between replays.
+const HTTP_RETRY_MAX_BACKOFF: Duration = Duration::from_secs(1);
 
 fn payment_method_path_segment(method: &PaymentMethod) -> Result<&str, Error> {
     match method {
@@ -74,7 +82,7 @@ where
 }
 
 /// Http Client
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HttpClient<T>
 where
     T: Transport + Send + Sync + 'static,
@@ -83,6 +91,20 @@ where
     mint_url: MintUrl,
     cache_support: Arc<StdRwLock<Cache>>,
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
+}
+
+impl<T> fmt::Debug for HttpClient<T>
+where
+    T: Transport + Send + Sync + 'static,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpClient")
+            .field("transport", &core::any::type_name::<T>())
+            .field("mint_url", &self.mint_url)
+            .field("cache_support", &"[INTERNAL]")
+            .field("auth_wallet", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -176,8 +198,20 @@ where
         transport: T,
         auth_wallet: Option<AuthWallet>,
     ) -> Self {
+        Self::with_shared_transport(mint_url, Arc::new(transport), auth_wallet)
+    }
+
+    /// Create new [`HttpClient`] sharing an existing transport instance.
+    ///
+    /// Lets several clients (for example the main and blind-auth clients) reuse
+    /// one transport, and so its connection pool and any rate limiter it wraps.
+    pub fn with_shared_transport(
+        mint_url: MintUrl,
+        transport: Arc<T>,
+        auth_wallet: Option<AuthWallet>,
+    ) -> Self {
         Self {
-            transport: transport.into(),
+            transport,
             mint_url,
             auth_wallet: Arc::new(RwLock::new(auth_wallet)),
             cache_support: Default::default(),
@@ -185,7 +219,10 @@ where
     }
 
     /// Create new [`HttpClient`]
-    pub fn new(mint_url: MintUrl, auth_wallet: Option<AuthWallet>) -> Self {
+    pub fn new(mint_url: MintUrl, auth_wallet: Option<AuthWallet>) -> Self
+    where
+        T: Default,
+    {
         Self {
             transport: T::default().into(),
             mint_url,
@@ -219,7 +256,10 @@ where
         proxy: Url,
         host_matcher: Option<&str>,
         accept_invalid_certs: bool,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, Error>
+    where
+        T: Default,
+    {
         let mut transport = T::default();
         transport
             .with_proxy(proxy, host_matcher, accept_invalid_certs)
@@ -264,6 +304,7 @@ where
             .unwrap_or_default();
 
         let transport = self.transport.clone();
+        let mut retry_delay = HTTP_RETRY_INITIAL_BACKOFF;
         loop {
             let url = match &path {
                 nut19::Path::Swap => self.mint_url.join_paths(&["v1", "swap"])?,
@@ -276,39 +317,51 @@ where
                 }
             };
 
-            let result = match method {
-                nut19::Method::Get => transport
-                    .http_get(url, auth_token.clone())
-                    .await
-                    .map_err(Self::map_http_error),
-                nut19::Method::Post => transport
-                    .http_post(url, auth_token.clone(), payload)
-                    .await
-                    .map_err(Self::map_http_error),
-            };
-
-            if result.is_ok() {
-                return result;
-            }
-
-            match result.as_ref() {
-                Err(Error::HttpError(status_code, _)) => {
-                    let status_code = status_code.to_owned().unwrap_or_default();
-                    if (400..=499).contains(&status_code) {
-                        // 4xx errors won't be 'solved' by retrying
-                        return result;
-                    }
-
-                    // retry request, if possible
-                    tracing::error!("Failed http_request {:?}", result.as_ref().err());
-
-                    if retriable_window < started.elapsed() {
-                        return result;
+            let request = async {
+                match method {
+                    nut19::Method::Get => transport.http_get(url, auth_token.clone()).await,
+                    nut19::Method::Post => {
+                        transport.http_post(url, auth_token.clone(), payload).await
                     }
                 }
-                Err(_) => return result,
-                _ => unreachable!(),
             };
+            let result = if retriable_window.is_zero() {
+                request.await
+            } else {
+                let remaining = retriable_window.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    return Err(Error::Timeout);
+                }
+
+                match timeout(remaining, request).await {
+                    Ok(result) => result,
+                    Err(_) => return Err(Error::Timeout),
+                }
+            };
+
+            match result {
+                Ok(response) => return Ok(response),
+                Err(http_error) => {
+                    let replay_safe = http_error.is_replay_safe();
+                    let error = Self::map_http_error(http_error);
+                    let elapsed = started.elapsed();
+
+                    if !replay_safe || elapsed >= retriable_window {
+                        return Err(error);
+                    }
+
+                    tracing::warn!(error = %error, "Replay-safe HTTP request failed");
+
+                    // Back off before replaying so a struggling mint is not hammered,
+                    // without ever sleeping past the end of the replay window.
+                    let remaining = retriable_window.saturating_sub(elapsed);
+                    sleep(retry_delay.min(remaining)).await;
+                    if started.elapsed() >= retriable_window {
+                        return Err(error);
+                    }
+                    retry_delay = retry_delay.saturating_mul(2).min(HTTP_RETRY_MAX_BACKOFF);
+                }
+            }
         }
     }
 }
@@ -977,7 +1030,10 @@ where
     }
 
     /// Create new [`AuthHttpClient`]
-    pub fn new(mint_url: MintUrl, cat: Option<AuthToken>) -> Self {
+    pub fn new(mint_url: MintUrl, cat: Option<AuthToken>) -> Self
+    where
+        T: Default,
+    {
         Self {
             transport: T::default().into(),
             mint_url,
@@ -988,8 +1044,18 @@ where
     }
     /// Create new [`AuthHttpClient`] with a provided transport implementation.
     pub fn with_transport(mint_url: MintUrl, transport: T, cat: Option<AuthToken>) -> Self {
+        Self::with_shared_transport(mint_url, Arc::new(transport), cat)
+    }
+
+    /// Create new [`AuthHttpClient`] sharing an existing transport instance, so
+    /// it reuses the transport's connection pool and any rate limiter it wraps.
+    pub fn with_shared_transport(
+        mint_url: MintUrl,
+        transport: Arc<T>,
+        cat: Option<AuthToken>,
+    ) -> Self {
         Self {
-            transport: transport.into(),
+            transport,
             mint_url,
             cat: Arc::new(RwLock::new(
                 cat.unwrap_or(AuthToken::ClearAuth("".to_string())),
@@ -1006,7 +1072,10 @@ where
         host_matcher: Option<&str>,
         accept_invalid_certs: bool,
         cat: Option<AuthToken>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, Error>
+    where
+        T: Default,
+    {
         let mut transport = T::default();
         transport
             .with_proxy(proxy, host_matcher, accept_invalid_certs)
@@ -1078,6 +1147,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::fmt;
     use std::str::FromStr;
     use std::sync::Mutex;
@@ -1106,6 +1176,10 @@ mod tests {
         get_urls: Arc<Mutex<Vec<String>>>,
         /// URLs passed to `http_post`.
         post_urls: Arc<Mutex<Vec<String>>>,
+        /// Errors returned by `http_post` before its canned success response.
+        post_errors: Arc<Mutex<VecDeque<HttpError>>>,
+        /// Artificial delay applied to each `http_post` call.
+        post_delay: Option<Duration>,
     }
 
     impl fmt::Debug for MockTransport {
@@ -1176,6 +1250,14 @@ mod tests {
                 .map_err(|e| HttpError::Serialization(e.to_string()))?;
             *self.captured_payload.lock().expect("lock") = Some(value);
 
+            if let Some(delay) = self.post_delay {
+                tokio::time::sleep(delay).await;
+            }
+
+            if let Some(error) = self.post_errors.lock().expect("lock").pop_front() {
+                return Err(error);
+            }
+
             // Return the canned response
             let json = self
                 .post_response
@@ -1210,6 +1292,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn http_client_debug_does_not_traverse_auth_wallet() {
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, MockTransport::default(), None);
+
+        let debug = format!("{client:?}");
+
+        assert!(debug.contains("https://mint.example.com"));
+        assert!(debug.contains("auth_wallet: \"[REDACTED]\""));
+    }
+
     /// Regression test: `post_mint_quote` must send only the
     /// `MintQuoteCustomRequest` as the JSON body for custom payment methods,
     /// not the `(PaymentMethod, MintQuoteCustomRequest)` tuple which
@@ -1234,6 +1327,8 @@ mod tests {
             get_response: Arc::new(Mutex::new(None)),
             get_urls: Arc::new(Mutex::new(Vec::new())),
             post_urls: Arc::new(Mutex::new(Vec::new())),
+            post_errors: Arc::new(Mutex::new(VecDeque::new())),
+            post_delay: None,
         };
         let captured = transport.captured_payload.clone();
 
@@ -1287,6 +1382,158 @@ mod tests {
         let parsed = parsed.expect("already checked");
         assert_eq!(parsed.amount, Some(cdk_common::Amount::from(1000)));
         assert_eq!(parsed.unit, cdk_common::CurrencyUnit::Sat);
+    }
+
+    #[tokio::test]
+    async fn retriable_request_retries_transient_transport_error() {
+        let transport = MockTransport {
+            post_response: Arc::new(Mutex::new(Some(
+                serde_json::json!({ "ok": true }).to_string(),
+            ))),
+            post_errors: Arc::new(Mutex::new(VecDeque::from([HttpError::Connection(
+                "connection reset".to_string(),
+            )]))),
+            ..Default::default()
+        };
+        let post_urls = transport.post_urls.clone();
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+        *client.cache_support.write().expect("cache lock") =
+            (1, HashSet::from([(nut19::Method::Post, nut19::Path::Swap)]));
+
+        let started = Instant::now();
+        let response: serde_json::Value = client
+            .retriable_http_request(
+                nut19::Method::Post,
+                nut19::Path::Swap,
+                None,
+                &serde_json::json!({}),
+            )
+            .await
+            .expect("transient failure should be retried");
+
+        assert_eq!(response, serde_json::json!({ "ok": true }));
+        assert_eq!(post_urls.lock().expect("lock").len(), 2);
+        assert!(started.elapsed() >= HTTP_RETRY_INITIAL_BACKOFF);
+    }
+
+    #[tokio::test]
+    async fn retriable_request_does_not_replay_http_status_response() {
+        let transport = MockTransport {
+            post_response: Arc::new(Mutex::new(Some(
+                serde_json::json!({ "ok": true }).to_string(),
+            ))),
+            post_errors: Arc::new(Mutex::new(VecDeque::from([HttpError::Status {
+                status: 503,
+                message: "unavailable".to_string(),
+            }]))),
+            ..Default::default()
+        };
+        let post_urls = transport.post_urls.clone();
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+        *client.cache_support.write().expect("cache lock") =
+            (1, HashSet::from([(nut19::Method::Post, nut19::Path::Swap)]));
+
+        let result: Result<serde_json::Value, Error> = client
+            .retriable_http_request(
+                nut19::Method::Post,
+                nut19::Path::Swap,
+                None,
+                &serde_json::json!({}),
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::HttpError(Some(503), _))));
+        assert_eq!(post_urls.lock().expect("lock").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn retriable_request_is_bounded_by_nut19_window() {
+        let transport = MockTransport {
+            post_response: Arc::new(Mutex::new(Some(
+                serde_json::json!({ "ok": true }).to_string(),
+            ))),
+            post_delay: Some(Duration::from_secs(5)),
+            ..Default::default()
+        };
+        let post_urls = transport.post_urls.clone();
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+        *client.cache_support.write().expect("cache lock") =
+            (1, HashSet::from([(nut19::Method::Post, nut19::Path::Swap)]));
+
+        let started = Instant::now();
+        let result: Result<serde_json::Value, Error> = client
+            .retriable_http_request(
+                nut19::Method::Post,
+                nut19::Path::Swap,
+                None,
+                &serde_json::json!({}),
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::Timeout)));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(post_urls.lock().expect("lock").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn retriable_request_does_not_retry_terminal_transport_error() {
+        let transport = MockTransport {
+            post_response: Arc::new(Mutex::new(Some(
+                serde_json::json!({ "ok": true }).to_string(),
+            ))),
+            post_errors: Arc::new(Mutex::new(VecDeque::from([HttpError::Other(
+                "attestation failed".to_string(),
+            )]))),
+            ..Default::default()
+        };
+        let post_urls = transport.post_urls.clone();
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+        *client.cache_support.write().expect("cache lock") =
+            (1, HashSet::from([(nut19::Method::Post, nut19::Path::Swap)]));
+
+        let result: Result<serde_json::Value, Error> = client
+            .retriable_http_request(
+                nut19::Method::Post,
+                nut19::Path::Swap,
+                None,
+                &serde_json::json!({}),
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::HttpError(None, _))));
+        assert_eq!(post_urls.lock().expect("lock").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn retriable_request_does_not_replay_without_nut19_cache_support() {
+        let transport = MockTransport {
+            post_response: Arc::new(Mutex::new(Some(
+                serde_json::json!({ "ok": true }).to_string(),
+            ))),
+            post_errors: Arc::new(Mutex::new(VecDeque::from([HttpError::Connection(
+                "connection reset".to_string(),
+            )]))),
+            ..Default::default()
+        };
+        let post_urls = transport.post_urls.clone();
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+
+        let result: Result<serde_json::Value, Error> = client
+            .retriable_http_request(
+                nut19::Method::Post,
+                nut19::Path::Swap,
+                None,
+                &serde_json::json!({}),
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::HttpError(None, _))));
+        assert_eq!(post_urls.lock().expect("lock").len(), 1);
     }
 
     #[tokio::test]

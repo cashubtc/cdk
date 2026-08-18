@@ -115,6 +115,9 @@ where
     /// Atomically increment Keyset counter and return new value
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<u32, Err>;
 
+    /// Atomically increment a namespaced derivation counter and return its new value.
+    async fn increment_derivation_counter(&self, namespace: &str, count: u32) -> Result<u32, Err>;
+
     /// Add Mint to storage
     async fn add_mint(&self, mint_url: MintUrl, mint_info: Option<MintInfo>) -> Result<(), Err>;
 
@@ -177,7 +180,11 @@ where
         operation_id: &uuid::Uuid,
     ) -> Result<(), Err>;
 
-    /// Release proofs reserved by an operation
+    /// Release proofs reserved by an operation.
+    ///
+    /// Only proofs owned by `operation_id` in [`State::Reserved`] or
+    /// [`State::Pending`] may be changed to [`State::Unspent`]. Implementations
+    /// must preserve spent proofs and proofs owned by another operation.
     async fn release_proofs(&self, operation_id: &uuid::Uuid) -> Result<(), Err>;
 
     /// Get proofs reserved by an operation

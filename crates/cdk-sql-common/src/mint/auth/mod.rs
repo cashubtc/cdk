@@ -124,24 +124,27 @@ where
 
     async fn add_proof(&mut self, proof: AuthProof) -> Result<(), database::Error> {
         let y = proof.y()?;
-        if let Err(err) = query(
+        let rows_affected = query(
             r#"
                 INSERT INTO proof
                 (y, keyset_id, secret, c, state)
                 VALUES
                 (:y, :keyset_id, :secret, :c, :state)
+                ON CONFLICT(y) DO NOTHING
                 "#,
         )?
         .bind("y", y.to_bytes().to_vec())
         .bind("keyset_id", proof.keyset_id.to_string())
         .bind("secret", proof.secret.to_string())
         .bind("c", proof.c.to_bytes().to_vec())
-        .bind("state", "UNSPENT".to_string())
+        .bind("state", State::Spent.to_string())
         .execute(&self.inner)
-        .await
-        {
-            tracing::debug!("Attempting to add known proof. Skipping.... {:?}", err);
+        .await?;
+
+        if rows_affected != 1 {
+            return Err(database::Error::Duplicate);
         }
+
         Ok(())
     }
 

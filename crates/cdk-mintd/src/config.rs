@@ -1,3 +1,5 @@
+#[cfg(any(feature = "bdk", feature = "ldk-node"))]
+use std::fmt;
 use std::path::PathBuf;
 
 use bitcoin::hashes::{sha256, Hash};
@@ -5,7 +7,9 @@ use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
 use cdk_axum::cache;
 use cdk_common::common::QuoteTTL;
-use config::{Config, ConfigError, File};
+#[cfg(any(feature = "bdk", feature = "ldk-node"))]
+use cdk_common::redact::url_for_logs;
+use config::{Config, ConfigError, File, FileFormat};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -47,6 +51,7 @@ pub struct LoggingConfig {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Info {
     pub url: String,
     pub listen_host: String,
@@ -122,6 +127,7 @@ impl std::fmt::Debug for Info {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct Signatory {
     #[serde(default)]
     pub enabled: bool,
@@ -157,48 +163,46 @@ fn default_signatory_port() -> u16 {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
-pub enum LnBackend {
+pub enum PaymentBackendType {
     #[default]
     None,
     #[cfg(feature = "cln")]
     Cln,
-    #[cfg(feature = "lnbits")]
-    LNbits,
     #[cfg(feature = "fakewallet")]
     FakeWallet,
     #[cfg(feature = "lnd")]
     Lnd,
     #[cfg(feature = "ldk-node")]
+    #[serde(alias = "ldk-node")]
     LdkNode,
     #[cfg(feature = "grpc-processor")]
     GrpcProcessor,
 }
 
-impl std::str::FromStr for LnBackend {
+impl std::str::FromStr for PaymentBackendType {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             #[cfg(feature = "cln")]
-            "cln" => Ok(LnBackend::Cln),
-            #[cfg(feature = "lnbits")]
-            "lnbits" => Ok(LnBackend::LNbits),
+            "cln" => Ok(PaymentBackendType::Cln),
             #[cfg(feature = "fakewallet")]
-            "fakewallet" => Ok(LnBackend::FakeWallet),
+            "fakewallet" => Ok(PaymentBackendType::FakeWallet),
             #[cfg(feature = "lnd")]
-            "lnd" => Ok(LnBackend::Lnd),
+            "lnd" => Ok(PaymentBackendType::Lnd),
             #[cfg(feature = "ldk-node")]
-            "ldk-node" | "ldknode" => Ok(LnBackend::LdkNode),
+            "ldk-node" | "ldknode" => Ok(PaymentBackendType::LdkNode),
             #[cfg(feature = "grpc-processor")]
-            "grpcprocessor" => Ok(LnBackend::GrpcProcessor),
-            _ => Err(format!("Unknown Lightning backend: {s}")),
+            "grpcprocessor" => Ok(PaymentBackendType::GrpcProcessor),
+            _ => Err(format!("Unknown payment backend: {s}")),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Ln {
-    pub ln_backend: LnBackend,
+#[serde(default)]
+pub struct PaymentBackend {
+    pub backend: PaymentBackendType,
     #[serde(default)]
     pub unit: CurrencyUnit,
     pub invoice_description: Option<String>,
@@ -208,10 +212,10 @@ pub struct Ln {
     pub max_melt: Amount,
 }
 
-impl Default for Ln {
+impl Default for PaymentBackend {
     fn default() -> Self {
-        Ln {
-            ln_backend: LnBackend::default(),
+        PaymentBackend {
+            backend: PaymentBackendType::default(),
             unit: CurrencyUnit::default(),
             invoice_description: None,
             min_mint: 1.into(),
@@ -222,20 +226,20 @@ impl Default for Ln {
     }
 }
 
-fn deserialize_ln<'de, D>(deserializer: D) -> Result<Vec<Ln>, D::Error>
+fn deserialize_payment_backend<'de, D>(deserializer: D) -> Result<Vec<PaymentBackend>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     #[derive(Deserialize)]
     #[serde(untagged)]
-    enum LnOneOrMany {
-        Many(Vec<Ln>),
-        One(Ln),
+    enum PaymentBackendOneOrMany {
+        Many(Vec<PaymentBackend>),
+        One(PaymentBackend),
     }
 
-    match LnOneOrMany::deserialize(deserializer)? {
-        LnOneOrMany::Many(ln) => Ok(ln),
-        LnOneOrMany::One(ln) => Ok(vec![ln]),
+    match PaymentBackendOneOrMany::deserialize(deserializer)? {
+        PaymentBackendOneOrMany::Many(backends) => Ok(backends),
+        PaymentBackendOneOrMany::One(backend) => Ok(vec![backend]),
     }
 }
 
@@ -266,6 +270,7 @@ impl std::str::FromStr for OnchainBackend {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Onchain {
     pub onchain_backend: OnchainBackend,
     pub min_mint: Amount,
@@ -344,7 +349,7 @@ impl Default for BatchConfig {
 }
 
 #[cfg(feature = "bdk")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Bdk {
     /// Fee percentage (e.g., 0.02 for 2%)
     #[serde(default = "default_fee_percent")]
@@ -378,6 +383,12 @@ pub struct Bdk {
     pub bitcoind_rpc_user: Option<String>,
     /// Bitcoin RPC password
     pub bitcoind_rpc_password: Option<String>,
+    /// Optional birthday height used when creating a fresh Bitcoin RPC wallet.
+    ///
+    /// If unset, the wallet starts at the current chain tip. Set this when
+    /// restoring from a mnemonic to rescan from a known height. Existing
+    /// wallets are not rewound.
+    pub wallet_rescan_from_height: Option<u32>,
     /// BIP-39 mnemonic for the BDK wallet
     pub mnemonic: Option<String>,
     /// Batch processor configuration
@@ -403,6 +414,39 @@ pub struct Bdk {
 }
 
 #[cfg(feature = "bdk")]
+impl fmt::Debug for Bdk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Bdk")
+            .field("fee_percent", &self.fee_percent)
+            .field("reserve_fee_min", &self.reserve_fee_min)
+            .field("network", &self.network)
+            .field("chain_source_type", &self.chain_source_type)
+            .field(
+                "esplora_url",
+                &self.esplora_url.as_deref().map(url_for_logs),
+            )
+            .field("esplora_parallel_requests", &self.esplora_parallel_requests)
+            .field(
+                "electrum_url",
+                &self.electrum_url.as_deref().map(url_for_logs),
+            )
+            .field("electrum_batch_size", &self.electrum_batch_size)
+            .field("bitcoind_rpc_host", &self.bitcoind_rpc_host)
+            .field("bitcoind_rpc_port", &self.bitcoind_rpc_port)
+            .field("bitcoind_rpc_user", &self.bitcoind_rpc_user)
+            .field("bitcoind_rpc_password", &"[REDACTED]")
+            .field("wallet_rescan_from_height", &self.wallet_rescan_from_height)
+            .field("mnemonic", &"[REDACTED]")
+            .field("batch_config", &self.batch_config)
+            .field("num_confs", &self.num_confs)
+            .field("min_receive_amount_sat", &self.min_receive_amount_sat)
+            .field("min_send_amount_sat", &self.min_send_amount_sat)
+            .field("sync_interval_secs", &self.sync_interval_secs)
+            .finish()
+    }
+}
+
+#[cfg(feature = "bdk")]
 impl Default for Bdk {
     fn default() -> Self {
         Self {
@@ -418,6 +462,7 @@ impl Default for Bdk {
             bitcoind_rpc_port: None,
             bitcoind_rpc_user: None,
             bitcoind_rpc_password: None,
+            wallet_rescan_from_height: None,
             mnemonic: None,
             batch_config: BatchConfig::default(),
             num_confs: default_bdk_num_confs(),
@@ -546,46 +591,9 @@ fn default_bdk_quote_safety_multiplier() -> f64 {
     1.25
 }
 
-#[cfg(feature = "lnbits")]
-#[derive(Clone, Serialize, Deserialize)]
-pub struct LNbits {
-    pub admin_api_key: String,
-    pub invoice_api_key: String,
-    pub lnbits_api: String,
-    #[serde(default = "default_fee_percent")]
-    pub fee_percent: f32,
-    #[serde(default = "default_reserve_fee_min")]
-    pub reserve_fee_min: Amount,
-}
-
-#[cfg(feature = "lnbits")]
-impl std::fmt::Debug for LNbits {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LNbits")
-            .field("admin_api_key", &"[REDACTED]")
-            .field("invoice_api_key", &"[REDACTED]")
-            .field("lnbits_api", &self.lnbits_api)
-            .field("fee_percent", &self.fee_percent)
-            .field("reserve_fee_min", &self.reserve_fee_min)
-            .finish()
-    }
-}
-
-#[cfg(feature = "lnbits")]
-impl Default for LNbits {
-    fn default() -> Self {
-        Self {
-            admin_api_key: String::new(),
-            invoice_api_key: String::new(),
-            lnbits_api: String::new(),
-            fee_percent: 0.02,
-            reserve_fee_min: 2.into(),
-        }
-    }
-}
-
 #[cfg(feature = "cln")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Cln {
     pub rpc_path: PathBuf,
     #[serde(default = "default_cln_bolt12")]
@@ -618,6 +626,7 @@ fn default_cln_bolt12() -> bool {
 
 #[cfg(feature = "lnd")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Lnd {
     pub address: String,
     pub cert_file: PathBuf,
@@ -643,6 +652,7 @@ impl Default for Lnd {
 
 #[cfg(feature = "ldk-node")]
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LdkNode {
     /// Fee percentage (e.g., 0.02 for 2%)
     #[serde(default = "default_ldk_fee_percent")]
@@ -717,15 +727,21 @@ impl Default for LdkNode {
 }
 
 #[cfg(feature = "ldk-node")]
-impl std::fmt::Debug for LdkNode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for LdkNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LdkNode")
             .field("fee_percent", &self.fee_percent)
             .field("reserve_fee_min", &self.reserve_fee_min)
             .field("bitcoin_network", &self.bitcoin_network)
             .field("chain_source_type", &self.chain_source_type)
-            .field("esplora_url", &self.esplora_url)
-            .field("electrum_url", &self.electrum_url)
+            .field(
+                "esplora_url",
+                &self.esplora_url.as_deref().map(url_for_logs),
+            )
+            .field(
+                "electrum_url",
+                &self.electrum_url.as_deref().map(url_for_logs),
+            )
             .field("bitcoind_rpc_host", &self.bitcoind_rpc_host)
             .field("bitcoind_rpc_port", &self.bitcoind_rpc_port)
             .field("bitcoind_rpc_user", &self.bitcoind_rpc_user)
@@ -739,7 +755,7 @@ impl std::fmt::Debug for LdkNode {
                 &self.ldk_node_announce_addresses,
             )
             .field("gossip_source_type", &self.gossip_source_type)
-            .field("rgs_url", &self.rgs_url)
+            .field("rgs_url", &self.rgs_url.as_deref().map(url_for_logs))
             .field("webserver_host", &self.webserver_host)
             .field("webserver_port", &self.webserver_port)
             .field("ldk_node_mnemonic", &"[REDACTED]")
@@ -824,6 +840,7 @@ impl FakeWalletCustomPaymentMethod {
 
 #[cfg(feature = "fakewallet")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FakeWallet {
     #[serde(default = "default_fake_wallet_supported_units")]
     pub supported_units: Vec<CurrencyUnit>,
@@ -857,12 +874,12 @@ impl Default for FakeWallet {
 
 // Helper functions to provide default values
 // Common fee defaults for all backends
-#[cfg(any(feature = "cln", feature = "lnbits", feature = "lnd"))]
+#[cfg(any(feature = "cln", feature = "lnd"))]
 fn default_fee_percent() -> f32 {
     0.02
 }
 
-#[cfg(any(feature = "cln", feature = "lnbits", feature = "lnd"))]
+#[cfg(any(feature = "cln", feature = "lnd"))]
 fn default_reserve_fee_min() -> Amount {
     2.into()
 }
@@ -888,6 +905,7 @@ fn default_fake_wallet_supported_units() -> Vec<CurrencyUnit> {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default)]
 pub struct GrpcProcessor {
     #[serde(default)]
     pub supported_units: Vec<CurrencyUnit>,
@@ -942,17 +960,20 @@ impl std::str::FromStr for DatabaseEngine {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct Database {
     pub engine: DatabaseEngine,
     pub postgres: Option<PostgresConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct AuthDatabase {
     pub postgres: Option<PostgresAuthConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PostgresAuthConfig {
     pub url: String,
     pub tls_mode: Option<String>,
@@ -972,6 +993,7 @@ impl Default for PostgresAuthConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PostgresConfig {
     pub url: String,
     pub tls_mode: Option<String>,
@@ -1013,6 +1035,7 @@ impl std::str::FromStr for AuthType {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Auth {
     #[serde(default)]
     pub auth_enabled: bool,
@@ -1048,20 +1071,19 @@ fn default_blind() -> AuthType {
 
 /// CDK settings, derived from `config.toml`
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct Settings {
     pub info: Info,
     pub signatory: Option<Signatory>,
     pub mint_info: MintInfo,
-    #[serde(default, deserialize_with = "deserialize_ln")]
-    pub ln: Vec<Ln>,
+    #[serde(default, deserialize_with = "deserialize_payment_backend")]
+    pub payment_backend: Vec<PaymentBackend>,
     pub onchain: Option<Onchain>,
     /// Transaction limits for DoS protection
     #[serde(default)]
     pub limits: Limits,
     #[cfg(feature = "cln")]
     pub cln: Option<Cln>,
-    #[cfg(feature = "lnbits")]
-    pub lnbits: Option<LNbits>,
     #[cfg(feature = "lnd")]
     pub lnd: Option<Lnd>,
     #[cfg(feature = "ldk-node")]
@@ -1083,6 +1105,7 @@ pub struct Settings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[cfg(feature = "prometheus")]
+#[serde(default)]
 pub struct Prometheus {
     pub enabled: bool,
     pub address: Option<String>,
@@ -1118,6 +1141,7 @@ fn default_max_outputs() -> usize {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct MintInfo {
     /// name of the mint and should be recognizable
     pub name: String,
@@ -1141,6 +1165,7 @@ pub struct MintInfo {
 
 #[cfg(feature = "management-rpc")]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct MintManagementRpc {
     /// When this is set to `true` the mint use the config file for the initial set up on first start.
     /// Changes to the `[mint_info]` after this **MUST** be made via the RPC changes to the config file or env vars will be ignored.
@@ -1153,7 +1178,56 @@ pub struct MintManagementRpc {
 }
 
 impl Settings {
-    /// Validate payment backend combinations after config and env overrides are applied.
+    /// Parses settings from an in-memory TOML import document.
+    pub fn try_from_toml(document: &str) -> Result<Self, ConfigError> {
+        Self::try_from_toml_allowing(document, &[])
+    }
+
+    /// Parses settings while allowing a narrow set of fields owned by the
+    /// legacy migration layer.
+    pub(crate) fn try_from_toml_allowing(
+        document: &str,
+        allowed_unknown_fields: &[&str],
+    ) -> Result<Self, ConfigError> {
+        let defaults = Self::default();
+        let configuration = Config::builder()
+            .add_source(Config::try_from(&defaults)?)
+            .add_source(File::from_str(document, FileFormat::Toml))
+            .build()?;
+        Self::deserialize_configuration(configuration, allowed_unknown_fields)
+    }
+
+    fn deserialize_configuration(
+        configuration: Config,
+        allowed_unknown_fields: &[&str],
+    ) -> Result<Self, ConfigError> {
+        let mut unknown_fields = Vec::new();
+        let settings = serde_ignored::deserialize(configuration, |path| {
+            let path = path.to_string().replace(".?.", ".");
+            if !allowed_unknown_fields.contains(&path.as_str()) {
+                unknown_fields.push(path);
+            }
+        })?;
+        unknown_fields.sort();
+        unknown_fields.dedup();
+        if unknown_fields.is_empty() {
+            Ok(settings)
+        } else {
+            let mut message = format!(
+                "unknown configuration field(s): {}",
+                unknown_fields.join(", ")
+            );
+            if unknown_fields.iter().any(|field| field == "ln") {
+                message.push_str(
+                    "; legacy `[ln]`/`[[ln]]` configuration must be migrated to \
+                     `[payment_backend]`/`[[payment_backend]]`; run `cdk-mintd config migrate \
+                     --file <old> --output <new>`",
+                );
+            }
+            Err(ConfigError::Message(message))
+        }
+    }
+
     pub fn validate_backend_pairing(&self) -> Result<(), String> {
         #[cfg(feature = "fakewallet")]
         self.validate_fake_wallet_backend_pairing()?;
@@ -1169,35 +1243,34 @@ impl Settings {
             .map(|onchain| &onchain.onchain_backend)
             .unwrap_or(&OnchainBackend::None);
 
-        let has_fake_wallet_ln_backend = self
-            .ln
+        let has_fake_wallet_backend = self
+            .payment_backend
             .iter()
-            .any(|ln| ln.ln_backend == LnBackend::FakeWallet);
-        let has_real_ln_backend = self
-            .ln
-            .iter()
-            .any(|ln| !matches!(ln.ln_backend, LnBackend::None | LnBackend::FakeWallet));
+            .any(|backend| backend.backend == PaymentBackendType::FakeWallet);
+        let has_real_backend = self.payment_backend.iter().any(|backend| {
+            !matches!(
+                backend.backend,
+                PaymentBackendType::None | PaymentBackendType::FakeWallet
+            )
+        });
 
-        // A fake Lightning backend cannot be combined with a real one.
-        if has_fake_wallet_ln_backend && has_real_ln_backend {
-            return Err(
-                "ln_backend = \"fakewallet\" cannot be combined with a real \
-                 Lightning backend; use only fakewallet backends or only real backends"
-                    .to_string(),
-            );
+        if has_fake_wallet_backend && has_real_backend {
+            return Err("backend = \"fakewallet\" cannot be combined with a real \
+                 payment backend; use only fakewallet backends or only real backends"
+                .to_string());
         }
 
         match onchain_backend {
             #[cfg(feature = "bdk")]
-            OnchainBackend::Bdk if has_fake_wallet_ln_backend => {
-                return Err("ln_backend = \"fakewallet\" cannot be combined with \
+            OnchainBackend::Bdk if has_fake_wallet_backend => {
+                return Err("backend = \"fakewallet\" cannot be combined with \
                      onchain_backend = \"bdk\"; use onchain_backend = \
                      \"fakewallet\" or \"none\""
                     .to_string());
             }
-            OnchainBackend::FakeWallet if has_real_ln_backend => {
+            OnchainBackend::FakeWallet if has_real_backend => {
                 return Err("onchain_backend = \"fakewallet\" cannot be combined with \
-                     a real Lightning backend; use ln_backend = \"fakewallet\" \
+                     a real payment backend; use backend = \"fakewallet\" \
                      or \"none\""
                     .to_string());
             }
@@ -1207,30 +1280,32 @@ impl Settings {
         Ok(())
     }
 
+    pub fn try_new<P>(config_file_name: Option<P>) -> Result<Self, ConfigError>
+    where
+        P: Into<PathBuf>,
+    {
+        let default_settings = Self::default();
+        Self::new_from_default(&default_settings, config_file_name)
+    }
+
+    /// Loads settings from defaults and an optional config file.
+    ///
+    /// New code should use [`Self::try_new`] so configuration errors can be
+    /// reported to the caller. This method retains its historical fallback
+    /// behavior for API compatibility.
+    #[deprecated(note = "use Settings::try_new to handle configuration errors")]
     #[must_use]
     pub fn new<P>(config_file_name: Option<P>) -> Self
     where
         P: Into<PathBuf>,
     {
-        let default_settings = Self::default();
-        // attempt to construct settings with file
-        let from_file = Self::new_from_default(&default_settings, config_file_name);
-        match from_file {
-            Ok(f) => f,
-            Err(e) => {
-                tracing::error!(
-                    "Error reading config file, falling back to defaults. Error: {e:?}"
-                );
-                default_settings
+        match Self::try_new(config_file_name) {
+            Ok(settings) => settings,
+            Err(err) => {
+                tracing::error!("Error reading config file, falling back to defaults: {err}");
+                Self::default()
             }
         }
-    }
-
-    pub fn try_new<P>(config_file_name: Option<P>) -> Result<Self, ConfigError>
-    where
-        P: Into<PathBuf>,
-    {
-        Self::new_from_default(&Self::default(), config_file_name)
     }
 
     fn new_from_default<P>(
@@ -1256,7 +1331,7 @@ impl Settings {
             // override with file contents
             .add_source(File::with_name(&config))
             .build()?;
-        config.try_deserialize()
+        Self::deserialize_configuration(config, &[])
     }
 
     pub(crate) fn enabled_signatory(&self) -> Option<&Signatory> {
@@ -1271,12 +1346,85 @@ mod tests {
 
     use super::*;
 
-    fn config_env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static CONFIG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    #[cfg(feature = "ldk-node")]
+    #[test]
+    fn ldk_node_backend_accepts_supported_spellings() {
+        for backend in ["ldk-node", "ldknode"] {
+            let document = format!(
+                r#"
+[[payment_backend]]
+backend = "{backend}"
+unit = "sat"
+"#
+            );
 
-        CONFIG_ENV_LOCK
-            .lock()
-            .expect("config env test lock should not be poisoned")
+            let settings =
+                Settings::try_from_toml(&document).expect("LDK Node backend should deserialize");
+
+            assert_eq!(
+                settings
+                    .payment_backend
+                    .first()
+                    .expect("config should contain one payment backend")
+                    .backend,
+                PaymentBackendType::LdkNode
+            );
+        }
+    }
+
+    #[test]
+    fn toml_parser_rejects_unknown_fields_with_full_paths() {
+        let error = Settings::try_from_toml(
+            r#"
+[info]
+listen_por = 8085
+
+[database]
+engin = "sqlite"
+"#,
+        )
+        .expect_err("misspelled fields must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("database.engin"));
+        assert!(message.contains("info.listen_por"));
+    }
+
+    #[test]
+    fn toml_parser_reports_legacy_ln_migration() {
+        let error = Settings::try_from_toml(
+            r#"
+[ln]
+ln_backend = "fakewallet"
+"#,
+        )
+        .expect_err("legacy [ln] configuration must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("legacy `[ln]`/`[[ln]]` configuration must be migrated"));
+        assert!(message.contains("`[payment_backend]`/`[[payment_backend]]`"));
+        assert!(message.contains("`cdk-mintd config migrate --file <old> --output <new>`"));
+    }
+
+    #[test]
+    fn legacy_parser_allowlist_does_not_hide_unrelated_typos() {
+        let error = Settings::try_from_toml_allowing(
+            r#"
+[info]
+signatory_url = "http://127.0.0.1:10009"
+listen_por = 8085
+"#,
+            &["info.signatory_url"],
+        )
+        .expect_err("only exact legacy fields may be ignored");
+        let message = error.to_string();
+        assert!(message.contains("info.listen_por"));
+        assert!(!message.contains("info.signatory_url"));
+    }
+
+    fn config_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        // Share the single process-wide env lock with the rest of the crate's
+        // tests. `std::env` is global, so config.rs and lib.rs tests must
+        // serialize on the *same* mutex or they race over env vars.
+        crate::test_utils::env_lock()
     }
 
     #[cfg(feature = "bdk")]
@@ -1287,6 +1435,7 @@ mod tests {
         std::env::remove_var(crate::env_vars::BDK_ESPLORA_URL_ENV_VAR);
         std::env::remove_var(crate::env_vars::BDK_ELECTRUM_URL_ENV_VAR);
         std::env::remove_var(crate::env_vars::BDK_ELECTRUM_BATCH_SIZE_ENV_VAR);
+        std::env::remove_var(crate::env_vars::BDK_WALLET_RESCAN_FROM_HEIGHT_ENV_VAR);
         std::env::remove_var(crate::env_vars::BDK_MIN_SEND_AMOUNT_SAT_ENV_VAR);
         std::env::remove_var(crate::env_vars::BDK_TARGET_BLOCK_TIME_SECS_ENV_VAR);
         std::env::remove_var(crate::env_vars::BDK_FEE_OPTIONS_ENV_VAR);
@@ -1352,6 +1501,66 @@ mod tests {
 
     #[cfg(feature = "bdk")]
     #[test]
+    fn test_bdk_debug_redacts_secrets_and_url_credentials() {
+        let config = Bdk {
+            network: Some("regtest".to_string()),
+            esplora_url: Some(
+                "https://esplora-user:esplora-secret@example.com/esplora".to_string(),
+            ),
+            electrum_url: Some("ssl://electrum-user:electrum-secret@example.com:50002".to_string()),
+            bitcoind_rpc_password: Some("rpc-password-secret".to_string()),
+            mnemonic: Some("mnemonic-secret-words".to_string()),
+            ..Default::default()
+        };
+
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("regtest"));
+        assert!(debug.contains("https://example.com/esplora"));
+        assert!(debug.contains("ssl://example.com:50002"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("esplora-user"));
+        assert!(!debug.contains("esplora-secret"));
+        assert!(!debug.contains("electrum-user"));
+        assert!(!debug.contains("electrum-secret"));
+        assert!(!debug.contains("rpc-password-secret"));
+        assert!(!debug.contains("mnemonic-secret-words"));
+    }
+
+    #[cfg(feature = "ldk-node")]
+    #[test]
+    fn test_ldk_node_debug_redacts_secrets_and_url_credentials() {
+        let config = LdkNode {
+            bitcoin_network: Some("regtest".to_string()),
+            esplora_url: Some(
+                "https://esplora-user:esplora-secret@example.com/esplora".to_string(),
+            ),
+            electrum_url: Some("ssl://electrum-user:electrum-secret@example.com:50002".to_string()),
+            bitcoind_rpc_password: Some("rpc-password-secret".to_string()),
+            rgs_url: Some("https://rgs-user:rgs-secret@example.com/snapshot".to_string()),
+            ldk_node_mnemonic: Some("mnemonic-secret-words".to_string()),
+            ..Default::default()
+        };
+
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("regtest"));
+        assert!(debug.contains("https://example.com/esplora"));
+        assert!(debug.contains("ssl://example.com:50002"));
+        assert!(debug.contains("https://example.com/snapshot"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("esplora-user"));
+        assert!(!debug.contains("esplora-secret"));
+        assert!(!debug.contains("electrum-user"));
+        assert!(!debug.contains("electrum-secret"));
+        assert!(!debug.contains("rgs-user"));
+        assert!(!debug.contains("rgs-secret"));
+        assert!(!debug.contains("rpc-password-secret"));
+        assert!(!debug.contains("mnemonic-secret-words"));
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
     fn test_bdk_electrum_toml_config() {
         use std::{env, fs};
 
@@ -1368,7 +1577,8 @@ electrum_batch_size = 11
 "#;
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
-        let settings = Settings::new(Some(&config_path));
+        let settings = Settings::try_new(Some(&config_path))
+            .expect("electrum config should parse successfully");
         let bdk = settings.bdk.expect("bdk config should be present");
 
         assert_eq!(bdk.chain_source_type, Some("electrum".to_string()));
@@ -1393,7 +1603,7 @@ min_send_amount_sat = 1200
 "#;
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
-        let settings = Settings::new(Some(&config_path));
+        let settings = Settings::try_new(Some(&config_path)).expect("config should load");
 
         assert_eq!(
             settings
@@ -1426,6 +1636,33 @@ min_send_amount_sat = 1200
                 .expect("bdk config should be present")
                 .min_send_amount_sat,
             777
+        );
+
+        clear_bdk_env_vars();
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_env_wallet_rescan_height_override() {
+        let _guard = config_env_lock();
+        clear_bdk_env_vars();
+        std::env::set_var(crate::env_vars::ENV_ONCHAIN_BACKEND, "bdk");
+        std::env::set_var(crate::env_vars::BDK_NETWORK_ENV_VAR, "regtest");
+        std::env::set_var(
+            crate::env_vars::BDK_WALLET_RESCAN_FROM_HEIGHT_ENV_VAR,
+            "850000",
+        );
+
+        let mut settings = Settings::default();
+        settings.from_env().expect("Failed to apply env vars");
+
+        assert_eq!(
+            settings
+                .bdk
+                .as_ref()
+                .expect("bdk config should be present")
+                .wallet_rescan_from_height,
+            Some(850000)
         );
 
         clear_bdk_env_vars();
@@ -1503,7 +1740,7 @@ fee_options = ["immediate", "economy"]
 "#;
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
-        let settings = Settings::new(Some(&config_path));
+        let settings = Settings::try_new(Some(&config_path)).expect("config should load");
 
         assert_eq!(
             settings
@@ -1533,7 +1770,7 @@ target_block_time_secs = 300
 "#;
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
-        let settings = Settings::new(Some(&config_path));
+        let settings = Settings::try_new(Some(&config_path)).expect("config should load");
         let batch_config: cdk_bdk::BatchConfig = settings
             .bdk
             .as_ref()
@@ -1694,10 +1931,10 @@ target_block_time_secs = 300
 
     #[cfg(all(feature = "fakewallet", feature = "bdk"))]
     #[test]
-    fn test_fakewallet_ln_with_bdk_onchain_rejected() {
+    fn test_fakewallet_backend_with_bdk_onchain_rejected() {
         let settings = Settings {
-            ln: vec![Ln {
-                ln_backend: LnBackend::FakeWallet,
+            payment_backend: vec![PaymentBackend {
+                backend: PaymentBackendType::FakeWallet,
                 ..Default::default()
             }],
             onchain: Some(Onchain {
@@ -1709,7 +1946,7 @@ target_block_time_secs = 300
 
         let err = settings
             .validate_backend_pairing()
-            .expect_err("fake LN with BDK onchain should fail");
+            .expect_err("fake payment backend with BDK onchain should fail");
 
         assert!(err.contains("fakewallet"));
         assert!(err.contains("bdk"));
@@ -1717,10 +1954,10 @@ target_block_time_secs = 300
 
     #[cfg(all(feature = "fakewallet", feature = "cln"))]
     #[test]
-    fn test_real_ln_with_fakewallet_onchain_rejected() {
+    fn test_real_backend_with_fakewallet_onchain_rejected() {
         let settings = Settings {
-            ln: vec![Ln {
-                ln_backend: LnBackend::Cln,
+            payment_backend: vec![PaymentBackend {
+                backend: PaymentBackendType::Cln,
                 ..Default::default()
             }],
             onchain: Some(Onchain {
@@ -1732,18 +1969,18 @@ target_block_time_secs = 300
 
         let err = settings
             .validate_backend_pairing()
-            .expect_err("real LN with fake onchain should fail");
+            .expect_err("real payment backend with fake onchain should fail");
 
         assert!(err.contains("fakewallet"));
-        assert!(err.contains("real Lightning"));
+        assert!(err.contains("real payment backend"));
     }
 
     #[cfg(feature = "fakewallet")]
     #[test]
-    fn test_fakewallet_ln_with_fakewallet_onchain_accepted() {
+    fn test_fakewallet_backend_with_fakewallet_onchain_accepted() {
         let settings = Settings {
-            ln: vec![Ln {
-                ln_backend: LnBackend::FakeWallet,
+            payment_backend: vec![PaymentBackend {
+                backend: PaymentBackendType::FakeWallet,
                 ..Default::default()
             }],
             onchain: Some(Onchain {
@@ -1760,10 +1997,10 @@ target_block_time_secs = 300
 
     #[cfg(feature = "fakewallet")]
     #[test]
-    fn test_fakewallet_ln_with_no_onchain_accepted() {
+    fn test_fakewallet_backend_with_no_onchain_accepted() {
         let settings = Settings {
-            ln: vec![Ln {
-                ln_backend: LnBackend::FakeWallet,
+            payment_backend: vec![PaymentBackend {
+                backend: PaymentBackendType::FakeWallet,
                 ..Default::default()
             }],
             onchain: Some(Onchain {
@@ -1775,15 +2012,15 @@ target_block_time_secs = 300
 
         settings
             .validate_backend_pairing()
-            .expect("fake LN without onchain should pass");
+            .expect("fake payment backend without onchain should pass");
     }
 
     #[cfg(feature = "fakewallet")]
     #[test]
-    fn test_no_ln_with_fakewallet_onchain_accepted() {
+    fn test_no_payment_backend_with_fakewallet_onchain_accepted() {
         let settings = Settings {
-            ln: vec![Ln {
-                ln_backend: LnBackend::None,
+            payment_backend: vec![PaymentBackend {
+                backend: PaymentBackendType::None,
                 ..Default::default()
             }],
             onchain: Some(Onchain {
@@ -1800,15 +2037,15 @@ target_block_time_secs = 300
 
     #[cfg(all(feature = "fakewallet", feature = "cln"))]
     #[test]
-    fn test_fakewallet_ln_with_real_ln_rejected() {
+    fn test_fakewallet_backend_with_real_backend_rejected() {
         let settings = Settings {
-            ln: vec![
-                Ln {
-                    ln_backend: LnBackend::FakeWallet,
+            payment_backend: vec![
+                PaymentBackend {
+                    backend: PaymentBackendType::FakeWallet,
                     ..Default::default()
                 },
-                Ln {
-                    ln_backend: LnBackend::Cln,
+                PaymentBackend {
+                    backend: PaymentBackendType::Cln,
                     ..Default::default()
                 },
             ],
@@ -1817,10 +2054,10 @@ target_block_time_secs = 300
 
         let err = settings
             .validate_backend_pairing()
-            .expect_err("fake LN combined with real LN should fail");
+            .expect_err("fake payment backend combined with real backend should fail");
 
         assert!(err.contains("fakewallet"));
-        assert!(err.contains("real Lightning"));
+        assert!(err.contains("real payment backend"));
     }
 
     #[cfg(feature = "fakewallet")]
@@ -1867,16 +2104,16 @@ target_block_time_secs = 300
         let config_path = temp_dir.join("config.toml");
 
         let config_content = r#"
-[[ln]]
-ln_backend = "fakewallet"
+[[payment_backend]]
+backend = "fakewallet"
 unit = "sat"
 min_mint = 1
 max_mint = 500000
 min_melt = 1
 max_melt = 500000
 
-[[ln]]
-ln_backend = "fakewallet"
+[[payment_backend]]
+backend = "fakewallet"
 unit = "eur"
 min_mint = 1
 max_mint = 1000
@@ -1885,18 +2122,24 @@ max_melt = 1000
 "#;
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
-        let settings = Settings::new(Some(&config_path));
+        let settings = Settings::try_new(Some(&config_path)).expect("config should load");
 
-        assert_eq!(settings.ln.len(), 2);
+        assert_eq!(settings.payment_backend.len(), 2);
 
-        assert_eq!(settings.ln[0].ln_backend, LnBackend::FakeWallet);
-        assert_eq!(settings.ln[0].unit, CurrencyUnit::Sat);
-        let max_mint_0: u64 = settings.ln[0].max_mint.into();
+        assert_eq!(
+            settings.payment_backend[0].backend,
+            PaymentBackendType::FakeWallet
+        );
+        assert_eq!(settings.payment_backend[0].unit, CurrencyUnit::Sat);
+        let max_mint_0: u64 = settings.payment_backend[0].max_mint.into();
         assert_eq!(max_mint_0, 500_000);
 
-        assert_eq!(settings.ln[1].ln_backend, LnBackend::FakeWallet);
-        assert_eq!(settings.ln[1].unit, CurrencyUnit::Eur);
-        let max_mint_1: u64 = settings.ln[1].max_mint.into();
+        assert_eq!(
+            settings.payment_backend[1].backend,
+            PaymentBackendType::FakeWallet
+        );
+        assert_eq!(settings.payment_backend[1].unit, CurrencyUnit::Eur);
+        let max_mint_1: u64 = settings.payment_backend[1].max_mint.into();
         assert_eq!(max_mint_1, 1_000);
 
         let _ = fs::remove_dir_all(&temp_dir);
@@ -1904,16 +2147,16 @@ max_melt = 1000
 
     #[cfg(feature = "fakewallet")]
     #[test]
-    fn test_legacy_ln_block_parses() {
+    fn test_single_payment_backend_block_parses() {
         use std::{env, fs};
 
-        let temp_dir = env::temp_dir().join("cdk_test_legacy_ln_block");
+        let temp_dir = env::temp_dir().join("cdk_test_single_payment_backend_block");
         fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
         let config_path = temp_dir.join("config.toml");
 
         let config_content = r#"
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 min_mint = 1
 max_mint = 500000
 min_melt = 1
@@ -1921,11 +2164,14 @@ max_melt = 500000
 "#;
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
-        let settings = Settings::new(Some(&config_path));
+        let settings = Settings::try_new(Some(&config_path)).expect("config should load");
 
-        assert_eq!(settings.ln.len(), 1);
-        assert_eq!(settings.ln[0].ln_backend, LnBackend::FakeWallet);
-        assert_eq!(settings.ln[0].unit, CurrencyUnit::Sat);
+        assert_eq!(settings.payment_backend.len(), 1);
+        assert_eq!(
+            settings.payment_backend[0].backend,
+            PaymentBackendType::FakeWallet
+        );
+        assert_eq!(settings.payment_backend[0].unit, CurrencyUnit::Sat);
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -1940,8 +2186,8 @@ max_melt = 500000
         let config_path = temp_dir.join("config.toml");
 
         let config_content = r#"
-[[ln]]
-ln_backend = "fakewallet"
+[[payment_backend]]
+backend = "fakewallet"
 unit = "sat"
 min_mint = 100
 max_mint = 1000000
@@ -1958,8 +2204,8 @@ max_delay_time = 3
 
         let settings = Settings::try_new(Some(&config_path)).expect("config should parse");
 
-        assert_eq!(settings.ln.len(), 1);
-        assert_eq!(settings.ln[0].unit, CurrencyUnit::Sat);
+        assert_eq!(settings.payment_backend.len(), 1);
+        assert_eq!(settings.payment_backend[0].unit, CurrencyUnit::Sat);
         assert_eq!(
             settings
                 .fake_wallet
@@ -1986,9 +2232,6 @@ max_delay_time = 3
         #[cfg(feature = "cln")]
         test_cln_env_config();
 
-        #[cfg(feature = "lnbits")]
-        test_lnbits_env_config();
-
         #[cfg(feature = "fakewallet")]
         test_fakewallet_env_config();
 
@@ -2006,7 +2249,7 @@ max_delay_time = 3
 
         let _guard = config_env_lock();
 
-        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
+        env::remove_var(crate::env_vars::ENV_PAYMENT_BACKEND);
         env::remove_var(crate::env_vars::ENV_PROMETHEUS_ENABLED);
         env::remove_var(crate::env_vars::ENV_PROMETHEUS_ADDRESS);
         env::remove_var(crate::env_vars::ENV_PROMETHEUS_PORT);
@@ -2022,8 +2265,8 @@ url = "http://127.0.0.1:8085"
 listen_host = "127.0.0.1"
 listen_port = 8085
 
-[ln]
-ln_backend = "fakewallet"
+[payment_backend]
+backend = "fakewallet"
 min_mint = 1
 max_mint = 500000
 min_melt = 1
@@ -2036,7 +2279,7 @@ port = 9090
 "#;
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::try_new(Some(&config_path)).expect("config should load");
         settings.from_env().expect("Failed to apply env vars");
 
         let prometheus = settings
@@ -2062,7 +2305,7 @@ port = 9090
 
         // Create a minimal config.toml with backend set but NO [lnd] section
         let config_content = r#"
-[ln]
+[payment_backend]
 backend = "lnd"
 min_mint = 1
 max_mint = 500000
@@ -2072,7 +2315,7 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for LND configuration
-        env::set_var(crate::env_vars::ENV_LN_BACKEND, "lnd");
+        env::set_var(crate::env_vars::ENV_PAYMENT_BACKEND, "lnd");
         env::set_var(crate::env_vars::ENV_LND_ADDRESS, "https://localhost:10009");
         env::set_var(crate::env_vars::ENV_LND_CERT_FILE, "/tmp/test_tls.cert");
         env::set_var(
@@ -2083,7 +2326,7 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_LND_RESERVE_FEE_MIN, "4");
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::try_new(Some(&config_path)).expect("Failed to load config");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
@@ -2100,7 +2343,7 @@ max_melt = 500000
         assert_eq!(reserve_fee_u64, 4);
 
         // Cleanup env vars
-        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
+        env::remove_var(crate::env_vars::ENV_PAYMENT_BACKEND);
         env::remove_var(crate::env_vars::ENV_LND_ADDRESS);
         env::remove_var(crate::env_vars::ENV_LND_CERT_FILE);
         env::remove_var(crate::env_vars::ENV_LND_MACAROON_FILE);
@@ -2123,7 +2366,7 @@ max_melt = 500000
 
         // Create a minimal config.toml with backend set but NO [cln] section
         let config_content = r#"
-[ln]
+[payment_backend]
 backend = "cln"
 min_mint = 1
 max_mint = 500000
@@ -2133,14 +2376,14 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for CLN configuration
-        env::set_var(crate::env_vars::ENV_LN_BACKEND, "cln");
+        env::set_var(crate::env_vars::ENV_PAYMENT_BACKEND, "cln");
         env::set_var(crate::env_vars::ENV_CLN_RPC_PATH, "/tmp/lightning-rpc");
         env::set_var(crate::env_vars::ENV_CLN_BOLT12, "false");
         env::set_var(crate::env_vars::ENV_CLN_FEE_PERCENT, "0.01");
         env::set_var(crate::env_vars::ENV_CLN_RESERVE_FEE_MIN, "4");
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::try_new(Some(&config_path)).expect("Failed to load config");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
@@ -2153,71 +2396,11 @@ max_melt = 500000
         assert_eq!(reserve_fee_u64, 4);
 
         // Cleanup env vars
-        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
+        env::remove_var(crate::env_vars::ENV_PAYMENT_BACKEND);
         env::remove_var(crate::env_vars::ENV_CLN_RPC_PATH);
         env::remove_var(crate::env_vars::ENV_CLN_BOLT12);
         env::remove_var(crate::env_vars::ENV_CLN_FEE_PERCENT);
         env::remove_var(crate::env_vars::ENV_CLN_RESERVE_FEE_MIN);
-
-        // Cleanup test file
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[cfg(feature = "lnbits")]
-    fn test_lnbits_env_config() {
-        use std::{env, fs};
-
-        // Create a temporary directory for config file
-        let temp_dir = env::temp_dir().join("cdk_test_env_vars_lnbits");
-        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
-        let config_path = temp_dir.join("config.toml");
-
-        // Create a minimal config.toml with backend set but NO [lnbits] section
-        let config_content = r#"
-[ln]
-backend = "lnbits"
-min_mint = 1
-max_mint = 500000
-min_melt = 1
-max_melt = 500000
-"#;
-        fs::write(&config_path, config_content).expect("Failed to write config file");
-
-        // Set environment variables for LNbits configuration
-        env::set_var(crate::env_vars::ENV_LN_BACKEND, "lnbits");
-        env::set_var(crate::env_vars::ENV_LNBITS_ADMIN_API_KEY, "test_admin_key");
-        env::set_var(
-            crate::env_vars::ENV_LNBITS_INVOICE_API_KEY,
-            "test_invoice_key",
-        );
-        env::set_var(
-            crate::env_vars::ENV_LNBITS_API,
-            "https://lnbits.example.com",
-        );
-        env::set_var(crate::env_vars::ENV_LNBITS_FEE_PERCENT, "0.02");
-        env::set_var(crate::env_vars::ENV_LNBITS_RESERVE_FEE_MIN, "5");
-
-        // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
-        settings.from_env().expect("Failed to apply env vars");
-
-        // Verify that settings were populated from env vars
-        assert!(settings.lnbits.is_some());
-        let lnbits_config = settings.lnbits.as_ref().unwrap();
-        assert_eq!(lnbits_config.admin_api_key, "test_admin_key");
-        assert_eq!(lnbits_config.invoice_api_key, "test_invoice_key");
-        assert_eq!(lnbits_config.lnbits_api, "https://lnbits.example.com");
-        assert_eq!(lnbits_config.fee_percent, 0.02);
-        let reserve_fee_u64: u64 = lnbits_config.reserve_fee_min.into();
-        assert_eq!(reserve_fee_u64, 5);
-
-        // Cleanup env vars
-        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
-        env::remove_var(crate::env_vars::ENV_LNBITS_ADMIN_API_KEY);
-        env::remove_var(crate::env_vars::ENV_LNBITS_INVOICE_API_KEY);
-        env::remove_var(crate::env_vars::ENV_LNBITS_API);
-        env::remove_var(crate::env_vars::ENV_LNBITS_FEE_PERCENT);
-        env::remove_var(crate::env_vars::ENV_LNBITS_RESERVE_FEE_MIN);
 
         // Cleanup test file
         let _ = fs::remove_dir_all(&temp_dir);
@@ -2234,7 +2417,7 @@ max_melt = 500000
 
         // Create a minimal config.toml with backend set but NO [fake_wallet] section
         let config_content = r#"
-[ln]
+[payment_backend]
 backend = "fakewallet"
 min_mint = 1
 max_mint = 500000
@@ -2244,7 +2427,7 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for FakeWallet configuration
-        env::set_var(crate::env_vars::ENV_LN_BACKEND, "fakewallet");
+        env::set_var(crate::env_vars::ENV_PAYMENT_BACKEND, "fakewallet");
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_SUPPORTED_UNITS, "sat,msat");
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_FEE_PERCENT, "0.0");
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_RESERVE_FEE_MIN, "0");
@@ -2256,7 +2439,7 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_MAX_DELAY, "5");
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::try_new(Some(&config_path)).expect("Failed to load config");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
@@ -2283,15 +2466,15 @@ max_melt = 500000
         assert_eq!(fakewallet_config.max_delay_time, 5);
         assert_eq!(
             settings
-                .ln
+                .payment_backend
                 .iter()
-                .map(|ln| ln.unit.clone())
+                .map(|backend| backend.unit.clone())
                 .collect::<Vec<_>>(),
             vec![CurrencyUnit::Sat, CurrencyUnit::Msat]
         );
 
         // Cleanup env vars
-        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
+        env::remove_var(crate::env_vars::ENV_PAYMENT_BACKEND);
         env::remove_var(crate::env_vars::ENV_FAKE_WALLET_SUPPORTED_UNITS);
         env::remove_var(crate::env_vars::ENV_FAKE_WALLET_FEE_PERCENT);
         env::remove_var(crate::env_vars::ENV_FAKE_WALLET_RESERVE_FEE_MIN);
@@ -2314,7 +2497,7 @@ max_melt = 500000
 
         // Create a minimal config.toml with backend set but NO [grpc_processor] section
         let config_content = r#"
-[ln]
+[payment_backend]
 backend = "grpcprocessor"
 min_mint = 1
 max_mint = 500000
@@ -2324,7 +2507,7 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for GRPC Processor configuration
-        env::set_var(crate::env_vars::ENV_LN_BACKEND, "grpcprocessor");
+        env::set_var(crate::env_vars::ENV_PAYMENT_BACKEND, "grpcprocessor");
         env::set_var(
             crate::env_vars::ENV_GRPC_PROCESSOR_SUPPORTED_UNITS,
             "sat,msat",
@@ -2333,7 +2516,7 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_GRPC_PROCESSOR_PORT, "50051");
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::try_new(Some(&config_path)).expect("Failed to load config");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
@@ -2343,7 +2526,7 @@ max_melt = 500000
         assert_eq!(grpc_config.port, 50051);
 
         // Cleanup env vars
-        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
+        env::remove_var(crate::env_vars::ENV_PAYMENT_BACKEND);
         env::remove_var(crate::env_vars::ENV_GRPC_PROCESSOR_SUPPORTED_UNITS);
         env::remove_var(crate::env_vars::ENV_GRPC_PROCESSOR_ADDRESS);
         env::remove_var(crate::env_vars::ENV_GRPC_PROCESSOR_PORT);
@@ -2363,7 +2546,7 @@ max_melt = 500000
 
         // Create a minimal config.toml with backend set but NO [ldk_node] section
         let config_content = r#"
-[ln]
+[payment_backend]
 backend = "ldknode"
 min_mint = 1
 max_mint = 500000
@@ -2373,7 +2556,7 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for LDK Node configuration
-        env::set_var(crate::env_vars::ENV_LN_BACKEND, "ldknode");
+        env::set_var(crate::env_vars::ENV_PAYMENT_BACKEND, "ldknode");
         env::set_var(crate::env_vars::LDK_NODE_FEE_PERCENT_ENV_VAR, "0.01");
         env::set_var(crate::env_vars::LDK_NODE_RESERVE_FEE_MIN_ENV_VAR, "4");
         env::set_var(crate::env_vars::LDK_NODE_BITCOIN_NETWORK_ENV_VAR, "regtest");
@@ -2395,7 +2578,7 @@ max_melt = 500000
         );
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::try_new(Some(&config_path)).expect("Failed to load config");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
@@ -2417,7 +2600,7 @@ max_melt = 500000
         assert_eq!(ldk_config.storage_dir_path, Some("/tmp/ldk".to_string()));
 
         // Cleanup env vars
-        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
+        env::remove_var(crate::env_vars::ENV_PAYMENT_BACKEND);
         env::remove_var(crate::env_vars::LDK_NODE_FEE_PERCENT_ENV_VAR);
         env::remove_var(crate::env_vars::LDK_NODE_RESERVE_FEE_MIN_ENV_VAR);
         env::remove_var(crate::env_vars::LDK_NODE_BITCOIN_NETWORK_ENV_VAR);

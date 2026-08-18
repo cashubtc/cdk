@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use cdk::mint::{Mint, MintQuote};
+use cdk::mint::{Mint, MintKeySetInfo, MintQuote};
 use cdk::nuts::nut04::MintMethodSettings;
 use cdk::nuts::nut05::MeltMethodSettings;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
@@ -19,13 +19,22 @@ use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status};
 
 use crate::cdk_mint_server::{CdkMint, CdkMintServer};
+use crate::keyset::keyset_service_server::{KeysetService, KeysetServiceServer};
+use crate::quote::quote_service_server::{QuoteService, QuoteServiceServer};
+use crate::wallet::wallet_service_server::{WalletService, WalletServiceServer};
 use crate::{
-    ContactInfo, GetInfoRequest, GetInfoResponse, GetQuoteTtlRequest, GetQuoteTtlResponse,
-    RotateNextKeysetRequest, RotateNextKeysetResponse, UpdateContactRequest,
+    ContactInfo, DynWalletInfoProvider, GetInfoRequest, GetInfoResponse, GetQuoteTtlRequest,
+    GetQuoteTtlResponse, RotateNextKeysetRequest, RotateNextKeysetResponse, UpdateContactRequest,
     UpdateDescriptionRequest, UpdateIconUrlRequest, UpdateMotdRequest, UpdateNameRequest,
     UpdateNut04QuoteRequest, UpdateNut04Request, UpdateNut05Request, UpdateQuoteTtlRequest,
-    UpdateResponse, UpdateTosUrlRequest, UpdateUrlRequest,
+    UpdateResponse, UpdateTosUrlRequest, UpdateUrlRequest, WalletAddressPage,
+    WalletTransactionPage,
 };
+
+const DEFAULT_TRANSACTION_LIMIT: u32 = 20;
+const MAX_TRANSACTION_LIMIT: u32 = 100;
+const DEFAULT_ADDRESS_LIMIT: u32 = 100;
+const MAX_ADDRESS_LIMIT: u32 = 1_000;
 
 /// Error
 #[derive(Debug, Error)]
@@ -41,12 +50,32 @@ pub enum Error {
     Io(#[from] std::io::Error),
 }
 
+/// Failure returned when a management mutation is not currently allowed.
+#[derive(Debug, Error)]
+pub enum MintMutationGuardError {
+    /// The mutation conflicts with the mint's current lifecycle state.
+    #[error("{0}")]
+    FailedPrecondition(String),
+    /// The lifecycle state could not be checked.
+    #[error("{0}")]
+    Internal(String),
+}
+
+/// Checks whether management RPC mutations are currently allowed.
+#[tonic::async_trait]
+pub trait MintMutationGuard: Send + Sync {
+    /// Returns successfully when a mutation may proceed.
+    async fn check(&self) -> Result<(), MintMutationGuardError>;
+}
+
 /// CDK Mint RPC Server
 #[derive(Clone)]
 #[allow(missing_debug_implementations)]
 pub struct MintRPCServer {
     socket_addr: SocketAddr,
     mint: Arc<Mint>,
+    mutation_guard: Option<Arc<dyn MintMutationGuard>>,
+    wallet_info_provider: Option<DynWalletInfoProvider>,
     shutdown: Arc<Notify>,
     handle: Option<Arc<JoinHandle<Result<(), Error>>>>,
 }
@@ -62,9 +91,36 @@ impl MintRPCServer {
         Ok(Self {
             socket_addr: format!("{addr}:{port}").parse()?,
             mint,
+            mutation_guard: None,
+            wallet_info_provider: None,
             shutdown: Arc::new(Notify::new()),
             handle: None,
         })
+    }
+
+    /// Adds a guard that runs before every mutating management RPC.
+    pub fn with_mutation_guard(mut self, guard: Arc<dyn MintMutationGuard>) -> Self {
+        self.mutation_guard = Some(guard);
+        self
+    }
+
+    async fn ensure_mutation_allowed(&self) -> Result<(), Status> {
+        let Some(guard) = &self.mutation_guard else {
+            return Ok(());
+        };
+
+        guard.check().await.map_err(|error| match error {
+            MintMutationGuardError::FailedPrecondition(message) => {
+                Status::failed_precondition(message)
+            }
+            MintMutationGuardError::Internal(message) => Status::internal(message),
+        })
+    }
+
+    /// Configures the read-only on-chain wallet information provider.
+    pub fn with_wallet_info_provider(mut self, provider: DynWalletInfoProvider) -> Self {
+        self.wallet_info_provider = Some(provider);
+        self
     }
 
     /// Starts the RPC server
@@ -136,25 +192,68 @@ impl MintRPCServer {
                     .identity(server_identity)
                     .client_ca_root(client_ca_cert);
 
-                Server::builder().tls_config(tls_config)?.add_service(
-                    CdkMintServer::with_interceptor(
+                Server::builder()
+                    .tls_config(tls_config)?
+                    .add_service(CdkMintServer::with_interceptor(
                         self.clone(),
                         create_version_check_interceptor(
                             cdk_common::grpc::VERSION_HEADER,
                             cdk_common::MINT_RPC_PROTOCOL_VERSION,
                         ),
-                    ),
-                )
+                    ))
+                    .add_service(KeysetServiceServer::with_interceptor(
+                        self.clone(),
+                        create_version_check_interceptor(
+                            cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                        ),
+                    ))
+                    .add_service(QuoteServiceServer::with_interceptor(
+                        self.clone(),
+                        create_version_check_interceptor(
+                            cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                        ),
+                    ))
+                    .add_service(WalletServiceServer::with_interceptor(
+                        self.clone(),
+                        create_version_check_interceptor(
+                            cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                        ),
+                    ))
             }
             None => {
                 tracing::warn!("No valid TLS configuration found, starting insecure server");
-                Server::builder().add_service(CdkMintServer::with_interceptor(
-                    self.clone(),
-                    create_version_check_interceptor(
-                        cdk_common::grpc::VERSION_HEADER,
-                        cdk_common::MINT_RPC_PROTOCOL_VERSION,
-                    ),
-                ))
+                Server::builder()
+                    .add_service(CdkMintServer::with_interceptor(
+                        self.clone(),
+                        create_version_check_interceptor(
+                            cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                        ),
+                    ))
+                    .add_service(KeysetServiceServer::with_interceptor(
+                        self.clone(),
+                        create_version_check_interceptor(
+                            cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                        ),
+                    ))
+                    .add_service(QuoteServiceServer::with_interceptor(
+                        self.clone(),
+                        create_version_check_interceptor(
+                            cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                        ),
+                    ))
+                    .add_service(WalletServiceServer::with_interceptor(
+                        self.clone(),
+                        create_version_check_interceptor(
+                            cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                        ),
+                    ))
             }
         };
 
@@ -185,6 +284,141 @@ impl MintRPCServer {
 
         tracing::info!("Mint rpc server stopped");
         Ok(())
+    }
+
+    /// Rotates to the next keyset for the given unit
+    ///
+    /// Shared by the legacy [`CdkMint`] service and [`KeysetService`] while
+    /// both are served.
+    async fn rotate_keyset(
+        &self,
+        unit: CurrencyUnit,
+        amounts: Vec<u64>,
+        input_fee_ppk: Option<u64>,
+        use_keyset_v2: Option<bool>,
+        final_expiry: Option<u64>,
+    ) -> Result<MintKeySetInfo, Status> {
+        self.ensure_mutation_allowed().await?;
+        self.mint
+            .rotate_keyset(
+                unit,
+                amounts,
+                input_fee_ppk.unwrap_or(0),
+                use_keyset_v2.unwrap_or(true),
+                final_expiry,
+            )
+            .await
+            .map_err(|_| Status::invalid_argument("Could not rotate keyset".to_string()))
+    }
+
+    /// Returns the mint's quote time-to-live settings
+    ///
+    /// Shared by the legacy [`CdkMint`] service and [`QuoteService`] while both
+    /// are served.
+    async fn quote_ttl(&self) -> Result<QuoteTTL, Status> {
+        self.mint
+            .quote_ttl()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))
+    }
+
+    /// Updates the mint's quote time-to-live settings, keeping the current
+    /// value of any setting that is not given
+    ///
+    /// Returns the settings in effect after the update. Shared by the legacy
+    /// [`CdkMint`] service and [`QuoteService`] while both are served.
+    async fn set_quote_ttl(
+        &self,
+        mint_ttl: Option<u64>,
+        melt_ttl: Option<u64>,
+    ) -> Result<QuoteTTL, Status> {
+        let current_ttl = self.quote_ttl().await?;
+
+        let quote_ttl = QuoteTTL {
+            mint_ttl: mint_ttl.unwrap_or(current_ttl.mint_ttl),
+            melt_ttl: melt_ttl.unwrap_or(current_ttl.melt_ttl),
+        };
+
+        self.mint
+            .set_quote_ttl(quote_ttl)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(quote_ttl)
+    }
+
+    /// Records a payment against a mint quote as though the payment backend
+    /// had reported it, marking the quote paid
+    ///
+    /// Returns the quote as it stands after the update. Shared by the legacy
+    /// [`CdkMint`] service and [`QuoteService`] while both are served.
+    async fn set_mint_quote_paid(&self, quote_id: &str) -> Result<MintQuote, Status> {
+        let quote_id = quote_id
+            .parse()
+            .map_err(|_| Status::invalid_argument("Invalid quote id".to_string()))?;
+
+        let mint_quote = self
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
+            .ok_or(Status::invalid_argument("Could not find quote".to_string()))?;
+
+        // Create a dummy payment response
+        let response = WaitPaymentResponse {
+            payment_id: mint_quote.request_lookup_id.to_string(),
+            payment_amount: mint_quote.clone().amount.unwrap_or(cdk::Amount::new(
+                mint_quote.amount_paid().value(),
+                mint_quote.unit.clone(),
+            )),
+            payment_identifier: mint_quote.request_lookup_id.clone(),
+        };
+
+        let localstore = self.mint.localstore();
+        let mut tx = localstore
+            .begin_transaction()
+            .await
+            .map_err(|_| Status::internal("Could not start db transaction".to_string()))?;
+
+        // Re-fetch the mint quote within the transaction to lock it
+        let mut mint_quote = tx
+            .get_mint_quote(&quote_id)
+            .await
+            .map_err(|_| Status::internal("Could not get quote in transaction".to_string()))?
+            .ok_or(Status::invalid_argument(
+                "Quote not found in transaction".to_string(),
+            ))?;
+
+        let should_notify = self
+            .mint
+            .pay_mint_quote(&mut tx, &mut mint_quote, response)
+            .await
+            .map_err(|_| Status::internal("Could not process payment".to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|_| Status::internal("Could not commit db transaction".to_string()))?;
+
+        // Publish notification AFTER transaction commits
+        if should_notify {
+            self.mint
+                .pubsub_manager()
+                .mint_quote_payment(&mint_quote, mint_quote.amount_paid());
+        }
+
+        self.mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
+            .ok_or(Status::invalid_argument("Could not find quote".to_string()))
+    }
+
+    fn wallet_info_provider(&self) -> Result<&DynWalletInfoProvider, Status> {
+        self.wallet_info_provider.as_ref().ok_or_else(|| {
+            Status::failed_precondition("No on-chain wallet information provider is configured")
+        })
     }
 }
 
@@ -258,6 +492,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateMotdRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let motd = request.into_inner().motd;
         let mut info = self
             .mint
@@ -279,6 +514,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateDescriptionRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let description = request.into_inner().description;
         let mut info = self
             .mint
@@ -300,6 +536,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateDescriptionRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let description = request.into_inner().description;
         let mut info = self
             .mint
@@ -321,6 +558,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNameRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let name = request.into_inner().name;
         let mut info = self
             .mint
@@ -342,6 +580,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateIconUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let icon_url = request.into_inner().icon_url;
 
         let mut info = self
@@ -364,6 +603,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateTosUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let tos_url = request.into_inner().tos_url;
 
         let mut info = self
@@ -386,6 +626,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let url = request.into_inner().url;
         let mut info = self
             .mint
@@ -409,6 +650,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let url = request.into_inner().url;
         let mut info = self
             .mint
@@ -436,6 +678,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateContactRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let request_inner = request.into_inner();
         let mut info = self
             .mint
@@ -461,6 +704,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateContactRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let request_inner = request.into_inner();
         let mut info = self
             .mint
@@ -486,6 +730,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNut04Request>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let mut info = self
             .mint
             .mint_info()
@@ -563,6 +808,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNut05Request>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let mut info = self
             .mint
             .mint_info()
@@ -638,23 +884,11 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateQuoteTtlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
-        let current_ttl = self
-            .mint
-            .quote_ttl()
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
-
+        self.ensure_mutation_allowed().await?;
         let request = request.into_inner();
 
-        let quote_ttl = QuoteTTL {
-            mint_ttl: request.mint_ttl.unwrap_or(current_ttl.mint_ttl),
-            melt_ttl: request.melt_ttl.unwrap_or(current_ttl.melt_ttl),
-        };
-
-        self.mint
-            .set_quote_ttl(quote_ttl)
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
+        self.set_quote_ttl(request.mint_ttl, request.melt_ttl)
+            .await?;
 
         Ok(Response::new(UpdateResponse {}))
     }
@@ -664,11 +898,7 @@ impl CdkMint for MintRPCServer {
         &self,
         _request: Request<GetQuoteTtlRequest>,
     ) -> Result<Response<GetQuoteTtlResponse>, Status> {
-        let ttl = self
-            .mint
-            .quote_ttl()
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
+        let ttl = self.quote_ttl().await?;
 
         Ok(Response::new(GetQuoteTtlResponse {
             mint_ttl: ttl.mint_ttl,
@@ -681,70 +911,28 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNut04QuoteRequest>,
     ) -> Result<Response<UpdateNut04QuoteRequest>, Status> {
+        self.ensure_mutation_allowed().await?;
         let request = request.into_inner();
-        let quote_id = request
-            .quote_id
-            .parse()
-            .map_err(|_| Status::invalid_argument("Invalid quote id".to_string()))?;
 
         let state = MintQuoteState::from_str(&request.state)
             .map_err(|_| Status::invalid_argument("Invalid quote state".to_string()))?;
 
-        let mint_quote = self
-            .mint
-            .localstore()
-            .get_mint_quote(&quote_id)
-            .await
-            .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
-            .ok_or(Status::invalid_argument("Could not find quote".to_string()))?;
+        let mint_quote = match state {
+            MintQuoteState::Paid => self.set_mint_quote_paid(&request.quote_id).await?,
+            _ => {
+                let quote_id = request
+                    .quote_id
+                    .parse()
+                    .map_err(|_| Status::invalid_argument("Invalid quote id".to_string()))?;
 
-        match state {
-            MintQuoteState::Paid => {
-                // Create a dummy payment response
-                let response = WaitPaymentResponse {
-                    payment_id: mint_quote.request_lookup_id.to_string(),
-                    payment_amount: mint_quote.clone().amount.unwrap_or(cdk::Amount::new(
-                        mint_quote.amount_paid().value(),
-                        mint_quote.unit.clone(),
-                    )),
-                    payment_identifier: mint_quote.request_lookup_id.clone(),
-                };
-
-                let localstore = self.mint.localstore();
-                let mut tx = localstore
-                    .begin_transaction()
-                    .await
-                    .map_err(|_| Status::internal("Could not start db transaction".to_string()))?;
-
-                // Re-fetch the mint quote within the transaction to lock it
-                let mut mint_quote = tx
+                let mint_quote = self
+                    .mint
+                    .localstore()
                     .get_mint_quote(&quote_id)
                     .await
-                    .map_err(|_| {
-                        Status::internal("Could not get quote in transaction".to_string())
-                    })?
-                    .ok_or(Status::invalid_argument(
-                        "Quote not found in transaction".to_string(),
-                    ))?;
+                    .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
+                    .ok_or(Status::invalid_argument("Could not find quote".to_string()))?;
 
-                let should_notify = self
-                    .mint
-                    .pay_mint_quote(&mut tx, &mut mint_quote, response)
-                    .await
-                    .map_err(|_| Status::internal("Could not process payment".to_string()))?;
-
-                tx.commit()
-                    .await
-                    .map_err(|_| Status::internal("Could not commit db transaction".to_string()))?;
-
-                // Publish notification AFTER transaction commits
-                if should_notify {
-                    self.mint
-                        .pubsub_manager()
-                        .mint_quote_payment(&mint_quote, mint_quote.amount_paid());
-                }
-            }
-            _ => {
                 // Create a new quote with the same values
                 let quote = MintQuote::new(
                     Some(mint_quote.id.clone()),          // id
@@ -775,16 +963,15 @@ impl CdkMint for MintRPCServer {
                 tx.commit()
                     .await
                     .map_err(|_| Status::internal("Could not update quote".to_string()))?;
-            }
-        }
 
-        let mint_quote = self
-            .mint
-            .localstore()
-            .get_mint_quote(&quote_id)
-            .await
-            .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
-            .ok_or(Status::invalid_argument("Could not find quote".to_string()))?;
+                self.mint
+                    .localstore()
+                    .get_mint_quote(&quote_id)
+                    .await
+                    .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
+                    .ok_or(Status::invalid_argument("Could not find quote".to_string()))?
+            }
+        };
 
         Ok(Response::new(UpdateNut04QuoteRequest {
             state: mint_quote.state().to_string(),
@@ -802,19 +989,15 @@ impl CdkMint for MintRPCServer {
         let unit = CurrencyUnit::from_str(&request.unit)
             .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
 
-        let amounts = request.amounts;
-
         let keyset_info = self
-            .mint
             .rotate_keyset(
                 unit,
-                amounts,
-                request.input_fee_ppk.unwrap_or(0),
-                request.use_keyset_v2.unwrap_or(true),
+                request.amounts,
+                request.input_fee_ppk,
+                request.use_keyset_v2,
                 request.final_expiry,
             )
-            .await
-            .map_err(|_| Status::invalid_argument("Could not rotate keyset".to_string()))?;
+            .await?;
 
         Ok(Response::new(RotateNextKeysetResponse {
             id: keyset_info.id.to_string(),
@@ -825,24 +1008,274 @@ impl CdkMint for MintRPCServer {
     }
 }
 
+#[tonic::async_trait]
+impl KeysetService for MintRPCServer {
+    /// Rotates to the next keyset for the specified currency unit
+    async fn rotate_next_keyset(
+        &self,
+        request: Request<crate::keyset::RotateNextKeysetRequest>,
+    ) -> Result<Response<crate::keyset::RotateNextKeysetResponse>, Status> {
+        let request = request.into_inner();
+
+        let unit = CurrencyUnit::from_str(&request.unit)
+            .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
+
+        let keyset_info = self
+            .rotate_keyset(
+                unit,
+                request.amounts,
+                request.input_fee_ppk,
+                request.use_keyset_v2,
+                request.final_expiry,
+            )
+            .await?;
+
+        Ok(Response::new(crate::keyset::RotateNextKeysetResponse {
+            id: keyset_info.id.to_string(),
+            unit: keyset_info.unit.to_string(),
+            amounts: keyset_info.amounts,
+            input_fee_ppk: keyset_info.input_fee_ppk,
+        }))
+    }
+}
+
+#[tonic::async_trait]
+impl QuoteService for MintRPCServer {
+    /// Gets the mint's quote time-to-live settings
+    async fn get_quote_ttl(
+        &self,
+        _request: Request<crate::quote::GetQuoteTtlRequest>,
+    ) -> Result<Response<crate::quote::GetQuoteTtlResponse>, Status> {
+        let ttl = self.quote_ttl().await?;
+
+        Ok(Response::new(crate::quote::GetQuoteTtlResponse {
+            mint_ttl: ttl.mint_ttl,
+            melt_ttl: ttl.melt_ttl,
+        }))
+    }
+
+    /// Updates the mint's quote time-to-live settings
+    async fn update_quote_ttl(
+        &self,
+        request: Request<crate::quote::UpdateQuoteTtlRequest>,
+    ) -> Result<Response<crate::quote::UpdateQuoteTtlResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
+        let request = request.into_inner();
+
+        let ttl = self
+            .set_quote_ttl(request.mint_ttl, request.melt_ttl)
+            .await?;
+
+        Ok(Response::new(crate::quote::UpdateQuoteTtlResponse {
+            mint_ttl: ttl.mint_ttl,
+            melt_ttl: ttl.melt_ttl,
+        }))
+    }
+
+    /// Force-marks a mint quote as paid
+    async fn update_mint_quote_state(
+        &self,
+        request: Request<crate::quote::UpdateMintQuoteStateRequest>,
+    ) -> Result<Response<crate::quote::UpdateMintQuoteStateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
+        let request = request.into_inner();
+
+        match request.state() {
+            crate::quote::MintQuoteState::Paid => (),
+            crate::quote::MintQuoteState::Unpaid => {
+                return Err(Status::invalid_argument(
+                    "Cannot unpay a quote: payments cannot be retracted".to_string(),
+                ));
+            }
+            crate::quote::MintQuoteState::Issued => {
+                return Err(Status::invalid_argument(
+                    "Cannot issue a quote: no signatures would back the issuance".to_string(),
+                ));
+            }
+            crate::quote::MintQuoteState::Unspecified => {
+                return Err(Status::invalid_argument(
+                    "Quote state is required".to_string(),
+                ));
+            }
+        }
+
+        let mint_quote = self.set_mint_quote_paid(&request.quote_id).await?;
+
+        Ok(Response::new(crate::quote::UpdateMintQuoteStateResponse {
+            quote_id: mint_quote.id.to_string(),
+            state: crate::quote::MintQuoteState::from(mint_quote.state()).into(),
+        }))
+    }
+}
+
+#[tonic::async_trait]
+impl WalletService for MintRPCServer {
+    /// Gets the on-chain wallet balance.
+    async fn get_balance(
+        &self,
+        _request: Request<crate::wallet::GetBalanceRequest>,
+    ) -> Result<Response<crate::wallet::GetBalanceResponse>, Status> {
+        let balance = self
+            .wallet_info_provider()?
+            .get_balance()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(balance))
+    }
+
+    /// Lists on-chain wallet transactions.
+    async fn list_transactions(
+        &self,
+        request: Request<crate::wallet::ListTransactionsRequest>,
+    ) -> Result<Response<crate::wallet::ListTransactionsResponse>, Status> {
+        let request = request.into_inner();
+        let limit = page_limit(
+            request.limit,
+            DEFAULT_TRANSACTION_LIMIT,
+            MAX_TRANSACTION_LIMIT,
+        )?;
+
+        let WalletTransactionPage {
+            transactions,
+            total,
+        } = self
+            .wallet_info_provider()?
+            .list_transactions(request.offset as usize, limit)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(crate::wallet::ListTransactionsResponse {
+            transactions,
+            total,
+        }))
+    }
+
+    /// Lists addresses revealed by the on-chain wallet.
+    async fn list_addresses(
+        &self,
+        request: Request<crate::wallet::ListAddressesRequest>,
+    ) -> Result<Response<crate::wallet::ListAddressesResponse>, Status> {
+        let request = request.into_inner();
+        let limit = page_limit(request.limit, DEFAULT_ADDRESS_LIMIT, MAX_ADDRESS_LIMIT)?;
+
+        let WalletAddressPage { addresses, total } = self
+            .wallet_info_provider()?
+            .list_addresses(request.offset as usize, limit)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(crate::wallet::ListAddressesResponse {
+            addresses,
+            total,
+        }))
+    }
+}
+
+fn page_limit(requested: u32, default: u32, maximum: u32) -> Result<usize, Status> {
+    let limit = match requested {
+        0 => default,
+        requested if requested <= maximum => requested,
+        requested => {
+            return Err(Status::invalid_argument(format!(
+                "Requested page size {requested} exceeds maximum {maximum}"
+            )));
+        }
+    };
+
+    Ok(limit as usize)
+}
+
+impl From<MintQuoteState> for crate::quote::MintQuoteState {
+    fn from(state: MintQuoteState) -> Self {
+        match state {
+            MintQuoteState::Unpaid => Self::Unpaid,
+            MintQuoteState::Paid => Self::Paid,
+            MintQuoteState::Issued => Self::Issued,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
 
     use bip39::Mnemonic;
-    use cdk::mint::{MintBuilder, MintMeltLimits};
-    use cdk::nuts::{CurrencyUnit, PaymentMethod};
+    use cdk::amount::SplitTarget;
+    use cdk::mint::{MintBuilder, MintInput, MintMeltLimits};
+    use cdk::nuts::{CurrencyUnit, MintRequest, PaymentMethod, PreMintSecrets};
     use cdk::types::QuoteTTL;
     use cdk_common::nut00::KnownMethod;
+    use cdk_common::MintQuoteBolt11Request;
     use cdk_fake_wallet::FakeWallet;
-    use tonic::Request;
+    use tonic::{Code, Request};
 
     use super::*;
     use crate::cdk_mint_server::CdkMint;
     use crate::{GetInfoRequest, UpdateTosUrlRequest};
 
+    struct TestWalletInfoProvider;
+
+    #[async_trait::async_trait]
+    impl crate::WalletInfoProvider for TestWalletInfoProvider {
+        async fn get_balance(
+            &self,
+        ) -> Result<crate::wallet::GetBalanceResponse, crate::WalletInfoError> {
+            Ok(crate::wallet::GetBalanceResponse {
+                confirmed_sat: 21,
+                trusted_pending_sat: 2,
+                untrusted_pending_sat: 3,
+                immature_sat: 4,
+                trusted_spendable_sat: 23,
+                total_sat: 30,
+                network: "regtest".to_string(),
+                synced_height: 123,
+            })
+        }
+
+        async fn list_transactions(
+            &self,
+            offset: usize,
+            limit: usize,
+        ) -> Result<crate::WalletTransactionPage, crate::WalletInfoError> {
+            Ok(crate::WalletTransactionPage {
+                transactions: vec![crate::wallet::WalletTransaction {
+                    txid: format!("{offset}:{limit}"),
+                    ..Default::default()
+                }],
+                total: 7,
+            })
+        }
+
+        async fn list_addresses(
+            &self,
+            offset: usize,
+            limit: usize,
+        ) -> Result<crate::WalletAddressPage, crate::WalletInfoError> {
+            Ok(crate::WalletAddressPage {
+                addresses: vec![crate::wallet::WalletAddress {
+                    address: format!("{offset}:{limit}"),
+                    ..Default::default()
+                }],
+                total: 9,
+            })
+        }
+    }
+
+    /// A well-formed quote id that no test mint has issued
+    const UNKNOWN_QUOTE_ID: &str = "019820ab-cdef-7000-8000-000000000000";
+
     async fn create_test_rpc_server() -> MintRPCServer {
+        create_test_rpc_server_with_payment_delay(2).await
+    }
+
+    /// Builds a test server whose fake payment backend waits `payment_delay`
+    /// seconds before reporting a quote paid
+    ///
+    /// Tests that drive quote state themselves pass a delay long enough that
+    /// the backend never reports a payment of its own.
+    async fn create_test_rpc_server_with_payment_delay(payment_delay: u64) -> MintRPCServer {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
 
         let mut mint_builder = MintBuilder::new(db.clone());
@@ -852,11 +1285,11 @@ mod tests {
             percent_fee_reserve: 1.0,
         };
 
-        let ln_fake = FakeWallet::new(
+        let fake_backend = FakeWallet::new(
             fee_reserve,
             HashMap::default(),
             HashSet::default(),
-            2,
+            payment_delay,
             CurrencyUnit::Sat,
         );
 
@@ -865,7 +1298,7 @@ mod tests {
                 CurrencyUnit::Sat,
                 PaymentMethod::Known(KnownMethod::Bolt11),
                 MintMeltLimits::new(1, 10_000),
-                Arc::new(ln_fake),
+                Arc::new(fake_backend),
             )
             .await
             .unwrap();
@@ -890,9 +1323,82 @@ mod tests {
         MintRPCServer {
             socket_addr: "127.0.0.1:0".parse().unwrap(),
             mint: Arc::new(mint),
+            mutation_guard: None,
+            wallet_info_provider: None,
             shutdown: Arc::new(Notify::new()),
             handle: None,
         }
+    }
+
+    #[derive(Debug)]
+    struct RejectingMutationGuard;
+
+    #[tonic::async_trait]
+    impl MintMutationGuard for RejectingMutationGuard {
+        async fn check(&self) -> Result<(), MintMutationGuardError> {
+            Err(MintMutationGuardError::FailedPrecondition(
+                "configuration restart pending".to_owned(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn wallet_service_requires_a_configured_provider() {
+        let server = create_test_rpc_server().await;
+
+        let error = server
+            .get_balance(Request::new(crate::wallet::GetBalanceRequest {}))
+            .await
+            .expect_err("wallet provider should be required");
+
+        assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[tokio::test]
+    async fn wallet_service_returns_provider_data_and_applies_page_defaults() {
+        let server = create_test_rpc_server()
+            .await
+            .with_wallet_info_provider(Arc::new(TestWalletInfoProvider));
+
+        let balance = server
+            .get_balance(Request::new(crate::wallet::GetBalanceRequest {}))
+            .await
+            .expect("get balance")
+            .into_inner();
+        assert_eq!(balance.confirmed_sat, 21);
+        assert_eq!(balance.total_sat, 30);
+        assert_eq!(balance.network, "regtest");
+        assert_eq!(balance.synced_height, 123);
+
+        let transactions = server
+            .list_transactions(Request::new(crate::wallet::ListTransactionsRequest {
+                limit: 0,
+                offset: 2,
+            }))
+            .await
+            .expect("list transactions")
+            .into_inner();
+        assert_eq!(transactions.total, 7);
+        assert_eq!(transactions.transactions[0].txid, "2:20");
+
+        let addresses = server
+            .list_addresses(Request::new(crate::wallet::ListAddressesRequest {
+                limit: 3,
+                offset: 4,
+            }))
+            .await
+            .expect("list addresses")
+            .into_inner();
+        assert_eq!(addresses.total, 9);
+        assert_eq!(addresses.addresses[0].address, "4:3");
+    }
+
+    #[test]
+    fn wallet_service_rejects_oversized_pages() {
+        let error = page_limit(101, DEFAULT_TRANSACTION_LIMIT, MAX_TRANSACTION_LIMIT)
+            .expect_err("oversized page should fail");
+
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
     }
 
     #[tokio::test]
@@ -925,6 +1431,273 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_keyset_service_rotate_next_keyset() {
+        let server = create_test_rpc_server().await;
+
+        let response = KeysetService::rotate_next_keyset(
+            &server,
+            Request::new(crate::keyset::RotateNextKeysetRequest {
+                unit: "sat".to_string(),
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: Some(1),
+                use_keyset_v2: Some(true),
+                final_expiry: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let response = response.into_inner();
+        assert!(!response.id.is_empty());
+        assert_eq!(response.unit, "sat");
+        assert_eq!(response.amounts, vec![1, 2, 4, 8]);
+        assert_eq!(response.input_fee_ppk, 1);
+    }
+
+    #[tokio::test]
+    async fn test_quote_service_get_quote_ttl() {
+        let server = create_test_rpc_server().await;
+
+        let response =
+            QuoteService::get_quote_ttl(&server, Request::new(crate::quote::GetQuoteTtlRequest {}))
+                .await
+                .unwrap();
+
+        let response = response.into_inner();
+        assert_eq!(response.mint_ttl, 10000);
+        assert_eq!(response.melt_ttl, 10000);
+    }
+
+    #[tokio::test]
+    async fn test_quote_service_update_quote_ttl_keeps_omitted_setting() {
+        let server = create_test_rpc_server().await;
+
+        let response = QuoteService::update_quote_ttl(
+            &server,
+            Request::new(crate::quote::UpdateQuoteTtlRequest {
+                mint_ttl: Some(60),
+                melt_ttl: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let response = response.into_inner();
+        assert_eq!(response.mint_ttl, 60);
+        assert_eq!(response.melt_ttl, 10000);
+
+        let persisted =
+            QuoteService::get_quote_ttl(&server, Request::new(crate::quote::GetQuoteTtlRequest {}))
+                .await
+                .unwrap()
+                .into_inner();
+        assert_eq!(persisted.mint_ttl, 60);
+        assert_eq!(persisted.melt_ttl, 10000);
+    }
+
+    /// Creates a bolt11 mint quote for `amount` sats and returns its id
+    async fn create_test_mint_quote(server: &MintRPCServer, amount: u64) -> String {
+        let response = server
+            .mint
+            .get_mint_quote(
+                MintQuoteBolt11Request {
+                    amount: amount.into(),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                }
+                .into(),
+            )
+            .await
+            .unwrap();
+
+        response.quote().to_string()
+    }
+
+    /// Issues the full paid amount of a quote, leaving it in the issued state
+    async fn issue_test_mint_quote(server: &MintRPCServer, quote_id: &str, amount: u64) {
+        let keyset_id = *server
+            .mint
+            .get_active_keysets()
+            .get(&CurrencyUnit::Sat)
+            .unwrap();
+        let keys = server
+            .mint
+            .keyset_pubkeys(&keyset_id)
+            .unwrap()
+            .keysets
+            .first()
+            .unwrap()
+            .keys
+            .clone();
+        let fees: (u64, Vec<u64>) = (0, keys.iter().map(|a| a.0.to_u64()).collect());
+        let premint = PreMintSecrets::random(
+            keyset_id,
+            Amount::from(amount),
+            &SplitTarget::None,
+            &fees.into(),
+        )
+        .unwrap();
+
+        server
+            .mint
+            .process_mint_request(MintInput::Single(MintRequest {
+                quote: quote_id.parse().unwrap(),
+                outputs: premint.blinded_messages().to_vec(),
+                signature: None,
+            }))
+            .await
+            .unwrap();
+    }
+
+    /// Returns the amount recorded as paid against a quote
+    async fn amount_paid(server: &MintRPCServer, quote_id: &str) -> u64 {
+        server
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id.parse().unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .amount_paid()
+            .value()
+    }
+
+    #[tokio::test]
+    async fn test_quote_service_update_mint_quote_state_marks_quote_paid() {
+        let server = create_test_rpc_server_with_payment_delay(3600).await;
+        let quote_id = create_test_mint_quote(&server, 100).await;
+
+        assert_eq!(amount_paid(&server, &quote_id).await, 0);
+
+        let response = QuoteService::update_mint_quote_state(
+            &server,
+            Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                quote_id: quote_id.clone(),
+                state: crate::quote::MintQuoteState::Paid.into(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert_eq!(response.quote_id, quote_id);
+        assert_eq!(response.state(), crate::quote::MintQuoteState::Paid);
+        assert_eq!(amount_paid(&server, &quote_id).await, 100);
+    }
+
+    #[tokio::test]
+    async fn test_quote_service_update_mint_quote_state_paid_twice_pays_once() {
+        let server = create_test_rpc_server_with_payment_delay(3600).await;
+        let quote_id = create_test_mint_quote(&server, 100).await;
+
+        for _ in 0..2 {
+            let response = QuoteService::update_mint_quote_state(
+                &server,
+                Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                    quote_id: quote_id.clone(),
+                    state: crate::quote::MintQuoteState::Paid.into(),
+                }),
+            )
+            .await
+            .unwrap()
+            .into_inner();
+
+            assert_eq!(response.state(), crate::quote::MintQuoteState::Paid);
+        }
+
+        assert_eq!(amount_paid(&server, &quote_id).await, 100);
+    }
+
+    #[tokio::test]
+    async fn test_quote_service_update_mint_quote_state_reports_state_of_issued_quote() {
+        let server = create_test_rpc_server_with_payment_delay(3600).await;
+        let quote_id = create_test_mint_quote(&server, 32).await;
+
+        QuoteService::update_mint_quote_state(
+            &server,
+            Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                quote_id: quote_id.clone(),
+                state: crate::quote::MintQuoteState::Paid.into(),
+            }),
+        )
+        .await
+        .unwrap();
+        issue_test_mint_quote(&server, &quote_id, 32).await;
+
+        // The request asks for Paid; an already-issued quote stays Issued
+        let response = QuoteService::update_mint_quote_state(
+            &server,
+            Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                quote_id: quote_id.clone(),
+                state: crate::quote::MintQuoteState::Paid.into(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert_eq!(response.state(), crate::quote::MintQuoteState::Issued);
+        assert_eq!(amount_paid(&server, &quote_id).await, 32);
+    }
+
+    #[tokio::test]
+    async fn test_quote_service_update_mint_quote_state_rejects_unsupported_states() {
+        let server = create_test_rpc_server().await;
+
+        // An unsupported state is rejected before the quote is looked up
+        for (state, expected) in [
+            (
+                crate::quote::MintQuoteState::Unpaid,
+                "Cannot unpay a quote: payments cannot be retracted",
+            ),
+            (
+                crate::quote::MintQuoteState::Issued,
+                "Cannot issue a quote: no signatures would back the issuance",
+            ),
+            (
+                crate::quote::MintQuoteState::Unspecified,
+                "Quote state is required",
+            ),
+        ] {
+            let status = QuoteService::update_mint_quote_state(
+                &server,
+                Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                    quote_id: UNKNOWN_QUOTE_ID.to_string(),
+                    state: state.into(),
+                }),
+            )
+            .await
+            .unwrap_err();
+
+            assert_eq!(status.code(), tonic::Code::InvalidArgument);
+            assert_eq!(
+                status.message(),
+                expected,
+                "unexpected rejection for {state:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_quote_service_update_mint_quote_state_unknown_quote() {
+        let server = create_test_rpc_server().await;
+
+        let status = QuoteService::update_mint_quote_state(
+            &server,
+            Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                quote_id: UNKNOWN_QUOTE_ID.to_string(),
+                state: crate::quote::MintQuoteState::Paid.into(),
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(status.message(), "Could not find quote");
+    }
+
+    #[tokio::test]
     async fn test_update_tos_url() {
         let server = create_test_rpc_server().await;
         let tos = "https://example.com/terms";
@@ -942,5 +1715,71 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.into_inner().tos_url.unwrap(), tos);
+    }
+
+    #[tokio::test]
+    async fn test_mutation_guard_rejects_updates_without_blocking_reads() {
+        let server = create_test_rpc_server()
+            .await
+            .with_mutation_guard(Arc::new(RejectingMutationGuard));
+
+        let error = server
+            .update_tos_url(Request::new(UpdateTosUrlRequest {
+                tos_url: "https://example.com/terms".to_owned(),
+            }))
+            .await
+            .expect_err("mutation should be rejected");
+
+        assert_eq!(error.code(), Code::FailedPrecondition);
+        assert_eq!(error.message(), "configuration restart pending");
+
+        let keyset_error = KeysetService::rotate_next_keyset(
+            &server,
+            Request::new(crate::keyset::RotateNextKeysetRequest {
+                unit: "sat".to_owned(),
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: Some(1),
+                use_keyset_v2: Some(true),
+                final_expiry: None,
+            }),
+        )
+        .await
+        .expect_err("keyset mutation should be rejected");
+
+        assert_eq!(keyset_error.code(), Code::FailedPrecondition);
+        assert_eq!(keyset_error.message(), "configuration restart pending");
+
+        let quote_ttl_error = QuoteService::update_quote_ttl(
+            &server,
+            Request::new(crate::quote::UpdateQuoteTtlRequest {
+                mint_ttl: Some(60),
+                melt_ttl: None,
+            }),
+        )
+        .await
+        .expect_err("quote TTL mutation should be rejected");
+
+        assert_eq!(quote_ttl_error.code(), Code::FailedPrecondition);
+        assert_eq!(quote_ttl_error.message(), "configuration restart pending");
+
+        let quote_state_error = QuoteService::update_mint_quote_state(
+            &server,
+            Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                quote_id: UNKNOWN_QUOTE_ID.to_owned(),
+                state: crate::quote::MintQuoteState::Paid.into(),
+            }),
+        )
+        .await
+        .expect_err("quote-state mutation should be rejected");
+
+        assert_eq!(quote_state_error.code(), Code::FailedPrecondition);
+        assert_eq!(quote_state_error.message(), "configuration restart pending");
+        assert!(server
+            .get_info(Request::new(GetInfoRequest {}))
+            .await
+            .expect("read should remain available")
+            .into_inner()
+            .tos_url
+            .is_none());
     }
 }

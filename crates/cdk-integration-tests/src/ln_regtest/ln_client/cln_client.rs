@@ -11,11 +11,11 @@ use cdk::util::hex;
 use cln_rpc::model::requests::{
     ConnectRequest, FetchinvoiceRequest, FundchannelRequest, GetinfoRequest, InvoiceRequest,
     ListchannelsRequest, ListfundsRequest, ListinvoicesRequest, ListpaysRequest,
-    ListtransactionsRequest, NewaddrRequest, OfferRequest, PayRequest,
+    ListtransactionsRequest, NewaddrRequest, OfferRequest, XpayRequest,
 };
 use cln_rpc::model::responses::{
     GetinfoResponse, ListchannelsResponse, ListfundsOutputsStatus, ListinvoicesInvoicesStatus,
-    ListpaysPaysStatus, PayStatus,
+    ListpaysPaysStatus,
 };
 use cln_rpc::primitives::{Amount, AmountOrAll, AmountOrAny, PublicKey};
 use cln_rpc::{ClnRpc, Request};
@@ -281,7 +281,9 @@ impl ClnClient {
                 recurrence_base: None,
                 recurrence_limit: None,
                 recurrence_paywindow: None,
-                recurrence_start_any_period: None,
+                optional_recurrence: None,
+                proportional_amount: None,
+                fronting_nodes: None,
             })
             .await?;
 
@@ -492,39 +494,23 @@ impl LightningClient for ClnClient {
     async fn pay_invoice(&self, bolt11: String) -> Result<String> {
         let mut cln_client = self.client.lock().await;
 
-        let cln_response = cln_client
-            .call(cln_rpc::Request::Pay(PayRequest {
-                bolt11,
+        let pay_response = cln_client
+            .call_typed(&XpayRequest {
+                invstring: bolt11,
                 amount_msat: None,
                 label: None,
-                riskfactor: None,
-                maxfeepercent: None,
+                dev_use_shadow: None,
                 retry_for: Some(10),
                 maxdelay: None,
-                exemptfee: None,
                 localinvreqid: None,
-                exclude: None,
                 maxfee: None,
-                description: None,
                 partial_msat: None,
-            }))
+                payer_note: None,
+                layers: None,
+            })
             .await?;
 
-        // match return_error {
-        //     true => {
-        //         bail!("Lighiting error");
-        //     }
-        //     false => response,
-        // }
-
-        match cln_response {
-            cln_rpc::Response::Pay(pay_response) => {
-                Ok(hex::encode(pay_response.payment_preimage.to_vec()))
-            }
-            _ => {
-                bail!("CLN returned wrong response kind");
-            }
-        }
+        Ok(hex::encode(pay_response.payment_preimage.to_vec()))
     }
 
     async fn wait_chain_sync(&self) -> Result<()> {
@@ -532,7 +518,7 @@ impl LightningClient for ClnClient {
         while count < 100 {
             let info = self.get_info().await?;
 
-            if info.warning_lightningd_sync.is_none() || info.warning_bitcoind_sync.is_none() {
+            if info.warning_lightningd_sync.is_none() && info.warning_bitcoind_sync.is_none() {
                 tracing::info!("CLN completed chain sync");
                 return Ok(());
             }
@@ -685,33 +671,23 @@ impl LightningClient for ClnClient {
         };
 
         let cln_response = cln_client
-            .call(Request::Pay(PayRequest {
-                bolt11: invoice,
+            .call_typed(&XpayRequest {
+                invstring: invoice,
                 amount_msat: None,
                 label: None,
-                riskfactor: None,
-                maxfeepercent: None,
+                dev_use_shadow: None,
                 retry_for: Some(10),
                 maxdelay: None,
-                exemptfee: None,
                 localinvreqid: None,
-                exclude: None,
                 maxfee: None,
-                description: None,
                 partial_msat: None,
-            }))
+                payer_note: None,
+                layers: None,
+            })
             .await;
 
         let response = match cln_response {
-            Ok(cln_rpc::Response::Pay(pay_response)) => {
-                match pay_response.status {
-                    PayStatus::COMPLETE => (),
-                    PayStatus::PENDING => bail!("Invoice pending"),
-                    PayStatus::FAILED => bail!("Could not pay invoice"),
-                }
-
-                pay_response.payment_preimage
-            }
+            Ok(pay_response) => pay_response.payment_preimage,
             _ => {
                 tracing::error!("Error attempting to pay invoice");
                 bail!("Could not pay bolt12 offer")

@@ -126,6 +126,7 @@ where
             amount_paid,
             amount_issued,
             updated_at,
+            last_checked,
             payment_method,
             request_lookup_id_kind,
             extra_json
@@ -179,6 +180,7 @@ where
             amount_paid,
             amount_issued,
             updated_at,
+            last_checked,
             payment_method,
             request_lookup_id_kind,
             extra_json
@@ -229,6 +231,7 @@ where
             amount_paid,
             amount_issued,
             updated_at,
+            last_checked,
             payment_method,
             request_lookup_id_kind,
             extra_json
@@ -327,12 +330,14 @@ where
             amount_paid,
             amount_issued,
             updated_at,
+            last_checked,
             payment_method,
             request_lookup_id_kind,
             extra_json
         FROM
             mint_quote
         WHERE id IN (:quote_ids)
+        ORDER BY id
         {for_update_clause}
         "#
     );
@@ -405,6 +410,7 @@ where
         WHERE
             request_lookup_id = :request_lookup_id
             AND request_lookup_id_kind = :request_lookup_id_kind
+        ORDER BY id
         {for_update_clause}
         "#
     );
@@ -500,7 +506,8 @@ fn sql_row_to_mint_quote(
     unpack_into!(
         let (
             id, amount, unit, request, expiry, request_lookup_id,
-            pubkey, created_time, amount_paid, amount_issued, updated_at, payment_method,
+            pubkey, created_time, amount_paid, amount_issued, updated_at, last_checked,
+            payment_method,
             request_lookup_id_kind, extra_json
         ) = row
     );
@@ -522,12 +529,13 @@ fn sql_row_to_mint_quote(
     let amount_paid: u64 = column_as_number!(amount_paid);
     let amount_issued: u64 = column_as_number!(amount_issued);
     let updated_at: u64 = column_as_number!(updated_at);
+    let last_checked: u64 = column_as_number!(last_checked);
     let payment_method = column_as_string!(payment_method, PaymentMethod::from_str);
     let unit = column_as_string!(unit, CurrencyUnit::from_str);
     let extra_json = column_as_nullable_string!(&extra_json)
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
 
-    Ok(MintQuote::new(
+    let mut quote = MintQuote::new(
         Some(QuoteId::from_str(&id)?),
         request_str,
         unit.clone(),
@@ -544,7 +552,10 @@ fn sql_row_to_mint_quote(
         payments,
         issueances,
         extra_json,
-    ))
+    );
+    quote.set_last_checked(last_checked);
+
+    Ok(quote)
 }
 
 // FIXME: Replace unwrap with proper error handling
@@ -691,9 +702,16 @@ where
     ) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
+        let mut ordered_messages = blinded_messages.iter().enumerate().collect::<Vec<_>>();
+        ordered_messages.sort_unstable_by(|(_, left), (_, right)| {
+            left.blinded_secret
+                .to_bytes()
+                .cmp(&right.blinded_secret.to_bytes())
+        });
+
         // Insert blinded_messages directly into blind_signature with c = NULL
         // Let the database constraint handle duplicate detection
-        for (i, message) in blinded_messages.iter().enumerate() {
+        for (i, message) in ordered_messages {
             match query(
                 r#"
                 INSERT INTO blind_signature
@@ -735,6 +753,26 @@ where
         &mut self,
         blinded_secrets: &[PublicKey],
     ) -> Result<(), Self::Err> {
+        // Acquire all affected row locks in primary-key order before deleting.
+        query(
+            r#"
+            SELECT blinded_message
+            FROM blind_signature
+            WHERE blinded_message IN (:blinded_secrets) AND c IS NULL
+            ORDER BY blinded_message
+            FOR UPDATE
+            "#,
+        )?
+        .bind_vec(
+            "blinded_secrets",
+            blinded_secrets
+                .iter()
+                .map(|secret| secret.to_bytes().to_vec())
+                .collect(),
+        )?
+        .fetch_all(&self.inner)
+        .await?;
+
         // Delete blinded messages from blind_signature table where c IS NULL
         // (only delete unsigned blinded messages)
         query(
@@ -784,7 +822,7 @@ where
                 SELECT blinded_message, keyset_id, amount
                 FROM blind_signature
                 WHERE quote_id = :quote_id AND c IS NULL
-                ORDER BY order_index ASC
+                ORDER BY order_index ASC, blinded_message ASC
                 FOR UPDATE
                 "#,
             )?
@@ -830,6 +868,21 @@ where
         )?
         .bind("quote_id", quote_id.to_string())
         .execute(&self.inner)
+        .await?;
+
+        // Match the lock order used when change outputs are loaded for
+        // finalization before deleting any still-unsigned rows.
+        query(
+            r#"
+            SELECT blinded_message
+            FROM blind_signature
+            WHERE quote_id = :quote_id AND c IS NULL
+            ORDER BY order_index ASC, blinded_message ASC
+            FOR UPDATE
+            "#,
+        )?
+        .bind("quote_id", quote_id.to_string())
+        .fetch_all(&self.inner)
         .await?;
 
         // Also delete blinded messages (where c IS NULL) from blind_signature table
@@ -951,10 +1004,14 @@ where
         query(
             r#"
                 INSERT INTO mint_quote (
-                id, amount, unit, request, expiry, request_lookup_id, pubkey, created_time, updated_at, payment_method, request_lookup_id_kind, extra_json
+                    id, amount, unit, request, expiry, request_lookup_id, pubkey,
+                    created_time, updated_at, last_checked, payment_method,
+                    request_lookup_id_kind, extra_json
                 )
                 VALUES (
-                :id, :amount, :unit, :request, :expiry, :request_lookup_id, :pubkey, :created_time, :updated_at, :payment_method, :request_lookup_id_kind, :extra_json
+                    :id, :amount, :unit, :request, :expiry, :request_lookup_id, :pubkey,
+                    :created_time, :updated_at, :last_checked, :payment_method,
+                    :request_lookup_id_kind, :extra_json
                 )
             "#,
         )?
@@ -963,13 +1020,11 @@ where
         .bind("unit", quote.unit.to_string())
         .bind("request", quote.request.clone())
         .bind("expiry", quote.expiry as i64)
-        .bind(
-            "request_lookup_id",
-            quote.request_lookup_id.to_string(),
-        )
+        .bind("request_lookup_id", quote.request_lookup_id.to_string())
         .bind("pubkey", quote.pubkey.map(|p| p.to_string()))
         .bind("created_time", quote.created_time as i64)
         .bind("updated_at", quote.updated_at() as i64)
+        .bind("last_checked", quote.last_checked() as i64)
         .bind("payment_method", quote.payment_method.to_string())
         .bind("request_lookup_id_kind", quote.request_lookup_id.kind())
         .bind(
@@ -1217,6 +1272,35 @@ where
         result
     }
 
+    async fn try_update_mint_quote_last_checked(
+        &self,
+        quote_id: &QuoteId,
+        last_checked: u64,
+        min_interval: u64,
+    ) -> Result<bool, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let threshold = last_checked.saturating_sub(min_interval);
+        let rows_affected = query(
+            r#"
+            UPDATE mint_quote
+            SET last_checked = :last_checked
+            WHERE id = :quote_id
+              AND last_checked < :threshold
+            "#,
+        )?
+        .bind("quote_id", quote_id.to_string())
+        .bind("last_checked", last_checked as i64)
+        .bind("threshold", threshold as i64)
+        .execute(&*conn)
+        .await?;
+
+        Ok(rows_affected > 0)
+    }
+
     async fn get_mint_quotes_by_ids(
         &self,
         quote_ids: &[QuoteId],
@@ -1273,6 +1357,7 @@ where
                 amount_paid,
                 amount_issued,
                 updated_at,
+                last_checked,
                 payment_method,
                 request_lookup_id_kind,
                 extra_json

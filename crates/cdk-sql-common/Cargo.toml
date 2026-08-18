@@ -18,7 +18,7 @@ wallet = ["cdk-common/wallet"]
 prometheus = ["cdk-prometheus"]
 [dependencies]
 async-trait.workspace = true
-cdk-common = { workspace = true, features = ["test"] }
+cdk-common.workspace = true
 cdk-prometheus = { workspace = true, optional = true }
 bitcoin.workspace = true
 thiserror.workspace = true

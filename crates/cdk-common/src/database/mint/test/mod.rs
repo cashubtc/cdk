@@ -4,16 +4,14 @@
 //! implementation
 #![allow(clippy::unwrap_used, clippy::missing_panics_doc)]
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 // For derivation path parsing
 use bitcoin::bip32::DerivationPath;
 use cashu::CurrencyUnit;
-use web_time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
 use crate::common::IssuerVersion;
-use crate::database::KVStoreDatabase;
+use crate::database::{KVStoreCompareAndSwap, KVStoreDatabase};
 use crate::mint::MintKeySetInfo;
 
 mod keys;
@@ -144,43 +142,46 @@ where
     }
 }
 
-static COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Test atomic compare-and-swap behavior, including concurrent contenders.
+pub async fn kvstore_compare_and_swap<DB>(db: DB)
+where
+    DB: KVStoreCompareAndSwap<Err = crate::database::Error> + Sync,
+{
+    const PRIMARY: &str = "cas_test";
+    const SECONDARY: &str = "config";
+    const KEY: &str = "active";
 
-/// Returns a unique, random-looking Base62 string (no external crates).
-/// Not cryptographically secure, but great for ids, keys, temp names, etc.
-fn unique_string() -> String {
-    // 1) high-res timestamp (nanos since epoch)
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    assert!(db
+        .kv_compare_and_swap(PRIMARY, SECONDARY, KEY, None, b"first")
+        .await
+        .unwrap());
+    assert!(!db
+        .kv_compare_and_swap(PRIMARY, SECONDARY, KEY, None, b"unexpected")
+        .await
+        .unwrap());
+    assert!(!db
+        .kv_compare_and_swap(PRIMARY, SECONDARY, KEY, Some(b"wrong"), b"unexpected")
+        .await
+        .unwrap());
+    assert!(db
+        .kv_compare_and_swap(PRIMARY, SECONDARY, KEY, Some(b"first"), b"second")
+        .await
+        .unwrap());
 
-    // 2) per-process monotonic counter to avoid collisions in the same instant
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed) as u128;
+    let left = db.kv_compare_and_swap(PRIMARY, SECONDARY, KEY, Some(b"second"), b"left");
+    let right = db.kv_compare_and_swap(PRIMARY, SECONDARY, KEY, Some(b"second"), b"right");
+    let (left, right) = tokio::join!(left, right);
+    let left = left.unwrap();
+    let right = right.unwrap();
+    assert_ne!(left, right);
 
-    // 3) process id to reduce collision chance across processes
-    let pid = std::process::id() as u128;
-
-    // Mix the components (simple XOR/shift mix; good enough for "random-looking")
-    let mixed = now ^ (pid << 64) ^ (n << 32);
-
-    base62_encode(mixed)
-}
-
-fn base62_encode(mut x: u128) -> String {
-    const ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    if x == 0 {
-        return "0".to_string();
-    }
-    let mut buf = [0u8; 26]; // enough for base62(u128)
-    let mut i = buf.len();
-    while x > 0 {
-        let rem = (x % 62) as usize;
-        x /= 62;
-        i -= 1;
-        buf[i] = ALPHABET[rem];
-    }
-    String::from_utf8_lossy(&buf[i..]).into_owned()
+    let stored = db.kv_read(PRIMARY, SECONDARY, KEY).await.unwrap().unwrap();
+    let expected = if left {
+        b"left".as_slice()
+    } else {
+        b"right".as_slice()
+    };
+    assert_eq!(stored, expected);
 }
 
 /// Unit test that is expected to be passed for a correct database implementation
@@ -239,13 +240,13 @@ macro_rules! mint_db_test {
             add_and_get_saga,
             add_duplicate_saga,
             update_saga_state,
-            update_saga_with_finalization_data,
+            update_acquired_saga_with_finalization_data,
             update_saga_preserves_finalization_data,
             delete_saga,
             get_incomplete_swap_sagas,
             get_incomplete_melt_sagas,
             get_nonexistent_saga,
-            update_nonexistent_saga,
+            get_saga_for_update_nonexistent,
             delete_nonexistent_saga,
             saga_with_quote_id,
             get_melt_saga_by_quote_id,

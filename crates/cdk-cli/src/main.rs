@@ -23,6 +23,7 @@ use url::Url;
 
 mod nostr_storage;
 mod sub_commands;
+mod terminal;
 mod token_storage;
 mod utils;
 
@@ -226,7 +227,7 @@ async fn main() -> Result<()> {
     let currency_unit = match args.unit {
         Some(unit) => match unit.to_lowercase().as_str() {
             "" => bail!("Currency unit cannot be empty. Omit the flag to use the default 'sat'."),
-            _ => Some(CurrencyUnit::from_str(&unit).unwrap_or(CurrencyUnit::Custom(unit))),
+            _ => Some(CurrencyUnit::from_str(&unit)?),
         },
         None => None,
     };
@@ -269,7 +270,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    match &args.command {
+    let result = match &args.command {
         Commands::DecodeToken(sub_command_args) => {
             sub_commands::decode_token::decode_token(sub_command_args)
         }
@@ -401,7 +402,16 @@ async fn main() -> Result<()> {
             )
             .await
         }
+    };
+
+    // Errors may embed mint-controlled response bodies; escape control
+    // characters so a malicious mint cannot inject terminal escape sequences.
+    if let Err(err) = result {
+        eprintln!("Error: {}", terminal::escape_control(&format!("{err:#}")));
+        std::process::exit(1);
     }
+
+    Ok(())
 }
 
 #[cfg(test)]

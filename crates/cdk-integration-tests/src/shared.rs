@@ -200,9 +200,9 @@ pub fn create_fake_wallet_settings(
         signatory: signatory_config,
         mint_info: cdk_mintd::config::MintInfo::default(),
         limits: cdk_mintd::config::Limits::default(),
-        ln: vec![
-            cdk_mintd::config::Ln {
-                ln_backend: cdk_mintd::config::LnBackend::FakeWallet,
+        payment_backend: vec![
+            cdk_mintd::config::PaymentBackend {
+                backend: cdk_mintd::config::PaymentBackendType::FakeWallet,
                 unit: cdk::nuts::CurrencyUnit::Sat,
                 invoice_description: None,
                 min_mint: DEFAULT_MIN_MINT.into(),
@@ -211,8 +211,8 @@ pub fn create_fake_wallet_settings(
                 max_melt: DEFAULT_MAX_MELT.into(),
                 ..Default::default()
             },
-            cdk_mintd::config::Ln {
-                ln_backend: cdk_mintd::config::LnBackend::FakeWallet,
+            cdk_mintd::config::PaymentBackend {
+                backend: cdk_mintd::config::PaymentBackendType::FakeWallet,
                 unit: cdk::nuts::CurrencyUnit::Usd,
                 invoice_description: None,
                 min_mint: DEFAULT_MIN_MINT.into(),
@@ -223,7 +223,6 @@ pub fn create_fake_wallet_settings(
             },
         ],
         cln: None,
-        lnbits: None,
         lnd: None,
         ldk_node: None,
         onchain: onchain_config,
@@ -271,8 +270,8 @@ pub fn create_cln_settings(
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
         limits: cdk_mintd::config::Limits::default(),
-        ln: vec![cdk_mintd::config::Ln {
-            ln_backend: cdk_mintd::config::LnBackend::Cln,
+        payment_backend: vec![cdk_mintd::config::PaymentBackend {
+            backend: cdk_mintd::config::PaymentBackendType::Cln,
             unit: cdk::nuts::CurrencyUnit::Sat,
             invoice_description: None,
             min_mint: DEFAULT_MIN_MINT.into(),
@@ -283,7 +282,6 @@ pub fn create_cln_settings(
         }],
         onchain: None,
         cln: Some(cln_config),
-        lnbits: None,
         lnd: None,
         ldk_node: None,
         fake_wallet: None,
@@ -325,8 +323,8 @@ pub fn create_lnd_settings(
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
         limits: cdk_mintd::config::Limits::default(),
-        ln: vec![cdk_mintd::config::Ln {
-            ln_backend: cdk_mintd::config::LnBackend::Lnd,
+        payment_backend: vec![cdk_mintd::config::PaymentBackend {
+            backend: cdk_mintd::config::PaymentBackendType::Lnd,
             unit: cdk::nuts::CurrencyUnit::Sat,
             invoice_description: None,
             min_mint: DEFAULT_MIN_MINT.into(),

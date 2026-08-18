@@ -131,6 +131,49 @@ pub trait KeysDatabaseTransaction<'a, Error>: DbTransactionFinalizer<Err = Error
 
     /// Add [`MintKeySetInfo`]
     async fn add_keyset_info(&mut self, keyset: MintKeySetInfo) -> Result<(), Error>;
+
+    /// Allocate the next derivation-path index for a unit.
+    ///
+    /// Returns `max(derivation_path_index) + 1` for the unit (1 when the unit
+    /// has no keysets yet). The transaction holds the global keyset advisory
+    /// lock (taken when it begins), so all keyset transactions serialize and two
+    /// signatory instances rotating the same unit cannot allocate the same index
+    /// and derive divergent keysets. This is the authoritative index source;
+    /// callers must not compute it from process-local state.
+    async fn next_derivation_index(&mut self, unit: &CurrencyUnit) -> Result<u32, Error>;
+
+    /// Read a unit's keyset infos inside the transaction, under the global
+    /// keyset advisory lock the transaction holds.
+    ///
+    /// Boot-time reactivation uses this to pick a unit's highest-index keyset
+    /// and reassign the active pointer as one atomic step. Both happen inside the
+    /// transaction, under the global keyset lock, so a peer rotation cannot commit
+    /// a higher keyset between the read and the reassignment and get clobbered
+    /// back to the older one.
+    async fn get_keyset_infos_by_unit(
+        &mut self,
+        unit: &CurrencyUnit,
+    ) -> Result<Vec<MintKeySetInfo>, Error>;
+
+    /// Read all active keyset pointers inside the transaction.
+    ///
+    /// Keyset reads go through a transaction, which holds the global keyset lock,
+    /// so no other keyset transaction can commit between reads. The signatory
+    /// uses these transaction reads to reload its in-memory keysets, so the
+    /// collision check and default amounts see peers' committed rotations rather
+    /// than a stale snapshot.
+    async fn get_active_keysets(&mut self) -> Result<HashMap<CurrencyUnit, Id>, Error>;
+
+    /// Read all keyset infos inside the transaction. See
+    /// [`get_active_keysets`](Self::get_active_keysets) for why keyset reads go
+    /// through the transaction.
+    async fn get_keyset_infos(&mut self) -> Result<Vec<MintKeySetInfo>, Error>;
+
+    /// Read the keyset epoch inside the transaction.
+    ///
+    /// Transaction-scoped counterpart of [`KeysDatabase::keysets_epoch`], used to
+    /// gate the reload under the global lock.
+    async fn keysets_epoch(&mut self) -> Result<u64, Error>;
 }
 
 /// Mint Keys Database trait
@@ -140,21 +183,25 @@ pub trait KeysDatabase {
     type Err: Into<Error> + From<Error>;
 
     /// Begins a transaction
+    ///
+    /// All keyset reads and writes go through a transaction: it takes the global
+    /// keyset advisory lock, so the signatory's reload sees a consistent
+    /// snapshot. The autocommit reads that once existed here are gone; use the
+    /// transaction's read methods instead.
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn KeysDatabaseTransaction<'a, Self::Err> + Send + Sync + 'a>, Error>;
 
-    /// Get Active Keyset
-    async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err>;
-
-    /// Get all Active Keyset
-    async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err>;
-
-    /// Get [`MintKeySetInfo`]
-    async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err>;
-
-    /// Get [`MintKeySetInfo`]s
-    async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
+    /// An opaque epoch for the current keyset set.
+    ///
+    /// It must change whenever the set changes, both when a keyset is added and
+    /// when the active pointer is reassigned. Callers only compare it for
+    /// equality to decide whether to reload their in-memory view, so an epoch
+    /// that misses reactivations would leave peers serving a stale active
+    /// keyset. The storage decides how to compute it cheaply (e.g. a counter
+    /// bumped inside every keyset-writing transaction); there is deliberately no
+    /// default, since a count-based fallback would not move on reactivation.
+    async fn keysets_epoch(&self) -> Result<u64, Self::Err>;
 }
 
 /// Mint Quote Database writer trait
@@ -261,7 +308,7 @@ pub trait QuotesTransaction {
     ///
     /// # Arguments
     ///
-    /// * `request_lookup_id` - The payment identifier used by the Lightning backend to track
+    /// * `request_lookup_id` - The payment identifier used by the payment backend to track
     ///   payment state (e.g., payment hash, offer ID, or label).
     async fn get_melt_quotes_by_request_lookup_id(
         &mut self,
@@ -339,6 +386,17 @@ pub trait QuotesDatabase {
 
     /// Get [`MintMintQuote`]
     async fn get_mint_quote(&self, quote_id: &QuoteId) -> Result<Option<MintMintQuote>, Self::Err>;
+
+    /// Atomically claim a payment backend status check for a mint quote.
+    ///
+    /// Returns `true` when `last_checked` was updated, or `false` when another check occurred
+    /// within `min_interval` seconds.
+    async fn try_update_mint_quote_last_checked(
+        &self,
+        quote_id: &QuoteId,
+        last_checked: u64,
+        min_interval: u64,
+    ) -> Result<bool, Self::Err>;
 
     /// Get multiple [`MintMintQuote`]s by their IDs.
     ///
@@ -521,20 +579,30 @@ pub trait SagaTransaction {
         operation_id: &uuid::Uuid,
     ) -> Result<Option<mint::Saga>, Self::Err>;
 
+    /// Get a saga by operation ID and mark it as acquired for mutation.
+    ///
+    /// Implementations must lock the returned row for the lifetime of the
+    /// transaction. Saga mutation methods require this marker so callers
+    /// cannot update a stale snapshot loaded outside the transaction.
+    async fn get_saga_for_update(
+        &mut self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Option<Acquired<mint::Saga>>, Self::Err>;
+
     /// Add saga
     async fn add_saga(&mut self, saga: &mint::Saga) -> Result<(), Self::Err>;
 
-    /// Update saga state (only updates state and updated_at fields)
-    async fn update_saga(
+    /// Update the state of an acquired saga.
+    async fn update_acquired_saga(
         &mut self,
-        operation_id: &uuid::Uuid,
+        saga: &mut Acquired<mint::Saga>,
         new_state: mint::SagaStateEnum,
     ) -> Result<(), Self::Err>;
 
-    /// Update saga state and optional finalization metadata.
-    async fn update_saga_with_finalization_data(
+    /// Update an acquired saga state and optional finalization metadata.
+    async fn update_acquired_saga_with_finalization_data(
         &mut self,
-        operation_id: &uuid::Uuid,
+        saga: &mut Acquired<mint::Saga>,
         new_state: mint::SagaStateEnum,
         finalization_data: Option<&mint::MeltFinalizationData>,
     ) -> Result<(), Self::Err>;

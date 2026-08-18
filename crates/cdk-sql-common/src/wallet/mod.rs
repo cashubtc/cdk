@@ -13,7 +13,7 @@ use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
-    self, MintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId,
+    self, MintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId, TransactionStatus,
 };
 use cdk_common::{
     database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PaymentMethod, Proof,
@@ -690,7 +690,8 @@ where
                 payment_request,
                 payment_proof,
                 payment_method,
-                saga_id
+                saga_id,
+                status
             FROM
                 transactions
             WHERE
@@ -733,7 +734,8 @@ where
                 payment_request,
                 payment_proof,
                 payment_method,
-                saga_id
+                saga_id,
+                status
             FROM
                 transactions
             "#,
@@ -874,7 +876,16 @@ where
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(
+        skip(self, transaction),
+        fields(
+            direction = %transaction.direction,
+            amount = %transaction.amount,
+            unit = %transaction.unit,
+            quote_id = ?transaction.quote_id,
+            saga_id = ?transaction.saga_id,
+        )
+    )]
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), database::Error> {
         let conn = self
             .pool
@@ -898,9 +909,9 @@ where
         query(
                r#"
    INSERT INTO transactions
-   (id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata, quote_id, payment_request, payment_proof, payment_method, saga_id)
+   (id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata, quote_id, payment_request, payment_proof, payment_method, saga_id, status)
    VALUES
-   (:id, :mint_url, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata, :quote_id, :payment_request, :payment_proof, :payment_method, :saga_id)
+   (:id, :mint_url, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata, :quote_id, :payment_request, :payment_proof, :payment_method, :saga_id, :status)
    ON CONFLICT(id) DO UPDATE SET
        mint_url = excluded.mint_url,
        direction = excluded.direction,
@@ -914,7 +925,8 @@ where
        payment_request = excluded.payment_request,
        payment_proof = excluded.payment_proof,
        payment_method = excluded.payment_method,
-       saga_id = excluded.saga_id
+       saga_id = excluded.saga_id,
+       status = excluded.status
    ;
            "#,
            )?
@@ -936,6 +948,7 @@ where
            .bind("payment_proof", transaction.payment_proof)
            .bind("payment_method", transaction.payment_method.map(|pm| pm.to_string()))
            .bind("saga_id", transaction.saga_id.map(|id| id.to_string()))
+           .bind("status", transaction.status.to_string())
            .execute(&*conn)
            .await?;
 
@@ -1003,6 +1016,38 @@ where
         .map(|n| Ok::<_, Error>(column_as_number!(n)))
         .transpose()?
         .ok_or_else(|| Error::Internal("Counter update returned no value".to_owned()))?;
+
+        Ok(new_counter)
+    }
+
+    #[instrument(skip(self))]
+    async fn increment_derivation_counter(
+        &self,
+        namespace: &str,
+        count: u32,
+    ) -> Result<u32, database::Error> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+
+        let new_counter = query(
+            r#"
+            INSERT INTO derivation_counter (namespace, counter)
+            VALUES (:namespace, :count)
+            ON CONFLICT(namespace) DO UPDATE SET
+                counter = derivation_counter.counter + :count
+            RETURNING counter
+            "#,
+        )?
+        .bind("namespace", namespace.to_owned())
+        .bind("count", count)
+        .pluck(&*conn)
+        .await?
+        .map(|n| Ok::<_, Error>(column_as_number!(n)))
+        .transpose()?
+        .ok_or_else(|| Error::Internal("Derivation counter update returned no value".to_owned()))?;
 
         Ok(new_counter)
     }
@@ -1216,7 +1261,10 @@ where
             .bind("request", quote.request)
             .bind("state", quote.state.to_string())
             .bind("expiry", quote.expiry as i64)
-            .bind("secret_key", quote.secret_key.map(|p| p.to_string()))
+            .bind(
+                "secret_key",
+                quote.secret_key.map(|key| key.to_secret_hex()),
+            )
             .bind("payment_method", quote.payment_method.to_string())
             .bind("amount_issued", quote.amount_issued.to_i64())
             .bind("amount_paid", quote.amount_paid.to_i64())
@@ -1571,23 +1619,33 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
 
-        for y in ys {
-            let rows_affected = query(
-                r#"
-                UPDATE proof
-                SET state = 'RESERVED', used_by_operation = :operation_id
-                WHERE y = :y AND state = 'UNSPENT'
-                "#,
-            )?
-            .bind("y", y.to_bytes().to_vec())
-            .bind("operation_id", operation_id.to_string())
-            .execute(&*conn)
-            .await?;
-
-            if rows_affected == 0 {
-                return Err(database::Error::ProofNotUnspent);
-            }
+        if ys.is_empty() {
+            return Ok(());
         }
+
+        let expected = ys.len();
+        let tx = ConnectionWithTransaction::new(conn).await?;
+
+        let rows_affected = query(
+            r#"
+            UPDATE proof
+            SET state = 'RESERVED', used_by_operation = :operation_id
+            WHERE y IN (:ys) AND state = 'UNSPENT'
+            "#,
+        )?
+        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
+        .bind("operation_id", operation_id.to_string())
+        .execute(&tx)
+        .await?;
+
+        // Reserving is all-or-nothing: a partial match must not leave some of
+        // the proofs reserved.
+        if rows_affected != expected {
+            tx.rollback().await?;
+            return Err(database::Error::ProofNotUnspent);
+        }
+
+        tx.commit().await?;
 
         Ok(())
     }
@@ -1605,6 +1663,7 @@ where
             UPDATE proof
             SET state = 'UNSPENT', used_by_operation = NULL
             WHERE used_by_operation = :operation_id
+              AND state IN ('RESERVED', 'PENDING')
             "#,
         )?
         .bind("operation_id", operation_id.to_string())
@@ -1956,9 +2015,9 @@ fn sql_row_to_mint_info(row: Vec<Column>) -> Result<MintInfo, Error> {
 
     Ok(MintInfo {
         name: column_as_nullable_string!(&name),
-        pubkey: column_as_nullable_string!(&pubkey, |v| serde_json::from_str(v).ok(), |v| {
-            serde_json::from_slice(v).ok()
-        }),
+        pubkey: column_as_nullable_binary!(&pubkey)
+            .map(|bytes| cdk_common::nuts::PublicKey::from_slice(&bytes))
+            .transpose()?,
         version: column_as_nullable_string!(&version).and_then(|v| serde_json::from_str(&v).ok()),
         description: column_as_nullable_string!(description),
         description_long: column_as_nullable_string!(description_long),
@@ -2248,7 +2307,8 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
             payment_request,
             payment_proof,
             payment_method,
-            saga_id
+            saga_id,
+            status
         ) = row
     );
 
@@ -2283,6 +2343,7 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
             .transpose()
             .map_err(Error::from)?,
         saga_id,
+        status: column_as_string!(status, TransactionStatus::from_str),
     })
 }
 

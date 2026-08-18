@@ -59,9 +59,6 @@ pub enum Error {
         "Returned invoice amount {actual} msat does not match requested amount {expected} msat"
     )]
     IncorrectInvoiceAmount { actual: u64, expected: u64 },
-    /// Returned invoice description hash does not match LNURL metadata
-    #[error("Returned invoice description hash does not match LNURL metadata")]
-    IncorrectInvoiceDescriptionHash,
 }
 
 /// Lightning address - represents a user@domain.com address
@@ -163,10 +160,14 @@ impl LightningAddress {
         }
 
         let expected_description_hash = Sha256Hash::hash(pay_data.metadata.as_bytes());
-        match invoice.description() {
+        if !matches!(
+            invoice.description(),
             lightning_invoice::Bolt11InvoiceDescriptionRef::Hash(hash)
-                if hash.0.as_byte_array() == expected_description_hash.as_byte_array() => {}
-            _ => return Err(Error::IncorrectInvoiceDescriptionHash),
+                if hash.0.as_byte_array() == expected_description_hash.as_byte_array()
+        ) {
+            tracing::warn!(
+                "LNURL-pay invoice description hash does not match metadata; continuing payment"
+            );
         }
 
         Ok(invoice)
@@ -489,7 +490,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_request_invoice_rejects_invoice_when_metadata_does_not_hash() {
+    async fn test_request_invoice_accepts_invoice_when_metadata_does_not_hash() {
         let connector = Arc::new(MockMintConnector::new());
         connector.set_lnurl_pay_request_response(Ok(LnurlPayResponse {
             callback: "https://example.com/callback".to_string(),
@@ -507,17 +508,15 @@ mod tests {
         }));
 
         let address = LightningAddress::from_str("alice@example.com").expect("valid address");
-        let result = address
+        let invoice = address
             .request_invoice(
                 &(connector as Arc<dyn crate::wallet::MintConnector + Send + Sync>),
                 Amount::from(100_000_u64),
             )
-            .await;
+            .await
+            .expect("metadata hash mismatch should not prevent payment");
 
-        assert!(matches!(
-            result,
-            Err(Error::IncorrectInvoiceDescriptionHash)
-        ));
+        assert_eq!(invoice.amount_milli_satoshis(), Some(100_000));
     }
 
     #[tokio::test]

@@ -12,10 +12,14 @@ use url::Url;
 use crate::{HttpClient, HttpClientBuilder};
 use crate::{HttpError, RawResponse};
 
-/// Expected HTTP transport
+/// Expected HTTP transport.
+///
+/// Callers that construct a transport implicitly may add a [`Default`] bound,
+/// while configured transports can be supplied directly without implementing
+/// a meaningless default configuration.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait Transport: Default + Send + Sync + Debug + Clone {
+pub trait Transport: Send + Sync + Debug + Clone {
     /// Connect to a WebSocket endpoint using this transport.
     async fn ws_connect(
         &self,
@@ -37,9 +41,16 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
         accept_invalid_certs: bool,
     ) -> Result<(), HttpError>;
 
-    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     /// DNS resolver to get TXT records from a domain name.
-    async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, HttpError>;
+    ///
+    /// Transports that support DNS resolution should override this method. The
+    /// default implementation keeps the trait API stable when the `bip353`
+    /// feature is disabled.
+    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, HttpError> {
+        Err(HttpError::Other(
+            "DNS TXT resolution is not enabled for this transport".to_owned(),
+        ))
+    }
 
     /// HTTP GET request.
     async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>
@@ -80,45 +91,16 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
 #[derive(Debug, Clone)]
 pub struct Async {
     inner: HttpClient,
-    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-    resolver: std::sync::Arc<
-        hickory_resolver::Resolver<hickory_resolver::name_server::TokioConnectionProvider>,
-    >,
-}
-
-#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-fn default_resolver(
-) -> hickory_resolver::Resolver<hickory_resolver::name_server::TokioConnectionProvider> {
-    use hickory_resolver::config::{ResolverConfig, ResolverOpts};
-    use hickory_resolver::name_server::TokioConnectionProvider;
-    use hickory_resolver::Resolver;
-
-    let mut resolver_opts = ResolverOpts::default();
-    resolver_opts.validate = true;
-
-    Resolver::builder_with_config(
-        ResolverConfig::default(),
-        TokioConnectionProvider::default(),
-    )
-    .with_options(resolver_opts)
-    .build()
 }
 
 #[cfg(any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest"))]
 impl Default for Async {
     fn default() -> Self {
-        #[cfg(all(not(target_arch = "wasm32"), feature = "bip353"))]
-        if rustls::crypto::CryptoProvider::get_default().is_none() {
-            let _ = rustls::crypto::ring::default_provider().install_default();
-        }
-
         Self {
             inner: HttpClient::builder()
                 .no_redirects()
                 .build()
                 .expect("default no-redirect client"),
-            #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-            resolver: std::sync::Arc::new(default_resolver()),
         }
     }
 }
@@ -148,25 +130,7 @@ impl Transport for Async {
 
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, HttpError> {
-        use std::str::FromStr;
-
-        let name = hickory_resolver::Name::from_str(domain)
-            .map_err(|e| HttpError::Other(format!("Invalid domain name: {}", e)))?;
-
-        Ok(self
-            .resolver
-            .txt_lookup(name)
-            .await
-            .map_err(|e| HttpError::Other(e.to_string()))?
-            .into_iter()
-            .map(|txt| {
-                txt.txt_data()
-                    .iter()
-                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-                    .collect::<Vec<_>>()
-                    .join("")
-            })
-            .collect::<Vec<_>>())
+        crate::dns::resolve_dns_txt(domain).await
     }
 
     async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>

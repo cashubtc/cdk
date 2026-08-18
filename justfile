@@ -7,6 +7,41 @@ alias t := test
 default:
   @just --list
 
+# Enter a Nix development shell without copying ignored files from JJ workspaces.
+develop shell="stable":
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  shell_name={{quote(shell)}}
+  case "$shell_name" in
+    ""|*[!a-zA-Z0-9._-]*)
+      echo "Error: invalid development shell name: $shell_name" >&2
+      exit 2
+      ;;
+  esac
+
+  flake_ref=".#${shell_name}"
+  if command -v jj >/dev/null 2>&1 && jj root >/dev/null 2>&1; then
+    revision=$(jj log -r @ --no-graph -T commit_id)
+
+    if git_dir=$(jj git root 2>/dev/null); then
+      case "$git_dir" in
+        */.git)
+          git_source=${git_dir%/.git}
+          ;;
+        *)
+          git_source=$git_dir
+          ;;
+      esac
+
+      flake_ref="git+file://${git_source}?rev=${revision}#${shell_name}"
+    else
+      echo "Warning: JJ repository is not Git-backed; using the workspace path." >&2
+    fi
+  fi
+
+  exec nix develop "$flake_ref" -c "${SHELL:-bash}"
+
 # Create a new SQL migration file
 new-migration target name:
   #!/usr/bin/env bash
@@ -38,6 +73,36 @@ build *ARGS="--workspace --all-targets":
   fi
   cargo build {{ARGS}}
 
+# Build the default Nix package.
+nix-build:
+  nix build --accept-flake-config
+
+# Build and push the default package and reusable Crane dependency artifacts to Attic.
+attic-push:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  targets=(
+    '.#default'
+    '.#deps'
+    '.#deps-msrv'
+    '.#itest-archive'
+    '.#start-fake-mint'
+    '.#start-regtest-mints'
+    '.#start-fake-auth-mint'
+    '.#start-regtest'
+    '.#signatory'
+    '.#cdk-payment-processor'
+    '.#cdk-mintd-grpc'
+  )
+  system="$(nix eval --impure --raw --expr builtins.currentSystem)"
+  if [[ "$system" == *-linux ]]; then
+    targets+=('.#deps-static')
+  fi
+  nix build --accept-flake-config --json --no-link "${targets[@]}" \
+    | jq -r '.[].outputs | to_entries[].value' \
+    | attic push --stdin cashudevkit-cache:cashudevkit
+
 # Build a statically-linked binary by profile name (requires nix)
 # Profiles: cdk-mintd-static, cdk-mintd-ldk-static, cdk-cli-static
 build-static profile:
@@ -64,12 +129,12 @@ ci-cache-build:
   set -euo pipefail
   cd "{{justfile_directory()}}"
   nix build -L --no-link \
-    'path:.#deps' \
-    'path:.#deps-msrv' \
-    'path:.#checks.x86_64-linux.workspace-clippy-all-targets' \
-    'path:.#dart-bindings' \
-    'path:.#kotlin-bindings' \
-    'path:.#go-bindings'
+    '.#deps' \
+    '.#deps-msrv' \
+    '.#checks.x86_64-linux.workspace-clippy-all-targets' \
+    '.#dart-bindings' \
+    '.#kotlin-bindings' \
+    '.#go-bindings'
 
 # Push the locally built CI cache warmup targets to Cachix.
 ci-cache-push:
@@ -77,12 +142,12 @@ ci-cache-push:
   set -euo pipefail
   cd "{{justfile_directory()}}"
   nix build --json --no-link \
-    'path:.#deps' \
-    'path:.#deps-msrv' \
-    'path:.#checks.x86_64-linux.workspace-clippy-all-targets' \
-    'path:.#dart-bindings' \
-    'path:.#kotlin-bindings' \
-    'path:.#go-bindings' \
+    '.#deps' \
+    '.#deps-msrv' \
+    '.#checks.x86_64-linux.workspace-clippy-all-targets' \
+    '.#dart-bindings' \
+    '.#kotlin-bindings' \
+    '.#go-bindings' \
     | jq -r '.[].outputs | to_entries[].value' \
     | cachix push cashudevkit
 
@@ -123,14 +188,10 @@ test:
   # Unit/lib tests always run from source (not included in the nextest archive)
   cargo test --lib --workspace --exclude cdk-postgres
 
-  # Run pure integration tests
-  if [ -n "${CDK_ITEST_ARCHIVE:-}" ] && [ -f "$CDK_ITEST_ARCHIVE" ]; then
-    # Run the mint integration test from the pre-built nextest archive
-    cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(/^mint$/)"
-  else
-    # Run pure integration tests
-    cargo test -p cdk-integration-tests --test mint
-  fi
+  # Run the mint integration test (from the pre-built nextest archive when
+  # CDK_ITEST_ARCHIVE is set, otherwise via cargo test)
+  source ./misc/itest_helpers.sh
+  run_test mint
 
 test-units:
   #!/usr/bin/env bash
@@ -184,11 +245,13 @@ test-pure db="memory":
   fi
 
   if [ -n "${CDK_ITEST_ARCHIVE:-}" ] && [ -f "$CDK_ITEST_ARCHIVE" ]; then
-    # Run pure integration tests from nextest archive
-    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~integration_tests_pure)" -j 1
-    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~test_swap_flow)" -j 1
-    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~wallet_saga)" -j 1
-    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~nwc_e2e)" -j 1
+    # Run pure integration tests from nextest archive (extracted once, reused)
+    source ./misc/itest_helpers.sh
+    export CDK_TEST_DB_TYPE={{db}}
+    run_test integration_tests_pure -j 1
+    run_test test_swap_flow -j 1
+    run_test wallet_saga -j 1
+    run_test nwc_e2e -j 1
   else
     # Run pure integration tests (cargo test will only build what's needed for the test)
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure -- --test-threads 1
@@ -428,7 +491,7 @@ test-nutshell:
 
   # Set environment variables and run tests
   export CDK_TEST_MINT_URL=http://127.0.0.1:3338
-  export LN_BACKEND=FAKEWALLET
+  export PAYMENT_BACKEND=FAKEWALLET
 
   # Track test results
   test_exit_code=0
@@ -451,7 +514,7 @@ test-nutshell:
   fi
 
   unset CDK_TEST_MINT_URL
-  unset LN_BACKEND
+  unset PAYMENT_BACKEND
 
   # Exit with error code if any test failed
   if [ $test_exit_code -ne 0 ]; then
@@ -669,6 +732,7 @@ release m="":
     "-p cdk-redb"
     "-p cdk-signatory"
     "-p cdk-fake-wallet"
+    "-p cdk-nwc"
     "-p cdk"
     "-p cdk-supabase"
     "-p cdk-ffi"
@@ -677,7 +741,6 @@ release m="":
     "-p cdk-bdk"
     "-p cdk-cln"
     "-p cdk-lnd"
-    "-p cdk-lnbits"
     "-p cdk-ldk-node"
     "-p cdk-payment-processor"
     "-p cdk-cli"
@@ -715,7 +778,6 @@ check-docs:
     "-p cdk-mint-rpc"
     "-p cdk-cln"
     "-p cdk-lnd"
-    "-p cdk-lnbits"
     "-p cdk-ldk-node"
     "-p cdk-prometheus"
     "-p cdk-payment-processor"
@@ -750,7 +812,6 @@ docs-strict:
     "-p cdk-mint-rpc"
     "-p cdk-cln"
     "-p cdk-lnd"
-    "-p cdk-lnbits"
     "-p cdk-ldk-node"
     "-p cdk-prometheus"
     "-p cdk-payment-processor"
@@ -857,10 +918,15 @@ ffi-generate-swift *ARGS="--release":
     BUILD_TYPE="debug"
   fi
 
-  # Set up SPM-compatible directory structure for testing
+  # Set up SPM-compatible directory structure for testing.
+  # Derive the FFI module name from the generated header so the on-disk
+  # directory matches the target path written into Package.swift below
+  # (the header name follows uniffi.toml's module_name, e.g. CashuDevKitFFI).
   BINDINGS_DIR="$ROOT/target/bindings/swift"
   SWIFT_SRC="$ROOT/Sources/Cdk"
-  FFI_MODULE="$ROOT/Sources/cdk_ffiFFI"
+  HEADER_NAME=$(basename "$BINDINGS_DIR/"*FFI.h)
+  MODULE_NAME="${HEADER_NAME%.h}"
+  FFI_MODULE="$ROOT/Sources/${MODULE_NAME}"
   mkdir -p "$SWIFT_SRC" "$FFI_MODULE"
 
   # Copy generated Swift sources
@@ -869,9 +935,7 @@ ffi-generate-swift *ARGS="--release":
   # Copy generated FFI header and create modulemap.
   # The modulemap generated by uniffi uses 'link' directives; replace with one
   # that lets SPM link the dylib via Package.swift linkerSettings instead.
-  cp "$BINDINGS_DIR/"*FFI.h "$FFI_MODULE/" 2>/dev/null || true
-  HEADER_NAME=$(basename "$FFI_MODULE/"*.h)
-  MODULE_NAME="${HEADER_NAME%.h}"
+  cp "$BINDINGS_DIR/"*FFI.h "$FFI_MODULE/"
   printf 'module %s {\n    header "%s"\n    export *\n}\n' \
     "${MODULE_NAME}" "${HEADER_NAME}" > "$FFI_MODULE/module.modulemap"
 
@@ -931,6 +995,7 @@ ffi-test: ffi-generate-python
   echo "🧪 Running Python FFI tests..."
   python3 crates/cdk-ffi/tests/test_transactions.py
   python3 crates/cdk-ffi/tests/test_kvstore.py
+  python3 crates/cdk-ffi/tests/test_rate_limit.py
   echo "✅ Tests completed!"
 
 # Build debug version and generate Python bindings quickly (for development)

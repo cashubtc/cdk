@@ -3,6 +3,7 @@ use std::time::Instant;
 use bdk_esplora::esplora_client::{AsyncClient, Builder};
 use bdk_esplora::EsploraAsyncExt;
 use bdk_wallet::bitcoin::Transaction;
+use cdk_common::redact::url_for_logs;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
@@ -37,7 +38,7 @@ pub(crate) async fn sync_esplora(
     let mut backoff = initial_backoff;
 
     tracing::info!(
-        url = %url,
+        url = %url_for_logs(url),
         parallel_requests,
         interval_secs = cdk_bdk.sync_interval_secs,
         "Starting Esplora block sync"

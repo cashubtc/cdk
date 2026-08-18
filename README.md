@@ -38,14 +38,13 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-axum**](./crates/cdk-axum/): Axum webserver for mint.
     * [**cdk-cln**](./crates/cdk-cln/): CLN Lightning backend for mint.
     * [**cdk-lnd**](./crates/cdk-lnd/): Lnd Lightning backend for mint.
-    * [**cdk-lnbits**](./crates/cdk-lnbits/): [LNbits](https://lnbits.com/) Lightning backend for mint. **Note: Only LNBits v1 API is supported.**
     * [**cdk-ldk-node**](./crates/cdk-ldk-node/): LDK Node Lightning backend for mint.
     * [**cdk-bdk**](./crates/cdk-bdk/): Onchain Bitcoin backend using BDK.
-    * [**cdk-fake-wallet**](./crates/cdk-fake-wallet/): Fake Lightning backend for mint. To be used only for testing, quotes are automatically filled.
+    * [**cdk-fake-wallet**](./crates/cdk-fake-wallet/): Fake payment backend for mint. To be used only for testing, quotes are automatically filled.
     * [**cdk-common**](./crates/cdk-common/): Common utilities and shared code.
     * [**cdk-sql-common**](./crates/cdk-sql-common/): Common SQL utilities for storage backends.
     * [**cdk-signatory**](./crates/cdk-signatory/): Signing utilities and cryptographic operations.
-    * [**cdk-payment-processor**](./crates/cdk-payment-processor/): Payment processing functionality.
+    * [**cdk-payment-processor**](./crates/cdk-payment-processor/): Payment processing functionality; LNbits integrations should use an external payment processor.
     * [**cdk-prometheus**](./crates/cdk-prometheus/): Prometheus metrics integration.
     * [**cdk-npubcash**](./crates/cdk-npubcash/): npub.cash SDK integration.
     * [**cdk-ffi**](./crates/cdk-ffi/): Foreign Function Interface bindings for other languages.

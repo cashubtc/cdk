@@ -7,7 +7,7 @@ license.workspace = true
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
 rust-version.workspace = true # MSRV
-description = "CDK fake ln backend"
+description = "CDK fake payment backend"
 readme = "README.md"
 
 [features]

@@ -115,10 +115,23 @@ To build the CDK mint server:
 cargo build --bin cdk-mintd --release
 ```
 
-To run cdk-mintd directly without building:
+For a first local run, initialize the database-backed configuration explicitly,
+then start the daemon. The example file references the mnemonic through an
+environment variable; it is a secret input, not a startup-time configuration
+override.
+
 ```bash
+export CDK_MINTD_MNEMONIC="your stable BIP39 mnemonic"
+cargo run --bin cdk-mintd -- config validate --file crates/cdk-mintd/example.config.toml
+cargo run --bin cdk-mintd -- config init --file crates/cdk-mintd/example.config.toml
 cargo run --bin cdk-mintd
 ```
+
+On later edits, use `config apply --file ...`, then restart. A running daemon
+keeps its current configuration snapshot until that restart.
+See the
+[`cdk-mintd` configuration guide](crates/cdk-mintd/README.md#configuration) for
+the full workflow.
 
 Note: For cdk-mintd, you need to have the protobuf compiler installed as it's required for some dependencies.
 
@@ -162,6 +175,58 @@ nix build .#cdk-mintd
 # Run a check (clippy + tests) for a specific crate
 nix build .#checks.x86_64-linux.cashu
 ```
+
+### Binary Cache
+
+The flake advertises the CDK Attic cache as the primary project cache and the
+CDK Cachix cache as a fallback. On single-user Nix installations, or when the
+current user is trusted by the Nix daemon, accept the flake configuration when
+prompted or pass `--accept-flake-config` explicitly:
+
+```bash
+nix build --accept-flake-config .#default
+```
+
+Multi-user Nix installations must configure the caches and signing keys at the
+daemon level. Add the following to `/etc/nix/nix.conf` and restart the Nix
+daemon:
+
+```ini
+extra-substituters = https://cache.cashudevkit.org https://cashudevkit.cachix.org
+extra-trusted-public-keys = cashudevkit:Ukc9ltM4674fDHWWay+q4vdHDYKF48QIm6A+0z5/FqQ= cashudevkit.cachix.org-1:zFKdvMiTllKWxIFNTjXgisZsOFufmaZXjWJNcmc8r+4=
+```
+
+On NixOS, use the corresponding system configuration:
+
+```nix
+{
+  nix.settings = {
+    extra-substituters = [
+      "https://cache.cashudevkit.org"
+      "https://cashudevkit.cachix.org"
+    ];
+    extra-trusted-public-keys = [
+      "cashudevkit:Ukc9ltM4674fDHWWay+q4vdHDYKF48QIm6A+0z5/FqQ="
+      "cashudevkit.cachix.org-1:zFKdvMiTllKWxIFNTjXgisZsOFufmaZXjWJNcmc8r+4="
+    ];
+  };
+}
+```
+
+Publishing requires an Attic token with write access to the `cashudevkit`
+cache. Obtain the API endpoint and token from a project maintainer, configure
+the expected server alias locally, and run the cache warm-up recipe:
+
+```bash
+attic login cashudevkit-cache <attic-api-endpoint> <write-token>
+just attic-push
+```
+
+The recipe pushes the default package, reusable native and MSRV Crane
+dependency artifacts, and the integration-test archive and harness binaries.
+On Linux it also pushes the static-musl dependencies; that target is skipped
+automatically on macOS. Attic credentials are local publisher secrets and must
+not be committed to the repository.
 
 ### Release Binaries
 
@@ -227,7 +292,7 @@ sha256sum ./result/bin/*
 
 - **Updating Dependencies**: If you notice dependencies are out of date or a new tool has been added to the flake, run `nix flake update` to refresh the `flake.lock` file.
 - **Command Not Found**: Ensure you have entered the shell (e.g., `nix develop`). Some tools like `mprocs` or `bitcoind` are only available in the `regtest` shell.
-- **Binary Cache**: The flake advertises the `cashudevkit` Cachix cache to speed up local builds and shell setup. If your Nix installation does not accept flake-provided cache settings automatically, the project will still work, but dependencies may build locally and take longer.
+- **Binary Cache**: See [Binary Cache](#binary-cache) for consumer and publisher configuration. If Nix cannot use either project cache, the build still works but dependencies compile locally and take substantially longer.
 - **Cache Issues**: If you suspect the environment is not reflecting recent flake changes, you can force a re-evaluation with `nix flake check`.
 - **Persistent Data**: The local PostgreSQL instance stores data in the `.pg_data/` directory. If you want to reset your database completely, stop the database and delete this directory.
 

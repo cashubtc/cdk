@@ -413,7 +413,7 @@ mod tests {
 
     fn db_connections_active() -> f64 {
         for family in METRICS.registry().gather() {
-            if family.get_name() != "cdk_db_connections_active" {
+            if family.name() != "cdk_db_connections_active" {
                 continue;
             }
 
@@ -422,7 +422,7 @@ mod tests {
                 .first()
                 .expect("active connections metric should exist")
                 .get_gauge()
-                .get_value();
+                .value();
         }
 
         panic!("active connections metric should be registered");

@@ -25,7 +25,7 @@ use tracing::instrument;
 use crate::error::Error;
 use crate::migrations::migrate_00_to_01;
 use crate::wallet::migrations::{
-    migrate_01_to_02, migrate_02_to_03, migrate_03_to_04, migrate_04_to_05,
+    migrate_01_to_02, migrate_02_to_03, migrate_03_to_04, migrate_04_to_05, migrate_05_to_06,
 };
 
 mod migrations;
@@ -46,6 +46,7 @@ const MINT_KEYS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mint_
 const PROOFS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("proofs");
 const CONFIG_TABLE: TableDefinition<&str, &str> = TableDefinition::new("config");
 const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_counter");
+const DERIVATION_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("derivation_counter");
 // <Transaction_id, Transaction>
 const TRANSACTIONS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("transactions");
 // <Saga_id, WalletSaga>
@@ -59,7 +60,7 @@ const KEYSET_U32_MAPPING: TableDefinition<u32, &str> = TableDefinition::new("key
 // <(primary_namespace, secondary_namespace, key), value>
 const KV_STORE_TABLE: TableDefinition<(&str, &str, &str), &[u8]> = TableDefinition::new("kv_store");
 
-const DATABASE_VERSION: u32 = 5;
+const DATABASE_VERSION: u32 = 6;
 
 /// Wallet Redb Database
 #[derive(Debug, Clone)]
@@ -125,6 +126,10 @@ impl WalletRedbDatabase {
 
                             if current_file_version == 4 {
                                 current_file_version = migrate_04_to_05(Arc::clone(&db))?;
+                            }
+
+                            if current_file_version == 5 {
+                                current_file_version = migrate_05_to_06(Arc::clone(&db))?;
                             }
 
                             if current_file_version != DATABASE_VERSION {
@@ -575,7 +580,16 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(
+        skip(self, transaction),
+        fields(
+            direction = %transaction.direction,
+            amount = %transaction.amount,
+            unit = %transaction.unit,
+            quote_id = ?transaction.quote_id,
+            saga_id = ?transaction.saga_id,
+        )
+    )]
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), database::Error> {
         let id = transaction.id();
         let write_txn = self.db.begin_write().map_err(Error::from)?;
@@ -701,6 +715,34 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             new_counter
         };
         write_txn.commit().map_err(Error::from)?;
+        Ok(new_counter)
+    }
+
+    #[instrument(skip(self))]
+    async fn increment_derivation_counter(
+        &self,
+        namespace: &str,
+        count: u32,
+    ) -> Result<u32, database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        let new_counter = {
+            let mut table = write_txn
+                .open_table(DERIVATION_COUNTER)
+                .map_err(Error::from)?;
+            let current_counter = table
+                .get(namespace)
+                .map_err(Error::from)?
+                .map(|value| value.value())
+                .unwrap_or_default();
+            let new_counter = current_counter
+                .checked_add(count)
+                .ok_or(database::Error::AmountOverflow)?;
+
+            table.insert(namespace, new_counter).map_err(Error::from)?;
+            new_counter
+        };
+        write_txn.commit().map_err(Error::from)?;
+
         Ok(new_counter)
     }
 
@@ -1182,7 +1224,9 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
             // Now update proofs that match the operation_id
             for (y_bytes, mut proof) in all_proofs {
-                if proof.used_by_operation == Some(*operation_id) {
+                if proof.used_by_operation == Some(*operation_id)
+                    && matches!(proof.state, State::Reserved | State::Pending)
+                {
                     proof.state = State::Unspent;
                     proof.used_by_operation = None;
 

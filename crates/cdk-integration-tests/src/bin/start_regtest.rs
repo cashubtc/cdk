@@ -69,6 +69,7 @@ async fn main() -> Result<()> {
             addr: [127, 0, 0, 1],
             port: 8092,
         }],
+        std::sync::Arc::new(cdk_sqlite::mint::memory::empty().await?),
     );
     let cdk_ldk = node_builder.build()?;
 

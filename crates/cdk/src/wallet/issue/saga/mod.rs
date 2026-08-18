@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::wallet::{
     IssueSagaState, MintOperationData, OperationData, ProofInfo, Transaction, TransactionDirection,
-    WalletSaga, WalletSagaState,
+    TransactionStatus, WalletSaga, WalletSagaState,
 };
 use cdk_common::{PaymentMethod, SecretKey};
 use tracing::instrument;
@@ -45,7 +45,7 @@ use tracing::instrument;
 use self::compensation::{MintCompensation, ReleaseMintQuote};
 use self::state::{Finalized, Initial, Prepared, PreparedMintRequest};
 use crate::amount::SplitTarget;
-use crate::dhke::construct_proofs;
+use crate::dhke::{construct_proofs, hash_to_curve};
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
 use crate::util::unix_time;
@@ -406,6 +406,16 @@ impl<'a> MintSaga<'a, Initial> {
             return Err(Error::SignatureMissingOrInvalid);
         }
 
+        // Reload the quote after signing-key resolution so the prepared saga
+        // carries the latest optimistic-lock version into the post-mint
+        // persistence step.
+        let quote_info = self
+            .wallet
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
         let operation_id = self.state_data.operation_id;
 
         // Get counter range for recovery
@@ -717,6 +727,17 @@ impl<'a> MintSaga<'a, Initial> {
             }
         }
 
+        // Refresh every snapshot after signing-key resolution so later
+        // versioned writes use the latest persisted versions.
+        for quote in &mut quote_infos {
+            *quote = self
+                .wallet
+                .localstore
+                .get_mint_quote(&quote.id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
+        }
+
         // Check if any quote requires a signature.
         let has_locked = signatures.iter().any(Option::is_some);
         let signatures_to_send = if has_locked { Some(signatures) } else { None };
@@ -854,6 +875,37 @@ impl<'a> MintSaga<'a, Prepared> {
                 return Err(Error::ConcurrentUpdate);
             }
 
+            let transaction_ys = premint_secrets
+                .secrets
+                .iter()
+                .map(|pre_mint| hash_to_curve(pre_mint.secret.as_bytes()))
+                .collect::<Result<Vec<_>, _>>()?;
+            let first_quote_id = quote_ids.first().cloned();
+            let first_quote_request = quote_infos
+                .first()
+                .map(|quote| quote.request.clone())
+                .unwrap_or_default();
+
+            wallet
+                .upsert_transaction(Transaction {
+                    mint_url: wallet.mint_url.clone(),
+                    direction: TransactionDirection::Incoming,
+                    amount: saga.amount,
+                    fee: Amount::ZERO,
+                    unit: wallet.unit.clone(),
+                    ys: transaction_ys,
+                    timestamp: unix_time(),
+                    memo: None,
+                    metadata: HashMap::new(),
+                    quote_id: first_quote_id.clone(),
+                    payment_request: Some(first_quote_request.clone()),
+                    payment_proof: None,
+                    payment_method: Some(payment_method.clone()),
+                    saga_id: Some(operation_id),
+                    status: TransactionStatus::Pending,
+                })
+                .await?;
+
             let mint_res =
                 post_mint_request_with_legacy_fallback(wallet, &payment_method, &mint_request)
                     .await?;
@@ -881,11 +933,6 @@ impl<'a> MintSaga<'a, Prepared> {
             let minted_amount = proofs.total_amount()?;
 
             // Extract first quote info before consuming quote_infos
-            let first_quote_request = quote_infos
-                .first()
-                .map(|q| q.request.clone())
-                .unwrap_or_default();
-
             // Update quote states - for batch, update each quote with its own amount.
             for (index, mut quote_info) in quote_infos.into_iter().enumerate() {
                 if payment_method == PaymentMethod::Known(KnownMethod::Bolt11) {
@@ -920,11 +967,8 @@ impl<'a> MintSaga<'a, Prepared> {
             wallet.localstore.update_proofs(proof_infos, vec![]).await?;
 
             // For transaction, use the first quote's request
-            let first_quote_id = quote_ids.first().cloned();
-
             wallet
-                .localstore
-                .add_transaction(Transaction {
+                .upsert_transaction(Transaction {
                     mint_url: wallet.mint_url.clone(),
                     direction: TransactionDirection::Incoming,
                     amount: minted_amount,
@@ -939,6 +983,7 @@ impl<'a> MintSaga<'a, Prepared> {
                     payment_proof: None,
                     payment_method: Some(payment_method.clone()),
                     saga_id: Some(operation_id),
+                    status: TransactionStatus::Completed,
                 })
                 .await?;
 
@@ -979,6 +1024,7 @@ impl<'a> MintSaga<'a, Prepared> {
                         "Mint saga execution failed (definitive): {}. Running compensations.",
                         e
                     );
+                    wallet.mark_transaction_failed(operation_id).await?;
                     if let Err(comp_err) = execute_compensations(&mut compensations).await {
                         tracing::error!("Compensation failed: {}", comp_err);
                     }
@@ -1049,6 +1095,89 @@ mod tests {
         mint_quote.amount_paid = amount;
         mint_quote.secret_key = Some(signing_key);
         mint_quote
+    }
+
+    #[cfg(feature = "npubcash")]
+    fn seed_prefix_signing_key(wallet: &Wallet) -> SecretKey {
+        SecretKey::from_slice(&wallet.seed[..32]).expect("wallet seed prefix is a valid key")
+    }
+
+    #[cfg(feature = "npubcash")]
+    #[tokio::test]
+    async fn seed_prefix_quote_preparation_refreshes_persisted_version() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let mint_quote =
+            paid_signed_mint_quote(mint_url, Amount::from(64), seed_prefix_signing_key(&wallet));
+        let quote_id = mint_quote.id.clone();
+        db.add_mint_quote(mint_quote).await.expect("add mint quote");
+
+        let prepared = MintSaga::new(&wallet)
+            .prepare(&quote_id, SplitTarget::Values(vec![Amount::from(64)]), None)
+            .await
+            .expect("prepare mint saga");
+
+        let mut prepared_quote = match prepared.state_data.mint_request {
+            PreparedMintRequest::Single { quote_info, .. } => quote_info,
+            PreparedMintRequest::Batch { .. } => panic!("expected single mint request"),
+        };
+        let persisted = db
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("get mint quote")
+            .expect("mint quote exists");
+        assert_eq!(prepared_quote.version, persisted.version);
+
+        prepared_quote.state = MintQuoteState::Issued;
+        prepared_quote.amount_issued = Amount::from(64);
+        db.add_mint_quote(prepared_quote)
+            .await
+            .expect("post-mint quote update uses the current version");
+    }
+
+    #[cfg(feature = "npubcash")]
+    #[tokio::test]
+    async fn seed_prefix_batch_preparation_refreshes_persisted_version() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let mint_quote =
+            paid_signed_mint_quote(mint_url, Amount::from(64), seed_prefix_signing_key(&wallet));
+        let quote_id = mint_quote.id.clone();
+        db.add_mint_quote(mint_quote).await.expect("add mint quote");
+
+        let prepared = MintSaga::new(&wallet)
+            .prepare_batch(
+                &[quote_id.as_str()],
+                SplitTarget::Values(vec![Amount::from(64)]),
+                None,
+                None,
+            )
+            .await
+            .expect("prepare batch mint saga");
+
+        let mut prepared_quote = match prepared.state_data.mint_request {
+            PreparedMintRequest::Batch { quote_infos, .. } => quote_infos
+                .into_iter()
+                .next()
+                .expect("batch contains the mint quote"),
+            PreparedMintRequest::Single { .. } => panic!("expected batch mint request"),
+        };
+        let persisted = db
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("get mint quote")
+            .expect("mint quote exists");
+        assert_eq!(prepared_quote.version, persisted.version);
+
+        prepared_quote.state = MintQuoteState::Issued;
+        prepared_quote.amount_issued = Amount::from(64);
+        db.add_mint_quote(prepared_quote)
+            .await
+            .expect("post-mint quote update uses the current version");
     }
 
     #[tokio::test]

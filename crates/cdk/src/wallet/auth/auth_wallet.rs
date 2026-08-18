@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 
 use cdk_common::database::{self, WalletDatabase};
@@ -34,7 +35,7 @@ struct _Claims {
 /// CDK Auth Wallet
 ///
 /// A [`AuthWallet`] is for auth operations with a single mint.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AuthWallet {
     /// Mint Url
     pub mint_url: MintUrl,
@@ -49,6 +50,20 @@ pub struct AuthWallet {
     auth_client: Arc<dyn AuthMintConnector + Send + Sync>,
     /// OIDC client for authentication
     oidc_client: Arc<RwLock<Option<OidcClient>>>,
+}
+
+impl fmt::Debug for AuthWallet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthWallet")
+            .field("mint_url", &self.mint_url)
+            .field("localstore", &"[CONFIGURED]")
+            .field("metadata_cache", &"[CONFIGURED]")
+            .field("protected_endpoints", &self.protected_endpoints)
+            .field("refresh_token", &"[REDACTED]")
+            .field("auth_client", &"[CONFIGURED]")
+            .field("oidc_client", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl AuthWallet {
@@ -549,6 +564,18 @@ mod tests {
             protected_endpoints,
             None,
         )
+    }
+
+    #[tokio::test]
+    async fn debug_redacts_refresh_token() {
+        let secret = "wallet-refresh-token";
+        let wallet = auth_wallet(HashMap::new()).await;
+        wallet.set_refresh_token(Some(secret.to_string())).await;
+
+        let debug = format!("{wallet:?}");
+
+        assert!(!debug.contains(secret));
+        assert!(debug.contains("refresh_token: \"[REDACTED]\""));
     }
 
     fn build_auth_keyset(seed_byte: u8) -> KeySet {

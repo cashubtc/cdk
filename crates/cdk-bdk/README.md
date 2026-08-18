@@ -38,6 +38,7 @@ let chain_source = ChainSource::BitcoinRpc(BitcoinRpcConfig {
     port: 18443,
     user: "user".to_string(),
     password: "password".to_string(),
+    wallet_rescan_from_height: None,
 });
 
 let backend = CdkBdk::new(
@@ -87,6 +88,12 @@ blocks per wallet-lock acquisition) so user-facing operations like address
 reveal and batch construction are not blocked during long chain catch-ups.
 Chain-source clients are reused across sync iterations and rebuilt only on
 error.
+
+Fresh Bitcoin Core wallets checkpoint at the current chain tip instead of
+scanning from genesis. When restoring from a mnemonic, set
+`BitcoinRpcConfig::wallet_rescan_from_height` to the wallet's known birthday
+height. This setting only affects wallet creation and never rewinds persisted
+wallet state.
 
 ## Finality and Confirmation Policy
 

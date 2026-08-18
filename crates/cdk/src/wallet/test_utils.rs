@@ -462,6 +462,11 @@ pub struct MockMintConnector {
         Mutex<std::collections::VecDeque<Result<MeltQuoteBolt11Response<String>, Error>>>,
     /// Response for post_mint calls
     pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
+    /// Queue of responses for successive post_mint_quote calls.
+    pub post_mint_quote_responses:
+        Mutex<std::collections::VecDeque<Result<MintQuoteResponse<String>, Error>>>,
+    /// Captured post_mint_quote requests.
+    pub post_mint_quote_requests: Mutex<Vec<MintQuoteRequest>>,
     /// Queue of responses for successive post_mint calls.
     pub post_mint_responses: Mutex<std::collections::VecDeque<Result<MintResponse, Error>>>,
     /// Captured post_mint requests.
@@ -481,6 +486,11 @@ pub struct MockMintConnector {
     pub captured_swap_requests: Mutex<Vec<SwapRequest>>,
     /// Response for post_melt calls
     pub post_melt_response: Mutex<Option<Result<MeltQuoteResponse<String>, Error>>>,
+    /// Queue of responses for successive post_melt_quote calls.
+    pub post_melt_quote_responses:
+        Mutex<std::collections::VecDeque<Result<MeltQuoteCreateResponse<String>, Error>>>,
+    /// Captured post_melt_quote requests.
+    pub post_melt_quote_requests: Mutex<Vec<MeltQuoteRequest>>,
     /// Last post_melt method/request captured by the mock
     pub last_post_melt_request: Mutex<Option<(PaymentMethod, MeltRequest<String>)>>,
     /// Response for LNURL pay request calls
@@ -513,6 +523,8 @@ impl MockMintConnector {
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             post_mint_response: Mutex::new(None),
+            post_mint_quote_responses: Mutex::new(std::collections::VecDeque::new()),
+            post_mint_quote_requests: Mutex::new(Vec::new()),
             post_mint_responses: Mutex::new(std::collections::VecDeque::new()),
             post_mint_requests: Mutex::new(Vec::new()),
             post_batch_mint_responses: Mutex::new(std::collections::VecDeque::new()),
@@ -521,6 +533,8 @@ impl MockMintConnector {
             post_swap_responses: Mutex::new(std::collections::VecDeque::new()),
             captured_swap_requests: Mutex::new(Vec::new()),
             post_melt_response: Mutex::new(None),
+            post_melt_quote_responses: Mutex::new(std::collections::VecDeque::new()),
+            post_melt_quote_requests: Mutex::new(Vec::new()),
             last_post_melt_request: Mutex::new(None),
             lnurl_pay_request_response: Mutex::new(None),
             lnurl_invoice_response: Mutex::new(None),
@@ -618,6 +632,22 @@ impl MockMintConnector {
         *self.post_mint_response.lock().unwrap() = Some(response);
     }
 
+    /// Enqueue a response for the next `post_mint_quote` call.
+    pub fn push_post_mint_quote_response(
+        &self,
+        response: Result<MintQuoteResponse<String>, Error>,
+    ) {
+        self.post_mint_quote_responses
+            .lock()
+            .unwrap()
+            .push_back(response);
+    }
+
+    /// Return all captured `post_mint_quote` requests.
+    pub fn post_mint_quote_requests(&self) -> Vec<MintQuoteRequest> {
+        self.post_mint_quote_requests.lock().unwrap().clone()
+    }
+
     /// Enqueue a response for the next `post_mint` call.
     pub fn push_post_mint_response(&self, response: Result<MintResponse, Error>) {
         self.post_mint_responses.lock().unwrap().push_back(response);
@@ -657,6 +687,22 @@ impl MockMintConnector {
 
     pub fn set_post_melt_response(&self, response: Result<MeltQuoteResponse<String>, Error>) {
         *self.post_melt_response.lock().unwrap() = Some(response);
+    }
+
+    /// Enqueue a response for the next `post_melt_quote` call.
+    pub fn push_post_melt_quote_response(
+        &self,
+        response: Result<MeltQuoteCreateResponse<String>, Error>,
+    ) {
+        self.post_melt_quote_responses
+            .lock()
+            .unwrap()
+            .push_back(response);
+    }
+
+    /// Return all captured `post_melt_quote` requests.
+    pub fn post_melt_quote_requests(&self) -> Vec<MeltQuoteRequest> {
+        self.post_melt_quote_requests.lock().unwrap().clone()
     }
 
     pub fn last_post_melt_request(&self) -> Option<(PaymentMethod, MeltRequest<String>)> {
@@ -750,9 +796,14 @@ impl MintConnector for MockMintConnector {
 
     async fn post_mint_quote(
         &self,
-        _request: MintQuoteRequest,
+        request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error> {
-        unimplemented!()
+        self.post_mint_quote_requests.lock().unwrap().push(request);
+        self.post_mint_quote_responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("MockMintConnector: post_mint_quote called without configured response")
     }
 
     async fn get_mint_quote_status(
@@ -787,9 +838,14 @@ impl MintConnector for MockMintConnector {
 
     async fn post_melt_quote(
         &self,
-        _request: MeltQuoteRequest,
+        request: MeltQuoteRequest,
     ) -> Result<MeltQuoteCreateResponse<String>, Error> {
-        unimplemented!()
+        self.post_melt_quote_requests.lock().unwrap().push(request);
+        self.post_melt_quote_responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("MockMintConnector: post_melt_quote called without configured response")
     }
 
     async fn get_melt_quote_status(

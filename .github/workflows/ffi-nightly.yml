@@ -1,0 +1,151 @@
+name: "FFI - Nightly Bindings"
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ffi-nightly
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: "Prepare nightly release"
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.prepare.outputs.release_tag }}
+      cdk_ref: ${{ steps.prepare.outputs.cdk_ref }}
+      cdk_version: ${{ steps.prepare.outputs.cdk_version }}
+      dart: ${{ steps.prepare.outputs.dart }}
+      go: ${{ steps.prepare.outputs.go }}
+      kotlin: ${{ steps.prepare.outputs.kotlin }}
+      swift: ${{ steps.prepare.outputs.swift }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve version and bindings to publish
+        id: prepare
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.FFI_DEPLOY_KEY }}
+          DART_REPO: ${{ vars.CDK_DART_REPO }}
+          GO_REPO: ${{ vars.CDK_GO_REPO }}
+          KOTLIN_REPO: ${{ vars.CDK_KOTLIN_REPO }}
+          SWIFT_REPO: ${{ vars.CDK_SWIFT_REPO }}
+        run: |
+          set -euo pipefail
+
+          SOURCE_SHA=$(git rev-parse HEAD)
+          SOURCE_SHORT=${SOURCE_SHA:0:7}
+          SOURCE_DATE=$(date -u +%Y%m%d)
+          WORKSPACE_VERSION=$(
+            sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+              | sed -n 's/^version = "\([^"]*\)"/\1/p' \
+              | head -1
+          )
+          CDK_VERSION=${WORKSPACE_VERSION%%[-+]*}
+
+          if [[ ! "${CDK_VERSION}" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+            echo "::error::Could not derive a stable SemVer core from workspace version ${WORKSPACE_VERSION}"
+            exit 1
+          fi
+
+          RELEASE_TAG="v${CDK_VERSION}-nightly.${SOURCE_DATE}.g${SOURCE_SHORT}"
+
+          {
+            echo "release_tag=${RELEASE_TAG}"
+            echo "cdk_ref=${SOURCE_SHA}"
+            echo "cdk_version=${CDK_VERSION}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Nightly source: ${SOURCE_SHA}"
+          echo "Nightly tag: ${RELEASE_TAG}"
+
+          check_binding() {
+            local binding=$1
+            local repo=$2
+            local nightly_notes
+
+            if [[ -z "${repo}" ]]; then
+              echo "::error::Repository variable for ${binding} is not configured"
+              exit 1
+            fi
+
+            # gh release list has no "body" field; fetch release notes via the API.
+            nightly_notes=$(gh api --paginate "repos/${repo}/releases" \
+              --jq '.[] | select(.tag_name | contains("-nightly.")) | .body' \
+              || true)
+
+            if grep -Fq "${SOURCE_SHA}" <<< "${nightly_notes}"; then
+              echo "${binding}=false" >> "$GITHUB_OUTPUT"
+              echo "${binding}: ${SOURCE_SHA} is already published; skipping"
+            else
+              echo "${binding}=true" >> "$GITHUB_OUTPUT"
+              echo "${binding}: ${SOURCE_SHA} needs publishing"
+            fi
+          }
+
+          check_binding dart "${DART_REPO}"
+          check_binding go "${GO_REPO}"
+          check_binding kotlin "${KOTLIN_REPO}"
+          check_binding swift "${SWIFT_REPO}"
+
+  dart:
+    name: "Publish Dart nightly"
+    needs: prepare
+    if: needs.prepare.outputs.dart == 'true'
+    uses: ./.github/workflows/dart-publish.yml
+    with:
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+      cdk_version: ${{ needs.prepare.outputs.cdk_version }}
+      cdk_ref: ${{ needs.prepare.outputs.cdk_ref }}
+      prerelease: true
+      nightly: true
+    secrets: inherit
+
+  go:
+    name: "Publish Go nightly"
+    needs: prepare
+    if: needs.prepare.outputs.go == 'true'
+    uses: ./.github/workflows/go-publish.yml
+    with:
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+      cdk_version: ${{ needs.prepare.outputs.cdk_version }}
+      cdk_ref: ${{ needs.prepare.outputs.cdk_ref }}
+      prerelease: true
+      nightly: true
+    secrets: inherit
+
+  kotlin:
+    name: "Publish Kotlin nightly"
+    needs: prepare
+    if: needs.prepare.outputs.kotlin == 'true'
+    uses: ./.github/workflows/kotlin-publish.yml
+    with:
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+      cdk_version: ${{ needs.prepare.outputs.cdk_version }}
+      cdk_ref: ${{ needs.prepare.outputs.cdk_ref }}
+      prerelease: true
+      nightly: true
+    secrets: inherit
+
+  swift:
+    name: "Publish Swift nightly"
+    needs: prepare
+    if: needs.prepare.outputs.swift == 'true'
+    uses: ./.github/workflows/swift-publish.yml
+    with:
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+      cdk_version: ${{ needs.prepare.outputs.cdk_version }}
+      cdk_ref: ${{ needs.prepare.outputs.cdk_ref }}
+      prerelease: true
+      nightly: true
+    secrets: inherit

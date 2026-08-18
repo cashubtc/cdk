@@ -65,6 +65,71 @@ class WalletTest {
         }
     }
 
+    private fun rateLimitedWallet(rateLimit: RateLimit?): Wallet = Wallet(
+        mintUrl = "https://mint.example.com",
+        unit = CurrencyUnit.Sat,
+        mnemonic = generateMnemonic(),
+        store = WalletStore.Sqlite(path = ":memory:"),
+        config = WalletConfig(targetProofCount = null, rateLimit = rateLimit),
+    )
+
+    @Test
+    fun `rate limit defaults to pacing`() {
+        // Omitting the field is the backwards-compatible spelling and must keep
+        // selecting the built-in default.
+        val omitted = Wallet(
+            mintUrl = "https://mint.example.com",
+            unit = CurrencyUnit.Sat,
+            mnemonic = generateMnemonic(),
+            store = WalletStore.Sqlite(path = ":memory:"),
+            config = WalletConfig(targetProofCount = null),
+        )
+        try {
+            assertTrue(omitted.isRateLimited())
+        } finally {
+            omitted.close()
+        }
+
+        val explicit = rateLimitedWallet(RateLimit.Default)
+        try {
+            assertTrue(explicit.isRateLimited())
+        } finally {
+            explicit.close()
+        }
+    }
+
+    @Test
+    fun `rate limit can be disabled and re-enabled`() {
+        val disabled = rateLimitedWallet(RateLimit.Disabled)
+        try {
+            assertFalse(disabled.isRateLimited())
+            disabled.setRateLimit(RateLimit.Default)
+            assertTrue(disabled.isRateLimited())
+        } finally {
+            disabled.close()
+        }
+    }
+
+    @Test
+    fun `custom rate limit paces the wallet`() {
+        val custom = rateLimitedWallet(RateLimit.Custom(capacity = 5U, refillPerMinute = 30U))
+        try {
+            assertTrue(custom.isRateLimited())
+        } finally {
+            custom.close()
+        }
+    }
+
+    @Test
+    fun `zero rate limit values are rejected`() {
+        assertThrows(FfiException::class.java) {
+            rateLimitedWallet(RateLimit.Custom(capacity = 0U, refillPerMinute = 30U))
+        }
+        assertThrows(FfiException::class.java) {
+            rateLimitedWallet(RateLimit.Custom(capacity = 5U, refillPerMinute = 0U))
+        }
+    }
+
     @Test
     fun `mint flow`() = runBlocking {
         val quote = wallet.mintQuote(

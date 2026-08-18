@@ -7,32 +7,23 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use bitcoin::bip32::DerivationPath;
 use cashu::nut00::KnownMethod;
 use cashu::secret::Secret;
 use cashu::{Amount, CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey};
-use web_time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
 use crate::mint_url::MintUrl;
 use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, State};
 use crate::wallet::{
     MeltQuote, MintQuote, OperationData, ProofInfo, SwapOperationData, SwapSagaState, Transaction,
-    TransactionDirection, WalletSaga, WalletSagaState,
+    TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
 };
-
-static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Generate a unique test ID
 fn unique_id() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("test_{}_{}", now, n)
+    format!("test-{}", uuid::Uuid::now_v7())
 }
 
 /// Generate valid test keys and return both the keys and the matching keyset ID.
@@ -158,6 +149,7 @@ fn test_transaction(mint_url: MintUrl, direction: TransactionDirection) -> Trans
         payment_proof: None,
         payment_method: None,
         saga_id: None,
+        status: TransactionStatus::Completed,
     }
 }
 
@@ -189,7 +181,14 @@ where
     DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
-    let mint_info = MintInfo::default();
+    let pubkey = crate::nuts::PublicKey::from_hex(
+        "02836c831cfff541ba17fbca32dd0f6a54d06305893cbcb2af0d7143e66a609147",
+    )
+    .unwrap();
+    let mint_info = MintInfo {
+        pubkey: Some(pubkey),
+        ..MintInfo::default()
+    };
 
     // Add mint
     db.add_mint(mint_url.clone(), Some(mint_info.clone()))
@@ -198,7 +197,12 @@ where
 
     // Get mint
     let retrieved = db.get_mint(mint_url.clone()).await.unwrap();
-    assert!(retrieved.is_some());
+    let retrieved = retrieved.expect("mint info should be stored");
+    assert_eq!(
+        retrieved.pubkey,
+        Some(pubkey),
+        "the stored pubkey must survive the database round trip"
+    );
 
     // Get all mints
     let mints = db.get_mints().await.unwrap();
@@ -847,6 +851,70 @@ where
     assert_eq!(counter1, 5);
 }
 
+/// Test incrementing a derivation counter.
+pub async fn increment_derivation_counter<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let counter1 = db.increment_derivation_counter("test", 1).await.unwrap();
+    assert_eq!(counter1, 1);
+
+    let counter2 = db.increment_derivation_counter("test", 4).await.unwrap();
+    assert_eq!(counter2, 5);
+}
+
+/// Test that derivation namespaces and NUT-13 keyset counters are independent.
+pub async fn derivation_counters_are_independent<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let keyset_id = test_keyset_id();
+
+    db.increment_keyset_counter(&keyset_id, 7).await.unwrap();
+    db.increment_derivation_counter("first", 3).await.unwrap();
+    db.increment_derivation_counter("second", 5).await.unwrap();
+
+    assert_eq!(db.increment_keyset_counter(&keyset_id, 0).await.unwrap(), 7);
+    assert_eq!(
+        db.increment_derivation_counter("first", 0).await.unwrap(),
+        3
+    );
+    assert_eq!(
+        db.increment_derivation_counter("second", 0).await.unwrap(),
+        5
+    );
+}
+
+/// Test that concurrent derivation counter reservations return unique indexes.
+pub async fn derivation_counter_is_atomic<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + Sync,
+{
+    let (a, b, c, d, e, f, g, h) = tokio::join!(
+        db.increment_derivation_counter("test", 1),
+        db.increment_derivation_counter("test", 1),
+        db.increment_derivation_counter("test", 1),
+        db.increment_derivation_counter("test", 1),
+        db.increment_derivation_counter("test", 1),
+        db.increment_derivation_counter("test", 1),
+        db.increment_derivation_counter("test", 1),
+        db.increment_derivation_counter("test", 1),
+    );
+    let mut counters = vec![
+        a.unwrap(),
+        b.unwrap(),
+        c.unwrap(),
+        d.unwrap(),
+        e.unwrap(),
+        f.unwrap(),
+        g.unwrap(),
+        h.unwrap(),
+    ];
+    counters.sort_unstable();
+
+    assert_eq!(counters, (1..=8).collect::<Vec<_>>());
+}
+
 // =============================================================================
 // Transaction Tests
 // =============================================================================
@@ -867,6 +935,65 @@ where
     let retrieved = db.get_transaction(tx_id).await.unwrap();
     assert!(retrieved.is_some());
     assert_eq!(retrieved.unwrap().id(), tx_id);
+}
+
+/// Test updating a transaction's status through the idempotent add operation.
+pub async fn update_transaction_status<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mut transaction = test_transaction(test_mint_url(), TransactionDirection::Outgoing);
+    transaction.status = TransactionStatus::Pending;
+    let tx_id = transaction.id();
+
+    db.add_transaction(transaction.clone()).await.unwrap();
+    transaction.status = TransactionStatus::Completed;
+    db.add_transaction(transaction).await.unwrap();
+
+    let retrieved = db
+        .get_transaction(tx_id)
+        .await
+        .unwrap()
+        .expect("transaction exists");
+    assert_eq!(retrieved.status, TransactionStatus::Completed);
+}
+
+/// Test that separate saga operations using the same proofs remain distinct.
+pub async fn same_proofs_in_different_sagas<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mut outgoing = test_transaction(test_mint_url(), TransactionDirection::Outgoing);
+    outgoing.saga_id = Some(uuid::Uuid::new_v4());
+    outgoing.status = TransactionStatus::Pending;
+
+    let mut incoming = outgoing.clone();
+    incoming.direction = TransactionDirection::Incoming;
+    incoming.saga_id = Some(uuid::Uuid::new_v4());
+    incoming.status = TransactionStatus::Completed;
+
+    let outgoing_id = outgoing.id();
+    let incoming_id = incoming.id();
+    assert_ne!(outgoing_id, incoming_id);
+
+    db.add_transaction(outgoing).await.unwrap();
+    db.add_transaction(incoming).await.unwrap();
+
+    let outgoing = db
+        .get_transaction(outgoing_id)
+        .await
+        .unwrap()
+        .expect("outgoing transaction exists");
+    let incoming = db
+        .get_transaction(incoming_id)
+        .await
+        .unwrap()
+        .expect("incoming transaction exists");
+
+    assert_eq!(outgoing.direction, TransactionDirection::Outgoing);
+    assert_eq!(outgoing.status, TransactionStatus::Pending);
+    assert_eq!(incoming.direction, TransactionDirection::Incoming);
+    assert_eq!(incoming.status, TransactionStatus::Completed);
 }
 
 /// Test listing transactions
@@ -1457,6 +1584,34 @@ where
     assert!(reserved.is_empty());
 }
 
+/// Test that releasing an operation never resurrects proofs already marked spent.
+pub async fn release_proofs_preserves_spent<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let proof_info = test_proof_info(keyset_id, 100, mint_url);
+    let proof_y = proof_info.y;
+
+    db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+    let operation_id = uuid::Uuid::new_v4();
+    db.reserve_proofs(vec![proof_y], &operation_id)
+        .await
+        .unwrap();
+    db.update_proofs_state(vec![proof_y], State::Spent)
+        .await
+        .unwrap();
+
+    db.release_proofs(&operation_id).await.unwrap();
+
+    let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].state, State::Spent);
+    assert_eq!(stored[0].used_by_operation, Some(operation_id));
+}
+
 /// Test getting proofs reserved by an operation
 pub async fn get_reserved_proofs<DB>(db: DB)
 where
@@ -1535,6 +1690,47 @@ where
     assert!(result.is_err());
 }
 
+/// Test that a failed reservation leaves no proof reserved
+pub async fn reserve_proofs_is_atomic<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let proof_info_1 = test_proof_info(keyset_id, 100, mint_url.clone());
+    let proof_info_2 = test_proof_info(keyset_id, 200, mint_url.clone());
+
+    db.update_proofs(vec![proof_info_1.clone(), proof_info_2.clone()], vec![])
+        .await
+        .unwrap();
+
+    let operation_id_1 = uuid::Uuid::new_v4();
+    db.reserve_proofs(vec![proof_info_1.y], &operation_id_1)
+        .await
+        .unwrap();
+
+    // The unspent proof comes first so a non-atomic implementation reserves it
+    // before hitting the already-reserved one.
+    let operation_id_2 = uuid::Uuid::new_v4();
+    let result = db
+        .reserve_proofs(vec![proof_info_2.y, proof_info_1.y], &operation_id_2)
+        .await;
+    assert!(result.is_err());
+
+    assert!(db
+        .get_reserved_proofs(&operation_id_2)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let unspent = db
+        .get_proofs(None, None, Some(vec![State::Unspent]), None)
+        .await
+        .unwrap();
+    assert_eq!(unspent.len(), 1);
+    assert_eq!(unspent[0].y, proof_info_2.y);
+}
+
 /// Unit test that is expected to be passed for a correct wallet database implementation
 #[macro_export]
 macro_rules! wallet_db_test {
@@ -1568,7 +1764,12 @@ macro_rules! wallet_db_test {
             get_balance_by_state,
             increment_keyset_counter,
             keyset_counter_isolation,
+            increment_derivation_counter,
+            derivation_counters_are_independent,
+            derivation_counter_is_atomic,
             add_and_get_transaction,
+            update_transaction_status,
+            same_proofs_in_different_sagas,
             list_transactions,
             filter_transactions_by_mint,
             remove_transaction,
@@ -1583,8 +1784,10 @@ macro_rules! wallet_db_test {
             get_incomplete_sagas,
             reserve_proofs,
             release_proofs,
+            release_proofs_preserves_spent,
             get_reserved_proofs,
-            reserve_proofs_already_reserved
+            reserve_proofs_already_reserved,
+            reserve_proofs_is_atomic
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {

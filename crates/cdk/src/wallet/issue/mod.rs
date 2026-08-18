@@ -14,7 +14,7 @@ use crate::amount::SplitTarget;
 use crate::nuts::{BatchCheckMintQuoteRequest, Proofs, SecretKey, SpendingConditions};
 use crate::util::unix_time;
 use crate::wallet::recovery::RecoveryAction;
-use crate::wallet::{MintQuote, MintQuoteState};
+use crate::wallet::{DerivationCounterNamespace, MintQuote, MintQuoteState};
 use crate::{Amount, Error, Wallet};
 
 pub(crate) fn apply_mint_quote_response(
@@ -149,42 +149,52 @@ fn mint_quote_response_amount(response: &MintQuoteResponse<String>) -> Option<Am
 }
 
 impl Wallet {
+    async fn next_mint_quote_signing_key(&self) -> Result<SecretKey, Error> {
+        let counter = self
+            .reserve_derivation_index(DerivationCounterNamespace::Nut20Quote, 0)
+            .await?;
+
+        Ok(crate::nuts::nut20::derive_quote_locking_key(
+            &self.seed, counter,
+        )?)
+    }
+
     /// Resolve the NUT-20 signing key for a mint quote
     ///
-    /// Returns the quote's stored key if present. NpubCash quotes do not
-    /// persist a key; for those the key is re-derived from the wallet seed.
+    /// Re-derives the key for explicitly marked NpubCash quotes. For all other
+    /// quotes, returns the stored key without modifying wallet state.
     pub(crate) async fn mint_quote_signing_key(
         &self,
         quote: &MintQuote,
     ) -> Result<Option<SecretKey>, Error> {
         #[cfg(feature = "npubcash")]
-        if let Some(secret_key) = &quote.secret_key {
-            if self.is_legacy_npubcash_secret_key(secret_key) {
-                self.scrub_legacy_npubcash_quote(quote).await?;
-                return Ok(Some(self.npubcash_quote_secret_key(
-                    crate::wallet::npubcash::NpubCashQuoteKey::LegacySeedPrefix,
-                )?));
-            }
-
-            return Ok(Some(secret_key.clone()));
-        }
-
-        #[cfg(not(feature = "npubcash"))]
-        if let Some(secret_key) = &quote.secret_key {
-            return Ok(Some(secret_key.clone()));
-        }
-
-        #[cfg(feature = "npubcash")]
         if let Some(key) = self.npubcash_quote_key(&quote.id).await? {
             return Ok(Some(self.npubcash_quote_secret_key(key)?));
         }
 
-        Ok(None)
+        Ok(quote.secret_key.clone())
     }
 
     /// Create a mint quote for the given payment method and amount
     #[instrument(skip(self, method))]
     pub async fn mint_quote(
+        &self,
+        method: PaymentMethod,
+        amount: Option<Amount>,
+        description: Option<String>,
+        extra: Option<String>,
+    ) -> Result<MintQuote, Error> {
+        let quote = self
+            .request_mint_quote(method, amount, description, extra)
+            .await?;
+
+        self.localstore.add_mint_quote(quote.clone()).await?;
+
+        Ok(quote)
+    }
+
+    /// Request a mint quote without persisting it to the wallet database.
+    pub(crate) async fn request_mint_quote(
         &self,
         method: PaymentMethod,
         amount: Option<Amount>,
@@ -211,7 +221,7 @@ impl Wallet {
 
         self.keysets(Default::default()).await?;
 
-        let secret_key = SecretKey::generate();
+        let secret_key = self.next_mint_quote_signing_key().await?;
 
         let request = match &method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
@@ -268,8 +278,6 @@ impl Wallet {
             Some(secret_key),
         );
         apply_mint_quote_response(&mut quote, &response);
-
-        self.localstore.add_mint_quote(quote.clone()).await?;
 
         Ok(quote)
     }
@@ -694,10 +702,64 @@ impl Wallet {
 mod tests {
     use std::str::FromStr;
 
+    use bip39::Mnemonic;
     use cdk_common::mint_url::MintUrl;
     use cdk_common::nuts::CurrencyUnit;
 
     use super::*;
+
+    #[tokio::test]
+    async fn mint_quote_signing_keys_follow_nut20_counter_across_wallet_instances() {
+        let mnemonic = Mnemonic::from_str(
+            "half depart obvious quality work element tank gorilla view sugar picture humble",
+        )
+        .expect("valid mnemonic");
+        let seed = mnemonic.to_seed_normalized("");
+        let db = crate::wallet::test_utils::create_test_db().await;
+        let wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            db.clone(),
+            seed,
+            None,
+        )
+        .expect("wallet should build");
+
+        let first = wallet
+            .next_mint_quote_signing_key()
+            .await
+            .expect("first key should derive");
+        let second = wallet
+            .next_mint_quote_signing_key()
+            .await
+            .expect("second key should derive");
+
+        let restarted_wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            db,
+            seed,
+            None,
+        )
+        .expect("wallet should rebuild");
+        let third = restarted_wallet
+            .next_mint_quote_signing_key()
+            .await
+            .expect("third key should derive");
+
+        assert_eq!(
+            first.public_key().to_hex(),
+            "03062837166e56114b59a4d1fd3a5a812bf7aadc1dde758428cf943d80acd41539"
+        );
+        assert_eq!(
+            second.public_key().to_hex(),
+            "02b47d9d41725f5ce6f08c874835cef25376cb1e95f6cb073fef52ca8fd986cf15"
+        );
+        assert_eq!(
+            third.public_key().to_hex(),
+            "029acbd3a46fd75bc05ba0226d0b4d909b2fb6e96c80544a094a1a3567737e44d3"
+        );
+    }
 
     #[test]
     fn local_onchain_mint_quote_amount_is_not_stored() {

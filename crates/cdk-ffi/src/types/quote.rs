@@ -1,5 +1,7 @@
 //! Quote-related FFI types
 
+use core::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use super::amount::{Amount, CurrencyUnit};
@@ -7,7 +9,7 @@ use super::mint::MintUrl;
 use crate::error::FfiError;
 
 /// FFI-compatible MintQuote
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MintQuote {
     /// Quote ID
     pub id: String,
@@ -44,6 +46,31 @@ pub struct MintQuote {
     /// Version for optimistic locking
     #[serde(default)]
     pub version: u32,
+}
+
+impl fmt::Debug for MintQuote {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MintQuote")
+            .field("id", &self.id)
+            .field("amount", &self.amount)
+            .field("unit", &self.unit)
+            .field("request", &self.request)
+            .field("state", &self.state)
+            .field("expiry", &self.expiry)
+            .field("mint_url", &self.mint_url)
+            .field("amount_issued", &self.amount_issued)
+            .field("amount_paid", &self.amount_paid)
+            .field("updated_at", &self.updated_at)
+            .field("estimated_blocks", &self.estimated_blocks)
+            .field("payment_method", &self.payment_method)
+            .field(
+                "secret_key",
+                &self.secret_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("used_by_operation", &self.used_by_operation)
+            .field("version", &self.version)
+            .finish()
+    }
 }
 
 impl From<cdk::wallet::MintQuote> for MintQuote {
@@ -95,6 +122,27 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
             used_by_operation: quote.used_by_operation,
             version: quote.version,
         })
+    }
+}
+
+/// FFI-compatible quote for a maximum cross-mint Lightning transfer.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct CrossMintTransferQuote {
+    /// Quote used to receive the Lightning payment at the destination mint.
+    pub mint_quote: MintQuote,
+    /// Quote used to pay the destination invoice from the source mint.
+    pub melt_quote: MeltQuote,
+    /// Input fee for spending all currently unspent source proofs.
+    pub input_fee: Amount,
+}
+
+impl From<cdk::wallet::CrossMintTransferQuote> for CrossMintTransferQuote {
+    fn from(quote: cdk::wallet::CrossMintTransferQuote) -> Self {
+        Self {
+            mint_quote: quote.mint_quote.into(),
+            melt_quote: quote.melt_quote.into(),
+            input_fee: quote.input_fee.into(),
+        }
     }
 }
 
@@ -644,3 +692,38 @@ impl From<QuoteState> for cdk::nuts::MintQuoteState {
 }
 
 // Note: MeltQuoteState is the same as nut05::QuoteState, so we don't need a separate impl
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mint_quote_debug_redacts_secret_key_and_keeps_quote_id() {
+        let secret = "mint-quote-secret-key";
+        let quote = MintQuote {
+            id: "public-quote-id".to_string(),
+            amount: Some(Amount::new(100)),
+            unit: CurrencyUnit::Sat,
+            request: "payment-request".to_string(),
+            state: QuoteState::Paid,
+            expiry: 1_000,
+            mint_url: MintUrl {
+                url: "https://mint.example.com".to_string(),
+            },
+            amount_issued: Amount::zero(),
+            amount_paid: Amount::new(100),
+            updated_at: 500,
+            estimated_blocks: None,
+            payment_method: PaymentMethod::Bolt11,
+            secret_key: Some(secret.to_string()),
+            used_by_operation: Some("operation-id".to_string()),
+            version: 1,
+        };
+
+        let debug = format!("{quote:?}");
+
+        assert!(debug.contains("public-quote-id"));
+        assert!(!debug.contains(secret));
+        assert!(debug.contains("secret_key: Some(\"[REDACTED]\")"));
+    }
+}

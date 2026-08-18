@@ -4,7 +4,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
-use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
+use cdk::wallet::{RateLimitConfig, Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
 
 use crate::error::FfiError;
 use crate::token::Token;
@@ -67,16 +67,32 @@ impl Wallet {
             .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
         let seed = m.to_seed_normalized("");
 
-        let wallet = CdkWalletBuilder::new()
+        let requested = config
+            .rate_limit
+            .as_ref()
+            .map(RateLimit::to_config)
+            .transpose()?;
+        let pace_with = requested.map(|config| config.unwrap_or_default());
+        let start_disabled = matches!(requested, Some(None));
+
+        let mut builder = CdkWalletBuilder::new()
             .mint_url(mint_url.parse().map_err(|e: cdk::mint_url::Error| {
                 FfiError::internal(format!("Invalid URL: {}", e))
             })?)
             .unit(unit.into())
             .localstore(localstore)
             .seed(seed)
-            .target_proof_count(config.target_proof_count.unwrap_or(3) as usize)
-            .build()
-            .map_err(FfiError::from)?;
+            .target_proof_count(config.target_proof_count.unwrap_or(3) as usize);
+
+        if let Some(config) = pace_with {
+            builder = builder.with_rate_limiting_config(config);
+        }
+
+        let wallet = builder.build().map_err(FfiError::from)?;
+
+        if start_disabled {
+            wallet.disable_rate_limiting();
+        }
 
         Ok(Self {
             inner: Arc::new(wallet),
@@ -114,6 +130,42 @@ impl Wallet {
     pub fn set_metadata_cache_ttl(&self, ttl_secs: Option<u64>) {
         let ttl = ttl_secs.map(std::time::Duration::from_secs);
         self.inner.set_metadata_cache_ttl(ttl);
+    }
+
+    /// Change client-side request rate limiting on this wallet.
+    ///
+    /// A new wallet starts with whatever `WalletConfig.rate_limit` selected. Use
+    /// this to disable pacing, restore the default, or set a custom burst and
+    /// refill. It takes effect immediately and covers every host the wallet's
+    /// limiter paces, so it reaches the main and blind-auth clients as well as
+    /// any third-party host their transport reaches. For a wallet built through
+    /// a wallet repository the limiter is shared, so the change is
+    /// repository-wide.
+    ///
+    /// Returns an error if a `Custom` value has a zero field.
+    pub fn set_rate_limit(&self, rate_limit: RateLimit) -> Result<(), FfiError> {
+        match rate_limit.to_config()? {
+            Some(config) => self.inner.set_rate_limiting_config(config),
+            None => self.inner.disable_rate_limiting(),
+        }
+        Ok(())
+    }
+
+    /// Whether this wallet's requests are being paced right now.
+    ///
+    /// Also false when the wallet paces nothing at all, which is the case
+    /// [`Wallet::set_rate_limit`] silently ignores.
+    pub fn is_rate_limited(&self) -> bool {
+        self.inner.is_rate_limited()
+    }
+
+    /// Wait until the rate-limit budget this wallet drew down has been stored.
+    ///
+    /// Await this before dropping the wallet on shutdown. Without it,
+    /// persistence is best effort and a rebuild can outrun the detached writer,
+    /// so the rebuilt wallet starts with a full burst against the mint's cap.
+    pub async fn flush_rate_limits(&self) {
+        self.inner.flush_rate_limits().await;
     }
 
     /// Get total balance
@@ -463,6 +515,27 @@ impl Wallet {
         let quote = self
             .inner
             .melt_quote::<cdk::nuts::PaymentMethod, _>(method.into(), request, cdk_options, extra)
+            .await?;
+        Ok(quote.into())
+    }
+
+    /// Create quotes for transferring the maximum amount allowed by the source
+    /// balance and both mints' advertised BOLT11 limits.
+    ///
+    /// The returned input fee assumes all currently unspent source proofs are
+    /// used. Prepare the returned melt quote with those proofs and confirm it
+    /// with `skip_swap` to preserve that accounting.
+    ///
+    /// This search may create multiple quote pairs at the remote mints. Only the
+    /// returned pair is persisted locally; unused remote quotes cannot be
+    /// cancelled and remain until they expire.
+    pub async fn cross_mint_transfer_quote_max(
+        &self,
+        target_wallet: std::sync::Arc<Wallet>,
+    ) -> Result<CrossMintTransferQuote, FfiError> {
+        let quote = self
+            .inner
+            .cross_mint_transfer_quote_max(target_wallet.inner.as_ref())
             .await?;
         Ok(quote.into())
     }
@@ -913,10 +986,75 @@ impl Wallet {
     }
 }
 
+/// Client-side request pacing for a wallet's mint traffic.
+///
+/// A wallet starts with whatever [`WalletConfig::rate_limit`] selected, which
+/// defaults to the built-in pacing so it stays under a mint's per-minute request
+/// cap. Pass one of these to [`Wallet::set_rate_limit`] to change it on a live
+/// wallet.
+///
+/// # Example
+///
+/// ```ignore
+/// // Turn pacing off (e.g. a mint with no request cap).
+/// wallet.set_rate_limit(RateLimit::Disabled)?;
+///
+/// // Restore the built-in default pacing.
+/// wallet.set_rate_limit(RateLimit::Default)?;
+///
+/// // Allow a burst of 20 requests, refilling 60 per minute.
+/// wallet.set_rate_limit(RateLimit::Custom {
+///     capacity: 20,
+///     refill_per_minute: 60,
+/// })?;
+/// ```
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum RateLimit {
+    /// Built-in default pacing (capacity 20, refill 20/min).
+    Default,
+    /// No client-side pacing.
+    Disabled,
+    /// Custom burst capacity and per-minute refill. Both must be non-zero.
+    Custom {
+        /// Maximum burst: requests allowed back-to-back before pacing kicks in.
+        capacity: u32,
+        /// Sustained rate: requests earned back per minute.
+        refill_per_minute: u32,
+    },
+}
+
+impl RateLimit {
+    /// Translate into the native config, where `None` means pacing is off.
+    ///
+    /// The only place a zero-valued `Custom` is rejected, since the native
+    /// config's fields are non-zero by construction.
+    pub(crate) fn to_config(&self) -> Result<Option<RateLimitConfig>, FfiError> {
+        match self {
+            RateLimit::Default => Ok(Some(RateLimitConfig::default())),
+            RateLimit::Disabled => Ok(None),
+            RateLimit::Custom {
+                capacity,
+                refill_per_minute,
+            } => RateLimitConfig::try_new(*capacity, *refill_per_minute)
+                .map(Some)
+                .ok_or_else(|| {
+                    FfiError::internal("rate limit capacity and refill_per_minute must be non-zero")
+                }),
+        }
+    }
+}
+
 /// Configuration for creating wallets
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct WalletConfig {
     pub target_proof_count: Option<u32>,
+    /// Client-side request pacing to start with. Omit it to keep the built-in
+    /// default, which paces the wallet under a mint's per-minute request cap.
+    ///
+    /// `Disabled` builds the limiter but leaves it off, so a later
+    /// [`Wallet::set_rate_limit`] can turn pacing back on.
+    #[uniffi(default = None)]
+    pub rate_limit: Option<RateLimit>,
 }
 
 /// Generates a new random mnemonic phrase
@@ -943,19 +1081,24 @@ mod tests {
     use crate::database::custom_wallet_store;
     use crate::sqlite::WalletSqliteDatabase;
 
-    fn test_wallet() -> Wallet {
+    const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    fn wallet_with(rate_limit: Option<RateLimit>) -> Result<Wallet, FfiError> {
         let db = WalletSqliteDatabase::new_in_memory().expect("in-memory wallet db should open");
         Wallet::new(
             "https://mint.example.com".to_string(),
             CurrencyUnit::Sat,
-            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-                .to_string(),
+            MNEMONIC.to_string(),
             custom_wallet_store(db),
             WalletConfig {
                 target_proof_count: None,
+                rate_limit,
             },
         )
-        .expect("wallet should be created")
+    }
+
+    fn test_wallet() -> Wallet {
+        wallet_with(None).expect("wallet should be created")
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -972,5 +1115,140 @@ mod tests {
             .await
             .expect("trait call should mint zero from empty quote store");
         assert!(trait_minted.is_zero());
+    }
+
+    #[test]
+    fn set_rate_limit_accepts_default_disabled_and_custom() {
+        let wallet = test_wallet();
+
+        wallet
+            .set_rate_limit(RateLimit::Default)
+            .expect("default is always valid");
+        wallet
+            .set_rate_limit(RateLimit::Disabled)
+            .expect("disabled is always valid");
+        wallet
+            .set_rate_limit(RateLimit::Custom {
+                capacity: 20,
+                refill_per_minute: 60,
+            })
+            .expect("non-zero custom is valid");
+    }
+
+    #[test]
+    fn set_rate_limit_rejects_zero_custom() {
+        let wallet = test_wallet();
+
+        assert!(wallet
+            .set_rate_limit(RateLimit::Custom {
+                capacity: 0,
+                refill_per_minute: 60,
+            })
+            .is_err());
+        assert!(wallet
+            .set_rate_limit(RateLimit::Custom {
+                capacity: 10,
+                refill_per_minute: 0,
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn to_config_maps_every_variant() {
+        assert_eq!(
+            RateLimit::Default.to_config().expect("default is valid"),
+            Some(RateLimitConfig::default())
+        );
+        assert_eq!(
+            RateLimit::Disabled.to_config().expect("disabled is valid"),
+            None
+        );
+        assert_eq!(
+            RateLimit::Custom {
+                capacity: 5,
+                refill_per_minute: 30,
+            }
+            .to_config()
+            .expect("non-zero custom is valid"),
+            RateLimitConfig::try_new(5, 30)
+        );
+        assert!(RateLimit::Custom {
+            capacity: 0,
+            refill_per_minute: 30,
+        }
+        .to_config()
+        .is_err());
+        assert!(RateLimit::Custom {
+            capacity: 5,
+            refill_per_minute: 0,
+        }
+        .to_config()
+        .is_err());
+    }
+
+    #[test]
+    fn wallet_config_selects_the_starting_rate_limit() {
+        for rate_limit in [
+            None,
+            Some(RateLimit::Default),
+            Some(RateLimit::Custom {
+                capacity: 5,
+                refill_per_minute: 30,
+            }),
+        ] {
+            let wallet = wallet_with(rate_limit).expect("wallet should be created");
+            assert!(wallet.is_rate_limited());
+        }
+    }
+
+    #[test]
+    fn wallet_config_disabled_is_reversible() {
+        let wallet = wallet_with(Some(RateLimit::Disabled)).expect("wallet should be created");
+        assert!(!wallet.is_rate_limited());
+
+        wallet
+            .set_rate_limit(RateLimit::Default)
+            .expect("default is always valid");
+        assert!(
+            wallet.is_rate_limited(),
+            "a wallet built disabled still has a limiter to turn back on"
+        );
+    }
+
+    #[test]
+    fn wallet_config_rejects_zero_custom() {
+        assert!(wallet_with(Some(RateLimit::Custom {
+            capacity: 0,
+            refill_per_minute: 30,
+        }))
+        .is_err());
+        assert!(wallet_with(Some(RateLimit::Custom {
+            capacity: 5,
+            refill_per_minute: 0,
+        }))
+        .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flush_rate_limits_is_available_on_wallet_and_trait() {
+        let wallet = test_wallet();
+
+        wallet.flush_rate_limits().await;
+        <Wallet as WalletTrait>::flush_rate_limits(&wallet).await;
+    }
+
+    #[test]
+    fn rate_limiting_round_trips_through_the_trait() {
+        let wallet = test_wallet();
+        assert!(<Wallet as WalletTrait>::is_rate_limited(&wallet));
+
+        <Wallet as WalletTrait>::set_rate_limiting_config(&wallet, None);
+        assert!(!<Wallet as WalletTrait>::is_rate_limited(&wallet));
+
+        <Wallet as WalletTrait>::set_rate_limiting_config(
+            &wallet,
+            Some(RateLimitConfig::default()),
+        );
+        assert!(<Wallet as WalletTrait>::is_rate_limited(&wallet));
     }
 }

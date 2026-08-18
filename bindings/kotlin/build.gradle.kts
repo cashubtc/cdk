@@ -16,7 +16,8 @@ subprojects {
         apply(plugin = "com.vanniktech.maven.publish.base")
 
         configure<com.vanniktech.maven.publish.MavenPublishBaseExtension> {
-            // Publish all modules as one Central Portal deployment.
+            // Only cdk-android is published to Central; desktop JVM users build
+            // from source. Publish it as a single Central Portal deployment.
             publishToMavenCentral()
             signAllPublications()
         }

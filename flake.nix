@@ -2,10 +2,13 @@
   description = "CDK Flake";
 
   nixConfig = {
+    fallback = true;
     extra-substituters = [
+      "https://cache.cashudevkit.org"
       "https://cashudevkit.cachix.org"
     ];
     extra-trusted-public-keys = [
+      "cashudevkit:Ukc9ltM4674fDHWWay+q4vdHDYKF48QIm6A+0z5/FqQ="
       "cashudevkit.cachix.org-1:zFKdvMiTllKWxIFNTjXgisZsOFufmaZXjWJNcmc8r+4="
     ];
   };
@@ -19,12 +22,6 @@
       inputs = {
         nixpkgs.follows = "nixpkgs";
       };
-    };
-
-    fenix = {
-      url = "github:nix-community/fenix";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.rust-analyzer-src.follows = "";
     };
 
     flake-utils.url = "github:numtide/flake-utils";
@@ -123,7 +120,7 @@
 
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable."1.96.0".default.override {
+        stable_toolchain = pkgs.rust-bin.stable."1.97.1".default.override {
           targets = [
             "wasm32-unknown-unknown"
             "aarch64-apple-ios"
@@ -169,7 +166,7 @@
         # Stable toolchain with musl target for static builds (Linux only)
         static_toolchain =
           if muslTarget != null then
-            pkgs.rust-bin.stable."1.96.0".default.override
+            pkgs.rust-bin.stable."1.97.1".default.override
               {
                 targets = [ muslTarget ];
               }
@@ -208,6 +205,16 @@
           if static_toolchain != null then (crane.mkLib pkgs).overrideToolchain static_toolchain else null;
         craneLibNightly = (crane.mkLib pkgs).overrideToolchain nightly_toolchain;
 
+        # Include only checked-in fuzzing inputs. Using ./fuzz directly would also
+        # copy generated directories such as fuzz/target, corpus, and artifacts.
+        fuzzSrc = lib.fileset.unions [
+          ./fuzz/Cargo.toml
+          ./fuzz/Cargo.lock
+          ./fuzz/fuzz_targets
+          ./fuzz/seeds
+          ./fuzz/src
+        ];
+
         # Source for crane builds - uses lib.fileset for efficient filtering
         # This is much faster than nix-gitignore when large directories (like target/) exist
         # because it uses a whitelist approach rather than scanning everything first
@@ -224,7 +231,7 @@
               ./README.md
               ./.cargo
               ./crates
-              ./fuzz
+              fuzzSrc
               ./bindings
             ]
           );
@@ -245,7 +252,7 @@
               ./README.md
               ./.cargo
               ./crates
-              ./fuzz
+              fuzzSrc
               ./bindings
             ]
           );
@@ -367,12 +374,12 @@
         );
 
         # MSRV dependencies (separate cache due to different toolchain)
-        # Exclude cdk-redb (and its dependents) since redb requires a higher MSRV
+        # Exclude cdk-redb (and its dependents) and cdk-cli from MSRV coverage
         workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (
           commonCraneArgsMsrv
           // {
             pname = "cdk-deps-msrv";
-            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin --exclude cdk-bindings-releaser";
+            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin --exclude cdk-cli";
           }
         );
 
@@ -422,6 +429,9 @@
               );
               doCheck = false;
               installPhaseCommand = "mkdir -p $out";
+              # These outputs are success markers; no later derivation consumes
+              # their target directories.
+              doInstallCargoArtifacts = false;
             }
           );
 
@@ -527,7 +537,6 @@
                 -p cdk-axum \
                 -p cdk-cln \
                 -p cdk-lnd \
-                -p cdk-lnbits \
                 -p cdk-fake-wallet \
                 -p cdk-mint-rpc \
                 -p cdk-payment-processor \
@@ -565,6 +574,7 @@
               # Run Python tests
               python3 crates/cdk-ffi/tests/test_transactions.py
               python3 crates/cdk-ffi/tests/test_kvstore.py
+              python3 crates/cdk-ffi/tests/test_rate_limit.py
             '';
             doCheck = false;
             installPhaseCommand = "mkdir -p $out";
@@ -601,7 +611,7 @@
               # Generate Dart bindings via the custom uniffi-bindgen binary
               # Must run from bindings/dart/rust/ so it finds uniffi.toml
               (cd bindings/dart/rust && \
-                cargo run --release -p cdk-ffi-dart --bin uniffi-bindgen -- \
+                cargo run --release -p cdk-ffi-dart --bin uniffi-bindgen-dart -- \
                   "../../../$CDK_FFI_LIB" --out-dir ../../../target/dart-bindings)
             '';
             doCheck = false;
@@ -627,9 +637,10 @@
               cargo build --release -p cdk-ffi-kotlin --target "${hostTarget}"
 
               # Generate Kotlin bindings
-              cargo run --release -p cdk-ffi-kotlin --bin uniffi-bindgen -- generate \
-                --library "target/${hostTarget}/release/libcdk_ffi.$LIB_EXT" \
+              cargo run --release -p cdk-ffi-kotlin --bin uniffi-bindgen-kotlin -- generate \
+                --library "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
                 --language kotlin \
+                --config bindings/kotlin/rust/uniffi.toml \
                 --out-dir target/kotlin-bindings \
                 --no-format
             '';
@@ -644,11 +655,11 @@
               cp -r target/kotlin-bindings/org $out/cdk-jvm/src/main/kotlin/
 
               # Copy native library
-              cp "target/${hostTarget}/release/libcdk_ffi.$LIB_EXT" \
-                "$out/cdk-jvm/src/main/resources/libcdk_ffi.$LIB_EXT"
+              cp "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
+                "$out/cdk-jvm/src/main/resources/libcdk_ffi_kotlin.$LIB_EXT"
 
               # Strip debug symbols
-              strip -x "$out/cdk-jvm/src/main/resources/libcdk_ffi.$LIB_EXT" 2>/dev/null || true
+              strip -x "$out/cdk-jvm/src/main/resources/libcdk_ffi_kotlin.$LIB_EXT" 2>/dev/null || true
             '';
           }
         );
@@ -737,11 +748,14 @@
         # These run both clippy and unit tests in a single derivation
         # ========================================
         clippyAndTestChecks = {
-          "core-lib" = [
+          "core-cashu" = [
             "-p cashu"
             "-p cashu --no-default-features"
             "-p cashu --no-default-features --features wallet"
             "-p cashu --no-default-features --features mint"
+          ];
+
+          "core-common-http" = [
             "-p cdk-http-client"
             "-p cdk-http-client --no-default-features --features reqwest"
             "-p cdk-common"
@@ -752,13 +766,22 @@
             "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/wallet,cdk-common/http,cdk-http-client/reqwest"
             "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/mint,cdk-common/http,cdk-http-client/bitreq"
             "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/mint,cdk-common/http,cdk-http-client/reqwest"
+          ];
+
+          "core-sdk-baseline" = [
             "-p cdk -p cdk-http-client"
             "-p cdk --no-default-features"
+          ];
+
+          "core-sdk-wallet" = [
             "-p cdk --no-default-features --features bip353"
             "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/bitreq"
             "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/reqwest"
             "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk/tor,cdk-http-client/bitreq"
             "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk/npubcash,cdk-http-client/reqwest"
+          ];
+
+          "core-sdk-mint" = [
             "-p cdk -p cdk-http-client --no-default-features --features cdk/mint,cdk-http-client/bitreq"
             "-p cdk -p cdk-http-client --no-default-features --features cdk/mint,cdk-http-client/reqwest"
           ];
@@ -776,14 +799,12 @@
           ];
 
           "lightning-and-api" = [
-            "-p cdk-http-client"
             "-p cdk-axum"
             "-p cdk-axum --no-default-features"
             "-p cdk-axum --no-default-features --features redis"
             "-p cdk-bdk"
             "-p cdk-cln"
             "-p cdk-lnd"
-            "-p cdk-lnbits"
             "-p cdk-fake-wallet -p cdk-http-client --no-default-features --features cdk-http-client/bitreq"
             "-p cdk-payment-processor"
             "-p cdk-ldk-node"
@@ -802,7 +823,6 @@
 
           "mintd-backends-sqlite" = [
             "-p cdk-mintd --no-default-features --features lnd,sqlite"
-            "-p cdk-mintd --no-default-features --features lnbits,sqlite"
             "-p cdk-mintd --no-default-features --features fakewallet,sqlite"
             "-p cdk-mintd --no-default-features --features grpc-processor,sqlite"
             "-p cdk-mintd --no-default-features --features management-rpc,lnd,sqlite"
@@ -812,7 +832,6 @@
           "mintd-backends-postgres" = [
             "-p cdk-mintd --no-default-features --features cln,postgres"
             "-p cdk-mintd --no-default-features --features lnd,postgres"
-            "-p cdk-mintd --no-default-features --features lnbits,postgres"
             "-p cdk-mintd --no-default-features --features fakewallet,postgres"
             "-p cdk-mintd --no-default-features --features grpc-processor,postgres"
             "-p cdk-mintd --no-default-features --features management-rpc,cln,postgres"
@@ -828,10 +847,7 @@
 
           # Mintd with all backends, databases, and features
           "cdk-mintd-all" =
-            "-p cdk-mintd --no-default-features --features \"cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,redis,management-rpc\"";
-
-          # CLI - default features (excludes redb which breaks MSRV)
-          "cdk-cli" = "-p cdk-cli";
+            "-p cdk-mintd --no-default-features --features \"cln,lnd,fakewallet,ldk-node,grpc-processor,sqlite,postgres,redis,management-rpc\"";
 
           # Minimal builds to ensure no-default-features works
           "cdk-wallet-only" = "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/bitreq";
@@ -865,6 +881,7 @@
             protobuf
             nixpkgs-fmt
             typos
+            tokei
 
             cargo-outdated
             cargo-mutants
@@ -923,6 +940,17 @@
         commonShellHook = ''
           # Needed for github ci
           export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [ pkgs.zlib ]}:$LD_LIBRARY_PATH
+        '';
+
+        dockerShellHook = ''
+          # Ensure Docker is available
+          if ! command -v docker &> /dev/null; then
+            echo "Docker is not installed or not in PATH"
+            echo "Please install Docker to run integration tests"
+            exit 1
+          fi
+          echo "Docker is available at $(command -v docker)"
+          echo "Docker version: $(docker --version)"
         '';
 
         pgShellHook = ''
@@ -1358,6 +1386,12 @@
             '';
             doCheck = false;
             installPhaseCommand = "";
+            # mkCargoDerivation would otherwise also compress the whole cargo
+            # target dir into $out/target.tar.zst (crane's cargoArtifacts
+            # mechanism). Nothing consumes this package's artifacts and the
+            # extra tarball (~4.7 GB) nearly doubles the store path that binary
+            # caches have to push and every runner has to pull, so skip it.
+            doInstallCargoArtifacts = false;
           }
         );
 
@@ -1368,10 +1402,27 @@
         ++ lib.optionals isDarwin [
           # Additional darwin specific native inputs can be set here
         ];
+
+        defaultPackage =
+          if muslTarget != null then
+            mkStaticPackage
+              {
+                bin = "cdk-mintd";
+                name = "cdk-mintd";
+                cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
+              }
+          else
+            mkDarwinPackage {
+              bin = "cdk-mintd";
+              name = "cdk-mintd";
+              cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
+            };
       in
       {
         # Expose deps for explicit cache warming
         packages = {
+          default = defaultPackage;
+          attic-client = pkgs.attic-client;
           deps = workspaceDeps;
           deps-msrv = workspaceDepsMsrv;
           # Language bindings (cached cdylib + uniffi codegen)
@@ -1385,11 +1436,7 @@
         }
         # Static binary packages (fully statically-linked, Linux only)
         // lib.optionalAttrs (muslTarget != null) {
-          cdk-mintd-static = mkStaticPackage {
-            bin = "cdk-mintd";
-            name = "cdk-mintd";
-            cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
-          };
+          cdk-mintd-static = defaultPackage;
 
           cdk-mintd-ldk-static = mkStaticPackage {
             bin = "cdk-mintd";
@@ -1405,11 +1452,7 @@
         }
         # macOS release binary packages (dynamically linked, Apple Silicon only)
         // lib.optionalAttrs isDarwin {
-          cdk-mintd-darwin = mkDarwinPackage {
-            bin = "cdk-mintd";
-            name = "cdk-mintd";
-            cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
-          };
+          cdk-mintd-darwin = defaultPackage;
 
           cdk-mintd-ldk-darwin = mkDarwinPackage {
             bin = "cdk-mintd";
@@ -1588,18 +1631,7 @@
             # Shell with Docker for integration tests
             integration = pkgs.mkShell (
               {
-                shellHook = ''
-                  # Ensure Docker is available
-                  if ! command -v docker &> /dev/null; then
-                    echo "Docker is not installed or not in PATH"
-                    echo "Please install Docker to run integration tests"
-                    exit 1
-                  fi
-                  echo "Docker is available at $(which docker)"
-                  echo "Docker version: $(docker --version)"
-                ''
-                + commonShellHook
-                + pgShellHook;
+                shellHook = dockerShellHook + commonShellHook + pgShellHook;
                 buildInputs =
                   baseBuildInputs
                   ++ regtestBuildInputs
@@ -1610,6 +1642,21 @@
                     pkgsUnstable.cargo-llvm-cov
                   ]
                   ++ builtins.attrValues itestBinaries;
+                inherit nativeBuildInputs;
+              }
+              // envVars
+            );
+
+            # Minimal shell for the Nutshell interoperability tests. These tests
+            # compile their own binaries with Cargo and do not use the pre-built
+            # integration-test harnesses from the full integration shell.
+            nutshell = pkgs.mkShell (
+              {
+                shellHook = dockerShellHook + commonShellHook;
+                buildInputs = baseBuildInputs ++ [
+                  stable_toolchain
+                  pkgs.docker-client
+                ];
                 inherit nativeBuildInputs;
               }
               // envVars
@@ -1679,7 +1726,7 @@
                 ndkHome = "${androidSdk}/libexec/android-sdk/ndk/27.0.12077973";
                 toolchainBin = "${ndkHome}/toolchains/llvm/prebuilt/linux-x86_64/bin";
                 androidRustFlags = "-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384";
-                buildToolchain = pkgs.rust-bin.stable."1.96.0".default.override {
+                buildToolchain = pkgs.rust-bin.stable."1.97.1".default.override {
                   targets = [
                     "aarch64-linux-android"
                     "armv7-linux-androideabi"
@@ -1750,6 +1797,7 @@
               nightly
               nightly-regtest
               integration
+              nutshell
               ffi
               bindings
               kotlin-build

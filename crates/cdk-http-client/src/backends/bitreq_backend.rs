@@ -66,6 +66,7 @@ impl std::fmt::Debug for HttpClient {
 impl HttpClient {
     /// Create a new HTTP client with default settings
     pub fn new() -> Self {
+        super::install_rustls_crypto_provider();
         Self {
             inner: Arc::new(bitreq::Client::new(10)),
             proxy_config: None,
@@ -79,6 +80,7 @@ impl HttpClient {
         proxy_config: Option<ProxyConfig>,
         no_redirects: bool,
     ) -> Self {
+        super::install_rustls_crypto_provider();
         Self {
             inner: client,
             proxy_config,

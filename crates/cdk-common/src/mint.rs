@@ -162,7 +162,7 @@ impl FromStr for SwapSagaState {
 pub enum MeltSagaState {
     /// Setup complete (proofs reserved, quote verified)
     SetupComplete,
-    /// Payment attempted to Lightning network (may or may not have succeeded)
+    /// Payment attempted through the configured backend (may or may not have succeeded)
     PaymentAttempted,
     /// TX1 committed (proofs Spent, quote Paid) - change signing + cleanup pending
     Finalizing,
@@ -551,7 +551,7 @@ pub struct MintQuote {
     pub request: String,
     /// Expiration time of quote
     pub expiry: u64,
-    /// Value used by ln backend to look up state of request
+    /// Value used by the payment backend to look up state of request
     pub request_lookup_id: PaymentIdentifier,
     /// Pubkey
     pub pubkey: Option<PublicKey>,
@@ -563,6 +563,8 @@ pub struct MintQuote {
     amount_issued: Amount<CurrencyUnit>,
     /// Unix timestamp indicating when the quote accounting last changed.
     updated_at: u64,
+    /// Unix timestamp of the most recent payment backend status check.
+    last_checked: u64,
     /// Payment of payment(s) that filled quote
     pub payments: Vec<IncomingPayment>,
     /// Payment Method
@@ -613,6 +615,7 @@ impl MintQuote {
             amount_paid,
             amount_issued,
             updated_at,
+            last_checked: 0,
             payment_method,
             payments,
             issuance,
@@ -702,6 +705,16 @@ impl MintQuote {
     /// Replaces `updated_at` with the value persisted by the database.
     pub fn set_updated_at(&mut self, updated_at: u64) {
         self.updated_at = updated_at;
+    }
+
+    /// Unix timestamp of the most recent payment backend status check.
+    pub fn last_checked(&self) -> u64 {
+        self.last_checked
+    }
+
+    /// Replaces `last_checked` with the value persisted by the database.
+    pub fn set_last_checked(&mut self, last_checked: u64) {
+        self.last_checked = last_checked;
     }
 
     /// Get state of mint quote
@@ -868,7 +881,7 @@ pub struct MeltQuote {
     pub expiry: u64,
     /// Payment proof (e.g. Lightning preimage or onchain outpoint)
     pub payment_proof: Option<String>,
-    /// Value used by ln backend to look up state of request
+    /// Value used by the payment backend to look up state of request
     pub request_lookup_id: Option<PaymentIdentifier>,
     /// Payment options
     ///

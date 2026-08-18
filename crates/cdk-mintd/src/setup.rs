@@ -16,7 +16,6 @@ use cdk::cdk_database::KVStore;
 use cdk::cdk_payment::MintPayment;
 use cdk::nuts::CurrencyUnit;
 #[cfg(any(
-    feature = "lnbits",
     feature = "cln",
     feature = "lnd",
     feature = "ldk-node",
@@ -30,7 +29,7 @@ use crate::config::{self, Settings};
 use crate::expand_path;
 
 #[async_trait]
-pub trait LnBackendSetup {
+pub trait PaymentBackendSetup {
     async fn setup(
         &self,
         settings: &Settings,
@@ -55,7 +54,7 @@ pub trait OnchainBackendSetup {
 
 #[cfg(feature = "cln")]
 #[async_trait]
-impl LnBackendSetup for config::Cln {
+impl PaymentBackendSetup for config::Cln {
     async fn setup(
         &self,
         _settings: &Settings,
@@ -67,7 +66,7 @@ impl LnBackendSetup for config::Cln {
         // Validate required connection field
         if self.rpc_path.as_os_str().is_empty() {
             return Err(anyhow::anyhow!(
-                "CLN rpc_path must be set via config or CDK_MINTD_CLN_RPC_PATH env var"
+                "CLN rpc_path must be set in [cln].rpc_path"
             ));
         }
 
@@ -95,58 +94,9 @@ impl LnBackendSetup for config::Cln {
     }
 }
 
-#[cfg(feature = "lnbits")]
-#[async_trait]
-impl LnBackendSetup for config::LNbits {
-    async fn setup(
-        &self,
-        _settings: &Settings,
-        _unit: CurrencyUnit,
-        _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
-        _work_dir: &Path,
-        _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
-    ) -> anyhow::Result<cdk_lnbits::LNbits> {
-        use anyhow::bail;
-
-        // Validate required connection fields
-        if self.admin_api_key.is_empty() {
-            bail!("LNbits admin_api_key must be set via config or CDK_MINTD_LNBITS_ADMIN_API_KEY env var");
-        }
-        if self.invoice_api_key.is_empty() {
-            bail!("LNbits invoice_api_key must be set via config or CDK_MINTD_LNBITS_INVOICE_API_KEY env var");
-        }
-        if self.lnbits_api.is_empty() {
-            bail!(
-                "LNbits lnbits_api must be set via config or CDK_MINTD_LNBITS_LNBITS_API env var"
-            );
-        }
-
-        let admin_api_key = &self.admin_api_key;
-        let invoice_api_key = &self.invoice_api_key;
-
-        let fee_reserve = FeeReserve {
-            min_fee_reserve: self.reserve_fee_min,
-            percent_fee_reserve: self.fee_percent,
-        };
-
-        let lnbits = cdk_lnbits::LNbits::new(
-            admin_api_key.clone(),
-            invoice_api_key.clone(),
-            self.lnbits_api.clone(),
-            fee_reserve,
-        )
-        .await?;
-
-        // Use v1 websocket API
-        lnbits.subscribe_ws().await?;
-
-        Ok(lnbits)
-    }
-}
-
 #[cfg(feature = "lnd")]
 #[async_trait]
-impl LnBackendSetup for config::Lnd {
+impl PaymentBackendSetup for config::Lnd {
     async fn setup(
         &self,
         _settings: &Settings,
@@ -158,15 +108,13 @@ impl LnBackendSetup for config::Lnd {
         use anyhow::bail;
         // Validate required connection fields
         if self.address.is_empty() {
-            bail!("LND address must be set via config or CDK_MINTD_LND_ADDRESS env var");
+            bail!("LND address must be set in [lnd].address");
         }
         if self.cert_file.as_os_str().is_empty() {
-            bail!("LND cert_file must be set via config or CDK_MINTD_LND_CERT_FILE env var");
+            bail!("LND cert_file must be set in [lnd].cert_file");
         }
         if self.macaroon_file.as_os_str().is_empty() {
-            bail!(
-                "LND macaroon_file must be set via config or CDK_MINTD_LND_MACAROON_FILE env var"
-            );
+            bail!("LND macaroon_file must be set in [lnd].macaroon_file");
         }
 
         let address = &self.address;
@@ -193,7 +141,7 @@ impl LnBackendSetup for config::Lnd {
 
 #[cfg(feature = "fakewallet")]
 #[async_trait]
-impl LnBackendSetup for config::FakeWallet {
+impl PaymentBackendSetup for config::FakeWallet {
     async fn setup(
         &self,
         _settings: &Settings,
@@ -312,7 +260,7 @@ mod tests {
 
 #[cfg(feature = "grpc-processor")]
 #[async_trait]
-impl LnBackendSetup for config::GrpcProcessor {
+impl PaymentBackendSetup for config::GrpcProcessor {
     async fn setup(
         &self,
         _settings: &Settings,
@@ -470,14 +418,14 @@ mod ldk_node_tests {
 
 #[cfg(feature = "ldk-node")]
 #[async_trait]
-impl LnBackendSetup for config::LdkNode {
+impl PaymentBackendSetup for config::LdkNode {
     async fn setup(
         &self,
         settings: &Settings,
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
-        _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_ldk_node::CdkLdkNode> {
         use std::net::SocketAddr;
 
@@ -491,10 +439,9 @@ impl LnBackendSetup for config::LdkNode {
         };
 
         // Parse network from config
-        let network_str = self
-            .bitcoin_network
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("LDK Node bitcoin_network must be set via config or CDK_MINTD_LDK_NODE_BITCOIN_NETWORK env var"))?;
+        let network_str = self.bitcoin_network.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("LDK Node bitcoin_network must be set in [ldk_node].bitcoin_network")
+        })?;
 
         let network = match network_str.to_lowercase().as_str() {
             "mainnet" | "bitcoin" => Network::Bitcoin,
@@ -574,6 +521,8 @@ impl LnBackendSetup for config::LdkNode {
             .map(|addrs| addrs.iter().filter_map(|addr| addr.parse().ok()).collect())
             .unwrap_or_default();
 
+        let kv_store = kv_store.ok_or_else(|| anyhow::anyhow!("LdkNode needs a KV store"))?;
+
         let mut ldk_node_builder = cdk_ldk_node::CdkLdkNodeBuilder::new(
             network,
             chain_source,
@@ -581,6 +530,7 @@ impl LnBackendSetup for config::LdkNode {
             storage_dir_path,
             fee_reserve,
             listen_address,
+            kv_store,
         );
 
         // Only set seed if provided
@@ -672,6 +622,7 @@ impl crate::config::Bdk {
                         port,
                         user,
                         password,
+                        wallet_rescan_from_height: self.wallet_rescan_from_height,
                     },
                 ))
             }
@@ -683,6 +634,25 @@ impl crate::config::Bdk {
 #[cfg(all(test, feature = "bdk"))]
 mod bdk_tests {
     use super::*;
+
+    #[test]
+    fn forwards_bitcoin_rpc_wallet_rescan_height() {
+        let config = config::Bdk {
+            chain_source_type: Some("bitcoinrpc".to_string()),
+            wallet_rescan_from_height: Some(850000),
+            ..Default::default()
+        };
+
+        match config
+            .chain_source()
+            .expect("Bitcoin RPC config should parse")
+        {
+            cdk_bdk::ChainSource::BitcoinRpc(config) => {
+                assert_eq!(config.wallet_rescan_from_height, Some(850000));
+            }
+            _ => panic!("expected a Bitcoin RPC chain source"),
+        }
+    }
 
     #[test]
     fn parses_electrum_chain_source() {
@@ -785,9 +755,10 @@ impl OnchainBackendSetup for crate::config::Bdk {
             percent_fee_reserve: self.fee_percent,
         };
 
-        let network_str = self.network.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("BDK network must be set via config or CDK_MINTD_BDK_NETWORK env var")
-        })?;
+        let network_str = self
+            .network
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("BDK network must be set in [bdk].network"))?;
 
         let network = match network_str.to_lowercase().as_str() {
             "mainnet" | "bitcoin" => Network::Bitcoin,

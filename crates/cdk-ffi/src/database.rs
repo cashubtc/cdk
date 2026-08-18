@@ -169,6 +169,13 @@ pub trait WalletDatabase: Send + Sync {
     /// Atomically increment Keyset counter and return new value
     async fn increment_keyset_counter(&self, keyset_id: Id, count: u32) -> Result<u32, FfiError>;
 
+    /// Atomically increment a namespaced derivation counter and return its new value.
+    async fn increment_derivation_counter(
+        &self,
+        namespace: String,
+        count: u32,
+    ) -> Result<u32, FfiError>;
+
     /// Add Mint to storage
     async fn add_mint(
         &self,
@@ -234,7 +241,11 @@ pub trait WalletDatabase: Send + Sync {
         operation_id: String,
     ) -> Result<(), FfiError>;
 
-    /// Release proofs reserved by an operation
+    /// Release live proofs reserved by an operation.
+    ///
+    /// Implementations must only change Reserved or Pending proofs owned by
+    /// `operation_id`; Spent proofs and proofs owned by another operation must
+    /// be preserved.
     async fn release_proofs(&self, operation_id: String) -> Result<(), FfiError>;
 
     /// Get proofs reserved by an operation
@@ -806,6 +817,17 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
         let ffi_id = (*keyset_id).into();
         self.ffi_db
             .increment_keyset_counter(ffi_id, count)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn increment_derivation_counter(
+        &self,
+        namespace: &str,
+        count: u32,
+    ) -> Result<u32, cdk::cdk_database::Error> {
+        self.ffi_db
+            .increment_derivation_counter(namespace.to_owned(), count)
             .await
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
@@ -1571,6 +1593,17 @@ where
             .map_err(FfiError::internal)
     }
 
+    async fn increment_derivation_counter(
+        &self,
+        namespace: String,
+        count: u32,
+    ) -> Result<u32, FfiError> {
+        self.inner
+            .increment_derivation_counter(&namespace, count)
+            .await
+            .map_err(FfiError::internal)
+    }
+
     async fn add_mint(
         &self,
         mint_url: MintUrl,
@@ -1985,6 +2018,16 @@ macro_rules! impl_ffi_wallet_database {
                 count: u32,
             ) -> Result<u32, FfiError> {
                 self.inner.increment_keyset_counter(keyset_id, count).await
+            }
+
+            async fn increment_derivation_counter(
+                &self,
+                namespace: String,
+                count: u32,
+            ) -> Result<u32, FfiError> {
+                self.inner
+                    .increment_derivation_counter(namespace, count)
+                    .await
             }
 
             async fn add_mint(

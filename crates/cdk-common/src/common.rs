@@ -154,7 +154,7 @@ impl std::fmt::Debug for FinalizedMelt {
     }
 }
 
-/// Key used in hashmap of ln backends to identify what unit and payment method
+/// Key used in hashmap of payment backends to identify what unit and payment method
 /// it is for
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentProcessorKey {

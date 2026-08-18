@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
-use cdk_common::{Amount, HttpClient, PaymentRequest, PaymentRequestPayload, TransportType};
+use cdk_common::{
+    Amount, HttpClient, PaymentRequest, PaymentRequestPayload, SupportedMethod, TransportType,
+};
 #[cfg(feature = "nostr")]
 use nostr_sdk::nips::nip19::Nip19Profile;
 #[cfg(feature = "nostr")]
@@ -19,10 +21,11 @@ use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys, ToBech32}
 
 use crate::error::Error;
 use crate::mint_url::MintUrl;
+use crate::nuts::nut05::MeltMethodSettings;
 use crate::nuts::nut10::{Conditions, SpendingConditions};
 use crate::nuts::nut11::SigFlag;
 use crate::nuts::nut18::Nut10SecretRequest;
-use crate::nuts::{CurrencyUnit, Nut10Secret, Transport};
+use crate::nuts::{CurrencyUnit, Nut10Secret, PaymentMethod, Transport};
 #[cfg(feature = "nostr")]
 use crate::wallet::ReceiveOptions;
 use crate::wallet::{SendOptions, WalletRepository};
@@ -39,13 +42,21 @@ impl Wallet {
         payment_request: PaymentRequest,
         custom_amount: Option<Amount>,
     ) -> Result<(), Error> {
-        let amount = match payment_request.amount {
+        let unit = payment_request_unit(&payment_request)?;
+        let base_amount = match payment_request.amount {
             Some(amount) => amount,
             None => match custom_amount {
                 Some(a) => a,
                 None => return Err(Error::AmountUndefined),
             },
         };
+
+        if unit != self.unit {
+            return Err(Error::UnsupportedUnit);
+        }
+
+        let amount =
+            payment_request_amount_for_wallet(base_amount, &payment_request, self, &unit).await?;
 
         // Extract optional NUT-10 spending conditions from the payment request.
         //
@@ -189,6 +200,349 @@ impl Wallet {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    #[test]
+    fn create_request_params_default_is_strict_by_default() {
+        let params = CreateRequestParams::default();
+
+        assert_eq!(params.unit, "sat");
+        assert_eq!(params.num_sigs, 1);
+        assert_eq!(params.transport, "none");
+        assert!(params.amount.is_none());
+        assert!(params.mint_preferred.is_none());
+    }
+
+    #[test]
+    fn payment_request_rejects_missing_unit_with_amount() {
+        let payment_request = payment_request(None, Some(Amount::from(1)), vec![]);
+
+        assert!(matches!(
+            payment_request_unit(&payment_request),
+            Err(Error::InvalidPaymentRequest)
+        ));
+    }
+
+    #[test]
+    fn payment_request_rejects_missing_unit_with_supported_methods() {
+        let payment_request = payment_request(
+            None,
+            None,
+            vec![SupportedMethod::new(PaymentMethod::BOLT11.to_string())],
+        );
+
+        assert!(matches!(
+            payment_request_unit(&payment_request),
+            Err(Error::InvalidPaymentRequest)
+        ));
+    }
+
+    #[test]
+    fn legacy_amountless_request_without_unit_defaults_to_sats() {
+        let payment_request = payment_request(None, None, vec![]);
+
+        assert_eq!(
+            payment_request_unit(&payment_request).expect("legacy unit"),
+            CurrencyUnit::Sat
+        );
+    }
+
+    #[test]
+    fn strict_mint_policy_only_accepts_listed_mints() {
+        let listed_mint = MintUrl::from_str("https://listed.example.com").expect("valid URL");
+        let unlisted_mint = MintUrl::from_str("https://unlisted.example.com").expect("valid URL");
+        let mints = vec![listed_mint.clone()];
+
+        assert!(payment_request_mint_policy_accepts_mint(
+            &mints,
+            None,
+            &listed_mint
+        ));
+        assert!(!payment_request_mint_policy_accepts_mint(
+            &mints,
+            None,
+            &unlisted_mint
+        ));
+        assert!(!payment_request_mint_policy_accepts_mint(
+            &mints,
+            Some(false),
+            &unlisted_mint
+        ));
+    }
+
+    #[test]
+    fn preferred_or_empty_mint_policy_accepts_unlisted_mints() {
+        let listed_mint = MintUrl::from_str("https://listed.example.com").expect("valid URL");
+        let unlisted_mint = MintUrl::from_str("https://unlisted.example.com").expect("valid URL");
+        let mints = vec![listed_mint];
+
+        assert!(payment_request_mint_policy_accepts_mint(
+            &mints,
+            Some(true),
+            &unlisted_mint
+        ));
+        assert!(payment_request_mint_policy_accepts_mint(
+            &[],
+            None,
+            &unlisted_mint
+        ));
+    }
+
+    #[test]
+    fn method_fee_defaults_to_zero_when_request_has_no_method_restriction() {
+        let fee = payment_request_method_fee_from_melt_methods(&[], &[], false, &CurrencyUnit::Sat)
+            .expect("fee");
+
+        assert_eq!(fee, Some(Amount::ZERO));
+    }
+
+    #[test]
+    fn method_fee_uses_lowest_supported_melt_method_fee() {
+        let supported_methods = vec![
+            SupportedMethod {
+                method: PaymentMethod::BOLT11.to_string(),
+                fee: Some(Amount::from(4)),
+            },
+            SupportedMethod {
+                method: PaymentMethod::BOLT12.to_string(),
+                fee: Some(Amount::from(2)),
+            },
+        ];
+        let melt_methods = vec![
+            melt_method(PaymentMethod::BOLT11, CurrencyUnit::Sat),
+            melt_method(PaymentMethod::BOLT12, CurrencyUnit::Sat),
+        ];
+
+        let fee = payment_request_method_fee_from_melt_methods(
+            &supported_methods,
+            &melt_methods,
+            false,
+            &CurrencyUnit::Sat,
+        )
+        .expect("fee");
+
+        assert_eq!(fee, Some(Amount::from(2)));
+    }
+
+    #[test]
+    fn method_fee_ignores_melt_methods_for_other_units() {
+        let supported_methods = vec![SupportedMethod {
+            method: PaymentMethod::BOLT11.to_string(),
+            fee: Some(Amount::from(4)),
+        }];
+        let melt_methods = vec![melt_method(PaymentMethod::BOLT11, CurrencyUnit::Usd)];
+
+        let fee = payment_request_method_fee_from_melt_methods(
+            &supported_methods,
+            &melt_methods,
+            false,
+            &CurrencyUnit::Sat,
+        )
+        .expect("fee");
+
+        assert_eq!(fee, None);
+    }
+
+    #[test]
+    fn method_fee_requires_matching_melt_method() {
+        let supported_methods = vec![SupportedMethod {
+            method: PaymentMethod::BOLT11.to_string(),
+            fee: Some(Amount::from(4)),
+        }];
+        let melt_methods = vec![melt_method(PaymentMethod::BOLT12, CurrencyUnit::Sat)];
+
+        let fee = payment_request_method_fee_from_melt_methods(
+            &supported_methods,
+            &melt_methods,
+            false,
+            &CurrencyUnit::Sat,
+        )
+        .expect("fee");
+
+        assert_eq!(fee, None);
+    }
+
+    #[test]
+    fn method_fee_rejects_methods_when_melting_is_disabled() {
+        let supported_methods = vec![SupportedMethod {
+            method: PaymentMethod::BOLT11.to_string(),
+            fee: Some(Amount::from(4)),
+        }];
+        let melt_methods = vec![melt_method(PaymentMethod::BOLT11, CurrencyUnit::Sat)];
+
+        let fee = payment_request_method_fee_from_melt_methods(
+            &supported_methods,
+            &melt_methods,
+            true,
+            &CurrencyUnit::Sat,
+        )
+        .expect("fee");
+
+        assert_eq!(fee, None);
+    }
+
+    fn payment_request(
+        unit: Option<CurrencyUnit>,
+        amount: Option<Amount>,
+        supported_methods: Vec<SupportedMethod>,
+    ) -> PaymentRequest {
+        PaymentRequest {
+            payment_id: None,
+            amount,
+            unit,
+            single_use: None,
+            mints: vec![],
+            mint_preferred: None,
+            supported_methods,
+            description: None,
+            transports: vec![],
+            nut10: None,
+        }
+    }
+
+    fn melt_method(method: PaymentMethod, unit: CurrencyUnit) -> MeltMethodSettings {
+        MeltMethodSettings {
+            method,
+            unit,
+            method_name: None,
+            min_amount: None,
+            max_amount: None,
+            options: None,
+        }
+    }
+}
+
+fn payment_request_unit(payment_request: &PaymentRequest) -> Result<CurrencyUnit, Error> {
+    match &payment_request.unit {
+        Some(unit) => Ok(unit.clone()),
+        None if payment_request.amount.is_none()
+            && payment_request.supported_methods.is_empty() =>
+        {
+            Ok(CurrencyUnit::Sat)
+        }
+        None => Err(Error::InvalidPaymentRequest),
+    }
+}
+
+fn payment_request_mint_list_is_strict(payment_request: &PaymentRequest) -> bool {
+    payment_request_mint_policy_is_strict(&payment_request.mints, payment_request.mint_preferred)
+}
+
+fn payment_request_mint_policy_is_strict(mints: &[MintUrl], mint_preferred: Option<bool>) -> bool {
+    !mints.is_empty() && mint_preferred != Some(true)
+}
+
+#[cfg(any(feature = "nostr", test))]
+fn payment_request_mint_policy_accepts_mint(
+    mints: &[MintUrl],
+    mint_preferred: Option<bool>,
+    mint_url: &MintUrl,
+) -> bool {
+    !payment_request_mint_policy_is_strict(mints, mint_preferred) || mints.contains(mint_url)
+}
+
+fn payment_request_uses_unlisted_mint(
+    payment_request: &PaymentRequest,
+    mint_url: &MintUrl,
+) -> bool {
+    !payment_request.mints.is_empty() && !payment_request.mints.contains(mint_url)
+}
+
+async fn payment_request_amount_for_wallet(
+    amount: Amount,
+    payment_request: &PaymentRequest,
+    wallet: &Wallet,
+    unit: &CurrencyUnit,
+) -> Result<Amount, Error> {
+    if payment_request_mint_list_is_strict(payment_request)
+        && payment_request_uses_unlisted_mint(payment_request, &wallet.mint_url)
+    {
+        return Err(Error::Custom(format!(
+            "Mint {} is not accepted by this payment request. Accepted mints: {:?}",
+            wallet.mint_url, payment_request.mints
+        )));
+    }
+
+    let method_fee = wallet_payment_request_method_fee(wallet, payment_request, unit)
+        .await?
+        .ok_or(Error::UnsupportedPaymentMethod)?;
+
+    if payment_request_method_fee_applies(payment_request, &wallet.mint_url) {
+        return amount.checked_add(method_fee).ok_or(Error::AmountOverflow);
+    }
+
+    Ok(amount)
+}
+
+fn payment_request_method_fee_applies(
+    payment_request: &PaymentRequest,
+    mint_url: &MintUrl,
+) -> bool {
+    payment_request.mints.is_empty() || !payment_request.mints.contains(mint_url)
+}
+
+async fn wallet_payment_request_method_fee(
+    wallet: &Wallet,
+    payment_request: &PaymentRequest,
+    unit: &CurrencyUnit,
+) -> Result<Option<Amount>, Error> {
+    if payment_request.supported_methods.is_empty() {
+        return Ok(Some(Amount::ZERO));
+    }
+
+    let mint_info = wallet.load_mint_info().await?;
+
+    payment_request_method_fee_from_melt_methods(
+        &payment_request.supported_methods,
+        &mint_info.nuts.nut05.methods,
+        mint_info.nuts.nut05.disabled,
+        unit,
+    )
+}
+
+fn payment_request_method_fee_from_melt_methods(
+    supported_methods: &[SupportedMethod],
+    melt_methods: &[MeltMethodSettings],
+    melting_disabled: bool,
+    unit: &CurrencyUnit,
+) -> Result<Option<Amount>, Error> {
+    if supported_methods.is_empty() {
+        return Ok(Some(Amount::ZERO));
+    }
+
+    if melting_disabled {
+        return Ok(None);
+    }
+
+    let requested_methods = supported_methods
+        .iter()
+        .map(|method| {
+            PaymentMethod::from_str(&method.method)
+                .map(|payment_method| (payment_method, method.fee.unwrap_or(Amount::ZERO)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut lowest_fee: Option<Amount> = None;
+    for (method, fee) in requested_methods {
+        let melt_supports_method = melt_methods
+            .iter()
+            .any(|settings| settings.unit == *unit && settings.method == method);
+
+        if melt_supports_method {
+            lowest_fee = match lowest_fee {
+                Some(current) if current <= fee => Some(current),
+                _ => Some(fee),
+            };
+        }
+    }
+
+    Ok(lowest_fee)
+}
+
 /// Parameters for creating a PaymentRequest
 ///
 /// This mirrors the CLI inputs and is used by `create_request` to build a
@@ -218,6 +572,27 @@ pub struct CreateRequestParams {
     pub nostr_relays: Option<Vec<String>>, // when transport == nostr
     /// Optional list of mint URLs the receiver trusts. If not provided, the wallet's current mints for the requested unit will be used.
     pub mints: Option<Vec<String>>,
+    /// Whether the mint list is preferred rather than required
+    pub mint_preferred: Option<bool>,
+}
+
+impl Default for CreateRequestParams {
+    fn default() -> Self {
+        Self {
+            amount: None,
+            unit: "sat".to_string(),
+            description: None,
+            pubkeys: None,
+            num_sigs: 1,
+            hash: None,
+            preimage: None,
+            transport: "none".to_string(),
+            http_url: None,
+            nostr_relays: None,
+            mints: None,
+            mint_preferred: None,
+        }
+    }
 }
 
 /// Extra information needed to wait for an incoming Nostr payment
@@ -234,6 +609,10 @@ pub struct NostrWaitInfo {
     pub relays: Vec<String>,
     /// The recipient public key to subscribe to for incoming events
     pub pubkey: nostr_sdk::PublicKey,
+    /// Mint URLs accepted or preferred by the original payment request
+    pub mints: Vec<MintUrl>,
+    /// Whether the original request's mint list is preferred instead of strict
+    pub mint_preferred: Option<bool>,
 }
 
 impl WalletRepository {
@@ -265,6 +644,7 @@ impl WalletRepository {
         mint_url: Option<MintUrl>,
         custom_amount: Option<Amount>,
     ) -> Result<(), Error> {
+        let unit = payment_request_unit(&payment_request)?;
         let amount = match payment_request.amount {
             Some(amount) => amount,
             None => match custom_amount {
@@ -275,14 +655,14 @@ impl WalletRepository {
 
         // Get the list of mints accepted by the payment request (empty means any mint is accepted)
         let accepted_mints = &payment_request.mints;
-
-        // Get the unit from the payment request, defaulting to Sat
-        let unit = payment_request.unit.clone().unwrap_or(CurrencyUnit::Sat);
+        let mint_list_is_preferred = payment_request.mint_preferred == Some(true);
 
         // Select the wallet to use for payment
         let selected_wallet = if let Some(specified_mint) = &mint_url {
-            // User specified a mint - verify it's accepted by the payment request
-            if !accepted_mints.is_empty() && !accepted_mints.contains(specified_mint) {
+            // User specified a mint - verify it's accepted by strict payment requests.
+            if payment_request_mint_list_is_strict(&payment_request)
+                && !accepted_mints.contains(specified_mint)
+            {
                 return Err(Error::Custom(format!(
                     "Mint {} is not accepted by this payment request. Accepted mints: {:?}",
                     specified_mint, accepted_mints
@@ -294,8 +674,10 @@ impl WalletRepository {
         } else {
             // No mint specified - find the best matching mint with highest balance
             let balances = self.get_balances().await?;
-            let mut best_wallet: Option<Arc<Wallet>> = None;
-            let mut best_balance = Amount::ZERO;
+            let mut best_preferred_wallet: Option<Arc<Wallet>> = None;
+            let mut best_preferred_balance = Amount::ZERO;
+            let mut best_fallback_wallet: Option<Arc<Wallet>> = None;
+            let mut best_fallback_balance = Amount::ZERO;
 
             for (wallet_key, balance) in balances.iter() {
                 // Only consider wallets with matching unit
@@ -303,24 +685,62 @@ impl WalletRepository {
                     continue;
                 }
 
-                // Check if this mint is accepted by the payment request
-                let is_accepted =
+                let mint_is_listed =
                     accepted_mints.is_empty() || accepted_mints.contains(&wallet_key.mint_url);
 
-                if !is_accepted {
+                if !mint_is_listed && !mint_list_is_preferred {
                     continue;
                 }
 
-                // Check balance meets requirements and is best so far
-                if *balance >= amount && *balance > best_balance {
-                    if let Ok(wallet) = self.get_wallet(&wallet_key.mint_url, &unit).await {
-                        best_balance = *balance;
-                        best_wallet = Some(Arc::new(wallet));
+                let wallet = match self.get_wallet(&wallet_key.mint_url, &unit).await {
+                    Ok(wallet) => wallet,
+                    Err(err) => {
+                        tracing::warn!(
+                            "Skipping mint {} while selecting a payment-request wallet: {}",
+                            wallet_key.mint_url,
+                            err
+                        );
+                        continue;
                     }
+                };
+
+                let required_amount = match payment_request_amount_for_wallet(
+                    amount,
+                    &payment_request,
+                    &wallet,
+                    &unit,
+                )
+                .await
+                {
+                    Ok(required_amount) => required_amount,
+                    Err(err) => {
+                        tracing::warn!(
+                            "Skipping mint {} after its payment-method probe failed: {}",
+                            wallet_key.mint_url,
+                            err
+                        );
+                        continue;
+                    }
+                };
+
+                // Check balance meets requirements and is best so far
+                if *balance < required_amount {
+                    continue;
+                }
+
+                if mint_is_listed {
+                    if *balance > best_preferred_balance {
+                        best_preferred_balance = *balance;
+                        best_preferred_wallet = Some(Arc::new(wallet));
+                    }
+                } else if *balance > best_fallback_balance {
+                    best_fallback_balance = *balance;
+                    best_fallback_wallet = Some(Arc::new(wallet));
                 }
             }
 
-            best_wallet
+            best_preferred_wallet
+                .or(best_fallback_wallet)
                 .map(|w| (*w).clone())
                 .ok_or(Error::InsufficientFunds)?
         };
@@ -512,6 +932,8 @@ impl WalletRepository {
                             keys,
                             relays,
                             pubkey: nprofile.public_key,
+                            mints: mints.clone(),
+                            mint_preferred: params.mint_preferred,
                         }),
                     )
                 }
@@ -542,6 +964,8 @@ impl WalletRepository {
             unit: Some(CurrencyUnit::from_str(&params.unit)?),
             single_use: Some(true),
             mints,
+            mint_preferred: params.mint_preferred,
+            supported_methods: vec![],
             description: params.description,
             transports,
             nut10,
@@ -611,6 +1035,8 @@ impl WalletRepository {
             unit: Some(CurrencyUnit::from_str(&params.unit)?),
             single_use: Some(true),
             mints,
+            mint_preferred: params.mint_preferred,
+            supported_methods: vec![],
             description: params.description,
             transports,
             nut10,
@@ -630,6 +1056,8 @@ impl WalletRepository {
             keys,
             relays,
             pubkey,
+            mints,
+            mint_preferred,
         } = info;
 
         let mut stream = NostrPaymentEventStream::new(keys, relays, pubkey);
@@ -641,6 +1069,14 @@ impl WalletRepository {
         while let Some(item) = stream.next().await {
             match item {
                 Ok(payload) => {
+                    if !payment_request_mint_policy_accepts_mint(
+                        &mints,
+                        mint_preferred,
+                        &payload.mint,
+                    ) {
+                        continue;
+                    }
+
                     let token = crate::nuts::Token::new(
                         payload.mint.clone(),
                         payload.proofs,
@@ -687,6 +1123,8 @@ impl WalletRepository {
             keys,
             relays,
             pubkey,
+            mints,
+            mint_preferred,
         } = info;
 
         let client = nostr_sdk::Client::new(keys);
@@ -716,6 +1154,14 @@ impl WalletRepository {
                         let rumor = unwrapped.rumor;
                         match serde_json::from_str::<PaymentRequestPayload>(&rumor.content) {
                             Ok(payload) => {
+                                if !payment_request_mint_policy_accepts_mint(
+                                    &mints,
+                                    mint_preferred,
+                                    &payload.mint,
+                                ) {
+                                    continue;
+                                }
+
                                 let token = crate::nuts::Token::new(
                                     payload.mint.clone(),
                                     payload.proofs,
