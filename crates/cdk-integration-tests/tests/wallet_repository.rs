@@ -474,6 +474,78 @@ async fn test_wallet_repository_get_balances() {
     assert_eq!(total, 100.into(), "Total balance should match");
 }
 
+/// Test get_balances_for_unit() filters correctly by currency unit
+///
+/// Regression test for issue #2323: send, melt, and transfer commands don't
+/// filter mint selection by currency unit.
+///
+/// This test verifies:
+/// 1. get_balances_for_unit returns only wallets matching the requested unit
+/// 2. When filtering by a unit with no wallets, the result is empty
+/// 3. The filtered result excludes wallets of other units
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_wallet_repository_get_balances_for_unit() {
+    let wallet_repository = create_test_wallet_repository().await;
+
+    let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
+
+    // Add a second mint (also Sat unit) to verify multiple wallets are returned
+    let second_mint_url = MintUrl::from_str("http://second-mint.example.com:3338/v1")
+        .expect("invalid second mint url");
+
+    wallet_repository
+        .add_wallet(mint_url.clone())
+        .await
+        .expect("failed to add first mint");
+    wallet_repository
+        .add_wallet(second_mint_url.clone())
+        .await
+        .expect("failed to add second mint");
+
+    // Fund the first mint only
+    fund_wallet_repository(&wallet_repository, &mint_url, 100.into()).await;
+
+    // get_balances_for_unit(Sat) should return both wallets (one funded, one zero)
+    let sat_balances = wallet_repository
+        .get_balances_for_unit(&CurrencyUnit::Sat)
+        .await
+        .expect("get_balances_for_unit failed");
+
+    assert_eq!(sat_balances.len(), 2, "Should have 2 Sat wallets");
+    assert_eq!(
+        sat_balances
+            .get(&WalletKey::new(mint_url.clone(), CurrencyUnit::Sat))
+            .cloned()
+            .unwrap_or(Amount::ZERO),
+        100.into(),
+        "First mint should have 100 sats"
+    );
+    assert_eq!(
+        sat_balances
+            .get(&WalletKey::new(second_mint_url.clone(), CurrencyUnit::Sat))
+            .cloned()
+            .unwrap_or(Amount::ZERO),
+        Amount::ZERO,
+        "Second mint should have 0 sats"
+    );
+
+    // get_balances_for_unit(Msat) should return empty (no Msat wallets exist)
+    let msat_balances = wallet_repository
+        .get_balances_for_unit(&CurrencyUnit::Msat)
+        .await
+        .expect("get_balances_for_unit failed");
+
+    assert!(msat_balances.is_empty(), "Should have no Msat wallets");
+
+    // get_balances() should still return all wallets (backward compat)
+    let all_balances = wallet_repository.get_balances().await.unwrap();
+    assert_eq!(
+        all_balances.len(),
+        2,
+        "get_balances() should return all 2 wallets"
+    );
+}
+
 /// Test list_proofs() function
 ///
 /// This test verifies:
