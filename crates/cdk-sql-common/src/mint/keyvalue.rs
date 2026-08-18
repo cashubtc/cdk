@@ -44,6 +44,23 @@ where
         .await
     }
 
+    async fn kv_write_if_absent(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+        value: &[u8],
+    ) -> Result<bool, Error> {
+        crate::keyvalue::kv_write_if_absent_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+            value,
+        )
+        .await
+    }
+
     async fn kv_remove(
         &mut self,
         primary_namespace: &str,
@@ -55,6 +72,25 @@ where
             primary_namespace,
             secondary_namespace,
             key,
+        )
+        .await
+    }
+
+    async fn kv_write_if_equals(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+        expected: &[u8],
+        replacement: &[u8],
+    ) -> Result<bool, Error> {
+        crate::keyvalue::kv_write_if_equals_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+            key,
+            expected,
+            replacement,
         )
         .await
     }
