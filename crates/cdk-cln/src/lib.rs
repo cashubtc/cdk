@@ -48,6 +48,10 @@ const CLN_KV_SECONDARY_NAMESPACE: &str = "payment_indices";
 const CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE: &str = "bolt12_outgoing_payments";
 const CLN_KV_BOLT12_CLEANUP_MARKER: &[u8] = b"cleanup-in-progress";
 const LAST_PAY_INDEX_KV_KEY: &str = "last_pay_index";
+const XPAY_DESTINATION_PERMANENT_FAILURE_ERROR_CODE: i32 = 203;
+const XPAY_ROUTE_NOT_FOUND_ERROR_CODE: i32 = 205;
+const XPAY_ROUTE_TOO_EXPENSIVE_ERROR_CODE: i32 = 206;
+const XPAY_INVOICE_EXPIRED_ERROR_CODE: i32 = 207;
 
 /// CLN mint backend
 #[derive(Clone)]
@@ -563,16 +567,61 @@ impl MintPayment for Cln {
                     .convert_to(unit)?,
             },
             Err(err) => {
-                tracing::error!("Could not pay invoice with xpay: {}", err);
-                if let Some((quote_id, payment_hash)) = &bolt12_binding {
-                    match self
-                        .bolt12_binding_may_be_live_after_xpay_error(
-                            &mut cln_client,
-                            payment_hash,
-                            &err,
-                        )
-                        .await
+                tracing::warn!("xpay returned an error: {}", err);
+
+                // Reconcile BOLT12 payments by hash so a failed observation does
+                // not release the quote binding before the xpay error itself has
+                // been classified.
+                let reconciliation_payment_identifier = match &bolt12_binding {
+                    Some((_, payment_hash)) => PaymentIdentifier::Bolt12PaymentHash(*payment_hash),
+                    None => payment_lookup_id.clone(),
+                };
+
+                let (observed_state, response) = match self
+                    .check_outgoing_payment(&reconciliation_payment_identifier)
+                    .await
+                {
+                    Ok(observed_response)
+                        if matches!(
+                            observed_response.status,
+                            MeltQuoteState::Paid | MeltQuoteState::Pending
+                        ) =>
                     {
+                        (
+                            Some(observed_response.status),
+                            MakePaymentResponse {
+                                payment_lookup_id: payment_lookup_id.clone(),
+                                ..observed_response
+                            },
+                        )
+                    }
+                    Ok(observed_response) => {
+                        let observed_state = Some(observed_response.status);
+                        (
+                            observed_state,
+                            outgoing_payment_response_with_status(
+                                &payment_lookup_id,
+                                xpay_error_state(&err, observed_state),
+                            ),
+                        )
+                    }
+                    Err(status_err) => {
+                        tracing::warn!(
+                            "Could not reconcile xpay error with listpays: {}",
+                            status_err
+                        );
+                        (
+                            None,
+                            outgoing_payment_response_with_status(
+                                &payment_lookup_id,
+                                xpay_error_state(&err, None),
+                            ),
+                        )
+                    }
+                };
+
+                if let Some((quote_id, payment_hash)) = &bolt12_binding {
+                    match should_retain_bolt12_binding_after_xpay_error(&err, observed_state) {
                         true => {
                             tracing::warn!(
                                 quote_id = %quote_id,
@@ -587,7 +636,8 @@ impl MintPayment for Cln {
                         }
                     }
                 }
-                return Err(Error::ClnRpc(err).into());
+
+                response
             }
         };
 
@@ -974,46 +1024,6 @@ impl Cln {
         }
     }
 
-    /// Reconciles a coded `xpay` error with CLN's durable payment records.
-    ///
-    /// Transport and response-decoding errors are ambiguous without another
-    /// RPC round trip, so their bindings are retained. For a coded error, the
-    /// binding is released only when `listpays` has no pending or completed
-    /// payment. A failed reconciliation is also treated as ambiguous.
-    async fn bolt12_binding_may_be_live_after_xpay_error(
-        &self,
-        cln_client: &mut ClnRpc,
-        payment_hash: &[u8; 32],
-        xpay_error: &cln_rpc::RpcError,
-    ) -> bool {
-        if xpay_error.code.is_none() {
-            return true;
-        }
-
-        match cln_client
-            .call_typed(&ListpaysRequest {
-                payment_hash: Some(*Sha256::from_bytes_ref(payment_hash)),
-                bolt11: None,
-                status: None,
-                start: None,
-                index: None,
-                limit: None,
-            })
-            .await
-        {
-            Ok(response) => {
-                should_retain_bolt12_binding_after_xpay_error(xpay_error, Some(&response.pays))
-            }
-            Err(err) => {
-                tracing::warn!(
-                    payment_hash = %hex::encode(payment_hash),
-                    "Could not query listpays after BOLT12 xpay error: {err}"
-                );
-                true
-            }
-        }
-    }
-
     /// Atomically removes the binding only if it still names `payment_hash`.
     async fn delete_bolt12_quote_payment_hash_if_equals(
         &self,
@@ -1212,21 +1222,13 @@ enum Bolt12QuotePaymentHashLookup {
     Malformed,
 }
 
-/// Whether an `xpay` error and the reconciled CLN payment records require the
+/// Whether an `xpay` error and the reconciled CLN payment state require the
 /// BOLT12 quote binding to be retained.
 fn should_retain_bolt12_binding_after_xpay_error(
     xpay_error: &cln_rpc::RpcError,
-    payments: Option<&[ListpaysPays]>,
+    observed_state: Option<MeltQuoteState>,
 ) -> bool {
-    xpay_error.code.is_none()
-        || payments.is_none_or(|payments| {
-            payments.iter().any(|payment| {
-                matches!(
-                    payment.status,
-                    ListpaysPaysStatus::PENDING | ListpaysPaysStatus::COMPLETE
-                )
-            })
-        })
+    xpay_error_state(xpay_error, observed_state) != MeltQuoteState::Failed
 }
 
 fn cln_pays_status_to_mint_state(status: ListpaysPaysStatus) -> MeltQuoteState {
@@ -1315,6 +1317,35 @@ fn outgoing_payment_response_with_status(
     }
 }
 
+fn xpay_error_state(
+    error: &cln_rpc::RpcError,
+    observed_state: Option<MeltQuoteState>,
+) -> MeltQuoteState {
+    // listpays aggregates attempts by payment hash, so a negative or missing
+    // record cannot prove what happened to this specific xpay invocation. Only
+    // positive evidence (Paid/Pending) may override the RPC result. Explicit
+    // terminal xpay errors prove that this invocation cannot settle even when
+    // no send attempt was created and listpays has no row.
+    match observed_state {
+        Some(MeltQuoteState::Paid) => MeltQuoteState::Paid,
+        Some(MeltQuoteState::Pending) => MeltQuoteState::Pending,
+        _ if xpay_error_is_explicit_terminal_failure(error) => MeltQuoteState::Failed,
+        _ => MeltQuoteState::Unknown,
+    }
+}
+
+fn xpay_error_is_explicit_terminal_failure(error: &cln_rpc::RpcError) -> bool {
+    matches!(
+        error.code,
+        Some(
+            XPAY_DESTINATION_PERMANENT_FAILURE_ERROR_CODE
+                | XPAY_ROUTE_NOT_FOUND_ERROR_CODE
+                | XPAY_ROUTE_TOO_EXPENSIVE_ERROR_CODE
+                | XPAY_INVOICE_EXPIRED_ERROR_CODE
+        )
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap};
@@ -1328,6 +1359,8 @@ mod tests {
     use cdk_common::payment::Bolt11OutgoingPaymentOptions;
 
     use super::*;
+
+    const XPAY_ALREADY_PAID_ERROR_CODE: i32 = 219;
 
     type MemoryKvKey = (String, String, String);
 
@@ -1346,6 +1379,14 @@ mod tests {
         DatabaseError::Database(Box::new(std::io::Error::other(
             "memory kv store lock poisoned",
         )))
+    }
+
+    fn test_rpc_error(code: Option<i32>) -> cln_rpc::RpcError {
+        cln_rpc::RpcError {
+            code,
+            message: "xpay failed".to_string(),
+            data: None,
+        }
     }
 
     fn memory_kv_key(primary_namespace: &str, secondary_namespace: &str, key: &str) -> MemoryKvKey {
@@ -1865,7 +1906,7 @@ mod tests {
     }
 
     #[test]
-    fn xpay_error_reconciliation_retains_ambiguous_bindings() {
+    fn xpay_error_classification_controls_bolt12_binding_retention() {
         let transport_error = cln_rpc::RpcError {
             code: None,
             message: "no response from lightningd".to_string(),
@@ -1881,33 +1922,43 @@ mod tests {
             message: "invoice already paid".to_string(),
             data: None,
         };
-        let pending = [test_listpays_payment(1, ListpaysPaysStatus::PENDING)];
-        let complete = [test_listpays_payment(2, ListpaysPaysStatus::COMPLETE)];
-        let failed = [test_listpays_payment(3, ListpaysPaysStatus::FAILED)];
+        let no_route_error = cln_rpc::RpcError {
+            code: Some(XPAY_ROUTE_NOT_FOUND_ERROR_CODE),
+            message: "could not find a route".to_string(),
+            data: None,
+        };
 
         assert!(should_retain_bolt12_binding_after_xpay_error(
             &transport_error,
-            Some(&failed)
+            Some(MeltQuoteState::Failed)
         ));
         assert!(should_retain_bolt12_binding_after_xpay_error(
             &coded_error,
             None
         ));
+        assert!(!should_retain_bolt12_binding_after_xpay_error(
+            &no_route_error,
+            None
+        ));
         assert!(should_retain_bolt12_binding_after_xpay_error(
             &coded_error,
-            Some(&pending)
+            Some(MeltQuoteState::Unknown)
+        ));
+        assert!(should_retain_bolt12_binding_after_xpay_error(
+            &coded_error,
+            Some(MeltQuoteState::Pending)
         ));
         assert!(should_retain_bolt12_binding_after_xpay_error(
             &already_paid_error,
-            Some(&complete)
+            Some(MeltQuoteState::Paid)
         ));
-        assert!(!should_retain_bolt12_binding_after_xpay_error(
+        assert!(should_retain_bolt12_binding_after_xpay_error(
             &coded_error,
-            Some(&failed)
+            Some(MeltQuoteState::Failed)
         ));
-        assert!(!should_retain_bolt12_binding_after_xpay_error(
+        assert!(should_retain_bolt12_binding_after_xpay_error(
             &coded_error,
-            Some(&[])
+            Some(MeltQuoteState::Unpaid)
         ));
     }
 
@@ -1936,6 +1987,82 @@ mod tests {
     #[test]
     fn cln_payment_selection_returns_none_when_missing() {
         assert!(select_cln_payment(&[]).is_none());
+    }
+
+    #[test]
+    fn xpay_explicit_terminal_errors_do_not_require_payment_record() {
+        for code in [
+            XPAY_DESTINATION_PERMANENT_FAILURE_ERROR_CODE,
+            XPAY_ROUTE_NOT_FOUND_ERROR_CODE,
+            XPAY_ROUTE_TOO_EXPENSIVE_ERROR_CODE,
+            XPAY_INVOICE_EXPIRED_ERROR_CODE,
+        ] {
+            assert_eq!(
+                xpay_error_state(&test_rpc_error(Some(code)), None),
+                MeltQuoteState::Failed
+            );
+            assert_eq!(
+                xpay_error_state(&test_rpc_error(Some(code)), Some(MeltQuoteState::Unknown)),
+                MeltQuoteState::Failed
+            );
+            assert_eq!(
+                xpay_error_state(&test_rpc_error(Some(code)), Some(MeltQuoteState::Failed)),
+                MeltQuoteState::Failed
+            );
+        }
+    }
+
+    #[test]
+    fn xpay_nonspecific_rpc_errors_ignore_negative_reconciliation() {
+        for code in [-1, 209] {
+            assert_eq!(
+                xpay_error_state(&test_rpc_error(Some(code)), None),
+                MeltQuoteState::Unknown
+            );
+            assert_eq!(
+                xpay_error_state(&test_rpc_error(Some(code)), Some(MeltQuoteState::Unknown)),
+                MeltQuoteState::Unknown
+            );
+            assert_eq!(
+                xpay_error_state(&test_rpc_error(Some(code)), Some(MeltQuoteState::Failed)),
+                MeltQuoteState::Unknown
+            );
+            assert_eq!(
+                xpay_error_state(&test_rpc_error(Some(code)), Some(MeltQuoteState::Unpaid)),
+                MeltQuoteState::Unknown
+            );
+        }
+    }
+
+    #[test]
+    fn xpay_transport_and_already_paid_errors_are_ambiguous() {
+        assert_eq!(
+            xpay_error_state(&test_rpc_error(None), None),
+            MeltQuoteState::Unknown
+        );
+        assert_eq!(
+            xpay_error_state(&test_rpc_error(Some(XPAY_ALREADY_PAID_ERROR_CODE)), None),
+            MeltQuoteState::Unknown
+        );
+        assert_eq!(
+            xpay_error_state(&test_rpc_error(None), Some(MeltQuoteState::Failed)),
+            MeltQuoteState::Unknown
+        );
+    }
+
+    #[test]
+    fn xpay_positive_reconciliation_takes_precedence() {
+        let transport_error = test_rpc_error(None);
+        let terminal_rpc_error = test_rpc_error(Some(XPAY_ROUTE_NOT_FOUND_ERROR_CODE));
+
+        assert_eq!(
+            xpay_error_state(&transport_error, Some(MeltQuoteState::Paid)),
+            MeltQuoteState::Paid
+        );
+        assert_eq!(
+            xpay_error_state(&terminal_rpc_error, Some(MeltQuoteState::Pending)),
+            MeltQuoteState::Pending
+        );
     }
 
     #[tokio::test]
