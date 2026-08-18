@@ -39,6 +39,34 @@ use tokio_util::sync::CancellationToken;
 
 const LDK_NODE_P2P_PORT_OFFSET: u16 = 10;
 
+struct RegtestMnemonics {
+    cln_mint: Mnemonic,
+    cln_bdk: Mnemonic,
+    lnd_mint: Mnemonic,
+    lnd_bdk: Mnemonic,
+    ldk_mint: Mnemonic,
+    ldk_bdk: Mnemonic,
+    ldk_node: Mnemonic,
+    onchain_mint: Mnemonic,
+    onchain_bdk: Mnemonic,
+}
+
+impl RegtestMnemonics {
+    fn generate() -> Result<Self> {
+        Ok(Self {
+            cln_mint: Mnemonic::generate(12)?,
+            cln_bdk: Mnemonic::generate(12)?,
+            lnd_mint: Mnemonic::generate(12)?,
+            lnd_bdk: Mnemonic::generate(12)?,
+            ldk_mint: Mnemonic::generate(12)?,
+            ldk_bdk: Mnemonic::generate(12)?,
+            ldk_node: Mnemonic::generate(12)?,
+            onchain_mint: Mnemonic::generate(12)?,
+            onchain_bdk: Mnemonic::generate(12)?,
+        })
+    }
+}
+
 fn derive_ldk_node_p2p_port(ldk_port: u16) -> Result<u16> {
     match ldk_port.checked_add(LDK_NODE_P2P_PORT_OFFSET) {
         Some(port) => Ok(port),
@@ -86,6 +114,8 @@ async fn start_cln_mint(
     port: u16,
     database_type: &str,
     shutdown: Arc<Notify>,
+    mint_mnemonic: &Mnemonic,
+    bdk_mnemonic: &Mnemonic,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let cln_rpc_path = temp_dir
         .join("cln")
@@ -109,11 +139,11 @@ async fn start_cln_mint(
             .join("one")
             .join("regtest")
             .join("lightning-rpc"),
-        "eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal".to_string(),
+        mint_mnemonic.to_string(),
         cln_config,
     );
 
-    apply_onchain_settings(&mut settings);
+    apply_onchain_settings(&mut settings, bdk_mnemonic);
     apply_database_settings(&mut settings, database_type, port)?;
 
     println!("Starting CLN mintd on port {port}");
@@ -153,6 +183,8 @@ async fn start_lnd_mint(
     port: u16,
     database_type: &str,
     shutdown: Arc<Notify>,
+    mint_mnemonic: &Mnemonic,
+    bdk_mnemonic: &Mnemonic,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let lnd_cert_file = temp_dir.join("lnd").join("two").join("tls.cert");
     let lnd_macaroon_file = temp_dir
@@ -177,13 +209,9 @@ async fn start_lnd_mint(
     };
 
     // Create settings struct for LND mint using shared function
-    let mut settings = shared::create_lnd_settings(
-        port,
-        lnd_config,
-        "cattle gold bind busy sound reduce tone addict baby spend february strategy".to_string(),
-    );
+    let mut settings = shared::create_lnd_settings(port, lnd_config, mint_mnemonic.to_string());
 
-    apply_onchain_settings(&mut settings);
+    apply_onchain_settings(&mut settings, bdk_mnemonic);
     apply_database_settings(&mut settings, database_type, port)?;
 
     println!("Starting LND mintd on port {port}");
@@ -224,6 +252,7 @@ async fn start_ldk_mint(
     database_type: &str,
     shutdown: Arc<Notify>,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    mnemonics: &RegtestMnemonics,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let ldk_work_dir = temp_dir.join("ldk_mint");
     let ldk_node_p2p_port = derive_ldk_node_p2p_port(port)?;
@@ -253,16 +282,13 @@ async fn start_ldk_mint(
         rgs_url: None,
         webserver_host: Some("127.0.0.1".to_string()),
         webserver_port: Some(port + 1), // Use next port for web interface
-        ldk_node_mnemonic: Some(
-            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-                .to_string(),
-        ),
+        ldk_node_mnemonic: Some(mnemonics.ldk_node.to_string()),
     };
 
     // Create settings struct for LDK mint using a new shared function
-    let mut settings = create_ldk_settings(port, ldk_config);
+    let mut settings = create_ldk_settings(port, ldk_config, &mnemonics.ldk_mint);
 
-    apply_onchain_settings(&mut settings);
+    apply_onchain_settings(&mut settings, &mnemonics.ldk_bdk);
     apply_database_settings(&mut settings, database_type, port)?;
 
     println!("Starting LDK mintd on port {port}");
@@ -434,6 +460,7 @@ async fn wait_for_ldk_bolt12_ready(
 fn create_ldk_settings(
     port: u16,
     ldk_config: cdk_mintd::config::LdkNode,
+    mint_mnemonic: &Mnemonic,
 ) -> cdk_mintd::config::Settings {
     cdk_mintd::config::Settings {
         info: cdk_mintd::config::Info {
@@ -442,10 +469,7 @@ fn create_ldk_settings(
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,
             seed: None,
-            mnemonic: Some(
-                "eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
-                    .to_string(),
-            ),
+            mnemonic: Some(mint_mnemonic.to_string()),
             input_fee_ppk: None,
             use_keyset_v2: None,
             http_cache: cdk_axum::cache::Config::default(),
@@ -472,7 +496,7 @@ fn create_ldk_settings(
     }
 }
 
-fn apply_onchain_settings(settings: &mut cdk_mintd::config::Settings) {
+fn apply_onchain_settings(settings: &mut cdk_mintd::config::Settings, bdk_mnemonic: &Mnemonic) {
     settings.onchain = Some(cdk_mintd::config::Onchain {
         onchain_backend: cdk_mintd::config::OnchainBackend::Bdk,
         min_mint: 1.into(),
@@ -481,10 +505,7 @@ fn apply_onchain_settings(settings: &mut cdk_mintd::config::Settings) {
         max_melt: 500_000.into(),
     });
     settings.bdk = Some(cdk_mintd::config::Bdk {
-        mnemonic: Some(
-            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-                .to_string(),
-        ),
+        mnemonic: Some(bdk_mnemonic.to_string()),
         network: Some("regtest".to_string()),
         bitcoind_rpc_host: Some("127.0.0.1".to_string()),
         bitcoind_rpc_port: Some(18443),
@@ -541,7 +562,7 @@ fn signal_mints_ready(temp_dir: &Path) -> Result<()> {
 }
 
 /// Create settings for an onchain-only mint
-fn create_onchain_settings(port: u16) -> cdk_mintd::config::Settings {
+fn create_onchain_settings(port: u16, mint_mnemonic: &Mnemonic) -> cdk_mintd::config::Settings {
     cdk_mintd::config::Settings {
         info: cdk_mintd::config::Info {
             quote_ttl: None,
@@ -549,10 +570,7 @@ fn create_onchain_settings(port: u16) -> cdk_mintd::config::Settings {
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,
             seed: None,
-            mnemonic: Some(
-                "eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
-                    .to_string(),
-            ),
+            mnemonic: Some(mint_mnemonic.to_string()),
             input_fee_ppk: None,
             use_keyset_v2: None,
             http_cache: cdk_axum::cache::Config::default(),
@@ -576,9 +594,11 @@ async fn start_onchain_mint(
     port: u16,
     database_type: &str,
     shutdown: Arc<Notify>,
+    mint_mnemonic: &Mnemonic,
+    bdk_mnemonic: &Mnemonic,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    let mut settings = create_onchain_settings(port);
-    apply_onchain_settings(&mut settings);
+    let mut settings = create_onchain_settings(port, mint_mnemonic);
+    apply_onchain_settings(&mut settings, bdk_mnemonic);
     apply_database_settings(&mut settings, database_type, port)?;
 
     println!("Starting onchain-only mintd on port {port}");
@@ -623,6 +643,7 @@ fn main() -> Result<()> {
         shared::setup_logging(&args.common);
 
         let temp_dir = shared::init_working_directory(&args.work_dir)?;
+        let mnemonics = RegtestMnemonics::generate()?;
 
         // Write environment variables to a .env file in the temp_dir
         let mint_url_1 = format!("http://{}:{}", args.mint_addr, args.cln_port);
@@ -649,15 +670,9 @@ fn main() -> Result<()> {
             let temp_dir_clone = temp_dir.clone();
             let shutdown_clone_two = Arc::clone(&shutdown_clone);
             tokio::spawn(async move {
-                start_regtest_end(
-                    &temp_dir_clone,
-                    tx,
-                    shutdown_clone_two,
-                    None,
-                    args.skip_ln,
-                )
-                .await
-                .expect("Error starting regtest");
+                start_regtest_end(&temp_dir_clone, tx, shutdown_clone_two, None, args.skip_ln)
+                    .await
+                    .expect("Error starting regtest");
             });
 
             match timeout(Duration::from_secs(300), rx).await {
@@ -676,6 +691,8 @@ fn main() -> Result<()> {
                 args.cln_port,
                 &args.database_type,
                 shutdown_clone.clone(),
+                &mnemonics.onchain_mint,
+                &mnemonics.onchain_bdk,
             )
             .await?;
 
@@ -712,9 +729,6 @@ fn main() -> Result<()> {
         let ldk_work_dir = temp_dir.join("ldk_mint");
         fs::create_dir_all(ldk_work_dir.join("logs"))?;
         let ldk_node_p2p_port = derive_ldk_node_p2p_port(args.ldk_port)?;
-        let test_mnemonic: Mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-            .parse()
-            .expect("Failed to parse test mnemonic");
         let node_builder = CdkLdkNodeBuilder::new(
             bitcoin::Network::Regtest,
             cdk_ldk_node::ChainSource::BitcoinRpc(cdk_ldk_node::BitcoinRpcConfig {
@@ -735,7 +749,7 @@ fn main() -> Result<()> {
             }],
             std::sync::Arc::new(cdk_sqlite::mint::memory::empty().await?),
         )
-        .with_seed(test_mnemonic.clone());
+        .with_seed(mnemonics.ldk_node.clone());
         let cdk_ldk = match node_builder.build() {
             Ok(node) => node,
             Err(e) => {
@@ -769,7 +783,7 @@ fn main() -> Result<()> {
                     }],
                     std::sync::Arc::new(cdk_sqlite::mint::memory::empty().await?),
                 )
-                .with_seed(test_mnemonic);
+                .with_seed(mnemonics.ldk_node.clone());
 
                 node_builder.build()?
             }
@@ -809,9 +823,15 @@ fn main() -> Result<()> {
         }
 
         // Start LND mint
-        let lnd_handle =
-            start_lnd_mint(&temp_dir, args.lnd_port, &args.database_type, shutdown_clone.clone())
-                .await?;
+        let lnd_handle = start_lnd_mint(
+            &temp_dir,
+            args.lnd_port,
+            &args.database_type,
+            shutdown_clone.clone(),
+            &mnemonics.lnd_mint,
+            &mnemonics.lnd_bdk,
+        )
+        .await?;
 
         // Start LDK mint from the node storage that was set up with channels.
         let ldk_handle = start_ldk_mint(
@@ -820,13 +840,20 @@ fn main() -> Result<()> {
             &args.database_type,
             shutdown_clone.clone(),
             Some(rt_clone),
+            &mnemonics,
         )
         .await?;
 
         // Start CLN mint
-        let cln_handle =
-            start_cln_mint(&temp_dir, args.cln_port, &args.database_type, shutdown_clone.clone())
-                .await?;
+        let cln_handle = start_cln_mint(
+            &temp_dir,
+            args.cln_port,
+            &args.database_type,
+            shutdown_clone.clone(),
+            &mnemonics.cln_mint,
+            &mnemonics.cln_bdk,
+        )
+        .await?;
 
         let cancel_token = Arc::new(CancellationToken::new());
 
