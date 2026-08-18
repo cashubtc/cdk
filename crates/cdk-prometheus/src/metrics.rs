@@ -381,6 +381,16 @@ impl CdkMetrics {
         self.db_connections_active.set(count);
     }
 
+    /// Increment the number of active database connections.
+    pub fn increment_db_connections_active(&self) {
+        self.db_connections_active.inc();
+    }
+
+    /// Decrement the number of active database connections.
+    pub fn decrement_db_connections_active(&self) {
+        self.db_connections_active.dec();
+    }
+
     // Error metrics methods
     /// Record an error
     pub fn record_error(&self) {
