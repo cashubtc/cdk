@@ -956,30 +956,12 @@
         pgShellHook = ''
           # PostgreSQL environment variables
           export CDK_MINTD_DATABASE_URL="postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
-
-          # Informational banner goes to stderr so it never corrupts the stdout of
-          # commands run via `nix develop --command ... > file` (e.g. CI schema dumps).
-          echo "" >&2
-          echo "PostgreSQL commands available:" >&2
-          echo "  start-postgres  - Initialize and start PostgreSQL" >&2
-          echo "  stop-postgres   - Stop PostgreSQL (run before exiting)" >&2
-          echo "  pg-status       - Check PostgreSQL status" >&2
-          echo "  pg-connect      - Connect to PostgreSQL with psql" >&2
-          echo "" >&2
         '';
 
         redisShellHook = ''
           # Redis environment variables (single-node defaults)
           export CDK_MINTD_CACHE_REDIS_URL="redis://127.0.0.1:6379"
           export CDK_MINTD_CACHE_REDIS_CLUSTER_NODES="redis://127.0.0.1:7001,redis://127.0.0.1:7002,redis://127.0.0.1:7003"
-
-          echo "" >&2
-          echo "Redis commands available:" >&2
-          echo "  start-redis-single   - Start a single-node Redis on port 6379" >&2
-          echo "  stop-redis-single    - Stop the single-node Redis" >&2
-          echo "  start-redis-cluster  - Start a 3-node Redis cluster on ports 7001-7003" >&2
-          echo "  stop-redis-cluster   - Stop the Redis cluster" >&2
-          echo "" >&2
         '';
 
         # PostgreSQL configuration
