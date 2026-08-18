@@ -193,7 +193,10 @@ async fn main() -> Result<()> {
         temp_dir.display()
     );
     println!("You can source these variables with:");
-    println!("  source {}/.env", temp_dir.display());
+    println!(
+        "  source {}",
+        shared::shell_quote(&temp_dir.join(".env").display().to_string())
+    );
     println!();
     println!("Environment variables set:");
     println!("  CDK_TEST_MINT_URL=http://127.0.0.1:{}", args.port);

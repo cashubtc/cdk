@@ -5,6 +5,7 @@
 //! integration test binaries to reduce code duplication.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -16,6 +17,7 @@ use cdk_mintd::config::{Database, DatabaseEngine};
 use tokio::signal;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::cli::{init_logging, CommonArgs};
 
@@ -151,16 +153,32 @@ pub fn write_env_file(temp_dir: &Path, env_vars: &[(&str, &str)]) -> Result<()> 
     let mut env_content = String::new();
 
     for (key, value) in env_vars {
-        env_content.push_str(&format!("{}={}\n", key, shell_quote_value(value)));
+        env_content.push_str(&format!("{}={}\n", key, shell_quote(value)));
     }
 
     let env_path = temp_dir.join(".env");
-    fs::write(env_path, env_content)?;
+    let temporary_path = temp_dir.join(format!(".env.{}.tmp", Uuid::new_v4()));
+    let write_result = (|| -> Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)?;
+        file.write_all(env_content.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary_path, env_path)?;
+        Ok(())
+    })();
 
-    Ok(())
+    if write_result.is_err() {
+        let _ = fs::remove_file(temporary_path);
+    }
+
+    write_result
 }
 
-fn shell_quote_value(value: &str) -> String {
+/// Quote a string for safe use as one POSIX shell word.
+pub fn shell_quote(value: &str) -> String {
     let mut quoted = String::with_capacity(value.len() + 2);
     quoted.push('\'');
 
@@ -404,6 +422,8 @@ pub fn setup_logging(common: &CommonArgs) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -466,6 +486,29 @@ mod tests {
             !marker.exists(),
             "sourcing env file executed command substitution"
         );
+
+        fs::remove_dir_all(&dir).expect("test temp dir should be removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_env_file_replaces_symlink_without_overwriting_target() {
+        let dir = test_temp_dir("symlink");
+        let target = dir.join("target");
+        fs::write(&target, "preserve me").expect("target should be written");
+        symlink(&target, dir.join(".env")).expect("env symlink should be created");
+
+        write_env_file(&dir, &[("CDK_TEST_MINT_URL", "http://127.0.0.1:8085")])
+            .expect("env file should replace the symlink");
+
+        assert_eq!(
+            fs::read_to_string(&target).expect("target should remain readable"),
+            "preserve me"
+        );
+        assert!(!fs::symlink_metadata(dir.join(".env"))
+            .expect("env file should exist")
+            .file_type()
+            .is_symlink());
 
         fs::remove_dir_all(&dir).expect("test temp dir should be removed");
     }
