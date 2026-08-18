@@ -688,23 +688,34 @@ impl MintPayment for CdkBdk {
             _ => return Err(cdk_common::payment::Error::UnsupportedPaymentOption),
         };
 
-        let mut wallet_with_db = self.wallet_with_db.lock().await;
-        let address = wallet_with_db
-            .wallet
-            .reveal_next_address(KeychainKind::External);
-        let address_str = address.address.to_string();
-
-        wallet_with_db.persist().map_err(|err| {
-            tracing::error!("Could not persist to bdk db: {}", err);
-
-            Error::BdkPersist
-        })?;
-
         let quote_id = onchain_options.quote_id;
+        let quote_id_string = quote_id.to_string();
 
-        self.storage
-            .track_receive_address(&address_str, &quote_id.to_string())
-            .await?;
+        let mut wallet_with_db = self.wallet_with_db.lock().await;
+
+        // An address already tracked for another quote (derived by another
+        // instance sharing this seed, or by a re-initialised local wallet)
+        // must not be handed out again; advance to a fresh address.
+        let address_str = loop {
+            let address = wallet_with_db
+                .wallet
+                .reveal_next_address(KeychainKind::External);
+            let candidate = address.address.to_string();
+
+            wallet_with_db.persist().map_err(|err| {
+                tracing::warn!("Could not persist to bdk db: {}", err);
+
+                Error::BdkPersist
+            })?;
+
+            if self
+                .storage
+                .track_receive_address(&candidate, &quote_id_string)
+                .await?
+            {
+                break candidate;
+            }
+        };
 
         Ok(CreateIncomingPaymentResponse {
             request_lookup_id: PaymentIdentifier::QuoteId(quote_id),
@@ -927,6 +938,79 @@ mod tests {
         )?;
 
         Ok((backend, tmp))
+    }
+
+    /// Build a `CdkBdk` instance with its own local wallet directory but a
+    /// shared KV store, like a second replica or a re-initialised node using
+    /// the same seed.
+    async fn build_test_instance_with_shared_kv(
+        kv: Arc<cdk_sqlite::mint::MintSqliteDatabase>,
+    ) -> (CdkBdk, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mnemonic = Mnemonic::from_str(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .expect("mnemonic");
+        let chain_source = ChainSource::Esplora(EsploraConfig {
+            url: "http://127.0.0.1:1".to_string(),
+            parallel_requests: 1,
+        });
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: Amount::new(1, CurrencyUnit::Sat).into(),
+            percent_fee_reserve: 0.02,
+        };
+
+        let backend = CdkBdk::new(
+            mnemonic,
+            Network::Regtest,
+            chain_source,
+            tmp.path().to_string_lossy().into_owned(),
+            fee_reserve,
+            kv,
+            None,
+            1,
+            0,
+            546,
+            60,
+            Some(5),
+            None,
+        )
+        .expect("build CdkBdk test instance");
+
+        (backend, tmp)
+    }
+
+    #[tokio::test]
+    async fn instances_sharing_seed_and_kv_never_share_a_receive_address() {
+        let kv = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory kv store"),
+        );
+        let (first, _tmp_first) = build_test_instance_with_shared_kv(kv.clone()).await;
+        let (second, _tmp_second) = build_test_instance_with_shared_kv(kv).await;
+
+        let first_request = first
+            .create_incoming_payment_request(IncomingPaymentOptions::Onchain(
+                OnchainIncomingPaymentOptions {
+                    quote_id: cdk_common::QuoteId::new(),
+                },
+            ))
+            .await
+            .expect("first receive request");
+        let second_request = second
+            .create_incoming_payment_request(IncomingPaymentOptions::Onchain(
+                OnchainIncomingPaymentOptions {
+                    quote_id: cdk_common::QuoteId::new(),
+                },
+            ))
+            .await
+            .expect("second receive request");
+
+        assert_ne!(
+            first_request.request, second_request.request,
+            "each instance must hand out a distinct receive address"
+        );
     }
 
     #[tokio::test]
