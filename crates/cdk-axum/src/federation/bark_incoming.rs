@@ -6,14 +6,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cdk::federation::{
     ark_server_commitment, federation_bark_description_hash, federation_bark_mailbox_scope,
     payment_hash_for_preimage, preimage_commitment, FederationBarkActionId,
-    FederationBarkActionTransition, FederationBarkEvidenceAttestationRequest,
-    FederationBarkEvidenceBinding, FederationBarkEvidenceCertificate, FederationBarkEvidencePhase,
-    FederationBarkMemberObservation, FederationBarkObservationStatus, FederationBarkOperation,
-    FederationBarkReceiveIntent, FederationBarkReceivePrepared, FederationBarkReceiveProof,
-    FederationBarkReceiveSecretBinding, FederationBarkSemanticPhase, FederationBarkUnit,
-    FederationBarkVtxoLocator, FederationBarkVtxoState, FederationError, FederationId,
-    FederationOperationId, FederationPaymentObservationContext, MemberConfigPublic,
-    FEDERATION_BARK_OPERATION_VERSION, FEDERATION_MAX_DERIVATION_INDEX,
+    FederationBarkActionTransition, FederationBarkEvidencePhase, FederationBarkMemberObservation,
+    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkReceiveIntent,
+    FederationBarkReceivePrepared, FederationBarkReceiveProof, FederationBarkReceiveSecretBinding,
+    FederationBarkSemanticPhase, FederationBarkUnit, FederationBarkVtxoLocator,
+    FederationBarkVtxoState, FederationError, FederationId, FederationOperationId,
+    FederationPaymentObservationContext, MemberConfigPublic, FEDERATION_BARK_OPERATION_VERSION,
+    FEDERATION_MAX_DERIVATION_INDEX,
 };
 use cdk::mint::{MintQuoteRequest, MintQuoteResponse, QuoteId};
 use cdk::nuts::CurrencyUnit;
@@ -23,6 +22,12 @@ use sha2::{Digest, Sha256};
 
 use crate::MintState;
 
+#[cfg(test)]
+use super::bark_evidence::bark_evidence_retry_collector;
+use super::bark_evidence::{
+    bark_evidence_collector, collect_bark_evidence_certificate,
+    persist_local_bark_evidence_attestation, scheduled_bark_evidence_collector_round,
+};
 use super::bark_observer::{
     is_selected_bark_observer, required_bark_result_observers, unselected_bark_observer_wait,
 };
@@ -111,214 +116,6 @@ async fn receive_transition_entry(
         .get_federation_journal_entry_by_operation_id(operation_id)
         .await?
         .ok_or(cdk::Error::Internal)
-}
-
-async fn collect_bark_evidence_certificate(
-    state: &MintState,
-    intent: &FederationBarkReceiveIntent,
-    phase: FederationBarkEvidencePhase,
-    evidence_operation_id: FederationOperationId,
-    attempt: u32,
-    observation: &FederationBarkMemberObservation,
-    required: u16,
-    collector_fallback_round: u32,
-) -> Result<Option<FederationBarkEvidenceCertificate>, cdk::Error> {
-    let timer = super::latency::FederationLatencyTimer::start(
-        super::latency::FederationLatencyCorrelation::Action,
-        intent.action_id.to_string(),
-        super::latency::FederationLatencyBackend::Bark,
-        super::latency::FederationLatencyDirection::Incoming,
-        super::latency::FederationLatencyPhase::BarkEvidenceCollection,
-    );
-    let result = collect_bark_evidence_certificate_inner(
-        state,
-        intent,
-        phase,
-        evidence_operation_id,
-        attempt,
-        observation,
-        required,
-        collector_fallback_round,
-    )
-    .await;
-    let outcome = match &result {
-        Ok(Some(_)) => super::latency::FederationLatencyOutcome::Success,
-        Ok(None) => super::latency::FederationLatencyOutcome::Pending,
-        Err(_) => super::latency::FederationLatencyOutcome::Error,
-    };
-    timer.finish(outcome);
-    result
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn collect_bark_evidence_certificate_inner(
-    state: &MintState,
-    intent: &FederationBarkReceiveIntent,
-    phase: FederationBarkEvidencePhase,
-    evidence_operation_id: FederationOperationId,
-    attempt: u32,
-    observation: &FederationBarkMemberObservation,
-    required: u16,
-    collector_fallback_round: u32,
-) -> Result<Option<FederationBarkEvidenceCertificate>, cdk::Error> {
-    let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
-    let (binding, _) = persist_local_bark_evidence_attestation(
-        state,
-        phase,
-        evidence_operation_id,
-        attempt,
-        observation,
-    )?;
-    let store = state
-        .federation
-        .bark_receive_secrets()
-        .ok_or_else(bark_unavailable)?;
-
-    let collector = bark_evidence_collector(
-        federation.public_config().members.keys().copied(),
-        intent.actor,
-        collector_fallback_round,
-    )
-    .ok_or(cdk::Error::Internal)?;
-    let attestations = store
-        .evidence_attestations(&binding, federation.public_config())
-        .map_err(|_| bark_unavailable())?;
-    if federation.member_id() != collector {
-        let collector_member = federation
-            .public_config()
-            .member(collector)
-            .ok_or(cdk::Error::Internal)?;
-        let peer_client = FederationRestPeerClient::new_with_validated_config(
-            state.federation.transport.clone(),
-            federation.public_config(),
-            federation.private_config().clone(),
-            state
-                .federation
-                .peer_sync_config
-                .ok_or_else(bark_unavailable)?,
-        )
-        .map_err(|_| bark_unavailable())?;
-        for attestation in attestations {
-            let request =
-                FederationBarkEvidenceAttestationRequest::new(binding.clone(), attestation);
-            if peer_client
-                .deliver_bark_evidence_attestation(collector_member, &request)
-                .await
-                .is_err()
-            {
-                tracing::debug!(
-                    collector = %collector,
-                    "Bark evidence attestation primary delivery failed"
-                );
-                if let Some(retry_collector) = bark_evidence_retry_collector(
-                    federation.public_config().members.keys().copied(),
-                    intent.actor,
-                    collector_fallback_round,
-                    required,
-                ) {
-                    let retry_member = federation
-                        .public_config()
-                        .member(retry_collector)
-                        .ok_or(cdk::Error::Internal)?;
-                    if peer_client
-                        .deliver_bark_evidence_attestation(retry_member, &request)
-                        .await
-                        .is_err()
-                    {
-                        tracing::debug!(
-                            collector = %retry_collector,
-                            "Bark evidence attestation remains durable for a later delivery retry"
-                        );
-                    }
-                }
-            }
-        }
-        return Ok(None);
-    }
-
-    if attestations.len() < usize::from(required) {
-        return Ok(None);
-    }
-    FederationBarkEvidenceCertificate::new(
-        binding,
-        attestations,
-        federation.public_config(),
-        required,
-    )
-    .map(Some)
-    .map_err(cdk::Error::from)
-}
-
-fn persist_local_bark_evidence_attestation(
-    state: &MintState,
-    phase: FederationBarkEvidencePhase,
-    evidence_operation_id: FederationOperationId,
-    attempt: u32,
-    observation: &FederationBarkMemberObservation,
-) -> Result<
-    (
-        FederationBarkEvidenceBinding,
-        cdk::federation::FederationBarkEvidenceAttestation,
-    ),
-    cdk::Error,
-> {
-    let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
-    let binding = FederationBarkEvidenceBinding::from_observation(
-        federation.public_config(),
-        phase,
-        evidence_operation_id,
-        attempt,
-        observation,
-    )
-    .map_err(cdk::Error::from)?;
-    let attestation = cdk::federation::FederationBarkEvidenceAttestation::new_signed(
-        &binding,
-        federation.public_config(),
-        federation.private_config(),
-    )
-    .map_err(cdk::Error::from)?;
-    state
-        .federation
-        .bark_receive_secrets()
-        .ok_or_else(bark_unavailable)?
-        .persist_evidence_attestation(&binding, attestation, federation.public_config())
-        .map_err(|_| bark_unavailable())?;
-    Ok((binding, attestation))
-}
-
-fn bark_evidence_collector(
-    members: impl IntoIterator<Item = cdk::federation::MemberId>,
-    actor: cdk::federation::MemberId,
-    fallback_round: u32,
-) -> Option<cdk::federation::MemberId> {
-    let members = members.into_iter().collect::<Vec<_>>();
-    let actor_index = members.iter().position(|member| *member == actor)?;
-    let offset = usize::try_from(fallback_round)
-        .unwrap_or(usize::MAX)
-        .min(members.len().saturating_sub(1));
-    members.get((actor_index + offset) % members.len()).copied()
-}
-
-fn scheduled_bark_evidence_collector_round(fallback_round: u32, required: u16) -> u32 {
-    match fallback_round {
-        0 => 0,
-        fallback_round => u32::from(required).saturating_add(fallback_round - 1),
-    }
-}
-
-fn bark_evidence_retry_collector(
-    members: impl IntoIterator<Item = cdk::federation::MemberId>,
-    actor: cdk::federation::MemberId,
-    current_round: u32,
-    required: u16,
-) -> Option<cdk::federation::MemberId> {
-    let members = members.into_iter().collect::<Vec<_>>();
-    let last_round = u32::try_from(members.len().checked_sub(1)?).ok()?;
-    let retry_round = current_round.saturating_add(1).max(u32::from(required));
-    if retry_round > last_round {
-        return None;
-    }
-    bark_evidence_collector(members, actor, retry_round)
 }
 
 fn receive_claim_proposal(
@@ -563,13 +360,15 @@ async fn advance_federated_bark_mint_quote_inner(
             };
             let certificate = collect_bark_evidence_certificate(
                 state,
-                &intent,
+                intent.action_id,
+                intent.actor,
                 FederationBarkEvidencePhase::ReceiveHtlcsReady,
                 prepared_record.operation_id,
                 1,
                 &observation,
                 threshold,
                 collector_fallback_round,
+                super::latency::FederationLatencyDirection::Incoming,
             )
             .await?;
             if let (Some(certificate), Some(transition)) = (certificate, transition.as_mut()) {
@@ -927,13 +726,15 @@ async fn advance_receive_claimed_evidence(
     };
     let certificate = collect_bark_evidence_certificate(
         state,
-        intent,
+        intent.action_id,
+        intent.actor,
         FederationBarkEvidencePhase::ReceiveClaimed,
         action.latest_operation_id,
         claimed.attempt,
         &observation,
         required,
         collector_fallback_round,
+        super::latency::FederationLatencyDirection::Incoming,
     )
     .await?;
     if let Some(certificate) = certificate {
@@ -1040,26 +841,34 @@ pub(crate) async fn prepare_federated_bark_mint_quote(
     (
         MintQuoteResponse<QuoteId>,
         cdk::cdk_payment::PaymentIdentifier,
+        Option<cdk::federation::FederationOperationEnvelope>,
     ),
     cdk::Error,
 > {
     let _guard = state.federation.bark_incoming_lock().lock().await;
     if let Some(quote) = state.mint.localstore().get_mint_quote(&quote_id).await? {
         let request_lookup_id = quote.request_lookup_id.clone();
-        return Ok((quote.try_into()?, request_lookup_id));
+        return Ok((quote.try_into()?, request_lookup_id, None));
     }
-    let invoice = accepted_invoice(state, &quote_id, &request).await?;
-    state
+    let (invoice, receive_prepared) = accepted_invoice(state, &quote_id, &request).await?;
+    let (response, request_lookup_id) = state
         .mint
         .prepare_bolt11_mint_quote_with_invoice(quote_id, request, invoice)
-        .await
+        .await?;
+    Ok((response, request_lookup_id, receive_prepared))
 }
 
 async fn accepted_invoice(
     state: &MintState,
     quote_id: &QuoteId,
     request: &MintQuoteRequest,
-) -> Result<cdk::Bolt11Invoice, cdk::Error> {
+) -> Result<
+    (
+        cdk::Bolt11Invoice,
+        Option<cdk::federation::FederationOperationEnvelope>,
+    ),
+    cdk::Error,
+> {
     let MintQuoteRequest::Bolt11(bolt11) = request else {
         return Err(cdk::Error::InvalidPaymentRequest);
     };
@@ -1101,20 +910,22 @@ async fn accepted_invoice(
                     .validate_against_intent(&intent)
                     .map_err(cdk::Error::from)?;
                 validate_request_against_prepared(bolt11, prepared)?;
-                prepared
+                let invoice = prepared
                     .invoice
                     .parse()
-                    .map_err(|_| cdk::Error::InvalidPaymentRequest)
+                    .map_err(|_| cdk::Error::InvalidPaymentRequest)?;
+                Ok((invoice, None))
             }
             FederationBarkOperation::ReceiveIntent(intent) => {
                 validate_request_against_intent(bolt11, intent)?;
-                prepare_and_accept_invoice(
+                let (invoice, _, envelope) = prepare_invoice_candidate(
                     state,
                     action.latest_operation_id,
                     action.latest_operation_index,
                     intent,
                 )
-                .await
+                .await?;
+                Ok((invoice, Some(envelope)))
             }
             FederationBarkOperation::ActionPlan(_)
             | FederationBarkOperation::ActionTransition(_)
@@ -1210,7 +1021,9 @@ async fn accepted_invoice(
             },
         )
         .map_err(|_| bark_unavailable())?;
-    prepare_and_accept_invoice(state, entry.operation_id, entry.index, &intent).await
+    let (invoice, _, envelope) =
+        prepare_invoice_candidate(state, entry.operation_id, entry.index, &intent).await?;
+    Ok((invoice, Some(envelope)))
 }
 
 async fn fresh_intent(
@@ -1305,6 +1118,27 @@ async fn prepare_and_accept_invoice(
     intent_operation_index: u64,
     intent: &FederationBarkReceiveIntent,
 ) -> Result<cdk::Bolt11Invoice, cdk::Error> {
+    let (invoice, prepared, envelope) =
+        prepare_invoice_candidate(state, intent_operation_id, intent_operation_index, intent)
+            .await?;
+    state.submit_federation_envelope(envelope).await?;
+    apply_accepted_receive_prepared(state, intent, &prepared).await;
+    Ok(invoice)
+}
+
+async fn prepare_invoice_candidate(
+    state: &MintState,
+    intent_operation_id: FederationOperationId,
+    intent_operation_index: u64,
+    intent: &FederationBarkReceiveIntent,
+) -> Result<
+    (
+        cdk::Bolt11Invoice,
+        FederationBarkReceivePrepared,
+        cdk::federation::FederationOperationEnvelope,
+    ),
+    cdk::Error,
+> {
     let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
     let execution_actor = federation.member_id();
     if !intent
@@ -1346,7 +1180,21 @@ async fn prepare_and_accept_invoice(
     let envelope = federation.operation_envelope(super::bark_federation_operation(
         FederationBarkOperation::ReceivePrepared(prepared.clone()),
     )?);
-    state.submit_federation_envelope(envelope).await?;
+    let invoice = prepared
+        .invoice
+        .parse()
+        .map_err(|_| cdk::Error::InvalidPaymentRequest)?;
+    Ok((invoice, prepared, envelope))
+}
+
+async fn apply_accepted_receive_prepared(
+    state: &MintState,
+    intent: &FederationBarkReceiveIntent,
+    prepared: &FederationBarkReceivePrepared,
+) {
+    let Some(runtime) = state.federation.bark_runtime() else {
+        return;
+    };
     if runtime
         .apply_receive_prepared(intent, &prepared)
         .await
@@ -1360,10 +1208,6 @@ async fn prepare_and_accept_invoice(
             "accepted Bark receive plan could not be materialized locally"
         );
     }
-    prepared
-        .invoice
-        .parse()
-        .map_err(|_| cdk::Error::InvalidPaymentRequest)
 }
 
 fn intent_from_binding(

@@ -421,6 +421,47 @@ impl Mint {
     }
 
     #[cfg(feature = "federation-bark")]
+    async fn federation_bark_transition_certificate_payment_records(
+        &self,
+        entry: &FederationJournalEntry,
+        transition: &cdk_federation_bark::FederationBarkActionTransition,
+    ) -> Result<Vec<FederationPaymentObservationRecord>, Error> {
+        let certificate = transition
+            .evidence_certificate
+            .as_deref()
+            .ok_or(Error::Internal)?;
+        let observer = certificate
+            .attestations
+            .first()
+            .map(|attestation| attestation.signer)
+            .ok_or(Error::Internal)?;
+        let observation = certificate.observation_for(observer);
+        let projection = self.federation_bark_projection_snapshot().await?;
+        let current = projection
+            .actions
+            .iter()
+            .find(|action| action.action_id == transition.action_id)
+            .ok_or(Error::Internal)?;
+        let operation = FederationBarkOperation::ActionTransition(transition.clone());
+        let action = current.advanced(entry, &operation)?;
+        let template = self
+            .federation_bark_payment_observation_template(&action, &observation)
+            .await?
+            .ok_or(Error::Internal)?;
+        Ok(certificate
+            .signers()
+            .map(|observer| FederationPaymentObservationRecord {
+                operation_id: federation_bark_certificate_observation_id(
+                    entry.operation_id,
+                    observer,
+                ),
+                operation_index: entry.index,
+                observation: template.with_observer(observer),
+            })
+            .collect())
+    }
+
+    #[cfg(feature = "federation-bark")]
     async fn federation_bark_payment_observation_template(
         &self,
         action: &cdk_federation_bark::FederationBarkActionRecord,
@@ -1274,6 +1315,12 @@ impl Mint {
             }
             FederationBarkOperation::EvidenceCertificate(certificate) => {
                 self.federation_bark_certificate_payment_records(entry, certificate)
+                    .await?
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.evidence_certificate.is_some() =>
+            {
+                self.federation_bark_transition_certificate_payment_records(entry, transition)
                     .await?
             }
             FederationBarkOperation::ReceiveIntent(_)

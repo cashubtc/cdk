@@ -7,9 +7,10 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::federation::{
     FederationBarkEvidenceAttestationRequest, FederationBarkEvidenceAttestationResponse,
-    FederationBarkPrepareReceiveSecretRequest, FederationBarkReceiveSecret,
-    FederationBarkReceiveSecretAcknowledgement, FederationBarkReceiveSecretBinding,
-    FederationConfig, FederationRestMessageKind, FederationSignedRequest, MemberConfigPublic,
+    FederationBarkEvidencePhase, FederationBarkPrepareReceiveSecretRequest,
+    FederationBarkReceiveSecret, FederationBarkReceiveSecretAcknowledgement,
+    FederationBarkReceiveSecretBinding, FederationConfig, FederationRestMessageKind,
+    FederationSignedRequest, MemberConfigPublic,
 };
 use cdk::mint::QuoteId;
 use futures::future::join_all;
@@ -240,18 +241,31 @@ pub(super) async fn post_bark_evidence_attestation(
         runtime_config.private_config(),
     )
     .map_err(federation_error_response)?;
+    let phase = payload.payload.binding.phase;
     let quote = payload.payload.binding.quote.parse::<QuoteId>();
     if let Ok(quote) = quote {
         let wake_state = state.clone();
         tokio::spawn(async move {
-            if let Err(error) =
-                super::bark_incoming::advance_federated_bark_mint_quote_from_evidence_delivery(
-                    &wake_state,
-                    &quote,
-                    collector_fallback_round,
-                )
-                .await
-            {
+            let result = match phase {
+                FederationBarkEvidencePhase::ReceiveHtlcsReady
+                | FederationBarkEvidencePhase::ReceiveClaimed => {
+                    super::bark_incoming::advance_federated_bark_mint_quote_from_evidence_delivery(
+                        &wake_state,
+                        &quote,
+                        collector_fallback_round,
+                    )
+                    .await
+                }
+                FederationBarkEvidencePhase::SendSucceeded => {
+                    super::bark_outgoing::advance_federated_bark_melt_quote_from_evidence_delivery(
+                        &wake_state,
+                        &quote,
+                        collector_fallback_round,
+                    )
+                    .await
+                }
+            };
+            if let Err(error) = result {
                 tracing::debug!(error = %error, "Bark evidence wake did not advance quote");
             }
         });

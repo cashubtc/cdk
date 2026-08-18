@@ -42,6 +42,11 @@ pub struct PreferHeader {
     pub respond_async: bool,
 }
 
+#[cfg(feature = "federation-bark")]
+type RouteFederationMintQuotePredecessor = cdk::federation::FederationOperationEnvelope;
+#[cfg(not(feature = "federation-bark"))]
+type RouteFederationMintQuotePredecessor = ();
+
 async fn create_mint_quote_for_route(
     state: &MintState,
     request: cdk::mint::MintQuoteRequest,
@@ -49,6 +54,7 @@ async fn create_mint_quote_for_route(
     (
         cdk::mint::MintQuoteResponse<QuoteId>,
         Option<cdk::cdk_payment::PaymentIdentifier>,
+        Option<RouteFederationMintQuotePredecessor>,
     ),
     cdk::Error,
 > {
@@ -64,12 +70,12 @@ async fn create_mint_quote_for_route(
                 &request,
             )?;
             state.mint.check_mint_request_acceptable(&request).await?;
-            let (response, request_lookup_id) =
+            let (response, request_lookup_id, receive_prepared) =
                 crate::federation::bark_incoming::prepare_federated_bark_mint_quote(
                     state, quote_id, request,
                 )
                 .await?;
-            return Ok((response, Some(request_lookup_id)));
+            return Ok((response, Some(request_lookup_id), receive_prepared));
         }
         #[cfg(feature = "federation-bdk")]
         if matches!(request, cdk::mint::MintQuoteRequest::Onchain(_)) {
@@ -89,13 +95,13 @@ async fn create_mint_quote_for_route(
                 .mint
                 .prepare_onchain_mint_quote(quote_id, request, address)
                 .await?;
-            return Ok((response, Some(request_lookup_id)));
+            return Ok((response, Some(request_lookup_id), None));
         }
         let (response, request_lookup_id) = state.mint.prepare_mint_quote(request).await?;
-        return Ok((response, Some(request_lookup_id)));
+        return Ok((response, Some(request_lookup_id), None));
     }
 
-    Ok((state.mint.get_mint_quote(request).await?, None))
+    Ok((state.mint.get_mint_quote(request).await?, None, None))
 }
 
 async fn check_mint_quotes_for_route(
@@ -422,6 +428,7 @@ async fn submit_federation_mint_quote_operation(
     request: cdk::mint::MintQuoteRequest,
     response: &cdk::mint::MintQuoteResponse<QuoteId>,
     request_lookup_id: Option<cdk::cdk_payment::PaymentIdentifier>,
+    ordered_predecessor: Option<RouteFederationMintQuotePredecessor>,
 ) -> Result<(), cdk::Error> {
     let Some(config) = state.mint.federation_config() else {
         return Ok(());
@@ -433,7 +440,27 @@ async fn submit_federation_mint_quote_operation(
         request,
         mint_quote_response_to_string(response),
     );
-    state.submit_federation_envelope(envelope).await?;
+    #[cfg(feature = "federation-bark")]
+    match ordered_predecessor {
+        Some(predecessor) => {
+            let responses = state
+                .submit_federation_ordered_successor_group(vec![predecessor, envelope])
+                .await?;
+            let [predecessor_response, quote_response] = responses.as_slice() else {
+                return Err(cdk::Error::Internal);
+            };
+            predecessor_response.ensure_accepted()?;
+            quote_response.ensure_accepted()?;
+        }
+        None => {
+            state.submit_federation_envelope(envelope).await?;
+        }
+    }
+    #[cfg(not(feature = "federation-bark"))]
+    {
+        let _ = ordered_predecessor;
+        state.submit_federation_envelope(envelope).await?;
+    }
     match Box::pin(
         state
             .federation
@@ -566,7 +593,7 @@ pub async fn post_mint_custom_quote(
                 })?;
 
             let quote_request: cdk::mint::MintQuoteRequest = bolt11_request.into();
-            let (quote, _request_lookup_id) =
+            let (quote, _request_lookup_id, _ordered_predecessor) =
                 create_mint_quote_for_route(&state, quote_request.clone())
                     .await
                     .map_err(into_response)?;
@@ -576,6 +603,7 @@ pub async fn post_mint_custom_quote(
                 quote_request,
                 &quote,
                 _request_lookup_id,
+                _ordered_predecessor,
             )
             .await
             .map_err(into_response)?;
@@ -595,7 +623,7 @@ pub async fn post_mint_custom_quote(
                 })?;
 
             let quote_request: cdk::mint::MintQuoteRequest = bolt12_request.into();
-            let (quote, _request_lookup_id) =
+            let (quote, _request_lookup_id, _ordered_predecessor) =
                 create_mint_quote_for_route(&state, quote_request.clone())
                     .await
                     .map_err(into_response)?;
@@ -605,6 +633,7 @@ pub async fn post_mint_custom_quote(
                 quote_request,
                 &quote,
                 _request_lookup_id,
+                _ordered_predecessor,
             )
             .await
             .map_err(into_response)?;
@@ -625,7 +654,7 @@ pub async fn post_mint_custom_quote(
                 })?;
 
             let quote_request: cdk::mint::MintQuoteRequest = onchain_request.into();
-            let (quote, _request_lookup_id) =
+            let (quote, _request_lookup_id, _ordered_predecessor) =
                 create_mint_quote_for_route(&state, quote_request.clone())
                     .await
                     .map_err(into_response)?;
@@ -635,6 +664,7 @@ pub async fn post_mint_custom_quote(
                 quote_request,
                 &quote,
                 _request_lookup_id,
+                _ordered_predecessor,
             )
             .await
             .map_err(into_response)?;
@@ -655,7 +685,7 @@ pub async fn post_mint_custom_quote(
                 request: custom_request,
             };
 
-            let (response, _request_lookup_id) =
+            let (response, _request_lookup_id, _ordered_predecessor) =
                 create_mint_quote_for_route(&state, quote_request.clone())
                     .await
                     .map_err(into_response)?;
@@ -665,6 +695,7 @@ pub async fn post_mint_custom_quote(
                 quote_request,
                 &response,
                 _request_lookup_id,
+                _ordered_predecessor,
             )
             .await
             .map_err(into_response)?;
@@ -972,7 +1003,36 @@ async fn process_federation_melt_request(
         crate::federation::latency::FederationLatencyPhase::CashuMelt,
     );
     let result = async {
-        state.submit_federation_envelope(envelope).await?;
+        #[cfg(feature = "federation-bark")]
+        let submitted_bark_group = {
+            let quote = state
+                .mint
+                .localstore()
+                .get_melt_quote(payload.quote())
+                .await?
+                .ok_or(cdk::Error::UnknownQuote)?;
+            if state.federation.bark_runtime().is_some()
+                && matches!(
+                    quote.request,
+                    cdk_common::mint::MeltPaymentRequest::Bolt11 { .. }
+                )
+            {
+                crate::federation::bark_outgoing::submit_federated_bark_melt_with_plan(
+                    state,
+                    envelope.clone(),
+                    payload.quote(),
+                )
+                .await?;
+                true
+            } else {
+                false
+            }
+        };
+        #[cfg(not(feature = "federation-bark"))]
+        let submitted_bark_group = false;
+        if !submitted_bark_group {
+            state.submit_federation_envelope(envelope).await?;
+        }
         if let Err(err) = Box::pin(
             state
                 .federation
@@ -2315,7 +2375,7 @@ mod tests {
             description: None,
             pubkey: None,
         });
-        let (response, request_lookup_id) = create_mint_quote_for_route(state, request.clone())
+        let (response, request_lookup_id, _) = create_mint_quote_for_route(state, request.clone())
             .await
             .expect("prepare federation mint quote");
         let quote_id = response.quote().clone();

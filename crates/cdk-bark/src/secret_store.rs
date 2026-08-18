@@ -899,6 +899,7 @@ fn evidence_attestation_key_prefix(
     prefix.push(match phase {
         FederationBarkEvidencePhase::ReceiveHtlcsReady => 0,
         FederationBarkEvidencePhase::ReceiveClaimed => 1,
+        FederationBarkEvidencePhase::SendSucceeded => 2,
     });
     prefix
 }

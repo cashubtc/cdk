@@ -790,6 +790,13 @@ impl FederationRuntimeConfig {
                         .required_matching_observations(),
                 )
             }
+            cdk_federation_bark::FederationBarkEvidencePhase::SendSucceeded => {
+                self.public_config.threshold_params.signature_threshold.max(
+                    self.public_config
+                        .payment_verification_policy(FederationPaymentObservationContext::MeltQuote)
+                        .required_matching_observations(),
+                )
+            }
         };
         certificate
             .verify(&self.public_config, required)

@@ -1165,6 +1165,30 @@ impl Mint {
                         "payment success does not consume the exact HTLC value",
                     ));
                 }
+                let certificate = transition.evidence_certificate.as_deref().ok_or_else(|| {
+                    bark_state_error("payment success has no evidence certificate")
+                })?;
+                let binding = &certificate.binding;
+                if binding.phase != FederationBarkEvidencePhase::SendSucceeded
+                    || binding.action_id != transition.action_id
+                    || binding.quote != plan.quote.as_deref().unwrap_or_default()
+                    || binding.evidence_operation_id != action.latest_operation_id
+                    || binding.payment_hash
+                        != plan.payment_hash.ok_or_else(|| {
+                            bark_state_error("payment success plan has no payment hash")
+                        })?
+                    || binding.source_scope
+                        != ark_server_commitment(&application.ark_server_public_key)?
+                    || binding.status != FederationBarkObservationStatus::Succeeded
+                    || binding.amount != plan.external_amount
+                    || binding.fee != plan.fee_amount
+                    || binding.evidence_digest != transition.result_hash
+                    || binding.attempt != transition.attempt
+                {
+                    return Err(bark_state_error(
+                        "payment success certificate differs from its exact send result",
+                    ));
+                }
             }
             FederationBarkOperation::ActionTransition(transition)
                 if transition.phase == FederationBarkSemanticPhase::PaymentFailed =>

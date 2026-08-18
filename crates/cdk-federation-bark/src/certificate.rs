@@ -39,6 +39,8 @@ pub enum FederationBarkEvidencePhase {
     ReceiveHtlcsReady,
     /// Complete accepted incoming claim result before Cashu issuance.
     ReceiveClaimed,
+    /// Complete successful outgoing payment result before consensus finalization.
+    SendSucceeded,
 }
 
 /// Receiver-independent statement signed independently by Bark evidence verifiers.
@@ -103,12 +105,12 @@ impl FederationBarkEvidenceBinding {
             quote: observation
                 .quote
                 .clone()
-                .ok_or_else(|| invalid_certificate("Bark receive evidence requires a quote"))?,
+                .ok_or_else(|| invalid_certificate("Bark evidence requires a quote"))?,
             phase,
             evidence_operation_id,
-            payment_hash: observation.payment_hash.ok_or_else(|| {
-                invalid_certificate("Bark receive evidence requires a payment hash")
-            })?,
+            payment_hash: observation
+                .payment_hash
+                .ok_or_else(|| invalid_certificate("Bark evidence requires a payment hash"))?,
             source_scope: observation.source_scope,
             status: observation.status,
             amount: observation.amount,
@@ -146,6 +148,9 @@ impl FederationBarkEvidenceBinding {
                 FederationBarkObservationStatus::Accepted
             }
             FederationBarkEvidencePhase::ReceiveClaimed => {
+                FederationBarkObservationStatus::Succeeded
+            }
+            FederationBarkEvidencePhase::SendSucceeded => {
                 FederationBarkObservationStatus::Succeeded
             }
         };

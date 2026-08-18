@@ -38,38 +38,6 @@ pub(super) fn required_bark_result_observers(
     usize::from(signature_threshold).max(usize::from(payment_observation_threshold))
 }
 
-pub(super) fn is_selected_bark_outgoing_terminal_observer(
-    members: impl IntoIterator<Item = MemberId>,
-    actor: MemberId,
-    member: MemberId,
-    failed_observer_count: usize,
-    failure_threshold: usize,
-    fallback_round: u32,
-) -> bool {
-    let members = members.into_iter().collect::<Vec<_>>();
-    if failed_observer_count == 0 {
-        let Some(actor_index) = members.iter().position(|candidate| *candidate == actor) else {
-            return false;
-        };
-        let active_offset = usize::from(fallback_round > 0);
-        return members
-            .get((actor_index + active_offset) % members.len())
-            .is_some_and(|candidate| *candidate == member);
-    }
-
-    // One failure report is not authority. Expand to the existing
-    // independent-observation threshold. The first persisted fallback round
-    // was already consumed by the healthy actor handoff; only a later round
-    // expands failure observers for liveness.
-    is_selected_bark_observer(
-        members,
-        actor,
-        member,
-        failure_threshold,
-        fallback_round.saturating_sub(1),
-    )
-}
-
 pub(super) fn bark_outgoing_terminal_pending_wait(
     actor: MemberId,
     member: MemberId,
@@ -99,8 +67,7 @@ mod tests {
 
     use super::{
         bark_outgoing_terminal_pending_wait, is_selected_bark_observer,
-        is_selected_bark_outgoing_terminal_observer, required_bark_result_observers,
-        unselected_bark_observer_wait,
+        required_bark_result_observers, unselected_bark_observer_wait,
     };
     use crate::federation::payment_schedule::FederationPaymentAdvancement;
 
@@ -164,28 +131,6 @@ mod tests {
     }
 
     #[test]
-    fn outgoing_terminal_selection_hands_one_lease_to_one_bounded_fallback() {
-        let selected = |round| {
-            (1..=5)
-                .filter(|id| {
-                    is_selected_bark_outgoing_terminal_observer(
-                        members(),
-                        member(4),
-                        member(*id),
-                        0,
-                        3,
-                        round,
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(selected(0), vec![4]);
-        assert_eq!(selected(1), vec![5]);
-        assert_eq!(selected(2), vec![5]);
-        assert_eq!(selected(u32::MAX), vec![5]);
-    }
-
-    #[test]
     fn actor_pending_yields_the_terminal_lease_once() {
         assert_eq!(
             bark_outgoing_terminal_pending_wait(member(4), member(4), 0, 0),
@@ -199,27 +144,5 @@ mod tests {
             bark_outgoing_terminal_pending_wait(member(4), member(4), 1, 0),
             FederationPaymentAdvancement::AwaitingExternalEvidence
         );
-    }
-
-    #[test]
-    fn first_failure_reactivates_threshold_selection_and_liveness_expansion() {
-        let selected = |round| {
-            (1..=5)
-                .filter(|id| {
-                    is_selected_bark_outgoing_terminal_observer(
-                        members(),
-                        member(4),
-                        member(*id),
-                        1,
-                        3,
-                        round,
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(selected(0), vec![1, 4, 5]);
-        assert_eq!(selected(1), vec![1, 4, 5]);
-        assert_eq!(selected(2), vec![1, 2, 4, 5]);
-        assert_eq!(selected(3), vec![1, 2, 3, 4, 5]);
     }
 }

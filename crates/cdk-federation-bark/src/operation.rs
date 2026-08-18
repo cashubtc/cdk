@@ -2793,6 +2793,37 @@ impl FederationBarkActionTransition {
                     ));
                 }
             }
+            Some(certificate)
+                if self.phase == FederationBarkSemanticPhase::PaymentSucceeded
+                    && certificate.binding.phase == FederationBarkEvidencePhase::SendSucceeded
+                    && certificate.binding.action_id == self.action_id
+                    && certificate.binding.quote == self.quote.as_deref().unwrap_or_default()
+                    && Some(certificate.binding.payment_hash) == self.payment_hash
+                    && certificate.binding.evidence_operation_id
+                        == self.predecessor_operation_id
+                    && certificate.binding.attempt == self.attempt
+                    && certificate.binding.evidence_digest == self.result_hash =>
+            {
+                let certified_total = certificate
+                    .binding
+                    .amount
+                    .checked_add(certificate.binding.fee)
+                    .ok_or_else(|| invalid_bark("Bark send certificate amount overflow"))?;
+                let spent_amount = checked_sum(
+                    self.vtxo_transitions
+                        .iter()
+                        .filter(|transition| {
+                            transition.previous_state == Some(FederationBarkVtxoState::PendingSpend)
+                                && transition.new_state == FederationBarkVtxoState::Spent
+                        })
+                        .map(|transition| transition.amount),
+                )?;
+                if spent_amount != certified_total {
+                    return Err(invalid_bark(
+                        "Bark send certificate amount differs from its spent value",
+                    ));
+                }
+            }
             Some(_) => {
                 return Err(invalid_bark(
                     "Bark evidence certificate does not match its transition",

@@ -757,6 +757,45 @@ fn evidence_certificate_requires_exact_independent_signatures() {
 }
 
 #[test]
+fn outgoing_success_certificate_requires_a_succeeded_result() {
+    let config = federated_config();
+    let mut observation = evidence_observation(&config, 36, member(1), 76);
+    assert!(FederationBarkEvidenceBinding::from_observation(
+        &config,
+        FederationBarkEvidencePhase::SendSucceeded,
+        FederationOperationId::from_bytes([77; 32]),
+        1,
+        &observation,
+    )
+    .is_err());
+
+    observation.status = FederationBarkObservationStatus::Succeeded;
+    observation.fee = Amount::from(2);
+    let binding = FederationBarkEvidenceBinding::from_observation(
+        &config,
+        FederationBarkEvidencePhase::SendSucceeded,
+        FederationOperationId::from_bytes([77; 32]),
+        1,
+        &observation,
+    )
+    .expect("outgoing success binding");
+    let attestations = [1, 2]
+        .map(|id| {
+            FederationBarkEvidenceAttestation::new_signed(
+                &binding,
+                &config,
+                &private_member(&config, id),
+            )
+            .expect("outgoing success attestation")
+        })
+        .to_vec();
+    FederationBarkEvidenceCertificate::new(binding, attestations, &config, 2)
+        .expect("outgoing success certificate")
+        .verify(&config, 2)
+        .expect("valid outgoing success certificate");
+}
+
+#[test]
 fn evidence_certificate_rejects_every_signed_binding_mutation() {
     let config = federated_config();
     let observation = evidence_observation(&config, 41, member(1), 81);

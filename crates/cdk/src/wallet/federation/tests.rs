@@ -3647,6 +3647,62 @@ async fn federated_mint_connector_returns_after_threshold_mint_responses() {
 }
 
 #[tokio::test]
+async fn federated_mint_connector_returns_after_three_of_five_with_two_slow_members() {
+    let bundle = threshold_five_bundle();
+    let keyset = active_keyset(&bundle);
+    let outputs = vec![blinded_output_for_keyset_amount(
+        &keyset,
+        1,
+        b"three of five mint liveness",
+    )];
+    let advertised = advertised_keyset(&bundle);
+    let mut connectors = BTreeMap::new();
+
+    for member in [member_id(1), member_id(2), member_id(3)] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, member, advertised.clone());
+        connector.set_post_mint_response(Ok(share_response(&bundle, member, &outputs)));
+        connectors.insert(
+            member,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+    for member in [member_id(4), member_id(5)] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, member, advertised.clone());
+        connector.set_post_mint_delay(Duration::from_secs(30));
+        connector.set_post_mint_response(Ok(share_response(&bundle, member, &outputs)));
+        connectors.insert(
+            member,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            member_request_timeout: Duration::from_secs(30),
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+    let request = MintRequest {
+        quote: "paid-three-of-five-quote".to_string(),
+        outputs: outputs.clone(),
+        signature: None,
+    };
+    let response = tokio::time::timeout(
+        Duration::from_millis(250),
+        connector.post_mint(&PaymentMethod::Known(KnownMethod::Bolt11), request),
+    )
+    .await
+    .expect("three valid shares must cancel two slow member requests")
+    .expect("mint response");
+    assert_aggregate_response_valid(&bundle, &outputs, &response);
+}
+
+#[tokio::test]
 async fn federated_mint_connector_retries_retryable_member_request_failure() {
     let bundle = threshold_bundle();
     let outputs = blinded_outputs(&bundle);

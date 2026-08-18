@@ -1554,6 +1554,62 @@ impl FederatedBarkRuntime {
         })
     }
 
+    /// Validate one not-yet-accepted success result independently, apply its
+    /// exact preimage locally, and produce this member's signed-evidence input.
+    /// Consensus accepts the result only after a threshold certificate is
+    /// attached to the same transition.
+    pub async fn attest_lightning_send_succeeded_candidate(
+        &self,
+        quote: &MeltQuote,
+        projection: &FederationBarkProjectionSnapshot,
+        accepted_plan: &FederationJournalEntry,
+        accepted_htlcs: &FederationJournalEntry,
+        success: &FederationBarkActionTransition,
+        observation_epoch: u64,
+    ) -> Result<FederationBarkMemberObservation, Error> {
+        if observation_epoch == 0
+            || success.phase != FederationBarkSemanticPhase::PaymentSucceeded
+            || success.evidence_certificate.is_some()
+        {
+            return Err(Error::SendReconciliationFailed);
+        }
+        let plan = accepted_send_plan(accepted_plan)?;
+        let htlcs = accepted_send_transition(
+            accepted_htlcs,
+            FederationBarkSemanticPhase::SendHtlcsCosigned,
+        )?;
+        validate_send_transition_binding(&self.federation, accepted_plan, &plan, &htlcs)?;
+        validate_send_transition_binding(&self.federation, accepted_plan, &plan, success)?;
+        if success.predecessor_operation_id != accepted_htlcs.operation_id
+            || success.request_hash != htlcs.result_hash
+        {
+            return Err(Error::SendReconciliationFailed);
+        }
+        FederationBarkOperation::ActionTransition(success.clone())
+            .validate()
+            .map_err(|_| Error::SendReconciliationFailed)?;
+        let preimage = send_success_preimage(&plan, success)?;
+        let bark_plan = self.validate_lightning_send_plan(quote, projection, &plan)?;
+        self.wallet
+            .apply_lightning_send_succeeded(&bark_plan, preimage)
+            .await
+            .map_err(|_| Error::SendReconciliationFailed)?;
+        Ok(FederationBarkMemberObservation {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: plan.action_id,
+            quote: plan.quote.clone(),
+            observer: self.member_id,
+            observation_epoch,
+            source_scope: ark_server_commitment(&self.bark_application().ark_server_public_key)
+                .map_err(|_| Error::SendReconciliationFailed)?,
+            payment_hash: plan.payment_hash,
+            status: FederationBarkObservationStatus::Succeeded,
+            amount: plan.external_amount,
+            fee: plan.fee_amount,
+            result_hash: success.result_hash,
+        })
+    }
+
     fn lightning_send_failure_observation(
         &self,
         plan: &FederationBarkActionPlan,
