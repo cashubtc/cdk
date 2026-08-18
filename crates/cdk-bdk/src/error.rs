@@ -199,6 +199,13 @@ pub enum Error {
     #[error("Receive address not found: {0}")]
     ReceiveAddressNotFound(String),
 
+    /// No unreserved receive address was found within the retry limit.
+    #[error("Could not reserve a fresh receive address after {attempts} attempts")]
+    ReceiveAddressReservationExhausted {
+        /// Number of addresses derived before giving up.
+        attempts: usize,
+    },
+
     /// Database
     #[error("Database error")]
     BdkPersist,

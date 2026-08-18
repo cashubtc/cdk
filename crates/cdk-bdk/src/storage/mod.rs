@@ -1658,6 +1658,41 @@ mod tests {
         assert!(missing.is_none());
     }
 
+    #[tokio::test]
+    async fn test_track_receive_address_never_remaps_to_another_quote() {
+        let storage = test_storage().await;
+
+        let q1 = Uuid::new_v4().to_string();
+        let q2 = Uuid::new_v4().to_string();
+
+        let reserved = storage
+            .track_receive_address("bcrt1qaddr1", &q1)
+            .await
+            .expect("track addr1");
+        assert!(reserved);
+
+        // Same address, same quote: idempotent no-op.
+        let reserved = storage
+            .track_receive_address("bcrt1qaddr1", &q1)
+            .await
+            .expect("re-track addr1");
+        assert!(reserved);
+
+        // Same address, different quote: rejected, mapping unchanged.
+        let reserved = storage
+            .track_receive_address("bcrt1qaddr1", &q2)
+            .await
+            .expect("track addr1 for q2");
+        assert!(!reserved);
+
+        let fetched = storage
+            .get_quote_id_by_receive_address("bcrt1qaddr1")
+            .await
+            .expect("get by address")
+            .expect("should exist");
+        assert_eq!(fetched, q1);
+    }
+
     // ── Receive saga: intent CRUD tests ──────────────────────────────
 
     #[tokio::test]
