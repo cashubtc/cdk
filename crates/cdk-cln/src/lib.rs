@@ -54,6 +54,7 @@ pub struct Cln {
     rpc_socket: PathBuf,
     fee_reserve: FeeReserve,
     expose_private_channels: bool,
+    bolt12: bool,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
     kv_store: DynKVStore,
@@ -80,10 +81,17 @@ impl Cln {
             rpc_socket,
             fee_reserve,
             expose_private_channels,
+            bolt12: true,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             kv_store,
         })
+    }
+
+    /// Enable or disable BOLT12 support.
+    pub fn with_bolt12(mut self, bolt12: bool) -> Self {
+        self.bolt12 = bolt12;
+        self
     }
 }
 
@@ -100,7 +108,9 @@ impl MintPayment for Cln {
                 amountless: true,
                 invoice_description: true,
             }),
-            bolt12: Some(payment::Bolt12Settings { amountless: true }),
+            bolt12: self
+                .bolt12
+                .then_some(payment::Bolt12Settings { amountless: true }),
             onchain: None,
             custom: HashMap::new(),
         })
@@ -1425,6 +1435,7 @@ mod tests {
                 percent_fee_reserve: 0.0,
             },
             expose_private_channels: false,
+            bolt12: true,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             kv_store,

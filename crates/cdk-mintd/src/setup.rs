@@ -88,7 +88,8 @@ impl PaymentBackendSetup for config::Cln {
             self.expose_private_channels,
             kv_store.expect("Cln needs kv store"),
         )
-        .await?;
+        .await?
+        .with_bolt12(self.bolt12);
 
         Ok(cln)
     }
