@@ -2034,6 +2034,78 @@ async fn test_payment_error_with_pending_check_does_not_compensate() {
     assert_eq!(stored_quote.state, MeltQuoteState::Pending);
 }
 
+async fn assert_payment_error_with_terminal_follow_up_does_not_compensate(
+    follow_up_state: MeltQuoteState,
+) {
+    assert!(matches!(
+        follow_up_state,
+        MeltQuoteState::Failed | MeltQuoteState::Unpaid
+    ));
+
+    let mint = create_test_mint().await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote_with_description(
+        &mint,
+        Amount::from(9_000),
+        FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Unknown,
+            check_payment_state: follow_up_state,
+            pay_err: true,
+            check_err: false,
+        },
+    )
+    .await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup_saga = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+    let operation_id = setup_saga.operation_id;
+    let (payment_saga, decision) = setup_saga
+        .attempt_internal_settlement(&melt_request)
+        .await
+        .unwrap();
+
+    let outcome = payment_saga.make_payment(decision).await.unwrap();
+
+    assert!(matches!(outcome, PaymentOutcome::Pending { .. }));
+    assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
+    let pending_saga = assert_saga_exists(&mint, &operation_id).await;
+    assert_eq!(
+        pending_saga.state,
+        SagaStateEnum::Melt(MeltSagaState::PaymentPending),
+        "an untrusted terminal follow-up must leave the payment recoverable"
+    );
+    let stored_quote = mint
+        .localstore
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .expect("quote should remain persisted");
+    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
+}
+
+#[tokio::test]
+async fn test_payment_error_with_failed_check_does_not_compensate() {
+    assert_payment_error_with_terminal_follow_up_does_not_compensate(MeltQuoteState::Failed).await;
+}
+
+#[tokio::test]
+async fn test_payment_error_with_unpaid_check_does_not_compensate() {
+    assert_payment_error_with_terminal_follow_up_does_not_compensate(MeltQuoteState::Unpaid).await;
+}
+
 /// An Unknown dispatch result cannot be overridden by an immediate stale
 /// Unpaid read: the payment may still settle after the proofs are returned.
 #[tokio::test]
