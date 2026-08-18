@@ -13,7 +13,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cdk_integration_tests::cli::CommonArgs;
 use cdk_integration_tests::shared;
@@ -21,6 +21,7 @@ use cdk_mintd::config::AuthType;
 use clap::Parser;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(name = "start-fake-auth-mint")]
@@ -50,7 +51,7 @@ async fn start_fake_auth_mint(
     port: u16,
     openid_discovery: String,
     shutdown: Arc<Notify>,
-) -> Result<tokio::task::JoinHandle<()>> {
+) -> Result<(tokio::task::JoinHandle<Result<()>>, String)> {
     println!("Starting fake auth mintd on port {port}");
 
     // Create settings struct for fake mint with auth using shared function
@@ -93,8 +94,8 @@ async fn start_fake_auth_mint(
         websocket_auth: AuthType::Blind,
     });
 
-    // Set description for the mint
-    settings.mint_info.description = "fake test mint with auth".to_string();
+    let readiness_marker = format!("fake auth mint {}", Uuid::new_v4());
+    settings.mint_info.description = readiness_marker.clone();
 
     let temp_dir = temp_dir.to_path_buf();
     let shutdown_clone = shutdown.clone();
@@ -107,7 +108,7 @@ async fn start_fake_auth_mint(
             println!("Fake auth mint shutdown signal received");
         };
 
-        match cdk_mintd::run_mintd_with_shutdown(
+        let result = cdk_mintd::run_mintd_with_shutdown(
             &temp_dir,
             &settings,
             shutdown_future,
@@ -115,14 +116,17 @@ async fn start_fake_auth_mint(
             None,
             vec![],
         )
-        .await
-        {
+        .await;
+
+        match &result {
             Ok(_) => println!("Fake auth mint exited normally"),
-            Err(e) => eprintln!("Fake auth mint exited with error: {e}"),
+            Err(err) => eprintln!("Fake auth mint exited with error: {err}"),
         }
+
+        result
     });
 
-    Ok(handle)
+    Ok((handle, readiness_marker))
 }
 
 #[tokio::main]
@@ -138,7 +142,7 @@ async fn main() -> Result<()> {
     let shutdown = shared::create_shutdown_handler();
     let shutdown_clone = shutdown.clone();
 
-    let handle = start_fake_auth_mint(
+    let (mut handle, readiness_marker) = start_fake_auth_mint(
         &temp_dir,
         &args.database_type,
         args.port,
@@ -149,10 +153,20 @@ async fn main() -> Result<()> {
 
     let cancel_token = Arc::new(CancellationToken::new());
 
-    // Wait for fake auth mint to be ready
-    if let Err(e) = shared::wait_for_mint_ready_with_shutdown(args.port, 100, cancel_token).await {
-        eprintln!("Error waiting for fake auth mint: {e}");
-        return Err(e);
+    tokio::select! {
+        ready = shared::wait_for_mint_ready_with_description_and_shutdown(
+            args.port,
+            100,
+            cancel_token,
+            &readiness_marker,
+        ) => ready?,
+        task_result = &mut handle => {
+            match task_result {
+                Ok(Ok(())) => bail!("Fake auth mint exited before becoming ready"),
+                Ok(Err(err)) => return Err(err),
+                Err(err) => return Err(err.into()),
+            }
+        }
     }
 
     println!("Fake auth mint started successfully!");
@@ -177,8 +191,10 @@ async fn main() -> Result<()> {
     println!("\nReceived Ctrl+C, shutting down mint...");
 
     // Wait for mint to finish gracefully
-    if let Err(e) = handle.await {
-        eprintln!("Error waiting for mint to shut down: {e}");
+    match handle.await {
+        Ok(Ok(())) => (),
+        Ok(Err(err)) => eprintln!("Fake auth mint exited with error: {err}"),
+        Err(err) => eprintln!("Error waiting for mint to shut down: {err}"),
     }
 
     println!("Mint shut down successfully");

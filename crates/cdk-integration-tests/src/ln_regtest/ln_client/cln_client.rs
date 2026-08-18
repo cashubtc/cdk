@@ -35,6 +35,24 @@ pub struct ClnClient {
     pub rpc_path: PathBuf,
 }
 
+fn reconcile_outgoing_payment_status<I>(statuses: I) -> InvoiceStatus
+where
+    I: IntoIterator<Item = ListpaysPaysStatus>,
+{
+    let status = statuses.into_iter().min_by_key(|status| match status {
+        ListpaysPaysStatus::COMPLETE => 0_u8,
+        ListpaysPaysStatus::PENDING => 1,
+        ListpaysPaysStatus::FAILED => 2,
+    });
+
+    match status {
+        Some(ListpaysPaysStatus::COMPLETE) => InvoiceStatus::Paid,
+        Some(ListpaysPaysStatus::PENDING) => InvoiceStatus::Pending,
+        Some(ListpaysPaysStatus::FAILED) => InvoiceStatus::Failed,
+        None => InvoiceStatus::Unpaid,
+    }
+}
+
 impl ClnClient {
     async fn reconnect(&self) -> Result<()> {
         let cln_client = cln_rpc::ClnRpc::new(&self.rpc_path).await?;
@@ -617,18 +635,9 @@ impl LightningClient for ClnClient {
             .await?;
 
         let state = match cln_response {
-            cln_rpc::Response::ListPays(pay_response) => {
-                let pay = pay_response.pays.first();
-
-                match pay {
-                    Some(pay) => match pay.status {
-                        ListpaysPaysStatus::COMPLETE => InvoiceStatus::Paid,
-                        ListpaysPaysStatus::PENDING => InvoiceStatus::Pending,
-                        ListpaysPaysStatus::FAILED => InvoiceStatus::Failed,
-                    },
-                    None => InvoiceStatus::Unpaid,
-                }
-            }
+            cln_rpc::Response::ListPays(pay_response) => reconcile_outgoing_payment_status(
+                pay_response.pays.into_iter().map(|pay| pay.status),
+            ),
             _ => {
                 bail!("Wrong cln response")
             }
@@ -711,5 +720,35 @@ pub fn amount_for_offer(offer: &Offer) -> Result<Amount> {
         } => {
             bail!("Unsupported unit")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outgoing_payment_status_prefers_complete_over_stale_failure() {
+        let status = reconcile_outgoing_payment_status([
+            ListpaysPaysStatus::FAILED,
+            ListpaysPaysStatus::COMPLETE,
+        ]);
+
+        assert_eq!(status, InvoiceStatus::Paid);
+    }
+
+    #[test]
+    fn outgoing_payment_status_prefers_pending_over_failure() {
+        let status = reconcile_outgoing_payment_status([
+            ListpaysPaysStatus::FAILED,
+            ListpaysPaysStatus::PENDING,
+        ]);
+
+        assert_eq!(status, InvoiceStatus::Pending);
+    }
+
+    #[test]
+    fn outgoing_payment_status_is_unpaid_without_attempts() {
+        assert_eq!(reconcile_outgoing_payment_status([]), InvoiceStatus::Unpaid);
     }
 }

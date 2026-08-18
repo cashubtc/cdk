@@ -34,6 +34,31 @@ pub async fn wait_for_mint_ready_with_shutdown(
     timeout_secs: u64,
     shutdown_notify: Arc<CancellationToken>,
 ) -> Result<()> {
+    wait_for_mint_ready(port, timeout_secs, shutdown_notify, None).await
+}
+
+/// Wait for a mint with the expected description to be ready.
+pub async fn wait_for_mint_ready_with_description_and_shutdown(
+    port: u16,
+    timeout_secs: u64,
+    shutdown_notify: Arc<CancellationToken>,
+    expected_description: &str,
+) -> Result<()> {
+    wait_for_mint_ready(
+        port,
+        timeout_secs,
+        shutdown_notify,
+        Some(expected_description),
+    )
+    .await
+}
+
+async fn wait_for_mint_ready(
+    port: u16,
+    timeout_secs: u64,
+    shutdown_notify: Arc<CancellationToken>,
+    expected_description: Option<&str>,
+) -> Result<()> {
     let url = format!("http://127.0.0.1:{port}/v1/info");
     let start_time = std::time::Instant::now();
     let http_client = cdk_common::HttpClient::new();
@@ -56,8 +81,33 @@ pub async fn wait_for_mint_ready_with_shutdown(
                 match result {
                     Ok(response) => {
                         if response.is_success() {
-                            println!("Mint on port {port} is ready");
-                            return Ok(());
+                            match expected_description {
+                                Some(expected_description) => {
+                                    match response.json::<cdk::nuts::MintInfo>().await {
+                                        Ok(info)
+                                            if info.description.as_deref()
+                                                == Some(expected_description) =>
+                                        {
+                                            println!("Mint on port {port} is ready");
+                                            return Ok(());
+                                        }
+                                        Ok(_) => {
+                                            println!(
+                                                "Service on port {port} is not the expected mint"
+                                            );
+                                        }
+                                        Err(err) => {
+                                            println!(
+                                                "Could not decode mint info from port {port}: {err}"
+                                            );
+                                        }
+                                    }
+                                }
+                                None => {
+                                    println!("Mint on port {port} is ready");
+                                    return Ok(());
+                                }
+                            }
                         } else {
                             println!(
                                 "Mint on port {} returned status: {}",
