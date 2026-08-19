@@ -652,7 +652,10 @@ impl Transaction {
     /// Legacy transactions without a saga ID retain their proof-derived ID.
     pub fn id(&self) -> TransactionId {
         match self.saga_id {
-            Some(saga_id) => TransactionId::from_saga_id(saga_id),
+            Some(saga_id) => match self.metadata.get("batch_quote_id") {
+                Some(quote_id) => TransactionId::from_batch_quote(saga_id, quote_id),
+                None => TransactionId::from_saga_id(saga_id),
+            },
             None => TransactionId::new(self.ys.clone()),
         }
     }
@@ -806,6 +809,14 @@ impl TransactionId {
             *destination = source;
         }
         Self(bytes)
+    }
+
+    /// Create a stable transaction ID for one quote within a batch saga.
+    pub fn from_batch_quote(saga_id: Uuid, quote_id: &str) -> Self {
+        let mut hasher = sha256::Hash::engine();
+        hasher.input(saga_id.as_bytes());
+        hasher.input(quote_id.as_bytes());
+        Self(sha256::Hash::from_engine(hasher).to_byte_array())
     }
 
     /// From bytes
@@ -1419,6 +1430,20 @@ mod tests {
             transaction_id.as_bytes(),
             b"019fa338b72f7f219bb2a504cdd5927b"
         );
+    }
+
+    #[test]
+    fn batch_quote_transaction_ids_are_stable_and_distinct() {
+        let saga_id =
+            Uuid::parse_str("019fa338-b72f-7f21-9bb2-a504cdd5927b").expect("valid saga ID");
+
+        let first = TransactionId::from_batch_quote(saga_id, "quote-a");
+        let first_again = TransactionId::from_batch_quote(saga_id, "quote-a");
+        let second = TransactionId::from_batch_quote(saga_id, "quote-b");
+
+        assert_eq!(first, first_again);
+        assert_ne!(first, second);
+        assert_ne!(first, TransactionId::from_saga_id(saga_id));
     }
 
     #[test]

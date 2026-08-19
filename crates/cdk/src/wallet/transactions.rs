@@ -64,26 +64,39 @@ impl Wallet {
             .await?
             .filter(|transaction| self.transaction_matches_wallet(transaction));
 
-        let Some(mut transaction) = transaction else {
-            return Ok(false);
+        let transactions = match transaction {
+            Some(transaction) => vec![transaction],
+            None => self
+                .localstore
+                .list_transactions(Some(self.mint_url.clone()), None, Some(self.unit.clone()))
+                .await?
+                .into_iter()
+                .filter(|transaction| transaction.saga_id == Some(saga_id))
+                .collect(),
         };
 
-        if transaction.status == status {
-            return Ok(true);
-        }
-
-        if transaction.status != TransactionStatus::Pending {
-            tracing::warn!(
-                saga_id = %saga_id,
-                current_status = %transaction.status,
-                requested_status = %status,
-                "Ignoring transaction status change from terminal state"
-            );
+        if transactions.is_empty() {
             return Ok(false);
         }
 
-        transaction.status = status;
-        self.localstore.add_transaction(transaction).await?;
+        for mut transaction in transactions {
+            if transaction.status == status {
+                continue;
+            }
+
+            if transaction.status != TransactionStatus::Pending {
+                tracing::warn!(
+                    saga_id = %saga_id,
+                    current_status = %transaction.status,
+                    requested_status = %status,
+                    "Ignoring transaction status change from terminal state"
+                );
+                continue;
+            }
+
+            transaction.status = status;
+            self.localstore.add_transaction(transaction).await?;
+        }
         Ok(true)
     }
 

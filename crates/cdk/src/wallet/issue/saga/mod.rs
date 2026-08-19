@@ -647,59 +647,62 @@ impl<'a> MintSaga<'a, Initial> {
             .get_keyset_fees_and_amounts_by_id_with_policy(active_keyset_id, keyset_policy)
             .await?;
 
-        // Create premint secrets for total amount
-        let split_target = match amount_split_target {
-            SplitTarget::None => {
-                self.wallet
-                    .determine_split_target_values(total_amount, &fee_and_amounts)
-                    .await?
-            }
-            s => s,
-        };
+        // Generate a consecutive output segment for each quote. NUT-29 sends
+        // one shared output list, so retaining these boundaries is what lets
+        // transaction history and crash recovery attribute proofs correctly.
+        let mut premint_secrets = PreMintSecrets::new(active_keyset_id);
+        let mut output_counts = Vec::with_capacity(quote_amounts.len());
+        for quote_amount in &quote_amounts {
+            let split_target = match &amount_split_target {
+                SplitTarget::None => {
+                    self.wallet
+                        .determine_split_target_values(*quote_amount, &fee_and_amounts)
+                        .await?
+                }
+                split_target => split_target.clone(),
+            };
 
-        let premint_secrets = match &spending_conditions {
-            Some(sc) => PreMintSecrets::with_conditions(
-                active_keyset_id,
-                total_amount,
-                &split_target,
-                sc,
-                &fee_and_amounts,
-            )?,
-            None => {
-                let amount_split = total_amount.split_targeted(&split_target, &fee_and_amounts)?;
-                let num_secrets = amount_split.len() as u32;
-
-                tracing::debug!(
-                    "Incrementing keyset {} counter by {}",
+            let quote_secrets = match &spending_conditions {
+                Some(sc) => PreMintSecrets::with_conditions(
                     active_keyset_id,
-                    num_secrets
-                );
-
-                let new_counter = self
-                    .wallet
-                    .localstore
-                    .increment_keyset_counter(&active_keyset_id, num_secrets)
-                    .await?;
-
-                let count = new_counter - num_secrets;
-
-                PreMintSecrets::from_seed(
-                    active_keyset_id,
-                    count,
-                    &self.wallet.seed,
-                    total_amount,
+                    *quote_amount,
                     &split_target,
+                    sc,
                     &fee_and_amounts,
-                )?
-            }
-        };
+                )?,
+                None => {
+                    let amount_split =
+                        quote_amount.split_targeted(&split_target, &fee_and_amounts)?;
+                    let num_secrets =
+                        u32::try_from(amount_split.len()).map_err(|_| Error::AmountOverflow)?;
+                    let new_counter = self
+                        .wallet
+                        .localstore
+                        .increment_keyset_counter(&active_keyset_id, num_secrets)
+                        .await?;
+                    let count = new_counter - num_secrets;
+
+                    PreMintSecrets::from_seed(
+                        active_keyset_id,
+                        count,
+                        &self.wallet.seed,
+                        *quote_amount,
+                        &split_target,
+                        &fee_and_amounts,
+                    )?
+                }
+            };
+
+            output_counts.push(quote_secrets.len());
+            premint_secrets.secrets.extend(quote_secrets.secrets);
+        }
 
         let outputs = premint_secrets.blinded_messages();
 
         // Create batch mint request
         let mut batch_request = BatchMintRequest {
             quotes: quote_ids.iter().map(|s| s.to_string()).collect(),
-            quote_amounts: Some(quote_amounts),
+            quote_amounts: Some(quote_amounts.clone()),
             outputs: outputs.clone(),
             signatures: None,
         };
@@ -758,12 +761,14 @@ impl<'a> MintSaga<'a, Initial> {
             total_amount,
             self.wallet.mint_url.clone(),
             self.wallet.unit.clone(),
-            OperationData::Mint(MintOperationData::new_batch(
+            OperationData::Mint(MintOperationData::new_partitioned_batch(
                 quote_ids.iter().map(|s| s.to_string()).collect(),
                 total_amount,
                 Some(counter_start),
                 Some(counter_end),
                 Some(outputs),
+                output_counts.clone(),
+                quote_amounts,
             )),
         );
 
@@ -790,6 +795,7 @@ impl<'a> MintSaga<'a, Initial> {
                 mint_request: PreparedMintRequest::Batch {
                     quote_ids: quote_ids.iter().map(|s| s.to_string()).collect(),
                     quote_infos,
+                    output_counts,
                     request: batch_request,
                 },
                 payment_method,
@@ -824,21 +830,27 @@ impl<'a> MintSaga<'a, Prepared> {
             saga,
         } = state_data;
 
-        let (quote_ids, quote_infos, batch_quote_amounts) = match &mint_request {
+        let (quote_ids, quote_infos, batch_quote_amounts, output_counts) = match &mint_request {
             PreparedMintRequest::Single {
                 quote_id,
                 quote_info,
                 ..
-            } => (vec![quote_id.clone()], vec![quote_info.clone()], None),
+            } => (
+                vec![quote_id.clone()],
+                vec![quote_info.clone()],
+                None,
+                vec![premint_secrets.len()],
+            ),
             PreparedMintRequest::Batch {
                 quote_ids,
                 quote_infos,
+                output_counts,
                 request,
-                ..
             } => (
                 quote_ids.clone(),
                 quote_infos.clone(),
                 request.quote_amounts.clone(),
+                output_counts.clone(),
             ),
         };
 
@@ -880,31 +892,50 @@ impl<'a> MintSaga<'a, Prepared> {
                 .iter()
                 .map(|pre_mint| hash_to_curve(pre_mint.secret.as_bytes()))
                 .collect::<Result<Vec<_>, _>>()?;
-            let first_quote_id = quote_ids.first().cloned();
-            let first_quote_request = quote_infos
-                .first()
-                .map(|quote| quote.request.clone())
-                .unwrap_or_default();
+            let is_batch = quote_ids.len() > 1;
+            let mut output_offset: usize = 0;
+            for (index, (quote_id, quote_info)) in quote_ids.iter().zip(&quote_infos).enumerate() {
+                let output_count = output_counts
+                    .get(index)
+                    .copied()
+                    .ok_or(Error::AmountUndefined)?;
+                let output_end = output_offset
+                    .checked_add(output_count)
+                    .ok_or(Error::AmountOverflow)?;
+                let ys = transaction_ys
+                    .get(output_offset..output_end)
+                    .ok_or(Error::AmountUndefined)?
+                    .to_vec();
+                output_offset = output_end;
+                let amount = batch_quote_amounts
+                    .as_ref()
+                    .and_then(|amounts| amounts.get(index))
+                    .copied()
+                    .unwrap_or(saga.amount);
+                let mut metadata = HashMap::new();
+                if is_batch {
+                    metadata.insert("batch_quote_id".to_string(), quote_id.clone());
+                }
 
-            wallet
-                .upsert_transaction(Transaction {
+                wallet.upsert_transaction(Transaction {
                     mint_url: wallet.mint_url.clone(),
                     direction: TransactionDirection::Incoming,
-                    amount: saga.amount,
+                    amount,
                     fee: Amount::ZERO,
                     unit: wallet.unit.clone(),
-                    ys: transaction_ys,
+                    ys,
                     timestamp: unix_time(),
                     memo: None,
-                    metadata: HashMap::new(),
-                    quote_id: first_quote_id.clone(),
-                    payment_request: Some(first_quote_request.clone()),
+                    metadata,
+                    quote_id: Some(quote_id.clone()),
+                    payment_request: Some(quote_info.request.clone()),
                     payment_proof: None,
                     payment_method: Some(payment_method.clone()),
                     saga_id: Some(operation_id),
                     status: TransactionStatus::Pending,
                 })
                 .await?;
+            }
 
             let mint_res =
                 post_mint_request_with_legacy_fallback(wallet, &payment_method, &mint_request)
@@ -934,7 +965,7 @@ impl<'a> MintSaga<'a, Prepared> {
 
             // Extract first quote info before consuming quote_infos
             // Update quote states - for batch, update each quote with its own amount.
-            for (index, mut quote_info) in quote_infos.into_iter().enumerate() {
+            for (index, mut quote_info) in quote_infos.iter().cloned().enumerate() {
                 if payment_method == PaymentMethod::Known(KnownMethod::Bolt11) {
                     quote_info.state = cdk_common::MintQuoteState::Issued;
                 }
@@ -966,26 +997,50 @@ impl<'a> MintSaga<'a, Prepared> {
 
             wallet.localstore.update_proofs(proof_infos, vec![]).await?;
 
-            // For transaction, use the first quote's request
-            wallet
-                .upsert_transaction(Transaction {
+            let proof_ys = proofs.ys()?;
+            let mut output_offset: usize = 0;
+            for (index, (quote_id, quote_info)) in quote_ids.iter().zip(&quote_infos).enumerate() {
+                let output_count = output_counts
+                    .get(index)
+                    .copied()
+                    .ok_or(Error::AmountUndefined)?;
+                let output_end = output_offset
+                    .checked_add(output_count)
+                    .ok_or(Error::AmountOverflow)?;
+                let ys = proof_ys
+                    .get(output_offset..output_end)
+                    .ok_or(Error::AmountUndefined)?
+                    .to_vec();
+                output_offset = output_end;
+                let amount = batch_quote_amounts
+                    .as_ref()
+                    .and_then(|amounts| amounts.get(index))
+                    .copied()
+                    .unwrap_or(minted_amount);
+                let mut metadata = HashMap::new();
+                if is_batch {
+                    metadata.insert("batch_quote_id".to_string(), quote_id.clone());
+                }
+
+                wallet.upsert_transaction(Transaction {
                     mint_url: wallet.mint_url.clone(),
                     direction: TransactionDirection::Incoming,
-                    amount: minted_amount,
+                    amount,
                     fee: Amount::ZERO,
                     unit: wallet.unit.clone(),
-                    ys: proofs.ys()?,
+                    ys,
                     timestamp: unix_time(),
                     memo: None,
-                    metadata: HashMap::new(),
-                    quote_id: first_quote_id,
-                    payment_request: Some(first_quote_request),
+                    metadata,
+                    quote_id: Some(quote_id.clone()),
+                    payment_request: Some(quote_info.request.clone()),
                     payment_proof: None,
                     payment_method: Some(payment_method.clone()),
                     saga_id: Some(operation_id),
                     status: TransactionStatus::Completed,
                 })
                 .await?;
+            }
 
             // Release all mint quote reservations - operation completed successfully
             if let Err(e) = wallet.localstore.release_mint_quote(&operation_id).await {
