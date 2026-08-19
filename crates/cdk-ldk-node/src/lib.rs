@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bip39::Mnemonic;
@@ -43,6 +44,10 @@ const LDK_KV_PRIMARY_NAMESPACE: &str = "cdk_ldk_node_lightning_backend";
 /// Secondary KV namespace holding the bolt12 melt quote id -> payment id
 /// mapping used to resolve `PaymentIdentifier::QuoteId` lookups
 const LDK_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE: &str = "bolt12_outgoing_payments";
+/// Maximum time a synchronous payment request waits for an LDK terminal event
+const PAYMENT_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Capacity for terminal outgoing payment notifications
+const PAYMENT_EVENT_CHANNEL_CAPACITY: usize = 64;
 
 /// Result of looking up the payment id recorded for a bolt12 melt quote
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +109,7 @@ pub struct CdkLdkNode {
     wait_invoice_is_active: Arc<AtomicBool>,
     sender: tokio::sync::broadcast::Sender<WaitPaymentResponse>,
     receiver: Arc<tokio::sync::broadcast::Receiver<WaitPaymentResponse>>,
+    outgoing_payment_sender: tokio::sync::broadcast::Sender<PaymentId>,
     events_cancel_token: CancellationToken,
     web_addr: Option<SocketAddr>,
 }
@@ -327,6 +333,8 @@ impl CdkLdkNodeBuilder {
 
         tracing::info!("Creating tokio channel for payment notifications");
         let (sender, receiver) = tokio::sync::broadcast::channel(8);
+        let (outgoing_payment_sender, _) =
+            tokio::sync::broadcast::channel(PAYMENT_EVENT_CHANNEL_CAPACITY);
 
         let id = node.node_id();
 
@@ -347,6 +355,7 @@ impl CdkLdkNodeBuilder {
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             sender,
             receiver: Arc::new(receiver),
+            outgoing_payment_sender,
             events_cancel_token: CancellationToken::new(),
             web_addr: None,
         })
@@ -432,6 +441,70 @@ impl CdkLdkNode {
                 std::cmp::Reverse(details.latest_update_timestamp),
             )
         })
+    }
+
+    async fn wait_for_terminal_payment_event(
+        receiver: &mut tokio::sync::broadcast::Receiver<PaymentId>,
+        payment_id: PaymentId,
+    ) -> Result<(), tokio::sync::broadcast::error::RecvError> {
+        loop {
+            match receiver.recv().await {
+                Ok(completed_payment_id) if completed_payment_id == payment_id => return Ok(()),
+                Ok(_) => continue,
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    async fn wait_for_payment_terminal_status(
+        &self,
+        payment_id: PaymentId,
+        mut receiver: tokio::sync::broadcast::Receiver<PaymentId>,
+    ) -> Result<PaymentDetails, payment::Error> {
+        let payment_details = self
+            .inner
+            .payment(&payment_id)
+            .ok_or(Error::PaymentNotFound)?;
+
+        if payment_details.status != PaymentStatus::Pending {
+            return Ok(payment_details);
+        }
+
+        match tokio::time::timeout(
+            PAYMENT_WAIT_TIMEOUT,
+            Self::wait_for_terminal_payment_event(&mut receiver, payment_id),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    payment_id = %payment_id,
+                    "Could not wait for terminal LDK payment event: {err}"
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    payment_id = %payment_id,
+                    "Payment did not reach a terminal state within {} seconds",
+                    PAYMENT_WAIT_TIMEOUT.as_secs()
+                );
+            }
+        }
+
+        let payment_details = self
+            .inner
+            .payment(&payment_id)
+            .ok_or(Error::PaymentNotFound)?;
+
+        if payment_details.status == PaymentStatus::Pending {
+            tracing::debug!(
+                payment_id = %payment_id,
+                "Payment remains pending after waiting for a terminal event"
+            );
+        }
+
+        Ok(payment_details)
     }
 
     /// Start the CDK LDK Node
@@ -598,6 +671,7 @@ impl CdkLdkNode {
     pub fn handle_events(&self) -> Result<(), Error> {
         let node = self.inner.clone();
         let sender = self.sender.clone();
+        let outgoing_payment_sender = self.outgoing_payment_sender.clone();
         let cancel_token = self.events_cancel_token.clone();
 
         tracing::info!("Starting event handler task");
@@ -626,6 +700,21 @@ impl CdkLdkNode {
                                     amount_msat
                                 ).await;
                             }
+                            Event::PaymentSuccessful {
+                                payment_id,
+                                payment_hash,
+                                payment_preimage: _,
+                                fee_paid_msat: _,
+                            } => {
+                                tracing::info!(
+                                    payment_id = ?payment_id,
+                                    payment_hash = %payment_hash,
+                                    "LDK node payment succeeded"
+                                );
+                                if let Some(payment_id) = payment_id {
+                                    let _ = outgoing_payment_sender.send(payment_id);
+                                }
+                            }
                             Event::PaymentFailed {
                                 payment_id,
                                 payment_hash,
@@ -637,6 +726,9 @@ impl CdkLdkNode {
                                     reason = ?reason,
                                     "LDK node payment failed"
                                 );
+                                if let Some(payment_id) = payment_id {
+                                    let _ = outgoing_payment_sender.send(payment_id);
+                                }
                             }
                             event => {
                                 tracing::debug!("Received other ldk node event: {:?}", event);
@@ -953,6 +1045,10 @@ impl MintPayment for CdkLdkNode {
                     }
                 };
 
+                // Subscribe before dispatch so an immediately completed
+                // payment cannot race ahead of the waiter.
+                let payment_event_receiver = self.outgoing_payment_sender.subscribe();
+
                 let payment_id = match bolt11_options.melt_options {
                     Some(MeltOptions::Amountless { amountless }) => {
                         if let Some(invoice_amount) = bolt11.amount_milli_satoshis() {
@@ -980,34 +1076,13 @@ impl MintPayment for CdkLdkNode {
                     _ => return Err(payment::Error::UnsupportedPaymentOption),
                 };
 
-                // Check payment status for up to 10 seconds
-                let start = std::time::Instant::now();
-                let timeout = std::time::Duration::from_secs(10);
+                let payment_details = self
+                    .wait_for_payment_terminal_status(payment_id, payment_event_receiver)
+                    .await?;
 
-                let payment_details = loop {
-                    let details = self
-                        .inner
-                        .payment(&payment_id)
-                        .ok_or(Error::PaymentNotFound)?;
-
-                    match details.status {
-                        PaymentStatus::Succeeded => break details,
-                        PaymentStatus::Failed => {
-                            tracing::error!("Failed to pay bolt11 payment.");
-                            break details;
-                        }
-                        PaymentStatus::Pending => {
-                            if start.elapsed() > timeout {
-                                tracing::warn!(
-                                    "Paying bolt11 exceeded timeout 10 seconds no longer waitning."
-                                );
-                                break details;
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                            continue;
-                        }
-                    }
-                };
+                if payment_details.status == PaymentStatus::Failed {
+                    tracing::error!(payment_id = %payment_id, "Bolt11 payment failed");
+                }
 
                 Self::make_payment_response_from_details(
                     unit,
@@ -1044,6 +1119,10 @@ impl MintPayment for CdkLdkNode {
                 // mapping). The payment must not be attempted unless this
                 // marker is durable.
                 write_bolt12_quote_payment_id(&self.kv_store, &quote_id, None).await?;
+
+                // BOLT12 payment ids are assigned by `send`, so subscribe
+                // first and filter the queued terminal events once it returns.
+                let payment_event_receiver = self.outgoing_payment_sender.subscribe();
 
                 let payment_id = match bolt12_options.melt_options {
                     Some(MeltOptions::Amountless { amountless }) => {
@@ -1098,40 +1177,19 @@ impl MintPayment for CdkLdkNode {
                     );
                 }
 
-                // Check payment status for up to 10 seconds
-                let start = std::time::Instant::now();
-                let timeout = std::time::Duration::from_secs(10);
+                let payment_details = self
+                    .wait_for_payment_terminal_status(payment_id, payment_event_receiver)
+                    .await?;
 
-                let payment_details = loop {
-                    let details = self
-                        .inner
-                        .payment(&payment_id)
-                        .ok_or(Error::PaymentNotFound)?;
-
-                    match details.status {
-                        PaymentStatus::Succeeded => break details,
-                        PaymentStatus::Failed => {
-                            tracing::error!(
-                                payment_id = %payment_id,
-                                amount_msat = ?details.amount_msat,
-                                fee_paid_msat = ?details.fee_paid_msat,
-                                payment_kind = ?details.kind,
-                                "Bolt12 payment failed"
-                            );
-                            break details;
-                        }
-                        PaymentStatus::Pending => {
-                            if start.elapsed() > timeout {
-                                tracing::warn!(
-                                    "Payment has been being for 10 seconds. No longer waiting"
-                                );
-                                break details;
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                            continue;
-                        }
-                    }
-                };
+                if payment_details.status == PaymentStatus::Failed {
+                    tracing::error!(
+                        payment_id = %payment_id,
+                        amount_msat = ?payment_details.amount_msat,
+                        fee_paid_msat = ?payment_details.fee_paid_msat,
+                        payment_kind = ?payment_details.kind,
+                        "Bolt12 payment failed"
+                    );
+                }
 
                 Self::make_payment_response_from_details(
                     unit,
@@ -1619,6 +1677,40 @@ mod tests {
 
         assert_eq!(selected.id, PaymentId([2; 32]));
         assert_eq!(selected.status, PaymentStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn terminal_payment_event_wait_ignores_other_payments() {
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(4);
+        let payment_id = PaymentId([2; 32]);
+
+        // Queue both events before entering the wait to exercise the race where
+        // LDK completes immediately after dispatch returns.
+        sender
+            .send(PaymentId([1; 32]))
+            .expect("receiver should be subscribed");
+        sender
+            .send(payment_id)
+            .expect("receiver should be subscribed");
+
+        CdkLdkNode::wait_for_terminal_payment_event(&mut receiver, payment_id)
+            .await
+            .expect("matching terminal event should wake the waiter");
+    }
+
+    #[tokio::test]
+    async fn terminal_payment_event_wait_reports_closed_channel() {
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(1);
+        drop(sender);
+
+        let err = CdkLdkNode::wait_for_terminal_payment_event(&mut receiver, PaymentId([2; 32]))
+            .await
+            .expect_err("a closed event channel should stop the wait");
+
+        assert!(matches!(
+            err,
+            tokio::sync::broadcast::error::RecvError::Closed
+        ));
     }
 
     #[test]
