@@ -83,7 +83,7 @@ The project is split up into several crates in the `crates/` directory:
 | [13][13] | Deterministic secrets | :heavy_check_mark: |
 | [14][14] | Hashed Timelock Contracts (HTLCs) | :heavy_check_mark: |
 | [15][15] | Partial multi-path payments (MPP) | :heavy_check_mark: |
-| [16][16] | Animated QR codes | :x: |
+| [16][16] | Animated QR codes | :heavy_check_mark: |
 | [17][17] | WebSocket subscriptions  | :heavy_check_mark: |
 | [18][18] | Payment Requests  | :heavy_check_mark: |
 | [19][19] | Cached responses  | :heavy_check_mark: |
