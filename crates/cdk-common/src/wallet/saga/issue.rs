@@ -64,6 +64,12 @@ pub struct MintOperationData {
     /// we can use these to query the mint for signatures and reconstruct proofs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blinded_messages: Option<Vec<BlindedMessage>>,
+    /// Number of consecutive blinded messages assigned to each batch quote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_output_counts: Option<Vec<usize>>,
+    /// Amount issued for each batch quote, in quote order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_quote_amounts: Option<Vec<crate::Amount>>,
 }
 
 impl MintOperationData {
@@ -83,6 +89,8 @@ impl MintOperationData {
             counter_start,
             counter_end,
             blinded_messages,
+            batch_output_counts: None,
+            batch_quote_amounts: None,
         }
     }
 
@@ -104,6 +112,33 @@ impl MintOperationData {
             counter_start,
             counter_end,
             blinded_messages,
+            batch_output_counts: None,
+            batch_quote_amounts: None,
+        }
+    }
+
+    /// Create operation data for a partitioned batch mint operation.
+    pub fn new_partitioned_batch(
+        quote_ids: Vec<String>,
+        amount: crate::Amount,
+        counter_start: Option<u32>,
+        counter_end: Option<u32>,
+        blinded_messages: Option<Vec<BlindedMessage>>,
+        batch_output_counts: Vec<usize>,
+        batch_quote_amounts: Vec<crate::Amount>,
+    ) -> Self {
+        let quote_id = quote_ids.first().cloned().unwrap_or_default();
+
+        Self {
+            quote_id,
+            quote_ids: Some(quote_ids),
+            is_batch: Some(true),
+            amount,
+            counter_start,
+            counter_end,
+            blinded_messages,
+            batch_output_counts: Some(batch_output_counts),
+            batch_quote_amounts: Some(batch_quote_amounts),
         }
     }
 
