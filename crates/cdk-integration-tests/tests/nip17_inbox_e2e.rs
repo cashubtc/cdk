@@ -197,7 +197,8 @@ async fn nip17_inbox_receives_unwrapped_rumor_and_survives_restart() {
         .await
         .expect("start inbox");
 
-    let content_one = r#"{"id":"request-one","mint":"http://localhost:3338","unit":"sat","proofs":[]}"#;
+    let content_one =
+        r#"{"id":"request-one","mint":"http://localhost:3338","unit":"sat","proofs":[]}"#;
     let wrap_one = publish_gift_wrap(&relay_url, &sender, &receiver, content_one).await;
     assert!(
         wait_for_gift_wrap(&relay_url, wrap_one, Duration::from_secs(10)).await,
@@ -218,7 +219,8 @@ async fn nip17_inbox_receives_unwrapped_rumor_and_survives_restart() {
     // the window).
     inbox.stop();
 
-    let content_two = r#"{"id":"request-two","mint":"http://localhost:3338","unit":"sat","proofs":[]}"#;
+    let content_two =
+        r#"{"id":"request-two","mint":"http://localhost:3338","unit":"sat","proofs":[]}"#;
     let wrap_two = publish_gift_wrap(&relay_url, &sender, &receiver, content_two).await;
     assert!(
         wait_for_gift_wrap(&relay_url, wrap_two, Duration::from_secs(10)).await,
