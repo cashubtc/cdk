@@ -2541,4 +2541,16 @@ mod tests {
             Amount::from(5)
         );
     }
+
+    /// A keyset may advertise a zero denomination. Dividing by it panics, so
+    /// the split rejects the keyset instead of trusting it.
+    #[test]
+    fn test_split_rejects_zero_denomination() {
+        let fee_and_amounts: FeeAndAmounts = (0, vec![0, 1, 2]).into();
+
+        assert!(matches!(
+            Amount::from(3).split(&fee_and_amounts),
+            Err(Error::InvalidAmount(_))
+        ));
+    }
 }

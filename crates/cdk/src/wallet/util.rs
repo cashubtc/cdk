@@ -179,7 +179,7 @@ mod tests {
 
     fn make_p2pk_proof(pubkey: PublicKey) -> Proof {
         let spending_conditions = SpendingConditions::new_p2pk(pubkey, None);
-        let nut10_secret: crate::nuts::nut10::Secret = spending_conditions.into();
+        let nut10_secret: crate::nuts::nut10::Secret = spending_conditions.try_into().unwrap();
         let secret: crate::secret::Secret = nut10_secret.try_into().unwrap();
         Proof::new(
             Amount::from(1),

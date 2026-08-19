@@ -1226,7 +1226,7 @@ mod tests {
     fn test_p2pk_proof(keyset_id: crate::nuts::Id, amount: u64) -> Proof {
         let secret_key = SecretKey::generate();
         let spending_conditions = SpendingConditions::new_p2pk(secret_key.public_key(), None);
-        let nut10_secret: crate::nuts::nut10::Secret = spending_conditions.into();
+        let nut10_secret: crate::nuts::nut10::Secret = spending_conditions.try_into().unwrap();
         let secret: crate::secret::Secret = nut10_secret.try_into().unwrap();
         let mut proof = test_proof(keyset_id, amount);
         proof.secret = secret;

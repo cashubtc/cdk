@@ -1074,9 +1074,19 @@ impl PreMintSecrets {
         ephemeral_keys: &[crate::nuts::nut01::SecretKey],
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
+        use crate::nuts::nut10::spending_conditions::{check_locking_slots, validate_p2pk};
         use crate::nuts::nut28::{blind_public_key, ecdh_kdf};
 
         let amount_split = amount.split_targeted(amount_split_target, fee_and_amounts)?;
+
+        validate_p2pk(receiver_pubkey, conditions.as_ref())?;
+
+        if let Some(conditions) = conditions.as_ref() {
+            check_locking_slots(
+                conditions.pubkeys.as_ref().map(Vec::len).unwrap_or(0),
+                conditions.refund_keys.as_deref(),
+            )?;
+        }
 
         let mut output = Vec::with_capacity(amount_split.len());
 
@@ -1128,7 +1138,7 @@ impl PreMintSecrets {
                 conditions: blinded_conditions,
             };
 
-            let secret: crate::nuts::nut10::Secret = p2pk_conditions.into();
+            let secret: crate::nuts::nut10::Secret = p2pk_conditions.try_into()?;
             let secret: Secret = secret.try_into()?;
             let (blinded, rs) = blind_message(&secret.to_bytes(), None)?;
 
@@ -1161,7 +1171,7 @@ impl PreMintSecrets {
         let mut output = Vec::with_capacity(amount_split.len());
 
         for amount in amount_split {
-            let secret: nut10::Secret = conditions.clone().into();
+            let secret: nut10::Secret = conditions.clone().try_into()?;
 
             let secret: Secret = secret.try_into()?;
             let (blinded, r) = blind_message(&secret.to_bytes(), None)?;
@@ -2011,7 +2021,7 @@ mod tests {
         let refund_key_1 = crate::nuts::nut01::SecretKey::generate().public_key();
         let refund_key_2 = crate::nuts::nut01::SecretKey::generate().public_key();
         let conditions = Conditions::new(
-            None,
+            Some(crate::util::unix_time() + 3600),
             Some(vec![additional_key_1, additional_key_2]),
             Some(vec![refund_key_1, refund_key_2]),
             Some(1),
@@ -2077,6 +2087,147 @@ mod tests {
             }
             SpendingConditions::HTLCConditions { .. } => panic!("expected P2PK conditions"),
         }
+    }
+
+    /// Each key is blinded under its own slot, so a repeated key would blind
+    /// into two different keys and hide the duplicate from verification. The
+    /// rejection has to land before any output is built.
+    #[test]
+    fn test_with_p2bk_rejects_duplicate_pubkeys_before_blinding() {
+        use crate::amount::{FeeAndAmounts, SplitTarget};
+        use crate::nuts::nut11::SigFlag;
+        use crate::Conditions;
+
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let receiver_secret_key = crate::nuts::nut01::SecretKey::generate();
+        let mut bytes = receiver_secret_key.public_key().to_bytes();
+        bytes[0] = 0x02;
+        let pk_02 = PublicKey::from_slice(&bytes).unwrap();
+        bytes[0] = 0x03;
+        let pk_03 = PublicKey::from_slice(&bytes).unwrap();
+
+        let conditions = Conditions {
+            locktime: None,
+            pubkeys: Some(vec![pk_03]),
+            refund_keys: None,
+            num_sigs: None,
+            sig_flag: SigFlag::SigAll,
+            num_sigs_refund: None,
+        };
+        let ephemeral_key = crate::nuts::nut01::SecretKey::generate();
+        let fee_and_amounts = FeeAndAmounts::from((0, (0..32).map(|x| 2u64.pow(x)).collect()));
+
+        let err = PreMintSecrets::with_p2bk(
+            keyset_id,
+            Amount::from(1_u64),
+            &SplitTarget::default(),
+            pk_02,
+            Some(conditions),
+            std::slice::from_ref(&ephemeral_key),
+            &fee_and_amounts,
+        )
+        .expect_err("duplicate key should be rejected before blinding");
+
+        assert!(
+            matches!(
+                err,
+                Error::NUT10(crate::nuts::nut10::Error::NUT11(
+                    crate::nuts::nut11::Error::DuplicatePubkey
+                ))
+            ),
+            "Expected DuplicatePubkey, got: {err:?}"
+        );
+    }
+
+    /// Every output in the batch carries the same conditions, so the batch has
+    /// to be rejected before the first secret is built.
+    #[test]
+    fn test_with_conditions_rejects_duplicate_pubkeys() {
+        use crate::amount::{FeeAndAmounts, SplitTarget};
+        use crate::nuts::nut11::SigFlag;
+        use crate::{Conditions, SpendingConditions};
+
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let pubkey = crate::nuts::nut01::SecretKey::generate().public_key();
+
+        let conditions = Conditions {
+            locktime: None,
+            pubkeys: Some(vec![pubkey]),
+            refund_keys: None,
+            num_sigs: None,
+            sig_flag: SigFlag::SigInputs,
+            num_sigs_refund: None,
+        };
+        let fee_and_amounts = FeeAndAmounts::from((0, (0..32).map(|x| 2u64.pow(x)).collect()));
+
+        let err = PreMintSecrets::with_conditions(
+            keyset_id,
+            Amount::from(2_u64),
+            &SplitTarget::default(),
+            &SpendingConditions::P2PKConditions {
+                data: pubkey,
+                conditions: Some(conditions),
+            },
+            &fee_and_amounts,
+        )
+        .expect_err("duplicate key should be rejected for the whole batch");
+
+        assert!(
+            matches!(
+                err,
+                Error::NUT10(crate::nuts::nut10::Error::NUT11(
+                    crate::nuts::nut11::Error::DuplicatePubkey
+                ))
+            ),
+            "Expected DuplicatePubkey, got: {err:?}"
+        );
+    }
+
+    /// Twelve slots have to fail as TooManyPubkeys, not as the
+    /// InvalidCanonicalSlot the key derivation would raise on its own.
+    #[test]
+    fn test_with_p2bk_rejects_more_slots_than_nut28_allows() {
+        use crate::amount::{FeeAndAmounts, SplitTarget};
+        use crate::nuts::nut11::SigFlag;
+        use crate::Conditions;
+
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let receiver_pubkey = crate::nuts::nut01::SecretKey::generate().public_key();
+        let pubkeys: Vec<PublicKey> = (0..11)
+            .map(|_| crate::nuts::nut01::SecretKey::generate().public_key())
+            .collect();
+
+        let conditions = Conditions {
+            locktime: None,
+            pubkeys: Some(pubkeys),
+            refund_keys: None,
+            num_sigs: Some(1),
+            sig_flag: SigFlag::SigAll,
+            num_sigs_refund: None,
+        };
+        let ephemeral_key = crate::nuts::nut01::SecretKey::generate();
+        let fee_and_amounts = FeeAndAmounts::from((0, (0..32).map(|x| 2u64.pow(x)).collect()));
+
+        let err = PreMintSecrets::with_p2bk(
+            keyset_id,
+            Amount::from(1_u64),
+            &SplitTarget::default(),
+            receiver_pubkey,
+            Some(conditions),
+            std::slice::from_ref(&ephemeral_key),
+            &fee_and_amounts,
+        )
+        .expect_err("twelve slots should be rejected");
+
+        assert!(
+            matches!(
+                err,
+                Error::NUT10(crate::nuts::nut10::Error::NUT11(
+                    crate::nuts::nut11::Error::TooManyPubkeys { slots: 12 }
+                ))
+            ),
+            "Expected TooManyPubkeys, got: {err:?}"
+        );
     }
 
     #[test]

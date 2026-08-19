@@ -147,7 +147,7 @@ fuzz_target!(|input: Input| {
             };
             let spending = SpendingConditions::new_htlc(preimage.clone(), conditions)
                 .expect("32-byte preimage must create HTLC conditions");
-            let nut10: Nut10Secret = spending.into();
+            let nut10: Nut10Secret = cdk_fuzz::nut10_secret_unchecked(spending);
             let secret: SecretString = nut10
                 .try_into()
                 .expect("generated valid HTLC conditions must serialize");
@@ -206,7 +206,7 @@ fuzz_target!(|input: Input| {
             };
             let spending = SpendingConditions::new_htlc(preimage, Some(conditions))
                 .expect("valid refund conditions must create an HTLC");
-            let nut10: Nut10Secret = spending.into();
+            let nut10: Nut10Secret = cdk_fuzz::nut10_secret_unchecked(spending);
             let secret: SecretString = nut10
                 .try_into()
                 .expect("generated valid HTLC refund conditions must serialize");

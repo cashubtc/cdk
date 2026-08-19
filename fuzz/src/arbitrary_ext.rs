@@ -221,7 +221,7 @@ impl<'a> Arbitrary<'a> for SecretStringArb {
                 let pk = PublicKeyArb::arbitrary(u)?.into_inner();
                 let cond = ConditionsArb::arbitrary(u)?.into_inner();
                 let sc = SpendingConditions::new_p2pk(pk, Some(cond));
-                let nut10: Nut10Secret = sc.into();
+                let nut10 = crate::nut10_secret_unchecked(sc);
                 match SecretString::try_from(nut10) {
                     Ok(s) => s,
                     Err(_) => SecretString::generate(),

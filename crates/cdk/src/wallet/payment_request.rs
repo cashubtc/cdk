@@ -206,6 +206,54 @@ mod tests {
 
     use super::*;
 
+    async fn test_repository() -> WalletRepository {
+        use cdk_common::database::{Error as DatabaseError, WalletDatabase};
+
+        let localstore: Arc<dyn WalletDatabase<DatabaseError> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("in-memory database"),
+        );
+
+        crate::wallet::WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("repository")
+    }
+
+    /// A request advertising the same key twice would build a lock the payer
+    /// cannot satisfy, so it has to fail on the requester's side. Mirrors what
+    /// `create_request` does with the parsed conditions.
+    #[tokio::test]
+    async fn get_pr_spending_conditions_rejects_duplicate_pubkey() {
+        let pubkey = crate::nuts::SecretKey::generate().public_key().to_hex();
+        let params = CreateRequestParams {
+            pubkeys: Some(vec![pubkey.clone(), pubkey]),
+            ..Default::default()
+        };
+
+        let conditions = test_repository()
+            .await
+            .get_pr_spending_conditions(&params)
+            .expect("params should parse")
+            .expect("conditions should be present");
+
+        let err = Error::from(
+            Nut10SecretRequest::try_from(conditions)
+                .expect_err("duplicate pubkey should be rejected"),
+        );
+
+        assert!(
+            matches!(
+                err,
+                Error::NUT11(crate::nuts::nut11::Error::DuplicatePubkey)
+            ),
+            "Expected DuplicatePubkey, got: {err:?}"
+        );
+    }
+
     #[test]
     fn create_request_params_default_is_strict_by_default() {
         let params = CreateRequestParams::default();
@@ -757,7 +805,7 @@ impl WalletRepository {
     /// - Centralizes translation of CLI/SDK inputs (P2PK multisig and HTLC variants) into
     ///   a single, canonical `SpendingConditions` shape so requests are consistent.
     /// - Prevents ambiguous construction by capping `num_sigs` to the number of provided keys
-    ///   and rejecting malformed hashes/inputs early.
+    ///   and rejecting malformed hashes/inputs early. Repeated keys are an error, not a cap.
     /// - Encourages safe defaults by selecting `SigFlag::SigInputs` and composing conditions
     ///   that can be verified by recipients and mints.
     ///
@@ -772,6 +820,9 @@ impl WalletRepository {
     /// Errors:
     /// - Invalid SHA-256 `hash` strings or invalid HTLC/P2PK parameterizations surface as errors
     ///   from parsing and `SpendingConditions` constructors.
+    /// - Conditions are validated here, so a request advertising a key twice within one
+    ///   signing pathway fails at creation with `DuplicatePubkey` rather than on the
+    ///   payer's side.
     fn get_pr_spending_conditions(
         &self,
         params: &CreateRequestParams,
@@ -852,6 +903,7 @@ impl WalletRepository {
             } else {
                 None
             };
+
         Ok(spending_conditions)
     }
 
@@ -956,7 +1008,8 @@ impl WalletRepository {
 
         let nut10 = self
             .get_pr_spending_conditions(&params)?
-            .map(Nut10SecretRequest::from);
+            .map(Nut10SecretRequest::try_from)
+            .transpose()?;
 
         let req = PaymentRequest {
             payment_id: None,
@@ -1027,7 +1080,8 @@ impl WalletRepository {
 
         let nut10 = self
             .get_pr_spending_conditions(&params)?
-            .map(Nut10SecretRequest::from);
+            .map(Nut10SecretRequest::try_from)
+            .transpose()?;
 
         let req = PaymentRequest {
             payment_id: None,

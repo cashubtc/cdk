@@ -100,6 +100,17 @@ impl SecretData {
     }
 }
 
+/// NUT-28 locking slots available across `data`, `pubkeys` and refund keys.
+///
+/// Slot indices are carried in a single `i_byte` (0x00..=0x0A), so eleven is a
+/// hard ceiling rather than a policy choice.
+pub const MAX_LOCKING_SLOTS: usize = 11;
+
+/// Reject a key repeated within one signing pathway, comparing x-coordinates.
+///
+/// NUT-11 counts two keys sharing an x-coordinate as one, so a repetition can
+/// never add a signer. Construction and verification both run this, so a lock
+/// that is built is a lock that can be spent.
 fn check_duplicate_pubkeys(pubkeys: &[PublicKey]) -> Result<(), Error> {
     let mut x_coords = std::collections::HashSet::with_capacity(pubkeys.len());
     for pk in pubkeys {
@@ -561,7 +572,8 @@ mod tests {
                 ..Default::default()
             }),
         )
-        .into();
+        .try_into()
+        .unwrap();
 
         assert_eq!(
             get_pubkeys_and_required_sigs(&secret, 100)
@@ -580,18 +592,22 @@ mod tests {
         );
     }
 
+    /// The secret is built from raw parts rather than through
+    /// [`SpendingConditions`], which rejects the duplicate: a hostile token can
+    /// still carry both keys, and verification has to reject it.
     #[test]
     fn test_htlc_rejects_duplicate_receiver_pubkeys() {
         let pubkey = SecretKey::generate().public_key();
-        let secret: Secret = SpendingConditions::new_htlc_hash(
-            "5c23fc3aec9d985bd5fc88ca8bceaccc52cf892715dd94b42b84f1b43350751e",
-            Some(Conditions {
-                pubkeys: Some(vec![pubkey, pubkey]),
-                ..Default::default()
-            }),
-        )
-        .unwrap()
-        .into();
+        let secret = Secret::new(
+            Kind::HTLC,
+            SecretData::new(
+                "5c23fc3aec9d985bd5fc88ca8bceaccc52cf892715dd94b42b84f1b43350751e",
+                Some(Conditions {
+                    pubkeys: Some(vec![pubkey, pubkey]),
+                    ..Default::default()
+                }),
+            ),
+        );
 
         assert!(matches!(
             get_pubkeys_and_required_sigs(&secret, 0),

@@ -581,7 +581,7 @@ mod tests {
         let payment_request = PaymentRequestBuilder::default()
             .unit(CurrencyUnit::Sat)
             .amount(10)
-            .nut10(nut10.into())
+            .nut10(nut10.try_into().unwrap())
             .build();
 
         let payment_request_str = payment_request.to_string();
@@ -608,7 +608,7 @@ mod tests {
             .amount(10)
             .payment_id("test-p2pk-id")
             .description("P2PK locked payment")
-            .nut10(nut10.into())
+            .nut10(nut10.try_into().unwrap())
             .build();
 
         // Convert to string representation

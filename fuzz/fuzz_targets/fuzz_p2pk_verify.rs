@@ -140,7 +140,7 @@ fuzz_target!(|input: Input| {
             num_sigs_refund: None,
         };
         let spending = SpendingConditions::new_p2pk(receiver_pk, Some(conditions));
-        let nut10: Nut10Secret = spending.into();
+        let nut10: Nut10Secret = cdk_fuzz::nut10_secret_unchecked(spending);
         let secret: SecretString = nut10
             .try_into()
             .expect("generated valid P2PK conditions must serialize");
@@ -215,7 +215,7 @@ fuzz_target!(|input: Input| {
     let spending = SpendingConditions::new_p2pk(receiver_pk, Some(conditions));
 
     // Convert to a Nut10Secret, then to the JSON-encoded plaintext `Secret`.
-    let mut nut10: Nut10Secret = spending.into();
+    let mut nut10: Nut10Secret = cdk_fuzz::nut10_secret_unchecked(spending);
 
     // Optionally mutate the data field to a fuzz-provided string so we can
     // feed malformed hex into the pubkey parser inside `verify_p2pk`.

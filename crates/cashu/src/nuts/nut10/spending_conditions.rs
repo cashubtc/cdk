@@ -2,7 +2,6 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/10.md>
 
-use std::collections::HashSet;
 use std::str::FromStr;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -63,9 +62,7 @@ impl SpendingConditions {
                 if let Some(conditions) = conditions {
                     pubkeys.extend(conditions.pubkeys.clone().unwrap_or_default());
                 }
-                // Remove duplicates
-                let unique_pubkeys: HashSet<_> = pubkeys.into_iter().collect();
-                Some(unique_pubkeys.into_iter().collect())
+                Some(pubkeys)
             }
             Self::HTLCConditions { conditions, .. } => conditions.clone().and_then(|c| c.pubkeys),
         }
@@ -128,9 +125,14 @@ impl TryFrom<Nut10Secret> for SpendingConditions {
     }
 }
 
-impl From<SpendingConditions> for super::Secret {
-    fn from(conditions: SpendingConditions) -> super::Secret {
-        match conditions {
+/// The only door from an author-supplied lock to wire bytes, so the
+/// construction rules are enforced here instead of at each caller.
+impl TryFrom<SpendingConditions> for super::Secret {
+    type Error = Error;
+    fn try_from(conditions: SpendingConditions) -> Result<super::Secret, Self::Error> {
+        conditions.validate()?;
+
+        Ok(match conditions {
             SpendingConditions::P2PKConditions { data, conditions } => super::Secret::new(
                 Kind::P2PK,
                 super::SecretData::new(data.to_hex(), conditions),
@@ -139,16 +141,14 @@ impl From<SpendingConditions> for super::Secret {
                 Kind::HTLC,
                 super::SecretData::new(data.to_string(), conditions),
             ),
-        }
+        })
     }
 }
 
 impl TryFrom<SpendingConditions> for Secret {
     type Error = Error;
     fn try_from(conditions: SpendingConditions) -> Result<Secret, Self::Error> {
-        conditions.validate()?;
-        let secret: Nut10Secret = conditions.into();
-        Secret::try_from(secret)
+        Secret::try_from(Nut10Secret::try_from(conditions)?)
     }
 }
 
@@ -237,6 +237,12 @@ impl Conditions {
     }
 
     /// Create new Spending [`Conditions`]
+    ///
+    /// A key repeated within either list is rejected: verification counts keys
+    /// by x-coordinate, so the repetition can never add a signer. On top of the
+    /// protocol rules this constructor applies authoring policy, refusing a
+    /// locktime already in the past and refund keys with no locktime, since
+    /// both describe a branch the author cannot have meant to leave dead.
     pub fn new(
         locktime: Option<u64>,
         pubkeys: Option<Vec<PublicKey>>,
@@ -252,6 +258,13 @@ impl Conditions {
             );
         }
 
+        if let Some(pubkeys) = pubkeys.as_deref() {
+            super::check_duplicate_pubkeys(pubkeys)?;
+        }
+        if let Some(refund_keys) = refund_keys.as_deref() {
+            super::check_duplicate_pubkeys(refund_keys)?;
+        }
+
         let conditions = Self {
             locktime,
             pubkeys,
@@ -262,26 +275,86 @@ impl Conditions {
         };
         conditions.validate(1)?;
 
+        if conditions
+            .refund_keys
+            .as_ref()
+            .is_some_and(|keys| !keys.is_empty())
+            && conditions.locktime.is_none()
+        {
+            return Err(Error::NUT11(crate::nut11::Error::RefundKeysRequireLocktime));
+        }
+
         Ok(conditions)
     }
 }
 
+/// Reject a key set that P2BK cannot blind.
+///
+/// Only NUT-28 assigns slot indices, and it carries them in a single byte, so
+/// the blinded `data` key plus the `pubkeys` and refund tags cannot occupy more
+/// than [`MAX_LOCKING_SLOTS`] entries. Plain NUT-11 and NUT-14 locks have no
+/// such limit, and verification never counts slots.
+pub(crate) fn check_locking_slots(
+    pubkeys: usize,
+    refund_keys: Option<&[PublicKey]>,
+) -> Result<(), Error> {
+    let slots = 1 + pubkeys + refund_keys.map(<[PublicKey]>::len).unwrap_or(0);
+    if slots > super::MAX_LOCKING_SLOTS {
+        return Err(Error::NUT11(crate::nut11::Error::TooManyPubkeys { slots }));
+    }
+    Ok(())
+}
+
+/// Enforce the P2PK construction rules over a key set.
+///
+/// `data` and the `pubkeys` tag are one signing pathway, so a key repeated
+/// across the two is a duplicate; the refund tag is checked as its own set.
+/// Shared with the P2BK path, which has to reject before blinding: each key is
+/// blinded under its own slot index, so a repeated key would blind into two
+/// different keys and hide the duplicate.
+pub(crate) fn validate_p2pk(data: PublicKey, conditions: Option<&Conditions>) -> Result<(), Error> {
+    let Some(conditions) = conditions else {
+        return Ok(());
+    };
+
+    let mut primary = vec![data];
+    primary.extend(conditions.pubkeys.clone().unwrap_or_default());
+    super::check_duplicate_pubkeys(&primary)?;
+
+    if let Some(refund_keys) = conditions.refund_keys.as_deref() {
+        super::check_duplicate_pubkeys(refund_keys)?;
+    }
+
+    conditions.validate(1)
+}
+
 impl SpendingConditions {
-    fn validate(&self) -> Result<(), Error> {
+    /// Enforce the NUT-10/11 construction rules, rejecting duplicate keys.
+    ///
+    /// Keys are compared by x-coordinate within a signing pathway, the way
+    /// verification compares them, so a lock that validates here is one the
+    /// mint will accept. The duplicate check runs before the signature
+    /// thresholds so a repeated key always reports the repetition. Only
+    /// protocol rules are enforced; the authoring policy in
+    /// [`Conditions::new`] is not applied here.
+    pub fn validate(&self) -> Result<(), Error> {
         match self {
-            Self::P2PKConditions { conditions, .. } => {
-                if let Some(conditions) = conditions {
-                    conditions.validate(1)?;
-                }
-            }
+            Self::P2PKConditions { data, conditions } => validate_p2pk(*data, conditions.as_ref()),
             Self::HTLCConditions { conditions, .. } => {
-                if let Some(conditions) = conditions {
-                    conditions.validate(0)?;
+                let Some(conditions) = conditions else {
+                    return Ok(());
+                };
+
+                if let Some(pubkeys) = conditions.pubkeys.as_deref() {
+                    super::check_duplicate_pubkeys(pubkeys)?;
                 }
+                if let Some(refund_keys) = conditions.refund_keys.as_deref() {
+                    super::check_duplicate_pubkeys(refund_keys)?;
+                }
+
+                conditions.validate(0)
             }
         }
-
-        Ok(())
     }
 }
 
@@ -584,6 +657,61 @@ mod tests {
         assert!(matches!(
             result,
             Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired))
+        ));
+    }
+
+    /// Without a locktime the refund branch never opens, but the primary
+    /// pathway stays spendable, so NUT-11 still accepts the lock. Only
+    /// `Conditions::new` refuses it.
+    #[test]
+    fn test_refund_keys_without_locktime_build_a_secret() {
+        let key = PublicKey::from_str(
+            "033281c37677ea273eb7183b783067f5244933ef78d8c3f15b1a77cb246099c26e",
+        )
+        .unwrap();
+        let data = PublicKey::from_str(
+            "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198",
+        )
+        .unwrap();
+
+        let conditions = SpendingConditions::P2PKConditions {
+            data,
+            conditions: Some(Conditions {
+                refund_keys: Some(vec![key]),
+                locktime: None,
+                ..Default::default()
+            }),
+        };
+
+        let result: Result<Secret, _> = conditions.try_into();
+
+        assert!(
+            result.is_ok(),
+            "refund keys without a locktime should build: {:?}",
+            result.err()
+        );
+    }
+
+    /// Wire bytes are only reachable through this conversion, so a lock
+    /// verification would refuse can never be serialized.
+    #[test]
+    fn test_nut10_secret_rejects_duplicate_p2pk_key() {
+        let key = PublicKey::from_str(
+            "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198",
+        )
+        .unwrap();
+
+        let result = Nut10Secret::try_from(SpendingConditions::P2PKConditions {
+            data: key,
+            conditions: Some(Conditions {
+                pubkeys: Some(vec![key]),
+                ..Default::default()
+            }),
+        });
+
+        assert!(matches!(
+            result,
+            Err(Error::NUT11(crate::nut11::Error::DuplicatePubkey))
         ));
     }
 

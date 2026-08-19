@@ -8,7 +8,26 @@
 
 pub mod arbitrary_ext;
 
-use cashu::{PublicKey, SecretKey};
+use cashu::nuts::nut10::{Kind, SecretData};
+use cashu::nuts::SpendingConditions;
+use cashu::{Nut10Secret, PublicKey, SecretKey};
+
+/// Build a NUT-10 secret without the construction checks the public
+/// conversion applies.
+///
+/// Verifier fuzzing needs malformed locks (duplicate keys, impossible
+/// thresholds) to reach the verifier at all, and the validating `TryFrom` would
+/// reject them before they got there.
+pub fn nut10_secret_unchecked(conditions: SpendingConditions) -> Nut10Secret {
+    match conditions {
+        SpendingConditions::P2PKConditions { data, conditions } => {
+            Nut10Secret::new(Kind::P2PK, SecretData::new(data.to_hex(), conditions))
+        }
+        SpendingConditions::HTLCConditions { data, conditions } => {
+            Nut10Secret::new(Kind::HTLC, SecretData::new(data.to_string(), conditions))
+        }
+    }
+}
 
 /// Deterministic `SecretKey` from 32 fuzz bytes.
 ///
