@@ -88,6 +88,32 @@ impl NpubCashClient {
 
         Ok(response.into())
     }
+
+    /// Resolve full quote data for specific quote IDs
+    ///
+    /// Asks the NpubCash server for the quotes matching `quote_ids`. Used to
+    /// reconcile local state with the server: fetch all quote IDs, determine
+    /// which ones are unknown locally, and resolve only those.
+    ///
+    /// # Arguments
+    ///
+    /// * `quote_ids` - Quote IDs to resolve
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the API request fails or authentication fails
+    pub async fn get_missing_quotes(
+        &self,
+        quote_ids: Vec<String>,
+    ) -> Result<Vec<NpubCashQuote>, FfiError> {
+        let quotes = self
+            .inner
+            .get_missing_quotes(&quote_ids)
+            .await
+            .map_err(|e| FfiError::internal(e.to_string()))?;
+
+        Ok(quotes.into_iter().map(Into::into).collect())
+    }
 }
 
 /// A quote from the NpubCash service

@@ -868,6 +868,33 @@ impl Wallet {
     }
 }
 
+/// NpubCash methods for Wallet
+#[cfg(feature = "npubcash")]
+#[uniffi::export(async_runtime = "tokio")]
+impl Wallet {
+    /// Enable NpubCash integration for this wallet
+    ///
+    /// Derives the NpubCash Nostr keys from the wallet seed, creates the
+    /// API client, and asserts this wallet's mint URL on the server.
+    pub async fn enable_npubcash(&self, npubcash_url: String) -> Result<(), FfiError> {
+        self.inner.enable_npubcash(npubcash_url).await?;
+        Ok(())
+    }
+
+    /// Claim all pending NpubCash quotes
+    ///
+    /// Syncs quotes from the NpubCash server (including reconciliation of
+    /// quotes missing locally) and mints every paid quote that has not been
+    /// issued yet. Mints that advertise NUT-29 are claimed with batch
+    /// minting automatically; other mints fall back to individual minting.
+    ///
+    /// Returns the total amount minted across all claimed quotes.
+    pub async fn claim_npubcash_quotes(&self) -> Result<Amount, FfiError> {
+        let minted = self.inner.claim_npubcash_quotes().await?;
+        Ok(minted.into())
+    }
+}
+
 /// BIP353 methods for Wallet
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 #[uniffi::export(async_runtime = "tokio")]
