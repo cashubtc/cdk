@@ -281,4 +281,56 @@ mod tests {
         let result = NostrInbox::new(secret, vec!["not-a-url".to_string()], None);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn nostr_get_pubkey_rejects_invalid_key() {
+        assert!(nostr_get_pubkey("definitely-not-a-key".to_string()).is_err());
+    }
+
+    #[test]
+    fn nip44_encrypt_rejects_invalid_recipient_pubkey() {
+        let alice = nostr_generate_secret_key();
+        assert!(nip44_encrypt(alice, "not-a-pubkey".to_string(), "hi".to_string()).is_err());
+    }
+
+    #[test]
+    fn nip44_decrypt_rejects_wrong_recipient_key() {
+        let alice = nostr_generate_secret_key();
+        let bob = nostr_generate_secret_key();
+        let eve = nostr_generate_secret_key();
+        let bob_pub = nostr_get_pubkey(bob).expect("bob pubkey");
+        let alice_pub = nostr_get_pubkey(alice.clone()).expect("alice pubkey");
+
+        let payload = nip44_encrypt(alice, bob_pub, "secret".to_string()).expect("encrypt");
+        assert!(nip44_decrypt(eve, alice_pub, payload).is_err());
+    }
+
+    #[test]
+    fn inbox_requires_at_least_one_relay() {
+        let secret = nostr_generate_secret_key();
+        assert!(NostrInbox::new(secret, vec![], None).is_err());
+    }
+
+    #[test]
+    fn inbox_rejects_invalid_secret_key() {
+        assert!(NostrInbox::new(
+            "bad-key".to_string(),
+            vec!["wss://relay.example.com".to_string()],
+            None
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn inbox_pubkey_matches_identity_key() {
+        let secret = nostr_generate_secret_key();
+        let expected = nostr_get_pubkey(secret.clone()).expect("pubkey derives");
+        let inbox = NostrInbox::new(
+            secret,
+            vec!["wss://relay.example.com".to_string()],
+            Some(1_700_000_000),
+        )
+        .expect("valid inbox builds without connecting");
+        assert_eq!(inbox.pubkey(), expected);
+    }
 }

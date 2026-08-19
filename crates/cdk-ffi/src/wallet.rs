@@ -7,6 +7,8 @@ use bip39::Mnemonic;
 use cdk::wallet::{RateLimitConfig, Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
 
 use crate::error::FfiError;
+#[cfg(feature = "npubcash")]
+use crate::npubcash::NpubCashUserResponse;
 use crate::token::Token;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use crate::types::bip321::BitcoinNetwork;
@@ -868,6 +870,66 @@ impl Wallet {
     }
 }
 
+/// NpubCash methods for Wallet
+#[cfg(feature = "npubcash")]
+#[uniffi::export(async_runtime = "tokio")]
+impl Wallet {
+    /// Enable NpubCash integration for this wallet
+    ///
+    /// Derives the NpubCash Nostr keys from the wallet seed, creates the
+    /// API client, sets this wallet's mint URL on the server, and enables
+    /// NUT-20 quote locking for newly created quotes. The integration is
+    /// only activated once locking has been enabled and confirmed.
+    ///
+    /// Returns an error if quote locking cannot be established — for
+    /// example when the configured mint does not support NUT-20.
+    pub async fn enable_npubcash(&self, npubcash_url: String) -> Result<(), FfiError> {
+        self.inner.enable_npubcash(npubcash_url).await?;
+        Ok(())
+    }
+
+    /// Reconcile the wallet with NpubCash by resolving quotes missing locally
+    ///
+    /// Fetches all quote IDs from the NpubCash server, resolves full data for
+    /// quotes missing from the local store, and refreshes NUT-20 lock
+    /// provenance for quotes already known locally. Unlike
+    /// `claim_npubcash_quotes`, this does not mint anything; it only
+    /// reconciles the local quote store with the server.
+    ///
+    /// Returns the quotes that were missing locally and have now been added.
+    ///
+    /// Requires NpubCash to be enabled on this wallet first.
+    pub async fn sync_missing_npubcash_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
+        let quotes = self.inner.sync_missing_npubcash_quotes().await?;
+        Ok(quotes.into_iter().map(Into::into).collect())
+    }
+
+    /// Claim all pending NpubCash quotes
+    ///
+    /// Syncs quotes from the NpubCash server (including reconciliation of
+    /// quotes missing locally) and mints every paid NpubCash quote that has
+    /// not been issued yet. Only quotes attributable to the wallet's NpubCash
+    /// accounts are claimed; unrelated mint quotes created through normal
+    /// wallet flows are left untouched. Mints that advertise NUT-29 are
+    /// claimed with batch minting automatically; other mints fall back to
+    /// individual minting.
+    ///
+    /// Returns the total amount minted across all claimed quotes.
+    pub async fn claim_npubcash_quotes(&self) -> Result<Amount, FfiError> {
+        let minted = self.inner.claim_npubcash_quotes().await?;
+        Ok(minted.into())
+    }
+
+    /// Fetch this wallet's NpubCash account settings
+    ///
+    /// Returns the configured mint URL and whether quote locking is enabled.
+    /// Requires NpubCash to be enabled on this wallet first.
+    pub async fn get_npubcash_user_info(&self) -> Result<NpubCashUserResponse, FfiError> {
+        let response = self.inner.get_npubcash_user_info().await?;
+        Ok(response.into())
+    }
+}
+
 /// BIP353 methods for Wallet
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 #[uniffi::export(async_runtime = "tokio")]
@@ -1250,5 +1312,15 @@ mod tests {
             Some(RateLimitConfig::default()),
         );
         assert!(<Wallet as WalletTrait>::is_rate_limited(&wallet));
+    }
+
+    #[cfg(feature = "npubcash")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn npubcash_methods_require_an_enabled_client() {
+        let wallet = test_wallet();
+
+        assert!(wallet.sync_missing_npubcash_quotes().await.is_err());
+        assert!(wallet.claim_npubcash_quotes().await.is_err());
+        assert!(wallet.get_npubcash_user_info().await.is_err());
     }
 }

@@ -461,6 +461,24 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn mint_unissued_quotes(&self) -> Result<Amount, Error> {
         let mint_quotes = self.get_unissued_mint_quotes().await?;
+        self.mint_given_unissued_quotes(mint_quotes).await
+    }
+
+    /// Mint the mintable quotes among a pre-filtered set of unissued quotes.
+    ///
+    /// Refreshes each quote's state with the mint and mints whatever is
+    /// mintable, using NUT-29 batch quote checks and batch minting when the
+    /// mint advertises support for the quotes' payment method. Returns the
+    /// total amount minted across the given quotes.
+    ///
+    /// The caller is responsible for the selection of quotes; this is used by
+    /// flows that must only touch a known subset of quotes (e.g. claiming
+    /// NpubCash quotes without sweeping unrelated deposits).
+    #[instrument(skip(self, mint_quotes))]
+    pub(crate) async fn mint_given_unissued_quotes(
+        &self,
+        mint_quotes: Vec<MintQuote>,
+    ) -> Result<Amount, Error> {
         let mut total_amount = Amount::ZERO;
         let batch_settings = self
             .load_mint_info()
