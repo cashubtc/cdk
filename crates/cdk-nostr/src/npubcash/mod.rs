@@ -54,7 +54,8 @@ pub use auth::JwtAuthProvider;
 pub use client::NpubCashClient;
 pub use error::{Error, Result};
 pub use types::{
-    Metadata, Nip98Data, Nip98Response, Quote, QuotesData, QuotesResponse, UserData, UserResponse,
+    Metadata, MissingQuotesRequest, Nip98Data, Nip98Response, Quote, QuotesData, QuotesResponse,
+    UserData, UserResponse,
 };
 
 /// Extract authentication URL (scheme + host + path, no query params)

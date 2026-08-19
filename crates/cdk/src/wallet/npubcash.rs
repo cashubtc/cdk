@@ -3,6 +3,7 @@
 //! This module provides integration between the CDK wallet and the NpubCash service,
 //! allowing wallets to sync quotes, subscribe to updates, and manage NpubCash settings.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
@@ -15,6 +16,7 @@ use crate::error::Error;
 use crate::nuts::SecretKey;
 use crate::wallet::types::{MintQuote, TransactionDirection, TransactionStatus};
 use crate::wallet::{MintQuoteState, Wallet};
+use crate::Amount;
 
 /// KV store namespace for npubcash-related data
 pub const NPUBCASH_KV_NAMESPACE: &str = "npubcash";
@@ -277,6 +279,87 @@ impl Wallet {
             .await
             .map_err(|e| Error::Custom(format!("Failed to sync quotes: {}", e)))?;
         self.process_npubcash_quotes(quotes).await
+    }
+
+    /// Reconcile the wallet with NpubCash by resolving quotes missing locally
+    ///
+    /// Fetches all quote IDs from NpubCash, determines which ones are not in
+    /// the local quote store, and resolves their full data via the server's
+    /// missing-quotes endpoint. If the server does not support that endpoint
+    /// yet, the data from the full quote list is used instead.
+    ///
+    /// Unlike [`Self::sync_npubcash_quotes`], this does not rely on the last
+    /// fetch timestamp and therefore recovers quotes that incremental syncs
+    /// may have missed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if NpubCash is not enabled or the sync fails
+    #[instrument(skip(self))]
+    pub async fn sync_missing_npubcash_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+        let client = self.get_npubcash_client().await?;
+
+        let remote_quotes = client
+            .get_quotes(None)
+            .await
+            .map_err(|e| Error::Custom(format!("Failed to fetch NpubCash quote list: {}", e)))?;
+
+        let known_ids: HashSet<String> = self
+            .localstore
+            .get_mint_quotes()
+            .await?
+            .into_iter()
+            .map(|quote| quote.id)
+            .collect();
+
+        let missing_ids: Vec<String> = remote_quotes
+            .iter()
+            .filter(|quote| !known_ids.contains(&quote.id))
+            .map(|quote| quote.id.clone())
+            .collect();
+
+        if missing_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        tracing::info!("Resolving {} missing NpubCash quotes", missing_ids.len());
+
+        let missing_quotes = match client.get_missing_quotes(&missing_ids).await {
+            Ok(quotes) => quotes,
+            Err(err) => {
+                // Older servers may not expose the missing-quotes endpoint;
+                // fall back to the data already present in the quote list.
+                tracing::warn!(
+                    "Failed to resolve missing NpubCash quotes ({}); falling back to quote list data",
+                    err
+                );
+                remote_quotes
+                    .into_iter()
+                    .filter(|quote| missing_ids.contains(&quote.id))
+                    .collect()
+            }
+        };
+
+        self.process_npubcash_quotes(missing_quotes).await
+    }
+
+    /// Claim all pending NpubCash quotes
+    ///
+    /// Performs an incremental quote sync and a missing-quote reconciliation,
+    /// then mints every paid quote that has not been issued yet. Mints that
+    /// advertise NUT-29 are claimed with batch minting automatically; other
+    /// mints fall back to individual minting.
+    ///
+    /// Returns the total amount minted across all claimed quotes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if NpubCash is not enabled or the sync fails
+    #[instrument(skip(self))]
+    pub async fn claim_npubcash_quotes(&self) -> Result<Amount, Error> {
+        self.sync_npubcash_quotes().await?;
+        self.sync_missing_npubcash_quotes().await?;
+        self.mint_unissued_quotes().await
     }
 
     /// Create a stream that continuously polls NpubCash and yields proofs as payments arrive
@@ -793,5 +876,29 @@ mod tests {
             .expect("quote lookup")
             .expect("quote remains stored");
         assert_eq!(after_lookup.version, version_before_lookup);
+    }
+
+    #[tokio::test]
+    async fn sync_missing_npubcash_quotes_requires_enabled_client() {
+        let wallet = build_test_wallet([0x42u8; 64]).await;
+
+        let err = wallet
+            .sync_missing_npubcash_quotes()
+            .await
+            .expect_err("sync must fail when NpubCash is not enabled");
+
+        assert!(matches!(err, Error::Custom(_)));
+    }
+
+    #[tokio::test]
+    async fn claim_npubcash_quotes_requires_enabled_client() {
+        let wallet = build_test_wallet([0x42u8; 64]).await;
+
+        let err = wallet
+            .claim_npubcash_quotes()
+            .await
+            .expect_err("claim must fail when NpubCash is not enabled");
+
+        assert!(matches!(err, Error::Custom(_)));
     }
 }

@@ -7,9 +7,10 @@ use tracing::instrument;
 
 use crate::npubcash::auth::JwtAuthProvider;
 use crate::npubcash::error::{Error, Result};
-use crate::npubcash::types::{Quote, QuotesResponse};
+use crate::npubcash::types::{MissingQuotesRequest, Quote, QuotesData, QuotesResponse};
 
 const API_PATHS_QUOTES: &str = "/api/v2/wallet/quotes";
+const API_PATHS_QUOTES_MISSING: &str = "/api/v2/wallet/quotes/missing";
 const PAGINATION_LIMIT: usize = 50;
 const THROTTLE_DELAY_MS: u64 = 200;
 
@@ -81,6 +82,53 @@ impl NpubCashClient {
             tracing::debug!("Fetching all quotes");
         }
         self.fetch_paginated_quotes(since).await
+    }
+
+    /// Resolve full quote data for specific quote IDs
+    ///
+    /// Asks the NpubCash server for the quotes matching `quote_ids`. This is
+    /// used to reconcile the local wallet with the server: fetch all quote
+    /// IDs, determine which ones are unknown locally, and resolve only those.
+    ///
+    /// # Arguments
+    ///
+    /// * `quote_ids` - Quote IDs to resolve
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the API request fails or authentication fails.
+    /// Returns an API error with status 404 if the server does not support
+    /// this endpoint yet.
+    #[instrument(skip(self, quote_ids))]
+    pub async fn get_missing_quotes(&self, quote_ids: &[String]) -> Result<Vec<Quote>> {
+        if quote_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let url = format!("{}{}", self.base_url, API_PATHS_QUOTES_MISSING);
+        let payload = MissingQuotesRequest {
+            quote_ids: quote_ids.to_vec(),
+        };
+
+        let auth_header = self.auth_provider.get_nip98_auth_header(&url, "POST")?;
+
+        tracing::debug!("Resolving {} quote IDs", quote_ids.len());
+        let response = self
+            .http_client
+            .post(&url)
+            .header("Authorization", auth_header)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header(
+                "User-Agent",
+                concat!("cdk-nostr/", env!("CARGO_PKG_VERSION")),
+            )
+            .json(&payload)
+            .send()
+            .await?;
+
+        let data: QuotesData = self.parse_response(response).await?;
+        Ok(data.quotes)
     }
 
     /// Fetch quotes with pagination support
@@ -308,5 +356,28 @@ impl NpubCashClient {
 
         tracing::debug!("Request successful");
         Ok(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nostr_sdk::Keys;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn get_missing_quotes_empty_ids_short_circuits() {
+        let base_url = "http://127.0.0.1:1".to_string();
+        let auth_provider = Arc::new(JwtAuthProvider::new(base_url.clone(), Keys::generate()));
+        let client = NpubCashClient::new(base_url, auth_provider);
+
+        // No request may be attempted for an empty ID list; the unroutable
+        // address would otherwise fail.
+        let quotes = client
+            .get_missing_quotes(&[])
+            .await
+            .expect("empty ID list resolves without a request");
+
+        assert!(quotes.is_empty());
     }
 }

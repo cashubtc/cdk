@@ -86,6 +86,17 @@ pub struct Metadata {
     pub since: Option<u64>,
 }
 
+/// Request body for resolving quotes by ID
+///
+/// Sent to the missing-quotes endpoint to fetch full quote data for a
+/// specific set of quote IDs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingQuotesRequest {
+    /// Quote IDs to resolve
+    pub quote_ids: Vec<String>,
+}
+
 /// Response containing user settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -188,6 +199,20 @@ impl From<Quote> for MintQuote {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_quotes_request_serializes_camel_case() {
+        let request = MissingQuotesRequest {
+            quote_ids: vec!["quote-a".to_string(), "quote-b".to_string()],
+        };
+
+        let json = serde_json::to_value(&request).expect("request serializes");
+
+        assert_eq!(
+            json,
+            serde_json::json!({ "quoteIds": ["quote-a", "quote-b"] })
+        );
+    }
 
     #[test]
     fn from_quote_saturates_default_expiry() {
