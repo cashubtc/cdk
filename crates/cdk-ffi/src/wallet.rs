@@ -883,6 +883,22 @@ impl Wallet {
         Ok(())
     }
 
+    /// Reconcile the wallet with NpubCash by resolving quotes missing locally
+    ///
+    /// Fetches all quote IDs from the NpubCash server, resolves full data for
+    /// quotes missing from the local store, and refreshes NUT-20 lock
+    /// provenance for quotes already known locally. Unlike
+    /// `claim_npubcash_quotes`, this does not mint anything; it only
+    /// reconciles the local quote store with the server.
+    ///
+    /// Returns the quotes that were missing locally and have now been added.
+    ///
+    /// Requires NpubCash to be enabled on this wallet first.
+    pub async fn sync_missing_npubcash_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
+        let quotes = self.inner.sync_missing_npubcash_quotes().await?;
+        Ok(quotes.into_iter().map(Into::into).collect())
+    }
+
     /// Claim all pending NpubCash quotes
     ///
     /// Syncs quotes from the NpubCash server (including reconciliation of
