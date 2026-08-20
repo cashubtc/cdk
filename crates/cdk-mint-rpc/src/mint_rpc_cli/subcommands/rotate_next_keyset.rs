@@ -1,4 +1,5 @@
 use anyhow::Result;
+use cdk_common::terminal::escape_control;
 use clap::Args;
 use tonic::Request;
 
@@ -64,8 +65,8 @@ pub async fn rotate_next_keyset(
 
     println!(
         "Rotated to new keyset {} for unit {} with amounts {} and fee of {}",
-        response.id,
-        response.unit,
+        escape_control(&response.id),
+        escape_control(&response.unit),
         serde_json::to_string(&response.amounts)?,
         response.input_fee_ppk
     );

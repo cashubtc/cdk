@@ -1,4 +1,5 @@
 use anyhow::Result;
+use cdk_common::terminal::escape_control;
 use clap::Args;
 use tonic::Request;
 
@@ -39,7 +40,10 @@ pub async fn get_wallet_balance(client: &mut InterceptedWalletServiceClient) -> 
         .await?
         .into_inner();
 
-    println!("network:                {}", balance.network);
+    println!(
+        "network:                {}",
+        escape_control(&balance.network)
+    );
     println!("synced height:          {}", balance.synced_height);
     println!("confirmed:              {} sat", balance.confirmed_sat);
     println!(
@@ -77,7 +81,7 @@ pub async fn list_wallet_transactions(
     for transaction in response.transactions {
         println!(
             "txid: {}, received: {} sat, sent: {} sat, fee: {}, delta: {} sat, height: {}, confirmation_time: {}, first_seen: {}",
-            transaction.txid,
+            escape_control(&transaction.txid),
             transaction.received_sat,
             transaction.sent_sat,
             transaction
@@ -101,22 +105,22 @@ pub async fn list_wallet_transactions(
         for input in transaction.inputs {
             println!(
                 "  input: txid {}, vout {}, amount: {}, address: {}",
-                input.txid,
+                escape_control(&input.txid),
                 input.vout,
                 input
                     .amount_sat
                     .map(|amount| format!("{amount} sat"))
                     .unwrap_or_else(|| "unknown".to_string()),
-                input.address.as_deref().unwrap_or("unknown"),
+                escape_control(input.address.as_deref().unwrap_or("unknown")),
             );
         }
         for output in transaction.outputs {
             println!(
                 "  output: vout {}, address: {}, amount: {} sat, quote_id: {}",
                 output.vout,
-                output.address,
+                escape_control(&output.address),
                 output.amount_sat,
-                output.quote_id.as_deref().unwrap_or("none"),
+                escape_control(output.quote_id.as_deref().unwrap_or("none")),
             );
         }
     }
@@ -141,7 +145,7 @@ pub async fn list_wallet_addresses(
     for address in response.addresses {
         println!(
             "address: {}, keychain: {}, index: {}, used: {}, balance: {} sat, confirmed: {} sat",
-            address.address,
+            escape_control(&address.address),
             address.keychain().as_str_name(),
             address.derivation_index,
             address.used,

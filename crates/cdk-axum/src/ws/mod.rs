@@ -9,6 +9,7 @@ use cdk::ws::{
     notification_to_ws_message, NotificationInner, WsErrorBody, WsMessageOrResponse,
     WsMethodRequest, WsRequest,
 };
+use cdk_common::terminal::escape_control;
 use futures::StreamExt;
 use tokio::sync::mpsc;
 
@@ -110,7 +111,10 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
                     },
                     Ok(Message::Close(frame)) => {
                         if let Some(CloseFrame { code, reason }) = frame {
-                            tracing::info!("ws-close: code={code:?} reason='{reason}'");
+                            tracing::info!(
+                                "ws-close: code={code:?} reason='{}'",
+                                escape_control(&reason)
+                            );
                         } else {
                             tracing::info!("ws-close: no frame");
                         }

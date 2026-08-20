@@ -7,6 +7,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod task;
+pub mod terminal;
 
 /// Authentication related types and utilities
 ///

@@ -1299,6 +1299,7 @@ dependencies = [
  "axum",
  "bip39",
  "cdk",
+ "cdk-common",
  "cdk-fake-wallet",
  "cdk-http-client",
  "cdk-prometheus",

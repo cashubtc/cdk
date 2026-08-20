@@ -1,5 +1,9 @@
 //! SQLite storage backend for cdk
 
+#[cfg(test)]
+#[path = "../migration_name.rs"]
+mod migration_name;
+
 mod common;
 pub mod database;
 mod keyvalue;

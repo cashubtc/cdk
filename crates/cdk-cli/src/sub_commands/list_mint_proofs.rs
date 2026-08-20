@@ -2,16 +2,30 @@ use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, Proof};
 use cdk::wallet::WalletRepository;
+use clap::Args;
 
 use crate::terminal::escape_control;
 
-pub async fn proofs(wallet_repository: &WalletRepository) -> Result<()> {
-    list_proofs(wallet_repository).await?;
+const REDACTED_SECRET: &str = "<redacted>";
+
+#[derive(Debug, Args)]
+pub struct ListMintProofsSubCommand {
+    /// Print proof secrets. Treat the output as sensitive export material.
+    #[arg(long)]
+    show_secrets: bool,
+}
+
+pub async fn proofs(
+    wallet_repository: &WalletRepository,
+    sub_command_args: &ListMintProofsSubCommand,
+) -> Result<()> {
+    list_proofs(wallet_repository, sub_command_args.show_secrets).await?;
     Ok(())
 }
 
 async fn list_proofs(
     wallet_repository: &WalletRepository,
+    show_secrets: bool,
 ) -> Result<Vec<(MintUrl, (Vec<Proof>, CurrencyUnit))>> {
     let mut proofs_vec = Vec::new();
 
@@ -31,7 +45,7 @@ async fn list_proofs(
                 proof.amount,
                 escape_control(&wallet.unit.to_string()),
                 "unspent",
-                escape_control(&proof.secret.to_string()),
+                render_secret(&proof.secret.to_string(), show_secrets),
                 proof.dleq.is_some()
             );
         }
@@ -44,7 +58,7 @@ async fn list_proofs(
                 proof.amount,
                 escape_control(&wallet.unit.to_string()),
                 "pending",
-                escape_control(&proof.secret.to_string()),
+                render_secret(&proof.secret.to_string(), show_secrets),
                 proof.dleq.is_some()
             );
         }
@@ -57,7 +71,7 @@ async fn list_proofs(
                 proof.amount,
                 escape_control(&wallet.unit.to_string()),
                 "reserved",
-                escape_control(&proof.secret.to_string()),
+                render_secret(&proof.secret.to_string(), show_secrets),
                 proof.dleq.is_some()
             );
         }
@@ -66,4 +80,30 @@ async fn list_proofs(
         proofs_vec.push((mint_url, (unspent_proofs, wallet.unit.clone())));
     }
     Ok(proofs_vec)
+}
+
+fn render_secret(secret: &str, show_secrets: bool) -> String {
+    if show_secrets {
+        escape_control(secret)
+    } else {
+        REDACTED_SECRET.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secrets_are_redacted_by_default() {
+        assert_eq!(render_secret("sensitive-secret", false), REDACTED_SECRET);
+    }
+
+    #[test]
+    fn explicitly_shown_secrets_are_terminal_safe() {
+        assert_eq!(
+            render_secret("secret\u{1b}]52;evil\u{07}", true),
+            "secret\\e]52;evil\\a"
+        );
+    }
 }

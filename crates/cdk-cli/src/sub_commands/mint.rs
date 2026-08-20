@@ -204,7 +204,10 @@ pub async fn mint(
             }
             // The stream surfaced an error.
             Ok(Some(Err(err))) => {
-                tracing::error!("Proof streams ended with {:?}", err);
+                tracing::error!(
+                    "Proof streams ended with {}",
+                    escape_control(&format!("{err:?}"))
+                );
                 break;
             }
             // The stream ended normally.
@@ -229,7 +232,10 @@ pub async fn mint(
         bail!("Timed out after {wait_duration}s waiting for the mint quote to be paid");
     }
 
-    println!("Received {amount_minted} from mint {mint_url}");
+    println!(
+        "Received {amount_minted} from mint {}",
+        escape_control(&mint_url.to_string())
+    );
 
     Ok(())
 }
@@ -260,7 +266,10 @@ async fn spawn_progress_task(
     let mut subscription = match wallet.subscribe(subscription_filter).await {
         Ok(sub) => sub,
         Err(err) => {
-            tracing::warn!("Failed to subscribe to mint quote updates: {}", err);
+            tracing::warn!(
+                "Failed to subscribe to mint quote updates: {}",
+                escape_control(&err.to_string())
+            );
             return None;
         }
     };

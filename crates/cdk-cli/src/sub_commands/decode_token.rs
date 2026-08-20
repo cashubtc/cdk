@@ -5,7 +5,7 @@ use cdk::nuts::Token;
 use cdk::util::serialize_to_cbor_diag;
 use clap::Args;
 
-use crate::terminal::escape_control;
+use crate::terminal::escape_cbor_diag;
 
 #[derive(Args)]
 pub struct DecodeTokenSubCommand {
@@ -18,6 +18,6 @@ pub fn decode_token(sub_command_args: &DecodeTokenSubCommand) -> Result<()> {
 
     // Token contents (unit, memo, secrets) are attacker-controlled; escape
     // control characters before printing.
-    println!("{:}", escape_control(&serialize_to_cbor_diag(&token)?));
+    println!("{}", escape_cbor_diag(&serialize_to_cbor_diag(&token)?));
     Ok(())
 }
