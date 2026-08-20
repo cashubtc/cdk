@@ -576,6 +576,24 @@ impl Wallet {
                     .batch_mint(&mintable_ids, SplitTarget::default(), None, None)
                     .await
                 {
+                    if matches!(err, Error::BatchSizeExceeded { .. }) {
+                        // The mint rejected the request while validating it,
+                        // so nothing was written — e.g. it enforces a smaller
+                        // batch limit than its NUT-29 settings advertise.
+                        // Retrying as individual mint requests is safe.
+                        tracing::warn!(
+                            "Batch mint of {} quotes rejected ({}); using individual requests",
+                            mintable.len(),
+                            err
+                        );
+                        for quote in mintable {
+                            total_amount = total_amount
+                                .checked_add(self.mint_refreshed_quote(quote).await?)
+                                .ok_or(Error::AmountOverflow)?;
+                        }
+                        continue;
+                    }
+
                     // Do not retry an ambiguous write as individual mint
                     // requests. The persisted batch saga owns recovery.
                     tracing::warn!("Could not batch mint quotes: {}", err);
@@ -866,6 +884,7 @@ impl Wallet {
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
+    use std::sync::Arc;
 
     use bip39::Mnemonic;
     use cdk_common::mint_url::MintUrl;
@@ -1083,5 +1102,110 @@ mod tests {
                 extra: serde_json::Value::Null,
             },
         }
+    }
+
+    fn paid_bolt11_quote_response(quote: &MintQuote) -> MintQuoteResponse<String> {
+        MintQuoteResponse::Bolt11(crate::nuts::MintQuoteBolt11Response {
+            quote: quote.id.clone(),
+            request: quote.request.clone(),
+            amount: quote.amount,
+            unit: Some(quote.unit.clone()),
+            method: quote.payment_method.clone(),
+            amount_paid: quote.amount.unwrap_or_default(),
+            amount_issued: Amount::ZERO,
+            updated_at: 1,
+            state: crate::nuts::MintQuoteState::Paid,
+            expiry: Some(quote.expiry),
+            pubkey: None,
+        })
+    }
+
+    /// Stage a wallet whose mock mint advertises NUT-29 batching and holds
+    /// `quote_count` paid, unissued bolt11 quotes.
+    async fn batch_claim_wallet(
+        quote_count: usize,
+    ) -> (
+        Wallet,
+        Arc<crate::wallet::test_utils::MockMintConnector>,
+        Vec<MintQuote>,
+    ) {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_mint_quote, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let mut mint_info = crate::wallet::test_utils::test_mint_info();
+        mint_info.nuts.nut29 = cdk_common::nut29::Settings::new(Some(100), None);
+        mock_client.set_active_keyset(crate::wallet::test_utils::test_keyset());
+        mock_client.set_mint_info_response(Ok(mint_info));
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
+
+        let mut quotes = Vec::new();
+        for _ in 0..quote_count {
+            let mut quote = test_mint_quote(wallet.mint_url.clone());
+            quote.state = crate::nuts::MintQuoteState::Paid;
+            quote.amount_paid = quote.amount.unwrap_or_default();
+            db.add_mint_quote(quote.clone())
+                .await
+                .expect("add mint quote");
+            quotes.push(quote);
+        }
+
+        (wallet, mock_client, quotes)
+    }
+
+    #[tokio::test]
+    async fn batch_size_rejection_falls_back_to_individual_minting() {
+        let (wallet, mock_client, quotes) = batch_claim_wallet(2).await;
+
+        let refreshed = quotes.iter().map(paid_bolt11_quote_response).collect();
+        mock_client.push_post_batch_check_mint_quote_status_response(Ok(refreshed));
+        // The mint enforces a smaller batch limit than it advertises and
+        // rejects the request during validation — nothing was written.
+        mock_client
+            .push_post_batch_mint_response(Err(Error::BatchSizeExceeded { actual: 2, max: 1 }));
+        // The individual retries fail as well (no signatures staged); the
+        // fallback only needs to attempt one request per quote.
+        mock_client.push_post_mint_response(Err(Error::Custom("staged".to_string())));
+        mock_client.push_post_mint_response(Err(Error::Custom("staged".to_string())));
+
+        let minted = wallet
+            .mint_unissued_quotes()
+            .await
+            .expect("claim should complete");
+
+        assert_eq!(minted, Amount::ZERO);
+        assert_eq!(mock_client.post_batch_mint_requests().len(), 1);
+        assert_eq!(
+            mock_client.post_mint_requests().len(),
+            2,
+            "a definitive batch-size rejection must retry each quote individually"
+        );
+    }
+
+    #[tokio::test]
+    async fn ambiguous_batch_mint_error_is_left_to_saga_recovery() {
+        let (wallet, mock_client, quotes) = batch_claim_wallet(2).await;
+
+        let refreshed = quotes.iter().map(paid_bolt11_quote_response).collect();
+        mock_client.push_post_batch_check_mint_quote_status_response(Ok(refreshed));
+        // A transport-style failure is an ambiguous write: the batch saga
+        // owns recovery, no individual retry may be attempted.
+        mock_client
+            .push_post_batch_mint_response(Err(Error::Custom("connection reset".to_string())));
+
+        let minted = wallet
+            .mint_unissued_quotes()
+            .await
+            .expect("claim should complete");
+
+        assert_eq!(minted, Amount::ZERO);
+        assert_eq!(mock_client.post_batch_mint_requests().len(), 1);
+        assert_eq!(
+            mock_client.post_mint_requests().len(),
+            0,
+            "ambiguous writes must not be retried as individual mints"
+        );
     }
 }

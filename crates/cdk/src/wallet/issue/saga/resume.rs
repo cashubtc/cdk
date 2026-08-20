@@ -289,6 +289,12 @@ impl Wallet {
             if !is_batch && index > 0 {
                 break;
             }
+            // Consume this quote's output segment before the quote lookup so a
+            // missing quote still advances the slice offset for later quotes.
+            let count = output_counts.get(index).copied().unwrap_or(proofs.len());
+            let end = offset.checked_add(count).ok_or(Error::AmountOverflow)?;
+            let quote_proofs = proofs.get(offset..end).ok_or(Error::AmountUndefined)?;
+            offset = end;
             let quote = match self.localstore.get_mint_quote(quote_id).await? {
                 Some(mut quote) => {
                     // Update state from mint
@@ -305,10 +311,6 @@ impl Wallet {
                 }
                 None => continue,
             };
-            let count = output_counts.get(index).copied().unwrap_or(proofs.len());
-            let end = offset.checked_add(count).ok_or(Error::AmountOverflow)?;
-            let quote_proofs = proofs.get(offset..end).ok_or(Error::AmountUndefined)?;
-            offset = end;
             let amount = quote_amounts.get(index).copied().unwrap_or_else(|| {
                 quote_proofs
                     .iter()
@@ -679,8 +681,8 @@ mod tests {
     use cdk_common::amount::{FeeAndAmounts, SplitTarget};
     use cdk_common::nuts::{CurrencyUnit, RestoreResponse};
     use cdk_common::wallet::{
-        IssueSagaState, MintOperationData, OperationData, TransactionStatus, WalletSaga,
-        WalletSagaState,
+        IssueSagaState, MintOperationData, OperationData, ProofInfo, TransactionId,
+        TransactionStatus, WalletSaga, WalletSagaState,
     };
     use cdk_common::Amount;
 
@@ -704,6 +706,72 @@ mod tests {
             Some(429),
             "Too Many Requests".to_string()
         )));
+    }
+
+    #[tokio::test]
+    async fn test_recovered_batch_transaction_missing_mid_quote_keeps_offset() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+
+        // Three-quote batch where the middle quote is missing from the store
+        let quote_a = test_mint_quote(mint_url.clone());
+        let quote_b = test_mint_quote(mint_url.clone());
+        let quote_c = test_mint_quote(mint_url.clone());
+        db.add_mint_quote(quote_a.clone()).await.unwrap();
+        db.add_mint_quote(quote_c.clone()).await.unwrap();
+        // quote_b deliberately NOT stored
+
+        let proof_infos: Vec<ProofInfo> = (1..=3)
+            .map(|i| {
+                crate::wallet::test_utils::test_proof_info(
+                    test_keyset_id(),
+                    i * 100,
+                    mint_url.clone(),
+                )
+            })
+            .collect();
+        let expected_ys: Vec<_> = proof_infos.iter().map(|p| p.y).collect();
+
+        let data = MintOperationData::new_partitioned_batch(
+            vec![quote_a.id.clone(), quote_b.id.clone(), quote_c.id.clone()],
+            Amount::from(600),
+            None,
+            None,
+            None,
+            vec![1, 1, 1],
+            vec![Amount::from(100), Amount::from(200), Amount::from(300)],
+        );
+
+        let wallet =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        wallet
+            .record_recovered_issue_transaction(&saga_id, &data, &proof_infos)
+            .await
+            .unwrap();
+
+        // Quote A must record its own proof (index 0)
+        let tx_a = db
+            .get_transaction(TransactionId::from_batch_quote(saga_id, &quote_a.id))
+            .await
+            .unwrap()
+            .expect("transaction for quote A");
+        assert_eq!(tx_a.ys, vec![expected_ys[0]]);
+
+        // Missing middle quote records nothing
+        assert!(db
+            .get_transaction(TransactionId::from_batch_quote(saga_id, &quote_b.id))
+            .await
+            .unwrap()
+            .is_none());
+
+        // Quote C must record its own proof (index 2), not the missing quote's (index 1)
+        let tx_c = db
+            .get_transaction(TransactionId::from_batch_quote(saga_id, &quote_c.id))
+            .await
+            .unwrap()
+            .expect("transaction for quote C");
+        assert_eq!(tx_c.ys, vec![expected_ys[2]]);
     }
 
     #[tokio::test]
