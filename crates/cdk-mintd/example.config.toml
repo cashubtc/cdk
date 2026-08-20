@@ -336,7 +336,11 @@ max_delay_time = 3
 # gRPC Payment Processor configuration
 # address = "127.0.0.1"
 # port = 50051
+# Directory containing ca.pem, client.pem, and client.key for mTLS.
 # tls_dir = "/path/to/tls"
+# Explicitly permit plaintext, including to non-loopback addresses. This disables
+# transport authentication and encryption; use only on a trusted, isolated network
+# or through a separately authenticated and encrypted tunnel.
 # allow_insecure = false
 # 
 # Note: To support custom payment methods (e.g., paypal, venmo, cashapp),

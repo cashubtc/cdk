@@ -3,7 +3,7 @@ use std::collections::HashMap;
 #[cfg(feature = "fakewallet")]
 use std::collections::HashSet;
 use std::path::Path;
-#[cfg(feature = "ldk-node")]
+#[cfg(any(feature = "grpc-processor", feature = "ldk-node"))]
 use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(feature = "bdk")]
@@ -270,27 +270,61 @@ impl PaymentBackendSetup for config::GrpcProcessor {
         _work_dir: &Path,
         _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_payment_processor::PaymentProcessorClient> {
-        let tls_dir = self.tls_dir.clone();
-
-        if tls_dir.is_none() {
-            if !self.allow_insecure {
-                anyhow::bail!(
-                    "gRPC payment processor TLS is not configured. Set [grpc_processor].tls_dir \
-                     or [grpc_processor].allow_insecure = true to connect without TLS"
-                );
-            }
-
-            tracing::warn!(
-                "No gRPC payment processor TLS directory configured; connecting without TLS \
-                 because allow_insecure is true"
-            );
-        }
+        let tls_dir = grpc_processor_tls_dir(self)?;
 
         let payment_processor =
             cdk_payment_processor::PaymentProcessorClient::new(&self.address, self.port, tls_dir)
                 .await?;
 
         Ok(payment_processor)
+    }
+}
+
+#[cfg(feature = "grpc-processor")]
+fn grpc_processor_tls_dir(processor: &config::GrpcProcessor) -> anyhow::Result<Option<PathBuf>> {
+    match (&processor.tls_dir, processor.allow_insecure) {
+        (Some(tls_dir), _) => Ok(Some(tls_dir.clone())),
+        (None, false) => anyhow::bail!(
+            "gRPC payment processor TLS is not configured. Set [grpc_processor].tls_dir \
+             or [grpc_processor].allow_insecure = true to connect without TLS"
+        ),
+        (None, true) => {
+            tracing::warn!(
+                address = %processor.address,
+                port = processor.port,
+                "SECURITY WARNING: connecting to the gRPC payment processor without TLS because \
+                 allow_insecure is true; traffic is unencrypted and unauthenticated and can be \
+                 intercepted or modified"
+            );
+
+            Ok(None)
+        }
+    }
+}
+
+#[cfg(all(test, feature = "grpc-processor"))]
+mod grpc_processor_tests {
+    use super::grpc_processor_tls_dir;
+    use crate::config::GrpcProcessor;
+
+    #[test]
+    fn remote_plaintext_processor_requires_explicit_opt_in() {
+        let mut processor = GrpcProcessor {
+            address: "192.0.2.1".to_string(),
+            ..Default::default()
+        };
+
+        let error = grpc_processor_tls_dir(&processor)
+            .expect_err("plaintext should require explicit opt-in");
+        assert!(error
+            .to_string()
+            .contains("allow_insecure = true to connect without TLS"));
+
+        processor.allow_insecure = true;
+        assert_eq!(
+            grpc_processor_tls_dir(&processor).expect("remote plaintext should be allowed"),
+            None
+        );
     }
 }
 

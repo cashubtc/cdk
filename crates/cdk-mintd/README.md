@@ -390,9 +390,44 @@ rpc_path = "/home/bitcoin/.lightning/bitcoin/lightning-rpc"
 supported_units = ["msat"]
 address = "127.0.0.1"
 port = 50051
+allow_insecure = true
 ```
 
 Each `[[payment_backend]]` block carries its own `min_mint`, `max_mint`, `min_melt`, `max_melt` if you want different limits per unit. The configured unit must match the backend's reported unit, except for the supported `sat`/`msat` conversion pair. If two configured backends expose the same `(unit, method)` pair, startup is rejected.
+
+### External payment processor security
+
+An external payment processor can move funds from its backing wallet. Use mTLS
+whenever it runs outside the mint's host. Configure mintd with a directory
+containing all three client-side files:
+
+```text
+/run/cdk/payment-processor-tls/
+├── ca.pem       # CA certificate used to verify the processor server
+├── client.pem   # mintd client certificate accepted by the processor
+└── client.key   # private key for client.pem
+```
+
+```toml
+[grpc_processor]
+supported_units = ["sat"]
+address = "10.0.0.20"
+port = 50051
+tls_dir = "/run/cdk/payment-processor-tls"
+allow_insecure = false
+```
+
+Setting `tls_dir` always enables mutual TLS; mintd refuses to connect when any
+of these files is missing. TLS without `client.pem` and `client.key` is not
+client authentication.
+
+Plaintext connections require the explicit opt-in `allow_insecure = true`.
+This includes non-loopback addresses, but it is unsafe on any untrusted network:
+without TLS, mintd cannot authenticate the processor and traffic is not encrypted
+or protected against modification. An attacker able to observe or alter the
+connection could interfere with payment operations. Use this mode only on a
+trusted, isolated network or through a separately authenticated and encrypted
+tunnel; prefer mTLS even for internal deployments.
 
 The single `[payment_backend]` form is equivalent to one `[[payment_backend]]`
 entry with `unit = "sat"` (the default). Multi-backend topology is imported
