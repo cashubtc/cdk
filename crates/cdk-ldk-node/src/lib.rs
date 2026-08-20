@@ -451,6 +451,13 @@ impl CdkLdkNode {
             match receiver.recv().await {
                 Ok(completed_payment_id) if completed_payment_id == payment_id => return Ok(()),
                 Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(
+                        payment_id = %payment_id,
+                        skipped,
+                        "Terminal payment event receiver lagged; continuing to wait"
+                    );
+                }
                 Err(err) => return Err(err),
             }
         }
@@ -1696,6 +1703,29 @@ mod tests {
         CdkLdkNode::wait_for_terminal_payment_event(&mut receiver, payment_id)
             .await
             .expect("matching terminal event should wake the waiter");
+    }
+
+    #[tokio::test]
+    async fn terminal_payment_event_wait_recovers_from_lagged_channel() {
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(2);
+        let payment_id = PaymentId([3; 32]);
+
+        sender
+            .send(PaymentId([1; 32]))
+            .expect("receiver should be subscribed");
+        sender
+            .send(PaymentId([2; 32]))
+            .expect("receiver should be subscribed");
+        sender
+            .send(PaymentId([4; 32]))
+            .expect("receiver should be subscribed");
+        sender
+            .send(payment_id)
+            .expect("receiver should be subscribed");
+
+        CdkLdkNode::wait_for_terminal_payment_event(&mut receiver, payment_id)
+            .await
+            .expect("receiver lag should not prevent a matching event from waking the waiter");
     }
 
     #[tokio::test]
