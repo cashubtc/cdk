@@ -1060,7 +1060,7 @@ impl std::str::FromStr for AuthType {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Auth {
     #[serde(default)]
@@ -1093,6 +1093,27 @@ pub struct Auth {
 
 fn default_blind() -> AuthType {
     AuthType::Blind
+}
+
+impl Default for Auth {
+    fn default() -> Self {
+        Self {
+            auth_enabled: false,
+            openid_discovery: String::new(),
+            openid_client_id: String::new(),
+            mint_max_bat: 0,
+            mint: default_blind(),
+            get_mint_quote: AuthType::default(),
+            check_mint_quote: AuthType::default(),
+            melt: AuthType::default(),
+            get_melt_quote: AuthType::default(),
+            check_melt_quote: AuthType::default(),
+            swap: default_blind(),
+            restore: default_blind(),
+            check_proof_state: AuthType::default(),
+            websocket_auth: default_blind(),
+        }
+    }
 }
 
 /// CDK settings, derived from `config.toml`

@@ -3968,14 +3968,27 @@ backend = "fakewallet"
             "CDK_MINTD_AUTH_ENABLED",
             "CDK_MINTD_AUTH_OPENID_DISCOVERY",
             "CDK_MINTD_AUTH_OPENID_CLIENT_ID",
+            "CDK_MINTD_AUTH_MINT_MAX_BAT",
+            "CDK_MINTD_AUTH_MINT",
+            "CDK_MINTD_AUTH_GET_MINT_QUOTE",
+            "CDK_MINTD_AUTH_CHECK_MINT_QUOTE",
+            "CDK_MINTD_AUTH_MELT",
+            "CDK_MINTD_AUTH_GET_MELT_QUOTE",
+            "CDK_MINTD_AUTH_CHECK_MELT_QUOTE",
+            "CDK_MINTD_AUTH_SWAP",
+            "CDK_MINTD_AUTH_RESTORE",
+            "CDK_MINTD_AUTH_CHECK_PROOF_STATE",
+            "CDK_MINTD_AUTH_WEBSOCKET",
             "CDK_MINTD_AUTH_POSTGRES_URL",
             "CDK_MINTD_AUTH_POSTGRES_TLS_MODE",
             "CDK_MINTD_AUTH_POSTGRES_MAX_CONNECTIONS",
             "CDK_MINTD_AUTH_POSTGRES_CONNECTION_TIMEOUT_SECONDS",
             "CDK_MINTD_CLN_RPC_PATH",
+            "CDK_MINTD_CLN_FEE_PERCENT",
             "CDK_MINTD_LND_ADDRESS",
             "CDK_MINTD_LND_CERT_FILE",
             "CDK_MINTD_LND_MACAROON_FILE",
+            "CDK_MINTD_LND_FEE_PERCENT",
             "CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS",
             "CDK_MINTD_FAKE_WALLET_FEE_PERCENT",
             "CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN",
@@ -4756,6 +4769,79 @@ openid_client_id = "mintd"
         let _ = fs::remove_dir_all(&temp_dir);
         clear_mintd_env();
         result
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn env_only_auth_preserves_protected_endpoint_defaults() {
+        let settings = load_settings_with_env(
+            "cdk_mintd_env_auth_defaults",
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[payment_backend]
+backend = "fakewallet"
+"#
+            ),
+            || {
+                std::env::set_var("CDK_MINTD_AUTH_ENABLED", "true");
+                std::env::set_var(
+                    "CDK_MINTD_AUTH_OPENID_DISCOVERY",
+                    "https://issuer.example.com/.well-known/openid-configuration",
+                );
+                std::env::set_var("CDK_MINTD_AUTH_OPENID_CLIENT_ID", "mintd");
+            },
+        )
+        .expect("environment-only auth configuration should load");
+
+        let auth = settings.auth.expect("auth should be enabled");
+        assert_eq!(auth.mint, config::AuthType::Blind);
+        assert_eq!(auth.swap, config::AuthType::Blind);
+        assert_eq!(auth.restore, config::AuthType::Blind);
+        assert_eq!(auth.websocket_auth, config::AuthType::Blind);
+    }
+
+    #[cfg(feature = "lnd")]
+    #[test]
+    fn invalid_lnd_fee_percent_from_env_is_rejected() {
+        for (name, fee_percent) in [
+            ("nan", "NaN"),
+            ("negative", "-1"),
+            ("not-a-number", "invalid"),
+        ] {
+            let error = load_settings_with_env(
+                &format!("cdk_mintd_lnd_fee_percent_{name}"),
+                &format!(
+                    r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[payment_backend]
+backend = "lnd"
+"#
+                ),
+                || {
+                    std::env::set_var("CDK_MINTD_LND_ADDRESS", "https://127.0.0.1:10009");
+                    std::env::set_var("CDK_MINTD_LND_CERT_FILE", "/certs/tls.cert");
+                    std::env::set_var("CDK_MINTD_LND_MACAROON_FILE", "/data/admin.macaroon");
+                    std::env::set_var("CDK_MINTD_LND_FEE_PERCENT", fee_percent);
+                },
+            )
+            .expect_err("invalid LND fee percentage should fail startup validation");
+
+            assert!(
+                error.to_string().contains("CDK_MINTD_LND_FEE_PERCENT"),
+                "unexpected error for {fee_percent}: {error}"
+            );
+        }
     }
 
     #[cfg(feature = "fakewallet")]

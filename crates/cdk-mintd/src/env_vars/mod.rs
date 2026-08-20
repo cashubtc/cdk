@@ -173,7 +173,7 @@ impl Settings {
 
         #[cfg(feature = "lnd")]
         {
-            let lnd = self.lnd.clone().unwrap_or_default().from_env();
+            let lnd = self.lnd.clone().unwrap_or_default().from_env()?;
             if lnd.address.is_empty() {
                 self.lnd = None;
             } else {

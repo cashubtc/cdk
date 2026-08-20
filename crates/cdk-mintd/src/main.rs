@@ -167,6 +167,7 @@ fn export_document(path: &std::path::Path, document: &str, force: bool) -> Resul
     } else {
         options.create_new(true);
     }
+    set_export_creation_mode(&mut options);
 
     let mut file = match options.open(path) {
         Ok(file) => file,
@@ -186,20 +187,36 @@ fn export_document(path: &std::path::Path, document: &str, force: bool) -> Resul
         .with_context(|| format!("could not export configuration to {}", path.display()))
 }
 
+#[cfg(unix)]
+fn set_export_creation_mode(options: &mut std::fs::OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    options.mode(0o600);
+}
+
+#[cfg(not(unix))]
+fn set_export_creation_mode(_options: &mut std::fs::OpenOptions) {}
+
 #[cfg(test)]
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
 
-    #[test]
-    fn export_requires_force_to_replace_existing_file() {
+    fn export_test_directory(name: &str) -> std::path::PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time should follow the Unix epoch")
             .as_nanos();
-        let directory =
-            std::env::temp_dir().join(format!("cdk-mintd-export-{}-{nonce}", std::process::id()));
+        std::env::temp_dir().join(format!(
+            "cdk-mintd-export-{name}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn export_requires_force_to_replace_existing_file() {
+        let directory = export_test_directory("replace");
         std::fs::create_dir(&directory).expect("create test directory");
         let path = directory.join("config.toml");
         std::fs::write(&path, "existing").expect("create existing export");
@@ -216,6 +233,28 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&path).expect("read replacement export"),
             "replacement"
+        );
+
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_uses_owner_only_permissions_for_new_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = export_test_directory("permissions");
+        std::fs::create_dir(&directory).expect("create test directory");
+        let path = directory.join("config.toml");
+
+        export_document(&path, "first", false).expect("create export");
+        assert_eq!(
+            std::fs::metadata(&path)
+                .expect("read export metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
         );
 
         std::fs::remove_dir_all(directory).expect("remove test directory");
