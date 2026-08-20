@@ -20,8 +20,8 @@ use chrono::NaiveDateTime;
 
 use super::{connect_client, MintPgDatabase, PgConfig};
 
-const MAX_SUPPORTED_NUTSHELL_VERSION: &str = "0.20.2";
-const SUPPORTED_NUTSHELL_SCHEMA_VERSION: i32 = 36;
+const MAX_SUPPORTED_NUTSHELL_VERSION: &str = "0.20.3";
+const SUPPORTED_NUTSHELL_SCHEMA_VERSION: i32 = 38;
 // Nutshell readers use OFFSET pagination, whose cost grows with every page.
 // Large pages keep that overhead bounded while remaining comfortably below the
 // memory available in the documented 6 GiB migration environment.
@@ -40,6 +40,21 @@ async fn source_count(client: &tokio_postgres::Client, table: &str) -> Result<us
         .query_one(&sql, &[])
         .await
         .map(|row| row.get::<_, i64>(0) as usize)
+        .map_err(|e| Error::Database(Box::new(e)))
+}
+
+async fn source_column_exists(
+    client: &tokio_postgres::Client,
+    table: &str,
+    column: &str,
+) -> Result<bool, Error> {
+    client
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2)",
+            &[&table, &column],
+        )
+        .await
+        .map(|row| row.get(0))
         .map_err(|e| Error::Database(Box::new(e)))
 }
 
@@ -119,7 +134,7 @@ async fn pg_liabilities(
         .map_err(|e| Error::Database(Box::new(e)))
 }
 
-/// Independently verify an already migrated Nutshell 0.20.2 Postgres database.
+/// Independently verify an already migrated Nutshell 0.20.3 Postgres database.
 pub async fn verify_nutshell_migration(
     cdk_db_url: &str,
     cdk_tls_mode: Option<&str>,
@@ -558,7 +573,14 @@ async fn read_melt_quotes_chunk_postgres(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<MeltQuote>, Error> {
-    let rows = client.query("SELECT quote, method, request, checking_id, unit, amount, fee_reserve, paid, created_time::text, paid_time::text, state, expiry::text, proof FROM melt_quotes ORDER BY quote LIMIT $1 OFFSET $2;", &[&limit, &offset])
+    let paid_column = if source_column_exists(client, "melt_quotes", "paid").await? {
+        "paid"
+    } else {
+        "NULL::boolean"
+    };
+    let query = format!("SELECT quote, method, request, checking_id, unit, amount, fee_reserve, {paid_column}, created_time::text, paid_time::text, state, expiry::text, proof FROM melt_quotes ORDER BY quote LIMIT $1 OFFSET $2;");
+    let rows = client
+        .query(&query, &[&limit, &offset])
         .await
         .map_err(|e| Error::Database(Box::new(e)))?;
     let mut chunk = Vec::new();
@@ -688,7 +710,16 @@ async fn read_promises_chunk_postgres(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<MigratedPromise>, Error> {
-    let rows = client.query("SELECT amount, id, b_, c_, dleq_e, dleq_s, mint_quote, melt_quote, order_index FROM promises ORDER BY b_ LIMIT $1 OFFSET $2;", &[&limit, &offset])
+    let dleq_columns = if source_column_exists(client, "promises", "dleq_e").await?
+        && source_column_exists(client, "promises", "dleq_s").await?
+    {
+        "dleq_e, dleq_s"
+    } else {
+        "NULL::text, NULL::text"
+    };
+    let query = format!("SELECT amount, id, b_, c_, {dleq_columns}, mint_quote, melt_quote, order_index FROM promises ORDER BY b_ LIMIT $1 OFFSET $2;");
+    let rows = client
+        .query(&query, &[&limit, &offset])
         .await
         .map_err(|e| Error::Database(Box::new(e)))?;
     let mut chunk = Vec::new();
@@ -841,36 +872,27 @@ async fn read_proofs_chunk_postgres(
         let keyset_id = match Id::from_str(&id_str) {
             Ok(id) => id,
             Err(e) => {
-                tracing::warn!(
-                    "Skipping proof due to invalid Keyset ID '{}': {:?}",
-                    id_str,
-                    e
-                );
-                continue;
+                return Err(Error::Database(Box::new(std::io::Error::other(format!(
+                    "Invalid keyset ID {id_str} on Nutshell proof: {e}"
+                )))));
             }
         };
 
         let secret = match Secret::from_str(&secret_str) {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!(
-                    "Skipping proof due to invalid Secret '{}': {:?}",
-                    secret_str,
-                    e
-                );
-                continue;
+                return Err(Error::Database(Box::new(std::io::Error::other(format!(
+                    "Invalid secret on Nutshell proof for keyset {id_str}: {e}"
+                )))));
             }
         };
 
         let c = match PublicKey::from_hex(&c_str) {
             Ok(pk) => pk,
             Err(e) => {
-                tracing::warn!(
-                    "Skipping proof due to invalid C_ public key '{}': {:?}",
-                    c_str,
-                    e
-                );
-                continue;
+                return Err(Error::Database(Box::new(std::io::Error::other(format!(
+                    "Invalid C public key on Nutshell proof for keyset {id_str}: {e}"
+                )))));
             }
         };
 

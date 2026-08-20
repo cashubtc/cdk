@@ -115,7 +115,7 @@ fn verify_semantic_manifest(
 
     let source_promises = query_strings(
         source,
-        "SELECT lower(b_) || '|' || amount || '|' || id || '|' || lower(COALESCE(c_, '')) || '|' || lower(COALESCE(dleq_e, '')) || '|' || lower(COALESCE(dleq_s, '')) || '|' || COALESCE(mint_quote, melt_quote, '') || '|' || COALESCE(order_index, 0) FROM promises ORDER BY lower(b_)",
+        "SELECT lower(b_) || '|' || amount || '|' || id || '|' || lower(COALESCE(c_, '')) || '|||' || COALESCE(mint_quote, melt_quote, '') || '|' || COALESCE(order_index, 0) FROM promises ORDER BY lower(b_)",
     )?;
     let target_promises = query_strings(
         target,
@@ -433,7 +433,7 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
             (proc, None, Some(path.clone()))
         }
         MintRuntime::Docker => {
-            println!("Sourcing nutshell mint from Docker container (cashubtc/nutshell:0.20.2)...");
+            println!("Sourcing nutshell mint from Docker container (cashubtc/nutshell:0.20.3)...");
             let name = format!("nutshell_fuzz_{}", uuid::Uuid::new_v4());
             // Pre-clean container
             let _ = std::process::Command::new("docker")
@@ -472,7 +472,7 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
                     "MINT_RPC_SERVER_PORT=8086",
                     "-e",
                     "MINT_RPC_SERVER_MUTUAL_TLS=False",
-                    "cashubtc/nutshell:0.20.2",
+                    "cashubtc/nutshell:0.20.3",
                     "poetry",
                     "run",
                     "mint",
@@ -662,7 +662,7 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
                     "--rm",
                     "-v",
                     &format!("{}:/data", fuzz_dir.to_str().unwrap()),
-                    "cashubtc/nutshell:0.20.2",
+                    "cashubtc/nutshell:0.20.3",
                     "chown",
                     "-R",
                     &format!("{}:{}", uid, gid),
@@ -723,7 +723,7 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
 
     let failed_melt_quote = uuid::Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO melt_quotes (quote, method, request, checking_id, unit, amount, fee_reserve, paid, created_time, paid_time, fee_paid, proof, state, expiry) VALUES (?1, 'bolt11', 'failed-fixture', ?2, 'sat', 2, 0, 0, unixepoch(), NULL, 0, NULL, 'FAILED', unixepoch() + 3600)",
+        "INSERT INTO melt_quotes (quote, method, request, checking_id, unit, amount, fee_reserve, created_time, paid_time, fee_paid, proof, state, expiry) VALUES (?1, 'bolt11', 'failed-fixture', ?2, 'sat', 2, 0, unixepoch(), NULL, 0, NULL, 'FAILED', unixepoch() + 3600)",
         rusqlite::params![failed_melt_quote, format!("checking-{failed_melt_quote}")],
     )?;
     let seed_str: String = conn.query_row(
@@ -738,7 +738,7 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
         |row| row.get(0),
     )?;
 
-    // Deterministic 0.20.2 accounting fixtures cover states that ordinary Bolt11
+    // Deterministic 0.20.3 accounting fixtures cover states that ordinary Bolt11
     // FakeWallet traffic cannot reliably produce: partial issuance and overpayment.
     for (state, amount_paid, amount_issued) in [
         ("UNPAID", 0_i64, 0_i64),
@@ -755,7 +755,7 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
 
     let pending_melt_quote = uuid::Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO melt_quotes (quote, method, request, checking_id, unit, amount, fee_reserve, paid, created_time, paid_time, fee_paid, proof, state, expiry) VALUES (?1, 'bolt11', 'pending-fixture', ?2, 'sat', 2, 0, 0, unixepoch(), NULL, 0, NULL, 'PENDING', unixepoch() + 3600)",
+        "INSERT INTO melt_quotes (quote, method, request, checking_id, unit, amount, fee_reserve, created_time, paid_time, fee_paid, proof, state, expiry) VALUES (?1, 'bolt11', 'pending-fixture', ?2, 'sat', 2, 0, unixepoch(), NULL, 0, NULL, 'PENDING', unixepoch() + 3600)",
         rusqlite::params![pending_melt_quote, format!("checking-{pending_melt_quote}")],
     )?;
     conn.execute(
@@ -796,7 +796,7 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
     .expect("Migration failed");
     println!("Migration complete!");
 
-    // Nutshell 0.20.2 persists cumulative quote accounting and promise ordering.
+    // Nutshell 0.20.3 persists cumulative quote accounting and promise ordering.
     // Both are required for safe quote recovery after the cutover.
     {
         let source = rusqlite::Connection::open(&nutshell_db_path)?;

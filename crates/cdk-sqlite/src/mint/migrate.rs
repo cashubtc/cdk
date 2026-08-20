@@ -21,8 +21,8 @@ use rusqlite::OptionalExtension;
 
 use super::MintSqliteDatabase;
 
-const MAX_SUPPORTED_NUTSHELL_VERSION: &str = "0.20.2";
-const SUPPORTED_NUTSHELL_SCHEMA_VERSION: i64 = 36;
+const MAX_SUPPORTED_NUTSHELL_VERSION: &str = "0.20.3";
+const SUPPORTED_NUTSHELL_SCHEMA_VERSION: i64 = 38;
 const CHUNK_SIZE: i64 = 2000;
 
 enum MigratedPromise {
@@ -83,6 +83,26 @@ fn source_count(conn: &rusqlite::Connection, table: &str) -> Result<usize, Error
     conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
         .map(|count| count as usize)
         .map_err(|e| Error::Database(Box::new(e)))
+}
+
+fn source_column_exists(
+    conn: &rusqlite::Connection,
+    table: &str,
+    column: &str,
+) -> Result<bool, Error> {
+    let sql = format!("PRAGMA table_info({table})");
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    for source_column in columns {
+        if source_column.map_err(|e| Error::Database(Box::new(e)))? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn source_proof_count(conn: &rusqlite::Connection) -> Result<usize, Error> {
@@ -160,7 +180,7 @@ fn liability_totals(
         .map_err(|e| Error::Database(Box::new(e)))
 }
 
-/// Independently verify an already migrated Nutshell 0.20.2 SQLite database.
+/// Independently verify an already migrated Nutshell 0.20.3 SQLite database.
 pub fn verify_nutshell_migration(
     cdk_db_path: &Path,
     nutshell_db_path: &str,
@@ -546,7 +566,16 @@ fn read_melt_quotes_chunk_sqlite(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<MeltQuote>, Error> {
-    let mut stmt = conn.prepare("SELECT quote, method, request, checking_id, unit, amount, fee_reserve, paid, created_time, paid_time, state, expiry, proof FROM melt_quotes ORDER BY quote LIMIT ? OFFSET ?;")
+    let paid_column = if source_column_exists(conn, "melt_quotes", "paid")? {
+        "paid"
+    } else {
+        "NULL"
+    };
+    let query = format!(
+        "SELECT quote, method, request, checking_id, unit, amount, fee_reserve, {paid_column}, created_time, paid_time, state, expiry, proof FROM melt_quotes ORDER BY quote LIMIT ? OFFSET ?;"
+    );
+    let mut stmt = conn
+        .prepare(&query)
         .map_err(|e| Error::Database(Box::new(e)))?;
     let melt_quotes_iter = stmt
         .query_map([limit, offset], |row| {
@@ -690,7 +719,18 @@ fn read_promises_chunk_sqlite(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<MigratedPromise>, Error> {
-    let mut stmt = conn.prepare("SELECT amount, id, b_, c_, dleq_e, dleq_s, mint_quote, melt_quote, order_index FROM promises ORDER BY b_ LIMIT ? OFFSET ?;")
+    let dleq_columns = if source_column_exists(conn, "promises", "dleq_e")?
+        && source_column_exists(conn, "promises", "dleq_s")?
+    {
+        "dleq_e, dleq_s"
+    } else {
+        "NULL, NULL"
+    };
+    let query = format!(
+        "SELECT amount, id, b_, c_, {dleq_columns}, mint_quote, melt_quote, order_index FROM promises ORDER BY b_ LIMIT ? OFFSET ?;"
+    );
+    let mut stmt = conn
+        .prepare(&query)
         .map_err(|e| Error::Database(Box::new(e)))?;
     let promises_iter = stmt
         .query_map([limit, offset], |row| {
@@ -821,77 +861,50 @@ fn read_proofs_chunk_sqlite(
         .map_err(|e| Error::Database(Box::new(e)))?;
     let proofs_iter = stmt
         .query_map([limit, offset], |row| {
-            let amount_val: i64 = row.get(0)?;
-            let id_str: String = row.get(1)?;
-            let c_str: String = row.get(2)?;
-            let secret_str: String = row.get(3)?;
-            let witness_str: Option<String> = row.get(4)?;
-            let melt_quote_str: Option<String> = row.get(5)?;
-
-            let keyset_id = match Id::from_str(&id_str) {
-                Ok(id) => id,
-                Err(e) => {
-                    tracing::warn!(
-                        "Skipping proof due to invalid Keyset ID '{}': {:?}",
-                        id_str,
-                        e
-                    );
-                    return Ok(None);
-                }
-            };
-
-            let secret = match Secret::from_str(&secret_str) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(
-                        "Skipping proof due to invalid Secret '{}': {:?}",
-                        secret_str,
-                        e
-                    );
-                    return Ok(None);
-                }
-            };
-
-            let c = match PublicKey::from_hex(&c_str) {
-                Ok(pk) => pk,
-                Err(e) => {
-                    tracing::warn!(
-                        "Skipping proof due to invalid C_ public key '{}': {:?}",
-                        c_str,
-                        e
-                    );
-                    return Ok(None);
-                }
-            };
-
-            let cdk_proof = Proof {
-                amount: Amount::from(amount_val as u64),
-                keyset_id,
-                secret,
-                c,
-                witness: witness_str
-                    .as_ref()
-                    .and_then(|w| serde_json::from_str(w).ok()),
-                dleq: None,
-                p2pk_e: None,
-            };
-
-            let melt_q_id = melt_quote_str
-                .as_ref()
-                .and_then(|q| QuoteId::from_str(q).ok());
-
-            Ok(Some((cdk_proof, melt_q_id, keyset_id, target_state)))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
         })
         .map_err(|e| Error::Database(Box::new(e)))?;
     let mut chunk = Vec::new();
-    for p in proofs_iter {
-        match p {
-            Ok(Some(proof_info)) => chunk.push(proof_info),
-            Ok(None) => {} // Skipped
-            Err(e) => {
-                tracing::warn!("Failed to retrieve proof row from SQLite: {:?}", e);
-            }
-        }
+    for row in proofs_iter {
+        let (amount_val, id_str, c_str, secret_str, witness_str, melt_quote_str) =
+            row.map_err(|e| Error::Database(Box::new(e)))?;
+        let keyset_id = Id::from_str(&id_str).map_err(|e| {
+            Error::Database(Box::new(std::io::Error::other(format!(
+                "Invalid keyset ID {id_str} on Nutshell proof: {e}"
+            ))))
+        })?;
+        let secret = Secret::from_str(&secret_str).map_err(|e| {
+            Error::Database(Box::new(std::io::Error::other(format!(
+                "Invalid secret on Nutshell proof for keyset {id_str}: {e}"
+            ))))
+        })?;
+        let c = PublicKey::from_hex(&c_str).map_err(|e| {
+            Error::Database(Box::new(std::io::Error::other(format!(
+                "Invalid C public key on Nutshell proof for keyset {id_str}: {e}"
+            ))))
+        })?;
+        let cdk_proof = Proof {
+            amount: Amount::from(amount_val as u64),
+            keyset_id,
+            secret,
+            c,
+            witness: witness_str
+                .as_ref()
+                .and_then(|w| serde_json::from_str(w).ok()),
+            dleq: None,
+            p2pk_e: None,
+        };
+        let melt_q_id = melt_quote_str
+            .as_ref()
+            .and_then(|q| QuoteId::from_str(q).ok());
+        chunk.push((cdk_proof, melt_q_id, keyset_id, target_state));
     }
     Ok(chunk)
 }
@@ -1393,7 +1406,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validates_nutshell_0202_schema_version() {
+    fn validates_nutshell_0203_schema_version() {
         let conn = rusqlite::Connection::open_in_memory().expect("in-memory database");
         conn.execute(
             "CREATE TABLE dbversions (db TEXT PRIMARY KEY, version INTEGER NOT NULL)",
@@ -1401,12 +1414,12 @@ mod tests {
         )
         .expect("create dbversions");
         conn.execute(
-            "INSERT INTO dbversions (db, version) VALUES ('mint', 36)",
+            "INSERT INTO dbversions (db, version) VALUES ('mint', 38)",
             [],
         )
         .expect("insert supported version");
 
-        validate_nutshell_schema(&conn).expect("0.20.2 schema should be accepted");
+        validate_nutshell_schema(&conn).expect("0.20.3 schema should be accepted");
     }
 
     #[test]

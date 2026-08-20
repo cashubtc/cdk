@@ -1,6 +1,6 @@
 # Migrating a Nutshell mint to CDK
 
-`cdk-mintd` can migrate Nutshell 0.20.2 keysets, quotes, promises, and pending or
+`cdk-mintd` can migrate Nutshell 0.20.3 keysets, quotes, promises, and pending or
 spent proofs into an empty CDK database of the same type.
 
 Stop the Nutshell mint and back up its database before starting. Keep it stopped
