@@ -225,6 +225,17 @@ impl HttpClient {
             self.no_redirects,
         )
     }
+
+    /// PUT request builder for complex cases
+    pub fn put(&self, url: &str) -> BitreqRequestBuilder {
+        BitreqRequestBuilder::new(
+            bitreq::put(url),
+            url,
+            self.inner.clone(),
+            self.proxy_config.clone(),
+            self.no_redirects,
+        )
+    }
 }
 
 /// bitreq-based RequestBuilder wrapper

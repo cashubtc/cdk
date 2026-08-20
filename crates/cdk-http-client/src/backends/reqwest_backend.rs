@@ -137,6 +137,11 @@ impl HttpClient {
     pub fn patch(&self, url: &str) -> ReqwestRequestBuilder {
         ReqwestRequestBuilder::new(self.request(reqwest::Method::PATCH, url), url)
     }
+
+    /// PUT request builder for complex cases.
+    pub fn put(&self, url: &str) -> ReqwestRequestBuilder {
+        ReqwestRequestBuilder::new(self.request(reqwest::Method::PUT, url), url)
+    }
 }
 
 fn map_reqwest_error(err: reqwest::Error) -> HttpError {

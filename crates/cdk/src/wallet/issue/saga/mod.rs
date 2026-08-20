@@ -71,6 +71,50 @@ fn should_retry_with_legacy_quote_signature(error: &Error) -> bool {
     )
 }
 
+/// npub.cash quotes may be unlocked at the mint even while the wallet carries
+/// a signing-key provenance marker (stale marker from an earlier sync, or a
+/// server whose lock state changed). Mints that reject signatures on unlocked
+/// quotes answer unsigned requests, so retry without the signature as a last
+/// resort. Locked quotes reject the same way, so this never mints a locked
+/// quote without authorization.
+#[cfg(feature = "npubcash")]
+async fn post_unsigned_mint_fallback(
+    wallet: &Wallet,
+    payment_method: &PaymentMethod,
+    quote_info: &MintQuote,
+    request: &crate::nuts::MintRequest<String>,
+) -> Option<crate::nuts::MintResponse> {
+    match wallet.npubcash_quote_key(&quote_info.id).await {
+        Ok(Some(_)) => (),
+        _ => return None,
+    }
+
+    let mut unsigned_request = request.clone();
+    unsigned_request.signature = None;
+
+    match wallet
+        .client
+        .post_mint(payment_method, unsigned_request)
+        .await
+    {
+        Ok(response) => {
+            tracing::info!(
+                "Mint request succeeded unsigned after signature rejection; npub.cash quote {} is not locked",
+                quote_info.id
+            );
+            Some(response)
+        }
+        Err(error) => {
+            tracing::debug!(
+                "Unsigned npub.cash mint retry for quote {} also failed: {}",
+                quote_info.id,
+                error
+            );
+            None
+        }
+    }
+}
+
 async fn post_mint_request_with_legacy_fallback(
     wallet: &Wallet,
     payment_method: &PaymentMethod,
@@ -123,6 +167,13 @@ async fn post_mint_request_with_legacy_fallback(
                             fallback_error = %fallback_error,
                             "Legacy mint quote signature retry failed; returning original mint error"
                         );
+                        #[cfg(feature = "npubcash")]
+                        if let Some(response) =
+                            post_unsigned_mint_fallback(wallet, payment_method, quote_info, request)
+                                .await
+                        {
+                            return Ok(response);
+                        }
                         Err(error)
                     }
                 }
@@ -1430,5 +1481,54 @@ mod tests {
         let result = prepared.execute().await;
 
         assert!(matches!(result, Err(Error::InvalidMintResponse(_))));
+    }
+
+    #[cfg(feature = "npubcash")]
+    #[tokio::test]
+    async fn test_execute_retries_npubcash_marked_quote_unsigned_after_signature_rejection() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
+
+        let signing_key =
+            SecretKey::from_hex("50d7fd7aa2b2fe4607f41f4ce6f8794fc184dd47b8cdfbe4b3d1249aa02d35aa")
+                .expect("valid signing key");
+        let mint_quote = paid_signed_mint_quote(mint_url, Amount::from(64), signing_key);
+        let quote_id = mint_quote.id.clone();
+        db.add_mint_quote(mint_quote).await.expect("add mint quote");
+
+        // Mark as an npub.cash quote (NIP-06 provenance marker).
+        db.kv_write("npubcash", "quotes", &quote_id, b"nip06")
+            .await
+            .expect("provenance marker write");
+
+        let prepared = MintSaga::new(&wallet)
+            .prepare(&quote_id, SplitTarget::Values(vec![Amount::from(64)]), None)
+            .await
+            .expect("prepare mint saga");
+
+        mock_client.push_post_mint_response(Err(Error::SignatureMissingOrInvalid));
+        mock_client.push_post_mint_response(Err(Error::SignatureMissingOrInvalid));
+        mock_client.push_post_mint_response(Err(Error::Custom(
+            "unsigned retry exercised; stop here".to_string(),
+        )));
+
+        let result = prepared.execute().await;
+
+        // The original signature error is preserved, not the fallback's.
+        assert!(matches!(result, Err(Error::SignatureMissingOrInvalid)));
+
+        let requests = mock_client.post_mint_requests();
+        assert_eq!(requests.len(), 3);
+        assert!(requests[0].1.signature.is_some(), "first attempt is signed");
+        assert!(requests[1].1.signature.is_some(), "legacy retry is signed");
+        assert!(
+            requests[2].1.signature.is_none(),
+            "npub.cash fallback goes out unsigned"
+        );
+        assert_eq!(requests[0].1.outputs, requests[2].1.outputs);
     }
 }

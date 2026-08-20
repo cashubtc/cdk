@@ -89,6 +89,11 @@ impl HttpClient {
     pub fn patch(&self, url: &str) -> WasmRequestBuilder {
         WasmRequestBuilder::new("PATCH", url, self.no_redirects)
     }
+
+    /// PUT request builder for complex cases
+    pub fn put(&self, url: &str) -> WasmRequestBuilder {
+        WasmRequestBuilder::new("PUT", url, self.no_redirects)
+    }
 }
 
 /// WASM fetch-based RequestBuilder wrapper

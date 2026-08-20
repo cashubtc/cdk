@@ -114,6 +114,52 @@ impl NpubCashClient {
 
         Ok(quotes.into_iter().map(Into::into).collect())
     }
+
+    /// Enable or disable NUT-20 quote locking for this NpubCash account
+    ///
+    /// When enabled, the NpubCash server creates new mint quotes locked to the
+    /// account's Nostr public key, so claiming them requires a NUT-20 quote
+    /// signature from the matching secret key. The server rejects enabling
+    /// locking when the configured mint does not support NUT-20.
+    ///
+    /// Already-created quotes keep their original lock state.
+    ///
+    /// # Arguments
+    ///
+    /// * `lock_quotes` - Whether new quotes should be locked to the npub
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the API request fails or authentication fails
+    pub async fn set_quote_locking(
+        &self,
+        lock_quotes: bool,
+    ) -> Result<NpubCashUserResponse, FfiError> {
+        let response = self
+            .inner
+            .set_quote_locking(lock_quotes)
+            .await
+            .map_err(|e| FfiError::internal(e.to_string()))?;
+
+        Ok(response.into())
+    }
+
+    /// Fetch the NpubCash account settings
+    ///
+    /// Returns the configured mint URL and whether quote locking is enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the API request fails or authentication fails
+    pub async fn get_user_info(&self) -> Result<NpubCashUserResponse, FfiError> {
+        let response = self
+            .inner
+            .get_user_info()
+            .await
+            .map_err(|e| FfiError::internal(e.to_string()))?;
+
+        Ok(response.into())
+    }
 }
 
 /// A quote from the NpubCash service
@@ -205,11 +251,12 @@ pub struct NpubCashUserResponse {
 
 impl From<cdk_nostr::npubcash::UserResponse> for NpubCashUserResponse {
     fn from(response: cdk_nostr::npubcash::UserResponse) -> Self {
+        let user = response.data.into_user();
         Self {
             error: response.error,
-            pubkey: response.data.user.pubkey,
-            mint_url: response.data.user.mint_url,
-            lock_quote: response.data.user.lock_quote,
+            pubkey: user.pubkey,
+            mint_url: user.mint_url,
+            lock_quote: user.lock_quote,
         }
     }
 }

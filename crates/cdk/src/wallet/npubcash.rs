@@ -141,6 +141,21 @@ impl Wallet {
             tracing::warn!("Failed to import legacy NpubCash quotes: {}", e);
         }
 
+        // Best-effort: lock new quotes to this wallet's NpubCash npub so only
+        // this wallet can mint them. Servers/mints without NUT-20 support
+        // reject this; unlocked quotes remain claimable either way.
+        match client.set_quote_locking(true).await {
+            Ok(_) => {
+                tracing::info!("NpubCash quote locking enabled at '{}'", npubcash_url);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to enable NpubCash quote locking: {}. New quotes will be unlocked.",
+                    e
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -288,6 +303,12 @@ impl Wallet {
     /// missing-quotes endpoint. If the server does not support that endpoint
     /// yet, the data from the full quote list is used instead.
     ///
+    /// Quotes known locally are re-processed too, so their NpubCash lock
+    /// provenance (and therefore whether they get a NUT-20 quote signature)
+    /// tracks the server's current state — e.g. quotes that were synced while
+    /// unlocked must lose their marker so mints that reject signatures on
+    /// unlocked quotes can be claimed.
+    ///
     /// Unlike [`Self::sync_npubcash_quotes`], this does not rely on the last
     /// fetch timestamp and therefore recovers quotes that incremental syncs
     /// may have missed.
@@ -319,6 +340,9 @@ impl Wallet {
             .collect();
 
         if missing_ids.is_empty() {
+            // Nothing new to resolve, but refresh lock provenance for the
+            // quotes we already know about.
+            self.process_npubcash_quotes(remote_quotes).await?;
             return Ok(Vec::new());
         }
 
@@ -334,11 +358,22 @@ impl Wallet {
                     err
                 );
                 remote_quotes
+                    .clone()
                     .into_iter()
                     .filter(|quote| missing_ids.contains(&quote.id))
                     .collect()
             }
         };
+
+        // Refresh provenance for known quotes from the full list before
+        // resolving the missing ones.
+        self.process_npubcash_quotes(
+            remote_quotes
+                .into_iter()
+                .filter(|quote| !missing_ids.contains(&quote.id))
+                .collect(),
+        )
+        .await?;
 
         self.process_npubcash_quotes(missing_quotes).await
     }
@@ -404,6 +439,48 @@ impl Wallet {
             .map_err(|e| Error::Custom(e.to_string()))
     }
 
+    /// Enable or disable NUT-20 quote locking on the NpubCash account
+    ///
+    /// When enabled, the NpubCash server creates new mint quotes locked to the
+    /// wallet's NpubCash Nostr public key, so minting them requires a NUT-20
+    /// quote signature (which this wallet produces from its seed). The server
+    /// rejects enabling locking when the configured mint does not support
+    /// NUT-20.
+    ///
+    /// Already-created quotes keep their original lock state; unlocked quotes
+    /// are still claimable (the wallet detects them and mints unsigned).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if NpubCash is not enabled or the update fails
+    #[instrument(skip(self))]
+    pub async fn set_npubcash_quote_locking(
+        &self,
+        lock_quotes: bool,
+    ) -> Result<cdk_nostr::npubcash::UserResponse, Error> {
+        let client = self.get_npubcash_client().await?;
+        client
+            .set_quote_locking(lock_quotes)
+            .await
+            .map_err(|e| Error::Custom(e.to_string()))
+    }
+
+    /// Fetch the wallet's NpubCash account settings
+    ///
+    /// Returns the configured mint URL and whether quote locking is enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if NpubCash is not enabled or the request fails
+    #[instrument(skip(self))]
+    pub async fn get_npubcash_user_info(&self) -> Result<cdk_nostr::npubcash::UserResponse, Error> {
+        let client = self.get_npubcash_client().await?;
+        client
+            .get_user_info()
+            .await
+            .map_err(|e| Error::Custom(e.to_string()))
+    }
+
     /// Add an NpubCash quote to the wallet's mint quote database
     ///
     /// Converts an NpubCash quote to a wallet MintQuote and stores it. The
@@ -432,25 +509,46 @@ impl Wallet {
         npubcash_quote: cdk_nostr::npubcash::Quote,
         key: NpubCashQuoteKey,
     ) -> Result<Option<MintQuote>, Error> {
+        // The NpubCash API reports whether this quote is NUT-20-locked.
+        // Signing an unlocked quote is rejected by mints with
+        // "Signature missing or invalid", so only persisted quotes that
+        // are actually locked carry a provenance marker — and only those
+        // get a quote signature on mint.
+        let quote_locked = npubcash_quote.locked.unwrap_or(true);
         let mint_quote: MintQuote = npubcash_quote.into();
 
-        // This marker is authoritative because the quote came from the
-        // NpubCash account associated with `key`.
-        self.localstore
-            .kv_write(
-                NPUBCASH_KV_NAMESPACE,
-                QUOTES_KV_SECONDARY_NAMESPACE,
-                &mint_quote.id,
-                key.as_bytes(),
-            )
-            .await?;
+        let stored_quote = if quote_locked {
+            // This marker is authoritative because the quote came from the
+            // NpubCash account associated with `key`.
+            self.localstore
+                .kv_write(
+                    NPUBCASH_KV_NAMESPACE,
+                    QUOTES_KV_SECONDARY_NAMESPACE,
+                    &mint_quote.id,
+                    key.as_bytes(),
+                )
+                .await?;
 
-        let stored_quote = match key {
-            NpubCashQuoteKey::Nip06 => self.localstore.get_mint_quote(&mint_quote.id).await?,
-            NpubCashQuoteKey::LegacySeedPrefix => {
-                self.scrub_proven_legacy_npubcash_quote(&mint_quote.id)
-                    .await?
+            match key {
+                NpubCashQuoteKey::Nip06 => self.localstore.get_mint_quote(&mint_quote.id).await?,
+                NpubCashQuoteKey::LegacySeedPrefix => {
+                    self.scrub_proven_legacy_npubcash_quote(&mint_quote.id)
+                        .await?
+                }
             }
+        } else {
+            // Unlocked npub.cash quote: drop any provenance marker and any
+            // previously persisted secret key so mint_quote_signing_key
+            // resolves no key and the mint request goes unsigned.
+            self.localstore
+                .kv_remove(
+                    NPUBCASH_KV_NAMESPACE,
+                    QUOTES_KV_SECONDARY_NAMESPACE,
+                    &mint_quote.id,
+                )
+                .await?;
+            self.scrub_proven_legacy_npubcash_quote(&mint_quote.id)
+                .await?
         };
 
         let exists = self
@@ -888,6 +986,83 @@ mod tests {
             .expect_err("sync must fail when NpubCash is not enabled");
 
         assert!(matches!(err, Error::Custom(_)));
+    }
+
+    #[tokio::test]
+    async fn unlocked_npubcash_quote_never_carries_provenance() {
+        let seed = [0x42u8; 64];
+        let wallet = build_test_wallet(seed).await;
+
+        let mut unlocked_quote = test_quote();
+        unlocked_quote.locked = Some(false);
+
+        let stored = wallet
+            .add_npubcash_mint_quote(unlocked_quote)
+            .await
+            .expect("unlocked npubcash quote is added")
+            .expect("quote was inserted");
+
+        assert!(
+            stored.secret_key.is_none(),
+            "unlocked quote must not persist a secret key"
+        );
+        assert_eq!(
+            wallet
+                .npubcash_quote_key(&stored.id)
+                .await
+                .expect("kv lookup"),
+            None,
+            "unlocked quote must not carry a provenance marker"
+        );
+        assert!(
+            wallet
+                .mint_quote_signing_key(&stored)
+                .await
+                .expect("signing key lookup")
+                .is_none(),
+            "unlocked quote must resolve no signing key"
+        );
+    }
+
+    #[tokio::test]
+    async fn unlocked_update_scrubs_prior_provenance_and_key() {
+        let seed = [0x42u8; 64];
+        let wallet = build_test_wallet(seed).await;
+
+        let mut locked_quote = test_quote();
+        locked_quote.locked = Some(true);
+        let stored = wallet
+            .add_npubcash_mint_quote(locked_quote)
+            .await
+            .expect("locked npubcash quote is added")
+            .expect("quote was inserted");
+        assert_eq!(
+            wallet
+                .npubcash_quote_key(&stored.id)
+                .await
+                .expect("kv lookup"),
+            Some(NpubCashQuoteKey::Nip06)
+        );
+
+        let mut unlocked_quote = test_quote();
+        unlocked_quote.locked = Some(false);
+        let stored = wallet
+            .add_npubcash_mint_quote(unlocked_quote)
+            .await
+            .expect("unlocked npubcash quote update is applied")
+            .expect("quote was updated");
+        assert_eq!(
+            wallet
+                .npubcash_quote_key(&stored.id)
+                .await
+                .expect("kv lookup"),
+            None
+        );
+        assert!(wallet
+            .mint_quote_signing_key(&stored)
+            .await
+            .expect("signing key lookup")
+            .is_none());
     }
 
     #[tokio::test]

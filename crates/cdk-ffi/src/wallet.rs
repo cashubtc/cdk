@@ -7,6 +7,8 @@ use bip39::Mnemonic;
 use cdk::wallet::{RateLimitConfig, Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
 
 use crate::error::FfiError;
+#[cfg(feature = "npubcash")]
+use crate::npubcash::NpubCashUserResponse;
 use crate::token::Token;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use crate::types::bip321::BitcoinNetwork;
@@ -892,6 +894,33 @@ impl Wallet {
     pub async fn claim_npubcash_quotes(&self) -> Result<Amount, FfiError> {
         let minted = self.inner.claim_npubcash_quotes().await?;
         Ok(minted.into())
+    }
+
+    /// Enable or disable NUT-20 quote locking on this wallet's NpubCash account
+    ///
+    /// When enabled, the NpubCash server creates new mint quotes locked to the
+    /// wallet's NpubCash Nostr public key, so only this wallet (which derives
+    /// the matching secret key from its seed) can mint them. The server
+    /// rejects enabling locking when the configured mint does not support
+    /// NUT-20.
+    ///
+    /// Requires NpubCash to be enabled on this wallet first. Already-created
+    /// quotes keep their original lock state.
+    pub async fn set_npubcash_quote_locking(
+        &self,
+        lock_quotes: bool,
+    ) -> Result<NpubCashUserResponse, FfiError> {
+        let response = self.inner.set_npubcash_quote_locking(lock_quotes).await?;
+        Ok(response.into())
+    }
+
+    /// Fetch this wallet's NpubCash account settings
+    ///
+    /// Returns the configured mint URL and whether quote locking is enabled.
+    /// Requires NpubCash to be enabled on this wallet first.
+    pub async fn get_npubcash_user_info(&self) -> Result<NpubCashUserResponse, FfiError> {
+        let response = self.inner.get_npubcash_user_info().await?;
+        Ok(response.into())
     }
 }
 
