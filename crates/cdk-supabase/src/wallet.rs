@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fmt::Debug;
+use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,6 +18,7 @@ use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{
     CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
 };
+use cdk_common::redact::url_for_logs;
 use cdk_common::secret::Secret;
 use cdk_common::util::hex;
 use cdk_common::wallet::{
@@ -100,13 +101,26 @@ pub enum AuthProvider {
 }
 
 /// Response from Supabase Auth token refresh
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct SupabaseTokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: Option<i64>,
     #[serde(skip)]
     _token_type: (),
+}
+
+impl fmt::Debug for SupabaseTokenResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SupabaseTokenResponse")
+            .field("access_token", &"[REDACTED]")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("expires_in", &self.expires_in)
+            .finish()
+    }
 }
 
 /// Supabase wallet database implementation
@@ -127,7 +141,7 @@ struct SupabaseTokenResponse {
 /// - **None**: No automatic token refresh, use API key only
 /// - **SupabaseAuth**: Uses Supabase's GoTrue API for token refresh
 /// - **Oidc**: Uses an external OIDC provider for token refresh
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SupabaseWalletDatabase {
     url: Url,
     api_key: String,
@@ -137,6 +151,21 @@ pub struct SupabaseWalletDatabase {
     auth_provider: Arc<RwLock<AuthProvider>>,
     client: Client,
     encryption_key: Arc<RwLock<Option<Key<Aes256Gcm>>>>,
+}
+
+impl fmt::Debug for SupabaseWalletDatabase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SupabaseWalletDatabase")
+            .field("url", &url_for_logs(self.url.as_str()))
+            .field("api_key", &"[REDACTED]")
+            .field("jwt_token", &"[REDACTED]")
+            .field("refresh_token", &"[REDACTED]")
+            .field("token_expiration", &"[REDACTED]")
+            .field("auth_provider", &"[REDACTED]")
+            .field("client", &"Client")
+            .field("encryption_key", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl SupabaseWalletDatabase {
@@ -693,7 +722,7 @@ impl SupabaseWalletDatabase {
     }
 
     /// Make a POST request with JSON body
-    async fn post_request<T: Serialize + Debug>(
+    async fn post_request<T: Serialize + fmt::Debug>(
         &self,
         path: &str,
         body: &T,
@@ -728,7 +757,7 @@ impl SupabaseWalletDatabase {
     /// so PostgREST returns `409 Conflict` if a row with the same primary key already
     /// exists. This is used by the optimistic-locking insert path so a concurrent
     /// row can be detected instead of silently overwritten.
-    async fn insert_request<T: Serialize + Debug>(
+    async fn insert_request<T: Serialize + fmt::Debug>(
         &self,
         path: &str,
         body: &T,
@@ -758,7 +787,7 @@ impl SupabaseWalletDatabase {
     }
 
     /// Make a PATCH request with JSON body
-    async fn patch_request<T: Serialize + Debug>(
+    async fn patch_request<T: Serialize + fmt::Debug>(
         &self,
         path: &str,
         body: &T,
@@ -789,7 +818,7 @@ impl SupabaseWalletDatabase {
     /// Make a PATCH request and ask PostgREST to return the updated rows as JSON
     /// (`Prefer: return=representation`).  Returns `(status, body)` where body is
     /// an empty JSON array `[]` when the filter matched no rows.
-    async fn patch_request_returning<T: Serialize + Debug>(
+    async fn patch_request_returning<T: Serialize + fmt::Debug>(
         &self,
         path: &str,
         body: &T,
@@ -3034,7 +3063,7 @@ struct SagaTable {
 }
 
 /// Response from Supabase Auth sign-up/sign-in
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct SupabaseAuthResponse {
     /// Access token
     pub access_token: String,
@@ -3046,6 +3075,21 @@ pub struct SupabaseAuthResponse {
     pub refresh_token: Option<String>,
     /// User
     pub user: serde_json::Value,
+}
+
+impl fmt::Debug for SupabaseAuthResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SupabaseAuthResponse")
+            .field("access_token", &"[REDACTED]")
+            .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("user", &self.user)
+            .finish()
+    }
 }
 
 /// Helper for Supabase Authentication
@@ -3146,6 +3190,62 @@ mod tests {
     use super::*;
     #[cfg(feature = "integration-tests")]
     use crate::Error;
+
+    #[test]
+    fn token_response_debug_redacts_tokens() {
+        let access_token = "supabase-internal-access-token";
+        let refresh_token = "supabase-internal-refresh-token";
+        let response = SupabaseTokenResponse {
+            access_token: access_token.to_string(),
+            refresh_token: Some(refresh_token.to_string()),
+            expires_in: Some(3_600),
+            _token_type: (),
+        };
+
+        let debug = format!("{response:?}");
+
+        assert!(debug.contains("expires_in: Some(3600)"));
+        assert!(!debug.contains(access_token));
+        assert!(!debug.contains(refresh_token));
+    }
+
+    #[test]
+    fn auth_response_debug_redacts_tokens() {
+        let access_token = "supabase-public-access-token";
+        let refresh_token = "supabase-public-refresh-token";
+        let response = SupabaseAuthResponse {
+            access_token: access_token.to_string(),
+            token_type: "bearer".to_string(),
+            expires_in: Some(3_600),
+            refresh_token: Some(refresh_token.to_string()),
+            user: json!({"id": "public-user-id"}),
+        };
+
+        let debug = format!("{response:?}");
+
+        assert!(debug.contains("public-user-id"));
+        assert!(!debug.contains(access_token));
+        assert!(!debug.contains(refresh_token));
+    }
+
+    #[tokio::test]
+    async fn wallet_database_debug_redacts_credentials() {
+        let api_key = "supabase-api-key-secret";
+        let url_secret = "supabase-url-secret";
+        let url = Url::parse(&format!(
+            "https://user:{url_secret}@example.supabase.co/rest/v1?token={url_secret}"
+        ))
+        .expect("valid Supabase URL");
+        let database = SupabaseWalletDatabase::new(url, api_key.to_string())
+            .await
+            .expect("database construction should succeed");
+
+        let debug = format!("{database:?}");
+
+        assert!(debug.contains("https://example.supabase.co/rest/v1"));
+        assert!(!debug.contains(api_key));
+        assert!(!debug.contains(url_secret));
+    }
 
     #[test]
     fn mint_quote_table_round_trip_preserves_secret_key_hex() {

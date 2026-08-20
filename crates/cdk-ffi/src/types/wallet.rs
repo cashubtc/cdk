@@ -384,7 +384,7 @@ impl From<cdk::nuts::SecretKey> for SecretKey {
 }
 
 /// FFI-compatible Receive options
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct ReceiveOptions {
     /// Amount split target
     pub amount_split_target: SplitTarget,
@@ -395,6 +395,17 @@ pub struct ReceiveOptions {
     pub preimages: Vec<String>,
     /// Metadata
     pub metadata: HashMap<String, String>,
+}
+
+impl fmt::Debug for ReceiveOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReceiveOptions")
+            .field("amount_split_target", &self.amount_split_target)
+            .field("p2pk_signing_keys", &"[REDACTED]")
+            .field("preimages", &"[REDACTED]")
+            .field("metadata", &self.metadata)
+            .finish()
+    }
 }
 
 impl Default for ReceiveOptions {
@@ -1072,6 +1083,20 @@ impl From<cdk::WalletKey> for WalletKey {
 mod tests {
     use super::*;
     use crate::types::proof::Proof;
+
+    #[test]
+    fn receive_options_debug_redacts_preimages() {
+        let preimage = "ffi-receive-preimage-secret";
+        let options = ReceiveOptions {
+            preimages: vec![preimage.to_string()],
+            ..Default::default()
+        };
+
+        let debug = format!("{options:?}");
+
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains(preimage));
+    }
 
     #[test]
     fn finalized_melt_debug_redacts_preimage_and_change_proofs() {

@@ -1,4 +1,3 @@
-#[cfg(any(feature = "bdk", feature = "ldk-node"))]
 use std::fmt;
 use std::path::PathBuf;
 
@@ -7,7 +6,6 @@ use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
 use cdk_axum::cache;
 use cdk_common::common::QuoteTTL;
-#[cfg(any(feature = "bdk", feature = "ldk-node"))]
 use cdk_common::redact::url_for_logs;
 use config::{Config, ConfigError, File, FileFormat};
 use serde::{Deserialize, Serialize};
@@ -972,13 +970,27 @@ pub struct AuthDatabase {
     pub postgres: Option<PostgresAuthConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PostgresAuthConfig {
     pub url: String,
     pub tls_mode: Option<String>,
     pub max_connections: Option<usize>,
     pub connection_timeout_seconds: Option<u64>,
+}
+
+impl fmt::Debug for PostgresAuthConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PostgresAuthConfig")
+            .field("url", &url_for_logs(&self.url))
+            .field("tls_mode", &self.tls_mode)
+            .field("max_connections", &self.max_connections)
+            .field(
+                "connection_timeout_seconds",
+                &self.connection_timeout_seconds,
+            )
+            .finish()
+    }
 }
 
 impl Default for PostgresAuthConfig {
@@ -992,13 +1004,27 @@ impl Default for PostgresAuthConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PostgresConfig {
     pub url: String,
     pub tls_mode: Option<String>,
     pub max_connections: Option<usize>,
     pub connection_timeout_seconds: Option<u64>,
+}
+
+impl fmt::Debug for PostgresConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PostgresConfig")
+            .field("url", &url_for_logs(&self.url))
+            .field("tls_mode", &self.tls_mode)
+            .field("max_connections", &self.max_connections)
+            .field(
+                "connection_timeout_seconds",
+                &self.connection_timeout_seconds,
+            )
+            .finish()
+    }
 }
 
 impl Default for PostgresConfig {
@@ -1345,6 +1371,33 @@ impl Settings {
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn postgres_config_debug_redacts_connection_credentials() {
+        let secret = "postgres-password-secret";
+        let url = format!("postgres://mint:{secret}@db.example.com/cdk?token={secret}");
+        let database = Database {
+            engine: DatabaseEngine::Postgres,
+            postgres: Some(PostgresConfig {
+                url: url.clone(),
+                ..Default::default()
+            }),
+        };
+        let auth_database = AuthDatabase {
+            postgres: Some(PostgresAuthConfig {
+                url,
+                ..Default::default()
+            }),
+        };
+
+        let database_debug = format!("{database:?}");
+        let auth_debug = format!("{auth_database:?}");
+
+        assert!(database_debug.contains("postgres://db.example.com/cdk"));
+        assert!(auth_debug.contains("postgres://db.example.com/cdk"));
+        assert!(!database_debug.contains(secret));
+        assert!(!auth_debug.contains(secret));
+    }
 
     #[cfg(feature = "ldk-node")]
     #[test]

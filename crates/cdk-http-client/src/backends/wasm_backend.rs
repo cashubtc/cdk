@@ -11,6 +11,8 @@ use wasm_bindgen_futures::JsFuture;
 use crate::error::HttpError;
 use crate::response::{RawResponse, Response};
 
+use super::url_for_debug;
+
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_name = "fetch")]
@@ -122,7 +124,7 @@ impl fmt::Debug for WasmRequestBuilder {
 
         f.debug_struct("WasmRequestBuilder")
             .field("method", &self.method)
-            .field("url", &self.url)
+            .field("url", &url_for_debug(&self.url))
             .field("header_names", &header_names)
             .field("body", &self.body)
             .field("has_error", &self.error.is_some())
@@ -370,14 +372,20 @@ mod tests {
     fn request_builder_debug_redacts_header_values_and_body() {
         let header_secret = "replayable-authorization-token";
         let body_secret = "refresh-token-in-request-body";
-        let request = WasmRequestBuilder::new("POST", "https://mint.example.com", false)
-            .header("Authorization", header_secret)
-            .json(&serde_json::json!({ "refresh_token": body_secret }));
+        let url_secret = "url-query-token";
+        let request = WasmRequestBuilder::new(
+            "POST",
+            &format!("https://user:{url_secret}@mint.example.com/api?token={url_secret}"),
+            false,
+        )
+        .header("Authorization", header_secret)
+        .json(&serde_json::json!({ "refresh_token": body_secret }));
 
         let debug = format!("{request:?}");
 
         assert!(debug.contains("Authorization"));
         assert!(!debug.contains(header_secret));
         assert!(!debug.contains(body_secret));
+        assert!(!debug.contains(url_secret));
     }
 }

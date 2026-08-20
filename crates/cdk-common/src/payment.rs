@@ -1,6 +1,7 @@
 //! CDK mint payment backend interface
 
 use std::convert::Infallible;
+use std::fmt;
 use std::pin::Pin;
 
 use async_trait::async_trait;
@@ -561,7 +562,7 @@ pub struct CreateIncomingPaymentResponse {
 }
 
 /// Payment response
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub struct MakePaymentResponse {
     /// Payment hash
     ///
@@ -578,6 +579,20 @@ pub struct MakePaymentResponse {
     /// Total amount spent, including fees. Only authoritative when `status`
     /// is [`MeltQuoteState::Paid`]; otherwise backends return `0`.
     pub total_spent: Amount<CurrencyUnit>,
+}
+
+impl fmt::Debug for MakePaymentResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MakePaymentResponse")
+            .field("payment_lookup_id", &self.payment_lookup_id)
+            .field(
+                "payment_proof",
+                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("status", &self.status)
+            .field("total_spent", &self.total_spent)
+            .finish()
+    }
 }
 
 impl MakePaymentResponse {
@@ -866,6 +881,23 @@ mod tests {
 
     use super::*;
     use crate::QuoteId;
+
+    #[test]
+    fn make_payment_response_debug_redacts_payment_proof() {
+        let secret = "backend-payment-preimage-secret";
+        let response = MakePaymentResponse {
+            payment_lookup_id: PaymentIdentifier::CustomId("public-lookup-id".to_string()),
+            payment_proof: Some(secret.to_string()),
+            status: MeltQuoteState::Paid,
+            total_spent: Amount::new(10, CurrencyUnit::Sat),
+        };
+
+        let debug = format!("{response:?}");
+
+        assert!(debug.contains("public-lookup-id"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains(secret));
+    }
 
     #[test]
     fn test_payment_identifier_quote_id_roundtrip() {

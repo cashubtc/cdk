@@ -252,7 +252,7 @@ pub struct Saga {
 }
 
 /// Persisted payment result for resuming melt finalization after a crash.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct MeltFinalizationData {
     /// Total amount actually spent on the payment.
     pub total_spent: Amount<CurrencyUnit>,
@@ -260,6 +260,19 @@ pub struct MeltFinalizationData {
     pub payment_lookup_id: PaymentIdentifier,
     /// Optional payment proof / preimage.
     pub payment_proof: Option<String>,
+}
+
+impl fmt::Debug for MeltFinalizationData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeltFinalizationData")
+            .field("total_spent", &self.total_spent)
+            .field("payment_lookup_id", &self.payment_lookup_id)
+            .field(
+                "payment_proof",
+                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl Serialize for MeltFinalizationData {
@@ -850,7 +863,7 @@ impl Issuance {
 }
 
 /// Melt Quote Info
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub struct MeltQuote {
     /// Quote id
     pub id: QuoteId,
@@ -896,6 +909,33 @@ pub struct MeltQuote {
     fee_options: Vec<MeltQuoteOnchainFeeOption>,
     /// Selected fee option index once an onchain quote is executed
     pub selected_fee_index: Option<u32>,
+}
+
+impl fmt::Debug for MeltQuote {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeltQuote")
+            .field("id", &self.id)
+            .field("unit", &self.unit)
+            .field("request", &self.request)
+            .field("amount", &self.amount)
+            .field("fee_reserve", &self.fee_reserve)
+            .field("state", &self.state)
+            .field("expiry", &self.expiry)
+            .field(
+                "payment_proof",
+                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("request_lookup_id", &self.request_lookup_id)
+            .field("options", &self.options)
+            .field("created_time", &self.created_time)
+            .field("paid_time", &self.paid_time)
+            .field("payment_method", &self.payment_method)
+            .field("extra_json", &self.extra_json)
+            .field("estimated_blocks", &self.estimated_blocks)
+            .field("fee_options", &self.fee_options)
+            .field("selected_fee_index", &self.selected_fee_index)
+            .finish()
+    }
 }
 
 impl MeltQuote {
@@ -1641,6 +1681,40 @@ mod tests {
         let operation = Operation::new_mint(Amount::from(100), PaymentMethod::BOLT11);
 
         assert_eq!(operation.id.get_version(), Some(uuid::Version::SortRand));
+    }
+
+    #[test]
+    fn mint_payment_records_debug_redact_payment_proofs() {
+        let secret = "mint-payment-preimage-secret";
+        let lookup_id = PaymentIdentifier::CustomId("public-lookup-id".to_string());
+        let mut quote = MeltQuote::new(
+            Some(QuoteId::new()),
+            MeltPaymentRequest::Custom {
+                method: "custom".to_string(),
+                request: "public-payment-request".to_string(),
+            },
+            CurrencyUnit::Sat,
+            Amount::new(100, CurrencyUnit::Sat),
+            Amount::new(2, CurrencyUnit::Sat),
+            unix_time() + 3_600,
+            Some(lookup_id.clone()),
+            None,
+            PaymentMethod::Custom("custom".to_string()),
+            None,
+            None,
+        );
+        quote.payment_proof = Some(secret.to_string());
+        let finalization = MeltFinalizationData {
+            total_spent: Amount::new(102, CurrencyUnit::Sat),
+            payment_lookup_id: lookup_id,
+            payment_proof: Some(secret.to_string()),
+        };
+
+        for debug in [format!("{quote:?}"), format!("{finalization:?}")] {
+            assert!(debug.contains("public-lookup-id"));
+            assert!(debug.contains("[REDACTED]"));
+            assert!(!debug.contains(secret));
+        }
     }
 
     #[test]

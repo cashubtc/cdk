@@ -56,7 +56,7 @@ impl WalletKey {
 }
 
 /// Proof info
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofInfo {
     /// Proof
     pub proof: Proof,
@@ -76,6 +76,23 @@ pub struct ProofInfo {
     /// Operation ID that created this proof
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by_operation: Option<Uuid>,
+}
+
+impl fmt::Debug for ProofInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProofInfo")
+            .field("amount", &self.proof.amount)
+            .field("keyset_id", &self.proof.keyset_id)
+            .field("proof", &"[REDACTED]")
+            .field("y", &self.y)
+            .field("mint_url", &self.mint_url)
+            .field("state", &self.state)
+            .field("spending_condition", &self.spending_condition)
+            .field("unit", &self.unit)
+            .field("used_by_operation", &self.used_by_operation)
+            .field("created_by_operation", &self.created_by_operation)
+            .finish()
+    }
 }
 
 impl ProofInfo {
@@ -216,7 +233,7 @@ pub struct MintQuote {
 }
 
 /// Melt Quote Info
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltQuote {
     /// Quote id
     pub id: String,
@@ -251,6 +268,30 @@ pub struct MeltQuote {
     /// Version for optimistic locking
     #[serde(default)]
     pub version: u32,
+}
+
+impl fmt::Debug for MeltQuote {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeltQuote")
+            .field("id", &self.id)
+            .field("mint_url", &self.mint_url)
+            .field("unit", &self.unit)
+            .field("amount", &self.amount)
+            .field("request", &self.request)
+            .field("fee_reserve", &self.fee_reserve)
+            .field("state", &self.state)
+            .field("expiry", &self.expiry)
+            .field(
+                "payment_proof",
+                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("estimated_blocks", &self.estimated_blocks)
+            .field("fee_index", &self.fee_index)
+            .field("payment_method", &self.payment_method)
+            .field("used_by_operation", &self.used_by_operation)
+            .field("version", &self.version)
+            .finish()
+    }
 }
 
 /// Quotes and fee information for a maximum cross-mint Lightning transfer.
@@ -540,7 +581,7 @@ impl SendKind {
 }
 
 /// Wallet Transaction
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Transaction {
     /// Mint Url
     pub mint_url: MintUrl,
@@ -576,6 +617,31 @@ pub struct Transaction {
     /// Transaction status
     #[serde(default)]
     pub status: TransactionStatus,
+}
+
+impl fmt::Debug for Transaction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Transaction")
+            .field("mint_url", &self.mint_url)
+            .field("direction", &self.direction)
+            .field("amount", &self.amount)
+            .field("fee", &self.fee)
+            .field("unit", &self.unit)
+            .field("ys", &self.ys)
+            .field("timestamp", &self.timestamp)
+            .field("memo", &self.memo)
+            .field("metadata", &self.metadata)
+            .field("quote_id", &self.quote_id)
+            .field("payment_request", &self.payment_request)
+            .field(
+                "payment_proof",
+                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("payment_method", &self.payment_method)
+            .field("saga_id", &self.saga_id)
+            .field("status", &self.status)
+            .finish()
+    }
 }
 
 impl Transaction {
@@ -1464,6 +1530,68 @@ mod tests {
             conditions: None,
         };
         assert!(!proof_info.matches_conditions(&None, &None, &None, &Some(vec![dummy_condition])));
+    }
+
+    #[test]
+    fn wallet_record_debug_redacts_spendable_secrets() {
+        let proof_secret = "wallet-proof-secret";
+        let payment_proof = "wallet-payment-preimage";
+        let keyset_id = Id::from_str("00deadbeef123456").expect("valid keyset ID");
+        let proof = Proof::new(
+            Amount::from(64),
+            keyset_id,
+            Secret::new(proof_secret),
+            PublicKey::from_hex(
+                "02deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            )
+            .expect("valid public key"),
+        );
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("valid mint URL");
+        let proof_info = ProofInfo::new(proof, mint_url.clone(), State::Unspent, CurrencyUnit::Sat)
+            .expect("valid proof");
+        let melt_quote = MeltQuote {
+            id: "public-quote-id".to_string(),
+            mint_url: Some(mint_url.clone()),
+            unit: CurrencyUnit::Sat,
+            amount: Amount::from(10),
+            request: "public-payment-request".to_string(),
+            fee_reserve: Amount::from(1),
+            state: MeltQuoteState::Paid,
+            expiry: 1_000,
+            payment_proof: Some(payment_proof.to_string()),
+            estimated_blocks: None,
+            fee_index: None,
+            payment_method: PaymentMethod::BOLT11,
+            used_by_operation: None,
+            version: 0,
+        };
+        let transaction = Transaction {
+            mint_url,
+            direction: TransactionDirection::Outgoing,
+            amount: Amount::from(10),
+            fee: Amount::from(1),
+            unit: CurrencyUnit::Sat,
+            ys: vec![],
+            timestamp: 42,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: Some("public-quote-id".to_string()),
+            payment_request: None,
+            payment_proof: Some(payment_proof.to_string()),
+            payment_method: Some(PaymentMethod::BOLT11),
+            saga_id: None,
+            status: TransactionStatus::Completed,
+        };
+
+        for debug in [
+            format!("{proof_info:?}"),
+            format!("{melt_quote:?}"),
+            format!("{transaction:?}"),
+        ] {
+            assert!(debug.contains("[REDACTED]"));
+            assert!(!debug.contains(proof_secret));
+            assert!(!debug.contains(payment_proof));
+        }
     }
 
     #[test]

@@ -11,9 +11,15 @@ use zeroize::Zeroize;
 use crate::util::hex;
 
 /// The secret data that allows spending ecash
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Secret(String);
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Secret([REDACTED])")
+    }
+}
 
 /// Secret Errors
 #[derive(Debug, Error)]
@@ -203,5 +209,16 @@ mod tests {
         let bytes_ref: Vec<u8> = (&secret).into();
         assert_eq!(bytes_ref, b"test_secret_value".to_vec());
         assert!(!bytes_ref.is_empty());
+    }
+
+    #[test]
+    fn debug_redacts_secret_value() {
+        let secret_value = "spendable-proof-secret";
+        let secret = Secret::new(secret_value);
+
+        let debug = format!("{secret:?}");
+
+        assert_eq!(debug, "Secret([REDACTED])");
+        assert!(!debug.contains(secret_value));
     }
 }

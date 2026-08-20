@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -10,10 +11,19 @@ use rusqlite::Connection;
 use crate::async_sqlite;
 
 /// The config need to create a new SQLite connection
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Config {
     path: Option<String>,
     password: Option<String>,
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("path", &self.path)
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 impl pool::DatabaseConfig for Config {
@@ -153,5 +163,22 @@ pub fn from_sqlite(v: rusqlite::types::Value) -> Value {
         rusqlite::types::Value::Null => Value::Null,
         rusqlite::types::Value::Text(t) => Value::Text(t),
         rusqlite::types::Value::Real(r) => Value::Real(r),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn config_debug_redacts_sqlcipher_password() {
+        let secret = "sqlcipher-password-secret";
+        let config = Config::from(("wallet.sqlite", secret));
+
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("wallet.sqlite"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains(secret));
     }
 }

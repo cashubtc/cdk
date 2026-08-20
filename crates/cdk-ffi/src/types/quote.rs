@@ -541,7 +541,7 @@ impl From<cdk::nuts::MeltQuoteOnchainResponse<String>> for MeltQuoteOnchainRespo
 }
 
 /// FFI-compatible MeltQuote
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MeltQuote {
     /// Quote ID
     pub id: String,
@@ -572,6 +572,30 @@ pub struct MeltQuote {
     /// Version for optimistic locking
     #[serde(default)]
     pub version: u32,
+}
+
+impl fmt::Debug for MeltQuote {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeltQuote")
+            .field("id", &self.id)
+            .field("mint_url", &self.mint_url)
+            .field("amount", &self.amount)
+            .field("unit", &self.unit)
+            .field("request", &self.request)
+            .field("fee_reserve", &self.fee_reserve)
+            .field("state", &self.state)
+            .field("expiry", &self.expiry)
+            .field(
+                "payment_proof",
+                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("estimated_blocks", &self.estimated_blocks)
+            .field("fee_index", &self.fee_index)
+            .field("payment_method", &self.payment_method)
+            .field("used_by_operation", &self.used_by_operation)
+            .field("version", &self.version)
+            .finish()
+    }
 }
 
 impl From<cdk::wallet::MeltQuote> for MeltQuote {
@@ -725,5 +749,32 @@ mod tests {
         assert!(debug.contains("public-quote-id"));
         assert!(!debug.contains(secret));
         assert!(debug.contains("secret_key: Some(\"[REDACTED]\")"));
+    }
+
+    #[test]
+    fn melt_quote_debug_redacts_payment_proof_and_keeps_quote_id() {
+        let secret = "ffi-melt-payment-preimage";
+        let quote = MeltQuote {
+            id: "public-melt-quote-id".to_string(),
+            mint_url: None,
+            amount: Amount::new(100),
+            unit: CurrencyUnit::Sat,
+            request: "public-payment-request".to_string(),
+            fee_reserve: Amount::new(1),
+            state: QuoteState::Paid,
+            expiry: 1_000,
+            payment_proof: Some(secret.to_string()),
+            estimated_blocks: None,
+            fee_index: None,
+            payment_method: PaymentMethod::Bolt11,
+            used_by_operation: None,
+            version: 0,
+        };
+
+        let debug = format!("{quote:?}");
+
+        assert!(debug.contains("public-melt-quote-id"));
+        assert!(debug.contains("payment_proof: Some(\"[REDACTED]\")"));
+        assert!(!debug.contains(secret));
     }
 }

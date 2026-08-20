@@ -1,5 +1,6 @@
 //! Transaction-related FFI types
 
+use core::fmt;
 use std::collections::HashMap;
 use std::str::FromStr;
 
@@ -14,7 +15,7 @@ use super::quote::PaymentMethod;
 use crate::error::FfiError;
 
 /// FFI-compatible Transaction
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Transaction {
     /// Transaction ID
     pub id: TransactionId,
@@ -49,6 +50,32 @@ pub struct Transaction {
     /// Transaction status
     #[serde(default)]
     pub status: TransactionStatus,
+}
+
+impl fmt::Debug for Transaction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Transaction")
+            .field("id", &self.id)
+            .field("mint_url", &self.mint_url)
+            .field("direction", &self.direction)
+            .field("amount", &self.amount)
+            .field("fee", &self.fee)
+            .field("unit", &self.unit)
+            .field("ys", &self.ys)
+            .field("timestamp", &self.timestamp)
+            .field("memo", &self.memo)
+            .field("metadata", &self.metadata)
+            .field("quote_id", &self.quote_id)
+            .field("payment_request", &self.payment_request)
+            .field(
+                "payment_proof",
+                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("payment_method", &self.payment_method)
+            .field("saga_id", &self.saga_id)
+            .field("status", &self.status)
+            .finish()
+    }
 }
 
 impl From<cdk::wallet::types::Transaction> for Transaction {
@@ -267,7 +294,7 @@ impl TryFrom<TransactionId> for cdk::wallet::types::TransactionId {
 }
 
 /// FFI-compatible AuthProof
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct AuthProof {
     /// Keyset ID
     pub keyset_id: String,
@@ -277,6 +304,17 @@ pub struct AuthProof {
     pub c: String,
     /// Y value (hash_to_curve of secret)
     pub y: String,
+}
+
+impl fmt::Debug for AuthProof {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthProof")
+            .field("keyset_id", &self.keyset_id)
+            .field("secret", &"[REDACTED]")
+            .field("c", &self.c)
+            .field("y", &self.y)
+            .finish()
+    }
 }
 
 impl From<cdk::nuts::AuthProof> for AuthProof {
@@ -330,4 +368,51 @@ pub fn decode_auth_proof(json: String) -> Result<AuthProof, FfiError> {
 #[uniffi::export]
 pub fn encode_auth_proof(proof: AuthProof) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&proof)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transaction_and_auth_proof_debug_redact_secrets() {
+        let payment_proof = "ffi-transaction-payment-preimage";
+        let auth_secret = "ffi-auth-proof-secret";
+        let transaction = Transaction {
+            id: TransactionId {
+                hex: "00".repeat(32),
+            },
+            mint_url: MintUrl {
+                url: "https://mint.example.com".to_string(),
+            },
+            direction: TransactionDirection::Outgoing,
+            amount: Amount::new(10),
+            fee: Amount::new(1),
+            unit: CurrencyUnit::Sat,
+            ys: vec![],
+            timestamp: 42,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: Some("public-quote-id".to_string()),
+            payment_request: None,
+            payment_proof: Some(payment_proof.to_string()),
+            payment_method: None,
+            saga_id: None,
+            status: TransactionStatus::Completed,
+        };
+        let auth_proof = AuthProof {
+            keyset_id: "public-keyset-id".to_string(),
+            secret: auth_secret.to_string(),
+            c: "public-signature".to_string(),
+            y: "public-y".to_string(),
+        };
+
+        let transaction_debug = format!("{transaction:?}");
+        let auth_debug = format!("{auth_proof:?}");
+
+        assert!(transaction_debug.contains("public-quote-id"));
+        assert!(auth_debug.contains("public-keyset-id"));
+        assert!(!transaction_debug.contains(payment_proof));
+        assert!(!auth_debug.contains(auth_secret));
+    }
 }

@@ -1,5 +1,6 @@
 //! Type definitions for NpubCash API
 
+use core::fmt;
 use std::str::FromStr;
 
 use cashu::nut00::KnownMethod;
@@ -125,10 +126,18 @@ pub struct Nip98Response {
 }
 
 /// NIP-98 token data
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Nip98Data {
     /// JWT token
     pub token: String,
+}
+
+impl fmt::Debug for Nip98Data {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Nip98Data")
+            .field("token", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl From<Quote> for MintQuote {
@@ -220,5 +229,20 @@ mod tests {
 
         assert_eq!(mint_quote.amount_paid, Amount::from(1_000));
         assert_eq!(mint_quote.updated_at, 200);
+    }
+
+    #[test]
+    fn nip98_response_debug_redacts_bearer_token() {
+        let secret = "nip98-bearer-token-secret";
+        let response = Nip98Response {
+            data: Nip98Data {
+                token: secret.to_string(),
+            },
+        };
+
+        let debug = format!("{response:?}");
+
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains(secret));
     }
 }

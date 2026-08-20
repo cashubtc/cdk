@@ -9,10 +9,21 @@ use serde::Serialize;
 use crate::error::HttpError;
 use crate::response::{RawResponse, Response};
 
-#[derive(Debug, Clone)]
+use super::url_for_debug;
+
+#[derive(Clone)]
 pub(crate) struct ProxyConfig {
     url: url::Url,
     matcher: Option<regex::Regex>,
+}
+
+impl std::fmt::Debug for ProxyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyConfig")
+            .field("url", &url_for_debug(self.url.as_str()))
+            .field("matcher", &self.matcher)
+            .finish()
+    }
 }
 
 fn validate_proxy_url(url: &url::Url) -> Response<()> {
@@ -229,7 +240,7 @@ pub struct BitreqRequestBuilder {
 impl std::fmt::Debug for BitreqRequestBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BitreqRequestBuilder")
-            .field("url", &self.url)
+            .field("url", &url_for_debug(&self.url))
             .field("error", &self.error)
             .finish_non_exhaustive()
     }
@@ -401,5 +412,35 @@ impl HttpClientBuilder {
             self.proxy,
             self.no_redirects,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HttpClient;
+
+    #[test]
+    fn request_builder_debug_redacts_url_credentials() {
+        let secret = "bitreq-url-token-secret";
+        let url = format!("https://user:{secret}@mint.example.com/api?token={secret}");
+        let request = HttpClient::new().post(&url);
+
+        let debug = format!("{request:?}");
+
+        assert!(debug.contains("https://mint.example.com/api"));
+        assert!(!debug.contains(secret));
+    }
+
+    #[test]
+    fn client_builder_debug_redacts_proxy_credentials() {
+        let secret = "bitreq-proxy-password-secret";
+        let proxy = url::Url::parse(&format!("http://user:{secret}@proxy.example.com:8080"))
+            .expect("valid proxy URL");
+        let builder = HttpClient::builder().proxy(proxy);
+
+        let debug = format!("{builder:?}");
+
+        assert!(debug.contains("http://proxy.example.com:8080"));
+        assert!(!debug.contains(secret));
     }
 }

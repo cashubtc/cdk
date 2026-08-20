@@ -1,5 +1,7 @@
 //! HTTP response types
 
+use core::fmt;
+
 use serde::de::DeserializeOwned;
 
 use crate::error::HttpError;
@@ -9,10 +11,18 @@ use crate::error::HttpError;
 pub type Response<R, E = HttpError> = Result<R, E>;
 
 /// Raw HTTP response with status code and body access
-#[derive(Debug)]
 pub struct RawResponse {
     status: u16,
     pub(crate) body: Vec<u8>,
+}
+
+impl fmt::Debug for RawResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RawResponse")
+            .field("status", &self.status)
+            .field("body_len", &self.body.len())
+            .finish()
+    }
 }
 
 impl RawResponse {
@@ -90,5 +100,17 @@ mod tests {
         let error: Response<i32> = Err(HttpError::Timeout);
         assert!(error.is_err());
         assert!(matches!(error, Err(HttpError::Timeout)));
+    }
+
+    #[test]
+    fn raw_response_debug_redacts_body_and_reports_length() {
+        let secret = "response-body-secret";
+        let response = RawResponse::new(200, secret.as_bytes().to_vec());
+
+        let debug = format!("{response:?}");
+
+        assert!(debug.contains("status: 200"));
+        assert!(debug.contains(&format!("body_len: {}", secret.len())));
+        assert!(!debug.contains(secret));
     }
 }
