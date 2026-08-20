@@ -216,6 +216,15 @@ struct BdkWalletInfoProvider {
 #[cfg(all(feature = "management-rpc", feature = "bdk"))]
 #[async_trait::async_trait]
 impl cdk_mint_rpc::WalletInfoProvider for BdkWalletInfoProvider {
+    async fn create_deposit_address(
+        &self,
+    ) -> std::result::Result<String, cdk_mint_rpc::WalletInfoError> {
+        self.bdk
+            .create_operator_deposit_address()
+            .await
+            .map_err(|err| cdk_mint_rpc::WalletInfoError::new(err.to_string()))
+    }
+
     async fn get_balance(
         &self,
     ) -> std::result::Result<cdk_mint_rpc::wallet::GetBalanceResponse, cdk_mint_rpc::WalletInfoError>
@@ -3688,11 +3697,32 @@ backend = "fakewallet"
             .iter()
             .any(|method| method.method == PaymentMethod::Known(KnownMethod::Onchain)));
 
-        let balance = provider
-            .expect("wallet info provider")
-            .get_balance()
+        let provider = provider.expect("wallet info provider");
+        let first_address = provider
+            .create_deposit_address()
             .await
-            .expect("get wallet balance");
+            .expect("create first operator deposit address");
+        let second_address = provider
+            .create_deposit_address()
+            .await
+            .expect("create second operator deposit address");
+        assert_ne!(first_address, second_address);
+
+        let addresses = provider
+            .list_addresses(0, 20)
+            .await
+            .expect("list wallet addresses");
+        assert_eq!(addresses.total, 2);
+        assert!(addresses
+            .addresses
+            .iter()
+            .any(|address| address.address == first_address));
+        assert!(addresses
+            .addresses
+            .iter()
+            .any(|address| address.address == second_address));
+
+        let balance = provider.get_balance().await.expect("get wallet balance");
         assert_eq!(balance.network, "regtest");
         assert_eq!(balance.total_sat, 0);
 

@@ -116,6 +116,23 @@ pub struct WalletPage<T> {
 }
 
 impl CdkBdk {
+    /// Creates and returns a fresh external address for operator deposits.
+    pub async fn create_operator_deposit_address(&self) -> Result<String, Error> {
+        let mut wallet_with_db = self.wallet_with_db.lock().await;
+        let address = wallet_with_db
+            .wallet
+            .reveal_next_address(KeychainKind::External)
+            .address
+            .to_string();
+
+        wallet_with_db.persist().map_err(|err| {
+            tracing::warn!("Could not persist to bdk db: {}", err);
+            Error::BdkPersist
+        })?;
+
+        Ok(address)
+    }
+
     /// Returns the wallet balance split by confirmation status.
     pub async fn wallet_balance(&self) -> WalletBalance {
         let wallet_with_db = self.wallet_with_db.lock().await;

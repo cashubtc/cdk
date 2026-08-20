@@ -120,7 +120,7 @@ impl MintRPCServer {
         })
     }
 
-    /// Configures the read-only on-chain wallet information provider.
+    /// Configures the on-chain wallet management provider.
     pub fn with_wallet_info_provider(mut self, provider: DynWalletInfoProvider) -> Self {
         self.wallet_info_provider = Some(provider);
         self
@@ -1216,6 +1216,23 @@ impl QuoteService for MintRPCServer {
 
 #[tonic::async_trait]
 impl WalletService for MintRPCServer {
+    /// Creates an on-chain address for operator deposits.
+    async fn create_deposit_address(
+        &self,
+        _request: Request<crate::wallet::CreateDepositAddressRequest>,
+    ) -> Result<Response<crate::wallet::CreateDepositAddressResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
+        let address = self
+            .wallet_info_provider()?
+            .create_deposit_address()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(crate::wallet::CreateDepositAddressResponse {
+            address,
+        }))
+    }
+
     /// Gets the on-chain wallet balance.
     async fn get_balance(
         &self,
@@ -1458,6 +1475,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::WalletInfoProvider for TestWalletInfoProvider {
+        async fn create_deposit_address(&self) -> Result<String, crate::WalletInfoError> {
+            Ok("bcrt1qoperatordeposit".to_string())
+        }
+
         async fn get_balance(
             &self,
         ) -> Result<crate::wallet::GetBalanceResponse, crate::WalletInfoError> {
@@ -1610,6 +1631,13 @@ mod tests {
         let server = create_test_rpc_server()
             .await
             .with_wallet_info_provider(Arc::new(TestWalletInfoProvider));
+
+        let deposit_address = server
+            .create_deposit_address(Request::new(crate::wallet::CreateDepositAddressRequest {}))
+            .await
+            .expect("create deposit address")
+            .into_inner();
+        assert_eq!(deposit_address.address, "bcrt1qoperatordeposit");
 
         let balance = server
             .get_balance(Request::new(crate::wallet::GetBalanceRequest {}))
@@ -2097,6 +2125,19 @@ mod tests {
 
         assert_eq!(no_flags_error.code(), Code::FailedPrecondition);
         assert_eq!(no_flags_error.message(), "configuration restart pending");
+
+        let deposit_address_error = WalletService::create_deposit_address(
+            &server,
+            Request::new(crate::wallet::CreateDepositAddressRequest {}),
+        )
+        .await
+        .expect_err("deposit-address mutation should be rejected");
+
+        assert_eq!(deposit_address_error.code(), Code::FailedPrecondition);
+        assert_eq!(
+            deposit_address_error.message(),
+            "configuration restart pending"
+        );
         assert!(server
             .get_info(Request::new(GetInfoRequest {}))
             .await

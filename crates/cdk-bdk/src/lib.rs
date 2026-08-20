@@ -1032,6 +1032,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn operator_deposit_address_is_not_associated_with_a_quote() {
+        let kv = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory kv store"),
+        );
+        let (backend, _tmp) = build_test_instance_with_shared_kv(kv).await;
+
+        let operator_address = backend
+            .create_operator_deposit_address()
+            .await
+            .expect("create operator deposit address");
+        let quote_request = backend
+            .create_incoming_payment_request(IncomingPaymentOptions::Onchain(
+                OnchainIncomingPaymentOptions {
+                    quote_id: cdk_common::QuoteId::new(),
+                },
+            ))
+            .await
+            .expect("create quote receive request");
+
+        assert_ne!(operator_address, quote_request.request);
+        assert!(backend
+            .storage
+            .get_quote_id_by_receive_address(&operator_address)
+            .await
+            .expect("look up operator address")
+            .is_none());
+        assert!(!backend
+            .storage
+            .get_tracked_receive_addresses()
+            .await
+            .expect("list quote receive addresses")
+            .contains(&operator_address));
+    }
+
+    #[tokio::test]
     async fn receive_address_reservation_stops_after_attempt_limit() {
         let kv = Arc::new(
             cdk_sqlite::mint::memory::empty()

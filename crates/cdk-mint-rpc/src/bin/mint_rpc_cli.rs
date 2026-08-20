@@ -115,6 +115,8 @@ enum Commands {
     RotateNextKeyset(subcommands::RotateNextKeysetCommand),
     /// Get the BDK on-chain wallet balance
     GetWalletBalance,
+    /// Create an on-chain address for operator wallet deposits
+    CreateWalletDepositAddress,
     /// List BDK on-chain wallet transactions
     ListWalletTransactions(subcommands::WalletPaginationCommand),
     /// List addresses revealed by the BDK on-chain wallet
@@ -272,6 +274,9 @@ async fn main() -> Result<()> {
         }
         Commands::GetWalletBalance => {
             subcommands::get_wallet_balance(&mut wallet_client).await?;
+        }
+        Commands::CreateWalletDepositAddress => {
+            subcommands::create_wallet_deposit_address(&mut wallet_client).await?;
         }
         Commands::ListWalletTransactions(args) => {
             subcommands::list_wallet_transactions(&mut wallet_client, &args).await?;

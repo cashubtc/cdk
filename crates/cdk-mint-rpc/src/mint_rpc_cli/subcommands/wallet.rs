@@ -2,7 +2,9 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::wallet::{GetBalanceRequest, ListAddressesRequest, ListTransactionsRequest};
+use crate::wallet::{
+    CreateDepositAddressRequest, GetBalanceRequest, ListAddressesRequest, ListTransactionsRequest,
+};
 use crate::InterceptedWalletServiceClient;
 
 /// Pagination arguments for wallet list commands.
@@ -14,6 +16,20 @@ pub struct WalletPaginationCommand {
     /// Records to skip.
     #[arg(long, default_value_t = 0)]
     offset: u32,
+}
+
+/// Creates and prints an address for operator deposits.
+pub async fn create_wallet_deposit_address(
+    client: &mut InterceptedWalletServiceClient,
+) -> Result<()> {
+    let response = client
+        .create_deposit_address(Request::new(CreateDepositAddressRequest {}))
+        .await?
+        .into_inner();
+
+    println!("address: {}", response.address);
+
+    Ok(())
 }
 
 /// Prints the BDK on-chain wallet balance.

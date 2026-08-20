@@ -2,14 +2,25 @@ syntax = "proto3";
 
 package cdk_mint_wallet_v1;
 
-// Read-only information about the mint's on-chain wallet.
+// Operator management of the mint's on-chain wallet.
 service WalletService {
+    // Creates a fresh address for operator deposits. Funds sent to this
+    // address are wallet capital and do not satisfy a mint quote.
+    rpc CreateDepositAddress(CreateDepositAddressRequest) returns (CreateDepositAddressResponse) {}
     // Returns the wallet balance split by confirmation status.
     rpc GetBalance(GetBalanceRequest) returns (GetBalanceResponse) {}
     // Returns wallet transactions, newest first.
     rpc ListTransactions(ListTransactionsRequest) returns (ListTransactionsResponse) {}
     // Returns addresses that the wallet has revealed, in derivation order.
     rpc ListAddresses(ListAddressesRequest) returns (ListAddressesResponse) {}
+}
+
+message CreateDepositAddressRequest {
+}
+
+message CreateDepositAddressResponse {
+    // Bitcoin address in network-specific display encoding.
+    string address = 1;
 }
 
 message GetBalanceRequest {

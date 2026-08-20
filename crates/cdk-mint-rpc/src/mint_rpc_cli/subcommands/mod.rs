@@ -46,5 +46,6 @@ pub use update_tos_url::{update_tos_url, UpdateTosUrlCommand};
 pub use update_ttl::{get_quote_ttl, update_quote_ttl, UpdateQuoteTtlCommand};
 pub use update_urls::{add_url, remove_url, AddUrlCommand, RemoveUrlCommand};
 pub use wallet::{
-    get_wallet_balance, list_wallet_addresses, list_wallet_transactions, WalletPaginationCommand,
+    create_wallet_deposit_address, get_wallet_balance, list_wallet_addresses,
+    list_wallet_transactions, WalletPaginationCommand,
 };
