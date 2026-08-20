@@ -1,4 +1,4 @@
-//! Read-only on-chain wallet information provider.
+//! On-chain wallet management provider.
 
 use std::sync::Arc;
 
@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use crate::wallet::{GetBalanceResponse, WalletAddress, WalletTransaction};
 
-/// Error returned while reading the configured on-chain wallet.
+/// Error returned while managing the configured on-chain wallet.
 #[derive(Debug, Error)]
 #[error("{message}")]
 pub struct WalletInfoError {
@@ -41,9 +41,12 @@ pub struct WalletAddressPage {
     pub total: u64,
 }
 
-/// Supplies read-only information for the management wallet service.
+/// Supplies operations for the management wallet service.
 #[async_trait]
 pub trait WalletInfoProvider {
+    /// Creates a fresh address for operator deposits.
+    async fn create_deposit_address(&self) -> Result<String, WalletInfoError>;
+
     /// Returns the wallet balance.
     async fn get_balance(&self) -> Result<GetBalanceResponse, WalletInfoError>;
 

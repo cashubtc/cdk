@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used)]
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("cargo:rerun-if-changed=src/proto/cdk-mint-rpc.proto");
+    println!("cargo:rerun-if-changed=src/proto");
 
     // Tell cargo to tell rustc to allow missing docs in generated code
     println!("cargo:rustc-env=RUSTDOC_ARGS=--allow-missing-docs");

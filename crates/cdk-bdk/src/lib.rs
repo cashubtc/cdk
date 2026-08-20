@@ -891,6 +891,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn operator_deposit_address_is_not_associated_with_a_quote() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
+
+        let operator_address = backend
+            .create_operator_deposit_address()
+            .await
+            .expect("create operator deposit address");
+        let quote_request = backend
+            .create_incoming_payment_request(IncomingPaymentOptions::Onchain(
+                OnchainIncomingPaymentOptions {
+                    quote_id: cdk_common::QuoteId::new(),
+                },
+            ))
+            .await
+            .expect("create quote receive request");
+
+        assert_ne!(operator_address, quote_request.request);
+        assert!(backend
+            .storage
+            .get_quote_id_by_receive_address(&operator_address)
+            .await
+            .expect("look up operator address")
+            .is_none());
+        assert!(!backend
+            .storage
+            .get_tracked_receive_addresses()
+            .await
+            .expect("list quote receive addresses")
+            .contains(&operator_address));
+    }
+
+    #[tokio::test]
     async fn wallet_info_lists_revealed_addresses_without_revealing_more() {
         let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
 
