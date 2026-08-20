@@ -624,19 +624,6 @@ impl MintQuote {
         }
     }
 
-    /// Increment the amount paid on the mint quote by a given amount
-    #[instrument(skip(self))]
-    pub fn increment_amount_paid(
-        &mut self,
-        additional_amount: Amount<CurrencyUnit>,
-    ) -> Result<Amount, crate::Error> {
-        self.amount_paid = self
-            .amount_paid
-            .checked_add(&additional_amount)
-            .map_err(|_| crate::Error::AmountOverflow)?;
-        Ok(Amount::from(self.amount_paid.value()))
-    }
-
     /// Amount paid
     #[instrument(skip(self))]
     pub fn amount_paid(&self) -> Amount<CurrencyUnit> {
