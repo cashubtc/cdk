@@ -475,6 +475,9 @@ pub struct MockMintConnector {
     pub post_batch_mint_responses: Mutex<std::collections::VecDeque<Result<MintResponse, Error>>>,
     /// Captured post_batch_mint requests.
     pub post_batch_mint_requests: Mutex<Vec<(PaymentMethod, BatchMintRequest<String>)>>,
+    /// Queue of responses for successive post_batch_check_mint_quote_status calls.
+    pub post_batch_check_mint_quote_status_responses:
+        Mutex<std::collections::VecDeque<Result<Vec<MintQuoteResponse<String>>, Error>>>,
     /// Response for post_swap calls
     pub post_swap_response: Mutex<Option<Result<SwapResponse, Error>>>,
     /// Queue of responses for successive post_swap calls.
@@ -529,6 +532,9 @@ impl MockMintConnector {
             post_mint_requests: Mutex::new(Vec::new()),
             post_batch_mint_responses: Mutex::new(std::collections::VecDeque::new()),
             post_batch_mint_requests: Mutex::new(Vec::new()),
+            post_batch_check_mint_quote_status_responses: Mutex::new(
+                std::collections::VecDeque::new(),
+            ),
             post_swap_response: Mutex::new(None),
             post_swap_responses: Mutex::new(std::collections::VecDeque::new()),
             captured_swap_requests: Mutex::new(Vec::new()),
@@ -669,6 +675,17 @@ impl MockMintConnector {
     /// Return all captured `post_batch_mint` requests.
     pub fn post_batch_mint_requests(&self) -> Vec<(PaymentMethod, BatchMintRequest<String>)> {
         self.post_batch_mint_requests.lock().unwrap().clone()
+    }
+
+    /// Enqueue a response for the next `post_batch_check_mint_quote_status` call.
+    pub fn push_post_batch_check_mint_quote_status_response(
+        &self,
+        response: Result<Vec<MintQuoteResponse<String>>, Error>,
+    ) {
+        self.post_batch_check_mint_quote_status_responses
+            .lock()
+            .unwrap()
+            .push_back(response);
     }
 
     pub fn set_post_swap_response(&self, response: Result<SwapResponse, Error>) {
@@ -929,7 +946,13 @@ impl MintConnector for MockMintConnector {
         _method: &PaymentMethod,
         _request: BatchCheckMintQuoteRequest<String>,
     ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
-        unimplemented!()
+        self.post_batch_check_mint_quote_status_responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect(
+                "MockMintConnector: post_batch_check_mint_quote_status called without configured response",
+            )
     }
 
     async fn post_batch_mint(
