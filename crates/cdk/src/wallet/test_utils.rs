@@ -2,7 +2,7 @@
 #![allow(missing_docs)]
 #![allow(clippy::missing_panics_doc)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
@@ -22,8 +22,9 @@ use cdk_common::{
 };
 
 use crate::nuts::{
-    nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, MeltQuoteBolt11Response,
-    MeltQuoteState, NUT04Settings, NUT05Settings, PaymentMethod, SecretKey, State,
+    nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, BlindSignature, BlindedMessage,
+    MeltQuoteBolt11Response, MeltQuoteState, NUT04Settings, NUT05Settings, PaymentMethod,
+    SecretKey, State,
 };
 use crate::secret::Secret;
 use crate::wallet::{MintConnector, Wallet};
@@ -406,6 +407,16 @@ pub async fn create_test_wallet_with_mock(
 ) -> Wallet {
     let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
 
+    create_test_wallet_with_mock_seed(db, mock_client, seed).await
+}
+
+/// Create a test wallet with a mock client and a fixed seed, so tests can
+/// simulate reopening a wallet on the same database and seed.
+pub async fn create_test_wallet_with_mock_seed(
+    db: Arc<dyn WalletDatabase<cdk_common::database::Error> + Send + Sync>,
+    mock_client: Arc<MockMintConnector>,
+    seed: [u8; 64],
+) -> Wallet {
     crate::wallet::WalletBuilder::new()
         .mint_url(test_mint_url())
         .unit(CurrencyUnit::Sat)
@@ -478,6 +489,12 @@ pub struct MockMintConnector {
     /// Queue of responses for successive post_batch_check_mint_quote_status calls.
     pub post_batch_check_mint_quote_status_responses:
         Mutex<std::collections::VecDeque<Result<Vec<MintQuoteResponse<String>>, Error>>>,
+    /// Staged `get_mint_quote_status` responses by quote ID.
+    pub mint_quote_status_responses: Mutex<HashMap<String, MintQuoteResponse<String>>>,
+    /// Secret keys backing the active keyset when mint signing is enabled.
+    /// When set, unstaged `post_mint`/`post_batch_mint` calls are answered
+    /// with valid blind signatures for the requested outputs.
+    pub mint_signing_keys: Mutex<Option<BTreeMap<Amount, SecretKey>>>,
     /// Response for post_swap calls
     pub post_swap_response: Mutex<Option<Result<SwapResponse, Error>>>,
     /// Queue of responses for successive post_swap calls.
@@ -535,6 +552,8 @@ impl MockMintConnector {
             post_batch_check_mint_quote_status_responses: Mutex::new(
                 std::collections::VecDeque::new(),
             ),
+            mint_signing_keys: Mutex::new(None),
+            mint_quote_status_responses: Mutex::new(HashMap::new()),
             post_swap_response: Mutex::new(None),
             post_swap_responses: Mutex::new(std::collections::VecDeque::new()),
             captured_swap_requests: Mutex::new(Vec::new()),
@@ -688,6 +707,68 @@ impl MockMintConnector {
             .push_back(response);
     }
 
+    /// Stage the `get_mint_quote_status` response for a quote.
+    pub fn set_mint_quote_status_response(
+        &self,
+        quote_id: &str,
+        response: MintQuoteResponse<String>,
+    ) {
+        self.mint_quote_status_responses
+            .lock()
+            .unwrap()
+            .insert(quote_id.to_string(), response);
+    }
+
+    /// Replace the active keyset with one backed by freshly generated secret
+    /// keys, so that unstaged `post_mint`/`post_batch_mint` calls are
+    /// answered with valid blind signatures for the requested outputs.
+    pub fn enable_mint_signing(&self) {
+        let mut signing_keys = BTreeMap::new();
+        let mut public_keys = BTreeMap::new();
+        for power in 0..32u8 {
+            let amount = Amount::from(1u64 << power);
+            let secret_key =
+                SecretKey::from_slice(&[power + 1; 32]).expect("test key is a valid secret");
+            public_keys.insert(amount, secret_key.public_key());
+            signing_keys.insert(amount, secret_key);
+        }
+        let keys = Keys::new(public_keys);
+
+        self.set_active_keyset(KeySet {
+            id: Id::v1_from_keys(&keys),
+            unit: CurrencyUnit::Sat,
+            active: Some(true),
+            keys,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        });
+        *self.mint_signing_keys.lock().unwrap() = Some(signing_keys);
+    }
+
+    /// Sign the requested outputs when mint signing is enabled.
+    fn sign_outputs(
+        &self,
+        outputs: &[BlindedMessage],
+    ) -> Option<Result<Vec<BlindSignature>, Error>> {
+        let signing_keys = self.mint_signing_keys.lock().unwrap();
+        let signing_keys = signing_keys.as_ref()?;
+
+        Some(
+            outputs
+                .iter()
+                .map(|output| {
+                    let secret_key = signing_keys.get(&output.amount).ok_or(Error::AmountKey)?;
+                    Ok(BlindSignature {
+                        amount: output.amount,
+                        keyset_id: output.keyset_id,
+                        c: crate::dhke::sign_message(secret_key, &output.blinded_secret)?,
+                        dleq: None,
+                    })
+                })
+                .collect(),
+        )
+    }
+
     pub fn set_post_swap_response(&self, response: Result<SwapResponse, Error>) {
         *self.post_swap_response.lock().unwrap() = Some(response);
     }
@@ -826,9 +907,14 @@ impl MintConnector for MockMintConnector {
     async fn get_mint_quote_status(
         &self,
         _method: PaymentMethod,
-        _quote_id: &str,
+        quote_id: &str,
     ) -> Result<MintQuoteResponse<String>, Error> {
-        unimplemented!()
+        self.mint_quote_status_responses
+            .lock()
+            .unwrap()
+            .get(quote_id)
+            .cloned()
+            .ok_or(Error::UnknownQuote)
     }
 
     async fn post_mint(
@@ -839,17 +925,23 @@ impl MintConnector for MockMintConnector {
         self.post_mint_requests
             .lock()
             .unwrap()
-            .push((method.clone(), request));
+            .push((method.clone(), request.clone()));
 
         let queued = self.post_mint_responses.lock().unwrap().pop_front();
         match queued {
             Some(response) => response,
-            None => self
-                .post_mint_response
-                .lock()
-                .unwrap()
-                .take()
-                .expect("MockMintConnector: post_mint called without configured response"),
+            None => {
+                if let Some(signatures) = self.sign_outputs(&request.outputs) {
+                    return Ok(MintResponse {
+                        signatures: signatures?,
+                    });
+                }
+                self.post_mint_response
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("MockMintConnector: post_mint called without configured response")
+            }
         }
     }
 
@@ -963,12 +1055,19 @@ impl MintConnector for MockMintConnector {
         self.post_batch_mint_requests
             .lock()
             .unwrap()
-            .push((method.clone(), request));
+            .push((method.clone(), request.clone()));
 
-        self.post_batch_mint_responses
-            .lock()
-            .unwrap()
-            .pop_front()
-            .expect("MockMintConnector: post_batch_mint called without configured response")
+        let queued = self.post_batch_mint_responses.lock().unwrap().pop_front();
+        match queued {
+            Some(response) => response,
+            None => {
+                if let Some(signatures) = self.sign_outputs(&request.outputs) {
+                    return Ok(MintResponse {
+                        signatures: signatures?,
+                    });
+                }
+                panic!("MockMintConnector: post_batch_mint called without configured response")
+            }
+        }
     }
 }

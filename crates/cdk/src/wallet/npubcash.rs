@@ -144,10 +144,9 @@ impl Wallet {
         // integration: do not expose the client when the server rejects it
         // (e.g. the configured mint lacks NUT-20 support) or does not
         // confirm it.
-        let response = client
-            .set_quote_locking(true)
-            .await
-            .map_err(|e| Error::Custom(format!("Failed to enable NpubCash quote locking: {}", e)))?;
+        let response = client.set_quote_locking(true).await.map_err(|e| {
+            Error::Custom(format!("Failed to enable NpubCash quote locking: {}", e))
+        })?;
         if !response.data.user().lock_quote {
             return Err(Error::Custom(
                 "NpubCash server did not confirm quote locking".to_string(),
@@ -1186,5 +1185,183 @@ mod tests {
 
         assert!(wallet.is_npubcash_enabled().await);
         server.await.expect("server completes");
+    }
+
+    /// Build a paid NpubCash server quote for the wallet's mint.
+    fn paid_server_quote(id: &str, amount: u64, locked: Option<bool>, mint_url: &str) -> Quote {
+        Quote {
+            id: id.to_string(),
+            amount,
+            unit: "sat".to_string(),
+            created_at: 0,
+            paid_at: Some(10),
+            expires_at: None,
+            mint_url: Some(mint_url.to_string()),
+            request: Some(format!("lnbc{amount}n1pjz")),
+            state: Some("PAID".to_string()),
+            locked,
+        }
+    }
+
+    #[tokio::test]
+    async fn upgrade_claims_legacy_locked_and_unlocked_quotes_after_reopen() {
+        use bitcoin::secp256k1::schnorr::Signature;
+
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, test_mint_info, test_mint_url,
+            MockMintConnector,
+        };
+
+        let seed = [0x42u8; 64];
+        let mint_url = test_mint_url().to_string();
+
+        // --- Pre-migration state, as written by the previous wallet
+        // version: the quote carries its persisted raw seed-prefix secret
+        // key and no provenance marker.
+        let db = create_test_db().await;
+        let legacy_server_quote = paid_server_quote("legacy-locked-quote", 1_000, None, &mint_url);
+        let mut pre_migration_quote: MintQuote = legacy_server_quote.clone().into();
+        pre_migration_quote.secret_key =
+            Some(SecretKey::from_slice(&seed[..32]).expect("legacy key is valid"));
+        db.add_mint_quote(pre_migration_quote)
+            .await
+            .expect("pre-migration quote is stored");
+
+        // --- Reopen the wallet on the same database and seed, backed by a
+        // signing mock mint that advertises NUT-29 batching.
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.enable_mint_signing();
+        let mut mint_info = test_mint_info();
+        mint_info.nuts.nut29 = cdk_common::nut29::Settings::new(Some(100), None);
+        mock_client.set_mint_info_response(Ok(mint_info));
+        let wallet = create_test_wallet_with_mock_seed(db.clone(), mock_client.clone(), seed).await;
+
+        let stored = db
+            .get_mint_quote("legacy-locked-quote")
+            .await
+            .expect("quote lookup")
+            .expect("quote exists");
+        assert!(
+            stored.secret_key.is_some(),
+            "pre-migration quote still carries its persisted key"
+        );
+
+        // --- Import phase, as performed on the first enable after the
+        // upgrade: re-import the legacy quote with legacy provenance, plus a
+        // newly locked quote and an existing unlocked legacy quote.
+        wallet
+            .add_npubcash_mint_quote_with_key(
+                legacy_server_quote,
+                NpubCashQuoteKey::LegacySeedPrefix,
+            )
+            .await
+            .expect("legacy import succeeds");
+        wallet
+            .add_npubcash_mint_quote(paid_server_quote(
+                "locked-quote",
+                2_000,
+                Some(true),
+                &mint_url,
+            ))
+            .await
+            .expect("locked import succeeds");
+        wallet
+            .add_npubcash_mint_quote(paid_server_quote(
+                "unlocked-quote",
+                4_000,
+                Some(false),
+                &mint_url,
+            ))
+            .await
+            .expect("unlocked import succeeds");
+
+        let stored = db
+            .get_mint_quote("legacy-locked-quote")
+            .await
+            .expect("quote lookup")
+            .expect("quote exists");
+        assert!(
+            stored.secret_key.is_none(),
+            "import must scrub the persisted legacy key"
+        );
+
+        // --- Claim all three quotes through the batch path.
+        let responses = {
+            let mut responses = Vec::new();
+            for id in ["legacy-locked-quote", "locked-quote", "unlocked-quote"] {
+                let quote = db
+                    .get_mint_quote(id)
+                    .await
+                    .expect("quote lookup")
+                    .expect("quote exists");
+                let response = cdk_common::MintQuoteResponse::Bolt11(
+                    cdk_common::nuts::MintQuoteBolt11Response {
+                        quote: quote.id.clone(),
+                        request: quote.request.clone(),
+                        amount: quote.amount,
+                        unit: Some(quote.unit.clone()),
+                        method: quote.payment_method.clone(),
+                        amount_paid: quote.amount_paid,
+                        amount_issued: quote.amount_issued,
+                        updated_at: 1,
+                        state: crate::nuts::MintQuoteState::Paid,
+                        expiry: Some(quote.expiry),
+                        pubkey: None,
+                    },
+                );
+                mock_client.set_mint_quote_status_response(id, response.clone());
+                responses.push(response);
+            }
+            responses
+        };
+        mock_client.push_post_batch_check_mint_quote_status_response(Ok(responses));
+
+        let minted = wallet.mint_unissued_quotes().await.expect("claim succeeds");
+        assert_eq!(minted, Amount::from(7_000u64));
+
+        let requests = mock_client.post_batch_mint_requests();
+        assert_eq!(requests.len(), 1, "one batch mint request expected");
+        let request = &requests[0].1;
+        let signatures = request
+            .signatures
+            .as_ref()
+            .expect("locked quotes carry signatures");
+
+        let nip06_pubkey = wallet
+            .derive_npubcash_secret_key()
+            .expect("nip06 key derives")
+            .public_key();
+        let legacy_pubkey = SecretKey::from_slice(&seed[..32])
+            .expect("legacy key is valid")
+            .public_key();
+
+        assert_eq!(request.quotes.len(), 3);
+        for (quote_id, signature) in request.quotes.iter().zip(signatures.iter()) {
+            match quote_id.as_str() {
+                "legacy-locked-quote" => {
+                    let signature =
+                        Signature::from_str(signature.as_ref().expect("legacy quote signed"))
+                            .expect("hex schnorr signature");
+                    legacy_pubkey
+                        .verify(&request.msg_to_sign(quote_id), &signature)
+                        .expect("legacy quote is signed with the legacy key");
+                }
+                "locked-quote" => {
+                    let signature =
+                        Signature::from_str(signature.as_ref().expect("locked quote signed"))
+                            .expect("hex schnorr signature");
+                    nip06_pubkey
+                        .verify(&request.msg_to_sign(quote_id), &signature)
+                        .expect("locked quote is signed with the NIP-06 key");
+                }
+                "unlocked-quote" => {
+                    assert!(
+                        signature.is_none(),
+                        "unlocked legacy quote must be claimed unsigned"
+                    );
+                }
+                other => panic!("unexpected quote in batch request: {other}"),
+            }
+        }
     }
 }
