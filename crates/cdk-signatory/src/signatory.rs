@@ -31,6 +31,17 @@ pub struct RotateKeyArguments {
     pub final_expiry: Option<u64>,
 }
 
+/// ReconstructDleqArguments
+///
+/// This struct is used to pass the arguments to the reconstruct_dleq function
+#[derive(Debug, Clone)]
+pub struct ReconstructDleqArguments {
+    /// Blind Signature
+    pub blind_signature: BlindSignature,
+    /// Blinded Message
+    pub blind_secret: PublicKey,
+}
+
 #[derive(Debug, Clone)]
 /// Signatory keysets
 pub struct SignatoryKeysets {
@@ -166,6 +177,12 @@ pub trait Signatory {
     /// Add current keyset to inactive keysets
     /// Generate new keyset
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error>;
+
+    /// Reconstruct DLEQ proof
+    async fn reconstruct_dleq(
+        &self,
+        args: ReconstructDleqArguments,
+    ) -> Result<BlindSignature, Error>;
 }
 
 #[cfg(test)]
