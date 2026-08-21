@@ -221,6 +221,11 @@ coverage:
   echo "Running unit tests coverage..."
   cargo llvm-cov --no-report --lib --workspace --exclude cdk-integration-tests
 
+  # Run cdk-nostr tests with all features; its npubcash/nwc modules are
+  # feature-gated, so the default-feature workspace run does not execute them.
+  echo "Running cdk-nostr feature-gated tests coverage..."
+  cargo llvm-cov --no-report --lib -p cdk-nostr --all-features
+
   # Run pure integration tests with coverage (memory backend)
   echo "Running pure integration tests coverage (memory)..."
   CDK_TEST_DB_TYPE=memory cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
