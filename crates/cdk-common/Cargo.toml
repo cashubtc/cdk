@@ -42,7 +42,7 @@ tracing.workspace = true
 cdk-prometheus = { workspace = true, optional = true}
 url.workspace = true
 uuid = { workspace = true, optional = true }
-futures.workspace = true
+futures = { workspace = true, features = ["std"] }
 anyhow.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
