@@ -331,7 +331,7 @@ pub struct SecretKey {
 impl fmt::Debug for SecretKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SecretKey")
-            .field("hex", &"[redacted]")
+            .field("hex", &"[REDACTED]")
             .finish()
     }
 }

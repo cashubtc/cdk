@@ -320,7 +320,7 @@ mod tests {
         assert!(encoded.contains(&secret_hex));
         assert!(encoded.contains("p2pk_signing_keys"));
         assert!(!debug.contains(&secret_hex));
-        assert!(debug.contains("[redacted]"));
+        assert!(debug.contains("[REDACTED]"));
 
         let decoded = crate::types::wallet::decode_send_options(encoded).unwrap();
 
@@ -377,7 +377,7 @@ mod tests {
         assert!(encoded.contains(&secret_hex));
         assert!(encoded.contains("p2pk_signing_keys"));
         assert!(!debug.contains(&secret_hex));
-        assert!(debug.contains("[redacted]"));
+        assert!(debug.contains("[REDACTED]"));
 
         let decoded = crate::types::wallet::decode_receive_options(encoded).unwrap();
 
