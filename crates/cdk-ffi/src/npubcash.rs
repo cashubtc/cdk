@@ -331,7 +331,15 @@ fn parse_nostr_secret_key(key: &str) -> Result<cdk_nostr::nostr_sdk::Keys, FfiEr
 
 #[cfg(test)]
 mod tests {
+    use cdk_nostr::nostr_sdk::{Keys, ToBech32};
+    use cdk_nostr::npubcash::types::UserDataContainer;
+    use cdk_nostr::npubcash::{UserData, UserResponse};
+
     use super::*;
+    use crate::types::Amount;
+
+    const HEX_SECRET_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000001";
+    const HEX_PUBLIC_KEY: &str = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 
     #[test]
     fn npubcash_seed_derivation_uses_wallet_nip06_key() {
@@ -343,5 +351,112 @@ mod tests {
 
         assert_eq!(secret_hex, wallet_secret.to_secret_hex());
         assert_ne!(&wallet_secret.to_secret_bytes()[..], &seed[..32]);
+    }
+
+    #[test]
+    fn npubcash_seed_derivation_rejects_short_seed() {
+        assert!(npubcash_derive_secret_key_from_seed(vec![0x42u8; 32]).is_err());
+    }
+
+    #[test]
+    fn npubcash_get_pubkey_accepts_hex_and_nsec() {
+        assert_eq!(
+            npubcash_get_pubkey(HEX_SECRET_KEY.to_string()).expect("hex key parses"),
+            HEX_PUBLIC_KEY
+        );
+
+        let keys = Keys::generate();
+        let nsec = keys.secret_key().to_bech32().expect("nsec encodes");
+        assert_eq!(
+            npubcash_get_pubkey(nsec).expect("nsec key parses"),
+            keys.public_key().to_hex()
+        );
+    }
+
+    #[test]
+    fn npubcash_get_pubkey_rejects_invalid_key() {
+        assert!(npubcash_get_pubkey("not-a-key".to_string()).is_err());
+    }
+
+    #[test]
+    fn client_rejects_invalid_secret_key() {
+        assert!(
+            NpubCashClient::new("https://npub.cash".to_string(), "invalid".to_string()).is_err()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_quotes_surfaces_request_errors() {
+        let client = NpubCashClient::new(
+            // Unroutable loopback port: the request fails fast without network
+            "http://127.0.0.1:1".to_string(),
+            HEX_SECRET_KEY.to_string(),
+        )
+        .expect("client builds with a valid key");
+
+        assert!(client.get_quotes(None).await.is_err());
+    }
+
+    #[test]
+    fn npubcash_quote_to_mint_quote_maps_fields_without_secret_key() {
+        let quote = NpubCashQuote {
+            id: "quote-id".to_string(),
+            amount: 42,
+            unit: "sat".to_string(),
+            created_at: 1,
+            paid_at: Some(10),
+            expires_at: Some(100),
+            mint_url: Some("https://mint.example.com".to_string()),
+            request: Some("lnbc42n1example".to_string()),
+            state: Some("PAID".to_string()),
+            locked: Some(true),
+        };
+
+        let mint_quote = npubcash_quote_to_mint_quote(quote);
+
+        assert_eq!(mint_quote.id, "quote-id");
+        assert_eq!(mint_quote.amount, Some(Amount::new(42)));
+        assert_eq!(mint_quote.request, "lnbc42n1example");
+        assert_eq!(mint_quote.expiry, 100);
+        assert_eq!(mint_quote.updated_at, 10);
+        assert!(
+            mint_quote.secret_key.is_none(),
+            "conversion must not invent a secret key"
+        );
+    }
+
+    #[test]
+    fn user_response_conversion_supports_wrapped_and_flat_layouts() {
+        let user = UserData {
+            pubkey: "npub1test".to_string(),
+            mint_url: Some("https://mint.example.com".to_string()),
+            lock_quote: true,
+        };
+
+        let wrapped: NpubCashUserResponse = UserResponse {
+            error: false,
+            data: UserDataContainer::Wrapped { user: user.clone() },
+        }
+        .into();
+        assert!(!wrapped.error);
+        assert_eq!(wrapped.pubkey, "npub1test");
+        assert_eq!(
+            wrapped.mint_url.as_deref(),
+            Some("https://mint.example.com")
+        );
+        assert!(wrapped.lock_quote);
+
+        let flat: NpubCashUserResponse = UserResponse {
+            error: false,
+            data: UserDataContainer::Flat(UserData {
+                lock_quote: false,
+                mint_url: None,
+                ..user
+            }),
+        }
+        .into();
+        assert_eq!(flat.pubkey, "npub1test");
+        assert_eq!(flat.mint_url, None);
+        assert!(!flat.lock_quote);
     }
 }

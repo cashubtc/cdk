@@ -1323,4 +1323,15 @@ mod tests {
         );
         assert!(<Wallet as WalletTrait>::is_rate_limited(&wallet));
     }
+
+    #[cfg(feature = "npubcash")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn npubcash_methods_require_an_enabled_client() {
+        let wallet = test_wallet();
+
+        assert!(wallet.sync_missing_npubcash_quotes().await.is_err());
+        assert!(wallet.claim_npubcash_quotes().await.is_err());
+        assert!(wallet.set_npubcash_quote_locking(true).await.is_err());
+        assert!(wallet.get_npubcash_user_info().await.is_err());
+    }
 }
