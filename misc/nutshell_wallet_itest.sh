@@ -11,12 +11,17 @@ WALLET_CONTAINER_NAME="nutshell-wallet"
 MINT_URL="http://0.0.0.0:${MINT_PORT}"
 WALLET_URL="http://localhost:${WALLET_PORT}"
 CDK_MINTD_PID=""
+NO_DOCKER=false
 
 # Function to clean up resources
 cleanup() {
   echo "Cleaning up resources..."
   
   if docker ps -a | grep -q ${WALLET_CONTAINER_NAME}; then
+    if ! curl -fsS "${WALLET_URL}/info" >/dev/null 2>&1; then
+      echo "Nutshell wallet container logs:"
+      docker logs ${WALLET_CONTAINER_NAME} || true
+    fi
     echo "Stopping and removing Docker container '${WALLET_CONTAINER_NAME}'..."
     docker stop ${WALLET_CONTAINER_NAME} >/dev/null 2>&1
     docker rm ${WALLET_CONTAINER_NAME} >/dev/null 2>&1
@@ -147,12 +152,8 @@ if docker info > /dev/null 2>&1; then
 else
   echo "Docker is not accessible, skipping Nutshell wallet container setup"
   # Set a flag to indicate we're not using Docker
-  export NO_DOCKER=true
+  NO_DOCKER=true
 fi
-
-# Wait for the mint to be ready
-echo "Waiting for Nutshell Mint to start..."
-sleep 5
 
 # Check if the Mint API is responding (use localhost for local curl check)
 echo "Checking if Nutshell Mint API is available..."
@@ -163,15 +164,27 @@ else
 fi
 
 # Only check wallet if Docker is available
-if [ -z "$NO_DOCKER" ]; then
-  # Check if the Wallet API is responding
-  echo "Checking if Nutshell Wallet API is available..."
-  if curl -s "${WALLET_URL}/info" > /dev/null; then
-    echo "Nutshell Wallet is running in container '${WALLET_CONTAINER_NAME}'"
-    echo "You can access it at ${WALLET_URL}"
-  else
-    echo "Warning: Nutshell Wallet API is not responding. The container might not be ready yet."
+if [ "$NO_DOCKER" = false ]; then
+  echo "Waiting for Nutshell Wallet API to start..."
+  wallet_ready=false
+  for _ in $(seq 1 60); do
+    if curl -fsS "${WALLET_URL}/info" >/dev/null; then
+      wallet_ready=true
+      break
+    fi
+    if [ "$(docker inspect --format '{{.State.Running}}' ${WALLET_CONTAINER_NAME} 2>/dev/null)" != true ]; then
+      echo "Nutshell Wallet container exited before becoming ready."
+      docker logs ${WALLET_CONTAINER_NAME} || true
+      exit 1
+    fi
+    sleep 1
+  done
+  if [ "$wallet_ready" != true ]; then
+    echo "Nutshell Wallet API did not become ready at ${WALLET_URL}."
+    docker logs ${WALLET_CONTAINER_NAME} || true
+    exit 1
   fi
+  echo "Nutshell Wallet is running in container '${WALLET_CONTAINER_NAME}' at ${WALLET_URL}"
 fi
 
 # Export URLs as environment variables

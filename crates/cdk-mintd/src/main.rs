@@ -137,6 +137,31 @@ fn main() -> Result<()> {
                     Ok(())
                 }
             },
+            Some(Commands::MigrateNutshell {
+                nutshell_db,
+                verify_only,
+            }) => {
+                let work_dir = work_dir
+                    .as_deref()
+                    .expect("nutshell migration has a work directory");
+                let document =
+                    cdk_mintd::stored_configuration_document(work_dir, password.clone()).await?;
+                let settings = cdk_mintd::config::Settings::try_from_toml(&document)?;
+                let _guard = if args.enable_logging {
+                    Some(cdk_mintd::setup_tracing(work_dir, &settings.info.logging)?)
+                } else {
+                    None
+                };
+                cdk_mintd::migrate::run_migration(
+                    work_dir,
+                    &settings,
+                    &nutshell_db,
+                    password,
+                    verify_only,
+                )
+                .await?;
+                Ok(())
+            }
             None => {
                 let work_dir = work_dir
                     .as_deref()

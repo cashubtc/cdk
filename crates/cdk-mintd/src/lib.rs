@@ -61,6 +61,7 @@ mod config_migration;
 mod config_service;
 mod config_store;
 pub mod env_vars;
+pub mod migrate;
 mod secret;
 pub mod setup;
 

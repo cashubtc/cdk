@@ -7,6 +7,9 @@ use crate::common::SqliteConnectionManager;
 
 pub mod memory;
 
+/// Nutshell migration module
+pub mod migrate;
+
 /// Mint SQLite implementation with rusqlite
 pub type MintSqliteDatabase = SQLMintDatabase<SqliteConnectionManager>;
 

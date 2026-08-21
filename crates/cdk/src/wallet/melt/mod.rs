@@ -3428,10 +3428,11 @@ mod tests {
             WaitStep::Continue(_) => panic!("expected terminal failure"),
         }
 
-        // Proofs released back to Unspent and the saga cleaned up.
+        // Proofs released back to Unspent; the saga is retained for a later
+        // authoritative recovery check.
         let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
         assert_eq!(stored[0].state, State::Unspent);
-        assert!(db.get_saga(&operation_id).await.unwrap().is_none());
+        assert!(db.get_saga(&operation_id).await.unwrap().is_some());
     }
 
     #[tokio::test]
