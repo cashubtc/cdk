@@ -11,7 +11,7 @@ use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::DynMintPayment;
 use cdk_common::{nut21, nut22};
-use cdk_signatory::signatory::{RotateKeyArguments, Signatory};
+use cdk_signatory::signatory::{KeysetExpiry, RotateKeyArguments, Signatory};
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
@@ -44,7 +44,7 @@ impl Default for UnitConfig {
 }
 
 /// Describes an extra keyset rotation to perform during mint build.
-/// Used to create inactive/expired keysets for testing.
+/// Used to create inactive or expiring keysets for testing.
 #[derive(Debug, Clone)]
 pub struct KeysetRotation {
     /// Currency unit for this rotation
@@ -144,7 +144,7 @@ impl MintBuilder {
     }
 
     /// Add a keyset rotation to execute during build.
-    /// Used to create inactive/expired keysets for testing.
+    /// Used to create inactive or expiring keysets for testing.
     pub fn with_keyset_rotation(mut self, rotation: KeysetRotation) -> Self {
         self.keyset_rotations.push(rotation);
         self
@@ -689,7 +689,7 @@ impl MintBuilder {
                     } else {
                         cdk_common::nut02::KeySetVersion::Version00
                     },
-                    final_expiry: rotation.final_expiry,
+                    final_expiry: rotation.final_expiry.map(KeysetExpiry::new).transpose()?,
                 })
                 .await?;
         }
