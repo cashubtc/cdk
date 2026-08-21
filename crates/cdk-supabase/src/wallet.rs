@@ -52,7 +52,7 @@ pub(crate) fn get_schema_sql_inner() -> String {
 
 /// URL-encode a value for use in query parameters
 fn url_encode(value: &str) -> String {
-    urlencoding::encode(value).into_owned()
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
 const ENCRYPTION_METADATA_VERSION: i64 = 1;
