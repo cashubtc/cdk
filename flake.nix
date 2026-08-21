@@ -1552,24 +1552,6 @@
             # devShells
             msrv = pkgs.mkShell (
               {
-                shellHook = "
-                  cargo update
-                  cargo update home --precise 0.5.11
-                  cargo update typed-index-collections --precise 3.3.0
-                  cargo update simple_asn1 --precise 0.6.3
-                  cargo update cookie_store --precise 0.22.0
-                  cargo update serde_with --precise 3.17.0
-                  cargo update time --precise 0.3.44
-                  cargo update unicode-segmentation --precise 1.12.0
-                  cargo update idna_adapter --precise 1.2.1
-                  cargo update icu_normalizer --precise 2.0.1
-                  cargo update icu_provider --precise 2.1.1
-                  cargo update icu_locale_core --precise 2.1.1
-                  cargo update tonic-prost@0.14.6 --precise 0.14.5
-                  cargo update tonic-prost-build@0.14.6 --precise 0.14.5
-                  cargo update tonic-build@0.14.6 --precise 0.14.5
-                  cargo update tonic@0.14.6 --precise 0.14.5
-               ";
                 buildInputs = baseBuildInputs ++ [ msrv_toolchain ];
                 inherit nativeBuildInputs;
               }

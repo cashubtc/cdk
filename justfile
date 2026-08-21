@@ -556,18 +556,45 @@ lint:
   typos
   echo "All checks passed!"
 
+# Refresh stable and MSRV lockfiles, excluding registry releases newer than seven days.
 update-msrv-lock:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    nix develop --ignore-environment .#msrv --command bash -c '
-        cp Cargo.lock Cargo.lock.msrv
-        echo "Copied Cargo.lock to Cargo.lock.msrv (MSRV 1.85.0)"
-    '
+    nix develop --ignore-environment .#nightly --command bash -c '
+        export CARGO_REGISTRY_GLOBAL_MIN_PUBLISH_AGE="7 days"
+        cargo_update() {
+            cargo -Z min-publish-age update "$@"
+        }
 
-    nix develop --ignore-environment .#stable --command bash -c '
-        cargo update
-        echo "Updated Cargo.lock (stable)"
+        cargo_update
+        echo "Updated Cargo.lock with a seven-day minimum publish age"
+
+        lock_dir=$(mktemp -d /data/rust/tmp/cdk-msrv-lock.XXXXXX)
+        cleanup() {
+            rm -f "$lock_dir/Cargo.lock"
+            rmdir "$lock_dir" 2>/dev/null || true
+        }
+        trap cleanup EXIT
+
+        cp Cargo.lock "$lock_dir/Cargo.lock"
+        export CARGO_RESOLVER_LOCKFILE_PATH="$lock_dir/Cargo.lock"
+        export CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS="fallback"
+
+        cargo_update
+        cargo_update home --precise 0.5.11
+        cargo_update typed-index-collections --precise 3.3.0
+        cargo_update simple_asn1 --precise 0.6.3
+        cargo_update cookie_store --precise 0.22.0
+        cargo_update serde_with --precise 3.17.0
+        cargo_update time --precise 0.3.44
+        cargo_update unicode-segmentation --precise 1.12.0
+        cargo_update idna_adapter --precise 1.2.1
+        cargo_update icu_normalizer --precise 2.0.1
+        cargo_update icu_provider --precise 2.1.1
+        cargo_update icu_locale_core --precise 2.1.1
+        cp "$lock_dir/Cargo.lock" Cargo.lock.msrv
+        echo "Updated Cargo.lock.msrv for MSRV 1.85.0"
     '
 
 itest db suite="all":
