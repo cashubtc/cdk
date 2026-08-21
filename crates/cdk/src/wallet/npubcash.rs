@@ -100,24 +100,26 @@ pub fn derive_npubcash_secret_key_from_seed(seed: &[u8; 64]) -> Result<SecretKey
 impl Wallet {
     /// Enable NpubCash integration for this wallet
     ///
+    /// Registers the wallet's mint URL on the server and enables NUT-20 quote
+    /// locking, so that quotes created after enabling can only be minted by
+    /// this wallet. The client is only exposed to the rest of the wallet
+    /// after locking has been enabled and confirmed; already-existing
+    /// unlocked quotes remain claimable.
+    ///
     /// # Arguments
     ///
     /// * `npubcash_url` - Base URL of the NpubCash service (e.g., "<https://npubx.cash>")
     ///
     /// # Errors
     ///
-    /// Returns an error if the NpubCash client cannot be initialized
+    /// Returns an error if the NpubCash client cannot be initialized, or if
+    /// quote locking cannot be enabled and confirmed — for example when the
+    /// configured mint does not support NUT-20.
     #[instrument(skip(self))]
     pub async fn enable_npubcash(&self, npubcash_url: String) -> Result<(), Error> {
         let keys = self.derive_npubcash_keys()?;
         let auth_provider = Arc::new(JwtAuthProvider::new(npubcash_url.clone(), keys));
         let client = Arc::new(NpubCashClient::new(npubcash_url.clone(), auth_provider));
-
-        let mut npubcash = self.npubcash_client.write().await;
-        *npubcash = Some(client.clone());
-        drop(npubcash);
-
-        tracing::info!("NpubCash integration enabled");
 
         // Automatically set the mint URL on the NpubCash server
         let mint_url = self.mint_url.to_string();
@@ -137,24 +139,31 @@ impl Wallet {
             }
         }
 
+        // New quotes must be locked to this wallet's NpubCash npub so only
+        // this wallet can mint them. Locking is an invariant of the
+        // integration: do not expose the client when the server rejects it
+        // (e.g. the configured mint lacks NUT-20 support) or does not
+        // confirm it.
+        let response = client
+            .set_quote_locking(true)
+            .await
+            .map_err(|e| Error::Custom(format!("Failed to enable NpubCash quote locking: {}", e)))?;
+        if !response.data.user().lock_quote {
+            return Err(Error::Custom(
+                "NpubCash server did not confirm quote locking".to_string(),
+            ));
+        }
+        tracing::info!("NpubCash quote locking enabled at '{}'", npubcash_url);
+
         if let Err(e) = self.import_legacy_npubcash_quotes_once(&npubcash_url).await {
             tracing::warn!("Failed to import legacy NpubCash quotes: {}", e);
         }
 
-        // Best-effort: lock new quotes to this wallet's NpubCash npub so only
-        // this wallet can mint them. Servers/mints without NUT-20 support
-        // reject this; unlocked quotes remain claimable either way.
-        match client.set_quote_locking(true).await {
-            Ok(_) => {
-                tracing::info!("NpubCash quote locking enabled at '{}'", npubcash_url);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to enable NpubCash quote locking: {}. New quotes will be unlocked.",
-                    e
-                );
-            }
-        }
+        let mut npubcash = self.npubcash_client.write().await;
+        *npubcash = Some(client);
+        drop(npubcash);
+
+        tracing::info!("NpubCash integration enabled");
 
         Ok(())
     }
@@ -1075,5 +1084,133 @@ mod tests {
             .expect_err("claim must fail when NpubCash is not enabled");
 
         assert!(matches!(err, Error::Custom(_)));
+    }
+
+    /// How the mock server answers the quote-locking request.
+    enum LockResponse {
+        /// 400 — the server rejects locking (e.g. mint without NUT-20)
+        Rejected,
+        /// 200 with `lockQuote: true`
+        Confirmed,
+        /// 200 but `lockQuote: false` — locking not actually enabled
+        NotConfirmed,
+    }
+
+    fn user_body(lock_quote: bool) -> String {
+        format!(
+            r#"{{"error":false,"data":{{"user":{{"pubkey":"test","mintUrl":"https://mint.example.com","lockQuote":{lock_quote}}}}}}}"#
+        )
+    }
+
+    /// Minimal NpubCash server: answers the mint/lock settings endpoints and
+    /// rejects everything else, so the best-effort legacy import stops at the
+    /// JWT request. Accepts connections until none arrive for 500ms.
+    async fn start_lock_gate_server(mode: LockResponse) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test server binds");
+        let addr = listener.local_addr().expect("test server has local addr");
+        let base_url = format!("http://{}", addr);
+
+        let server = tokio::spawn(async move {
+            loop {
+                let accept =
+                    tokio::time::timeout(std::time::Duration::from_millis(500), listener.accept())
+                        .await;
+                let Ok(Ok((mut stream, _))) = accept else {
+                    break;
+                };
+
+                let mut buffer = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let read = stream.read(&mut chunk).await.expect("request is readable");
+                    if read == 0 {
+                        break;
+                    }
+                    buffer.extend_from_slice(&chunk[..read]);
+                    if buffer.windows(4).any(|w| w == b"\r\n\r\n") {
+                        // The small JSON bodies fit in the first read
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&buffer).to_string();
+
+                let (status, body) = if request.starts_with("PATCH /api/v2/user/lock ") {
+                    match &mode {
+                        LockResponse::Rejected => {
+                            ("HTTP/1.1 400 Bad Request", r#"{"error":true}"#.to_string())
+                        }
+                        LockResponse::Confirmed => ("HTTP/1.1 200 OK", user_body(true)),
+                        LockResponse::NotConfirmed => ("HTTP/1.1 200 OK", user_body(false)),
+                    }
+                } else if request.starts_with("PATCH /api/v2/user/mint ") {
+                    ("HTTP/1.1 200 OK", user_body(true))
+                } else {
+                    ("HTTP/1.1 400 Bad Request", r#"{"error":true}"#.to_string())
+                };
+
+                let response = format!(
+                    "{status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("response is written");
+            }
+        });
+
+        (base_url, server)
+    }
+
+    #[tokio::test]
+    async fn enable_npubcash_fails_when_quote_locking_is_rejected() {
+        let wallet = build_test_wallet([0x42u8; 64]).await;
+        let (url, server) = start_lock_gate_server(LockResponse::Rejected).await;
+
+        let err = wallet
+            .enable_npubcash(url)
+            .await
+            .expect_err("enable must fail when the server rejects quote locking");
+
+        assert!(matches!(err, Error::Custom(_)));
+        assert!(
+            !wallet.is_npubcash_enabled().await,
+            "client must not be exposed when locking cannot be established"
+        );
+        server.await.expect("server completes");
+    }
+
+    #[tokio::test]
+    async fn enable_npubcash_fails_when_locking_is_not_confirmed() {
+        let wallet = build_test_wallet([0x42u8; 64]).await;
+        let (url, server) = start_lock_gate_server(LockResponse::NotConfirmed).await;
+
+        let err = wallet
+            .enable_npubcash(url)
+            .await
+            .expect_err("enable must fail when the server does not confirm locking");
+
+        assert!(matches!(err, Error::Custom(_)));
+        assert!(!wallet.is_npubcash_enabled().await);
+        server.await.expect("server completes");
+    }
+
+    #[tokio::test]
+    async fn enable_npubcash_publishes_client_once_locking_is_confirmed() {
+        let wallet = build_test_wallet([0x42u8; 64]).await;
+        let (url, server) = start_lock_gate_server(LockResponse::Confirmed).await;
+
+        wallet
+            .enable_npubcash(url)
+            .await
+            .expect("enable succeeds when locking is confirmed");
+
+        assert!(wallet.is_npubcash_enabled().await);
+        server.await.expect("server completes");
     }
 }

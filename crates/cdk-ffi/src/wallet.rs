@@ -877,7 +877,12 @@ impl Wallet {
     /// Enable NpubCash integration for this wallet
     ///
     /// Derives the NpubCash Nostr keys from the wallet seed, creates the
-    /// API client, and asserts this wallet's mint URL on the server.
+    /// API client, sets this wallet's mint URL on the server, and enables
+    /// NUT-20 quote locking for newly created quotes. The integration is
+    /// only activated once locking has been enabled and confirmed.
+    ///
+    /// Returns an error if quote locking cannot be established — for
+    /// example when the configured mint does not support NUT-20.
     pub async fn enable_npubcash(&self, npubcash_url: String) -> Result<(), FfiError> {
         self.inner.enable_npubcash(npubcash_url).await?;
         Ok(())
