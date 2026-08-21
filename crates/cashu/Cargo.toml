@@ -22,7 +22,6 @@ uuid.workspace = true
 bitcoin.workspace = true
 cbor-diag.workspace = true
 ciborium.workspace = true
-once_cell.workspace = true
 serde.workspace = true
 serde_bytes.workspace = true
 ur.workspace = true

@@ -35,7 +35,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 tonic-prost.workspace = true
 prost.workspace = true
-home.workspace = true
 rustls.workspace = true
 
 

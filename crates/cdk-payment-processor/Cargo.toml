@@ -44,7 +44,6 @@ tonic-prost.workspace = true
 prost.workspace = true
 tokio-stream.workspace = true
 tokio-util = { workspace = true, default-features = false }
-hex = "0.4"
 lightning = { workspace = true }
 
 

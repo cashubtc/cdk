@@ -66,7 +66,6 @@ toml = { workspace = true, features = ["parse"] }
 bip39.workspace = true
 tower-http = { workspace = true, features = ["compression-full", "decompression-full"] }
 tower.workspace = true
-home.workspace = true
 
 [lints]
 workspace = true

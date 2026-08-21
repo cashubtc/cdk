@@ -161,7 +161,7 @@ async fn main() -> Result<()> {
     let work_dir = match &args.work_dir {
         Some(work_dir) => work_dir.clone(),
         None => {
-            let home_dir = home::home_dir()
+            let home_dir = cdk_common::util::home_dir()
                 .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
             home_dir.join(DEFAULT_WORK_DIR)
         }

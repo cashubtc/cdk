@@ -1341,7 +1341,7 @@ impl Settings {
     where
         P: Into<PathBuf>,
     {
-        let mut default_config_file_name = home::home_dir()
+        let mut default_config_file_name = cdk_common::util::home_dir()
             .ok_or(ConfigError::NotFound("Config Path".to_string()))?
             .join("cashu-rs-mint");
 
