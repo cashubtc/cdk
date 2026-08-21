@@ -299,7 +299,10 @@ fn verify_htlc_preimage(witness: &HTLCWitness, secret: &Secret) -> Result<(), Er
 /// Per NUT-14, there are two spending pathways:
 /// 1. Receiver path (preimage + pubkeys): ALWAYS available
 /// 2. Sender/Refund path (refund keys, no preimage): available AFTER locktime
-pub(crate) fn verify_sig_all_htlc(first_input: &Proof, msg_to_sign: String) -> Result<(), Error> {
+pub(crate) fn verify_sig_all_htlc(
+    first_input: &Proof,
+    msgs_to_sign: &[Vec<u8>],
+) -> Result<(), Error> {
     // Get the first input, as it's the one with the signatures
     let first_secret =
         Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
@@ -348,12 +351,11 @@ pub(crate) fn verify_sig_all_htlc(first_input: &Proof, msg_to_sign: String) -> R
         }
 
         let signatures = extract_signatures_from_witness(first_witness)?;
-        let valid_sig_count = super::nut11::valid_signatures(
-            msg_to_sign.as_bytes(),
+        let valid_sig_count = super::nut11::valid_signatures_any_msg(
+            msgs_to_sign,
             &requirements.pubkeys,
             &signatures,
-        )
-        .map_err(|_| Error::InvalidSignature)?;
+        );
 
         if valid_sig_count >= requirements.required_sigs {
             Ok(())
@@ -364,12 +366,8 @@ pub(crate) fn verify_sig_all_htlc(first_input: &Proof, msg_to_sign: String) -> R
         // Refund path: preimage not valid/provided, but locktime has passed
         // Check SIG_ALL signatures against refund keys
         let signatures = extract_signatures_from_witness(first_witness)?;
-        let valid_sig_count = super::nut11::valid_signatures(
-            msg_to_sign.as_bytes(),
-            &refund_path.pubkeys,
-            &signatures,
-        )
-        .map_err(|_| Error::InvalidSignature)?;
+        let valid_sig_count =
+            super::nut11::valid_signatures_any_msg(msgs_to_sign, &refund_path.pubkeys, &signatures);
 
         if valid_sig_count >= refund_path.required_sigs {
             Ok(())
@@ -637,7 +635,7 @@ mod tests {
             })),
         );
 
-        assert!(verify_sig_all_htlc(&proof, "sig-all message".to_string()).is_ok());
+        assert!(verify_sig_all_htlc(&proof, &[b"sig-all message".to_vec()]).is_ok());
     }
 
     /// Tests that verify_htlc correctly rejects an HTLC with an invalid hash format.
