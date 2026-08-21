@@ -22,6 +22,7 @@ use uuid::Uuid;
 use crate::common::IssuerVersion;
 use crate::mint_quote::MintQuoteResponse;
 use crate::nuts::{MeltQuoteState, MintQuoteState};
+use crate::payjoin::payjoin_v2_from_extra_json;
 use crate::payment::PaymentIdentifier;
 use crate::{Amount, CurrencyUnit, Error, Id, KeySetInfo, PublicKey};
 
@@ -1221,6 +1222,7 @@ impl From<MeltQuote> for MeltQuoteOnchainResponse<QuoteId> {
             selected_fee_index: quote.selected_fee_index,
             outpoint: quote.payment_proof.clone(),
             change: None,
+            payjoin: payjoin_v2_from_extra_json(quote.extra_json.as_ref()),
         }
     }
 }
@@ -1238,6 +1240,7 @@ impl TryFrom<MintQuote> for MintQuoteOnchainResponse<QuoteId> {
             amount_paid: quote.amount_paid().into(),
             amount_issued: quote.amount_issued().into(),
             updated_at: quote.updated_at(),
+            payjoin: payjoin_v2_from_extra_json(quote.extra_json.as_ref()),
         })
     }
 }
@@ -1935,6 +1938,47 @@ mod tests {
         assert_eq!(response.pubkey, pubkey);
         assert_eq!(response.amount_paid, Amount::from(10_000));
         assert_eq!(response.amount_issued, Amount::from(1_000));
+    }
+
+    #[test]
+    fn test_mint_quote_onchain_response_exposes_payjoin_from_extra_json() {
+        use cashu::nuts::nut31::PayjoinV2;
+
+        let quote_id = QuoteId::new();
+        let pubkey = PublicKey::from_hex(
+            "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+        )
+        .expect("valid test public key");
+        let payjoin = PayjoinV2::new(
+            "https://payjoin.example/pj".to_string(),
+            "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+            "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
+            unix_time() + 3_600,
+        )
+        .expect("valid Payjoin parameters");
+        let now = unix_time();
+        let mint_quote = MintQuote::new(
+            Some(quote_id),
+            "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
+            CurrencyUnit::Sat,
+            None,
+            now + 3_600,
+            PaymentIdentifier::CustomId("payjoin-session".to_string()),
+            Some(pubkey),
+            Amount::new(0, CurrencyUnit::Sat),
+            Amount::new(0, CurrencyUnit::Sat),
+            PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Onchain),
+            now,
+            now,
+            vec![],
+            vec![],
+            Some(serde_json::json!({ "payjoin": payjoin.clone() })),
+        );
+
+        let response = MintQuoteOnchainResponse::try_from(mint_quote)
+            .expect("onchain quote should convert");
+
+        assert_eq!(response.payjoin, Some(payjoin));
     }
 
     fn dummy_bolt12_mint_quote(expiry: u64) -> (MintQuote, QuoteId, PublicKey) {
