@@ -917,24 +917,6 @@ impl Wallet {
         Ok(minted.into())
     }
 
-    /// Enable or disable NUT-20 quote locking on this wallet's NpubCash account
-    ///
-    /// When enabled, the NpubCash server creates new mint quotes locked to the
-    /// wallet's NpubCash Nostr public key, so only this wallet (which derives
-    /// the matching secret key from its seed) can mint them. The server
-    /// rejects enabling locking when the configured mint does not support
-    /// NUT-20.
-    ///
-    /// Requires NpubCash to be enabled on this wallet first. Already-created
-    /// quotes keep their original lock state.
-    pub async fn set_npubcash_quote_locking(
-        &self,
-        lock_quotes: bool,
-    ) -> Result<NpubCashUserResponse, FfiError> {
-        let response = self.inner.set_npubcash_quote_locking(lock_quotes).await?;
-        Ok(response.into())
-    }
-
     /// Fetch this wallet's NpubCash account settings
     ///
     /// Returns the configured mint URL and whether quote locking is enabled.
@@ -1336,7 +1318,6 @@ mod tests {
 
         assert!(wallet.sync_missing_npubcash_quotes().await.is_err());
         assert!(wallet.claim_npubcash_quotes().await.is_err());
-        assert!(wallet.set_npubcash_quote_locking(true).await.is_err());
         assert!(wallet.get_npubcash_user_info().await.is_err());
     }
 }
