@@ -294,6 +294,7 @@ impl Conditions {
 /// the blinded `data` key plus the `pubkeys` and refund tags cannot occupy more
 /// than [`MAX_LOCKING_SLOTS`] entries. Plain NUT-11 and NUT-14 locks have no
 /// such limit, and verification never counts slots.
+#[cfg(feature = "wallet")]
 pub(crate) fn check_locking_slots(
     pubkeys: usize,
     refund_keys: Option<&[PublicKey]>,
