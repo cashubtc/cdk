@@ -1191,8 +1191,6 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "serde_with",
- "strum 0.27.2",
- "strum_macros 0.27.2",
  "thiserror 2.0.20",
  "tracing",
  "unicode-normalization",
@@ -1259,7 +1257,6 @@ dependencies = [
  "bip39",
  "bitcoin",
  "bitcoin-payment-instructions",
- "cbor-diag",
  "cdk-common",
  "cdk-fake-wallet",
  "cdk-http-client",
@@ -1268,24 +1265,20 @@ dependencies = [
  "cdk-prometheus",
  "cdk-signatory",
  "cdk-sqlite",
- "ciborium",
  "criterion",
  "futures",
  "getrandom 0.4.3",
  "gloo-timers",
- "jsonwebtoken",
  "lightning",
  "lightning-invoice",
  "nostr-sdk 0.44.1",
  "nwc",
  "rand 0.9.5",
- "regex",
  "ring 0.17.14",
  "rustls",
  "serde",
  "serde_json",
  "serde_urlencoded",
- "serde_with",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
@@ -1322,7 +1315,6 @@ dependencies = [
  "sha2 0.11.0",
  "tokio",
  "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -1369,7 +1361,6 @@ dependencies = [
  "qrcode",
  "serde",
  "serde_json",
- "serde_with",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1402,10 +1393,8 @@ dependencies = [
  "bip39",
  "bitcoin",
  "cashu",
- "cbor-diag",
  "cdk-http-client",
  "cdk-prometheus",
- "ciborium",
  "criterion",
  "futures",
  "getrandom 0.4.3",
@@ -1418,7 +1407,6 @@ dependencies = [
  "rand 0.9.5",
  "serde",
  "serde_json",
- "serde_with",
  "thiserror 2.0.20",
  "tokio",
  "tonic 0.14.6",
@@ -1469,11 +1457,8 @@ dependencies = [
  "cdk-sql-common",
  "cdk-sqlite",
  "cdk-supabase",
- "futures",
  "log",
  "nostr-sdk 0.44.1",
- "once_cell",
- "rand 0.9.5",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -1501,7 +1486,6 @@ name = "cdk-ffi-go"
 version = "0.18.0-rc.0"
 dependencies = [
  "cdk-ffi",
- "uniffi",
 ]
 
 [[package]]
@@ -1563,7 +1547,6 @@ version = "0.18.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "axum",
  "bip39",
  "bitcoin",
  "bitcoincore-rpc",
@@ -1593,8 +1576,6 @@ dependencies = [
  "lightning-invoice",
  "nostr-sdk 0.44.1",
  "nwc",
- "once_cell",
- "rand 0.9.5",
  "rustls",
  "serde",
  "serde_json",
@@ -1602,11 +1583,9 @@ dependencies = [
  "tokio-tungstenite 0.26.2",
  "tokio-util",
  "tower-http",
- "tower-service",
  "tracing",
  "tracing-subscriber",
  "uuid",
- "web-time",
 ]
 
 [[package]]
@@ -1631,7 +1610,6 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tower",
- "tower-http",
  "tracing",
  "web-time",
 ]
@@ -1651,7 +1629,6 @@ dependencies = [
  "prost 0.14.4",
  "rustls",
  "rustls-pemfile 2.2.0",
- "serde_json",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
@@ -1677,7 +1654,6 @@ dependencies = [
  "home",
  "prost 0.14.4",
  "rustls",
- "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
@@ -1714,9 +1690,7 @@ dependencies = [
  "cdk-sqlite",
  "clap",
  "config",
- "futures",
  "home",
- "lightning-invoice",
  "serde",
  "serde_ignored",
  "serde_json",
@@ -1734,7 +1708,6 @@ dependencies = [
 name = "cdk-npubcash"
 version = "0.18.0-rc.0"
 dependencies = [
- "async-trait",
  "base64 0.23.1",
  "cashu",
  "cdk",
@@ -1774,7 +1747,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bip39",
- "bitcoin",
  "cashu",
  "cdk-cln",
  "cdk-common",
@@ -1791,7 +1763,6 @@ dependencies = [
  "rand 0.9.5",
  "serde",
  "serde_json",
- "serde_with",
  "thiserror 2.0.20",
  "tokio",
  "tokio-stream",
@@ -1801,7 +1772,6 @@ dependencies = [
  "tonic-prost-build",
  "tracing",
  "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
@@ -1809,21 +1779,14 @@ name = "cdk-postgres"
 version = "0.18.0-rc.0"
 dependencies = [
  "async-trait",
- "bitcoin",
  "cdk-common",
  "cdk-sql-common",
  "futures-util",
- "lightning-invoice",
  "native-tls",
- "once_cell",
  "paste",
  "postgres-native-tls",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
  "tokio",
  "tokio-postgres",
- "tracing",
  "uuid",
 ]
 
@@ -1831,12 +1794,7 @@ dependencies = [
 name = "cdk-prometheus"
 version = "0.18.0-rc.0"
 dependencies = [
- "anyhow",
- "futures",
- "once_cell",
  "prometheus",
- "serde",
- "serde_json",
  "sysinfo",
  "thiserror 2.0.20",
  "tokio",
@@ -1850,7 +1808,6 @@ version = "0.18.0-rc.0"
 dependencies = [
  "async-trait",
  "cdk-common",
- "lightning-invoice",
  "paste",
  "redb",
  "serde",
@@ -1898,7 +1855,6 @@ dependencies = [
  "cdk-prometheus",
  "lightning-invoice",
  "once_cell",
- "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
@@ -1911,16 +1867,12 @@ name = "cdk-sqlite"
 version = "0.18.0-rc.0"
 dependencies = [
  "async-trait",
- "bitcoin",
  "cdk-common",
  "cdk-prometheus",
  "cdk-sql-common",
- "lightning-invoice",
  "paste",
  "rusqlite",
- "serde",
  "serde_json",
- "thiserror 2.0.20",
  "tokio",
  "tracing",
  "uuid",
@@ -1934,9 +1886,7 @@ dependencies = [
  "async-trait",
  "bitcoin",
  "cdk-common",
- "lightning-invoice",
  "mockito",
- "once_cell",
  "paste",
  "reqwest 0.13.4",
  "scrypt 0.12.0",
@@ -7625,12 +7575,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "strum"
-version = "0.27.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
-
-[[package]]
 name = "strum_macros"
 version = "0.25.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7653,18 +7597,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "strum_macros"
-version = "0.27.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
-dependencies = [
- "heck 0.5.0",
- "proc-macro2",
- "quote",
  "syn 2.0.119",
 ]
 

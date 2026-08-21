@@ -24,9 +24,6 @@ cdk-npubcash = { workspace = true, optional = true }
 cdk-nwc = { workspace = true, optional = true }
 nostr-sdk = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
-futures = { workspace = true }
-once_cell = { workspace = true }
-rand = { workspace = true }
 cdk-sql-common = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }

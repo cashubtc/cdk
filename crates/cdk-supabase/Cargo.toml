@@ -23,18 +23,17 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-lightning-invoice.workspace = true
 uuid.workspace = true
 reqwest = { workspace = true }
 url.workspace = true
-once_cell.workspace = true
 urlencoding = "2.1"
 aes-gcm = "0.11"
 scrypt = { version = "0.12.0", default-features = false }
-paste.workspace = true
 
 [dev-dependencies]
 cdk-common = { workspace = true, features = ["test"] }
+# Needed at macro-expansion sites of cdk-common's `*_db_test!` macros
+paste.workspace = true
 mockito = { version = "1", default-features = false }
 
 [lints]

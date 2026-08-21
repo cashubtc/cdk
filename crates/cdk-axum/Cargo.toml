@@ -32,7 +32,6 @@ moka = { version = "0.12.10", features = ["future"] }
 serde_json.workspace = true
 paste.workspace = true
 serde.workspace = true
-uuid.workspace = true
 sha2 = "0.11"
 maud = { workspace = true, optional = true }
 redis = { version = "0.31.0", default-features = false, features = [
@@ -40,9 +39,6 @@ redis = { version = "0.31.0", default-features = false, features = [
     "cluster-async",
     "connection-manager",
 ], optional = true }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 cdk-fake-wallet = { workspace = true }

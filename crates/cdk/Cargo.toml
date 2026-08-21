@@ -35,24 +35,19 @@ prometheus = ["dep:cdk-prometheus"]
 [dependencies]
 arc-swap.workspace = true
 cdk-common = { workspace = true, default-features = false }
-cbor-diag.workspace = true
 async-trait.workspace = true
 anyhow.workspace = true
 bitcoin.workspace = true
-ciborium.workspace = true
 lightning.workspace = true
 lightning-invoice.workspace = true
-regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_with.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 
 futures = { workspace = true, optional = true, features = ["alloc"] }
 url.workspace = true
 uuid.workspace = true
-jsonwebtoken.workspace = true
 nostr-sdk = { workspace = true, optional = true }
 cdk-npubcash = { workspace = true, default-features = false, optional = true }
 cdk-nwc = { workspace = true, optional = true }

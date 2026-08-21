@@ -39,7 +39,6 @@ tracing-subscriber.workspace = true
 home.workspace = true
 nostr-sdk = { workspace = true }
 url.workspace = true
-serde_with.workspace = true
 lightning.workspace = true
 
 [lints]

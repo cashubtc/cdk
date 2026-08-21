@@ -23,12 +23,12 @@ thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-lightning-invoice.workspace = true
 uuid.workspace = true
-paste.workspace = true
 
 [dev-dependencies]
 cdk-common = { workspace = true, features = ["test"] }
+# Needed at macro-expansion sites of cdk-common's `*_db_test!` macros
+paste.workspace = true
 tempfile = "3.17.1"
 tokio.workspace = true
 

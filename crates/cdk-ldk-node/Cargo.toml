@@ -26,7 +26,6 @@ serde_json.workspace = true
 rand.workspace = true
 maud = "0.27.0"
 tower = { workspace = true, features = ["util"] }
-tower-http.workspace = true
 rust-embed = "8.5.0"
 serde_urlencoded = "0.7"
 bip39.workspace = true

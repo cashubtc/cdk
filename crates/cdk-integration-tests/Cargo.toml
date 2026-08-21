@@ -15,8 +15,6 @@ bdk = ["cdk-mintd/bdk"]
 
 [dependencies]
 async-trait.workspace = true
-axum.workspace = true
-rand.workspace = true
 bip39 = { workspace = true, features = ["rand"] }
 anyhow.workspace = true
 cashu = { workspace = true, features = ["mint", "wallet"] }
@@ -36,7 +34,6 @@ cdk-mintd = { workspace = true, features = ["cln", "lnd", "fakewallet", "grpc-pr
 futures = { workspace = true, default-features = false, features = [
     "executor",
 ] }
-once_cell.workspace = true
 uuid.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -49,11 +46,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tokio-tungstenite.workspace = true
 tower-http = { workspace = true, features = ["cors"] }
-tower-service = "0.3.3"
 tokio-util.workspace = true
 bitcoin = "0.32.0"
 clap = { workspace = true, features = ["derive"] }
-web-time.workspace = true
 lightning.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

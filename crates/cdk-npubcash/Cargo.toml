@@ -14,7 +14,6 @@ default = ["cdk-http-client/bitreq"]
 
 [dependencies]
 # Use workspace dependencies
-async-trait = { workspace = true }
 cashu = { workspace = true }
 cdk-common = { workspace = true, default-features = false, features = ["wallet", "http"] }
 cdk-http-client = { workspace = true, default-features = false }
