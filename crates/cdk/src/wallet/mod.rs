@@ -471,7 +471,11 @@ impl Wallet {
             .await?
             .fee();
 
-        let fee = (input_fee_ppk * count).div_ceil(1000);
+        let fee = input_fee_ppk
+            .checked_mul(count)
+            .and_then(|product| product.checked_add(999))
+            .map(|sum| sum / 1000)
+            .ok_or(Error::AmountOverflow)?;
 
         Ok(Amount::from(fee))
     }
@@ -1610,5 +1614,24 @@ mod tests {
         assert!(wallet.auth_wallet.read().await.is_some());
         assert_eq!(*keysets_calls.lock().expect("lock"), 1);
         assert_eq!(*keyset_calls.lock().expect("lock"), 1);
+    }
+
+    #[tokio::test]
+    async fn get_keyset_count_fee_rejects_amount_overflow() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_keyset, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let mut keyset = test_keyset();
+        keyset.input_fee_ppk = u64::MAX / 2;
+        let keyset_id = keyset.id;
+        mock_client.set_active_keyset(keyset);
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let result = wallet.get_keyset_count_fee(&keyset_id, 3).await;
+
+        assert!(matches!(result, Err(Error::AmountOverflow)));
     }
 }
