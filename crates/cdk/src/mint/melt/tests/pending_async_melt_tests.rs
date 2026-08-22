@@ -23,12 +23,17 @@ use crate::test_helpers::mint::mint_test_proofs;
 use crate::types::{FeeReserve, QuoteTTL};
 use crate::Error;
 
+const POSTGRES_NONBLOCKING_TIMEOUT: Duration = Duration::from_secs(5);
+const POSTGRES_COMPLETION_TIMEOUT: Duration = Duration::from_secs(30);
+
 struct NoEventPendingBackend {
     inner: FakeWallet,
     status_checks: AtomicUsize,
     settle_after_checks: usize,
+    dispatch_status: MeltQuoteState,
     final_status: Option<MeltQuoteState>,
     strip_quote_lookup_id: bool,
+    amount_mismatch_dispatch_error: bool,
     dispatch_gate: Option<Arc<DispatchGate>>,
 }
 
@@ -36,6 +41,7 @@ struct NoEventPendingBackend {
 struct DispatchGate {
     make_payment_started: Notify,
     allow_dispatch: Notify,
+    make_payment_entered: AtomicBool,
     dispatched: AtomicBool,
 }
 
@@ -66,8 +72,10 @@ impl NoEventPendingBackend {
             ),
             status_checks: AtomicUsize::new(0),
             settle_after_checks,
+            dispatch_status: MeltQuoteState::Pending,
             final_status,
             strip_quote_lookup_id: false,
+            amount_mismatch_dispatch_error: false,
             dispatch_gate: None,
         }
     }
@@ -81,6 +89,16 @@ impl NoEventPendingBackend {
 
     fn with_dispatch_gate(mut self, dispatch_gate: Arc<DispatchGate>) -> Self {
         self.dispatch_gate = Some(dispatch_gate);
+        self
+    }
+
+    fn with_dispatch_status(mut self, dispatch_status: MeltQuoteState) -> Self {
+        self.dispatch_status = dispatch_status;
+        self
+    }
+
+    fn with_amount_mismatch_dispatch_error(mut self) -> Self {
+        self.amount_mismatch_dispatch_error = true;
         self
     }
 }
@@ -118,16 +136,26 @@ impl MintPayment for NoEventPendingBackend {
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
         if let Some(dispatch_gate) = &self.dispatch_gate {
+            dispatch_gate
+                .make_payment_entered
+                .store(true, Ordering::SeqCst);
             dispatch_gate.make_payment_started.notify_one();
             dispatch_gate.allow_dispatch.notified().await;
+        }
+
+        if self.amount_mismatch_dispatch_error {
+            return Err(payment::Error::AmountMismatch);
         }
 
         let mut response = self.inner.make_payment(unit, options).await?;
         if let Some(dispatch_gate) = &self.dispatch_gate {
             dispatch_gate.dispatched.store(true, Ordering::SeqCst);
         }
-        response.status = MeltQuoteState::Pending;
-        response.payment_proof = None;
+        response.status = self.dispatch_status;
+        if self.dispatch_status != MeltQuoteState::Paid {
+            response.payment_proof = None;
+            response.total_spent = Amount::new(0, CurrencyUnit::Sat);
+        }
         Ok(response)
     }
 
@@ -201,6 +229,57 @@ async fn create_pending_test_mint(
     backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync>,
 ) -> Result<Mint, Error> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
+    build_pending_test_mint(db, backend).await
+}
+
+async fn create_postgres_pending_test_mint(
+    backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync>,
+) -> Option<Mint> {
+    let postgres_required = std::env::var_os("CDK_REQUIRE_POSTGRES_TESTS").is_some();
+    let db_url =
+        match std::env::var("CDK_MINTD_DATABASE_URL").or_else(|_| std::env::var("PG_DB_URL")) {
+            Ok(db_url) => db_url,
+            Err(err) if postgres_required => {
+                panic!("PostgreSQL melt-dispatch tests require a database URL: {err}")
+            }
+            Err(_) => return None,
+        };
+    let schema = format!("test_melt_dispatch_{}", uuid::Uuid::new_v4());
+    let db_config = format!("{db_url} schema={schema}");
+    let db = match cdk_postgres::MintPgDatabase::new(db_config.as_str()).await {
+        Ok(db) => db,
+        Err(err) if postgres_required => {
+            panic!("Could not create required PostgreSQL melt-dispatch database: {err}")
+        }
+        Err(err) => {
+            tracing::warn!("Skipping PostgreSQL melt-dispatch test: {}", err);
+            return None;
+        }
+    };
+
+    match build_pending_test_mint(Arc::new(db), backend).await {
+        Ok(mint) => Some(mint),
+        Err(err) if postgres_required => {
+            panic!("Could not build required PostgreSQL melt-dispatch mint: {err}")
+        }
+        Err(err) => {
+            tracing::warn!("Skipping PostgreSQL melt-dispatch test: {}", err);
+            None
+        }
+    }
+}
+
+async fn build_pending_test_mint<DB>(
+    db: Arc<DB>,
+    backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync>,
+) -> Result<Mint, Error>
+where
+    DB: cdk_common::database::MintDatabase<cdk_common::database::Error>
+        + cdk_common::database::MintKeysDatabase<Err = cdk_common::database::Error>
+        + Send
+        + Sync
+        + 'static,
+{
     let mut mint_builder = MintBuilder::new(db.clone());
 
     mint_builder
@@ -265,14 +344,23 @@ fn create_test_melt_request(
     cdk_common::nuts::MeltRequest::new(quote.id.clone(), proofs.clone(), None)
 }
 
+async fn finish_pending_melt_task(pending: crate::mint::melt::PendingMelt) {
+    match pending.await {
+        Ok(_) | Err(Error::PendingMeltTimeout { .. }) => {}
+        Err(err) => panic!("pending melt task failed unexpectedly: {err}"),
+    }
+}
+
 #[tokio::test]
-async fn quote_check_waits_for_live_dispatch_before_trusting_unpaid() {
+async fn second_replica_quote_check_keeps_live_dispatch_pending() {
     let dispatch_gate = Arc::new(DispatchGate::default());
     let backend = Arc::new(
         NoEventPendingBackend::new(2, Some(MeltQuoteState::Paid))
             .with_dispatch_gate(dispatch_gate.clone()),
     );
-    let mint = create_pending_test_mint(backend.clone()).await.unwrap();
+    let Some(mint) = create_postgres_pending_test_mint(backend.clone()).await else {
+        return;
+    };
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
     let melt_request = create_test_melt_request(&proofs, &quote);
@@ -280,24 +368,482 @@ async fn quote_check_waits_for_live_dispatch_before_trusting_unpaid() {
     let pending = mint.melt(&melt_request).await.unwrap();
     dispatch_gate.wait_for_make_payment().await;
 
-    let check_mint = mint.clone();
+    // Model a second mint process: it shares the database and backend, but not
+    // the first process's in-memory quote lock table.
+    let mut check_mint = mint.clone();
+    check_mint.melt_quote_locks = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let check_quote_id = quote.id.clone();
-    let mut check = tokio::spawn(async move { check_mint.check_melt_quote(&check_quote_id).await });
+    let check = tokio::spawn(async move { check_mint.check_melt_quote(&check_quote_id).await });
+    let checked = tokio::time::timeout(POSTGRES_NONBLOCKING_TIMEOUT, check)
+        .await
+        .expect("contended quote check must not wait for dispatch")
+        .unwrap()
+        .unwrap();
+    assert_eq!(checked.state(), MeltQuoteState::Pending);
 
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), &mut check)
-            .await
-            .is_err(),
-        "quote check must wait while make_payment can still dispatch"
-    );
+    let input_ys = proofs.ys().unwrap();
+    let proof_states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(proof_states
+        .iter()
+        .all(|state| *state == Some(cdk_common::State::Pending)));
 
     dispatch_gate.release_dispatch();
 
-    let response = pending.await.unwrap();
-    assert_eq!(response.state(), MeltQuoteState::Paid);
+    tokio::time::timeout(POSTGRES_COMPLETION_TIMEOUT, async {
+        while !dispatch_gate.dispatched.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("payment dispatch should complete");
 
-    let checked = check.await.unwrap().unwrap();
+    // The public status check is throttled per quote, so poll past the
+    // throttle window until the settled state is visible.
+    let checked = tokio::time::timeout(POSTGRES_COMPLETION_TIMEOUT, async {
+        loop {
+            let checked = mint.check_melt_quote(&quote.id).await.unwrap();
+            if checked.state() == MeltQuoteState::Paid {
+                break checked;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("quote should reach Paid");
     assert_eq!(checked.state(), MeltQuoteState::Paid);
+    finish_pending_melt_task(pending).await;
+    mint.stop().await.expect("mint should stop cleanly");
+}
+
+#[tokio::test]
+async fn second_replica_reconciliation_keeps_payment_marker_pending() {
+    let dispatch_gate = Arc::new(DispatchGate::default());
+    let backend = Arc::new(
+        NoEventPendingBackend::new(1, Some(MeltQuoteState::Paid))
+            .with_dispatch_gate(dispatch_gate.clone()),
+    );
+    let Some(mint) = create_postgres_pending_test_mint(backend).await else {
+        return;
+    };
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+    let saga = crate::mint::melt::melt_saga::MeltSaga::new(
+        Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+    let (setup, decision) = setup
+        .attempt_internal_settlement(&melt_request)
+        .await
+        .unwrap();
+
+    // Model the write-ahead marker committed immediately before dispatch. A
+    // replica that reconciles this ambiguous state must fail closed and leave
+    // the dispatcher able to continue under the shared advisory lock.
+    let operation_id = mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap()
+        .expect("melt saga")
+        .operation_id;
+    let mut marker_tx = mint.localstore().begin_transaction().await.unwrap();
+    let mut saga = marker_tx
+        .get_saga_for_update(&operation_id)
+        .await
+        .unwrap()
+        .expect("melt saga");
+    marker_tx
+        .update_acquired_saga(
+            &mut saga,
+            cdk_common::mint::SagaStateEnum::Melt(
+                cdk_common::mint::MeltSagaState::PaymentAttempted,
+            ),
+        )
+        .await
+        .unwrap();
+    marker_tx.commit().await.unwrap();
+
+    let mut check_mint = mint.clone();
+    check_mint.melt_quote_locks = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let check_quote_id = quote.id.clone();
+    let checked = check_mint.check_melt_quote(&check_quote_id).await.unwrap();
+    assert_eq!(checked.state(), MeltQuoteState::Pending);
+
+    let dispatch = tokio::spawn(async move { setup.make_payment(decision).await });
+    dispatch_gate.wait_for_make_payment().await;
+    assert!(
+        dispatch_gate.make_payment_entered.load(Ordering::SeqCst),
+        "dispatcher should retain ownership of the ambiguous payment attempt"
+    );
+    dispatch_gate.release_dispatch();
+
+    let outcome = tokio::time::timeout(Duration::from_secs(5), dispatch)
+        .await
+        .expect("payment dispatch should complete")
+        .expect("payment task should not panic")
+        .expect("payment dispatch should succeed");
+    assert!(matches!(
+        outcome,
+        crate::mint::melt::melt_saga::PaymentOutcome::Confirmed(_)
+    ));
+    mint.stop().await.expect("mint should stop cleanly");
+}
+
+#[tokio::test]
+async fn second_replica_cannot_advance_saga_before_terminal_failure_rollback() {
+    let dispatch_gate = Arc::new(DispatchGate::default());
+    let backend = Arc::new(
+        NoEventPendingBackend::new(1, Some(MeltQuoteState::Failed))
+            .with_dispatch_status(MeltQuoteState::Failed)
+            .with_dispatch_gate(dispatch_gate.clone()),
+    );
+    let Some(mint) = create_postgres_pending_test_mint(backend).await else {
+        return;
+    };
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+    let saga = crate::mint::melt::melt_saga::MeltSaga::new(
+        Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+    let operation_id = mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap()
+        .expect("melt saga")
+        .operation_id;
+    let (setup, decision) = setup
+        .attempt_internal_settlement(&melt_request)
+        .await
+        .unwrap();
+
+    let payment = tokio::spawn(async move { setup.make_payment(decision).await });
+    dispatch_gate.wait_for_make_payment().await;
+
+    // Queue a second replica behind the live dispatch lock. Before this fix it
+    // could acquire the lock after the terminal backend response but before
+    // compensation, advance the saga to PaymentPending, and then have that
+    // durable state removed by the stale compensation.
+    let observer_started = Arc::new(Notify::new());
+    let observer = tokio::spawn({
+        let db = mint.localstore();
+        let quote_id = quote.id.clone();
+        let observer_started = observer_started.clone();
+        async move {
+            let mut tx = db
+                .begin_dispatch_transaction()
+                .await
+                .expect("observer transaction");
+            observer_started.notify_one();
+            assert!(tx
+                .lock_quotes(std::slice::from_ref(&quote_id))
+                .await
+                .expect("observer quote lock"));
+
+            match tx
+                .get_saga_for_update(&operation_id)
+                .await
+                .expect("observer saga read")
+            {
+                Some(mut saga) => {
+                    tx.update_acquired_saga(
+                        &mut saga,
+                        cdk_common::mint::SagaStateEnum::Melt(
+                            cdk_common::mint::MeltSagaState::PaymentPending,
+                        ),
+                    )
+                    .await
+                    .expect("observer pending handoff");
+                    tx.commit().await.expect("observer commit");
+                    true
+                }
+                None => {
+                    tx.rollback().await.expect("observer rollback");
+                    false
+                }
+            }
+        }
+    });
+    observer_started.notified().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    dispatch_gate.release_dispatch();
+
+    let observer_saw_saga = observer.await.unwrap();
+    let payment_result = payment.await.unwrap();
+    assert!(matches!(payment_result, Err(Error::PaymentFailed)));
+    assert!(
+        !observer_saw_saga,
+        "terminal failure must remove the saga before releasing the dispatch lock"
+    );
+
+    let states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(states.iter().all(Option::is_none));
+    assert!(mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        mint.localstore()
+            .get_melt_quote(&quote.id)
+            .await
+            .unwrap()
+            .expect("quote exists")
+            .state,
+        MeltQuoteState::Unpaid
+    );
+    mint.stop().await.expect("mint should stop cleanly");
+}
+
+#[tokio::test]
+async fn second_replica_paid_event_preempts_terminal_failure_rollback() {
+    let dispatch_gate = Arc::new(DispatchGate::default());
+    let backend = Arc::new(
+        NoEventPendingBackend::new(1, Some(MeltQuoteState::Failed))
+            .with_dispatch_status(MeltQuoteState::Failed)
+            .with_dispatch_gate(dispatch_gate.clone()),
+    );
+    let Some(mint) = create_postgres_pending_test_mint(backend).await else {
+        return;
+    };
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+    let saga = crate::mint::melt::melt_saga::MeltSaga::new(
+        Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+    let (setup, decision) = setup
+        .attempt_internal_settlement(&melt_request)
+        .await
+        .unwrap();
+
+    let payment = tokio::spawn(async move { setup.make_payment(decision).await });
+    dispatch_gate.wait_for_make_payment().await;
+
+    // Model an independent replica receiving a trusted positive event while
+    // the dispatching replica is still waiting for its backend response.
+    let mut event_mint = mint.clone();
+    event_mint.melt_quote_locks = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let event_mint = Arc::new(event_mint);
+    let payment_response = MakePaymentResponse {
+        payment_lookup_id: quote
+            .request_lookup_id
+            .clone()
+            .expect("bolt11 quote should have a payment lookup id"),
+        payment_proof: Some("trusted_event_preimage".to_string()),
+        status: MeltQuoteState::Paid,
+        total_spent: quote.amount(),
+    };
+    tokio::time::timeout(
+        POSTGRES_NONBLOCKING_TIMEOUT,
+        Mint::handle_successful_melt_payment_event(
+            &event_mint,
+            &event_mint.localstore(),
+            &event_mint.pubsub_manager(),
+            &quote.id,
+            payment_response,
+        ),
+    )
+    .await
+    .expect("trusted paid event must not wait for the live dispatch call")
+    .expect("trusted paid event should finalize the melt");
+
+    assert_eq!(
+        mint.localstore()
+            .get_melt_quote(&quote.id)
+            .await
+            .unwrap()
+            .expect("quote exists")
+            .state,
+        MeltQuoteState::Paid
+    );
+    let states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(
+        states
+            .iter()
+            .all(|state| *state == Some(cdk_common::State::Spent)),
+        "trusted paid event must spend the reserved proofs"
+    );
+
+    // The stale terminal failure arrives after the paid handoff. It must see
+    // that the saga was advanced/completed and decline to compensate.
+    dispatch_gate.release_dispatch();
+    let payment_result = payment.await.unwrap();
+    assert!(matches!(payment_result, Err(Error::UnknownPaymentState)));
+    assert_eq!(
+        mint.localstore()
+            .get_melt_quote(&quote.id)
+            .await
+            .unwrap()
+            .expect("quote exists")
+            .state,
+        MeltQuoteState::Paid
+    );
+    let states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(states
+        .iter()
+        .all(|state| *state == Some(cdk_common::State::Spent)));
+    assert!(mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap()
+        .is_none());
+    mint.stop().await.expect("mint should stop cleanly");
+}
+
+#[tokio::test]
+async fn second_replica_recovery_keeps_live_dispatch_pending() {
+    let dispatch_gate = Arc::new(DispatchGate::default());
+    let backend = Arc::new(
+        NoEventPendingBackend::new(2, Some(MeltQuoteState::Paid))
+            .with_dispatch_gate(dispatch_gate.clone()),
+    );
+    let Some(mint) = create_postgres_pending_test_mint(backend).await else {
+        return;
+    };
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    let pending = mint.melt(&melt_request).await.unwrap();
+    dispatch_gate.wait_for_make_payment().await;
+
+    let mut recovery_mint = mint.clone();
+    recovery_mint.melt_quote_locks = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let recovery =
+        tokio::spawn(async move { recovery_mint.recover_from_incomplete_melt_sagas().await });
+    tokio::time::timeout(POSTGRES_NONBLOCKING_TIMEOUT, recovery)
+        .await
+        .expect("contended recovery must not wait for dispatch")
+        .unwrap()
+        .unwrap();
+
+    let proof_states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(proof_states
+        .iter()
+        .all(|state| *state == Some(cdk_common::State::Pending)));
+    assert!(mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap()
+        .is_some());
+
+    dispatch_gate.release_dispatch();
+    tokio::time::timeout(POSTGRES_COMPLETION_TIMEOUT, async {
+        while !dispatch_gate.dispatched.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("payment dispatch should complete");
+    let checked = mint.check_melt_quote(&quote.id).await.unwrap();
+    assert_eq!(checked.state(), MeltQuoteState::Paid);
+    finish_pending_melt_task(pending).await;
+    mint.stop().await.expect("mint should stop cleanly");
+}
+
+#[tokio::test]
+async fn pending_dispatch_is_sticky_across_stale_unpaid_verification() {
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
+        Arc::new(NoEventPendingBackend::new(1, Some(MeltQuoteState::Unpaid)));
+    let mint = create_pending_test_mint(backend).await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    let pending = mint.melt(&melt_request).await.unwrap();
+    assert!(matches!(
+        pending.await,
+        Err(Error::PendingMeltTimeout { .. })
+    ));
+
+    let stored_quote = mint
+        .localstore()
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
+    let proof_states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(proof_states
+        .iter()
+        .all(|state| *state == Some(cdk_common::State::Pending)));
+    let saga = mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap()
+        .expect("pending saga should remain");
+    assert_eq!(
+        saga.state,
+        cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentPending)
+    );
 }
 
 #[tokio::test]
@@ -327,7 +873,7 @@ async fn pending_melt_completes_via_explicit_status_check_without_notification()
 }
 
 #[tokio::test]
-async fn pending_melt_rolls_back_via_explicit_status_check_without_notification() {
+async fn pending_melt_ignores_failed_status_check_without_notification() {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
         Arc::new(NoEventPendingBackend::new(2, Some(MeltQuoteState::Failed)));
     let mint = create_pending_test_mint(backend).await.unwrap();
@@ -338,11 +884,8 @@ async fn pending_melt_rolls_back_via_explicit_status_check_without_notification(
 
     let pending = mint.melt(&melt_request).await.unwrap();
     let checked = mint.check_melt_quote(&quote.id).await.unwrap();
-    assert_eq!(checked.state(), MeltQuoteState::Unpaid);
-
-    let response = pending.await.unwrap();
-
-    assert_eq!(response.state(), MeltQuoteState::Unpaid);
+    assert_eq!(checked.state(), MeltQuoteState::Pending);
+    drop(pending);
 
     let stored_quote = mint
         .localstore()
@@ -350,14 +893,128 @@ async fn pending_melt_rolls_back_via_explicit_status_check_without_notification(
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(stored_quote.state, MeltQuoteState::Unpaid);
+    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
 
     let proof_states = mint
         .localstore()
         .get_proofs_states(&input_ys)
         .await
         .unwrap();
-    assert!(proof_states.iter().all(|state| state.is_none()));
+    assert!(proof_states
+        .iter()
+        .all(|state| *state == Some(cdk_common::State::Pending)));
+
+    let saga = mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap()
+        .expect("ambiguous dispatch saga should remain");
+    assert_eq!(
+        saga.state,
+        cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentPending)
+    );
+}
+
+#[tokio::test]
+async fn payment_error_that_looks_local_still_stays_pending() {
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> = Arc::new(
+        NoEventPendingBackend::new(usize::MAX, None).with_amount_mismatch_dispatch_error(),
+    );
+    let mint = create_pending_test_mint(backend).await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    // Even an error that resembles local validation can be returned after a
+    // backend crossed its dispatch boundary. A subsequent Unpaid read does
+    // not prove that no payment is in flight.
+    let pending = mint.melt(&melt_request).await.unwrap();
+    assert_eq!(pending.pending_response().state(), MeltQuoteState::Pending);
+    let pending_saga = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let saga = mint
+                .localstore()
+                .get_melt_saga_by_quote_id(&quote.id)
+                .await
+                .unwrap()
+                .expect("ambiguous payment should remain recoverable");
+            if saga.state
+                == cdk_common::mint::SagaStateEnum::Melt(
+                    cdk_common::mint::MeltSagaState::PaymentPending,
+                )
+            {
+                break saga;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("ambiguous payment should reach its durable pending handoff");
+    drop(pending);
+
+    assert_eq!(
+        mint.localstore()
+            .get_melt_quote(&quote.id)
+            .await
+            .unwrap()
+            .expect("quote exists")
+            .state,
+        MeltQuoteState::Pending
+    );
+    let states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(states
+        .iter()
+        .all(|state| *state == Some(cdk_common::State::Pending)));
+    assert_eq!(
+        pending_saga.state,
+        cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentPending)
+    );
+}
+
+#[tokio::test]
+async fn authoritative_failed_response_survives_unknown_recheck() {
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> = Arc::new(
+        NoEventPendingBackend::new(1, Some(MeltQuoteState::Unknown))
+            .with_dispatch_status(MeltQuoteState::Failed),
+    );
+    let mint = create_pending_test_mint(backend).await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    let pending = mint.melt(&melt_request).await.unwrap();
+    let err = pending
+        .await
+        .expect_err("authoritative failed response should compensate the melt");
+    assert!(matches!(err, Error::PaymentFailed));
+    assert_eq!(
+        mint.localstore()
+            .get_melt_quote(&quote.id)
+            .await
+            .unwrap()
+            .expect("quote exists")
+            .state,
+        MeltQuoteState::Unpaid
+    );
+    let states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(states.iter().all(Option::is_none));
+    assert!(mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -645,10 +1302,11 @@ async fn internal_settlement_without_lookup_id_finalizes_on_demand() {
     );
 }
 
-/// Startup recovery derives a stable backend identifier when an older quote
-/// has no persisted lookup id and compensates a definitively unpaid attempt.
+/// After a crashed dispatcher releases its advisory lock, startup recovery must
+/// keep the write-ahead attempt pending because it cannot prove whether the
+/// backend call happened before the crash.
 #[tokio::test]
-async fn payment_attempted_without_lookup_id_recovers_unpaid_at_startup() {
+async fn payment_attempt_without_lookup_id_stays_pending_at_startup() {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> = Arc::new(
         NoEventPendingBackend::new(1, Some(MeltQuoteState::Unpaid)).with_stripped_quote_lookup_id(),
     );
@@ -688,8 +1346,8 @@ async fn payment_attempted_without_lookup_id_recovers_unpaid_at_startup() {
         .expect("saga should exist")
         .operation_id;
 
-    // Simulate a crash after the write-ahead PaymentAttempted marker but
-    // before make_payment runs or a lookup id is persisted.
+    // Simulate a crash after the write-ahead PaymentAttempted marker. The
+    // durable state cannot prove whether make_payment ran before the crash.
     {
         let mut tx = mint.localstore().begin_transaction().await.unwrap();
         let mut saga = tx
@@ -718,30 +1376,36 @@ async fn payment_attempted_without_lookup_id_recovers_unpaid_at_startup() {
         .iter()
         .all(|s| *s == Some(cdk_common::State::Pending)));
 
-    // Simulate the crash: run startup recovery.
+    // The crashed process no longer holds the advisory lock.
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("recovery should succeed");
 
-    // The backend was checked with the identifier derived from the quote and
-    // definitively reported Unpaid, so recovery returns the reserved proofs.
+    // A public backend poll cannot resolve the ambiguous dispatch, even after
+    // the crashed process releases its advisory lock.
     let states = mint
         .localstore()
         .get_proofs_states(&input_ys)
         .await
         .unwrap();
-    assert!(states.iter().all(Option::is_none));
+    assert!(states
+        .iter()
+        .all(|state| *state == Some(cdk_common::State::Pending)));
     let stored_quote = mint
         .localstore()
         .get_melt_quote(&quote.id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(stored_quote.state, MeltQuoteState::Unpaid);
-    assert!(mint
+    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
+    let saga = mint
         .localstore()
         .get_melt_saga_by_quote_id(&quote.id)
         .await
         .unwrap()
-        .is_none());
+        .expect("ambiguous dispatch saga should remain");
+    assert_eq!(
+        saga.state,
+        cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentAttempted)
+    );
 }

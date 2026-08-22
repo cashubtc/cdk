@@ -144,10 +144,12 @@ async fn test_fake_melt_payment_fail() {
         .len();
     assert!(pending_before_failed > 0);
 
+    // Model an authoritative backend failure response. A dispatch error remains
+    // ambiguous even if an immediate follow-up check reports Failed.
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Failed,
         check_payment_state: MeltQuoteState::Failed,
-        pay_err: true,
+        pay_err: false,
         check_err: false,
     };
 
@@ -159,13 +161,14 @@ async fn test_fake_melt_payment_fail() {
         .unwrap();
 
     // A confirmed failure should return an error and release its proofs.
-    let melt = async {
+    let melt = tokio::time::timeout(Duration::from_secs(15), async {
         let prepared = wallet
             .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
             .await?;
         prepared.confirm().await
-    }
-    .await;
+    })
+    .await
+    .expect("authoritative failure should not remain pending");
     assert!(melt.is_err());
 
     let pending_after_failed = wallet
@@ -1849,11 +1852,13 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
 
     assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(100));
 
-    // Create a melt quote that will fail
+    // Model an authoritative backend failure response. An error from the
+    // dispatch call would be ambiguous even if an immediate status check
+    // reported Unpaid.
     let fake_description = FakeInvoiceDescription {
-        pay_invoice_state: MeltQuoteState::Unknown,
-        check_payment_state: MeltQuoteState::Unpaid,
-        pay_err: true,
+        pay_invoice_state: MeltQuoteState::Failed,
+        check_payment_state: MeltQuoteState::Failed,
+        pay_err: false,
         check_err: false,
     };
 
@@ -1864,13 +1869,14 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
         .unwrap();
 
     // Attempt to melt - this should fail but trigger proof recovery
-    let melt_result = async {
+    let melt_result = tokio::time::timeout(Duration::from_secs(15), async {
         let prepared = wallet
             .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
             .await?;
         prepared.confirm().await
-    }
-    .await;
+    })
+    .await
+    .expect("authoritative failure should not remain pending");
     assert!(melt_result.is_err(), "Melt should have failed");
 
     // Verify wallet still has balance (proofs recovered)

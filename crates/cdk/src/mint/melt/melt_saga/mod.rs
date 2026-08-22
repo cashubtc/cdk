@@ -1,7 +1,8 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use cdk_common::database::DynMintDatabase;
+use cdk_common::database::mint::Acquired;
+use cdk_common::database::{DynMintDatabase, DynMintTransaction};
 use cdk_common::mint::{MeltFinalizationData, MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
@@ -444,12 +445,14 @@ impl MeltSaga<SetupComplete> {
     /// # What This Does
     ///
     /// Within a single database transaction:
-    /// 1. Checks if payment request matches a mint quote on this mint
-    /// 2. If not a match or different unit: returns (self, RequiresExternalPayment)
-    /// 3. If match found: validates quote state and amount
-    /// 4. Increments the mint quote's paid amount
-    /// 5. Publishes mint quote payment notification
-    /// 6. Returns (self, Internal{amount})
+    /// 1. Locks the melt quote row and verifies it is still `Pending`
+    /// 2. Checks if payment request matches a mint quote on this mint
+    /// 3. If not a match or different unit: returns (self, RequiresExternalPayment)
+    /// 4. If match found: validates quote state and amount
+    /// 5. Increments the mint quote's paid amount
+    /// 6. Marks the melt quote `Paid` in the same transaction
+    /// 7. Publishes mint quote payment notification
+    /// 8. Returns (self, Internal{amount})
     ///
     /// # Compensation
     ///
@@ -467,6 +470,8 @@ impl MeltSaga<SetupComplete> {
     ///
     /// - `RequestAlreadyPaid`: Mint quote already settled
     /// - `InsufficientFunds`: Not enough input proofs for mint quote amount
+    /// - `UnpaidQuote`: Melt quote is no longer pending (rolled back or already settled)
+    /// - `UnknownQuote`: Melt quote not found
     /// - `Internal`: Database error during settlement
     #[instrument(skip_all)]
     pub async fn attempt_internal_settlement(
@@ -474,6 +479,31 @@ impl MeltSaga<SetupComplete> {
         melt_request: &MeltRequest<QuoteId>,
     ) -> Result<(Self, SettlementDecision), Error> {
         let mut tx = self.db.begin_transaction().await?;
+
+        // Coordinate the internal-settlement commit with cross-replica status
+        // reconciliation for this melt quote.
+        tx.lock_quotes(std::slice::from_ref(&self.state_data.quote.id))
+            .await?;
+
+        // Re-read the melt quote state under a row lock in this transaction.
+        let mut melt_quote = match tx.get_melt_quote(&self.state_data.quote.id).await? {
+            Some(quote) if quote.state == MeltQuoteState::Pending => quote,
+            Some(quote) => {
+                tracing::warn!(
+                    "Melt quote {} is {}, not Pending; aborting internal settlement",
+                    quote.id,
+                    quote.state
+                );
+                tx.rollback().await?;
+                self.compensate_all().await?;
+                return Err(Error::UnpaidQuote);
+            }
+            None => {
+                tx.rollback().await?;
+                self.compensate_all().await?;
+                return Err(Error::UnknownQuote);
+            }
+        };
 
         let mut mint_quote = match tx
             .get_mint_quote_by_request(&self.state_data.quote.request.to_string())
@@ -546,6 +576,23 @@ impl MeltSaga<SetupComplete> {
 
         mint_quote.add_payment(amount.clone(), self.state_data.quote.id.to_string(), None)?;
         tx.update_mint_quote(&mut mint_quote).await?;
+
+        // Mark the melt quote Paid in the same transaction as the mint quote
+        // credit.
+        tx.update_melt_quote_state(&mut melt_quote, MeltQuoteState::Paid, None)
+            .await?;
+
+        // Internally-settled melts never reach a payment backend, so persist
+        // the synthetic lookup id the settlement response will use.
+        if melt_quote.request_lookup_id.is_none() {
+            tx.update_melt_quote_request_lookup_id(
+                &mut melt_quote,
+                &cdk_common::payment::PaymentIdentifier::CustomId(
+                    self.state_data.quote.id.to_string(),
+                ),
+            )
+            .await?;
+        }
 
         tx.commit().await?;
         self.pubsub
@@ -624,8 +671,6 @@ impl MeltSaga<SetupComplete> {
                     }
                     MeltQuoteState::Unknown => {
                         tracing::warn!("Payment for quote {} unknown.", self.state_data.quote.id);
-                        self.persist_pending_payment_lookup_id(&response.payment_lookup_id)
-                            .await;
                         return Ok(PaymentOutcome::Pending {
                             #[cfg(feature = "prometheus")]
                             metrics: self.metrics,
@@ -636,8 +681,6 @@ impl MeltSaga<SetupComplete> {
                             "Payment pending, proofs remain pending for quote: {}",
                             self.state_data.quote.id
                         );
-                        self.persist_pending_payment_lookup_id(&response.payment_lookup_id)
-                            .await;
                         return Ok(PaymentOutcome::Pending {
                             #[cfg(feature = "prometheus")]
                             metrics: self.metrics,
@@ -704,8 +747,9 @@ impl MeltSaga<SetupComplete> {
                 Error::UnsupportedUnit
             })?;
 
-        // Update saga state to PaymentAttempted BEFORE making payment
-        // This ensures crash recovery knows payment may have been attempted
+        // Commit the write-ahead marker before acquiring the dispatch lock. If
+        // reconciliation wins the small intervening race, the dispatcher
+        // re-reads the saga under the lock and aborts before calling the backend.
         {
             let mut tx = self.db.begin_transaction().await?;
             let mut saga = tx
@@ -720,8 +764,124 @@ impl MeltSaga<SetupComplete> {
             tx.commit().await?;
         }
 
-        self.execute_payment_and_verify(Arc::clone(payment_backend))
-            .await
+        // PostgreSQL returns the transaction that owns the quote advisory lock.
+        // Use that same connection for protected state changes so concurrent
+        // melts cannot exhaust the pool by each holding one connection while
+        // waiting for a second.
+        let dispatch_lock =
+            shared::acquire_melt_dispatch_lock(&self.db, &self.state_data.quote.id).await?;
+
+        match dispatch_lock {
+            Some(mut tx) => {
+                // Read through the regular pool: the transaction-level saga
+                // getter locks the row on SQL backends, which would prevent a
+                // trusted Paid event from preempting this in-flight dispatch.
+                let Some(saga) = self
+                    .db
+                    .get_melt_saga_by_quote_id(&self.state_data.quote.id)
+                    .await?
+                else {
+                    tx.rollback().await?;
+                    return Err(Error::UnknownPaymentState);
+                };
+                if saga.operation_id != self.operation_id
+                    || !matches!(
+                        saga.state,
+                        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
+                    )
+                {
+                    tx.rollback().await?;
+                    return Err(Error::UnknownPaymentState);
+                }
+
+                let response = match self
+                    .execute_payment_and_verify(Arc::clone(payment_backend))
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(err) => {
+                        tx.rollback().await?;
+                        return Err(err);
+                    }
+                };
+
+                // Do not hold the saga row lock across the external payment
+                // call. A trusted Paid event must be able to persist the
+                // finalization handoff while dispatch is in flight. Re-locking
+                // and re-reading here makes that handoff authoritative: if the
+                // event advanced or completed the saga, this stale dispatcher
+                // must not compensate based on its own terminal response.
+                let Some(mut saga) = tx.get_saga_for_update(&self.operation_id).await? else {
+                    tx.rollback().await?;
+                    return Err(Error::UnknownPaymentState);
+                };
+                if !matches!(
+                    saga.state,
+                    SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
+                ) {
+                    tx.rollback().await?;
+                    return Err(Error::UnknownPaymentState);
+                }
+
+                match response.status {
+                    MeltQuoteState::Paid => {
+                        if let Err(err) =
+                            shared::persist_melt_finalization_handoff(&mut tx, &mut saga, &response)
+                                .await
+                        {
+                            tx.rollback().await?;
+                            return Err(err);
+                        }
+                        tx.commit().await?;
+                    }
+                    MeltQuoteState::Pending | MeltQuoteState::Unknown => {
+                        if let Err(err) = self
+                            .persist_pending_payment_in_transaction(
+                                &mut tx,
+                                &mut saga,
+                                &response.payment_lookup_id,
+                            )
+                            .await
+                        {
+                            tx.rollback().await?;
+                            return Err(err);
+                        }
+                        tx.commit().await?;
+                    }
+                    MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
+                        // Compensate while this transaction still owns the
+                        // cross-process dispatch lock. Releasing it first would
+                        // let another replica persist PaymentPending before the
+                        // stale failure removes the reserved proofs.
+                        shared::rollback_failed_melt_with_dispatch_lock(
+                            tx,
+                            &self.pubsub,
+                            &self.state_data.quote.id,
+                            &self.operation_id,
+                        )
+                        .await?;
+                    }
+                }
+
+                Ok(response)
+            }
+            None => {
+                let response = self
+                    .execute_payment_and_verify(Arc::clone(payment_backend))
+                    .await?;
+                match response.status {
+                    MeltQuoteState::Paid => {
+                        self.persist_paid_payment(&response).await?;
+                    }
+                    MeltQuoteState::Pending | MeltQuoteState::Unknown => {
+                        self.persist_pending_payment(&response.payment_lookup_id)
+                            .await?;
+                    }
+                    MeltQuoteState::Unpaid | MeltQuoteState::Failed => {}
+                }
+                Ok(response)
+            }
+        }
     }
 
     async fn execute_payment_and_verify(
@@ -772,19 +932,37 @@ impl MeltSaga<SetupComplete> {
             return Ok(check_response);
         }
 
-        // If we knew it was Pending, but now it's Unknown, stick with Pending to avoid
-        // accidental refund of an in-flight payment.
-        if pay.status == MeltQuoteState::Pending && check_response.status == MeltQuoteState::Unknown
-        {
+        // Pending and Unknown are monotonic for an immediate verification. A
+        // contradictory Unpaid/Failed/Unknown read may come from a lagging
+        // backend replica; refunding here would return proofs while the payment
+        // can still settle.
+        if matches!(
+            pay.status,
+            MeltQuoteState::Pending | MeltQuoteState::Unknown
+        ) {
             tracing::warn!(
-                "Payment was initially Pending but verification returned Unknown. Keeping as Pending for safety."
+                "Payment was initially {} but verification returned {}. Keeping the initial status for safety.",
+                pay.status,
+                check_response.status
             );
             return Ok(pay);
         }
 
-        // Unknown is indeterminate, not a confirmed failure: keep it as-is so
-        // make_payment parks the melt as pending instead of compensating a
-        // payment that may still settle.
+        // An Ok response with a terminal negative status is the backend's
+        // authoritative outcome, unlike an Err whose dispatch phase is
+        // unknown. A positive or in-flight follow-up overrides it, but a
+        // missing/Unknown observation does not erase that terminal result.
+        if matches!(pay.status, MeltQuoteState::Unpaid | MeltQuoteState::Failed)
+            && check_response.status == MeltQuoteState::Unknown
+        {
+            tracing::warn!(
+                "Payment backend returned authoritative {} for quote {}, but verification returned Unknown. Keeping the terminal response.",
+                pay.status,
+                self.state_data.quote.id
+            );
+            return Ok(pay);
+        }
+
         Ok(check_response)
     }
 
@@ -819,7 +997,7 @@ impl MeltSaga<SetupComplete> {
                 Error::Internal
             })?;
 
-        let check_response = self.check_payment_state(payment_backend, lookup_id).await?;
+        let mut check_response = self.check_payment_state(payment_backend, lookup_id).await?;
 
         tracing::info!(
             "Initial payment attempt for {} errored. Follow up check status: {}",
@@ -827,14 +1005,28 @@ impl MeltSaga<SetupComplete> {
             check_response.status
         );
 
-        // Unknown is indeterminate, not a confirmed failure: keep it as-is so
-        // make_payment parks the melt as pending instead of compensating a
-        // payment that may still settle.
+        // make_payment returned no authoritative terminal result. A positive
+        // Paid check can safely finalize and Pending remains pending, but a
+        // Failed or Unpaid follow-up may be a stale backend read after an
+        // ambiguous dispatch error. Keep every non-positive terminal read
+        // indeterminate so the melt cannot compensate while payment may settle.
+        if matches!(
+            check_response.status,
+            MeltQuoteState::Unpaid | MeltQuoteState::Failed
+        ) {
+            tracing::warn!(
+                "Payment attempt for {} errored and follow up check returned {}. Keeping payment status Unknown for safety.",
+                self.state_data.quote.id,
+                check_response.status
+            );
+            check_response.status = MeltQuoteState::Unknown;
+        }
+
         Ok(check_response)
     }
 
-    /// Persists the backend's payment lookup id on the quote before the saga
-    /// parks the payment as pending.
+    /// Persists the backend's payment lookup id and the durable pending marker
+    /// before releasing the cross-replica dispatch lock.
     ///
     /// For bolt12 melts the quote is created with `request_lookup_id: None`
     /// (no invoice exists until `make_payment`), so the id returned by the
@@ -844,52 +1036,84 @@ impl MeltSaga<SetupComplete> {
     /// a payment that settles after the in-process recheck can never be
     /// resolved, and startup recovery would treat the quote as never sent and
     /// compensate while the payment may still settle.
-    ///
-    /// Best-effort: a database failure here is logged loudly but does not
-    /// change the outcome — the payment is still pending and the in-process
-    /// state is no worse than before.
-    async fn persist_pending_payment_lookup_id(
+    async fn persist_pending_payment(
         &self,
         payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
-    ) {
+    ) -> Result<(), Error> {
         let quote_id = &self.state_data.quote.id;
 
-        if self.state_data.quote.request_lookup_id.as_ref() == Some(payment_lookup_id) {
-            return;
-        }
+        let mut tx = self.db.begin_transaction().await?;
+        let mut quote = tx
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
 
-        let result: Result<(), Error> = async {
-            let mut tx = self.db.begin_transaction().await?;
-            let mut quote = tx
-                .get_melt_quote(quote_id)
-                .await?
-                .ok_or(Error::UnknownQuote)?;
-
-            if quote.request_lookup_id.as_ref() != Some(payment_lookup_id) {
-                tracing::info!(
-                    "Updating payment lookup id for pending melt quote {} from {:?} to {}",
-                    quote_id,
-                    quote.request_lookup_id,
-                    payment_lookup_id
-                );
-                tx.update_melt_quote_request_lookup_id(&mut quote, payment_lookup_id)
-                    .await?;
-            }
-
-            tx.commit().await?;
-            Ok(())
-        }
-        .await;
-
-        if let Err(err) = result {
-            tracing::error!(
-                "Failed to persist payment lookup id {} for pending melt quote {}: {}. \
-                 Recovery will derive the backend identifier from the quote if needed.",
-                payment_lookup_id,
+        if quote.request_lookup_id.as_ref() != Some(payment_lookup_id) {
+            tracing::info!(
+                "Updating payment lookup id for pending melt quote {} from {:?} to {}",
                 quote_id,
-                err
+                quote.request_lookup_id,
+                payment_lookup_id
             );
+            tx.update_melt_quote_request_lookup_id(&mut quote, payment_lookup_id)
+                .await?;
         }
+
+        let mut saga = tx
+            .get_saga_for_update(&self.operation_id)
+            .await?
+            .ok_or(Error::Internal)?;
+        tx.update_acquired_saga(
+            &mut saga,
+            SagaStateEnum::Melt(MeltSagaState::PaymentPending),
+        )
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Persists a confirmed payment before releasing the process-local quote
+    /// guard used by backends without cross-process advisory locks.
+    async fn persist_paid_payment(
+        &self,
+        payment_response: &MakePaymentResponse,
+    ) -> Result<(), Error> {
+        let mut tx = self.db.begin_transaction().await?;
+        let Some(mut saga) = tx.get_saga_for_update(&self.operation_id).await? else {
+            tx.rollback().await?;
+            return Err(Error::UnknownPaymentState);
+        };
+
+        if let Err(err) =
+            shared::persist_melt_finalization_handoff(&mut tx, &mut saga, payment_response).await
+        {
+            tx.rollback().await?;
+            return Err(err);
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn persist_pending_payment_in_transaction(
+        &self,
+        tx: &mut DynMintTransaction,
+        saga: &mut Acquired<Saga>,
+        payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
+    ) -> Result<(), Error> {
+        let quote_id = &self.state_data.quote.id;
+        let mut quote = tx
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        if quote.request_lookup_id.as_ref() != Some(payment_lookup_id) {
+            tx.update_melt_quote_request_lookup_id(&mut quote, payment_lookup_id)
+                .await?;
+        }
+        tx.update_acquired_saga(saga, SagaStateEnum::Melt(MeltSagaState::PaymentPending))
+            .await?;
+        Ok(())
     }
 
     /// Helper to check payment state with the payment backend
@@ -947,7 +1171,7 @@ impl MeltSaga<PaymentConfirmed> {
     /// the user while the mint has already paid the invoice, causing fund loss.
     ///
     /// Instead, the error is returned and the saga remains in the database with
-    /// `PaymentAttempted` state. On startup, the recovery process will:
+    /// `Finalizing` state. On startup, the recovery process will:
     /// 1. Find the incomplete saga
     /// 2. Check the payment backend (which will confirm payment as Paid)
     /// 3. Retry finalization

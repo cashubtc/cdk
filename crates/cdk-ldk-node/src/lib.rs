@@ -97,6 +97,36 @@ fn bolt12_send_error_has_ambiguous_dispatch(err: &ldk_node::NodeError) -> bool {
     matches!(err, ldk_node::NodeError::PersistenceFailed)
 }
 
+/// Whether a BOLT11 send error authoritatively proves that this invocation
+/// cannot settle.
+///
+/// `PersistenceFailed` is ambiguous because `ldk-node` may return it after the
+/// channel manager accepted the payment but before the pending payment record
+/// was persisted. `DuplicatePayment` is also non-terminal for this invocation:
+/// the existing payment may already be pending or succeeded. The remaining
+/// errors listed here are returned only when dispatch was rejected.
+fn bolt11_send_error_is_explicit_terminal_failure(err: &ldk_node::NodeError) -> bool {
+    matches!(
+        err,
+        ldk_node::NodeError::NotRunning
+            | ldk_node::NodeError::InvalidAmount
+            | ldk_node::NodeError::InvalidInvoice
+            | ldk_node::NodeError::PaymentSendingFailed
+    )
+}
+
+fn outgoing_payment_failure_response(
+    unit: &CurrencyUnit,
+    payment_lookup_id: PaymentIdentifier,
+) -> MakePaymentResponse {
+    MakePaymentResponse {
+        payment_lookup_id,
+        payment_proof: None,
+        status: MeltQuoteState::Failed,
+        total_spent: Amount::new(0, unit.clone()),
+    }
+}
+
 /// CDK Lightning backend using LDK Node
 ///
 /// Provides Lightning Network functionality for CDK with support for Cashu operations.
@@ -1041,11 +1071,16 @@ impl MintPayment for CdkLdkNode {
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
         match options {
-            cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
-                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            cdk_common::payment::OutgoingPaymentOptions::Custom(options) => {
+                Ok(outgoing_payment_failure_response(
+                    unit,
+                    PaymentIdentifier::QuoteId(options.quote_id),
+                ))
             }
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 let bolt11 = bolt11_options.bolt11;
+                let payment_lookup_id =
+                    PaymentIdentifier::PaymentHash(bolt11.payment_hash().to_byte_array());
 
                 let send_params = match bolt11_options
                     .max_fee_amount
@@ -1061,7 +1096,7 @@ impl MintPayment for CdkLdkNode {
                     Ok(params) => params,
                     Err(err) => {
                         tracing::error!("Failed to convert fee amount: {}", err);
-                        return Err(payment::Error::Custom(format!("Invalid fee amount: {err}")));
+                        return Ok(outgoing_payment_failure_response(unit, payment_lookup_id));
                     }
                 };
 
@@ -1073,27 +1108,41 @@ impl MintPayment for CdkLdkNode {
                     Some(MeltOptions::Amountless { amountless }) => {
                         if let Some(invoice_amount) = bolt11.amount_milli_satoshis() {
                             if invoice_amount != u64::from(amountless.amount_msat) {
-                                return Err(payment::Error::AmountMismatch);
+                                return Ok(outgoing_payment_failure_response(
+                                    unit,
+                                    payment_lookup_id,
+                                ));
                             }
                         }
 
-                        self.inner
-                            .bolt11_payment()
-                            .send_using_amount(&bolt11, amountless.amount_msat.into(), send_params)
-                            .map_err(|err| {
-                                tracing::error!("Could not send send amountless bolt11: {}", err);
-                                Error::CouldNotSendBolt11WithoutAmount
-                            })?
+                        self.inner.bolt11_payment().send_using_amount(
+                            &bolt11,
+                            amountless.amount_msat.into(),
+                            send_params,
+                        )
                     }
-                    None => self
-                        .inner
-                        .bolt11_payment()
-                        .send(&bolt11, send_params)
-                        .map_err(|err| {
-                            tracing::error!("Could not send bolt11 {}", err);
-                            Error::CouldNotSendBolt11
-                        })?,
-                    _ => return Err(payment::Error::UnsupportedPaymentOption),
+                    None => self.inner.bolt11_payment().send(&bolt11, send_params),
+                    _ => {
+                        return Ok(outgoing_payment_failure_response(unit, payment_lookup_id));
+                    }
+                };
+
+                let payment_id = match payment_id {
+                    Ok(payment_id) => payment_id,
+                    Err(err) if bolt11_send_error_is_explicit_terminal_failure(&err) => {
+                        tracing::warn!(
+                            payment_hash = %bolt11.payment_hash(),
+                            "LDK rejected BOLT11 payment before dispatch: {err}"
+                        );
+                        return Ok(outgoing_payment_failure_response(unit, payment_lookup_id));
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            payment_hash = %bolt11.payment_hash(),
+                            "LDK BOLT11 send outcome is indeterminate: {err}"
+                        );
+                        return Err(Error::LdkNode(err).into());
+                    }
                 };
 
                 let payment_details = self
@@ -1104,11 +1153,7 @@ impl MintPayment for CdkLdkNode {
                     tracing::error!(payment_id = %payment_id, "Bolt11 payment failed");
                 }
 
-                Self::make_payment_response_from_details(
-                    unit,
-                    PaymentIdentifier::PaymentHash(bolt11.payment_hash().to_byte_array()),
-                    &payment_details,
-                )
+                Self::make_payment_response_from_details(unit, payment_lookup_id, &payment_details)
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
                 let offer = bolt12_options.offer;
@@ -1129,7 +1174,10 @@ impl MintPayment for CdkLdkNode {
                     Ok(params) => params,
                     Err(err) => {
                         tracing::error!("Failed to convert fee amount: {}", err);
-                        return Err(payment::Error::Custom(format!("Invalid fee amount: {err}")));
+                        return Ok(outgoing_payment_failure_response(
+                            unit,
+                            quote_payment_identifier,
+                        ));
                     }
                 };
 
@@ -1140,7 +1188,18 @@ impl MintPayment for CdkLdkNode {
                 // from "never dispatched" (mirrors cdk-cln's pre-dispatch
                 // bolt12 quote mapping). The payment must not be attempted
                 // unless this marker is durable.
-                write_bolt12_quote_payment_id(&self.kv_store, &quote_id, None).await?;
+                if let Err(err) =
+                    write_bolt12_quote_payment_id(&self.kv_store, &quote_id, None).await
+                {
+                    tracing::error!(
+                        quote_id = %quote_id,
+                        "Could not persist BOLT12 dispatch claim before sending: {err}"
+                    );
+                    return Ok(outgoing_payment_failure_response(
+                        unit,
+                        quote_payment_identifier,
+                    ));
+                }
 
                 // BOLT12 payment ids are assigned by `send`, so subscribe
                 // first and filter the queued terminal events once it returns.
@@ -1162,7 +1221,10 @@ impl MintPayment for CdkLdkNode {
                         .send(&offer, None, None, send_params),
                     _ => {
                         self.cleanup_bolt12_dispatch_binding(&quote_id, None).await;
-                        return Err(payment::Error::UnsupportedPaymentOption);
+                        return Ok(outgoing_payment_failure_response(
+                            unit,
+                            quote_payment_identifier,
+                        ));
                     }
                 };
 
@@ -1179,6 +1241,14 @@ impl MintPayment for CdkLdkNode {
                             }
                             false => {
                                 self.cleanup_bolt12_dispatch_binding(&quote_id, None).await;
+                                tracing::warn!(
+                                    quote_id = %quote_id,
+                                    "LDK rejected BOLT12 payment before dispatch: {err}"
+                                );
+                                return Ok(outgoing_payment_failure_response(
+                                    unit,
+                                    quote_payment_identifier,
+                                ));
                             }
                         }
                         return Err(Error::LdkNode(err).into());
@@ -1222,9 +1292,10 @@ impl MintPayment for CdkLdkNode {
                     &payment_details,
                 )
             }
-            OutgoingPaymentOptions::Onchain(_) => {
-                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
-            }
+            OutgoingPaymentOptions::Onchain(options) => Ok(outgoing_payment_failure_response(
+                unit,
+                PaymentIdentifier::QuoteId(options.quote_id),
+            )),
         }
     }
 
@@ -1844,6 +1915,43 @@ mod tests {
                 "{not_dispatched} must be treated as not dispatched"
             );
         }
+    }
+
+    #[test]
+    fn bolt11_send_errors_only_classify_explicit_rejections_as_terminal() {
+        for terminal_error in [
+            ldk_node::NodeError::NotRunning,
+            ldk_node::NodeError::InvalidAmount,
+            ldk_node::NodeError::InvalidInvoice,
+            ldk_node::NodeError::PaymentSendingFailed,
+        ] {
+            assert!(
+                bolt11_send_error_is_explicit_terminal_failure(&terminal_error),
+                "{terminal_error} must be treated as a definitive failure"
+            );
+        }
+
+        for ambiguous_error in [
+            ldk_node::NodeError::PersistenceFailed,
+            ldk_node::NodeError::DuplicatePayment,
+        ] {
+            assert!(
+                !bolt11_send_error_is_explicit_terminal_failure(&ambiguous_error),
+                "{ambiguous_error} must not authorize proof release"
+            );
+        }
+    }
+
+    #[test]
+    fn authoritative_outgoing_failure_response_is_terminal_and_spends_nothing() {
+        let payment_lookup_id = PaymentIdentifier::PaymentHash([42; 32]);
+        let response =
+            outgoing_payment_failure_response(&CurrencyUnit::Msat, payment_lookup_id.clone());
+
+        assert_eq!(response.payment_lookup_id, payment_lookup_id);
+        assert_eq!(response.status, MeltQuoteState::Failed);
+        assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Msat));
+        assert!(response.payment_proof.is_none());
     }
 
     #[test]

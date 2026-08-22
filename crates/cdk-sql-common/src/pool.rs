@@ -125,12 +125,7 @@ where
 
             #[cfg(feature = "prometheus")]
             {
-                let in_use = self
-                    .pool
-                    .max_size
-                    .saturating_sub(self.pool.semaphore.available_permits())
-                    .saturating_sub(1);
-                METRICS.set_db_connections_active(in_use as i64);
+                METRICS.decrement_db_connections_active();
 
                 let duration = self.start_time.elapsed().as_secs_f64();
 
@@ -170,6 +165,15 @@ where
     /// Creates a new pool
     pub fn new(config: RM::Config) -> Arc<Self> {
         let max_size = config.max_size();
+        Self::new_with_max_size(config, max_size)
+    }
+
+    /// Creates a pool with an explicit size instead of the configuration's
+    /// default.
+    ///
+    /// This is used when one configured connection budget is partitioned into
+    /// separate pools for short database work and long-lived operations.
+    pub(crate) fn new_with_max_size(config: RM::Config, max_size: usize) -> Arc<Self> {
         Arc::new(Self {
             default_timeout: config.default_timeout(),
             max_size,
@@ -214,15 +218,19 @@ where
         };
 
         #[cfg(feature = "prometheus")]
-        {
-            let in_use = self.max_size - self.semaphore.available_permits();
-            METRICS.set_db_connections_active(in_use as i64);
-        }
+        METRICS.increment_db_connections_active();
 
         // Briefly lock the idle queue to try to pop a non-stale connection.
         // This mutex is held for nanoseconds (just a Vec::pop).
         {
-            let mut resources = self.queue.lock().map_err(|_| Error::Poison)?;
+            let mut resources = match self.queue.lock() {
+                Ok(resources) => resources,
+                Err(_) => {
+                    #[cfg(feature = "prometheus")]
+                    METRICS.decrement_db_connections_active();
+                    return Err(Error::Poison);
+                }
+            };
             while let Some((stale, resource)) = resources.pop() {
                 if !stale.load(Ordering::SeqCst) {
                     return Ok(PooledResource {
@@ -250,13 +258,7 @@ where
             }),
             Err(e) => {
                 #[cfg(feature = "prometheus")]
-                {
-                    let in_use = self
-                        .max_size
-                        .saturating_sub(self.semaphore.available_permits())
-                        .saturating_sub(1);
-                    METRICS.set_db_connections_active(in_use as i64);
-                }
+                METRICS.decrement_db_connections_active();
 
                 // Permit is dropped here, releasing the slot back to the semaphore.
                 Err(e)
@@ -466,5 +468,22 @@ mod tests {
         assert!(matches!(result, Err(Error::Resource(_))));
         assert_eq!(db_connections_active(), 0.0);
         assert_eq!(pool.semaphore.available_permits(), pool.max_size);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn active_connections_gauge_aggregates_multiple_pools() {
+        let _lock = crate::metrics_test_lock::lock().await;
+        METRICS.set_db_connections_active(0);
+
+        let regular_pool = Pool::<TestPool>::new(test_config(1, false));
+        let dispatch_pool = Pool::<TestPool>::new(test_config(1, false));
+        let regular = regular_pool.get().await.expect("regular resource");
+        let dispatch = dispatch_pool.get().await.expect("dispatch resource");
+
+        assert_eq!(db_connections_active(), 2.0);
+
+        drop(regular);
+        drop(dispatch);
+        assert_eq!(db_connections_active(), 0.0);
     }
 }

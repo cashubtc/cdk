@@ -307,7 +307,7 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Run clippy and Postgres tests
-        run: nix develop --fallback -i -L .#regtest --command bash -c "start-postgres && cargo clippy -p cdk-postgres -- -D warnings && cargo test -p cdk-postgres && cargo test -p cdk-integration-tests --test signatory_rotation"
+        run: nix develop --fallback -i -L .#regtest --command bash -c "start-postgres && cargo clippy -p cdk-postgres -- -D warnings && cargo test -p cdk-postgres -- --test-threads 8 && CDK_REQUIRE_POSTGRES_TESTS=1 cargo test -p cdk --lib second_replica && cargo test -p cdk-integration-tests --test signatory_rotation"
 
 # Tests for cdk-supabase that require a local Supabase stack (PostgREST + GoTrue + PostgreSQL)
   supabase-tests:
