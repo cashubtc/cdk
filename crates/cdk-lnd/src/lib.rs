@@ -214,6 +214,31 @@ fn msat_total_spent_for_unit(
     }
 }
 
+/// Build an authoritative terminal-failure response for a payment that was
+/// rejected before dispatch.
+///
+/// The mint treats an `Ok` response with `MeltQuoteState::Failed` as
+/// authoritative (it may compensate the melt), unlike an `Err`, whose dispatch
+/// phase is unknown and which is therefore kept indeterminate. Pre-dispatch
+/// rejections must be returned as this response so the melt can be rolled back
+/// instead of parked pending.
+///
+/// Conversely, errors that straddle the dispatch boundary — a gRPC `Status`
+/// error from `send_*` (`Error::LndError`), or a stream that drops after
+/// dispatch began (`Error::AmbiguousDispatch`) — must stay `Err` so the melt
+/// stays indeterminate. Do not convert those to this response.
+fn outgoing_payment_failure_response(
+    unit: &CurrencyUnit,
+    payment_lookup_id: PaymentIdentifier,
+) -> MakePaymentResponse {
+    MakePaymentResponse {
+        payment_lookup_id,
+        payment_proof: None,
+        status: MeltQuoteState::Failed,
+        total_spent: Amount::new(0, unit.clone()),
+    }
+}
+
 #[async_trait]
 impl MintPayment for Lnd {
     type Err = payment::Error;
@@ -448,31 +473,47 @@ impl MintPayment for Lnd {
         match options {
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 let bolt11 = bolt11_options.bolt11;
+                let payment_lookup_id =
+                    PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref());
 
-                let pay_state = self
-                    .check_outgoing_payment(&PaymentIdentifier::PaymentHash(
-                        *bolt11.payment_hash().as_ref(),
-                    ))
-                    .await?;
+                // A prior lookup is authoritative evidence, not an error:
+                // report the already-recorded outcome so the mint reconciles
+                // against durable state instead of treating the duplicate melt
+                // as an ambiguous dispatch failure.
+                let pay_state = self.check_outgoing_payment(&payment_lookup_id).await?;
 
                 match pay_state.status {
                     MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => (),
                     MeltQuoteState::Paid => {
                         tracing::debug!("Melt attempted on invoice already paid");
-                        return Err(Self::Err::InvoiceAlreadyPaid);
+                        return Ok(MakePaymentResponse {
+                            payment_lookup_id: payment_lookup_id.clone(),
+                            ..pay_state
+                        });
                     }
                     MeltQuoteState::Pending => {
                         tracing::debug!("Melt attempted on invoice already pending");
-                        return Err(Self::Err::InvoicePaymentPending);
+                        return Ok(MakePaymentResponse {
+                            payment_lookup_id: payment_lookup_id.clone(),
+                            ..pay_state
+                        });
                     }
                 }
 
                 // Detect partial payments
                 match bolt11_options.melt_options {
                     Some(MeltOptions::Mpp { mpp }) => {
-                        let amount_msat: u64 = bolt11
-                            .amount_milli_satoshis()
-                            .ok_or(Error::UnknownInvoiceAmount)?;
+                        let amount_msat: u64 = match bolt11.amount_milli_satoshis() {
+                            Some(amount_msat) => amount_msat,
+                            None => {
+                                // Invoice carries no amount; a local parse
+                                // failure before any dispatch.
+                                return Ok(outgoing_payment_failure_response(
+                                    unit,
+                                    payment_lookup_id,
+                                ));
+                            }
+                        };
                         {
                             let partial_amount_msat = mpp.amount;
                             let invoice = bolt11;
@@ -511,13 +552,29 @@ impl MintPayment for Lnd {
                                     .map_err(Error::LndError)?
                                     .into_inner();
 
-                                // Get first route and update its MPP record
-                                let route =
-                                    routes_response.routes.first_mut().ok_or(Error::NoRoute)?;
+                                // Get first route and update its MPP record. An
+                                // empty route set means LND found no path; the
+                                // payment was never dispatched.
+                                let route = match routes_response.routes.first_mut() {
+                                    Some(route) => route,
+                                    None => {
+                                        return Ok(outgoing_payment_failure_response(
+                                            unit,
+                                            payment_lookup_id,
+                                        ));
+                                    }
+                                };
 
                                 // attempt it and check the result
-                                let last_hop: &mut Hop =
-                                    route.hops.last_mut().ok_or(Error::MissingLastHop)?;
+                                let last_hop: &mut Hop = match route.hops.last_mut() {
+                                    Some(last_hop) => last_hop,
+                                    None => {
+                                        return Ok(outgoing_payment_failure_response(
+                                            unit,
+                                            payment_lookup_id,
+                                        ));
+                                    }
+                                };
                                 let mpp_record = MppRecord {
                                     payment_addr: payer_addr.clone(),
                                     total_amt_msat: amount_msat as i64,
@@ -572,9 +629,10 @@ impl MintPayment for Lnd {
                             }
 
                             // "We have exhausted all tactical options" -- STEM, Upgrade (2018)
-                            // The payment was not possible within 50 retries.
+                            // Every route query ended in a no-route result, so
+                            // no payment was ever dispatched.
                             tracing::error!("Limit of retries reached, payment couldn't succeed.");
-                            Err(Error::PaymentFailed.into())
+                            Ok(outgoing_payment_failure_response(unit, payment_lookup_id))
                         }
                     }
                     _ => {
@@ -588,7 +646,13 @@ impl MintPayment for Lnd {
 
                                 if let Some(invoice_amount) = bolt11.amount_milli_satoshis() {
                                     if invoice_amount != u64::from(amount_msat) {
-                                        return Err(payment::Error::AmountMismatch);
+                                        // Invoice/request amount disagreement is
+                                        // a local validation failure, before any
+                                        // dispatch to LND.
+                                        return Ok(outgoing_payment_failure_response(
+                                            unit,
+                                            payment_lookup_id,
+                                        ));
                                     }
                                 }
 
@@ -615,14 +679,18 @@ impl MintPayment for Lnd {
                             .send_payment_v2(pay_req)
                             .await
                             .map_err(|err| {
-                                tracing::warn!("Lightning payment failed: {}", err);
-                                Error::PaymentFailed
+                                tracing::warn!("Lightning payment dispatch error: {}", err);
+                                // A gRPC error here may arrive after LND accepted
+                                // the payment; the dispatch outcome is unknown.
+                                Error::AmbiguousDispatch
                             })?
                             .into_inner();
 
                         while let Some(update) = payment_stream.message().await.map_err(|err| {
-                            tracing::warn!("Lightning payment failed: {}", err);
-                            Error::PaymentFailed
+                            tracing::warn!("Lightning payment stream error: {}", err);
+                            // The stream dropped after dispatch began; the payment
+                            // may still settle.
+                            Error::AmbiguousDispatch
                         })? {
                             let status = update.status();
 
@@ -887,5 +955,36 @@ mod tests {
             .expect("msat total should convert to sat");
 
         assert_eq!(total_spent, Amount::new(2, CurrencyUnit::Sat));
+    }
+
+    #[test]
+    fn authoritative_outgoing_failure_response_is_terminal_and_spends_nothing() {
+        let payment_lookup_id = PaymentIdentifier::PaymentHash([42; 32]);
+        let response =
+            outgoing_payment_failure_response(&CurrencyUnit::Sat, payment_lookup_id.clone());
+
+        assert_eq!(response.payment_lookup_id, payment_lookup_id);
+        assert_eq!(response.status, MeltQuoteState::Failed);
+        assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Sat));
+        assert!(response.payment_proof.is_none());
+    }
+
+    /// The dispatch-boundary variants must remain distinct from the
+    /// pre-dispatch `PaymentFailed`, so only the former stay `Err` (ambiguous)
+    /// and the latter can be converted to an authoritative `Failed` response.
+    /// This guards against a future change re-collapsing the two.
+    #[test]
+    fn dispatch_boundary_errors_are_distinct_from_pre_dispatch_failure() {
+        // `AmbiguousDispatch` is returned by send_* / stream failures (may have
+        // been accepted by LND) and must never be treated as a terminal
+        // pre-dispatch failure. It is a separate variant from `PaymentFailed`.
+        assert_ne!(
+            Error::AmbiguousDispatch.to_string(),
+            Error::PaymentFailed.to_string()
+        );
+        assert_ne!(
+            Error::UnknownPaymentStatus.to_string(),
+            Error::PaymentFailed.to_string()
+        );
     }
 }
