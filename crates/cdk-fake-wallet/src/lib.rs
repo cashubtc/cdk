@@ -508,7 +508,10 @@ impl MintPayment for FakeWallet {
                 amountless: false,
                 invoice_description: true,
             }),
-            bolt12: Some(payment::Bolt12Settings { amountless: false }),
+            bolt12: Some(payment::Bolt12Settings {
+                amountless: false,
+                invoice_description: true,
+            }),
             onchain: Some(payment::OnchainSettings {
                 confirmations: 1,
                 min_receive_amount_sat: 1,

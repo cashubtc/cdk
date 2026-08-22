@@ -10,6 +10,7 @@ use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk::Amount;
 use cdk_common::grpc::create_version_check_interceptor;
+use cdk_common::nut00::KnownMethod;
 use cdk_common::payment::WaitPaymentResponse;
 use thiserror::Error;
 use tokio::sync::Notify;
@@ -962,11 +963,15 @@ impl CdkMint for MintRPCServer {
     ) -> Result<Response<UpdateResponse>, Status> {
         let request = request.into_inner();
 
-        let options = request
-            .options
-            .map(|options| cdk::nuts::nut04::MintMethodOptions::Bolt11 {
-                description: options.description,
-            });
+        let options = request.options.map(|options| {
+            let description = options.description;
+            match PaymentMethod::from_str(&request.method) {
+                Ok(PaymentMethod::Known(KnownMethod::Bolt12)) => {
+                    cdk::nuts::nut04::MintMethodOptions::Bolt12 { description }
+                }
+                _ => cdk::nuts::nut04::MintMethodOptions::Bolt11 { description },
+            }
+        });
 
         self.set_mint_method(
             &request.unit,

@@ -244,9 +244,20 @@ impl Wallet {
                 .get_settings(&unit, &method)
                 .ok_or(Error::UnsupportedUnit)?;
 
-            match settings.options {
-                Some(MintMethodOptions::Bolt11 { description }) if description => (),
-                _ => return Err(Error::InvoiceDescriptionUnsupported),
+            let description_supported = match (&method, settings.options) {
+                (
+                    PaymentMethod::Known(KnownMethod::Bolt11),
+                    Some(MintMethodOptions::Bolt11 { description }),
+                )
+                | (
+                    PaymentMethod::Known(KnownMethod::Bolt12),
+                    Some(MintMethodOptions::Bolt12 { description }),
+                ) => description,
+                _ => false,
+            };
+
+            if !description_supported {
+                return Err(Error::InvoiceDescriptionUnsupported);
             }
         }
 
