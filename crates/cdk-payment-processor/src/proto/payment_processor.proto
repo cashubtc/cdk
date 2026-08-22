@@ -35,6 +35,7 @@ message OnchainSettings {
 
 message Bolt12Settings {
     bool amountless = 2;
+    bool invoice_description = 3;
 }
 
 message Bolt11Settings {

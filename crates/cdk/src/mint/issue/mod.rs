@@ -270,6 +270,16 @@ impl Mint {
 
                     let description = bolt12_request.description;
 
+                    // Check that the backend supports offer descriptions
+                    let settings = payment_backend.get_settings().await?;
+
+                    if let Some(ref bolt12_settings) = settings.bolt12 {
+                        if description.is_some() && !bolt12_settings.invoice_description {
+                            tracing::error!("Backend does not support invoice description");
+                            return Err(Error::InvoiceDescriptionUnsupported);
+                        }
+                    }
+
                     let bolt12_options = Bolt12IncomingPaymentOptions {
                         description,
                         amount: amount.map(|a| a.with_unit(unit.clone())),
