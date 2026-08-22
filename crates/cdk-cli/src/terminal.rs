@@ -2,9 +2,8 @@
 
 use std::fmt::Write as _;
 
-use cdk_common::terminal::is_bidi_control_character;
-
 pub use cdk_common::terminal::escape_control;
+use cdk_common::terminal::is_bidi_control_character;
 
 /// Escapes terminal controls inside JSON strings without changing JSON layout.
 ///

@@ -8,10 +8,9 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
+use super::url_for_debug;
 use crate::error::HttpError;
 use crate::response::{RawResponse, Response};
-
-use super::url_for_debug;
 
 #[wasm_bindgen]
 extern "C" {

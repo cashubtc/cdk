@@ -6,10 +6,9 @@ use bitreq::RequestExt;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+use super::url_for_debug;
 use crate::error::HttpError;
 use crate::response::{RawResponse, Response};
-
-use super::url_for_debug;
 
 #[derive(Clone)]
 pub(crate) struct ProxyConfig {
