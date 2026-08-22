@@ -677,6 +677,8 @@ pub struct Bolt11Settings {
 pub struct Bolt12Settings {
     /// Amountless offer support
     pub amountless: bool,
+    /// Offer description supported
+    pub invoice_description: bool,
 }
 
 /// Onchain settings

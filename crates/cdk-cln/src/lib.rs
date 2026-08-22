@@ -113,9 +113,10 @@ impl MintPayment for Cln {
                 amountless: true,
                 invoice_description: true,
             }),
-            bolt12: self
-                .bolt12
-                .then_some(payment::Bolt12Settings { amountless: true }),
+            bolt12: self.bolt12.then_some(payment::Bolt12Settings {
+                amountless: true,
+                invoice_description: true,
+            }),
             onchain: None,
             custom: HashMap::new(),
         })
