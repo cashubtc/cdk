@@ -57,6 +57,9 @@ pub enum Error {
     /// Witness missing or invalid
     #[error("Signature missing or invalid")]
     SignatureMissingOrInvalid,
+    /// Output metadata is malformed or belongs to an unsupported NUT
+    #[error("Invalid or unsupported output metadata")]
+    InvalidOutputMetadata,
     /// Amountless Invoice Not supported
     #[error("Amount Less Invoice is not allowed")]
     AmountLessNotAllowed,
@@ -662,6 +665,23 @@ mod tests {
         assert_eq!(response.detail, "Payment backend error");
         assert!(!response.detail.contains(BACKEND_DETAIL));
     }
+
+    #[test]
+    fn test_invalid_output_metadata_error_roundtrip() {
+        assert_eq!(ErrorCode::InvalidOutputMetadata.to_code(), 11018);
+        assert_eq!(
+            ErrorCode::from_code(11018),
+            ErrorCode::InvalidOutputMetadata
+        );
+
+        let response = ErrorResponse::from(Error::InvalidOutputMetadata);
+        assert_eq!(response.code, ErrorCode::InvalidOutputMetadata);
+        assert_eq!(response.detail, "Invalid or unsupported output metadata");
+
+        let error = Error::from(response);
+        assert!(matches!(error, Error::InvalidOutputMetadata));
+        assert!(error.is_definitive_failure());
+    }
 }
 
 impl Error {
@@ -684,6 +704,7 @@ impl Error {
             | Self::AmountOverflow
             | Self::OverIssue
             | Self::SignatureMissingOrInvalid
+            | Self::InvalidOutputMetadata
             | Self::AmountLessNotAllowed
             | Self::InternalMultiPartMeltQuote
             | Self::MppUnitMethodNotSupported(_, _)
@@ -1069,6 +1090,10 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::WitnessMissingOrInvalid,
                 detail: err.to_string(),
             },
+            Error::InvalidOutputMetadata => ErrorResponse {
+                code: ErrorCode::InvalidOutputMetadata,
+                detail: err.to_string(),
+            },
             Error::SigAllUsedInMelt => ErrorResponse {
                 code: ErrorCode::WitnessMissingOrInvalid,
                 detail: err.to_string(),
@@ -1235,6 +1260,7 @@ impl From<ErrorResponse> for Error {
             }
             ErrorCode::DuplicateQuoteIds => Self::DuplicateQuoteIds,
             ErrorCode::BatchSizeExceeded => Self::BatchSizeExceeded { actual: 0, max: 0 },
+            ErrorCode::InvalidOutputMetadata => Self::InvalidOutputMetadata,
             ErrorCode::MultipleUnits => Self::MultipleUnits,
             ErrorCode::UnitMismatch => Self::UnitMismatch,
             ErrorCode::AmountlessInvoiceNotSupported => Self::AmountLessNotAllowed,
@@ -1321,6 +1347,8 @@ pub enum ErrorCode {
     DuplicateQuoteIds,
     /// Batch size exceeds mint limit (11017)
     BatchSizeExceeded,
+    /// Output metadata is malformed or belongs to an unsupported NUT (11018)
+    InvalidOutputMetadata,
     // 12xxx - Keyset errors
     /// Keyset is not known (12001)
     KeysetNotFound,
@@ -1396,6 +1424,7 @@ impl ErrorCode {
             11015 => Self::MaxOutputsExceeded,
             11016 => Self::DuplicateQuoteIds,
             11017 => Self::BatchSizeExceeded,
+            11018 => Self::InvalidOutputMetadata,
             // 12xxx - Keyset errors
             12001 => Self::KeysetNotFound,
             12002 => Self::KeysetInactive,
@@ -1445,6 +1474,7 @@ impl ErrorCode {
             Self::MaxOutputsExceeded => 11015,
             Self::DuplicateQuoteIds => 11016,
             Self::BatchSizeExceeded => 11017,
+            Self::InvalidOutputMetadata => 11018,
             // 12xxx - Keyset errors
             Self::KeysetNotFound => 12001,
             Self::KeysetInactive => 12002,
