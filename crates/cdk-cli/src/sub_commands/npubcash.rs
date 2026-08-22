@@ -60,6 +60,8 @@ async fn get_wallet_for_mint_without_probe(
 pub enum NpubCashSubCommand {
     /// Sync quotes from NpubCash
     Sync,
+    /// Claim all pending quotes (sync, reconcile, then mint)
+    Claim,
     /// List all quotes
     List {
         /// Only show quotes since this Unix timestamp
@@ -91,6 +93,7 @@ pub async fn npubcash(
 
     match sub_command {
         NpubCashSubCommand::Sync => sync(wallet_repository, mint_url, &base_url).await,
+        NpubCashSubCommand::Claim => claim(wallet_repository, mint_url, &base_url).await,
         NpubCashSubCommand::List { since, format } => {
             list(wallet_repository, mint_url, &base_url, *since, format).await
         }
@@ -144,6 +147,25 @@ async fn sync(wallet_repository: &WalletRepository, mint_url: &str, base_url: &s
     let quotes = wallet.sync_npubcash_quotes().await?;
 
     println!("✓ Synced {} quotes successfully", quotes.len());
+    Ok(())
+}
+
+async fn claim(wallet_repository: &WalletRepository, mint_url: &str, base_url: &str) -> Result<()> {
+    ensure_active_mint(wallet_repository, mint_url).await?;
+
+    println!("Claiming pending NpubCash quotes...");
+
+    let wallet = get_wallet_for_mint(wallet_repository, mint_url).await?;
+
+    // Enable NpubCash if not already enabled
+    wallet.enable_npubcash(base_url.to_string()).await?;
+
+    let minted = wallet.claim_npubcash_quotes().await?;
+
+    println!("✓ Minted {} {}", minted, wallet.unit);
+    if let Ok(balance) = wallet.total_balance().await {
+        println!("  Wallet balance: {} {}", balance, wallet.unit);
+    }
     Ok(())
 }
 
@@ -385,9 +407,13 @@ mod tests {
 
         let global_mint = "https://global-mint.invalid";
         let requested_mint = "https://requested-mint.invalid";
-        let response_body = r#"{"error":false,"data":{"user":{"pubkey":"test","mintUrl":"https://requested-mint.invalid","lockQuote":false}}}"#;
+        let response_body = r#"{"error":false,"data":{"user":{"pubkey":"test","mintUrl":"https://requested-mint.invalid","lockQuote":true}}}"#;
+        // enable_npubcash sets the mint URL and enables quote locking (both
+        // required) before the actual set-mint request. The legacy-quote
+        // import stays silent here: the all-zero test seed is not a valid
+        // legacy secret key, so it is skipped before any request is made.
         let (npubcash_url, server) =
-            start_npubcash_settings_server("HTTP/1.1 200 OK", response_body, 2).await;
+            start_npubcash_settings_server("HTTP/1.1 200 OK", response_body, 3).await;
 
         tokio::time::timeout(
             Duration::from_secs(10),
@@ -413,13 +439,11 @@ mod tests {
         );
 
         let requests = server.await.expect("server task completes");
-        assert_eq!(requests.len(), 2);
-        assert!(requests
-            .iter()
-            .all(|request| request.starts_with("PATCH /api/v2/user/mint HTTP/1.1")));
-        assert!(requests
-            .iter()
-            .all(|request| request.contains(requested_mint)));
+        assert_eq!(requests.len(), 3);
+        assert!(requests[0].starts_with("PATCH /api/v2/user/mint HTTP/1.1"));
+        assert!(requests[1].starts_with("PATCH /api/v2/user/lock HTTP/1.1"));
+        assert!(requests[2].starts_with("PATCH /api/v2/user/mint HTTP/1.1"));
+        assert!(requests[2].contains(requested_mint));
     }
 
     #[tokio::test]
@@ -444,6 +468,9 @@ mod tests {
             .expect("active mint can be set");
 
         let response_body = r#"{"error":true,"message":"temporary failure"}"#;
+        // enable_npubcash sets the mint URL (best-effort) and then requires
+        // quote locking to succeed; the 500 on the lock request aborts
+        // initialization before the actual set-mint request.
         let (npubcash_url, server) =
             start_npubcash_settings_server("HTTP/1.1 500 Internal Server Error", response_body, 2)
                 .await;
@@ -471,6 +498,8 @@ mod tests {
 
         let requests = server.await.expect("server task completes");
         assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("PATCH /api/v2/user/mint HTTP/1.1"));
+        assert!(requests[1].starts_with("PATCH /api/v2/user/lock HTTP/1.1"));
     }
 
     async fn start_npubcash_settings_server(

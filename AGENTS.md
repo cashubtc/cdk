@@ -234,7 +234,7 @@ impl fmt::Display for MyType { ... }
 
 **Other**
 - `cdk-ffi` -- UniFFI bindings for cross-language use
-- `cdk-npubcash` -- npub.cash integration
+- `cdk-nostr` -- Nostr integration: keys, NIP-44 encryption, NIP-17 inbox listener, NIP-47 wallet service (feature `nwc`), npub.cash client (feature `npubcash`)
 - `cdk-prometheus` -- Prometheus metrics exporter
 - `cdk-integration-tests` -- full-stack integration tests
 

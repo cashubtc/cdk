@@ -71,8 +71,7 @@ cdk-signatory = { path = "./crates/cdk-signatory", version = "=0.18.0-rc.0", def
 cdk-mintd = { path = "./crates/cdk-mintd", version = "=0.18.0-rc.0", default-features = false }
 cdk-prometheus = { path = "./crates/cdk-prometheus", version = "=0.18.0-rc.0", default-features = false }
 cdk-supabase = { path = "./crates/cdk-supabase", version = "=0.18.0-rc.0", default-features = false }
-cdk-npubcash = { path = "./crates/cdk-npubcash", default-features = false, version = "=0.18.0-rc.0" }
-cdk-nwc = { path = "./crates/cdk-nwc", version = "=0.18.0-rc.0" }
+cdk-nostr = { path = "./crates/cdk-nostr", default-features = false, version = "=0.18.0-rc.0" }
 cdk-bdk = { path = "./crates/cdk-bdk", version = "=0.18.0-rc.0", default-features = false }
 clap = { version = "4.5.31", features = ["derive"] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }

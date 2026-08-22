@@ -9,8 +9,8 @@
 use std::sync::{Arc, Mutex};
 
 use cdk::wallet::WalletNwcHandler;
-use cdk_nwc::{NwcService as CdkNwcService, NwcServiceConfig};
-use nostr_sdk::{Keys, RelayUrl, SecretKey};
+use cdk_nostr::nostr_sdk::{Keys, RelayUrl, SecretKey};
+use cdk_nostr::nwc::{NwcService as CdkNwcService, NwcServiceConfig};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 

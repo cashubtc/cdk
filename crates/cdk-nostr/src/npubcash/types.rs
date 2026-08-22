@@ -86,6 +86,17 @@ pub struct Metadata {
     pub since: Option<u64>,
 }
 
+/// Request body for resolving quotes by ID
+///
+/// Sent to the missing-quotes endpoint to fetch full quote data for a
+/// specific set of quote IDs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingQuotesRequest {
+    /// Quote IDs to resolve
+    pub quote_ids: Vec<String>,
+}
+
 /// Response containing user settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -98,10 +109,39 @@ pub struct UserResponse {
 }
 
 /// Container for user data
+///
+/// Server revisions differ here: npubx-style servers wrap the settings in a
+/// `user` object (`data.user.{pubkey, mintUrl, lockQuote}`), while the layout
+/// shown in the npub.cash API docs flattens them into `data` directly and
+/// calls the flag `lockQuotes`. Both deserialize into the same struct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserDataContainer {
-    /// User settings
-    pub user: UserData,
+#[serde(untagged)]
+pub enum UserDataContainer {
+    /// `{"user": { ... }}` (npubx-style servers)
+    Wrapped {
+        /// User settings
+        user: UserData,
+    },
+    /// `{ "pubkey": ..., "mintUrl": ..., "lockQuotes": ... }` (docs layout)
+    Flat(UserData),
+}
+
+impl UserDataContainer {
+    /// The contained user settings regardless of server revision.
+    pub fn user(&self) -> &UserData {
+        match self {
+            Self::Wrapped { user } => user,
+            Self::Flat(user) => user,
+        }
+    }
+
+    /// Into the contained user settings regardless of server revision.
+    pub fn into_user(self) -> UserData {
+        match self {
+            Self::Wrapped { user } => user,
+            Self::Flat(user) => user,
+        }
+    }
 }
 
 /// User settings data
@@ -113,8 +153,11 @@ pub struct UserData {
     /// Configured mint URL
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mint_url: Option<String>,
-    /// Whether quotes are locked
-    #[serde(default)]
+    /// Whether quotes are locked.
+    ///
+    /// npubx-style servers call this `lockQuote`; the npub.cash API docs call
+    /// it `lockQuotes`.
+    #[serde(default, alias = "lockQuotes")]
     pub lock_quote: bool,
 }
 
@@ -188,6 +231,20 @@ impl From<Quote> for MintQuote {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_quotes_request_serializes_camel_case() {
+        let request = MissingQuotesRequest {
+            quote_ids: vec!["quote-a".to_string(), "quote-b".to_string()],
+        };
+
+        let json = serde_json::to_value(&request).expect("request serializes");
+
+        assert_eq!(
+            json,
+            serde_json::json!({ "quoteIds": ["quote-a", "quote-b"] })
+        );
+    }
 
     #[test]
     fn from_quote_saturates_default_expiry() {

@@ -20,9 +20,7 @@ cdk-http-client = { workspace = true, features = ["bitreq"] }
 cdk-sqlite = { workspace = true }
 cdk-postgres = { workspace = true, optional = true }
 cdk-supabase = { workspace = true, optional = true, features = ["wallet"] }
-cdk-npubcash = { workspace = true, optional = true }
-cdk-nwc = { workspace = true, optional = true }
-nostr-sdk = { workspace = true, optional = true }
+cdk-nostr = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 cdk-sql-common = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }
@@ -48,10 +46,12 @@ bip353 = ["cdk/bip353"]
 postgres = ["cdk-postgres"]
 # Enable Supabase-backed wallet database support in FFI
 supabase = ["cdk-supabase"]
+# Nostr base bindings: keys, NIP-44 encryption and the NIP-17 inbox listener
+nostr = ["dep:cdk-nostr"]
 # Enable NpubCash client bindings
-npubcash = ["cdk/npubcash", "cdk-npubcash", "nostr-sdk"]
+npubcash = ["cdk/npubcash", "nostr", "cdk-nostr/npubcash"]
 # Enable Nostr Wallet Connect (NIP-47) wallet service bindings
-nwc = ["cdk/nwc", "cdk-nwc", "nostr-sdk", "dep:tokio-util"]
+nwc = ["cdk/nwc", "nostr", "cdk-nostr/nwc", "dep:tokio-util"]
 
 [dev-dependencies]
 

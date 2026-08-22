@@ -2,7 +2,7 @@
 //!
 //! A backend (e.g. a Cashu wallet) implements [`NwcRequestHandler`] to service
 //! the NIP-47 commands. The handler is intentionally decoupled from any
-//! relay/transport concerns: the [`crate::NwcService`] owns the Nostr relay
+//! relay/transport concerns: the [`crate::nwc::NwcService`] owns the Nostr relay
 //! connection, decryption, authorization and response encoding, and only calls
 //! into the handler with already-validated, decrypted requests.
 //!

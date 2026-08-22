@@ -154,7 +154,7 @@ pub struct Wallet {
     auth_wallet: Arc<TokioRwLock<Option<AuthWallet>>>,
     auth_connector: Option<Arc<dyn AuthMintConnector + Send + Sync>>,
     #[cfg(feature = "npubcash")]
-    npubcash_client: Arc<TokioRwLock<Option<Arc<cdk_npubcash::NpubCashClient>>>>,
+    npubcash_client: Arc<TokioRwLock<Option<Arc<cdk_nostr::npubcash::NpubCashClient>>>>,
     seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,

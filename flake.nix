@@ -808,7 +808,7 @@
             "-p cdk-fake-wallet -p cdk-http-client --no-default-features --features cdk-http-client/bitreq"
             "-p cdk-payment-processor"
             "-p cdk-ldk-node"
-            "-p cdk-npubcash -p cdk-http-client --no-default-features --features cdk-http-client/bitreq"
+            "-p cdk-nostr -p cdk-http-client --no-default-features --features cdk-nostr/npubcash,cdk-http-client/bitreq"
           ];
 
           "mintd-main" = [

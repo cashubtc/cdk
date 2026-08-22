@@ -16,8 +16,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use cdk_npubcash::{JwtAuthProvider, NpubCashClient};
-use nostr_sdk::{Keys, ToBech32};
+use cdk_nostr::nostr_sdk::{Keys, ToBech32};
+use cdk_nostr::npubcash::{JwtAuthProvider, NpubCashClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

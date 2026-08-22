@@ -1362,14 +1362,15 @@ impl Settings {
     where
         P: Into<PathBuf>,
     {
-        let mut default_config_file_name = cdk_common::util::home_dir()
-            .ok_or(ConfigError::NotFound("Config Path".to_string()))?
-            .join("cashu-rs-mint");
-
-        default_config_file_name.push("config.toml");
         let config: String = match config_file_name {
             Some(value) => value.into().to_string_lossy().to_string(),
-            None => default_config_file_name.to_string_lossy().to_string(),
+            None => {
+                let mut default_config_file_name = cdk_common::util::home_dir()
+                    .ok_or(ConfigError::NotFound("Config Path".to_string()))?
+                    .join("cashu-rs-mint");
+                default_config_file_name.push("config.toml");
+                default_config_file_name.to_string_lossy().to_string()
+            }
         };
         let builder = Config::builder();
         let config: Config = builder
