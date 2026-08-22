@@ -12,6 +12,49 @@ use crate::mint::subscription::PubSubManager;
 use crate::mint::Mint;
 use crate::Error;
 
+/// Maximum time to wait for a payment-backend status check during melt
+/// reconciliation.
+///
+/// Reconciliation holds the quote advisory lock and the saga row lock while it
+/// re-checks the backend, so an unbounded call would let a slow or unreachable
+/// Lightning node hold those locks (and the dispatch-pool connection) for as
+/// long as it takes to answer. Bounding the call caps that window; on timeout
+/// the reconciler fails closed and leaves the melt pending for a later pass.
+#[cfg(not(test))]
+const MELT_PAYMENT_STATUS_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Shorter timeout in tests so the fail-closed path is exercised without
+/// slowing the suite.
+#[cfg(test)]
+const MELT_PAYMENT_STATUS_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Check the payment status with the backend, bounding the call so the locks
+/// held by the caller cannot be pinned by an unresponsive backend.
+///
+/// Returns `Ok(None)` on timeout (treated as indeterminate, fail closed);
+/// backend errors propagate so the caller can apply its own handling.
+async fn check_melt_payment_status_bounded(
+    mint: &Mint,
+    quote: &MeltQuote,
+) -> Result<Option<MakePaymentResponse>, Error> {
+    match tokio::time::timeout(
+        MELT_PAYMENT_STATUS_CHECK_TIMEOUT,
+        mint.check_melt_payment_status(quote),
+    )
+    .await
+    {
+        Ok(Ok(response)) => Ok(Some(response)),
+        Ok(Err(err)) => Err(err),
+        Err(_elapsed) => {
+            tracing::warn!(
+                "Payment status check for melt quote {} timed out after {:?}. Leaving pending.",
+                quote.id,
+                MELT_PAYMENT_STATUS_CHECK_TIMEOUT
+            );
+            Ok(None)
+        }
+    }
+}
+
 /// Process the outcome of a melt saga based on payment status.
 ///
 /// This function handles the shared logic for deciding whether to finalize, compensate, or skip
@@ -296,8 +339,13 @@ async fn reconcile_terminal_melt_with_dispatch_lock(
         return Ok(Some((saga, internal_response)));
     }
 
-    let fresh_response = match mint.check_melt_payment_status(quote).await {
-        Ok(response) => response,
+    let fresh_response = match check_melt_payment_status_bounded(mint, quote).await {
+        Ok(Some(response)) => response,
+        Ok(None) => {
+            // Timed out: fail closed, release the locks, leave pending.
+            tx.rollback().await?;
+            return Ok(None);
+        }
         Err(err) => {
             tracing::error!(
                 "Cannot verify payment status for melt quote {} (saga {}): {}. Leaving pending.",
@@ -435,8 +483,12 @@ async fn reconcile_terminal_melt_without_advisory_lock(
         }
     }
 
-    let fresh_response = match mint.check_melt_payment_status(quote).await {
-        Ok(response) => response,
+    let fresh_response = match check_melt_payment_status_bounded(mint, quote).await {
+        Ok(Some(response)) => response,
+        Ok(None) => {
+            // Timed out: fail closed, leave pending.
+            return Ok(None);
+        }
         Err(err) => {
             tracing::error!(
                 "Cannot verify payment status for melt quote {} (saga {}): {}. Leaving pending.",
@@ -670,6 +722,197 @@ mod tests {
     use super::*;
     use crate::mint::melt::melt_saga::MeltSaga;
     use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
+
+    /// A slow backend must not pin the reconciliation locks for the full
+    /// duration of its response: the bounded status check times out and the
+    /// reconciler fails closed, leaving the melt pending.
+    #[tokio::test]
+    async fn slow_backend_status_check_fails_closed_without_holding_locks() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use cdk_common::payment::{self, MintPayment};
+
+        use crate::mint::{MintBuilder, MintMeltLimits};
+        use crate::types::{FeeReserve, QuoteTTL};
+
+        // Backend whose status check never answers within the bounded window.
+        struct HangingStatusBackend {
+            inner: cdk_fake_wallet::FakeWallet,
+        }
+
+        #[async_trait::async_trait]
+        impl MintPayment for HangingStatusBackend {
+            type Err = payment::Error;
+
+            async fn get_settings(&self) -> Result<payment::SettingsResponse, Self::Err> {
+                self.inner.get_settings().await
+            }
+            async fn create_incoming_payment_request(
+                &self,
+                options: payment::IncomingPaymentOptions,
+            ) -> Result<payment::CreateIncomingPaymentResponse, Self::Err> {
+                self.inner.create_incoming_payment_request(options).await
+            }
+            async fn get_payment_quote(
+                &self,
+                unit: &CurrencyUnit,
+                options: payment::OutgoingPaymentOptions,
+            ) -> Result<payment::PaymentQuoteResponse, Self::Err> {
+                self.inner.get_payment_quote(unit, options).await
+            }
+            async fn make_payment(
+                &self,
+                unit: &CurrencyUnit,
+                options: payment::OutgoingPaymentOptions,
+            ) -> Result<MakePaymentResponse, Self::Err> {
+                self.inner.make_payment(unit, options).await
+            }
+            async fn check_incoming_payment_status(
+                &self,
+                payment_identifier: &PaymentIdentifier,
+            ) -> Result<Vec<payment::WaitPaymentResponse>, Self::Err> {
+                self.inner
+                    .check_incoming_payment_status(payment_identifier)
+                    .await
+            }
+            async fn check_outgoing_payment(
+                &self,
+                _payment_identifier: &PaymentIdentifier,
+            ) -> Result<MakePaymentResponse, Self::Err> {
+                // Longer than MELT_PAYMENT_STATUS_CHECK_TIMEOUT.
+                std::future::pending::<()>().await;
+                unreachable!("pending never resolves")
+            }
+            async fn wait_payment_event(
+                &self,
+            ) -> Result<
+                std::pin::Pin<Box<dyn futures::Stream<Item = payment::Event> + Send>>,
+                Self::Err,
+            > {
+                Ok(Box::pin(futures::stream::pending()))
+            }
+            fn is_payment_event_stream_active(&self) -> bool {
+                false
+            }
+            fn cancel_payment_event_stream(&self) {}
+        }
+
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let mut mint_builder = MintBuilder::new(db.clone());
+        let backend = HangingStatusBackend {
+            inner: cdk_fake_wallet::FakeWallet::new(
+                FeeReserve {
+                    min_fee_reserve: 1.into(),
+                    percent_fee_reserve: 1.0,
+                },
+                std::collections::HashMap::default(),
+                std::collections::HashSet::default(),
+                2,
+                CurrencyUnit::Sat,
+            ),
+        };
+        mint_builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintMeltLimits::new(1, 10_000),
+                Arc::new(backend),
+            )
+            .await
+            .unwrap();
+        let mnemonic = bip39::Mnemonic::generate(12).unwrap();
+        let mint = mint_builder
+            .with_name("test mint".to_string())
+            .with_description("test mint".to_string())
+            .with_urls(vec!["https://test-mint".to_string()])
+            .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
+            .await
+            .unwrap();
+        mint.set_quote_ttl(QuoteTTL::new(10000, 10000))
+            .await
+            .unwrap();
+        mint.start().await.unwrap();
+
+        let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+        let input_ys = proofs.ys().unwrap();
+        let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+        let melt_request = create_test_melt_request(&proofs, &quote);
+        let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+        let saga = MeltSaga::new(
+            Arc::new(mint.clone()),
+            mint.localstore(),
+            mint.pubsub_manager(),
+        );
+        let setup_saga = saga
+            .setup_melt(
+                &melt_request,
+                verification,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+            )
+            .await
+            .unwrap();
+        let operation_id = assert_single_melt_saga_operation_id(&mint).await;
+        drop(setup_saga);
+
+        // Park the saga as an ambiguous dispatch so reconciliation takes the
+        // status-check path.
+        let mut tx = mint.localstore.begin_transaction().await.unwrap();
+        let mut acquired = tx
+            .get_saga_for_update(&operation_id)
+            .await
+            .unwrap()
+            .expect("saga should exist");
+        tx.update_acquired_saga(
+            &mut acquired,
+            SagaStateEnum::Melt(MeltSagaState::PaymentPending),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let saga = assert_saga_exists(&mint, &operation_id).await;
+        let mut quote = mint
+            .localstore
+            .get_melt_quote(&quote.id)
+            .await
+            .unwrap()
+            .expect("quote should exist");
+        let payment_response = MakePaymentResponse {
+            payment_lookup_id: quote
+                .request_lookup_id
+                .clone()
+                .expect("bolt11 quote should have a lookup id"),
+            payment_proof: None,
+            status: MeltQuoteState::Failed,
+            total_spent: quote.amount(),
+        };
+
+        // The reconciler would normally block for the full backend response;
+        // the bounded check must return within the timeout instead.
+        let started = std::time::Instant::now();
+        process_melt_saga_outcome(
+            &saga,
+            &mut quote,
+            &payment_response,
+            &mint.localstore,
+            &mint.pubsub_manager,
+            &mint,
+        )
+        .await
+        .unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(60),
+            "reconciliation returned after the bounded status check, not the hanging backend (elapsed {:?})",
+            elapsed
+        );
+        // Failed-closed: the melt stays pending and the saga survives.
+        assert_eq!(quote.state, MeltQuoteState::Pending);
+        assert_saga_exists(&mint, &operation_id).await;
+        assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
+    }
 
     #[tokio::test]
     async fn test_paid_outcome_finalizes_and_records_completed_operation() {
