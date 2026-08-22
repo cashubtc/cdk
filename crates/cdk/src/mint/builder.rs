@@ -474,15 +474,17 @@ impl MintBuilder {
             }
             // Handle bolt12 methods
             PaymentMethod::Known(KnownMethod::Bolt12) => {
-                if settings.bolt12.is_some() {
-                    // Add to NUT04 (mint) - bolt12 doesn't have specific options yet
+                if let Some(bolt12_settings) = &settings.bolt12 {
+                    // Add to NUT04 (mint)
                     let mint_method_settings = MintMethodSettings {
                         method: method.clone(),
                         unit: unit.clone(),
                         method_name: Some("Bolt12".to_string()),
                         min_amount: Some(limits.mint_min),
                         max_amount: Some(limits.mint_max),
-                        options: None, // No bolt12-specific options in NUT04 yet
+                        options: Some(MintMethodOptions::Bolt12 {
+                            description: bolt12_settings.invoice_description,
+                        }),
                     };
                     self.mint_info.nuts.nut04.methods.push(mint_method_settings);
                     self.mint_info.nuts.nut04.disabled = false;
@@ -1263,7 +1265,10 @@ mod tests {
             )
             .unwrap();
 
-        let bolt12_settings = Bolt12Settings { amountless: true };
+        let bolt12_settings = Bolt12Settings {
+            amountless: true,
+            invoice_description: true,
+        };
 
         let settings = SettingsResponse {
             unit: "sat".to_string(),
@@ -1294,7 +1299,10 @@ mod tests {
         assert_eq!(mint_method.method_name, Some("Bolt12".to_string()));
         assert_eq!(mint_method.min_amount, Some(limits.mint_min));
         assert_eq!(mint_method.max_amount, Some(limits.mint_max));
-        assert!(mint_method.options.is_none());
+        assert_eq!(
+            mint_method.options,
+            Some(MintMethodOptions::Bolt12 { description: true })
+        );
 
         // Check NUT05 (melt) settings
         assert!(!mint_info.nuts.nut05.disabled);
@@ -1590,7 +1598,10 @@ mod tests {
             .unwrap();
 
         // Add Bolt12
-        let bolt12_settings = Bolt12Settings { amountless: false };
+        let bolt12_settings = Bolt12Settings {
+            amountless: false,
+            invoice_description: true,
+        };
         let settings2 = SettingsResponse {
             unit: "sat".to_string(),
             bolt11: None,

@@ -160,6 +160,7 @@ impl MintPayment for PaymentProcessorClient {
                 .bolt12
                 .map(|b| cdk_common::payment::Bolt12Settings {
                     amountless: b.amountless,
+                    invoice_description: b.invoice_description,
                 }),
             onchain: settings
                 .onchain

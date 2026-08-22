@@ -201,6 +201,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
             }),
             bolt12: settings.bolt12.map(|b| super::Bolt12Settings {
                 amountless: b.amountless,
+                invoice_description: b.invoice_description,
             }),
             onchain: settings.onchain.map(|o| super::OnchainSettings {
                 confirmations: o.confirmations,
