@@ -353,11 +353,11 @@ fn extract_supported_payment_methods(mint_info: &cdk::nuts::MintInfo) -> Vec<Str
 #[cfg(feature = "cln")]
 fn expand_path(path: &str) -> Option<PathBuf> {
     if path == "~" {
-        return cdk_common::util::home_dir();
+        return home::home_dir();
     }
 
     if let Some(remainder) = path.strip_prefix("~/") {
-        return cdk_common::util::home_dir().map(|home_dir| home_dir.join(remainder));
+        return home::home_dir().map(|home_dir| home_dir.join(remainder));
     }
 
     Some(PathBuf::from(path))
@@ -2496,7 +2496,7 @@ async fn shutdown_signal() {
 }
 
 fn work_dir() -> Result<PathBuf> {
-    let home_dir = cdk_common::util::home_dir().ok_or(anyhow!("Unknown home dir"))?;
+    let home_dir = home::home_dir().ok_or(anyhow!("Unknown home dir"))?;
     let dir = home_dir.join(".cdk-mintd");
 
     std::fs::create_dir_all(&dir)?;
@@ -3375,7 +3375,7 @@ backend = "fakewallet"
     fn expand_path_expands_bare_tilde_without_panic() {
         let expanded = expand_path("~");
 
-        assert_eq!(expanded, cdk_common::util::home_dir());
+        assert_eq!(expanded, home::home_dir());
     }
 
     #[cfg(feature = "cln")]

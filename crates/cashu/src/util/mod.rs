@@ -3,7 +3,6 @@
 pub mod hex;
 pub mod serde_helpers;
 
-use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use bitcoin::secp256k1::{rand, All, Secp256k1};
@@ -23,21 +22,6 @@ pub fn unix_time() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
-}
-
-/// Returns the current user's home directory.
-///
-/// Reads the `HOME` environment variable on Unix and `USERPROFILE` on
-/// Windows, treating an empty value as unset. Returns `None` when the
-/// variable is not set.
-pub fn home_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    let home = std::env::var_os("USERPROFILE");
-    #[cfg(not(target_os = "windows"))]
-    let home = std::env::var_os("HOME");
-
-    home.map(PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty())
 }
 
 #[derive(Debug, thiserror::Error)]
