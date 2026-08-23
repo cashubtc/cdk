@@ -73,10 +73,11 @@ pub struct DbSignatory {
     /// Units to initialize on boot, as `init_keysets` expects them.
     supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
     xpriv: Xpriv,
-    xpub: PublicKey,
-    /// Private half of `xpub`, kept as the identity key that signs arbitrary
-    /// payloads. No keyset derives from it directly.
+    /// NUT-06 mint identity key, derived from the seed outside the BIP-32 tree
+    /// so no keyset descends from it. Its public half is published as
+    /// `SignatoryKeysets::pubkey`.
     identity_key: SecretKey,
+    identity_pubkey: PublicKey,
     /// Latest keyset snapshot, published on every reload (initial load and each
     /// rotation).
     keyset_updates: watch::Sender<SignatoryKeysets>,
@@ -88,10 +89,6 @@ impl DbSignatory {
     /// The load is attempted once and any error is bubbled up: a failed load
     /// fails construction rather than returning a signatory without keys. On
     /// success the returned signatory is loaded and serving.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the seed produces an invalid master key (should never happen with valid entropy).
     pub async fn new(
         localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
         seed: &[u8],
@@ -99,12 +96,12 @@ impl DbSignatory {
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     ) -> Result<Self, Error> {
         let secp_ctx = Secp256k1::new();
-        let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
+        let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed)?;
 
-        let xpub: PublicKey = xpriv.to_keypair(&secp_ctx).public_key().into();
-        let identity_key: SecretKey = xpriv.private_key.into();
+        let identity_key = identity::derive_identity_key(seed)?;
+        let identity_pubkey = identity_key.public_key();
         let (keyset_updates, _) = watch::channel(SignatoryKeysets {
-            pubkey: xpub,
+            pubkey: identity_pubkey,
             keysets: vec![],
         });
 
@@ -114,7 +111,7 @@ impl DbSignatory {
             localstore,
             custom_paths,
             supported_units,
-            xpub,
+            identity_pubkey,
             identity_key,
             secp_ctx,
             xpriv,
@@ -310,7 +307,7 @@ impl DbSignatory {
     fn publish_latest(&self) {
         self.keyset_updates.send_modify(|out| {
             let latest = self.keysets.load();
-            out.pubkey = self.xpub;
+            out.pubkey = self.identity_pubkey;
             out.keysets = latest.by_id.values().map(|k| k.into()).collect();
         });
     }
@@ -331,7 +328,7 @@ impl DbSignatory {
     /// Snapshot the current keysets from memory (lock-free).
     fn keysets_snapshot(&self) -> SignatoryKeysets {
         SignatoryKeysets {
-            pubkey: self.xpub,
+            pubkey: self.identity_pubkey,
             keysets: self
                 .keysets
                 .load()
@@ -766,6 +763,31 @@ mod test {
         assert!(
             identity::verify(&keysets.pubkey, b"tampered", &signature).is_err(),
             "a tampered payload must not verify"
+        );
+    }
+
+    #[tokio::test]
+    async fn published_pubkey_is_not_the_bip32_master() {
+        let seed = b"test-seed-for-identity-signing";
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let signatory = DbSignatory::new(store, seed, Default::default(), Default::default())
+            .await
+            .expect("DbSignatory::new");
+
+        let master: PublicKey = Xpriv::new_master(bitcoin::Network::Bitcoin, seed)
+            .expect("master key")
+            .to_keypair(&Secp256k1::new())
+            .public_key()
+            .into();
+
+        assert_ne!(
+            signatory.keysets().await.expect("keysets").pubkey,
+            master,
+            "the identity key must be derived per NUT-06, not taken from the BIP-32 root"
         );
     }
 

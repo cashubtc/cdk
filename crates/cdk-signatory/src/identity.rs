@@ -1,78 +1,108 @@
-//! Identity signing
+//! Mint identity key
 //!
-//! The signatory signs arbitrary payloads with the key whose public half it
-//! already publishes as `SignatoryKeysets::pubkey`. The payload is not signed
-//! bare: it goes through the HMAC-SHA256 construction below first, so a
-//! signature produced here cannot be replayed as a NUT-11 or NUT-20 signature
-//! over the same bytes, nor those as one of these.
+//! Derivation and signing for the mint's identity key, the key published as
+//! `SignatoryKeysets::pubkey` and, downstream, as `MintInfo.pubkey`. Both
+//! follow NUT-06 so any wallet holding the published pubkey can verify without
+//! a signatory round trip.
 use bitcoin::secp256k1::hashes::{hmac, sha256, Hash, HashEngine, HmacEngine};
 use bitcoin::secp256k1::schnorr::Signature;
-use cdk_common::{Error, PublicKey, SecretKey};
+use bitcoin::secp256k1::{Keypair, Message};
+use cdk_common::{Error, PublicKey, SecretKey, SECP256K1};
 
-/// Domain separation tag. It is the HMAC key rather than a message prefix so
-/// any verifier can recompute the digest without holding a secret.
-const SIGN_DOMAIN: &[u8] = b"Cashu_Signatory_Sign_v1";
+/// NUT-06 domain separator for the identity key derivation.
+const MINT_IDENTITY_DOMAIN_SEPARATOR: &[u8] = b"Cashu_Mint_Identity_v1";
 
-/// Digest that is actually signed, HMAC-SHA256 over the payload keyed by the
-/// domain tag.
-fn signing_digest(payload: &[u8]) -> [u8; 32] {
-    let mut engine = HmacEngine::<sha256::Hash>::new(SIGN_DOMAIN);
-    engine.input(payload);
-    hmac::Hmac::<sha256::Hash>::from_engine(engine).to_byte_array()
+/// Derive the mint identity key from the mint seed, per NUT-06.
+///
+/// `HMAC-SHA256(key = seed, msg = domain_separator || ctr)`, with `ctr`
+/// incrementing while the result falls outside `1..n-1`.
+pub fn derive_identity_key(seed: &[u8]) -> Result<SecretKey, Error> {
+    for ctr in 0..=u8::MAX {
+        let mut engine = HmacEngine::<sha256::Hash>::new(seed);
+        engine.input(MINT_IDENTITY_DOMAIN_SEPARATOR);
+        engine.input(&[ctr]);
+        let candidate = hmac::Hmac::<sha256::Hash>::from_engine(engine).to_byte_array();
+
+        match SecretKey::from_slice(&candidate) {
+            Ok(secret_key) => return Ok(secret_key),
+            Err(error) => {
+                tracing::debug!(%error, ctr, "identity key candidate out of range, retrying")
+            }
+        }
+    }
+
+    Err(Error::IdentityKeyDerivation)
 }
 
-/// Sign an arbitrary payload with the signatory's identity key.
+/// Sign a payload with the mint identity key, per NUT-06.
+///
+/// BIP-340 over `SHA256(payload)`. The auxiliary randomness is zeroed so the
+/// signature over a given payload is stable across calls and reproduces the
+/// NUT-06 example vector.
 pub fn sign(secret_key: &SecretKey, payload: &[u8]) -> Result<Signature, Error> {
-    Ok(secret_key.sign(&signing_digest(payload))?)
+    let digest = sha256::Hash::hash(payload);
+    let message = Message::from_digest(digest.to_byte_array());
+    let keypair = Keypair::from_secret_key(&SECP256K1, secret_key);
+
+    Ok(SECP256K1.sign_schnorr_no_aux_rand(&message, &keypair))
 }
 
 /// Verify a signature produced by [`sign`] against the mint's published pubkey.
 pub fn verify(pubkey: &PublicKey, payload: &[u8], signature: &Signature) -> Result<(), Error> {
-    Ok(pubkey.verify(&signing_digest(payload), signature)?)
+    Ok(pubkey.verify(payload, signature)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn key() -> SecretKey {
-        SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
-            .expect("valid secret key")
-    }
-
     #[test]
-    fn digest_is_stable() {
+    fn derivation_matches_the_nut06_vector() {
+        let secret_key = derive_identity_key(b"NUT-06 example mint seed").expect("derive");
+
         assert_eq!(
-            cdk_common::util::hex::encode(signing_digest(b"an arbitrary stream of bytes")),
-            "a169782208c52b367550e7e123cc908508c82040c999c82a8920dfa64b666fd5"
+            secret_key.public_key().to_hex(),
+            "0338596797cef0627f653cd6568387361b00314add55d9f1ea9c94f46ae421e3da"
         );
     }
 
     #[test]
-    fn signature_round_trips() {
-        let key = key();
-        let payload = b"an arbitrary stream of bytes";
-        let signature = sign(&key, payload).expect("sign");
+    fn derivation_is_deterministic() {
+        let first = derive_identity_key(b"seed").expect("derive");
+        let second = derive_identity_key(b"seed").expect("derive");
 
-        verify(&key.public_key(), payload, &signature).expect("signature should verify");
+        assert_eq!(first.public_key(), second.public_key());
+    }
+
+    #[test]
+    fn signature_is_stable_across_calls() {
+        let secret_key = derive_identity_key(b"seed").expect("derive");
+        let payload = b"an arbitrary stream of bytes";
+
+        assert_eq!(
+            sign(&secret_key, payload).expect("sign").serialize(),
+            sign(&secret_key, payload).expect("sign").serialize()
+        );
+    }
+
+    #[test]
+    fn signature_verifies_with_the_plain_public_key_api() {
+        let secret_key = derive_identity_key(b"seed").expect("derive");
+        let payload = b"an arbitrary stream of bytes";
+        let signature = sign(&secret_key, payload).expect("sign");
+
+        secret_key
+            .public_key()
+            .verify(payload, &signature)
+            .expect("a verifier needs nothing from this crate");
+        verify(&secret_key.public_key(), payload, &signature).expect("verify");
     }
 
     #[test]
     fn tampered_payload_does_not_verify() {
-        let key = key();
-        let signature = sign(&key, b"an arbitrary stream of bytes").expect("sign");
+        let secret_key = derive_identity_key(b"seed").expect("derive");
+        let signature = sign(&secret_key, b"an arbitrary stream of bytes").expect("sign");
 
-        assert!(verify(&key.public_key(), b"tampered", &signature).is_err());
-    }
-
-    #[test]
-    fn domain_separation_rejects_a_bare_signature_over_the_same_bytes() {
-        // A NUT-11 style signature over the raw payload must not pass as an
-        // identity signature over the same bytes.
-        let key = key();
-        let payload = b"an arbitrary stream of bytes";
-        let bare = key.sign(payload).expect("sign");
-
-        assert!(verify(&key.public_key(), payload, &bare).is_err());
+        assert!(verify(&secret_key.public_key(), b"tampered", &signature).is_err());
     }
 }

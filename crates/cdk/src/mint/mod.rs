@@ -322,9 +322,16 @@ impl Mint {
             );
         }
 
-        // Persist missing pubkey early to avoid losing it on next boot and ensure stable identity across restarts
+        // Persist the pubkey early to avoid losing it on next boot and ensure stable identity across restarts
         let mut computed_info = mint_info;
-        if computed_info.pubkey.is_none() {
+        if computed_info.pubkey != Some(keysets.pubkey) {
+            if let Some(stale) = computed_info.pubkey {
+                tracing::warn!(
+                    %stale,
+                    current = %keysets.pubkey,
+                    "advertised pubkey does not match the signatory identity key, replacing it"
+                );
+            }
             computed_info.pubkey = Some(keysets.pubkey);
         }
 
@@ -339,7 +346,7 @@ impl Mint {
             Some(bytes) => {
                 let mut stored: MintInfo = serde_json::from_slice(&bytes)?;
                 let mut mutated = false;
-                if stored.pubkey.is_none() && computed_info.pubkey.is_some() {
+                if stored.pubkey != computed_info.pubkey {
                     stored.pubkey = computed_info.pubkey;
                     mutated = true;
                 }
@@ -1657,6 +1664,69 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    /// A mint upgraded across the NUT-06 identity change finds a persisted
+    /// `MintInfo.pubkey` that no longer matches what the signatory signs with.
+    /// It must advertise the signatory's key, not the stored one.
+    #[tokio::test]
+    async fn stored_pubkey_is_replaced_when_the_signatory_identity_changes() {
+        let localstore = Arc::new(
+            new_with_state(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                MintInfo::default(),
+            )
+            .await
+            .expect("in-memory db"),
+        );
+
+        let boot = |seed: &'static [u8]| {
+            let localstore = localstore.clone();
+            async move {
+                let keystore = Arc::new(
+                    cdk_sqlite::mint::memory::empty()
+                        .await
+                        .expect("in-memory keystore"),
+                );
+                let signatory = Arc::new(
+                    DbSignatory::new(keystore, seed, Default::default(), Default::default())
+                        .await
+                        .expect("DbSignatory::new"),
+                );
+                let pubkey = signatory.keysets().await.expect("keysets").pubkey;
+                let mint = Mint::new(
+                    MintInfo::default(),
+                    signatory,
+                    localstore,
+                    HashMap::new(),
+                    1000,
+                    1000,
+                )
+                .await
+                .expect("Mint::new");
+                (mint, pubkey)
+            }
+        };
+
+        let (first, first_pubkey) = boot(b"identity-seed-before-upgrade").await;
+        assert_eq!(
+            first.mint_info().await.expect("mint info").pubkey,
+            Some(first_pubkey)
+        );
+        drop(first);
+
+        let (second, second_pubkey) = boot(b"identity-seed-after-upgrade").await;
+        assert_ne!(first_pubkey, second_pubkey);
+        assert_eq!(
+            second.mint_info().await.expect("mint info").pubkey,
+            Some(second_pubkey),
+            "the persisted pubkey must follow the signatory, not outlive it"
+        );
     }
 
     #[tokio::test]
