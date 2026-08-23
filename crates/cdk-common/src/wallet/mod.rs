@@ -9,7 +9,6 @@ use bitcoin::bip32::DerivationPath;
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use cashu::amount::{FeeAndAmounts, KeysetFeeAndAmounts, SplitTarget};
 use cashu::nuts::nut07::ProofState;
-use cashu::nuts::nut18::PaymentRequest;
 use cashu::nuts::AuthProof;
 use cashu::util::hex;
 use cashu::{nut00, PaymentMethod, Proof, Proofs, PublicKey};
@@ -1242,13 +1241,6 @@ pub trait Wallet: Send + Sync {
 
     /// Verify DLEQ proofs in a token
     async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error>;
-
-    /// Pay a NUT-18 payment request
-    async fn pay_request(
-        &self,
-        request: PaymentRequest,
-        custom_amount: Option<Self::Amount>,
-    ) -> Result<(), Self::Error>;
 
     /// Subscribe to mint quote state updates
     ///

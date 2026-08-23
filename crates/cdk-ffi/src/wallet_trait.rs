@@ -430,20 +430,6 @@ impl WalletTraitDef for Wallet {
         Ok(())
     }
 
-    async fn pay_request(
-        &self,
-        request: cdk_common::nuts::nut18::PaymentRequest,
-        custom_amount: Option<Self::Amount>,
-    ) -> Result<(), Self::Error> {
-        WalletTraitDef::pay_request(
-            self.inner().as_ref(),
-            request,
-            custom_amount.map(Into::into),
-        )
-        .await?;
-        Ok(())
-    }
-
     async fn subscribe_mint_quote_state(
         &self,
         quote_ids: Vec<String>,

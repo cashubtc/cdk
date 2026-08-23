@@ -98,9 +98,9 @@ pub use nostr_backup::{BackupOptions, BackupResult, RestoreOptions, RestoreResul
 pub use npubcash::derive_npubcash_secret_key_from_seed;
 #[cfg(feature = "nwc")]
 pub use nwc::{derive_nwc_secret_key_from_seed, WalletNwcHandler};
-pub use payment_request::CreateRequestParams;
 #[cfg(feature = "nostr")]
 pub use payment_request::NostrWaitInfo;
+pub use payment_request::{CreateRequestParams, PayRequestOptions, PreparedPaymentRequest};
 pub use recovery::RecoveryReport;
 pub use send::PreparedSend;
 #[cfg(all(feature = "npubcash", not(target_arch = "wasm32")))]

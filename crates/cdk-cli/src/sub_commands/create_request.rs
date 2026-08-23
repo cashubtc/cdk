@@ -1,6 +1,6 @@
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{CurrencyUnit, SupportedMethod};
 use cdk::wallet::{payment_request as pr, NostrWaitInfo, WalletRepository};
 use clap::Args;
 use serde::{Deserialize, Serialize};
@@ -74,6 +74,13 @@ pub struct CreateRequestSubCommand {
     /// Prefer the listed mints while allowing payment from other mints
     #[arg(long)]
     mint_preferred: bool,
+    /// Accepted payment method and optional fee as METHOD or METHOD:FEE; repeatable
+    #[arg(
+        long = "supported-method",
+        action = clap::ArgAction::Append,
+        value_parser = parse_supported_method
+    )]
+    supported_methods: Vec<SupportedMethod>,
     /// Use bech32 encoding (CREQ-B)
     #[arg(short, long)]
     bech32: bool,
@@ -98,6 +105,7 @@ pub async fn create_request(
         nostr_relays: sub_command_args.nostr_relay.clone(),
         mints: sub_command_args.mints.clone(),
         mint_preferred: sub_command_args.mint_preferred.then_some(true),
+        supported_methods: sub_command_args.supported_methods.clone(),
     };
 
     let (req, nostr_wait) = wallet_repository.create_request(params).await?;
@@ -128,6 +136,27 @@ pub async fn create_request(
     }
 
     Ok(())
+}
+
+fn parse_supported_method(value: &str) -> Result<SupportedMethod, String> {
+    let (method, fee) = match value.rsplit_once(':') {
+        Some((method, fee)) => {
+            let fee = fee
+                .parse::<u64>()
+                .map_err(|err| format!("invalid method fee `{fee}`: {err}"))?;
+            (method, Some(fee))
+        }
+        None => (value, None),
+    };
+
+    if method.is_empty() {
+        return Err("payment method cannot be empty".to_string());
+    }
+
+    Ok(match fee {
+        Some(fee) => SupportedMethod::with_fee(method, fee),
+        None => SupportedMethod::new(method),
+    })
 }
 
 #[cfg(test)]
@@ -167,6 +196,19 @@ mod tests {
 
         assert!(info.mints.is_empty());
         assert!(info.mint_preferred.is_none());
+    }
+
+    #[test]
+    fn supported_method_cli_value_accepts_optional_fee() {
+        assert_eq!(
+            parse_supported_method("bolt11").expect("method"),
+            SupportedMethod::new("bolt11")
+        );
+        assert_eq!(
+            parse_supported_method("onchain:50").expect("method with fee"),
+            SupportedMethod::with_fee("onchain", 50)
+        );
+        assert!(parse_supported_method("bolt12:not-a-fee").is_err());
     }
 
     fn stored_info(mints: Vec<MintUrl>, mint_preferred: Option<bool>) -> StoredNostrWaitInfo {

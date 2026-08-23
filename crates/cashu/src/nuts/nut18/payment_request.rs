@@ -97,7 +97,9 @@ pub struct PaymentRequest {
     /// If non-empty, the payer must send ecash from a mint that supports at
     /// least one listed method. Each method can carry a fee that only applies
     /// to payments from non-preferred mints, or from any mint if no mint list is
-    /// set.
+    /// set. The advertised `mf` values are exposed as
+    /// [`SupportedMethod::fee`]; the fee that actually applies is selected by
+    /// the paying wallet based on its mint and supported methods.
     #[serde(rename = "sm")]
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub supported_methods: Vec<SupportedMethod>,

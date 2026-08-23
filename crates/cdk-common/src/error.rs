@@ -42,6 +42,18 @@ pub enum Error {
     /// Invalid payment request
     #[error("Invalid payment request")]
     InvalidPaymentRequest,
+    /// A payment-request token was created but transport delivery failed.
+    ///
+    /// The token remains a pending send. Callers can pass `operation_id` to
+    /// `Wallet::revoke_send` to reclaim it if the receiver has not claimed it.
+    #[error("Payment token created but delivery failed for operation {operation_id}: {source}")]
+    PaymentRequestDeliveryFailed {
+        /// Pending send operation that can be passed to `Wallet::revoke_send`.
+        operation_id: uuid::Uuid,
+        /// Transport error returned while delivering the created token.
+        #[source]
+        source: Box<Error>,
+    },
     /// Bolt11 invoice does not have amount
     #[error("Invoice Amount undefined")]
     InvoiceAmountUndefined,
@@ -603,6 +615,11 @@ mod tests {
         assert!(!Error::ConcurrentUpdate.is_definitive_failure());
         assert!(!Error::BlindedMessageAlreadySigned.is_definitive_failure());
         assert!(!Error::TokenAlreadySpent.is_definitive_failure());
+        assert!(!Error::PaymentRequestDeliveryFailed {
+            operation_id: uuid::Uuid::new_v4(),
+            source: Box::new(Error::Timeout),
+        }
+        .is_definitive_failure());
 
         // Test HTTP server errors (5xx)
         assert!(
@@ -759,6 +776,7 @@ impl Error {
             // Ambiguous Errors (Unsafe to revert)
             Self::Timeout
             | Self::Internal
+            | Self::PaymentRequestDeliveryFailed { .. }
             | Self::UnknownPaymentState
             | Self::PendingQuote
             | Self::TokenPending

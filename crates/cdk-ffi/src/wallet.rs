@@ -12,7 +12,7 @@ use crate::npubcash::NpubCashUserResponse;
 use crate::token::Token;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use crate::types::bip321::BitcoinNetwork;
-use crate::types::payment_request::PaymentRequest;
+use crate::types::payment_request::{PaymentRequest, PreparedPaymentRequest};
 use crate::types::*;
 
 /// FFI-compatible wallet.
@@ -846,27 +846,22 @@ impl Wallet {
         Ok(fee.into())
     }
 
-    /// Pay a NUT-18 payment request
+    /// Prepare a NUT-18 payment request so its method and input fees can be reviewed.
     ///
-    /// This method prepares and sends a payment for the given payment request.
-    /// It will use the Nostr or HTTP transport specified in the request.
-    ///
-    /// # Arguments
-    ///
-    /// * `payment_request` - The NUT-18 payment request to pay
-    /// * `custom_amount` - Optional amount to pay (required if request has no amount)
-    pub async fn pay_request(
+    /// Call `confirm` or `cancel` on the returned object to complete the flow.
+    pub async fn prepare_pay_request(
         &self,
         payment_request: std::sync::Arc<PaymentRequest>,
         custom_amount: Option<Amount>,
-    ) -> Result<(), FfiError> {
-        self.inner
-            .pay_request(
+    ) -> Result<std::sync::Arc<PreparedPaymentRequest>, FfiError> {
+        let prepared = self
+            .inner
+            .prepare_pay_request(
                 payment_request.inner().clone(),
                 custom_amount.map(Into::into),
             )
             .await?;
-        Ok(())
+        Ok(std::sync::Arc::new(PreparedPaymentRequest::new(prepared)))
     }
 }
 

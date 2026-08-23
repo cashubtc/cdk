@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use cdk_common::amount::{FeeAndAmounts, KeysetFeeAndAmounts, SplitTarget};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut07::ProofState;
-use cdk_common::nuts::nut18::PaymentRequest;
 use cdk_common::nuts::{
     AuthProof, CurrencyUnit, Id, MeltOptions, MintInfo, PaymentMethod, Proofs, SpendingConditions,
 };
@@ -362,15 +361,6 @@ impl WalletTrait for super::Wallet {
     async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error> {
         let token = cdk_common::nuts::nut00::token::Token::from_str(token_str)?;
         self.verify_token_dleq(&token).await
-    }
-
-    #[instrument(skip(self, request))]
-    async fn pay_request(
-        &self,
-        request: PaymentRequest,
-        custom_amount: Option<Amount>,
-    ) -> Result<(), Self::Error> {
-        self.pay_request(request, custom_amount).await
     }
 
     #[instrument(skip(self, method))]
