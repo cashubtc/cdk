@@ -89,7 +89,7 @@ pub struct ParsedPaymentInstruction {
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct Bip321UriBuilder {
-    /// A cashu payment request as a CREQB1 bech32m string.
+    /// A cashu payment request as a NUT-18 `creqA` or NUT-26 `creqb1` string.
     cashu_request_str: Option<String>,
     /// A BOLT11 invoice string.
     bolt11_invoice: Option<String>,
@@ -111,7 +111,7 @@ impl Bip321UriBuilder {
         Self::default()
     }
 
-    /// Set the cashu payment request from a raw CREQB1 bech32m string.
+    /// Set the cashu payment request from a raw NUT-18 or NUT-26 string.
     pub fn with_cashu_request_str(mut self, creq: String) -> Self {
         self.cashu_request_str = Some(creq);
         self
@@ -338,7 +338,7 @@ impl fmt::Display for Bip321UriBuilder {
         }
 
         if let Some(ref creq) = self.cashu_request_str {
-            query_params.append_pair("CREQ", &creq.to_ascii_uppercase());
+            query_params.append_pair("CREQ", &qr_friendly_cashu_request(creq));
         }
 
         let query_string = query_params.finish();
@@ -349,6 +349,19 @@ impl fmt::Display for Bip321UriBuilder {
 
         f.write_str(&uri)
     }
+}
+
+fn qr_friendly_cashu_request(creq: &str) -> String {
+    // NUT-26 uses bech32m and can be uppercased for more efficient QR encoding.
+    // NUT-18 uses case-sensitive base64 and must be preserved verbatim.
+    if creq
+        .get(..6)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("creqb1"))
+    {
+        return creq.to_ascii_uppercase();
+    }
+
+    creq.to_string()
 }
 
 fn uppercase_qr_address(address: &str) -> String {
@@ -411,6 +424,36 @@ mod tests {
 
         assert_has_creq(&uri);
         assert!(uri.contains(TEST_CREQ));
+    }
+
+    #[test]
+    fn test_bip321_uri_uppercases_bech32_cashu_request() {
+        let uri = Bip321UriBuilder::new()
+            .with_cashu_request_str(TEST_CREQ.to_ascii_lowercase())
+            .to_string();
+
+        assert!(uri.contains(TEST_CREQ));
+    }
+
+    #[test]
+    fn test_bip321_uri_preserves_base64_cashu_request() {
+        let creq = test_payment_request().to_string();
+        assert!(creq.starts_with("creqA"));
+
+        let uri = Bip321UriBuilder::new()
+            .with_cashu_request_str(creq.clone())
+            .to_string();
+
+        let query = uri
+            .split_once('?')
+            .map(|(_, query)| query)
+            .expect("URI should contain a query");
+        let encoded_creq = form_urlencoded::parse(query.as_bytes())
+            .find_map(|(name, value)| (name == "CREQ").then_some(value))
+            .expect("URI should contain a CREQ parameter");
+
+        assert_eq!(encoded_creq, creq);
+        assert!(PaymentRequest::from_str(&encoded_creq).is_ok());
     }
 
     #[test]
