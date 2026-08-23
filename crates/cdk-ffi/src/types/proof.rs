@@ -595,7 +595,7 @@ pub struct ProofStateUpdate {
     /// Current state
     pub state: ProofState,
     /// Optional witness data
-    pub witness: Option<String>,
+    pub witness: Option<Witness>,
 }
 
 impl From<cdk::nuts::nut07::ProofState> for ProofStateUpdate {
@@ -603,7 +603,7 @@ impl From<cdk::nuts::nut07::ProofState> for ProofStateUpdate {
         Self {
             y: proof_state.y.to_string(),
             state: proof_state.state.into(),
-            witness: proof_state.witness.map(|w| format!("{:?}", w)),
+            witness: proof_state.witness.map(Into::into),
         }
     }
 }
@@ -644,6 +644,39 @@ mod tests {
         assert!(debug.contains("public-signature"));
         assert!(!debug.contains(secret));
         assert!(debug.contains("preimage: \"[REDACTED]\""));
+    }
+
+    #[test]
+    fn proof_state_update_debug_redacts_htlc_preimage() {
+        let secret = "htlc-preimage-that-authorizes-spending";
+        let proof_state = cdk::nuts::nut07::ProofState {
+            y: cdk::nuts::SecretKey::generate().public_key(),
+            state: CdkState::Spent,
+            witness: Some(cdk::nuts::Witness::HTLCWitness(
+                cdk::nuts::nut14::HTLCWitness {
+                    preimage: secret.to_string(),
+                    signatures: Some(vec!["public-signature".to_string()]),
+                },
+            )),
+        };
+
+        let update: ProofStateUpdate = proof_state.into();
+        match update.witness.as_ref() {
+            Some(Witness::HTLC {
+                preimage,
+                signatures,
+            }) => {
+                assert_eq!(preimage, secret);
+                assert_eq!(signatures, &Some(vec!["public-signature".to_string()]));
+            }
+            witness => panic!("expected HTLC witness, got {witness:?}"),
+        }
+
+        let debug = format!("{update:?}");
+
+        assert!(debug.contains("public-signature"));
+        assert!(!debug.contains(secret));
+        assert!(debug.contains("[REDACTED]"));
     }
 
     #[test]
