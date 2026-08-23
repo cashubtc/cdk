@@ -1703,6 +1703,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdk-nitro"
+version = "0.1.0"
+dependencies = [
+ "cashu",
+]
+
+[[package]]
 name = "cdk-npubcash"
 version = "0.18.0-rc.0"
 dependencies = [

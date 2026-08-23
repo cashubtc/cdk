@@ -1,0 +1,69 @@
+{
+  "name": "@cashudevkit/react-native",
+  "version": "0.1.0",
+  "description": "React Native Nitro bindings for Cashu Development Kit",
+  "type": "module",
+  "main": "lib/commonjs/index.js",
+  "module": "lib/module/index.js",
+  "types": "lib/typescript/index.d.ts",
+  "react-native": "src/index.ts",
+  "source": "src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/typescript/index.d.ts",
+      "react-native": "./src/index.ts",
+      "import": "./lib/module/index.js",
+      "require": "./lib/commonjs/index.js"
+    },
+    "./native": {
+      "types": "./lib/typescript/native.d.ts",
+      "react-native": "./src/native.ts",
+      "import": "./lib/module/native.js",
+      "require": "./lib/commonjs/native.js"
+    }
+  },
+  "files": [
+    "src",
+    "lib",
+    "cpp",
+    "android",
+    "ios",
+    "nitrogen",
+    "*.podspec",
+    "nitro.json"
+  ],
+  "scripts": {
+    "build": "bob build",
+    "codegen": "nitrogen",
+    "prepack": "bob build",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "react-native",
+    "cashu",
+    "ecash",
+    "nitro"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@cashu/cashu-ts": "^5.0.0-rc.0",
+    "react": "*",
+    "react-native": "*",
+    "react-native-nitro-modules": "*"
+  },
+  "devDependencies": {
+    "@cashu/cashu-ts": "5.0.0-rc.5",
+    "nitrogen": "^0.32.0",
+    "react-native-builder-bob": "^0.30.0",
+    "typescript": "^5.4.0"
+  },
+  "react-native-builder-bob": {
+    "source": "src",
+    "output": "lib",
+    "targets": [
+      "commonjs",
+      ["module", { "esm": true }],
+      "typescript"
+    ]
+  }
+}
