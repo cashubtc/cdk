@@ -7,6 +7,45 @@
 
 ## [Unreleased]
 
+## [0.18.0-rc.1](https://github.com/cashubtc/cdk/releases/tag/v0.18.0-rc.1)
+
+### Summary
+
+Version 0.18.0-rc.1 strengthens multi-instance melt safety, makes NUT-18 payment requests explicitly confirmable, and adds resumable batch minting for unissued quotes. It also consolidates Nostr support in `cdk-nostr`, expands mint-management RPCs, and hardens configuration, payment dispatch, wallet recovery, and secret-bearing output.
+
+### Breaking Changes
+
+- cdk/cdk-ffi: Atomic `pay_request` methods are replaced by a prepared payment-request flow. Callers must inspect the resolved method and fees, then explicitly confirm or cancel the reserved payment. Delivery failures retain the pending operation ID so an unclaimed send can be revoked instead of paid again.
+- cdk-nostr: The standalone `cdk-npubcash` and `cdk-nwc` crates are consolidated into feature-gated `cdk-nostr` modules, with shared key handling, NIP-44 encryption, and restartable NIP-17 inbox support.
+
+### Added
+
+- cdk: Unissued mint quotes can be grouped by mint and keyset and minted in batches, with per-quote saga progress persisted for restart-safe recovery.
+- cdk-nostr/cdk-ffi: Npub.cash support can synchronize and reconcile locked quotes, claim only quotes created through npub.cash, and expose the workflow through the CLI and FFI.
+- cdk-common/cdk-postgres: Quote-coordination APIs, transaction-scoped PostgreSQL advisory locks, and partitioned connection pools support safe payment dispatch and recovery across mint replicas.
+- cdk-common: Database transactions support atomic conditional key-value writes for concurrent ownership transitions.
+- cdk-mint-rpc: New payment-method management and operator deposit-address APIs are available, and BDK transaction responses include ordered outputs, quote associations, and input metadata.
+- cashu/cdk: Mint information advertises the enforced maximum request-array length, and spending witnesses use typed representations instead of raw strings.
+
+### Changed
+
+- cdk: NUT-18 payment-request preparation exposes method and input fees, preserves advertised transport order, and requires explicit confirmation before payment.
+- cdk-mint: Melt dispatch, reconciliation, finalization, and compensation share durable quote locking and fail closed when backend results are ambiguous or time out.
+- cdk-ldk-node: Payment waiters wake on terminal LDK events instead of polling the payment store.
+- workspace: Unused dependencies were removed, small dependencies were replaced by standard-library or in-tree equivalents, and arithmetic paths use checked operations.
+
+### Fixed
+
+- cdk-mint: Concurrent replicas cannot dispatch or recover the same melt independently, and stale or contradictory payment status cannot roll back an indeterminate dispatch.
+- cdk-cln/cdk-ldk-node: BOLT12 quote bindings and dispatch claims are write-once, preventing retries or concurrent calls from redirecting recovery or paying multiple invoices. CLN also respects configurations that disable BOLT12.
+- cdk-bdk: Receive addresses cannot be reassigned across quotes, and send-intent quote IDs are reserved atomically under concurrent use.
+- cdk: Batched quote recovery falls back to individual requests after definitive size rejections and keeps proof offsets aligned when recovered quotes are missing.
+- cashu: Spending-condition construction rejects duplicate P2PK keys, wallet-only locking helpers are feature-gated correctly, and NUT-18 request casing is preserved in BIP-321 URIs.
+- cdk-mintd: Default configuration paths are resolved lazily, environment-only authorization policy is preserved, invalid LND fee percentages are rejected, exported configuration files are owner-only on Unix, and gRPC payment-processor clients use secure transport settings.
+- cdk-ldk-node: Lagged payment events no longer terminate event handling.
+- security: Untrusted terminal and log text is escaped, proof secrets are redacted, and unsafe migration filenames are rejected.
+- regtest/bindings: Regtest startup, payment-state checks, seed isolation, path handling, and Kotlin native-library stripping are more reliable.
+
 ## [0.18.0-rc.0](https://github.com/cashubtc/cdk/releases/tag/v0.18.0-rc.0)
 
 ### Summary
