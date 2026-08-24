@@ -431,6 +431,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn get_mint_quote_by_pubkey(
         &self,
+        method: PaymentMethod,
         pubkeys: Vec<PublicKey>,
         signatures: Vec<Signature>,
     ) -> Result<Vec<MintQuoteResponse<QuoteId>>, Error> {
@@ -473,9 +474,9 @@ impl Mint {
             // here would drift the moment a response field is added.
             quotes
                 .into_iter()
+                .filter(|q| q.payment_method == method)
                 .map(MintQuoteResponse::try_from)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(Error::from)
+                .collect::<Result<Vec<_>, Error>>()
         }
         .await;
 

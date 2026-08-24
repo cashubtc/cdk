@@ -130,8 +130,8 @@ pub enum RoutePath {
     Wildcard(String),
     /// Mint Quote for a specific payment method
     MintQuote(String),
-    /// Mint Quote lookup by public key (NUT-XX), method-agnostic
-    MintQuoteByPubkey,
+    /// Mint Quote lookup by public key (NUT-XX)
+    MintQuoteByPubkey(String),
     /// Mint for a specific payment method
     Mint(String),
     /// Melt Quote for a specific payment method
@@ -174,13 +174,16 @@ impl std::str::FromStr for RoutePath {
             "/v1/restore" => Ok(RoutePath::Restore),
             "/v1/auth/blind/mint" => Ok(RoutePath::MintBlindAuth),
             "/v1/ws" => Ok(RoutePath::Ws),
-            // Must precede the `/v1/mint/quote/` prefix branch below, which would otherwise
-            // read this as a payment method literally named "pubkey".
-            "/v1/mint/quote/pubkey" => Ok(RoutePath::MintQuoteByPubkey),
             _ => {
                 // Try to parse as a payment method route
                 if let Some(method) = s.strip_prefix("/v1/mint/quote/") {
-                    Ok(RoutePath::MintQuote(normalize_payment_method(method)))
+                    if let Some(method) = method.strip_suffix("/pubkey") {
+                        Ok(RoutePath::MintQuoteByPubkey(normalize_payment_method(
+                            method,
+                        )))
+                    } else {
+                        Ok(RoutePath::MintQuote(normalize_payment_method(method)))
+                    }
                 } else if let Some(method) = s.strip_prefix("/v1/mint/") {
                     Ok(RoutePath::Mint(normalize_payment_method(method)))
                 } else if let Some(method) = s.strip_prefix("/v1/melt/quote/") {
@@ -344,7 +347,7 @@ impl std::fmt::Display for RoutePath {
         match self {
             RoutePath::Wildcard(prefix) => write!(f, "{}*", prefix),
             RoutePath::MintQuote(method) => write!(f, "/v1/mint/quote/{}", method),
-            RoutePath::MintQuoteByPubkey => write!(f, "/v1/mint/quote/pubkey"),
+            RoutePath::MintQuoteByPubkey(method) => write!(f, "/v1/mint/quote/{}/pubkey", method),
             RoutePath::Mint(method) => write!(f, "/v1/mint/{}", method),
             RoutePath::MeltQuote(method) => write!(f, "/v1/melt/quote/{}", method),
             RoutePath::Melt(method) => write!(f, "/v1/melt/{}", method),
@@ -698,13 +701,14 @@ mod tests {
         let json = serde_json::to_string(&RoutePath::MintQuote("paypal".to_string())).unwrap();
         assert_eq!(json, "\"/v1/mint/quote/paypal\"");
 
-        // NUT-XX lookup is a static path. It must not be read as a payment method named
-        // "pubkey" by the `/v1/mint/quote/` prefix branch in `FromStr`.
-        let json = serde_json::to_string(&RoutePath::MintQuoteByPubkey).unwrap();
-        assert_eq!(json, "\"/v1/mint/quote/pubkey\"");
+        let json =
+            serde_json::to_string(&RoutePath::MintQuoteByPubkey("bolt11".to_string())).unwrap();
+        assert_eq!(json, "\"/v1/mint/quote/bolt11/pubkey\"");
+
+        let path: RoutePath = serde_json::from_str("\"/v1/mint/quote/bolt11/pubkey\"").unwrap();
         assert_eq!(
-            RoutePath::from_str("/v1/mint/quote/pubkey").unwrap(),
-            RoutePath::MintQuoteByPubkey
+            path,
+            RoutePath::MintQuoteByPubkey(PaymentMethod::Known(KnownMethod::Bolt11).to_string())
         );
 
         // Test deserialization of payment method paths

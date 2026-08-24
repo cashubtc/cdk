@@ -108,11 +108,9 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/checkstate", post(post_check))
         .route("/info", get(get_mint_info))
         .route("/restore", post(post_restore))
-        // NUT-XX quote lookup is method-agnostic, so it belongs here rather than in the
-        // per-method custom router, which is only mounted when custom methods are configured.
         .route(
-            "/mint/quote/pubkey",
-            post(custom_handlers::post_mint_quote_by_pubkey),
+            "/mint/quote/{method}/pubkey",
+            post(post_mint_quote_by_pubkey),
         );
 
     let mut mint_router = Router::new().nest("/v1", v1_router);

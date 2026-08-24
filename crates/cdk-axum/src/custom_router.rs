@@ -20,7 +20,6 @@ use crate::MintState;
 /// - `/mint/quote/{method}` - POST: Create mint quote
 /// - `/mint/quote/{method}/{quote_id}` - GET: Check mint quote status
 /// - `/mint/quote/{method}/check` - POST: Batch check mint quote status (NUT-29)
-/// - `/mint/quote/{method}/pubkey` - POST: Mint quotes lookup by pubkey
 /// - `/mint/{method}` - POST: Mint tokens
 /// - `/mint/{method}/batch` - POST: Batch mint tokens (NUT-29)
 /// - `/melt/quote/{method}` - POST: Create melt quote
@@ -46,10 +45,6 @@ pub fn create_custom_routers(state: MintState, custom_methods: Vec<String>) -> R
         .route(
             "/mint/quote/{method}/check",
             post(post_batch_check_mint_quote),
-        )
-        .route(
-            "/mint/quote/{method}/pubkey",
-            post(post_mint_quote_by_pubkey),
         )
         .route("/mint/{method}", post(cache_post_mint_custom))
         .route("/mint/{method}/batch", post(cache_post_batch_mint))

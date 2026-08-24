@@ -100,11 +100,12 @@ async fn signed_lookup_returns_own_quotes() {
     let mint = test_mint().await;
     let owner = SecretKey::generate();
     let pubkey = owner.public_key();
+    let method = PaymentMethod::Known(KnownMethod::Bolt11);
     locked_quote(&mint, pubkey).await;
 
     let signature = sign_lookup(&mint, &owner).await;
     let quotes = mint
-        .get_mint_quote_by_pubkey(vec![pubkey], vec![signature])
+        .get_mint_quote_by_pubkey(method, vec![pubkey], vec![signature])
         .await
         .unwrap();
 
@@ -123,6 +124,7 @@ async fn signature_is_over_a_single_hash_of_the_preimage() {
     let mint = test_mint().await;
     let owner = SecretKey::generate();
     let pubkey = owner.public_key();
+    let method = PaymentMethod::Known(KnownMethod::Bolt11);
     locked_quote(&mint, pubkey).await;
 
     let mint_pubkey = mint.mint_info().await.unwrap().pubkey.unwrap();
@@ -131,7 +133,7 @@ async fn signature_is_over_a_single_hash_of_the_preimage() {
     // Signing the preimage is accepted...
     let signature = owner.sign(&msg).unwrap();
     assert!(mint
-        .get_mint_quote_by_pubkey(vec![pubkey], vec![signature])
+        .get_mint_quote_by_pubkey(method.clone(), vec![pubkey], vec![signature])
         .await
         .is_ok());
 
@@ -139,7 +141,7 @@ async fn signature_is_over_a_single_hash_of_the_preimage() {
     let digest = Sha256Hash::hash(&msg).to_byte_array();
     let double_hashed = owner.sign(&digest).unwrap();
     assert!(matches!(
-        mint.get_mint_quote_by_pubkey(vec![pubkey], vec![double_hashed])
+        mint.get_mint_quote_by_pubkey(method, vec![pubkey], vec![double_hashed])
             .await,
         Err(Error::SignatureMissingOrInvalid)
     ));
@@ -152,11 +154,12 @@ async fn missing_signatures_are_rejected() {
     let mint = test_mint().await;
     let victim = SecretKey::generate();
     let victim_pubkey = victim.public_key();
+    let method = PaymentMethod::Known(KnownMethod::Bolt11);
     locked_quote(&mint, victim_pubkey).await;
 
     // No signature at all.
     assert!(matches!(
-        mint.get_mint_quote_by_pubkey(vec![victim_pubkey], vec![])
+        mint.get_mint_quote_by_pubkey(method.clone(), vec![victim_pubkey], vec![])
             .await,
         Err(Error::SignatureMissingOrInvalid)
     ));
@@ -166,6 +169,7 @@ async fn missing_signatures_are_rejected() {
     let attacker_signature = sign_lookup(&mint, &attacker).await;
     assert!(matches!(
         mint.get_mint_quote_by_pubkey(
+            method,
             vec![attacker.public_key(), victim_pubkey],
             vec![attacker_signature]
         )
@@ -184,8 +188,10 @@ async fn signature_from_another_key_is_rejected() {
     let attacker = SecretKey::generate();
     let attacker_signature = sign_lookup(&mint, &attacker).await;
 
+    let method = PaymentMethod::Known(KnownMethod::Bolt11);
+
     assert!(matches!(
-        mint.get_mint_quote_by_pubkey(vec![victim_pubkey], vec![attacker_signature])
+        mint.get_mint_quote_by_pubkey(method, vec![victim_pubkey], vec![attacker_signature])
             .await,
         Err(Error::SignatureMissingOrInvalid)
     ));
@@ -203,8 +209,10 @@ async fn signature_for_another_mint_is_rejected() {
     let msg = mint_quote_lookup_msg_to_sign(&other_mint_pubkey, &pubkey);
     let signature = owner.sign(&msg).unwrap();
 
+    let method = PaymentMethod::Known(KnownMethod::Bolt11);
+
     assert!(matches!(
-        mint.get_mint_quote_by_pubkey(vec![pubkey], vec![signature])
+        mint.get_mint_quote_by_pubkey(method, vec![pubkey], vec![signature])
             .await,
         Err(Error::SignatureMissingOrInvalid)
     ));
@@ -213,6 +221,8 @@ async fn signature_for_another_mint_is_rejected() {
 /// An anonymous caller cannot ask the mint for unbounded signature verification.
 #[tokio::test]
 async fn oversized_request_is_rejected() {
+    let method = PaymentMethod::Known(KnownMethod::Bolt11);
+
     let mint = test_mint().await;
 
     let pubkeys: Vec<PublicKey> = (0..MAX_LOOKUP_PUBKEYS + 1)
@@ -220,7 +230,7 @@ async fn oversized_request_is_rejected() {
         .collect();
 
     assert!(matches!(
-        mint.get_mint_quote_by_pubkey(pubkeys, vec![]).await,
+        mint.get_mint_quote_by_pubkey(method, pubkeys, vec![]).await,
         Err(Error::BatchSizeExceeded { .. })
     ));
 }

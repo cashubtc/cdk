@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
-//! NUT-XX route: `POST /v1/mint/quote/pubkey`
+//! NUT-XX route: `POST /v1/mint/quote/{method}/pubkey`
 //!
 //! The lookup is method-agnostic, so it must be served by the main v1 router rather than the
 //! per-method custom router, which is only mounted when custom methods are configured.
@@ -74,10 +74,10 @@ async fn signed_request_body(mint: &Mint, owner: &SecretKey) -> String {
     )
 }
 
-fn lookup_request(body: String) -> Request<Body> {
+fn lookup_request(method: String, body: String) -> Request<Body> {
     Request::builder()
         .method("POST")
-        .uri("/v1/mint/quote/pubkey")
+        .uri(format!("/v1/mint/quote/{method}/pubkey"))
         .header("content-type", "application/json")
         .body(Body::from(body))
         .unwrap()
@@ -100,10 +100,11 @@ async fn lookup_route_is_served_without_custom_methods() {
     .await
     .unwrap();
 
+    let method = "bolt11".to_string();
     let body = signed_request_body(&mint, &owner).await;
     let router = cdk_axum::create_mint_router(mint, vec![]).await.unwrap();
 
-    let response = router.oneshot(lookup_request(body)).await.unwrap();
+    let response = router.oneshot(lookup_request(method, body)).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -130,13 +131,14 @@ async fn lookup_route_is_served_without_custom_methods() {
 async fn lookup_route_is_served_with_custom_methods() {
     let mint = test_mint().await;
     let owner = SecretKey::generate();
+    let method = "bolt11".to_string();
     let body = signed_request_body(&mint, &owner).await;
 
     let router = cdk_axum::create_mint_router(mint, vec!["paypal".to_string()])
         .await
         .unwrap();
 
-    let response = router.oneshot(lookup_request(body)).await.unwrap();
+    let response = router.oneshot(lookup_request(method, body)).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 }
 
@@ -147,11 +149,12 @@ async fn unsigned_request_is_refused() {
     let victim = SecretKey::generate().public_key();
 
     let router = cdk_axum::create_mint_router(mint, vec![]).await.unwrap();
+    let method = "bolt11".to_string();
     let body = format!(
         r#"{{"pubkeys":["{}"],"pubkey_signatures":[]}}"#,
         victim.to_hex()
     );
 
-    let response = router.oneshot(lookup_request(body)).await.unwrap();
+    let response = router.oneshot(lookup_request(method, body)).await.unwrap();
     assert_ne!(response.status(), StatusCode::OK);
 }

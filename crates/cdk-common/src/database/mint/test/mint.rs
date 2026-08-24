@@ -1091,8 +1091,6 @@ pub async fn get_mint_quote_by_public_key<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    use crate::database::mint::test::unique_string;
-
     let secret_key = SecretKey::generate();
     let pubkey = secret_key.public_key();
     let other_pubkey = SecretKey::generate().public_key();
