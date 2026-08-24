@@ -11,6 +11,10 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use axum::extract::Request;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::Router;
 use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::WalletDatabase;
@@ -136,11 +140,8 @@ async fn mint_bat(mint: &Mint) -> cdk::nuts::Proof {
         .expect("one auth proof")
 }
 
-/// Serve a mint on an ephemeral local port and return its URL.
-async fn serve(mint: Arc<Mint>) -> MintUrl {
-    let router = cdk_axum::create_mint_router(mint, vec!["bolt11".to_string()])
-        .await
-        .expect("mint router");
+/// Serve a router on an ephemeral local port and return its URL.
+async fn serve_router(router: Router) -> MintUrl {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -149,6 +150,37 @@ async fn serve(mint: Arc<Mint>) -> MintUrl {
         axum::serve(listener, router).await.expect("serve mint");
     });
     MintUrl::from_str(&format!("http://{addr}")).expect("mint url")
+}
+
+async fn mint_router(mint: Arc<Mint>) -> Router {
+    cdk_axum::create_mint_router(mint, vec!["bolt11".to_string()])
+        .await
+        .expect("mint router")
+}
+
+/// Serve a mint on an ephemeral local port and return its URL.
+async fn serve(mint: Arc<Mint>) -> MintUrl {
+    serve_router(mint_router(mint).await).await
+}
+
+/// Serve a mint that behaves like one predating in-band authentication: the
+/// blind auth token has to be in the upgrade header or the upgrade is refused.
+async fn serve_header_only_blind_auth(mint: Arc<Mint>) -> MintUrl {
+    let router = mint_router(mint)
+        .await
+        .layer(middleware::from_fn(reject_header_less_ws));
+    serve_router(router).await
+}
+
+async fn reject_header_less_ws(request: Request, next: Next) -> Response {
+    if request.uri().path().ends_with("/v1/ws") && !request.headers().contains_key("Blind-auth") {
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            "blind auth header required",
+        )
+            .into_response();
+    }
+    next.run(request).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -222,6 +254,71 @@ async fn websocket_connects_and_authenticates_in_band() {
     assert!(
         spendable.is_err(),
         "expected the BAT to be spent by in-band websocket auth, but it was still \
+         spendable (was the subscription served over the HTTP poll fallback?): {spendable:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn websocket_falls_back_to_the_blind_auth_header() {
+    let mint = Arc::new(build_ws_protected_mint(AuthRequired::Blind).await);
+    let mint_url = serve_header_only_blind_auth(mint.clone()).await;
+
+    let db = Arc::new(memory::empty().await.expect("wallet db"));
+    let wallet = WalletBuilder::new()
+        .mint_url(mint_url.clone())
+        .unit(CurrencyUnit::Sat)
+        .localstore(db.clone())
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .build()
+        .expect("wallet");
+
+    wallet
+        .fetch_mint_info()
+        .await
+        .expect("mint info")
+        .expect("mint info present");
+
+    let bat = mint_bat(&mint).await;
+    let auth_proof: AuthProof = bat.clone().try_into().expect("auth proof");
+    let bat_info = ProofInfo::new(bat, mint_url.clone(), State::Unspent, CurrencyUnit::Auth)
+        .expect("proof info");
+    db.update_proofs(vec![bat_info], vec![])
+        .await
+        .expect("seed bat");
+
+    let quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
+        .await
+        .expect("mint quote");
+
+    // The header-less upgrade is refused here, and a refused upgrade retires
+    // the websocket for the life of the process. The wallet has to retry with
+    // the header instead of degrading to HTTP polling.
+    let mut subscription = wallet
+        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
+            .id
+            .clone()]))
+        .await
+        .expect("subscribe over the header-authenticated websocket");
+
+    let msg = timeout(Duration::from_secs(15), subscription.recv())
+        .await
+        .expect("timed out waiting for a notification")
+        .expect("subscription closed without a notification");
+
+    match msg.into_inner() {
+        NotificationPayload::MintQuoteBolt11Response(response) => {
+            assert_eq!(response.quote.to_string(), quote.id);
+        }
+        other => panic!("unexpected notification: {other:?}"),
+    }
+
+    // As above: only the websocket path spends the BAT, so a spent token proves
+    // the notification did not come from the HTTP poll fallback.
+    let spendable = mint.check_blind_auth_proof_spendable(auth_proof).await;
+    assert!(
+        spendable.is_err(),
+        "expected the BAT to be spent by the header upgrade, but it was still \
          spendable (was the subscription served over the HTTP poll fallback?): {spendable:?}"
     );
 }

@@ -520,6 +520,56 @@ struct BlindAuth {
     required: bool,
 }
 
+/// Retry a rejected upgrade with the legacy `Blind-auth` header.
+///
+/// Mints older than in-band NUT-22 authentication reject a header-less upgrade
+/// to a blind-protected `/v1/ws`, and the consumer disables streaming for the
+/// rest of the process once a connect fails permanently. This spends a BAT, so
+/// it only runs after the header-less connect has already failed for a reason
+/// that will not fix itself. Browsers cannot set headers on a WebSocket, so the
+/// retry is skipped on wasm, where it would repeat the same request.
+async fn connect_with_legacy_blind_auth(
+    client: &SubscriptionClient,
+    url: &str,
+    auth: &BlindAuth,
+    err: &WsError,
+) -> Option<(WsSender, WsReceiver)> {
+    if cfg!(target_arch = "wasm32") || !auth.required {
+        return None;
+    }
+
+    if !matches!(err, WsError::Terminal(_) | WsError::NotSupported(_)) {
+        return None;
+    }
+
+    let token = match auth
+        .wallet
+        .as_ref()?
+        .get_auth_for_request(&auth.endpoint)
+        .await
+    {
+        Ok(Some(token)) => token,
+        Ok(None) => return None,
+        Err(err) => {
+            tracing::warn!("Failed to get blind auth token for legacy upgrade: {err:?}");
+            return None;
+        }
+    };
+
+    tracing::debug!("Retrying the websocket upgrade with the legacy Blind-auth header");
+    match client
+        .http_client
+        .connect_websocket(url, &[("Blind-auth", &token.to_string())])
+        .await
+    {
+        Ok(connection) => Some(connection),
+        Err(err) => {
+            tracing::debug!("Legacy Blind-auth upgrade failed as well: {err:?}");
+            None
+        }
+    }
+}
+
 /// Authenticate the connection with a blind auth token, once, just before the
 /// first subscribe.
 ///
@@ -697,23 +747,33 @@ async fn stream_client(
     let header_refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
     tracing::debug!("Connecting to {}", url);
-    let (mut sender, mut receiver) = client
+
+    // Whether the connection is already authenticated. A single BAT authenticates
+    // the connection for its lifetime, so the in-band `authenticate` is sent once,
+    // lazily, just before the first subscribe (a connection with no subscriptions
+    // never authenticates and the mint closes it after its auth timeout, which is
+    // fine). The legacy header path below authenticates at the upgrade instead.
+    let mut authenticated = false;
+
+    let (mut sender, mut receiver) = match client
         .http_client
         .connect_websocket(&url_str, &header_refs)
         .await
-        .map_err(|err| {
-            tracing::error!("Error connecting: {err:?}");
-            map_ws_error(err)
-        })?;
+    {
+        Ok(connection) => connection,
+        Err(err) => match connect_with_legacy_blind_auth(client, &url_str, &auth, &err).await {
+            Some(connection) => {
+                authenticated = true;
+                connection
+            }
+            None => {
+                tracing::error!("Error connecting: {err:?}");
+                return Err(map_ws_error(err));
+            }
+        },
+    };
 
     tracing::debug!("Connected to {}", url);
-
-    // Whether `authenticate` has been sent on this connection. A single BAT
-    // authenticates the connection for its lifetime, so we send it once, lazily,
-    // just before the first subscribe (a connection with no subscriptions never
-    // authenticates and the mint closes it after its auth timeout, which is
-    // fine).
-    let mut authenticated = false;
 
     for (name, index) in topics {
         ensure_authenticated(
