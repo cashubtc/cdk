@@ -7,7 +7,7 @@
 //! the HTTP client.
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use cdk_common::nut00::KnownMethod;
@@ -22,8 +22,10 @@ use cdk_common::pub_sub::remote_consumer::{
 };
 use cdk_common::pub_sub::{Error as PubsubError, Spec, Subscriber};
 use cdk_common::subscription::WalletParams;
-use cdk_common::ws_client::WsError;
-use cdk_common::{AuthRequired, CheckStateRequest, Method, PaymentMethod, RoutePath};
+use cdk_common::ws_client::{WsError, WsReceiver, WsSender};
+use cdk_common::{
+    AuthRequired, CheckStateRequest, Method, PaymentMethod, ProtectedEndpoint, RoutePath,
+};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -99,6 +101,7 @@ impl SubscriptionManager {
                         mint_url,
                         http_client: self.http_client.clone(),
                         req_id: 0.into(),
+                        auth_failures: 0.into(),
                     },
                     self.prefer_http,
                     (),
@@ -146,6 +149,7 @@ pub struct SubscriptionClient {
     http_client: Arc<dyn MintConnector + Send + Sync>,
     mint_url: MintUrl,
     req_id: AtomicUsize,
+    auth_failures: AtomicUsize,
 }
 
 impl SubscriptionClient {
@@ -191,8 +195,7 @@ impl SubscriptionClient {
                 filters: vec![filter],
                 id: id.into(),
             }),
-            self.req_id
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            self.req_id.fetch_add(1, Ordering::Relaxed),
         )
             .into();
 
@@ -207,8 +210,7 @@ impl SubscriptionClient {
     fn get_unsub_request(&self, sub_id: String) -> Option<(usize, String)> {
         let request: WsRequest<_> = (
             WsMethodRequest::Unsubscribe(WsUnsubscribeRequest { sub_id }),
-            self.req_id
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            self.req_id.fetch_add(1, Ordering::Relaxed),
         )
             .into();
 
@@ -224,8 +226,7 @@ impl SubscriptionClient {
     fn get_auth_request(&self, token: String) -> Option<(usize, String)> {
         let request: WsRequest<String> = (
             WsMethodRequest::Authenticate(WsAuthenticateRequest { token }),
-            self.req_id
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            self.req_id.fetch_add(1, Ordering::Relaxed),
         )
             .into();
 
@@ -235,6 +236,23 @@ impl SubscriptionClient {
             })
             .map(|json| (request.id, json))
             .ok()
+    }
+
+    fn reset_auth_failures(&self) {
+        self.auth_failures.store(0, Ordering::Relaxed);
+    }
+
+    /// Record a rejected `authenticate` and pick the error to fail the stream
+    /// with.
+    ///
+    /// Every attempt spends a blind auth token, so once the mint has rejected
+    /// enough of them in a row the error becomes terminal: the consumer stops
+    /// reconnecting and falls back to HTTP polling instead of draining the
+    /// wallet's token pool.
+    fn note_auth_failure(&self, message: String) -> PubsubError {
+        let failures = self.auth_failures.fetch_add(1, Ordering::Relaxed) + 1;
+
+        auth_failure_error(failures, message)
     }
 }
 
@@ -486,8 +504,20 @@ impl Transport for SubscriptionClient {
     }
 }
 
+/// How many consecutive rejected `authenticate` commands are tolerated before
+/// the websocket stream is abandoned for HTTP polling.
+const MAX_CONSECUTIVE_AUTH_FAILURES: usize = 3;
+
 fn new_subscription_id() -> String {
     Uuid::now_v7().to_string()
+}
+
+/// What `ensure_authenticated` needs to run: the endpoint being protected, the
+/// wallet holding the tokens, and whether blind auth applies at all.
+struct BlindAuth {
+    wallet: Option<AuthWallet>,
+    endpoint: ProtectedEndpoint,
+    required: bool,
 }
 
 /// Authenticate the connection with a blind auth token, once, just before the
@@ -496,26 +526,27 @@ fn new_subscription_id() -> String {
 /// A single BAT authenticates the connection for its lifetime, so this fetches
 /// and spends a token only on the first call and only when the endpoint needs
 /// blind auth. Because it runs after a successful connect and only when a
-/// subscribe is about to be sent, a failed connect never burns a BAT.
+/// subscribe is about to be sent, a failed connect never burns a BAT. It waits
+/// for the mint's answer so a rejected token fails here rather than as a 31001
+/// on the subscribe that follows.
 async fn ensure_authenticated(
     client: &SubscriptionClient,
-    sender: &mut cdk_common::ws_client::WsSender,
+    sender: &mut WsSender,
+    receiver: &mut WsReceiver,
     pending_requests: &mut HashMap<usize, PendingRequest>,
-    auth_wallet: Option<&AuthWallet>,
-    endpoint: &cdk_common::ProtectedEndpoint,
-    needs_blind_auth: bool,
+    auth: &BlindAuth,
     authenticated: &mut bool,
 ) -> Result<(), PubsubError> {
-    if !needs_blind_auth || *authenticated {
+    if !auth.required || *authenticated {
         return Ok(());
     }
 
-    let wallet = auth_wallet.ok_or_else(|| {
+    let wallet = auth.wallet.as_ref().ok_or_else(|| {
         PubsubError::InternalStr("blind auth required but no auth wallet".to_string())
     })?;
 
     let token = wallet
-        .get_auth_for_request(endpoint)
+        .get_auth_for_request(&auth.endpoint)
         .await
         .map_err(|err| {
             PubsubError::InternalStr(format!("failed to get blind auth token: {err:?}"))
@@ -528,20 +559,75 @@ async fn ensure_authenticated(
         PubsubError::InternalStr("failed to build authenticate request".to_string())
     })?;
 
-    // Only mark the connection authenticated once the command is actually on the
-    // wire. The BAT has already been spent from the wallet store, so a failed
-    // send must surface as an error (reconnect) rather than silently proceeding
-    // as if authenticated.
     sender.send(req).await.map_err(map_ws_error)?;
     pending_requests.insert(request_id, PendingRequest::Authenticate);
+    await_authenticate_response(client, receiver, pending_requests, request_id).await?;
     *authenticated = true;
     Ok(())
+}
+
+/// Read until the mint answers the `authenticate` command.
+///
+/// A rejected token must not be discovered later, as a 31001 on the following
+/// subscribe, because the BAT was already spent and the reconnect would spend
+/// another one. Nothing else can be in flight here: this only runs before the
+/// first subscribe of a connection, so the mint has no subscription to notify
+/// us about.
+async fn await_authenticate_response(
+    client: &SubscriptionClient,
+    receiver: &mut WsReceiver,
+    pending_requests: &mut HashMap<usize, PendingRequest>,
+    request_id: usize,
+) -> Result<(), PubsubError> {
+    loop {
+        let msg = match receiver.recv().await {
+            Some(Ok(msg)) => msg,
+            Some(Err(err)) => return Err(map_ws_error(err)),
+            None => {
+                return Err(PubsubError::InternalStr(
+                    "WebSocket stream closed while authenticating".to_string(),
+                ))
+            }
+        };
+
+        let msg = match serde_json::from_str::<RawWsMessageOrResponse<String>>(&msg) {
+            Ok(msg) => msg,
+            Err(_) => continue,
+        };
+
+        match msg {
+            RawWsMessageOrResponse::Response(response) if response.id == request_id => {
+                pending_requests.remove(&request_id);
+                return match response.result {
+                    WsResponseResult::Authenticate(_) => {
+                        tracing::debug!("Websocket connection authenticated");
+                        client.reset_auth_failures();
+                        Ok(())
+                    }
+                    WsResponseResult::Subscription(result) => {
+                        Err(client.note_auth_failure(format!(
+                            "unexpected subscription response for subId {}",
+                            result.sub_id
+                        )))
+                    }
+                };
+            }
+            RawWsMessageOrResponse::ErrorResponse(error) if error.id == request_id => {
+                pending_requests.remove(&request_id);
+                return Err(client.note_auth_failure(error.error.message));
+            }
+            other => tracing::warn!(
+                "Ignoring unexpected websocket message while authenticating: {:?}",
+                other
+            ),
+        }
+    }
 }
 
 /// Send a subscribe request and record its kind for notification decoding.
 async fn send_subscribe(
     client: &SubscriptionClient,
-    sender: &mut cdk_common::ws_client::WsSender,
+    sender: &mut WsSender,
     sub_id_to_kind: &mut HashMap<String, Kind>,
     pending_requests: &mut HashMap<usize, PendingRequest>,
     name: String,
@@ -578,7 +664,7 @@ async fn stream_client(
         url.set_scheme("ws").expect("Could not set scheme");
     }
 
-    let endpoint = cdk_common::ProtectedEndpoint::new(Method::Get, RoutePath::Ws);
+    let endpoint = ProtectedEndpoint::new(Method::Get, RoutePath::Ws);
     let auth_wallet = client.http_client.get_auth_wallet().await;
 
     // Learn the auth requirement without consuming a token. Only clear auth
@@ -601,7 +687,11 @@ async fn stream_client(
         }
     }
 
-    let needs_blind_auth = matches!(auth_required, Some(AuthRequired::Blind));
+    let auth = BlindAuth {
+        required: matches!(auth_required, Some(AuthRequired::Blind)),
+        wallet: auth_wallet,
+        endpoint,
+    };
 
     let url_str = url.to_string();
     let header_refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
@@ -629,10 +719,9 @@ async fn stream_client(
         ensure_authenticated(
             client,
             &mut sender,
+            &mut receiver,
             &mut pending_requests,
-            auth_wallet.as_ref(),
-            &endpoint,
-            needs_blind_auth,
+            &auth,
             &mut authenticated,
         )
         .await?;
@@ -648,29 +737,15 @@ async fn stream_client(
     }
 
     loop {
+        // `ensure_authenticated` reads from `receiver`, which the `select!` below
+        // borrows for its own branch, so the subscribe is handled after it.
+        let mut to_subscribe = None;
+
         tokio::select! {
             Some(msg) = ctrl.recv() => {
                 match msg {
                     StreamCtrl::Subscribe(msg) => {
-                        ensure_authenticated(
-                            client,
-                            &mut sender,
-                            &mut pending_requests,
-                            auth_wallet.as_ref(),
-                            &endpoint,
-                            needs_blind_auth,
-                            &mut authenticated,
-                        )
-                        .await?;
-                        send_subscribe(
-                            client,
-                            &mut sender,
-                            &mut sub_id_to_kind,
-                            &mut pending_requests,
-                            msg.0,
-                            msg.1,
-                        )
-                        .await?;
+                        to_subscribe = Some(msg);
                     }
                     StreamCtrl::Unsubscribe(msg) => {
                         sub_id_to_kind.remove(&msg);
@@ -791,6 +866,27 @@ async fn stream_client(
                 }
             }
         }
+
+        if let Some((name, index)) = to_subscribe {
+            ensure_authenticated(
+                client,
+                &mut sender,
+                &mut receiver,
+                &mut pending_requests,
+                &auth,
+                &mut authenticated,
+            )
+            .await?;
+            send_subscribe(
+                client,
+                &mut sender,
+                &mut sub_id_to_kind,
+                &mut pending_requests,
+                name,
+                index,
+            )
+            .await?;
+        }
     }
 }
 
@@ -833,6 +929,16 @@ fn decode_notification_payload_for_stream(
             );
             None
         }
+    }
+}
+
+fn auth_failure_error(failures: usize, message: String) -> PubsubError {
+    if failures >= MAX_CONSECUTIVE_AUTH_FAILURES {
+        PubsubError::Terminal(format!(
+            "websocket authentication rejected repeatedly, giving up: {message}"
+        ))
+    } else {
+        PubsubError::InternalStr(format!("websocket authentication rejected: {message}"))
     }
 }
 
@@ -899,6 +1005,27 @@ mod tests {
         let error = map_ws_error(WsError::Terminal("attestation failed".to_string()));
 
         assert!(matches!(error, PubsubError::Terminal(_)));
+    }
+
+    #[test]
+    fn a_single_rejected_blind_auth_token_keeps_streaming_enabled() {
+        for failures in 1..MAX_CONSECUTIVE_AUTH_FAILURES {
+            assert!(matches!(
+                auth_failure_error(failures, "Blind authentication failed".to_string()),
+                PubsubError::InternalStr(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn repeatedly_rejected_blind_auth_tokens_disable_streaming() {
+        assert!(matches!(
+            auth_failure_error(
+                MAX_CONSECUTIVE_AUTH_FAILURES,
+                "Blind authentication failed".to_string()
+            ),
+            PubsubError::Terminal(_)
+        ));
     }
 
     #[test]

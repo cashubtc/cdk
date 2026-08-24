@@ -109,10 +109,13 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState, authenticat
             // authenticated connections are never closed by it.
             () = &mut auth_timeout, if !context.authenticated => {
                 tracing::info!("Closing websocket: no authentication within timeout");
-                let _ = socket.send(Message::Close(Some(CloseFrame {
+                // Best effort: the connection is dropped either way.
+                if let Err(err) = socket.send(Message::Close(Some(CloseFrame {
                     code: axum::extract::ws::close_code::POLICY,
                     reason: "authentication required".into(),
-                }))).await;
+                }))).await {
+                    tracing::debug!("Could not send close frame: {}", err);
+                }
                 break;
             }
             Some((sub_id, payload)) = subscriber.recv() => {

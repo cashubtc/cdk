@@ -15,25 +15,30 @@ use bip39::Mnemonic;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::cdk_database::WalletDatabase;
 use cdk::dhke::construct_proofs;
+use cdk::error::{ErrorCode, ErrorResponse};
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
-    AuthProof, CurrencyUnit, MintQuoteState, NotificationPayload, PaymentMethod, PreMintSecrets,
-    State,
+    AuthProof, AuthRequired, CurrencyUnit, MintQuoteState, NotificationPayload, PaymentMethod,
+    PreMintSecrets, State,
 };
+use cdk::secret::Secret;
 use cdk::types::FeeReserve;
 use cdk::wallet::{WalletBuilder, WalletSubscription};
 use cdk_common::wallet::ProofInfo;
 use cdk_fake_wallet::FakeWallet;
 use cdk_sqlite::wallet::memory;
 use tokio::time::{timeout, Duration};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::http::StatusCode;
+use tokio_tungstenite::tungstenite::Error as WsHandshakeError;
 
-/// Build an auth-enabled mint whose only blind-auth-protected endpoint is
-/// `/v1/ws`. `/v1/auth/blind/mint` is left unprotected (no clear auth), so no
-/// OIDC/CAT is involved anywhere in this test.
-async fn build_ws_protected_mint() -> Mint {
+/// Build an auth-enabled mint whose only protected endpoint is `/v1/ws`.
+/// `/v1/auth/blind/mint` is left unprotected (no clear auth), so no OIDC/CAT is
+/// involved anywhere in this test.
+async fn build_ws_protected_mint(auth: AuthRequired) -> Mint {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let auth_db = Arc::new(
         cdk_sqlite::mint::MintSqliteAuthDatabase::new(":memory:")
@@ -65,15 +70,25 @@ async fn build_ws_protected_mint() -> Mint {
         .await
         .expect("payment processor");
 
+    let ws_endpoint = ProtectedEndpoint::new(Method::Get, RoutePath::Ws);
+    let clear_endpoints = match auth {
+        AuthRequired::Clear => vec![ws_endpoint.clone()],
+        AuthRequired::Blind => vec![],
+    };
+
+    mint_builder = mint_builder.with_auth(
+        auth_db,
+        "https://example.com/.well-known/openid-configuration".to_string(),
+        "test-client".to_string(),
+        clear_endpoints,
+    );
+
+    if auth == AuthRequired::Blind {
+        mint_builder = mint_builder.with_blind_auth(50, vec![ws_endpoint]);
+    }
+
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
     let mint = mint_builder
-        .with_auth(
-            auth_db,
-            "https://example.com/.well-known/openid-configuration".to_string(),
-            "test-client".to_string(),
-            vec![],
-        )
-        .with_blind_auth(50, vec![ProtectedEndpoint::new(Method::Get, RoutePath::Ws)])
         .build_with_seed(db, &mnemonic.to_seed_normalized(""))
         .await
         .expect("mint");
@@ -138,7 +153,7 @@ async fn serve(mint: Arc<Mint>) -> MintUrl {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn websocket_connects_and_authenticates_in_band() {
-    let mint = Arc::new(build_ws_protected_mint().await);
+    let mint = Arc::new(build_ws_protected_mint(AuthRequired::Blind).await);
     let mint_url = serve(mint.clone()).await;
 
     let db = Arc::new(memory::empty().await.expect("wallet db"));
@@ -208,5 +223,120 @@ async fn websocket_connects_and_authenticates_in_band() {
         spendable.is_err(),
         "expected the BAT to be spent by in-band websocket auth, but it was still \
          spendable (was the subscription served over the HTTP poll fallback?): {spendable:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_auth_websocket_rejects_a_header_less_upgrade() {
+    let mint = Arc::new(build_ws_protected_mint(AuthRequired::Clear).await);
+    let mint_url = serve(mint.clone()).await;
+
+    let ws_url = mint_url
+        .to_string()
+        .replacen("http://", "ws://", 1)
+        .trim_end_matches('/')
+        .to_string()
+        + "/v1/ws";
+
+    // Clear auth has no in-band command, so an upgrade without a `Clear-auth`
+    // header must be refused at the HTTP layer rather than left to idle until
+    // the mint's authentication timeout.
+    let err = connect_async(&ws_url)
+        .await
+        .expect_err("upgrade to a clear-auth protected endpoint must fail");
+
+    match err {
+        WsHandshakeError::Http(response) => {
+            // NUT-00: the mint answers errors with 400 and a coded body.
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = response.body().as_ref().expect("error body");
+            let error: ErrorResponse = serde_json::from_slice(body).expect("error response");
+            assert_eq!(error.code, ErrorCode::ClearAuthRequired);
+        }
+        other => panic!("expected the upgrade to be refused, got: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejected_blind_auth_tokens_stop_draining_the_wallet() {
+    // Mirrors `MAX_CONSECUTIVE_AUTH_FAILURES` in `cdk::wallet::subscription`.
+    const MAX_AUTH_ATTEMPTS: usize = 3;
+    const SEEDED_TOKENS: usize = 5;
+
+    let mint = Arc::new(build_ws_protected_mint(AuthRequired::Blind).await);
+    let mint_url = serve(mint.clone()).await;
+
+    let db = Arc::new(memory::empty().await.expect("wallet db"));
+    let wallet = WalletBuilder::new()
+        .mint_url(mint_url.clone())
+        .unit(CurrencyUnit::Sat)
+        .localstore(db.clone())
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .build()
+        .expect("wallet");
+
+    wallet
+        .fetch_mint_info()
+        .await
+        .expect("mint info")
+        .expect("mint info present");
+
+    // Seed tokens the mint will reject: the secret no longer matches the
+    // signature, which is what a stale token looks like to the mint.
+    let mut invalid = Vec::new();
+    for _ in 0..SEEDED_TOKENS {
+        let mut bat = mint_bat(&mint).await;
+        bat.secret = Secret::generate();
+        invalid.push(
+            ProofInfo::new(bat, mint_url.clone(), State::Unspent, CurrencyUnit::Auth)
+                .expect("proof info"),
+        );
+    }
+    db.update_proofs(invalid, vec![]).await.expect("seed bats");
+
+    let quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
+        .await
+        .expect("mint quote");
+
+    let _subscription = wallet
+        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
+            .id
+            .clone()]))
+        .await
+        .expect("subscribe");
+
+    let remaining = || {
+        let db = db.clone();
+        let mint_url = mint_url.clone();
+        async move {
+            db.get_proofs(
+                Some(mint_url),
+                Some(CurrencyUnit::Auth),
+                Some(vec![State::Unspent]),
+                None,
+            )
+            .await
+            .expect("auth proofs")
+            .len()
+        }
+    };
+
+    let expected = SEEDED_TOKENS - MAX_AUTH_ATTEMPTS;
+    timeout(Duration::from_secs(60), async {
+        while remaining().await > expected {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("wallet kept retrying past its blind auth failure limit");
+
+    // Once the failures are terminal the consumer falls back to HTTP polling and
+    // must not spend another token, however long it runs.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    assert_eq!(
+        remaining().await,
+        expected,
+        "a terminal websocket authentication failure must stop spending tokens"
     );
 }

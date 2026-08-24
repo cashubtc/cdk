@@ -6,8 +6,8 @@ use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
-    AuthToken, CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MintInfo,
-    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    AuthRequired, AuthToken, CheckStateRequest, CheckStateResponse, Id, KeysResponse,
+    KeysetResponse, MintInfo, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
 use paste::paste;
@@ -123,6 +123,14 @@ pub(crate) async fn get_keysets(
     Ok(Json(state.mint.keysets()))
 }
 
+/// Upgrade a websocket connection, authenticating it when the endpoint is
+/// protected.
+///
+/// A browser WebSocket cannot set the `Blind-auth` header, so a header-less
+/// upgrade to a blind-protected endpoint is deferred to the in-band NUT-22
+/// `authenticate` command instead of being rejected here. Clear auth has no
+/// in-band command, so it stays a header check and a missing token is refused
+/// at the upgrade.
 #[instrument(skip_all)]
 pub(crate) async fn ws_handler(
     auth: AuthHeader,
@@ -132,9 +140,6 @@ pub(crate) async fn ws_handler(
     let endpoint = ProtectedEndpoint::new(Method::Get, RoutePath::Ws);
     let token: Option<AuthToken> = auth.into();
 
-    // A browser WebSocket cannot set the `Blind-auth` header, so a header-less
-    // upgrade to a protected endpoint is allowed and deferred to the in-band
-    // NUT-22 `authenticate` command instead of being rejected here.
     let authenticated = match state
         .mint
         .is_protected(&endpoint)
@@ -142,7 +147,7 @@ pub(crate) async fn ws_handler(
         .map_err(into_response)?
     {
         None => true,
-        Some(_) => match token {
+        Some(AuthRequired::Blind) => match token {
             Some(token) => {
                 state
                     .mint
@@ -153,6 +158,14 @@ pub(crate) async fn ws_handler(
             }
             None => false,
         },
+        Some(AuthRequired::Clear) => {
+            state
+                .mint
+                .verify_auth(token, &endpoint)
+                .await
+                .map_err(into_response)?;
+            true
+        }
     };
 
     Ok(ws.on_upgrade(move |ws| main_websocket(ws, state, authenticated)))
