@@ -13,8 +13,8 @@
 //! ```no_run
 //! use std::sync::Arc;
 //!
-//! use cdk_nostr::npubcash::{JwtAuthProvider, NpubCashClient};
 //! use cdk_nostr::nostr_sdk::Keys;
+//! use cdk_nostr::npubcash::{JwtAuthProvider, NpubCashClient};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
