@@ -195,6 +195,25 @@ fn payment_request_delivery_result(
     })
 }
 
+#[cfg(feature = "nostr")]
+fn ensure_nostr_delivery_succeeded(gift_wrap: &Output<EventId>) -> Result<(), Error> {
+    if gift_wrap.success.is_empty() {
+        let mut failed_relays = gift_wrap
+            .failed
+            .keys()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        failed_relays.sort();
+
+        return Err(Error::NostrPublishFailed {
+            event_id: gift_wrap.val.to_string(),
+            failed_relays,
+        });
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SelectedPaymentMethod {
     method: Option<String>,
@@ -384,17 +403,6 @@ impl Wallet {
                         .await
                         .map_err(|e| Error::Custom(format!("Publish Nostr event: {e}")))?;
 
-                    tracing::info!(
-                        "Published event {} successfully to {}",
-                        gift_wrap.val,
-                        gift_wrap
-                            .success
-                            .iter()
-                            .map(|s| s.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-
                     if !gift_wrap.failed.is_empty() {
                         tracing::warn!(
                             "Could not publish to {}",
@@ -406,6 +414,19 @@ impl Wallet {
                                 .join(", ")
                         );
                     }
+
+                    ensure_nostr_delivery_succeeded(&gift_wrap)?;
+
+                    tracing::info!(
+                        "Published event {} successfully to {}",
+                        gift_wrap.val,
+                        gift_wrap
+                            .success
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
 
                     Ok(())
                 }
@@ -806,6 +827,32 @@ mod tests {
             } => {
                 assert_eq!(failed_operation_id, operation_id);
                 assert_eq!(source.to_string(), "`transport failed`");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[cfg(feature = "nostr")]
+    #[test]
+    fn nostr_delivery_fails_when_all_relays_fail() {
+        let relay = RelayUrl::parse("wss://relay.example.com").expect("valid relay URL");
+        let gift_wrap = Output {
+            val: EventId::all_zeros(),
+            success: Default::default(),
+            failed: [(relay, "relay rejected event".to_string())]
+                .into_iter()
+                .collect(),
+        };
+
+        let error = ensure_nostr_delivery_succeeded(&gift_wrap).expect_err("delivery failure");
+
+        match error {
+            Error::NostrPublishFailed {
+                event_id,
+                failed_relays,
+            } => {
+                assert_eq!(event_id, EventId::all_zeros().to_string());
+                assert_eq!(failed_relays, vec!["wss://relay.example.com".to_string()]);
             }
             error => panic!("unexpected error: {error}"),
         }

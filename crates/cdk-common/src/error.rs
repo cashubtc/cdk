@@ -54,6 +54,14 @@ pub enum Error {
         #[source]
         source: Box<Error>,
     },
+    /// No Nostr relay accepted a published event.
+    #[error("No Nostr relay accepted event {event_id}")]
+    NostrPublishFailed {
+        /// Event that could not be published.
+        event_id: String,
+        /// Relays that failed to accept the event.
+        failed_relays: Vec<String>,
+    },
     /// Bolt11 invoice does not have amount
     #[error("Invoice Amount undefined")]
     InvoiceAmountUndefined,
@@ -794,6 +802,7 @@ impl Error {
             Self::HttpError(None, _) // No status code means network error
             | Self::SerdeJsonError(_) // Could be malformed success response
             | Self::Database(_)
+            | Self::NostrPublishFailed { .. }
             | Self::Custom(_) => false,
 
             // Auth Errors (Generally definitive if rejected)
