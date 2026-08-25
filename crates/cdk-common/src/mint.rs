@@ -162,11 +162,11 @@ impl FromStr for SwapSagaState {
 pub enum MeltSagaState {
     /// Setup complete (proofs reserved, quote verified)
     SetupComplete,
-    /// Payment attempted through the configured backend (may or may not have succeeded)
+    /// Write-ahead marker recorded before dispatch to the configured backend.
+    /// A terminal negative status cannot prove that the payment was not sent.
     PaymentAttempted,
-    /// The backend acknowledged that the payment is pending or indeterminate.
-    /// Contradictory public `Unpaid` or `Failed` polls must not return the
-    /// reserved proofs; recovery requires a trusted failure event.
+    /// The backend acknowledged the payment attempt.
+    /// Later authoritative status checks may finalize or compensate it.
     PaymentPending,
     /// TX1 committed (proofs Spent, quote Paid) - change signing + cleanup pending
     Finalizing,

@@ -2084,8 +2084,8 @@ async fn assert_payment_error_with_terminal_follow_up_does_not_compensate(
     let pending_saga = assert_saga_exists(&mint, &operation_id).await;
     assert_eq!(
         pending_saga.state,
-        SagaStateEnum::Melt(MeltSagaState::PaymentPending),
-        "an untrusted terminal follow-up must leave the payment recoverable"
+        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+        "an untrusted terminal follow-up must leave dispatch ambiguous"
     );
     let stored_quote = mint
         .localstore
@@ -2152,7 +2152,7 @@ async fn test_unknown_dispatch_with_unpaid_check_does_not_compensate() {
     let pending_saga = assert_saga_exists(&mint, &operation_id).await;
     assert_eq!(
         pending_saga.state,
-        SagaStateEnum::Melt(MeltSagaState::PaymentPending)
+        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
     );
     let stored_quote = mint
         .localstore
@@ -3443,7 +3443,7 @@ async fn test_unknown_follow_up_after_payment_error_keeps_proofs_pending() {
     let pending_saga = assert_saga_exists(&mint, &operation_id).await;
     assert_eq!(
         pending_saga.state,
-        SagaStateEnum::Melt(MeltSagaState::PaymentPending),
+        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
         "a backend Unknown response must leave dispatch marked ambiguous"
     );
 
