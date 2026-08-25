@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -15,6 +15,7 @@ use cdk_common::payment::{
 use cdk_common::{Amount, MeltQuoteBolt11Request, PaymentMethod, ProofsMethods};
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription, FakeWallet};
 use futures::Stream;
+use tokio::sync::Notify;
 
 use crate::mint::{Mint, MintBuilder, MintMeltLimits};
 use crate::test_helpers::mint::mint_test_proofs;
@@ -27,6 +28,113 @@ struct NoEventPendingBackend {
     settle_after_checks: usize,
     final_status: Option<MeltQuoteState>,
     strip_quote_lookup_id: bool,
+}
+
+struct CoordinatedPendingBackend {
+    inner: FakeWallet,
+    make_started: Notify,
+    release_make: Notify,
+    registered: AtomicBool,
+}
+
+impl CoordinatedPendingBackend {
+    fn new() -> Self {
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: 1.into(),
+            percent_fee_reserve: 1.0,
+        };
+
+        Self {
+            inner: FakeWallet::new(
+                fee_reserve,
+                HashMap::default(),
+                HashSet::default(),
+                2,
+                CurrencyUnit::Sat,
+            ),
+            make_started: Notify::new(),
+            release_make: Notify::new(),
+            registered: AtomicBool::new(false),
+        }
+    }
+}
+
+#[async_trait]
+impl MintPayment for CoordinatedPendingBackend {
+    type Err = payment::Error;
+
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        self.inner.get_settings().await
+    }
+
+    async fn create_incoming_payment_request(
+        &self,
+        options: IncomingPaymentOptions,
+    ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+        self.inner.create_incoming_payment_request(options).await
+    }
+
+    async fn get_payment_quote(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<PaymentQuoteResponse, Self::Err> {
+        self.inner.get_payment_quote(unit, options).await
+    }
+
+    async fn make_payment(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        self.make_started.notify_one();
+        self.release_make.notified().await;
+        let mut response = self.inner.make_payment(unit, options).await?;
+        self.registered.store(true, Ordering::SeqCst);
+        response.status = MeltQuoteState::Pending;
+        response.payment_proof = None;
+        response.total_spent = Amount::new(0, unit.clone());
+        Ok(response)
+    }
+
+    async fn wait_payment_event(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
+        Ok(Box::pin(futures::stream::pending()))
+    }
+
+    fn is_payment_event_stream_active(&self) -> bool {
+        false
+    }
+
+    fn cancel_payment_event_stream(&self) {}
+
+    async fn check_incoming_payment_status(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+        self.inner
+            .check_incoming_payment_status(payment_identifier)
+            .await
+    }
+
+    async fn check_outgoing_payment(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        let mut response = self
+            .inner
+            .check_outgoing_payment(payment_identifier)
+            .await?;
+        response.status = if self.registered.load(Ordering::SeqCst) {
+            MeltQuoteState::Pending
+        } else {
+            MeltQuoteState::Failed
+        };
+        response.payment_proof = None;
+        response.total_spent = Amount::new(0, CurrencyUnit::Sat);
+        Ok(response)
+    }
 }
 
 impl NoEventPendingBackend {
@@ -219,6 +327,58 @@ fn create_test_melt_request(
 }
 
 #[tokio::test]
+async fn quote_check_waits_for_payment_registration() {
+    let backend = Arc::new(CoordinatedPendingBackend::new());
+    let mint = create_pending_test_mint(backend.clone()).await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    let _pending = mint.melt(&melt_request).await.unwrap();
+    backend.make_started.notified().await;
+
+    let check_mint = mint.clone();
+    let quote_id = quote.id.clone();
+    let mut check_task = tokio::spawn(async move { check_mint.check_melt_quote(&quote_id).await });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut check_task)
+            .await
+            .is_err(),
+        "quote check should wait for the active payment call"
+    );
+
+    backend.release_make.notify_one();
+    let response = check_task.await.unwrap().unwrap();
+    assert_eq!(response.state(), MeltQuoteState::Pending);
+
+    let stored_quote = mint
+        .localstore()
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
+
+    let saga = mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap()
+        .expect("pending melt saga should exist");
+    assert!(saga.finalization_data.is_some());
+
+    let proof_states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(proof_states
+        .iter()
+        .all(|state| matches!(state, Some(cdk_common::State::Pending))));
+}
+
+#[tokio::test]
 async fn pending_melt_wait_completes_via_status_check_without_notification() {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
         Arc::new(NoEventPendingBackend::new(2, Some(MeltQuoteState::Paid)));
@@ -366,10 +526,11 @@ async fn pending_melt_wait_times_out_without_settled_progress() {
         .localstore()
         .get_melt_saga_by_quote_id(&quote.id)
         .await
-        .unwrap();
+        .unwrap()
+        .expect("pending melt should remain recoverable after timeout");
     assert!(
-        saga.is_some(),
-        "pending melt should remain recoverable after timeout"
+        saga.finalization_data.is_some(),
+        "pending backend result should be recorded for recovery"
     );
 }
 

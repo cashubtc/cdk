@@ -659,13 +659,12 @@ impl Mint {
             let should_compensate = if should_compensate {
                 true
             } else if quote.request_lookup_id.is_none() {
-                // Fallback: No request_lookup_id means payment likely never sent
                 tracing::info!(
-                    "Saga {} for quote {} has no request_lookup_id - payment never sent, will compensate",
+                    "Saga {} for quote {} has no payment lookup id; leaving it pending",
                     saga.operation_id,
                     quote_id
                 );
-                true
+                continue;
             } else {
                 // Payment was attempted - check LN backend status
                 tracing::info!(
@@ -784,6 +783,15 @@ impl Mint {
         &self,
         quote: &mut MeltQuote,
     ) -> Result<(), Error> {
+        let quote_lock = self.melt_quote_lock(&quote.id).await;
+        let _quote_guard = quote_lock.lock_owned().await;
+
+        *quote = self
+            .localstore
+            .get_melt_quote(&quote.id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
         if quote.state != MeltQuoteState::Pending {
             return Ok(());
         }
@@ -801,6 +809,14 @@ impl Mint {
                 return Ok(());
             }
         };
+
+        if saga.state
+            != cdk_common::mint::SagaStateEnum::Melt(
+                cdk_common::mint::MeltSagaState::PaymentAttempted,
+            )
+        {
+            return Ok(());
+        }
 
         let payment_response = self.check_melt_payment_status(quote).await?;
 

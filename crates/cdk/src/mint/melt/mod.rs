@@ -160,6 +160,9 @@ impl Mint {
         pubsub_manager: &Arc<crate::mint::subscription::PubSubManager>,
         quote_id: &QuoteId,
     ) -> Result<Option<String>, Error> {
+        let quote_lock = mint.melt_quote_lock(quote_id).await;
+        let _quote_guard = quote_lock.lock_owned().await;
+
         let Some(mut quote) = localstore.get_melt_quote(quote_id).await? else {
             return Err(Error::UnknownQuote);
         };
@@ -175,6 +178,14 @@ impl Mint {
             );
             return Ok(None);
         };
+
+        if saga.state
+            != cdk_common::mint::SagaStateEnum::Melt(
+                cdk_common::mint::MeltSagaState::PaymentAttempted,
+            )
+        {
+            return Ok(None);
+        }
 
         let payment_response = match mint.check_melt_payment_status(&quote).await {
             Ok(payment_response) => payment_response,
@@ -927,6 +938,9 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
+        let quote_lock = self.melt_quote_lock(&quote_id).await;
+        let active_melt_guard = quote_lock.lock_owned().await;
+
         let init_saga = MeltSaga::new(
             std::sync::Arc::new(self.clone()),
             self.localstore.clone(),
@@ -959,7 +973,13 @@ impl Mint {
             {
                 Ok((setup_saga, settlement)) => {
                     // Step 3: Make payment (internal or external)
-                    match setup_saga.make_payment(settlement).await {
+                    let payment_outcome = setup_saga.make_payment(settlement).await;
+
+                    if matches!(&payment_outcome, Ok(PaymentOutcome::Pending { .. })) {
+                        drop(active_melt_guard);
+                    }
+
+                    match payment_outcome {
                         Ok(PaymentOutcome::Confirmed(payment_saga)) => {
                             // Step 4: Finalize (TX2 - marks spent, issues change)
                             payment_saga.finalize().await

@@ -138,6 +138,60 @@ pub async fn rollback_melt_quote(
 
     let mut tx = db.begin_transaction().await?;
 
+    let Some(saga) = tx.get_saga(operation_id).await? else {
+        tx.rollback().await?;
+        return Ok(());
+    };
+    let quote_id_string = quote_id.to_string();
+    let saga_matches_quote = saga.quote_id.as_deref() == Some(quote_id_string.as_str());
+    let may_rollback = match &saga.state {
+        mint_types::SagaStateEnum::Melt(mint_types::MeltSagaState::SetupComplete) => true,
+        mint_types::SagaStateEnum::Melt(mint_types::MeltSagaState::PaymentAttempted) => {
+            saga.finalization_data.is_some()
+        }
+        _ => false,
+    };
+    if !saga_matches_quote {
+        tx.rollback().await?;
+        return Err(Error::UnknownPaymentState);
+    }
+
+    let quote_option = if let Some(mut quote) = tx.get_melt_quote(quote_id).await? {
+        match quote.state {
+            MeltQuoteState::Pending => {
+                if !may_rollback {
+                    tx.rollback().await?;
+                    return Err(Error::UnknownPaymentState);
+                }
+                tx.update_melt_quote_state(&mut quote, MeltQuoteState::Unpaid, None)
+                    .await?;
+                Some(quote)
+            }
+            MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
+                if !may_rollback {
+                    tx.rollback().await?;
+                    return Err(Error::UnknownPaymentState);
+                }
+                None
+            }
+            MeltQuoteState::Paid => {
+                tx.rollback().await?;
+                return Err(Error::PaidQuote);
+            }
+            state => {
+                tracing::warn!(
+                    "Refusing rollback for melt quote {} in unexpected state {}",
+                    quote_id,
+                    state
+                );
+                tx.rollback().await?;
+                return Err(Error::UnknownPaymentState);
+            }
+        }
+    } else {
+        None
+    };
+
     let mut proofs_recovered = false;
 
     // Remove input proofs
@@ -160,42 +214,6 @@ pub async fn rollback_melt_quote(
     if !blinded_secrets.is_empty() {
         tx.delete_blinded_messages(blinded_secrets).await?;
     }
-
-    let quote_option = if let Some(mut quote) = tx.get_melt_quote(quote_id).await? {
-        // Rollback transitions Pending → Unpaid (not Pending → Pending): the input
-        // proofs, change outputs, and melt request tracking have all been removed
-        // above, so no payment attempt is in flight. Unpaid is the correct
-        // retryable pre-melt state.
-        match quote.state {
-            MeltQuoteState::Pending => {
-                tx.update_melt_quote_state(&mut quote, MeltQuoteState::Unpaid, None)
-                    .await?;
-                Some(quote)
-            }
-            MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
-                // Already in a non-pending state; fall through to saga /
-                // melt-request cleanup so the rollback is idempotent and the
-                // saga isn't orphaned when recovery invokes rollback_melt_quote
-                // twice or when the quote was reset by another path first.
-                None
-            }
-            MeltQuoteState::Paid => {
-                tx.rollback().await?;
-                return Err(Error::PaidQuote);
-            }
-            state => {
-                tracing::warn!(
-                    "Refusing rollback for melt quote {} in unexpected state {}",
-                    quote_id,
-                    state
-                );
-                tx.rollback().await?;
-                return Err(Error::UnknownPaymentState);
-            }
-        }
-    } else {
-        None
-    };
 
     // Delete melt request tracking record
     tx.delete_melt_request(quote_id).await?;
@@ -652,15 +670,17 @@ pub async fn finalize_melt_quote(
     let melt_request_info = match tx.get_melt_request_and_blinded_messages(&quote.id).await? {
         Some(info) => info,
         None => {
-            if locked_quote.state == MeltQuoteState::Paid {
-                let locked_quote = locked_quote.inner();
+            if locked_quote.state != MeltQuoteState::Paid {
+                tx.rollback().await?;
+                return Err(Error::UnknownPaymentState);
+            }
 
-                if locked_quote.request_lookup_id.as_ref() != Some(payment_lookup_id)
-                    || locked_quote.payment_proof != payment_proof
-                {
-                    tx.rollback().await?;
-                    return Err(Error::PaidQuote);
-                }
+            let locked_quote = locked_quote.inner();
+            if locked_quote.request_lookup_id.as_ref() != Some(payment_lookup_id)
+                || locked_quote.payment_proof != payment_proof
+            {
+                tx.rollback().await?;
+                return Err(Error::PaidQuote);
             }
 
             tracing::warn!(
@@ -687,6 +707,11 @@ pub async fn finalize_melt_quote(
     let input_ys = tx.get_proof_ys_by_quote_id(&quote.id).await?;
 
     if input_ys.is_empty() {
+        if locked_quote.state != MeltQuoteState::Paid {
+            tx.rollback().await?;
+            return Err(Error::UnknownPaymentState);
+        }
+
         tracing::warn!(
             "No input proofs found for quote {} - may have been completed already",
             quote.id

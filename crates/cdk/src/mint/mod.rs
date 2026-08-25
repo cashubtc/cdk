@@ -1,7 +1,7 @@
 //! Cashu Mint
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
@@ -71,6 +71,8 @@ pub struct Mint {
     oidc_client: Option<OidcClient>,
     /// In-memory keyset
     keysets: Arc<ArcSwap<Vec<SignatoryKeySet>>>,
+    /// Coordinates payment dispatch and status handling for each melt quote.
+    melt_quote_locks: Arc<Mutex<HashMap<QuoteId, Weak<Mutex<()>>>>>,
     /// Background task management
     task_state: Arc<Mutex<TaskState>>,
     /// Maximum number of inputs allowed per transaction
@@ -245,10 +247,28 @@ impl Mint {
             payment_processors,
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
+            melt_quote_locks: Arc::new(Mutex::new(HashMap::new())),
             task_state: Arc::new(Mutex::new(TaskState::default())),
             max_inputs,
             max_outputs,
         })
+    }
+
+    pub(super) async fn melt_quote_lock(&self, quote_id: &QuoteId) -> Arc<Mutex<()>> {
+        let mut locks = self.melt_quote_locks.lock().await;
+
+        // The registry stores weak references so an idle quote does not keep its
+        // mutex alive. Remove entries whose mutex no longer has any holders or
+        // waiters before looking up the requested quote.
+        locks.retain(|_, lock| lock.upgrade().is_some());
+
+        if let Some(lock) = locks.get(quote_id).and_then(Weak::upgrade) {
+            return lock;
+        }
+
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(quote_id.clone(), Arc::downgrade(&lock));
+        lock
     }
 
     /// Start the mint's background services and operations
@@ -810,6 +830,9 @@ impl Mint {
         quote_id: &QuoteId,
         payment_response: cdk_common::payment::MakePaymentResponse,
     ) -> Result<(), Error> {
+        let quote_lock = mint.melt_quote_lock(quote_id).await;
+        let _quote_guard = quote_lock.lock_owned().await;
+
         let Some(mut quote) = localstore.get_melt_quote(quote_id).await? else {
             tracing::warn!("Outgoing payment event for unknown quote {}", quote_id);
             return Ok(());
@@ -872,6 +895,9 @@ impl Mint {
         pubsub_manager: &Arc<PubSubManager>,
         quote_id: &QuoteId,
     ) -> Result<(), Error> {
+        let quote_lock = mint.melt_quote_lock(quote_id).await;
+        let _quote_guard = quote_lock.lock_owned().await;
+
         let Some(mut quote) = localstore.get_melt_quote(quote_id).await? else {
             tracing::warn!("Outgoing payment event for unknown quote {}", quote_id);
             return Ok(());
@@ -1377,6 +1403,25 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn melt_quote_lock_prunes_expired_entries() {
+        let mint = create_test_mint().await.unwrap();
+        let expired_quote_id = QuoteId::new();
+        let active_quote_id = QuoteId::new();
+
+        let expired_lock = mint.melt_quote_lock(&expired_quote_id).await;
+        let active_lock = mint.melt_quote_lock(&active_quote_id).await;
+        drop(expired_lock);
+
+        let active_lock_again = mint.melt_quote_lock(&active_quote_id).await;
+
+        assert!(Arc::ptr_eq(&active_lock, &active_lock_again));
+
+        let locks = mint.melt_quote_locks.lock().await;
+        assert!(!locks.contains_key(&expired_quote_id));
+        assert!(locks.contains_key(&active_quote_id));
     }
 
     #[tokio::test]

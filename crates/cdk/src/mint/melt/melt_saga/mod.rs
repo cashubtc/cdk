@@ -653,8 +653,6 @@ impl MeltSaga<SetupComplete> {
                             "Lightning payment for quote {} unknown.",
                             self.state_data.quote.id
                         );
-                        self.persist_pending_payment_lookup_id(&response.payment_lookup_id)
-                            .await;
                         return Ok(PaymentOutcome::Pending {
                             #[cfg(feature = "prometheus")]
                             metrics: self.metrics,
@@ -665,8 +663,6 @@ impl MeltSaga<SetupComplete> {
                             "LN payment pending, proofs remain pending for quote: {}",
                             self.state_data.quote.id
                         );
-                        self.persist_pending_payment_lookup_id(&response.payment_lookup_id)
-                            .await;
                         return Ok(PaymentOutcome::Pending {
                             #[cfg(feature = "prometheus")]
                             metrics: self.metrics,
@@ -745,7 +741,14 @@ impl MeltSaga<SetupComplete> {
             tx.commit().await?;
         }
 
-        self.execute_payment_and_verify(Arc::clone(ln)).await
+        let (response, acknowledged) = self.execute_payment_and_verify(Arc::clone(ln)).await?;
+
+        if response.status != MeltQuoteState::Paid {
+            self.persist_external_payment_state(&response, acknowledged)
+                .await?;
+        }
+
+        Ok(response)
     }
 
     async fn execute_payment_and_verify(
@@ -753,15 +756,23 @@ impl MeltSaga<SetupComplete> {
         ln: Arc<
             dyn cdk_common::payment::MintPayment<Err = cdk_common::payment::Error> + Send + Sync,
         >,
-    ) -> Result<MakePaymentResponse, Error> {
+    ) -> Result<(MakePaymentResponse, bool), Error> {
         // Make payment with idempotent verification
         let quote = &self.state_data.quote;
         let payment_options = OutgoingPaymentOptions::from_melt_quote_with_fee(quote.clone())?;
 
         match ln.make_payment(&quote.unit, payment_options).await {
-            Ok(pay) if pay.status == MeltQuoteState::Paid => Ok(pay),
-            Ok(pay) => self.verify_ambiguous_payment(ln, pay).await,
-            Err(err) => self.handle_payment_error(ln, err).await,
+            Ok(pay) if pay.status == MeltQuoteState::Paid => Ok((pay, true)),
+            Ok(pay) => {
+                let acknowledged = pay.status != MeltQuoteState::Unknown;
+                let response = self.verify_ambiguous_payment(ln, pay).await?;
+                Ok((response, acknowledged))
+            }
+            Err(err) => {
+                let response = self.handle_payment_error(ln, err).await?;
+                let acknowledged = response.status == MeltQuoteState::Pending;
+                Ok((response, acknowledged))
+            }
         }
     }
 
@@ -780,7 +791,7 @@ impl MeltSaga<SetupComplete> {
             self.state_data.quote.unit
         );
 
-        let mut check_response = self.check_payment_state(ln, &pay.payment_lookup_id).await?;
+        let check_response = self.check_payment_state(ln, &pay.payment_lookup_id).await?;
 
         if check_response.status == MeltQuoteState::Paid {
             // Race condition: Payment succeeded during verification
@@ -791,20 +802,22 @@ impl MeltSaga<SetupComplete> {
             return Ok(check_response);
         }
 
-        // If we knew it was Pending, but now it's Unknown, stick with Pending to avoid
-        // accidental refund of an in-flight payment.
-        if pay.status == MeltQuoteState::Pending && check_response.status == MeltQuoteState::Unknown
-        {
+        if matches!(
+            pay.status,
+            MeltQuoteState::Pending | MeltQuoteState::Unknown
+        ) {
             tracing::warn!(
-                "Payment was initially Pending but verification returned Unknown. Keeping as Pending for safety."
+                "Payment was initially {} but verification returned {}. Keeping the initial status.",
+                pay.status,
+                check_response.status
             );
             return Ok(pay);
         }
 
-        if check_response.status == MeltQuoteState::Unknown {
-            // When the first make payment is an error response
-            // and the follow up is unknown we treat it as a failed payment
-            check_response.status = MeltQuoteState::Failed;
+        if matches!(pay.status, MeltQuoteState::Unpaid | MeltQuoteState::Failed)
+            && check_response.status == MeltQuoteState::Unknown
+        {
+            return Ok(pay);
         }
 
         Ok(check_response)
@@ -849,74 +862,62 @@ impl MeltSaga<SetupComplete> {
             check_response.status
         );
 
-        if check_response.status == MeltQuoteState::Unknown {
-            // When the first make payment is an error response
-            // and the follow up is unknown we treat it as a failed payment
-            check_response.status = MeltQuoteState::Failed;
+        if matches!(
+            check_response.status,
+            MeltQuoteState::Unpaid | MeltQuoteState::Failed
+        ) {
+            check_response.status = MeltQuoteState::Unknown;
         }
 
         Ok(check_response)
     }
 
-    /// Persists the backend's payment lookup id on the quote before the saga
-    /// parks the payment as pending.
-    ///
-    /// For bolt12 melts the quote is created with `request_lookup_id: None`
-    /// (no invoice exists until `make_payment`), so the id returned by the
-    /// backend is the only durable handle to the in-flight payment. The
-    /// pending waiter and startup recovery reload the quote from the database
-    /// and poll the backend via `quote.request_lookup_id`; without this write,
-    /// a payment that settles after the in-process recheck can never be
-    /// resolved, and startup recovery would treat the quote as never sent and
-    /// compensate while the payment may still settle.
-    ///
-    /// Best-effort: a database failure here is logged loudly but does not
-    /// change the outcome — the payment is still pending and the in-process
-    /// state is no worse than before.
-    async fn persist_pending_payment_lookup_id(
+    /// Persists the backend lookup id and the current dispatch result.
+    async fn persist_external_payment_state(
         &self,
-        payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
-    ) {
+        payment_response: &MakePaymentResponse,
+        acknowledged: bool,
+    ) -> Result<(), Error> {
         let quote_id = &self.state_data.quote.id;
+        let mut tx = self.db.begin_transaction().await?;
+        let saga = tx
+            .get_saga(&self.operation_id)
+            .await?
+            .ok_or(Error::UnknownPaymentState)?;
+        let quote_id_string = quote_id.to_string();
 
-        if self.state_data.quote.request_lookup_id.as_ref() == Some(payment_lookup_id) {
-            return;
+        if saga.quote_id.as_deref() != Some(quote_id_string.as_str())
+            || saga.state != SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
+        {
+            tx.rollback().await?;
+            return Err(Error::UnknownPaymentState);
         }
 
-        let result: Result<(), Error> = async {
-            let mut tx = self.db.begin_transaction().await?;
-
-            let mut quote = tx
-                .get_melt_quote(quote_id)
-                .await?
-                .ok_or(Error::UnknownQuote)?;
-
-            if quote.request_lookup_id.as_ref() != Some(payment_lookup_id) {
-                tracing::info!(
-                    "Updating payment lookup id for pending melt quote {} from {:?} to {}",
-                    quote_id,
-                    quote.request_lookup_id,
-                    payment_lookup_id
-                );
-                tx.update_melt_quote_request_lookup_id(&mut quote, payment_lookup_id)
-                    .await?;
-            }
-
-            tx.commit().await?;
-            Ok(())
+        let mut quote = tx
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+        if quote.request_lookup_id.as_ref() != Some(&payment_response.payment_lookup_id) {
+            tx.update_melt_quote_request_lookup_id(&mut quote, &payment_response.payment_lookup_id)
+                .await?;
         }
-        .await;
 
-        if let Err(err) = result {
-            tracing::error!(
-                "Failed to persist payment lookup id {} for pending melt quote {}: {}. \
-                 The pending payment cannot be polled from the database until a lookup id \
-                 is recorded; recovery may require manual intervention.",
-                payment_lookup_id,
-                quote_id,
-                err
-            );
+        if acknowledged {
+            let receipt = MeltFinalizationData {
+                total_spent: payment_response.total_spent.clone(),
+                payment_lookup_id: payment_response.payment_lookup_id.clone(),
+                payment_proof: payment_response.payment_proof.clone(),
+            };
+            tx.update_saga_with_finalization_data(
+                &self.operation_id,
+                SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+                Some(&receipt),
+            )
+            .await?;
         }
+
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Helper to check payment state with LN backend
