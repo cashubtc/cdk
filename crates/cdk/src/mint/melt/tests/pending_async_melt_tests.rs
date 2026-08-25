@@ -255,7 +255,7 @@ fn create_test_melt_request(
 }
 
 #[tokio::test]
-async fn pending_dispatch_is_sticky_across_stale_unpaid_verification() {
+async fn acknowledged_pending_dispatch_rolls_back_after_terminal_recheck() {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
         Arc::new(NoEventPendingBackend::new(1, Some(MeltQuoteState::Unpaid)));
     let mint = create_pending_test_mint(backend).await.unwrap();
@@ -265,10 +265,9 @@ async fn pending_dispatch_is_sticky_across_stale_unpaid_verification() {
     let melt_request = create_test_melt_request(&proofs, &quote);
 
     let pending = mint.melt(&melt_request).await.unwrap();
-    assert!(matches!(
-        pending.await,
-        Err(Error::PendingMeltTimeout { .. })
-    ));
+    let checked = mint.check_melt_quote(&quote.id).await.unwrap();
+    assert_eq!(checked.state(), MeltQuoteState::Unpaid);
+    drop(pending);
 
     let stored_quote = mint
         .localstore()
@@ -276,25 +275,19 @@ async fn pending_dispatch_is_sticky_across_stale_unpaid_verification() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
+    assert_eq!(stored_quote.state, MeltQuoteState::Unpaid);
     let proof_states = mint
         .localstore()
         .get_proofs_states(&input_ys)
         .await
         .unwrap();
-    assert!(proof_states
-        .iter()
-        .all(|state| *state == Some(cdk_common::State::Pending)));
+    assert!(proof_states.iter().all(Option::is_none));
     let saga = mint
         .localstore()
         .get_melt_saga_by_quote_id(&quote.id)
         .await
-        .unwrap()
-        .expect("pending saga should remain");
-    assert_eq!(
-        saga.state,
-        cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentPending)
-    );
+        .unwrap();
+    assert!(saga.is_none());
 }
 
 #[tokio::test]
@@ -324,7 +317,7 @@ async fn pending_melt_completes_via_explicit_status_check_without_notification()
 }
 
 #[tokio::test]
-async fn pending_melt_ignores_failed_status_check_without_notification() {
+async fn pending_melt_rolls_back_via_status_check_without_notification() {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
         Arc::new(NoEventPendingBackend::new(2, Some(MeltQuoteState::Failed)));
     let mint = create_pending_test_mint(backend).await.unwrap();
@@ -335,7 +328,7 @@ async fn pending_melt_ignores_failed_status_check_without_notification() {
 
     let pending = mint.melt(&melt_request).await.unwrap();
     let checked = mint.check_melt_quote(&quote.id).await.unwrap();
-    assert_eq!(checked.state(), MeltQuoteState::Pending);
+    assert_eq!(checked.state(), MeltQuoteState::Unpaid);
     drop(pending);
 
     let stored_quote = mint
@@ -344,31 +337,25 @@ async fn pending_melt_ignores_failed_status_check_without_notification() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
+    assert_eq!(stored_quote.state, MeltQuoteState::Unpaid);
 
     let proof_states = mint
         .localstore()
         .get_proofs_states(&input_ys)
         .await
         .unwrap();
-    assert!(proof_states
-        .iter()
-        .all(|state| *state == Some(cdk_common::State::Pending)));
+    assert!(proof_states.iter().all(Option::is_none));
 
     let saga = mint
         .localstore()
         .get_melt_saga_by_quote_id(&quote.id)
         .await
-        .unwrap()
-        .expect("ambiguous dispatch saga should remain");
-    assert_eq!(
-        saga.state,
-        cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentPending)
-    );
+        .unwrap();
+    assert!(saga.is_none());
 }
 
 #[tokio::test]
-async fn payment_error_that_looks_local_still_stays_pending() {
+async fn payment_error_that_looks_local_records_pending_acknowledgement() {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> = Arc::new(
         NoEventPendingBackend::new(usize::MAX, None).with_amount_mismatch_dispatch_error(),
     );
@@ -379,8 +366,8 @@ async fn payment_error_that_looks_local_still_stays_pending() {
     let melt_request = create_test_melt_request(&proofs, &quote);
 
     // Even an error that resembles local validation can be returned after a
-    // backend crossed its dispatch boundary. A subsequent Unpaid read does
-    // not prove that no payment is in flight.
+    // backend crossed its dispatch boundary. A follow-up Pending read proves
+    // that the backend can identify the in-flight attempt.
     let pending = mint.melt(&melt_request).await.unwrap();
     assert_eq!(pending.pending_response().state(), MeltQuoteState::Pending);
     let pending_saga = tokio::time::timeout(Duration::from_secs(5), async {
