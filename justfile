@@ -1092,6 +1092,25 @@ ffi-test-live-python:
   echo "🧪 Running live Python FFI tests..."
   python3 crates/cdk-ffi/tests/test_live_async_onchain_melt.py
 
+# Verify a published binding release used only workspace-pinned dependencies
+ffi-verify-lock LANGUAGE TAG:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  echo "🔍 Verifying {{LANGUAGE}} bindings at {{TAG}}..."
+  ./.github/scripts/verify-binding-lockfile.sh {{LANGUAGE}} {{TAG}}
+
+# Verify every published binding release at a tag
+ffi-verify-lock-all TAG:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  rc=0
+  for lang in dart swift kotlin go; do
+    just ffi-verify-lock "$lang" {{TAG}} || rc=1
+  done
+  exit $rc
+
 # Trigger all FFI binding releases (Dart, Kotlin, Swift, Go)
 ffi-release-all VERSION:
   #!/usr/bin/env bash

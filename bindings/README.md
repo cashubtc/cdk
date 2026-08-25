@@ -198,6 +198,71 @@ just ffi-release-go 0.17.0
   the authenticated Cachix cache
 - `gh` CLI must be authenticated for just commands
 
+## Build provenance
+
+Every release records what it was built from, and that record can be checked
+afterwards without re-running the release.
+
+### Same dependencies everywhere
+
+The workspace `Cargo.lock` is the single source of truth for dependency
+versions. During the sync step, `.github/scripts/seed-binding-lockfile.sh`
+copies it into the downstream binding crate, resolves it minimally with
+`cargo fetch` (only `cdk-ffi` itself moves from a path dependency to a registry
+or git source), and fails the release if the binding resolved anything the
+workspace lock did not pin. The resulting `rust/Cargo.lock` is committed to the
+release branch, and every build leg then compiles with `--locked`.
+
+Which lockfile counts as the reference follows `cdk_version` rather than the
+release tag. A binding pinned to a published `cdk-ffi` inherits that version's
+dependency requirements, frozen when it was published, so the sync job checks
+out the tag it was published from and seeds from there. Both are the same tag
+unless a release pins an older `cdk-ffi` than its own version.
+
+### Pinned toolchain
+
+`rust-toolchain.toml` is copied into each downstream repo and is the only thing
+that decides which compiler runs. Each build job installs it through `rustup`
+and then asserts that `rustc -vV` matches the pinned channel, so a release can
+never silently fall back to whatever stable happens to be current. The Kotlin
+job additionally cross-checks that the compiler its Nix shell provides agrees
+with `rust-toolchain.toml`.
+
+### build-manifest.json
+
+Each release ships a `build-manifest.json` recording the source commit, the
+`cdk-ffi` version it pins and the ref its lockfile was seeded from, the pinned
+Rust channel, and SHA-256 hashes of the workspace lockfile, the binding
+lockfile, and `flake.lock`.
+
+### Verifying a published release
+
+```bash
+git checkout <source commit from the manifest>
+just ffi-verify-lock kotlin v0.18.0
+just ffi-verify-lock-all v0.18.0
+```
+
+This confirms the release's dependency graph is a subset of what the lockfile
+pinned at the ref the manifest records, which is the tag that published the
+`cdk-ffi` the release depends on. The `FFI - Verify Published Bindings`
+workflow runs the same check weekly.
+
+Release artifacts also carry GitHub build provenance attestations, which bind a
+downstream asset to a workflow run and commit in this repository:
+
+```bash
+gh attestation verify <asset> --repo cashubtc/cdk
+```
+
+### What this does not cover
+
+Matching dependencies and a matching compiler do not make the binaries
+bit-for-bit identical. Absolute build paths, archive timestamps, and the
+unpinned Xcode and MSVC toolchains on the Apple and Windows legs all still vary
+between runs. The manifest records what would have to match; closing those gaps
+is separate work.
+
 ## Credits
 
 - [Bark FFI Bindings][bark] — the architectural model for this binding layer

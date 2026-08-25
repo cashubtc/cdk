@@ -1,0 +1,83 @@
+name: "FFI - Verify Published Bindings"
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Binding release tag to verify (e.g. v0.18.0)"
+        required: true
+        type: string
+      language:
+        description: "Binding to verify, or 'all'"
+        required: false
+        default: all
+        type: choice
+        options: [all, dart, swift, kotlin, go]
+  schedule:
+    # Re-check the most recent releases weekly so drift surfaces without a
+    # release having to happen first.
+    - cron: "23 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  verify-lockfiles:
+    name: "verify: ${{ matrix.language }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [dart, swift, kotlin, go]
+    steps:
+      - name: Skip unselected languages
+        id: gate
+        run: |
+          SELECTED="${{ inputs.language || 'all' }}"
+          if [[ "${SELECTED}" == "all" || "${SELECTED}" == "${{ matrix.language }}" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout monorepo
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve the release and its source commit
+        if: steps.gate.outputs.run == 'true'
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.FFI_DEPLOY_KEY }}
+        run: |
+          REPO="cashubtc/cdk-${{ matrix.language }}"
+          TAG="${{ inputs.release_tag }}"
+          if [[ -z "${TAG}" ]]; then
+            TAG=$(gh release view --repo "${REPO}" --json tagName -q .tagName)
+            echo "No tag given; using latest release ${TAG} of ${REPO}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          MANIFEST=$(gh release download "${TAG}" --repo "${REPO}" \
+            --pattern build-manifest.json --output - 2>/dev/null || true)
+          if [[ -z "${MANIFEST}" ]]; then
+            echo "::warning::${REPO}@${TAG} has no build-manifest.json; it predates provenance recording"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "${MANIFEST}" | jq .
+          echo "commit=$(echo "${MANIFEST}" | jq -r .source.commit)" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the source commit the release claims
+        if: steps.gate.outputs.run == 'true' && steps.resolve.outputs.skip == 'false'
+        run: git checkout --detach "${{ steps.resolve.outputs.commit }}"
+
+      - name: Verify the dependency graph
+        if: steps.gate.outputs.run == 'true' && steps.resolve.outputs.skip == 'false'
+        run: |
+          ./.github/scripts/verify-binding-lockfile.sh \
+            "${{ matrix.language }}" "${{ steps.resolve.outputs.tag }}"
