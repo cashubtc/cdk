@@ -52,34 +52,28 @@ impl MintUrl {
     fn format_url(url: &str) -> Result<String, Error> {
         ensure_cdk!(!url.is_empty(), Error::InvalidUrl);
 
-        let url = url.trim_end_matches('/');
-        // https://URL.com/path/TO/resource -> https://url.com/path/TO/resource
-        let protocol = url
-            .split("://")
-            .nth(0)
-            .ok_or(Error::InvalidUrl)?
-            .to_lowercase();
-        let host = url
-            .split("://")
-            .nth(1)
-            .ok_or(Error::InvalidUrl)?
-            .split('/')
-            .nth(0)
-            .ok_or(Error::InvalidUrl)?
-            .to_lowercase();
-        let path = url
-            .split("://")
-            .nth(1)
-            .ok_or(Error::InvalidUrl)?
-            .split('/')
-            .skip(1)
-            .collect::<Vec<&str>>()
-            .join("/");
-        let mut formatted_url = format!("{protocol}://{host}");
-        if !path.is_empty() {
-            formatted_url.push_str(&format!("/{path}"));
-        }
-        Ok(formatted_url)
+        // Keep legacy stored URLs readable. `join` validates before use; parsing
+        // and serializing with `Url` here would also normalize database keys.
+        let (scheme, rest) = url.split_once("://").ok_or(Error::InvalidUrl)?;
+        let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let (authority, rest) = rest.split_at(authority_end);
+        let path_end = rest.find(['?', '#']).unwrap_or(rest.len());
+        let (path, suffix) = rest.split_at(path_end);
+        // Legacy formatting retained path slashes before queries and fragments.
+        // Preserve those slashes because the full URL is used as a database key.
+        let path = if suffix.is_empty() {
+            path.trim_end_matches('/')
+        } else {
+            path
+        };
+
+        Ok(format!(
+            "{}://{}{}{}",
+            scheme.to_lowercase(),
+            authority.to_lowercase(),
+            path,
+            suffix
+        ))
     }
 
     /// Join onto url
@@ -197,6 +191,110 @@ mod tests {
         assert_eq!(
             format!("{url_with_path_with_slash}hello/world"),
             url.join_paths(&["hello", "world"]).unwrap().to_string()
+        );
+    }
+
+    #[test]
+    fn test_preserve_path_containing_scheme_separator() {
+        let mint_url = "https://shared.example/tenant://primary";
+        let url = MintUrl::from_str(mint_url).unwrap();
+
+        assert_eq!(mint_url, url.to_string());
+        assert_eq!(
+            "https://shared.example/tenant://primary/v1/swap",
+            url.join_paths(&["v1", "swap"]).unwrap().to_string()
+        );
+    }
+
+    #[test]
+    fn test_preserve_query_case() {
+        let mint_url = "https://shared.example?tenant=CaseSensitiveTenant";
+        let url = MintUrl::from_str(mint_url).unwrap();
+
+        assert_eq!(mint_url, url.to_string());
+        assert_eq!(
+            "https://shared.example/v1/swap?tenant=CaseSensitiveTenant",
+            url.join_paths(&["v1", "swap"]).unwrap().to_string()
+        );
+    }
+
+    #[test]
+    fn test_preserve_path_slash_and_query_value() {
+        let mint_url = "https://shared.example/?tenant=tenant/";
+        let url = MintUrl::from_str(mint_url).unwrap();
+
+        assert_eq!(mint_url, url.to_string());
+        assert_eq!(
+            "https://shared.example/v1/swap?tenant=tenant/",
+            url.join_paths(&["v1", "swap"]).unwrap().to_string()
+        );
+    }
+
+    #[test]
+    fn test_preserve_existing_url_identity() {
+        for mint_url in [
+            "https://mint.example:443",
+            "http://mint.example:80",
+            "https://mint.example/München",
+            "https://mint.example/a/../b",
+            "https://mint.example/%2fTenant",
+            "https://mint.example/?tenant=alice",
+            "https://mint.example/api///?tenant=alice",
+            "https://mint.example/path///#CaseSensitive",
+            "http://mint.local:99999",
+            "http://invalid host",
+            "http://999.999.999.999",
+            "file:///path",
+        ] {
+            let url = MintUrl::from_str(mint_url).unwrap();
+            assert_eq!(mint_url, url.to_string());
+
+            // Serialize the legacy string independently of the current formatter.
+            let stored = serde_json::to_string(mint_url).unwrap();
+            let restored: MintUrl = serde_json::from_str(&stored).unwrap();
+            assert_eq!(mint_url, restored.to_string());
+        }
+    }
+
+    #[test]
+    fn test_invalid_legacy_urls_fail_when_joining() {
+        for mint_url in [
+            "http://mint.local:99999",
+            "http://invalid host",
+            "http://999.999.999.999",
+        ] {
+            let url = MintUrl::from_str(mint_url).unwrap();
+            assert!(url.join_paths(&["v1", "info"]).is_err());
+        }
+    }
+
+    #[test]
+    fn test_serialize_preserves_url_components() {
+        for mint_url in [
+            "https://mint.example:443",
+            "https://mint.example/tenant://primary",
+            "https://mint.example/?tenant=CaseSensitive/",
+            "https://mint.example/path///#CaseSensitive/",
+        ] {
+            let url = MintUrl::from_str(mint_url).unwrap();
+            let stored = serde_json::to_string(&url).unwrap();
+            assert_eq!(serde_json::to_string(mint_url).unwrap(), stored);
+            let restored: MintUrl = serde_json::from_str(&stored).unwrap();
+            assert_eq!(url, restored);
+        }
+    }
+
+    #[test]
+    fn test_preserve_fragment_case_and_trailing_slash() {
+        let url = MintUrl::from_str("HTTPS://Shared.Example/path///#CaseSensitive/").unwrap();
+
+        assert_eq!(
+            "https://shared.example/path///#CaseSensitive/",
+            url.to_string()
+        );
+        assert_eq!(
+            "https://shared.example/path///v1/swap#CaseSensitive/",
+            url.join_paths(&["v1", "swap"]).unwrap().to_string()
         );
     }
 
