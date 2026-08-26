@@ -242,17 +242,30 @@ impl SubscriptionClient {
         self.auth_failures.store(0, Ordering::Relaxed);
     }
 
-    /// Record a rejected `authenticate` and pick the error to fail the stream
+    /// Record a failed `authenticate` and pick the error to fail the stream
     /// with.
     ///
-    /// Every attempt spends a blind auth token, so once the mint has rejected
-    /// enough of them in a row the error becomes terminal: the consumer stops
+    /// The token is spent the moment it is fetched, so a mint that answers
+    /// with an error and one that hangs up before answering drain the pool at
+    /// the same rate: every failure after the fetch counts here. Once enough
+    /// of them happen in a row the error becomes terminal, the consumer stops
     /// reconnecting and falls back to HTTP polling instead of draining the
     /// wallet's token pool.
     fn note_auth_failure(&self, message: String) -> PubsubError {
         let failures = self.auth_failures.fetch_add(1, Ordering::Relaxed) + 1;
 
         auth_failure_error(failures, message)
+    }
+
+    /// Fail an `authenticate` attempt that ended in a transport error.
+    ///
+    /// Errors that already stop the consumer are passed through untouched;
+    /// only the transient ones it would retry need the bound applied.
+    fn note_auth_ws_error(&self, err: WsError) -> PubsubError {
+        match map_ws_error(err) {
+            PubsubError::InternalStr(message) => self.note_auth_failure(message),
+            other => other,
+        }
     }
 }
 
@@ -504,7 +517,7 @@ impl Transport for SubscriptionClient {
     }
 }
 
-/// How many consecutive rejected `authenticate` commands are tolerated before
+/// How many consecutive failed `authenticate` attempts are tolerated before
 /// the websocket stream is abandoned for HTTP polling.
 const MAX_CONSECUTIVE_AUTH_FAILURES: usize = 3;
 
@@ -606,10 +619,13 @@ async fn ensure_authenticated(
         })?;
 
     let (request_id, req) = client.get_auth_request(token.to_string()).ok_or_else(|| {
-        PubsubError::InternalStr("failed to build authenticate request".to_string())
+        client.note_auth_failure("failed to build authenticate request".to_string())
     })?;
 
-    sender.send(req).await.map_err(map_ws_error)?;
+    sender
+        .send(req)
+        .await
+        .map_err(|err| client.note_auth_ws_error(err))?;
     pending_requests.insert(request_id, PendingRequest::Authenticate);
     await_authenticate_response(client, receiver, pending_requests, request_id).await?;
     *authenticated = true;
@@ -632,11 +648,10 @@ async fn await_authenticate_response(
     loop {
         let msg = match receiver.recv().await {
             Some(Ok(msg)) => msg,
-            Some(Err(err)) => return Err(map_ws_error(err)),
+            Some(Err(err)) => return Err(client.note_auth_ws_error(err)),
             None => {
-                return Err(PubsubError::InternalStr(
-                    "WebSocket stream closed while authenticating".to_string(),
-                ))
+                return Err(client
+                    .note_auth_failure("WebSocket stream closed while authenticating".to_string()))
             }
         };
 
@@ -995,10 +1010,10 @@ fn decode_notification_payload_for_stream(
 fn auth_failure_error(failures: usize, message: String) -> PubsubError {
     if failures >= MAX_CONSECUTIVE_AUTH_FAILURES {
         PubsubError::Terminal(format!(
-            "websocket authentication rejected repeatedly, giving up: {message}"
+            "websocket authentication failed repeatedly, giving up: {message}"
         ))
     } else {
-        PubsubError::InternalStr(format!("websocket authentication rejected: {message}"))
+        PubsubError::InternalStr(format!("websocket authentication failed: {message}"))
     }
 }
 
@@ -1012,9 +1027,12 @@ fn map_ws_error(err: WsError) -> PubsubError {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use serde_json::json;
 
     use super::*;
+    use crate::wallet::test_utils::MockMintConnector;
 
     #[test]
     fn nut17_subscription_ids_use_uuid_v7() {
@@ -1075,6 +1093,55 @@ mod tests {
                 PubsubError::InternalStr(_)
             ));
         }
+    }
+
+    fn test_client() -> SubscriptionClient {
+        SubscriptionClient {
+            http_client: Arc::new(MockMintConnector::new()),
+            mint_url: MintUrl::from_str("https://mint.test").expect("valid mint url"),
+            req_id: 0.into(),
+            auth_failures: 0.into(),
+        }
+    }
+
+    #[test]
+    fn dropped_connections_while_authenticating_count_toward_the_bound() {
+        let client = test_client();
+
+        for _ in 1..MAX_CONSECUTIVE_AUTH_FAILURES {
+            assert!(matches!(
+                client.note_auth_ws_error(WsError::Transient("connection closed".to_string())),
+                PubsubError::InternalStr(_)
+            ));
+        }
+
+        assert!(matches!(
+            client.note_auth_failure("WebSocket stream closed".to_string()),
+            PubsubError::Terminal(_)
+        ));
+    }
+
+    #[test]
+    fn a_successful_authentication_clears_earlier_failures() {
+        let client = test_client();
+
+        client.note_auth_ws_error(WsError::Transient("connection closed".to_string()));
+        client.reset_auth_failures();
+
+        assert!(matches!(
+            client.note_auth_ws_error(WsError::Transient("connection closed".to_string())),
+            PubsubError::InternalStr(_)
+        ));
+    }
+
+    #[test]
+    fn unsupported_websocket_failure_while_authenticating_is_not_rewritten() {
+        let client = test_client();
+
+        assert!(matches!(
+            client.note_auth_ws_error(WsError::NotSupported("404".to_string())),
+            PubsubError::NotSupported
+        ));
     }
 
     #[test]
