@@ -51,6 +51,8 @@ pub(crate) mod recovery;
 pub mod send;
 pub mod storage;
 pub(crate) mod sync;
+#[cfg(test)]
+pub(crate) mod testutil;
 pub mod types;
 pub(crate) mod util;
 pub mod wallet_info;
@@ -855,6 +857,22 @@ impl MintPayment for CdkBdk {
 
         // 1. Check active intents
         if let Some(record) = self.storage.get_send_intent_by_quote_id(&quote_id).await? {
+            let has_broadcast_evidence =
+                self.storage
+                    .get_all_send_batches()
+                    .await?
+                    .iter()
+                    .any(|batch| {
+                        matches!(
+                            &batch.state,
+                            crate::send::batch_transaction::record::SendBatchState::Broadcast {
+                                assignments,
+                                ..
+                            } if assignments
+                                .iter()
+                                .any(|assignment| assignment.intent_id == record.intent_id)
+                        )
+                    });
             // `total_spent` is the actual amount spent (amount + fee) and is
             // only reported once the payment has been made. Before the batch
             // transaction has been built, the per-intent fee contribution is
@@ -879,6 +897,14 @@ impl MintPayment for CdkBdk {
                 | crate::send::payment_intent::record::SendIntentState::AwaitingConfirmation {
                     ..
                 } => MeltQuoteState::Pending,
+                crate::send::payment_intent::record::SendIntentState::Failed { .. }
+                    if has_broadcast_evidence =>
+                {
+                    // A durable Broadcast transaction may already have reached
+                    // the network. Never authorize proof compensation merely
+                    // because a stale worker left the current intent Failed.
+                    MeltQuoteState::Pending
+                }
                 crate::send::payment_intent::record::SendIntentState::Failed { .. } => {
                     MeltQuoteState::Failed
                 }
@@ -1455,6 +1481,7 @@ mod tests {
                 .create_send_intent_if_absent(
                     &crate::send::payment_intent::record::SendIntentRecord {
                         intent_id: *intent_id,
+                        attempt_id: Uuid::new_v4(),
                         quote_id: quote_id.to_string(),
                         address: address.to_string(),
                         amount_sat: *amount_sat,
@@ -1518,10 +1545,16 @@ mod tests {
         assert_eq!(transactions.items[0].received_sat, 11_900);
 
         for (intent_id, quote_id, _, amount_sat, vout) in &intents {
+            let expected = backend
+                .storage
+                .get_send_intent(intent_id)
+                .await
+                .expect("read send intent")
+                .expect("send intent exists");
             backend
                 .storage
                 .finalize_send_intent(
-                    intent_id,
+                    &expected,
                     &FinalizedSendIntentRecord {
                         intent_id: *intent_id,
                         quote_id: quote_id.to_string(),
@@ -2345,8 +2378,11 @@ mod tests {
         .await
         .expect("create Pending send intent");
 
+        let batch_id = Uuid::new_v4();
+        crate::testutil::store_test_signed_batch(&backend.storage, batch_id, &[pending.intent_id])
+            .await;
         pending
-            .assign_to_batch(&backend.storage, Uuid::new_v4())
+            .assign_to_batch(&backend.storage, batch_id)
             .await
             .expect("transition Pending → Batched");
 
@@ -2390,8 +2426,11 @@ mod tests {
         .await
         .expect("create Pending send intent");
 
+        let batch_id = Uuid::new_v4();
+        crate::testutil::store_test_signed_batch(&backend.storage, batch_id, &[pending.intent_id])
+            .await;
         let batched = pending
-            .assign_to_batch(&backend.storage, Uuid::new_v4())
+            .assign_to_batch(&backend.storage, batch_id)
             .await
             .expect("transition Pending → Batched");
 
@@ -2455,6 +2494,75 @@ mod tests {
         assert_eq!(response.status, MeltQuoteState::Failed);
         assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Sat));
         assert_eq!(response.payment_proof, None);
+    }
+
+    #[tokio::test]
+    async fn durable_broadcast_fences_failed_intent_and_retry() {
+        use crate::send::batch_transaction::record::{
+            BatchOutputAssignment, SendBatchRecord, SendBatchState,
+        };
+        use crate::send::payment_intent::SendIntent;
+        use crate::types::{PaymentMetadata, PaymentTier};
+
+        let backend = build_test_instance(5).await;
+        let quote_id = QuoteId::UUID(Uuid::new_v4());
+        let pending = SendIntent::new(
+            &backend.storage,
+            quote_id.to_string(),
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            30_000,
+            2_000,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("create Pending send intent");
+        let intent_id = pending.intent_id;
+        let attempt_id = pending.attempt_id;
+        pending
+            .fail(&backend.storage, "stale failure".to_string())
+            .await
+            .expect("transition Pending to Failed");
+
+        backend
+            .storage
+            .store_send_batch(&SendBatchRecord {
+                batch_id: Uuid::new_v4(),
+                state: SendBatchState::Broadcast {
+                    txid: Txid::all_zeros().to_string(),
+                    tx_bytes: vec![0x01],
+                    assignments: vec![BatchOutputAssignment {
+                        intent_id,
+                        attempt_id,
+                        vout: 0,
+                        fee_contribution_sat: 500,
+                    }],
+                    fee_sat: 500,
+                },
+            })
+            .await
+            .expect("store Broadcast evidence");
+
+        let response = backend
+            .check_outgoing_payment(&PaymentIdentifier::QuoteId(quote_id.clone()))
+            .await
+            .expect("check fenced intent");
+        assert_eq!(response.status, MeltQuoteState::Pending);
+
+        let retry = SendIntent::new(
+            &backend.storage,
+            quote_id.to_string(),
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            30_000,
+            2_000,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await;
+        assert!(matches!(
+            retry,
+            Err(Error::SendIntentStateConflict { intent_id: id, .. }) if id == intent_id
+        ));
     }
 
     #[tokio::test]

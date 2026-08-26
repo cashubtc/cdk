@@ -103,12 +103,63 @@ pub(crate) async fn sync_electrum(
                     }
                 };
 
+                let reservations = match cdk_bdk.load_broadcast_reservations().await {
+                    Ok(reservations) => reservations,
+                    Err(error) => {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        crate::sync::log_sync_failure(
+                            "Failed to load Broadcast transactions for Electrum sync",
+                            &error,
+                            consecutive_failures,
+                        );
+                        continue;
+                    }
+                };
                 let sync_request = {
-                    let wallet = cdk_bdk.wallet_with_db.lock().await;
+                    let sync_started_at = crate::util::unix_now();
+                    let Some(reservation_time) = sync_started_at.checked_add(1) else {
+                        let error = Error::Wallet(
+                            "Cannot construct Electrum sync request at maximum timestamp"
+                                .to_string(),
+                        );
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        crate::sync::log_sync_failure(
+                            "Failed to reserve Broadcast transactions for Electrum sync",
+                            &error,
+                            consecutive_failures,
+                        );
+                        continue;
+                    };
+                    let mut wallet = cdk_bdk.wallet_with_db.lock().await;
+                    if let Err(error) = CdkBdk::reserve_broadcast_transactions_locked(
+                        &mut wallet.wallet,
+                        &reservations,
+                        reservation_time,
+                    ) {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        crate::sync::log_sync_failure(
+                            "Failed to reserve Broadcast transactions for Electrum sync",
+                            &error,
+                            consecutive_failures,
+                        );
+                        continue;
+                    }
+                    if let Err(error) = wallet.persist() {
+                        let error = Error::Database(error);
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        crate::sync::log_sync_failure(
+                            "Failed to persist Broadcast reservations for Electrum sync",
+                            &error,
+                            consecutive_failures,
+                        );
+                        continue;
+                    }
                     client.populate_tx_cache(
                         wallet.wallet.tx_graph().full_txs().map(|tx_node| tx_node.tx),
                     );
-                    wallet.wallet.start_sync_with_revealed_spks()
+                    wallet
+                        .wallet
+                        .start_sync_with_revealed_spks_at(sync_started_at)
                 };
 
                 let sync_client = Arc::clone(&client);

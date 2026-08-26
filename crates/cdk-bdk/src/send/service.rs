@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use bdk_wallet::bitcoin::{Address, OutPoint, Transaction};
+use bdk_wallet::bitcoin::{Address, OutPoint, Transaction, Txid};
 use cdk_common::payment::{Event, MakePaymentResponse, PaymentIdentifier};
 use cdk_common::{Amount, CurrencyUnit, MeltQuoteState, QuoteId};
 use tokio::time::interval;
@@ -13,6 +13,7 @@ use crate::send::batch_transaction::record::{
     BatchOutputAssignment, SendBatchRecord, SendBatchState,
 };
 use crate::send::batch_transaction::{allocate_batch_fee, state as batch_state, SendBatch};
+use crate::send::payment_intent::record::SendIntentState;
 use crate::send::payment_intent::{self, state as intent_state, SendIntent, SendIntentAny};
 use crate::types::PaymentTier;
 use crate::CdkBdk;
@@ -26,6 +27,7 @@ impl CdkBdk {
                     intent.intent_id,
                     err
                 );
+                continue;
             }
 
             if let Ok(quote_id) = QuoteId::from_str(&intent.quote_id) {
@@ -53,12 +55,15 @@ impl CdkBdk {
         let fee = intent.state.fee_contribution_sat;
         let outpoint = intent.state.outpoint.clone();
 
-        intent.finalize(&self.storage).await.map_err(|e| {
+        let finalized = intent.finalize(&self.storage).await.map_err(|e| {
             tracing::error!("Failed to finalize send intent {}: {}", intent_id, e);
             e
         })?;
 
-        if let Ok(quote_id) = QuoteId::from_str(&quote_id) {
+        if finalized {
+            let Ok(quote_id) = QuoteId::from_str(&quote_id) else {
+                return Ok(());
+            };
             let details = MakePaymentResponse {
                 payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                 payment_proof: Some(outpoint),
@@ -162,6 +167,7 @@ impl CdkBdk {
             .iter()
             .map(|intent| IntentOutput {
                 intent_id: intent.intent_id,
+                attempt_id: intent.attempt_id,
                 address: intent.address.as_str(),
                 amount: intent.amount,
             })
@@ -243,7 +249,69 @@ impl CdkBdk {
     }
 
     pub(crate) async fn process_ready_intents(&self) -> Result<(), Error> {
-        let pending = self.storage.get_pending_send_intents().await?;
+        let normalized = self.storage.normalize_legacy_pending_attempt_ids().await?;
+        if normalized > 0 {
+            tracing::info!(
+                normalized,
+                "Assigned attempt IDs to legacy pending send intents"
+            );
+        }
+
+        // Cancellation is durable precisely so transient wallet/storage
+        // failures can be retried. Drain those markers on every processor
+        // cycle rather than requiring a process restart.
+        self.resume_cancelled_send_batches().await?;
+
+        // A transient Signed -> Broadcast storage failure leaves a fully signed
+        // transaction durable but unavailable to the normal pending selector.
+        // Reuse the idempotent recovery path on a later processor cycle instead
+        // of requiring a process restart.
+        if self
+            .storage
+            .get_all_send_batches()
+            .await?
+            .iter()
+            .any(|batch| {
+                matches!(
+                    &batch.state,
+                    SendBatchState::Signed { tx_bytes, .. }
+                        if bdk_wallet::bitcoin::consensus::deserialize::<Transaction>(tx_bytes)
+                            .is_ok()
+                )
+            })
+        {
+            self.recover_send_saga().await?;
+        }
+
+        let broadcast_owned_intents: std::collections::HashSet<_> = self
+            .storage
+            .get_all_send_batches()
+            .await?
+            .into_iter()
+            .filter_map(|batch| match batch.state {
+                SendBatchState::Broadcast { assignments, .. } => Some(assignments),
+                _ => None,
+            })
+            .flatten()
+            .map(|assignment| assignment.intent_id)
+            .collect();
+        let pending: Vec<_> = self
+            .storage
+            .get_pending_send_intents()
+            .await?
+            .into_iter()
+            .filter(|intent| {
+                let eligible = !broadcast_owned_intents.contains(&intent.intent_id);
+                if !eligible {
+                    tracing::warn!(
+                        intent_id = %intent.intent_id,
+                        attempt_id = %intent.attempt_id,
+                        "Keeping Pending replacement fenced by durable Broadcast evidence"
+                    );
+                }
+                eligible
+            })
+            .collect();
         if pending.is_empty() {
             return Ok(());
         }
@@ -279,23 +347,38 @@ impl CdkBdk {
                         age_secs,
                         max_age.as_secs()
                     );
-                    if let Err(e) = self
+                    let failed_state =
+                        crate::send::payment_intent::record::SendIntentState::Failed {
+                            reason: reason.clone(),
+                            created_at,
+                            failed_at: now,
+                        };
+                    match self
                         .storage
-                        .update_send_intent(
+                        .transition_send_intent(
                             &intent.intent_id,
-                            &crate::send::payment_intent::record::SendIntentState::Failed {
-                                reason: reason.clone(),
-                                created_at,
-                                failed_at: now,
-                            },
+                            &intent.attempt_id,
+                            &intent.state,
+                            &failed_state,
                         )
                         .await
                     {
-                        tracing::error!(
-                            "Failed to mark expired intent {} failed: {}",
-                            intent.intent_id,
-                            e
-                        );
+                        Ok(true) => {}
+                        Ok(false) => {
+                            tracing::info!(
+                                "Skipping expiry of intent {}: durable state changed concurrently",
+                                intent.intent_id
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to mark expired intent {} failed: {}",
+                                intent.intent_id,
+                                e
+                            );
+                            continue;
+                        }
                     }
                     if let Ok(quote_id) = QuoteId::from_str(&intent.quote_id) {
                         if let Err(err) = self
@@ -411,8 +494,18 @@ impl CdkBdk {
             }
         };
 
+        // Load durable reservations before taking the wallet mutex. The actual
+        // reservations and coin selection remain in one critical section, while
+        // storage I/O cannot stall every other wallet user.
+        let durable_broadcasts = self.load_broadcast_reservations().await?;
+
         // 1. Build the PSBT
         let mut wallet_with_db = self.wallet_with_db.lock().await;
+        Self::reserve_broadcast_transactions_locked(
+            &mut wallet_with_db.wallet,
+            &durable_broadcasts,
+            0,
+        )?;
         let mut tx_builder = wallet_with_db.wallet.build_tx();
         for (address, amount) in recipients {
             tx_builder.add_recipient(address, bdk_wallet::bitcoin::Amount::from_sat(amount));
@@ -500,31 +593,12 @@ impl CdkBdk {
         let tx_bytes = bdk_wallet::bitcoin::consensus::serialize(&tx);
         let txid = tx.compute_txid();
 
-        // Apply the freshly built tx to BDK's tx graph so the next batch
-        // cycle's coin selection treats its inputs as spent. Without this,
-        // concurrent melts each call `finish()` against the same UTXO view
-        // and pick the same input, causing double-spends rejected by bitcoind.
-        let apply_time = crate::util::unix_now();
-        wallet_with_db
-            .wallet
-            .apply_unconfirmed_txs([(tx.clone(), apply_time)]);
-        if let Err(e) = wallet_with_db.persist() {
-            tracing::warn!(
-                batch_id = %batch_id,
-                "Could not persist BDK wallet after applying unconfirmed tx: {}",
-                e
-            );
-        }
-
-        // Drop wallet lock before broadcasting
-        drop(wallet_with_db);
-
         // 3. Record per-intent vout + fee mapping once, at the only place we have
         // ground truth: the freshly built transaction plus the fee allocation
-        // in memory. Persist this Signed batch before moving any intent out
-        // of Pending; this makes every post-sign crash/failure recoverable
-        // from the signed transaction bytes instead of reverting into a new
-        // batch.
+        // in memory. Persist Signed before applying the transaction to BDK, so
+        // every durable wallet-graph mutation has a recovery record. Keep the
+        // wallet lock through both operations so another local batch cannot
+        // select the same inputs in between.
         let assignments = self.derive_pending_vout_assignments(&tx, &intents, &fee_allocations)?;
         let intent_count = assignments.len();
 
@@ -540,30 +614,67 @@ impl CdkBdk {
             })
             .await
         {
-            // Persisting Signed failed after the wallet's tx graph was
-            // advanced. Revert the apply so the UTXOs aren't stranded in
-            // an orphaned unconfirmed tx. Downstream failures all leave a
-            // durable Signed/Broadcast record that recovery can replay.
-            let evict_time = apply_time.saturating_add(1);
-            let mut wallet_with_db = self.wallet_with_db.lock().await;
-            wallet_with_db
-                .wallet
-                .apply_evicted_txs([(txid, evict_time)]);
-            if let Err(persist_err) = wallet_with_db.persist() {
-                tracing::warn!(
-                    batch_id = %batch_id,
-                    "Could not persist BDK wallet after evicting unconfirmed tx on store_send_batch failure: {}",
-                    persist_err
-                );
-            }
             drop(wallet_with_db);
             return Err(e);
         }
 
+        // Apply the freshly built tx to BDK's tx graph so the next batch
+        // cycle's coin selection treats its inputs as spent. Without this,
+        // concurrent melts each call `finish()` against the same UTXO view
+        // and pick the same input, causing double-spends rejected by bitcoind.
+        let apply_time = reserve_unconfirmed_tx(&mut wallet_with_db.wallet, &tx)?;
+        if let Err(e) = wallet_with_db.persist() {
+            tracing::warn!(
+                batch_id = %batch_id,
+                "Could not persist BDK wallet after applying unconfirmed tx: {}",
+                e
+            );
+        }
+
+        // Drop wallet lock before broadcasting or compensating.
+        drop(wallet_with_db);
+
         // 4. Transition intents to Batched after the signed transaction is durable.
-        let mut batched_intents = Vec::new();
+        let mut batched_intents: Vec<SendIntent<intent_state::Batched>> = Vec::new();
         for intent in intents {
-            let batched = intent.assign_to_batch(&self.storage, batch_id).await?;
+            let batched = match intent.assign_to_batch(&self.storage, batch_id).await {
+                Ok(batched) => batched,
+                Err(e) => {
+                    tracing::warn!(
+                        batch_id = %batch_id,
+                        error = %e,
+                        "Batch member could not be claimed; compensating signed batch"
+                    );
+                    let cancelled = match self
+                        .cancel_signed_send_batch(
+                            batch_id,
+                            &tx_bytes,
+                            &assignments,
+                            actual_fee,
+                            apply_time.saturating_add(1),
+                        )
+                        .await
+                    {
+                        Ok(cancelled) => cancelled,
+                        Err(cancel_err) => {
+                            tracing::error!(
+                                batch_id = %batch_id,
+                                error = %cancel_err,
+                                "Failed to durably compensate signed batch"
+                            );
+                            return Err(cancel_err);
+                        }
+                    };
+                    if !cancelled {
+                        tracing::info!(
+                            batch_id = %batch_id,
+                            "Skipping compensation because the signed batch changed concurrently"
+                        );
+                        return Err(e);
+                    }
+                    return Err(e);
+                }
+            };
             batched_intents.push(batched);
         }
         let signed_batch =
@@ -695,30 +806,65 @@ impl CdkBdk {
         let all_active_intents = self.storage.get_all_send_intents().await?;
 
         for batch in batches {
-            let assignments = match &batch.state {
+            let (stored_txid, tx_bytes, assignments) = match &batch.state {
                 crate::send::batch_transaction::record::SendBatchState::Broadcast {
+                    txid,
+                    tx_bytes,
                     assignments,
                     ..
-                } => assignments,
+                } => (txid, tx_bytes, assignments),
                 _ => continue, // Only clean up broadcast batches
             };
 
             let has_active = assignments.iter().any(|a| {
                 all_active_intents
                     .iter()
-                    .any(|i| i.intent_id == a.intent_id)
+                    .any(|i| i.intent_id == a.intent_id && i.attempt_id == a.attempt_id)
             });
 
-            if !has_active {
+            if has_active {
+                continue;
+            }
+
+            // Missing active state can also mean corruption or replacement.
+            // Retain the Broadcast evidence unless every assigned output has
+            // an exact finalized tombstone.
+            let Some((txid, _)) = decode_broadcast_tx(&batch.batch_id, stored_txid, tx_bytes)
+            else {
+                continue;
+            };
+            let mut all_finalized = !assignments.is_empty();
+            for assignment in assignments {
+                let expected_outpoint = OutPoint::new(txid, assignment.vout).to_string();
+                let finalized = self
+                    .storage
+                    .get_finalized_intent(&assignment.intent_id)
+                    .await?;
+                if finalized
+                    .as_ref()
+                    .is_none_or(|record| record.outpoint != expected_outpoint)
+                {
+                    all_finalized = false;
+                    break;
+                }
+            }
+
+            if all_finalized {
                 tracing::info!("Cleaning up completed batch {}", batch.batch_id);
-                self.storage.delete_send_batch(&batch.batch_id).await?;
+                self.storage
+                    .delete_send_batch_if_state(&batch.batch_id, &batch.state)
+                    .await?;
+            } else {
+                tracing::warn!(
+                    batch_id = %batch.batch_id,
+                    "Retaining Broadcast batch because exact completion is not proven"
+                );
             }
         }
         Ok(())
     }
 
-    /// Re-broadcast any `Broadcast`-state batch whose transaction the BDK
-    /// wallet does not currently know about.
+    /// Re-broadcast any unconfirmed `Broadcast`-state batch.
     ///
     /// `Broadcast` state is persisted before the network send (see the
     /// hot path in `build_sign_broadcast_batch`), so a transient Esplora
@@ -728,88 +874,98 @@ impl CdkBdk {
     /// this helper closes the steady-state gap by retrying on every
     /// sync-reconciliation tick.
     ///
-    /// Staleness signal: `wallet.get_tx(txid).is_none()`. If the wallet
-    /// sees the tx (confirmed or unconfirmed in mempool), we leave it
-    /// alone. Per-batch failures are logged and swallowed; the next
-    /// reconciliation tick retries naturally.
+    /// The stored txid and persisted transaction bytes must identify the same
+    /// transaction. A locally tracked unconfirmed transaction is still retried
+    /// because BDK wallet presence does not prove backend acceptance. Confirmed
+    /// transactions are skipped. Per-batch failures are logged and swallowed;
+    /// the next reconciliation tick retries naturally.
     #[tracing::instrument(skip_all)]
     pub(crate) async fn rebroadcast_stuck_batches(&self) -> Result<(), Error> {
         let batches = self.storage.get_all_send_batches().await?;
+        let mut reservations = Vec::new();
+        let mut eligible = Vec::new();
+        for record in batches {
+            if let Some(reservation) = decode_broadcast_reservation(&record.batch_id, &record.state)
+            {
+                reservations.push(reservation);
+            }
+            if let Some((txid, tx)) = self
+                .prepare_broadcast_batch(record.batch_id, &record.state)
+                .await?
+            {
+                eligible.push((record.batch_id, txid, tx));
+            }
+        }
 
-        // Collect candidates while holding the wallet lock (needed for
-        // `get_tx`), then drop the lock before any network I/O so the
-        // sync loop is never blocked on Esplora latency.
+        // Reserve every candidate in BDK before releasing the wallet lock.
+        // A durable Broadcast record means its inputs must not be selected by
+        // another batch even when the backend has not accepted the transaction
+        // yet. The reservation timestamp must strictly beat any eviction marker
+        // or BDK will continue to treat the transaction as non-canonical.
         let candidates: Vec<(Uuid, String, Transaction)> = {
-            let wallet_with_db = self.wallet_with_db.lock().await;
-            batches
-                .into_iter()
-                .filter_map(|rec| {
-                    let crate::send::batch_transaction::record::SendBatchState::Broadcast {
-                        txid,
-                        tx_bytes,
-                        ..
-                    } = rec.state
-                    else {
-                        return None;
-                    };
+            let mut wallet_with_db = self.wallet_with_db.lock().await;
+            let mut candidates = Vec::new();
 
-                    let parsed_txid = match bdk_wallet::bitcoin::Txid::from_str(&txid) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            tracing::warn!(
-                                batch_id = %rec.batch_id,
-                                txid = %txid,
-                                "Skipping rebroadcast: failed to parse persisted txid: {e}"
-                            );
-                            return None;
-                        }
-                    };
+            for (batch_id, txid, tx) in &reservations {
+                if wallet_with_db
+                    .wallet
+                    .get_tx(*txid)
+                    .is_some_and(|wallet_tx| {
+                        matches!(
+                            wallet_tx.chain_position,
+                            bdk_wallet::chain::ChainPosition::Confirmed { .. }
+                        )
+                    })
+                {
+                    // Confirmed transactions no longer need rebroadcasting.
+                    continue;
+                }
 
-                    if wallet_with_db.wallet.get_tx(parsed_txid).is_some() {
-                        // Wallet knows the tx (confirmed or in mempool);
-                        // no rebroadcast needed.
-                        return None;
-                    }
+                if let Err(err) = reserve_unconfirmed_tx(&mut wallet_with_db.wallet, tx) {
+                    tracing::error!(
+                        %batch_id,
+                        %txid,
+                        error = %err,
+                        "Cannot reserve rebroadcast transaction"
+                    );
+                }
+            }
 
-                    match bdk_wallet::bitcoin::consensus::deserialize::<Transaction>(&tx_bytes) {
-                        Ok(tx) => Some((rec.batch_id, txid, tx)),
-                        Err(e) => {
-                            tracing::warn!(
-                                batch_id = %rec.batch_id,
-                                txid = %txid,
-                                "Skipping rebroadcast: failed to deserialize persisted tx: {e}"
-                            );
-                            None
-                        }
-                    }
-                })
-                .collect()
+            for (batch_id, txid, tx) in eligible {
+                if wallet_with_db.wallet.get_tx(txid).is_some_and(|wallet_tx| {
+                    matches!(
+                        wallet_tx.chain_position,
+                        bdk_wallet::chain::ChainPosition::Confirmed { .. }
+                    )
+                }) {
+                    continue;
+                }
+                candidates.push((batch_id, txid.to_string(), tx));
+            }
+
+            if !reservations.is_empty() {
+                if let Err(err) = wallet_with_db.persist() {
+                    tracing::warn!(
+                        "Could not persist BDK wallet after reserving rebroadcast transactions: {}",
+                        err
+                    );
+                }
+            }
+
+            candidates
         };
 
         for (batch_id, txid, tx) in candidates {
             tracing::info!(%batch_id, %txid, "Rebroadcasting stuck batch");
             match self.broadcast_transaction_internal(tx.clone()).await {
-                Ok(BroadcastOutcome::Accepted) => {
-                    tracing::info!(%batch_id, %txid, "Rebroadcast accepted");
-                    // Apply the now-broadcast tx to BDK's tx graph so the
-                    // next batch cycle doesn't reselect its inputs.
-                    let apply_time = crate::util::unix_now();
-                    let mut wallet_with_db = self.wallet_with_db.lock().await;
-                    wallet_with_db
-                        .wallet
-                        .apply_unconfirmed_txs([(tx, apply_time)]);
-                    if let Err(e) = wallet_with_db.persist() {
-                        tracing::warn!(
-                            %batch_id,
-                            "Could not persist BDK wallet after applying rebroadcast tx: {}",
-                            e
-                        );
+                Ok(outcome) => match outcome {
+                    BroadcastOutcome::Accepted => {
+                        tracing::info!(%batch_id, %txid, "Rebroadcast accepted");
                     }
-                    drop(wallet_with_db);
-                }
-                Ok(BroadcastOutcome::AlreadyKnown) => {
-                    tracing::info!(%batch_id, %txid, "Rebroadcast tx already known");
-                }
+                    BroadcastOutcome::AlreadyKnown => {
+                        tracing::info!(%batch_id, %txid, "Rebroadcast tx already known");
+                    }
+                },
                 Err(failure) => {
                     self.log_broadcast_failure("Rebroadcast failed", batch_id, &txid, &failure);
                     // Swallow: next reconciliation tick will retry.
@@ -818,6 +974,312 @@ impl CdkBdk {
         }
 
         Ok(())
+    }
+
+    /// Load every decodable durable Broadcast transaction for reservation.
+    ///
+    /// Strict intent eligibility deliberately is not checked here: even corrupt
+    /// or superseded durable evidence must fence its transaction inputs. Strict
+    /// checks are only authority for network rebroadcast.
+    pub(crate) async fn load_broadcast_reservations(
+        &self,
+    ) -> Result<Vec<(Uuid, Txid, Transaction)>, Error> {
+        let batches = self.storage.get_all_send_batches().await?;
+        Ok(batches
+            .into_iter()
+            .filter_map(|record| decode_broadcast_reservation(&record.batch_id, &record.state))
+            .collect())
+    }
+
+    /// Refresh preloaded Broadcast reservations while the caller holds the
+    /// wallet mutex.
+    ///
+    /// Sync request construction uses a `minimum_last_seen` strictly newer
+    /// than the request's eviction timestamp. Reservation and sync snapshot
+    /// creation must remain in the same wallet critical section.
+    pub(crate) fn reserve_broadcast_transactions_locked(
+        wallet: &mut bdk_wallet::Wallet,
+        reservations: &[(Uuid, Txid, Transaction)],
+        minimum_last_seen: u64,
+    ) -> Result<(), Error> {
+        for (_, txid, tx) in reservations {
+            if wallet.get_tx(*txid).is_some_and(|wallet_tx| {
+                matches!(
+                    wallet_tx.chain_position,
+                    bdk_wallet::chain::ChainPosition::Confirmed { .. }
+                )
+            }) {
+                continue;
+            }
+            reserve_unconfirmed_tx_at_least(wallet, tx, minimum_last_seen)?;
+        }
+        Ok(())
+    }
+
+    /// Validate and repair a durable Broadcast batch before it can reserve
+    /// wallet inputs or reach a chain backend.
+    ///
+    /// Eligibility is all-or-nothing. Exact Batched members are advanced using
+    /// their compare-and-set transition, then the batch and all members are
+    /// re-read. Any corruption, replacement, failure, or mismatch leaves the
+    /// durable evidence untouched and fences the transaction from the network.
+    pub(crate) async fn prepare_broadcast_batch(
+        &self,
+        batch_id: Uuid,
+        state: &SendBatchState,
+    ) -> Result<Option<(Txid, Transaction)>, Error> {
+        let SendBatchState::Broadcast {
+            txid: stored_txid,
+            tx_bytes,
+            assignments,
+            fee_sat,
+        } = state
+        else {
+            return Ok(None);
+        };
+        let Some((txid, tx)) = decode_broadcast_tx(&batch_id, stored_txid, tx_bytes) else {
+            return Ok(None);
+        };
+
+        let unique_intent_ids: std::collections::HashSet<_> =
+            assignments.iter().map(|item| item.intent_id).collect();
+        let unique_vouts: std::collections::HashSet<_> =
+            assignments.iter().map(|item| item.vout).collect();
+        let allocated_fee = assignments.iter().try_fold(0_u64, |total, assignment| {
+            total.checked_add(assignment.fee_contribution_sat)
+        });
+        if assignments.is_empty()
+            || unique_intent_ids.len() != assignments.len()
+            || unique_vouts.len() != assignments.len()
+            || allocated_fee != Some(*fee_sat)
+            || assignments.iter().any(|item| {
+                item.attempt_id.is_nil()
+                    || usize::try_from(item.vout).map_or(true, |vout| vout >= tx.output.len())
+            })
+        {
+            tracing::error!(
+                %batch_id,
+                "Fencing Broadcast batch with empty, duplicate, legacy, or out-of-range assignments"
+            );
+            return Ok(None);
+        }
+
+        let expected_txid = txid.to_string();
+        let mut repairs = Vec::new();
+        for assignment in assignments {
+            let Some(record) = self.storage.get_send_intent(&assignment.intent_id).await? else {
+                tracing::error!(
+                    %batch_id,
+                    intent_id = %assignment.intent_id,
+                    "Fencing Broadcast batch with a missing member"
+                );
+                return Ok(None);
+            };
+            if record.attempt_id != assignment.attempt_id {
+                tracing::error!(
+                    %batch_id,
+                    intent_id = %assignment.intent_id,
+                    assignment_attempt_id = %assignment.attempt_id,
+                    current_attempt_id = %record.attempt_id,
+                    "Fencing Broadcast batch owned by a replacement send attempt"
+                );
+                return Ok(None);
+            }
+            let Some(output) = usize::try_from(assignment.vout)
+                .ok()
+                .and_then(|vout| tx.output.get(vout))
+            else {
+                return Ok(None);
+            };
+            let address = Address::from_str(&record.address)
+                .ok()
+                .and_then(|address| address.require_network(self.network).ok());
+            if assignment.fee_contribution_sat > record.max_fee_amount_sat
+                || output.value.to_sat() != record.amount_sat
+                || address
+                    .as_ref()
+                    .is_none_or(|address| output.script_pubkey != address.script_pubkey())
+            {
+                tracing::error!(
+                    %batch_id,
+                    intent_id = %assignment.intent_id,
+                    "Fencing Broadcast batch whose output or fee does not match its intent"
+                );
+                return Ok(None);
+            }
+            match payment_intent::from_record(&record) {
+                SendIntentAny::Batched(intent) if intent.state.batch_id == batch_id => {
+                    repairs.push((intent, assignment));
+                }
+                SendIntentAny::AwaitingConfirmation(intent)
+                    if intent.state.batch_id == batch_id
+                        && intent.state.txid == expected_txid
+                        && intent.state.outpoint
+                            == OutPoint::new(txid, assignment.vout).to_string()
+                        && intent.state.fee_contribution_sat == assignment.fee_contribution_sat => {
+                }
+                _ => {
+                    tracing::error!(
+                        %batch_id,
+                        intent_id = %assignment.intent_id,
+                        "Fencing Broadcast batch with a mismatched member"
+                    );
+                    return Ok(None);
+                }
+            }
+        }
+
+        // Validate the entire batch before mutating any member.
+        for (intent, assignment) in repairs {
+            let intent_id = intent.intent_id;
+            let result = intent
+                .mark_broadcast(
+                    &self.storage,
+                    expected_txid.clone(),
+                    OutPoint::new(txid, assignment.vout).to_string(),
+                    assignment.fee_contribution_sat,
+                )
+                .await;
+            if let Err(err) = result {
+                // A concurrent worker may have completed the exact same repair.
+                // The fresh validation below decides eligibility.
+                tracing::info!(
+                    %batch_id,
+                    %intent_id,
+                    error = %err,
+                    "Broadcast member repair compare-and-set did not win; revalidating"
+                );
+            }
+        }
+
+        // Verify the batch itself did not change while members were repaired.
+        let Some(current_batch) = self.storage.get_send_batch(&batch_id).await? else {
+            return Ok(None);
+        };
+        if current_batch.state != *state {
+            return Ok(None);
+        }
+
+        for assignment in assignments {
+            let Some(record) = self.storage.get_send_intent(&assignment.intent_id).await? else {
+                return Ok(None);
+            };
+            if record.attempt_id != assignment.attempt_id {
+                return Ok(None);
+            }
+            let SendIntentState::AwaitingConfirmation {
+                batch_id: intent_batch_id,
+                txid: intent_txid,
+                outpoint,
+                fee_contribution_sat,
+                ..
+            } = record.state
+            else {
+                return Ok(None);
+            };
+            if intent_batch_id != batch_id
+                || intent_txid != expected_txid
+                || outpoint != OutPoint::new(txid, assignment.vout).to_string()
+                || fee_contribution_sat != assignment.fee_contribution_sat
+            {
+                return Ok(None);
+            }
+        }
+
+        Ok(Some((txid, tx)))
+    }
+}
+
+/// Reserve an unconfirmed transaction in BDK's canonical graph.
+///
+/// The last-seen timestamp must strictly exceed an existing eviction marker;
+/// otherwise BDK keeps the transaction non-canonical and coin selection may
+/// reuse its inputs.
+pub(crate) fn reserve_unconfirmed_tx(
+    wallet: &mut bdk_wallet::Wallet,
+    tx: &Transaction,
+) -> Result<u64, Error> {
+    reserve_unconfirmed_tx_at_least(wallet, tx, 0)
+}
+
+/// Reserve an unconfirmed transaction with a caller-provided lower bound for
+/// its last-seen timestamp.
+pub(crate) fn reserve_unconfirmed_tx_at_least(
+    wallet: &mut bdk_wallet::Wallet,
+    tx: &Transaction,
+    minimum_last_seen: u64,
+) -> Result<u64, Error> {
+    let txid = tx.compute_txid();
+    let now = crate::util::unix_now();
+    let last_seen = match wallet.tx_graph().get_last_evicted(txid) {
+        Some(last_evicted) => {
+            minimum_last_seen
+                .max(now)
+                .max(last_evicted.checked_add(1).ok_or_else(|| {
+                    Error::Wallet(format!(
+                        "Cannot reserve transaction {txid} after maximum eviction timestamp"
+                    ))
+                })?)
+        }
+        None => minimum_last_seen.max(now),
+    };
+    wallet.apply_unconfirmed_txs([(tx.clone(), last_seen)]);
+    Ok(last_seen)
+}
+
+/// Decode a persisted `Broadcast` transaction and derive its identity from
+/// the transaction bytes.
+///
+/// Both durable representations must agree. A mismatch is retained for
+/// diagnosis and fenced from the network.
+fn decode_broadcast_tx(
+    batch_id: &Uuid,
+    stored_txid: &str,
+    tx_bytes: &[u8],
+) -> Option<(Txid, Transaction)> {
+    let tx = match bdk_wallet::bitcoin::consensus::deserialize::<Transaction>(tx_bytes) {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!(
+                batch_id = %batch_id,
+                txid = %stored_txid,
+                "Skipping rebroadcast: failed to deserialize persisted tx: {e}"
+            );
+            return None;
+        }
+    };
+    let computed_txid = tx.compute_txid();
+    if stored_txid != computed_txid.to_string() {
+        tracing::error!(
+            batch_id = %batch_id,
+            stored_txid = %stored_txid,
+            computed_txid = %computed_txid,
+            "Skipping rebroadcast: persisted txid does not match transaction bytes"
+        );
+        return None;
+    }
+    Some((computed_txid, tx))
+}
+
+/// Decode a Broadcast transaction for input reservation without granting it
+/// authority for network I/O.
+pub(crate) fn decode_broadcast_reservation(
+    batch_id: &Uuid,
+    state: &SendBatchState,
+) -> Option<(Uuid, Txid, Transaction)> {
+    let SendBatchState::Broadcast { tx_bytes, .. } = state else {
+        return None;
+    };
+    match bdk_wallet::bitcoin::consensus::deserialize::<Transaction>(tx_bytes) {
+        Ok(tx) => Some((*batch_id, tx.compute_txid(), tx)),
+        Err(error) => {
+            tracing::warn!(
+                %batch_id,
+                %error,
+                "Cannot reserve undecodable durable Broadcast transaction"
+            );
+            None
+        }
     }
 }
 
@@ -847,6 +1309,7 @@ fn select_batch_intents<T>(
 /// `CdkBdk` instance.
 struct IntentOutput<'a> {
     intent_id: Uuid,
+    attempt_id: Uuid,
     address: &'a str,
     amount: u64,
 }
@@ -892,6 +1355,7 @@ fn derive_vout_assignments_inner(
 
         assignments.push(BatchOutputAssignment {
             intent_id: intent.intent_id,
+            attempt_id: intent.attempt_id,
             vout: vout as u32,
             fee_contribution_sat: fee_allocations[idx],
         });
@@ -902,18 +1366,84 @@ fn derive_vout_assignments_inner(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
     use bdk_wallet::bitcoin::absolute::LockTime;
     use bdk_wallet::bitcoin::transaction::Version;
-    use bdk_wallet::bitcoin::{Amount as BtcAmount, Network, ScriptBuf, TxOut};
+    use bdk_wallet::bitcoin::{
+        consensus, Amount as BtcAmount, Network, ScriptBuf, Transaction, TxOut,
+    };
     use uuid::Uuid;
 
     use super::*;
+    use crate::send::payment_intent::record::{SendIntentRecord, SendIntentState};
     use crate::send::payment_intent::state::Batched as IntentBatched;
     use crate::send::payment_intent::SendIntent;
-    use crate::types::{PaymentMetadata, PaymentTier};
+    use crate::testutil::{store_test_signed_batch, GatedKvStore, PausePoint, ReadPath};
+    use crate::types::{BatchConfig, PaymentMetadata, PaymentTier};
 
     const ADDR_A: &str = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
     const ADDR_B: &str = "bcrt1q6rhpng9evdsfnn833a4f4vej0asu6dk5srld6x";
+
+    #[tokio::test]
+    async fn concurrent_finalization_emits_one_success_event() {
+        let backend =
+            crate::testutil::build_test_backend(Arc::new(GatedKvStore::default()), None).await;
+        let quote_id = QuoteId::new();
+        let pending = SendIntent::new(
+            &backend.storage,
+            quote_id.to_string(),
+            ADDR_A.to_string(),
+            10_000,
+            500,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("create intent");
+        let batch_id = Uuid::new_v4();
+        store_test_signed_batch(&backend.storage, batch_id, &[pending.intent_id]).await;
+        let awaiting = pending
+            .assign_to_batch(&backend.storage, batch_id)
+            .await
+            .expect("assign intent")
+            .mark_broadcast(
+                &backend.storage,
+                "txid-concurrent-finalize".to_string(),
+                "txid-concurrent-finalize:0".to_string(),
+                250,
+            )
+            .await
+            .expect("mark intent broadcast");
+        let mut events = backend.payment_sender.subscribe();
+
+        let (first, second) = tokio::join!(
+            backend.finalize_send_intent_and_emit(awaiting.clone()),
+            backend.finalize_send_intent_and_emit(awaiting),
+        );
+        first.expect("first finalizer");
+        second.expect("second finalizer");
+
+        let event = events.try_recv().expect("one payment event");
+        assert!(
+            matches!(
+                event,
+                Event::PaymentSuccessful {
+                    quote_id: event_quote_id,
+                    ..
+                } if event_quote_id == quote_id
+            ),
+            "expected payment successful event"
+        );
+        assert!(
+            matches!(
+                events.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            ),
+            "only the winning finalizer may emit an event"
+        );
+    }
 
     fn make_batched_intent(
         intent_id: Uuid,
@@ -922,6 +1452,7 @@ mod tests {
     ) -> SendIntent<IntentBatched> {
         SendIntent {
             intent_id,
+            attempt_id: Uuid::new_v4(),
             quote_id: format!("q-{}", intent_id),
             address: address.to_string(),
             amount,
@@ -938,6 +1469,7 @@ mod tests {
     fn intent_output(intent: &SendIntent<IntentBatched>) -> IntentOutput<'_> {
         IntentOutput {
             intent_id: intent.intent_id,
+            attempt_id: intent.attempt_id,
             address: intent.address.as_str(),
             amount: intent.amount,
         }
@@ -1050,6 +1582,191 @@ mod tests {
         assert!(selected.is_empty());
     }
 
+    /// An intent whose expiry is detected from a stale `Pending` snapshot
+    /// must not be failed when another worker has already batched and
+    /// broadcast it: failing it would compensate (refund) a melt whose
+    /// payment still goes out.
+    #[tokio::test]
+    async fn expiry_cannot_fail_broadcast_intent() {
+        let kv = GatedKvStore::default();
+        let backend = crate::testutil::build_test_backend(
+            Arc::new(kv.clone()),
+            Some(BatchConfig {
+                max_intent_age: Some(Duration::ZERO),
+                ..Default::default()
+            }),
+        )
+        .await;
+
+        let quote_id = QuoteId::new().to_string();
+        let intent_id = Uuid::new_v4();
+        backend
+            .storage
+            .create_send_intent_if_absent(&SendIntentRecord {
+                intent_id,
+                attempt_id: Uuid::new_v4(),
+                quote_id: quote_id.clone(),
+                address: ADDR_A.to_string(),
+                amount_sat: 10_000,
+                max_fee_amount_sat: 500,
+                tier: PaymentTier::Immediate,
+                metadata: PaymentMetadata::default(),
+                state: SendIntentState::Pending {
+                    created_at: 1_700_000_000,
+                },
+            })
+            .await
+            .expect("store expired pending intent");
+
+        let mut events = backend.payment_sender.subscribe();
+
+        let gate = kv.gate_read(
+            ReadPath::Direct,
+            PausePoint::AfterRead,
+            crate::storage::BDK_NAMESPACE,
+            crate::storage::SEND_INTENT_NAMESPACE,
+            1,
+        );
+
+        let processor_backend = backend.clone();
+        let processor =
+            tokio::spawn(async move { processor_backend.process_ready_intents().await });
+
+        tokio::time::timeout(Duration::from_secs(5), gate.wait_entered())
+            .await
+            .expect("batch processor reached the gated read");
+
+        let record = backend
+            .storage
+            .get_send_intent(&intent_id)
+            .await
+            .expect("get intent")
+            .expect("intent present");
+        let pending = match payment_intent::from_record(&record) {
+            SendIntentAny::Pending(intent) => intent,
+            _ => panic!("intent should be pending"),
+        };
+        let batch_id = Uuid::new_v4();
+        store_test_signed_batch(&backend.storage, batch_id, &[intent_id]).await;
+        pending
+            .assign_to_batch(&backend.storage, batch_id)
+            .await
+            .expect("assign")
+            .mark_broadcast(
+                &backend.storage,
+                "txid-broadcast".to_string(),
+                "txid-broadcast:0".to_string(),
+                250,
+            )
+            .await
+            .expect("broadcast");
+
+        gate.release();
+        tokio::time::timeout(Duration::from_secs(5), processor)
+            .await
+            .expect("batch processor timed out")
+            .expect("join batch processor")
+            .expect("process_ready_intents should not error");
+
+        let persisted = backend
+            .storage
+            .get_send_intent(&intent_id)
+            .await
+            .expect("get intent")
+            .expect("intent present");
+        assert!(
+            matches!(
+                persisted.state,
+                SendIntentState::AwaitingConfirmation {
+                    batch_id: b,
+                    ..
+                } if b == batch_id
+            ),
+            "durable state must remain AwaitingConfirmation, got {:?}",
+            persisted.state
+        );
+
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn batch_processor_resumes_durable_cancellation() {
+        let kv = cdk_sqlite::mint::memory::empty()
+            .await
+            .expect("in-memory kv store");
+        let backend =
+            crate::testutil::build_test_backend(Arc::new(kv), Some(BatchConfig::default())).await;
+        let batch_id = Uuid::new_v4();
+        let pending = SendIntent::new(
+            &backend.storage,
+            "quote-resume-cancelled".to_string(),
+            ADDR_A.to_string(),
+            10_000,
+            500,
+            PaymentTier::Standard,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("store pending intent");
+        let intent_id = pending.intent_id;
+        let attempt_id = pending.attempt_id;
+        store_test_signed_batch(&backend.storage, batch_id, &[intent_id]).await;
+        pending
+            .assign_to_batch(&backend.storage, batch_id)
+            .await
+            .expect("assign intent to cancelled batch");
+
+        let tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: Vec::new(),
+            output: vec![TxOut {
+                value: BtcAmount::from_sat(10_000),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        };
+        backend
+            .storage
+            .store_send_batch(&SendBatchRecord {
+                batch_id,
+                state: SendBatchState::Cancelled {
+                    tx_bytes: consensus::serialize(&tx),
+                    assignments: vec![BatchOutputAssignment {
+                        intent_id,
+                        attempt_id,
+                        vout: 0,
+                        fee_contribution_sat: 500,
+                    }],
+                    fee_sat: 500,
+                    evict_at: crate::util::unix_now().saturating_add(1),
+                },
+            })
+            .await
+            .expect("store durable cancellation");
+
+        backend
+            .process_ready_intents()
+            .await
+            .expect("processor should resume cancellation");
+
+        let intent = backend
+            .storage
+            .get_send_intent(&intent_id)
+            .await
+            .expect("read intent")
+            .expect("intent remains active");
+        assert!(matches!(intent.state, SendIntentState::Pending { .. }));
+        assert!(backend
+            .storage
+            .get_send_batch(&batch_id)
+            .await
+            .expect("read batch")
+            .is_none());
+    }
+
     /// Two intents pay the same address for the same amount within one batch.
     /// The derivation must produce distinct vouts — one for each output —
     /// rather than aliasing both intents onto the same vout.
@@ -1080,9 +1797,11 @@ mod tests {
 
         assert_eq!(assignments.len(), 2);
         assert_eq!(assignments[0].intent_id, intent_a.intent_id);
+        assert_eq!(assignments[0].attempt_id, intent_a.attempt_id);
         assert_eq!(assignments[0].vout, 0);
         assert_eq!(assignments[0].fee_contribution_sat, 50);
         assert_eq!(assignments[1].intent_id, intent_b.intent_id);
+        assert_eq!(assignments[1].attempt_id, intent_b.attempt_id);
         assert_eq!(assignments[1].vout, 1);
         assert_eq!(assignments[1].fee_contribution_sat, 50);
 
@@ -1165,16 +1884,23 @@ mod tests {
         use std::sync::Arc;
         use std::time::Duration;
 
-        use bdk_wallet::bitcoin::consensus;
+        use bdk_wallet::bitcoin::{consensus, Address, OutPoint};
         use bdk_wallet::keys::bip39::Mnemonic;
+        use bdk_wallet::KeychainKind;
         use cdk_common::common::FeeReserve;
         use cdk_common::{Amount, CurrencyUnit};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
         use uuid::Uuid;
 
+        use super::super::decode_broadcast_tx;
         use super::{BtcAmount, LockTime, Network, ScriptBuf, TxOut, Version};
         use crate::send::batch_transaction::record::{
             BatchOutputAssignment, SendBatchRecord, SendBatchState,
         };
+        use crate::send::payment_intent::record::{SendIntentRecord, SendIntentState};
+        use crate::types::{PaymentMetadata, PaymentTier};
         use crate::{CdkBdk, ChainSource, EsploraConfig};
 
         const TEST_TXID: &str = "0000000000000000000000000000000000000000000000000000000000000001";
@@ -1226,10 +1952,10 @@ mod tests {
             .expect("build CdkBdk test instance")
         }
 
-        /// Serialize a minimal valid transaction so `consensus::deserialize`
-        /// can round-trip it during rebroadcast.
-        fn valid_tx_bytes() -> Vec<u8> {
-            let tx = super::Transaction {
+        /// A minimal valid transaction so `consensus::deserialize` can
+        /// round-trip it during rebroadcast.
+        fn valid_tx() -> super::Transaction {
+            super::Transaction {
                 version: Version::TWO,
                 lock_time: LockTime::ZERO,
                 input: Vec::new(),
@@ -1237,8 +1963,151 @@ mod tests {
                     value: BtcAmount::from_sat(10_000),
                     script_pubkey: ScriptBuf::new(),
                 }],
+            }
+        }
+
+        /// Serialize [`valid_tx`] for storage in a `Broadcast` record.
+        fn valid_tx_bytes() -> Vec<u8> {
+            consensus::serialize(&valid_tx())
+        }
+
+        async fn wallet_relevant_tx(backend: &CdkBdk) -> super::Transaction {
+            let script_pubkey = {
+                let mut wallet_with_db = backend.wallet_with_db.lock().await;
+                wallet_with_db
+                    .wallet
+                    .reveal_next_address(KeychainKind::External)
+                    .address
+                    .script_pubkey()
             };
-            consensus::serialize(&tx)
+
+            super::Transaction {
+                version: Version::TWO,
+                lock_time: LockTime::ZERO,
+                input: Vec::new(),
+                output: vec![TxOut {
+                    value: BtcAmount::from_sat(10_000),
+                    script_pubkey,
+                }],
+            }
+        }
+
+        async fn store_eligible_broadcast(
+            backend: &CdkBdk,
+            batch_id: Uuid,
+            tx: &super::Transaction,
+        ) {
+            let intent_id = Uuid::new_v4();
+            let txid = tx.compute_txid();
+            let address = Address::from_script(&tx.output[0].script_pubkey, backend.network)
+                .expect("test output script has an address");
+            backend
+                .storage
+                .create_send_intent_if_absent(&SendIntentRecord {
+                    intent_id,
+                    attempt_id: intent_id,
+                    quote_id: format!("quote-{intent_id}"),
+                    address: address.to_string(),
+                    amount_sat: 10_000,
+                    max_fee_amount_sat: 500,
+                    tier: PaymentTier::Immediate,
+                    metadata: PaymentMetadata::default(),
+                    state: SendIntentState::AwaitingConfirmation {
+                        batch_id,
+                        txid: txid.to_string(),
+                        outpoint: OutPoint::new(txid, 0).to_string(),
+                        fee_contribution_sat: 500,
+                        created_at: 1_700_000_000,
+                    },
+                })
+                .await
+                .expect("store eligible intent");
+            backend
+                .storage
+                .store_send_batch(&SendBatchRecord {
+                    batch_id,
+                    state: SendBatchState::Broadcast {
+                        txid: txid.to_string(),
+                        tx_bytes: consensus::serialize(tx),
+                        assignments: vec![BatchOutputAssignment {
+                            intent_id,
+                            attempt_id: intent_id,
+                            vout: 0,
+                            fee_contribution_sat: 500,
+                        }],
+                        fee_sat: 500,
+                    },
+                })
+                .await
+                .expect("store eligible Broadcast batch");
+        }
+
+        async fn serve_esplora_response(
+            status: &'static str,
+            body: &'static str,
+        ) -> (String, tokio::task::JoinHandle<()>) {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind test Esplora server");
+            let address = listener.local_addr().expect("test server address");
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.expect("accept broadcast request");
+                let mut request = [0u8; 4096];
+                let _bytes_read = stream
+                    .read(&mut request)
+                    .await
+                    .expect("read broadcast request");
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write broadcast response");
+            });
+
+            (format!("http://{address}"), server)
+        }
+
+        async fn serve_blocked_esplora_response() -> (
+            String,
+            oneshot::Receiver<()>,
+            oneshot::Sender<()>,
+            tokio::task::JoinHandle<()>,
+        ) {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind test Esplora server");
+            let address = listener.local_addr().expect("test server address");
+            let (request_seen_tx, request_seen_rx) = oneshot::channel();
+            let (release_tx, release_rx) = oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.expect("accept broadcast request");
+                let mut request = [0u8; 4096];
+                let _bytes_read = stream
+                    .read(&mut request)
+                    .await
+                    .expect("read broadcast request");
+                let _ = request_seen_tx.send(());
+                release_rx.await.expect("release blocked response");
+                let body = "temporarily unavailable";
+                let response = format!(
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Length: {}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write broadcast response");
+            });
+
+            (
+                format!("http://{address}"),
+                request_seen_rx,
+                release_tx,
+                server,
+            )
         }
 
         /// No persisted batches → nothing to do; must return Ok.
@@ -1264,10 +2133,11 @@ mod tests {
             let batch = SendBatchRecord {
                 batch_id,
                 state: SendBatchState::Broadcast {
-                    txid: TEST_TXID.to_string(),
+                    txid: valid_tx().compute_txid().to_string(),
                     tx_bytes: valid_tx_bytes(),
                     assignments: vec![BatchOutputAssignment {
                         intent_id,
+                        attempt_id: Uuid::nil(),
                         vout: 0,
                         fee_contribution_sat: 500,
                     }],
@@ -1296,6 +2166,232 @@ mod tests {
                 matches!(after.state, SendBatchState::Broadcast { .. }),
                 "batch must remain in Broadcast state after failed rebroadcast; got {:?}",
                 after.state
+            );
+        }
+
+        /// Applying a signed transaction locally before its first network
+        /// broadcast must not suppress retries after a transient failure.
+        #[tokio::test]
+        async fn rebroadcast_retries_locally_tracked_unconfirmed_tx() {
+            let mut backend = build_test_instance().await;
+            let batch_id = Uuid::new_v4();
+            let tx = wallet_relevant_tx(&backend).await;
+            let txid = tx.compute_txid();
+
+            {
+                let mut wallet_with_db = backend.wallet_with_db.lock().await;
+                wallet_with_db
+                    .wallet
+                    .apply_unconfirmed_txs([(tx.clone(), crate::util::unix_now())]);
+                wallet_with_db.persist().expect("persist local transaction");
+                assert!(wallet_with_db.wallet.get_tx(txid).is_some());
+            }
+
+            store_eligible_broadcast(&backend, batch_id, &tx).await;
+
+            let (url, server) =
+                serve_esplora_response("503 Service Unavailable", "temporarily unavailable").await;
+            backend.chain_source = ChainSource::Esplora(EsploraConfig {
+                url,
+                parallel_requests: 1,
+            });
+
+            tokio::time::timeout(Duration::from_secs(5), backend.rebroadcast_stuck_batches())
+                .await
+                .expect("rebroadcast timed out")
+                .expect("rebroadcast should swallow transport errors");
+            tokio::time::timeout(Duration::from_secs(5), server)
+                .await
+                .expect("locally tracked transaction was not sent to Esplora")
+                .expect("join test Esplora server");
+        }
+
+        /// A durable Broadcast transaction must be present in BDK before the
+        /// network request begins, so another batch cannot select its inputs
+        /// while rebroadcast is waiting on the backend.
+        #[tokio::test]
+        async fn rebroadcast_reserves_transaction_before_network_io() {
+            let mut backend = build_test_instance().await;
+            let batch_id = Uuid::new_v4();
+            let tx = wallet_relevant_tx(&backend).await;
+            let txid = tx.compute_txid();
+            store_eligible_broadcast(&backend, batch_id, &tx).await;
+
+            let (url, request_seen, release, server) = serve_blocked_esplora_response().await;
+            backend.chain_source = ChainSource::Esplora(EsploraConfig {
+                url,
+                parallel_requests: 1,
+            });
+            let rebroadcast_backend = backend.clone();
+            let rebroadcast =
+                tokio::spawn(async move { rebroadcast_backend.rebroadcast_stuck_batches().await });
+
+            tokio::time::timeout(Duration::from_secs(5), request_seen)
+                .await
+                .expect("rebroadcast request was not sent")
+                .expect("request signal dropped");
+            {
+                let wallet_with_db =
+                    tokio::time::timeout(Duration::from_secs(1), backend.wallet_with_db.lock())
+                        .await
+                        .expect("network request must not hold the wallet lock");
+                assert!(
+                    wallet_with_db.wallet.get_tx(txid).is_some(),
+                    "transaction must be reserved before network I/O"
+                );
+            }
+
+            release.send(()).expect("release blocked response");
+            tokio::time::timeout(Duration::from_secs(5), rebroadcast)
+                .await
+                .expect("rebroadcast timed out")
+                .expect("join rebroadcast task")
+                .expect("rebroadcast should swallow transport errors");
+            tokio::time::timeout(Duration::from_secs(5), server)
+                .await
+                .expect("server timed out")
+                .expect("join test Esplora server");
+        }
+
+        /// Reapplication must use a last-seen timestamp strictly newer than an
+        /// existing eviction marker or BDK will keep the transaction excluded
+        /// from its canonical graph.
+        #[tokio::test]
+        async fn rebroadcast_reservation_beats_last_evicted_timestamp() {
+            let mut backend = build_test_instance().await;
+            let batch_id = Uuid::new_v4();
+            let tx = wallet_relevant_tx(&backend).await;
+            let txid = tx.compute_txid();
+            let evicted_at = crate::util::unix_now().saturating_add(60);
+            {
+                let mut wallet_with_db = backend.wallet_with_db.lock().await;
+                wallet_with_db
+                    .wallet
+                    .apply_unconfirmed_txs([(tx.clone(), evicted_at.saturating_sub(1))]);
+                wallet_with_db
+                    .wallet
+                    .apply_evicted_txs([(txid, evicted_at)]);
+                wallet_with_db
+                    .persist()
+                    .expect("persist evicted transaction");
+                assert!(wallet_with_db.wallet.get_tx(txid).is_none());
+                assert_eq!(
+                    wallet_with_db.wallet.tx_graph().get_last_evicted(txid),
+                    Some(evicted_at)
+                );
+            }
+            store_eligible_broadcast(&backend, batch_id, &tx).await;
+
+            let (url, server) =
+                serve_esplora_response("503 Service Unavailable", "temporarily unavailable").await;
+            backend.chain_source = ChainSource::Esplora(EsploraConfig {
+                url,
+                parallel_requests: 1,
+            });
+            tokio::time::timeout(Duration::from_secs(5), backend.rebroadcast_stuck_batches())
+                .await
+                .expect("rebroadcast timed out")
+                .expect("rebroadcast should swallow transport errors");
+            tokio::time::timeout(Duration::from_secs(5), server)
+                .await
+                .expect("server timed out")
+                .expect("join test Esplora server");
+
+            let wallet_with_db = backend.wallet_with_db.lock().await;
+            let wallet_tx = wallet_with_db
+                .wallet
+                .get_tx(txid)
+                .expect("reservation must restore canonical transaction");
+            let bdk_wallet::chain::ChainPosition::Unconfirmed {
+                last_seen: Some(last_seen),
+                ..
+            } = wallet_tx.chain_position
+            else {
+                panic!("reserved transaction must be unconfirmed with a last-seen timestamp");
+            };
+            assert!(last_seen > evicted_at);
+        }
+
+        /// A reservation made atomically with sync request construction must
+        /// be newer than the eviction timestamp that the in-flight request can
+        /// later apply.
+        #[tokio::test]
+        async fn sync_reservation_survives_its_request_eviction_timestamp() {
+            let backend = build_test_instance().await;
+            let batch_id = Uuid::new_v4();
+            let tx = wallet_relevant_tx(&backend).await;
+            let txid = tx.compute_txid();
+            store_eligible_broadcast(&backend, batch_id, &tx).await;
+
+            let sync_started_at = crate::util::unix_now().saturating_add(60);
+            let reservation_time = sync_started_at
+                .checked_add(1)
+                .expect("test timestamp has room");
+            let reservations = backend
+                .load_broadcast_reservations()
+                .await
+                .expect("load Broadcast reservations");
+            let mut wallet_with_db = backend.wallet_with_db.lock().await;
+            CdkBdk::reserve_broadcast_transactions_locked(
+                &mut wallet_with_db.wallet,
+                &reservations,
+                reservation_time,
+            )
+            .expect("reserve eligible Broadcast batch");
+            wallet_with_db
+                .wallet
+                .apply_evicted_txs([(txid, sync_started_at)]);
+
+            let wallet_tx = wallet_with_db
+                .wallet
+                .get_tx(txid)
+                .expect("sync eviction must not defeat its atomic reservation");
+            let bdk_wallet::chain::ChainPosition::Unconfirmed {
+                last_seen: Some(last_seen),
+                ..
+            } = wallet_tx.chain_position
+            else {
+                panic!("reserved transaction must remain canonical and unconfirmed");
+            };
+            assert!(last_seen > sync_started_at);
+        }
+
+        /// An already-known response proves the backend has the transaction,
+        /// so a wallet that was missing it must record and persist it locally.
+        #[tokio::test]
+        async fn rebroadcast_applies_already_known_tx_to_wallet() {
+            let mut backend = build_test_instance().await;
+            let batch_id = Uuid::new_v4();
+            let tx = wallet_relevant_tx(&backend).await;
+            let txid = tx.compute_txid();
+
+            {
+                let wallet_with_db = backend.wallet_with_db.lock().await;
+                assert!(wallet_with_db.wallet.get_tx(txid).is_none());
+            }
+
+            store_eligible_broadcast(&backend, batch_id, &tx).await;
+
+            let (url, server) =
+                serve_esplora_response("400 Bad Request", "transaction already known").await;
+            backend.chain_source = ChainSource::Esplora(EsploraConfig {
+                url,
+                parallel_requests: 1,
+            });
+
+            tokio::time::timeout(Duration::from_secs(5), backend.rebroadcast_stuck_batches())
+                .await
+                .expect("rebroadcast timed out")
+                .expect("already-known rebroadcast should succeed");
+            tokio::time::timeout(Duration::from_secs(5), server)
+                .await
+                .expect("transaction was not sent to Esplora")
+                .expect("join test Esplora server");
+
+            let wallet_with_db = backend.wallet_with_db.lock().await;
+            assert!(
+                wallet_with_db.wallet.get_tx(txid).is_some(),
+                "already-known transaction must be tracked by the local wallet"
             );
         }
 
@@ -1349,6 +2445,7 @@ mod tests {
                     tx_bytes: vec![0xff],
                     assignments: vec![BatchOutputAssignment {
                         intent_id: Uuid::new_v4(),
+                        attempt_id: Uuid::nil(),
                         vout: 0,
                         fee_contribution_sat: 500,
                     }],
@@ -1375,11 +2472,38 @@ mod tests {
             assert!(matches!(after.state, SendBatchState::Signed { .. }));
         }
 
-        /// A persisted txid that fails to parse must not abort the loop
-        /// or propagate an error. Other batches on the same tick would
-        /// still be processed; here we just verify no error is returned.
+        /// Conflicting durable transaction identities are fenced.
+        #[test]
+        fn decode_broadcast_tx_rejects_txid_mismatch() {
+            let tx_bytes = valid_tx_bytes();
+            assert!(decode_broadcast_tx(&Uuid::new_v4(), TEST_TXID, &tx_bytes).is_none());
+        }
+
+        #[test]
+        fn decode_broadcast_tx_accepts_matching_identity() {
+            let tx = valid_tx();
+            let txid = tx.compute_txid();
+            let (decoded_txid, decoded) = decode_broadcast_tx(
+                &Uuid::new_v4(),
+                &txid.to_string(),
+                &consensus::serialize(&tx),
+            )
+            .expect("matching transaction");
+            assert_eq!(decoded_txid, txid);
+            assert_eq!(decoded, tx);
+        }
+
+        /// Undecodable bytes are the only reason a `Broadcast` record is
+        /// skipped: without valid bytes there is nothing safe to broadcast.
+        #[test]
+        fn decode_broadcast_tx_rejects_undecodable_bytes() {
+            assert!(decode_broadcast_tx(&Uuid::new_v4(), TEST_TXID, &[0xff]).is_none());
+        }
+
+        /// A malformed stored identity is retained but never reaches the
+        /// reservation or network path.
         #[tokio::test]
-        async fn rebroadcast_skips_unparsable_txid() {
+        async fn rebroadcast_malformed_stored_txid_is_fenced() {
             let backend = build_test_instance().await;
             let batch_id = Uuid::new_v4();
 
@@ -1390,6 +2514,7 @@ mod tests {
                     tx_bytes: valid_tx_bytes(),
                     assignments: vec![BatchOutputAssignment {
                         intent_id: Uuid::new_v4(),
+                        attempt_id: Uuid::nil(),
                         vout: 0,
                         fee_contribution_sat: 500,
                     }],
@@ -1405,7 +2530,16 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(5), backend.rebroadcast_stuck_batches())
                 .await
                 .expect("rebroadcast timed out")
-                .expect("rebroadcast should skip malformed txid gracefully");
+                .expect("rebroadcast should swallow transport errors");
+
+            // Batch must still be in Broadcast state for the next retry.
+            let after = backend
+                .storage
+                .get_send_batch(&batch_id)
+                .await
+                .expect("fetch batch")
+                .expect("batch still present");
+            assert!(matches!(after.state, SendBatchState::Broadcast { .. }));
         }
     }
 }

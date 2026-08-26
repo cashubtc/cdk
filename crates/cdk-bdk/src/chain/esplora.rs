@@ -79,10 +79,63 @@ pub(crate) async fn sync_esplora(
                     }
                 };
 
-                // Phase A (short lock): build the sync request.
+                // Phase A (short lock): refresh durable Broadcast reservations
+                // and build the sync request atomically. BDK marks transactions
+                // missing from the backend as evicted at `sync_started_at`, so
+                // reservations must be strictly newer than that timestamp.
+                let reservations = match cdk_bdk.load_broadcast_reservations().await {
+                    Ok(reservations) => reservations,
+                    Err(err) => {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        crate::sync::log_sync_failure(
+                            "Failed to load Broadcast transactions for Esplora sync",
+                            &err,
+                            consecutive_failures,
+                        );
+                        continue;
+                    }
+                };
                 let sync_request = {
-                    let w = cdk_bdk.wallet_with_db.lock().await;
-                    w.wallet.start_sync_with_revealed_spks()
+                    let sync_started_at = crate::util::unix_now();
+                    let Some(reservation_time) = sync_started_at.checked_add(1) else {
+                        let err = Error::Wallet(
+                            "Cannot construct Esplora sync request at maximum timestamp"
+                                .to_string(),
+                        );
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        crate::sync::log_sync_failure(
+                            "Failed to reserve Broadcast transactions for Esplora sync",
+                            &err,
+                            consecutive_failures,
+                        );
+                        continue;
+                    };
+                    let mut w = cdk_bdk.wallet_with_db.lock().await;
+                    if let Err(err) = CdkBdk::reserve_broadcast_transactions_locked(
+                        &mut w.wallet,
+                        &reservations,
+                        reservation_time,
+                    ) {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        crate::sync::log_sync_failure(
+                            "Failed to reserve Broadcast transactions for Esplora sync",
+                            &err,
+                            consecutive_failures,
+                        );
+                        continue;
+                    }
+                    if let Err(err) = w.persist() {
+                        let err = Error::Database(err);
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        crate::sync::log_sync_failure(
+                            "Failed to persist Broadcast reservations for Esplora sync",
+                            &err,
+                            consecutive_failures,
+                        );
+                        continue;
+                    }
+                    w.wallet
+                        .start_sync_with_revealed_spks_at(sync_started_at)
                 };
 
                 // Phase B (no lock): execute the network sync.

@@ -14,7 +14,7 @@ use uuid::Uuid;
 use self::record::{SendIntentRecord, SendIntentState};
 use self::state::{AwaitingConfirmation, Batched, Failed, Pending};
 use crate::error::Error;
-use crate::storage::{BdkStorage, FailedSendAttemptRecord, FinalizedSendIntentRecord};
+use crate::storage::{BdkStorage, FinalizedSendIntentRecord};
 use crate::types::{PaymentMetadata, PaymentTier};
 
 /// A send intent in a particular typestate
@@ -25,6 +25,8 @@ use crate::types::{PaymentMetadata, PaymentTier};
 pub(crate) struct SendIntent<S> {
     /// Unique identifier for this intent
     pub intent_id: Uuid,
+    /// Unique generation for the current payment attempt.
+    pub attempt_id: Uuid,
     /// Quote ID linking this intent to a melt quote
     pub quote_id: String,
     /// Destination Bitcoin address
@@ -57,10 +59,12 @@ impl SendIntent<Pending> {
         metadata: PaymentMetadata,
     ) -> Result<Self, Error> {
         let intent_id = Uuid::new_v4();
+        let attempt_id = Uuid::new_v4();
         let created_at = crate::util::unix_now();
 
         let record = SendIntentRecord {
             intent_id,
+            attempt_id,
             quote_id: quote_id.clone(),
             address: address.clone(),
             amount_sat: amount,
@@ -82,6 +86,7 @@ impl SendIntent<Pending> {
 
         Ok(Self {
             intent_id: record.intent_id,
+            attempt_id: record.attempt_id,
             quote_id: record.quote_id,
             address: record.address,
             amount: record.amount_sat,
@@ -94,23 +99,28 @@ impl SendIntent<Pending> {
     }
 
     /// Transition to Batched state
+    ///
+    /// The transition locks the durable `Signed` batch and compare-and-sets
+    /// the intent in one transaction. It fails when the batch changed or no
+    /// longer lists the intent, or when the intent is no longer the expected
+    /// `Pending` attempt.
     pub async fn assign_to_batch(
         self,
         storage: &BdkStorage,
         batch_id: Uuid,
     ) -> Result<SendIntent<Batched>, Error> {
         storage
-            .update_send_intent(
+            .claim_send_intent_for_signed_batch(
                 &self.intent_id,
-                &SendIntentState::Batched {
-                    batch_id,
-                    created_at: self.created_at,
-                },
+                &self.attempt_id,
+                self.created_at,
+                &batch_id,
             )
             .await?;
 
         Ok(SendIntent {
             intent_id: self.intent_id,
+            attempt_id: self.attempt_id,
             quote_id: self.quote_id,
             address: self.address,
             amount: self.amount,
@@ -123,15 +133,25 @@ impl SendIntent<Pending> {
     }
 
     /// Mark a pending intent as failed before a signed transaction was committed.
+    ///
+    /// The transition is a compare-and-set against the durable record: it
+    /// fails with [`Error::SendIntentStateConflict`] when the intent is no
+    /// longer stored as `Pending`, so a stale handle cannot fail an intent
+    /// another worker already batched or broadcast. The failed-attempt
+    /// tombstone is only written after the transition succeeds.
     pub async fn fail(
         self,
         storage: &BdkStorage,
         reason: String,
     ) -> Result<SendIntent<Failed>, Error> {
         let failed_at = crate::util::unix_now();
-        storage
-            .update_send_intent(
+        let failed = storage
+            .transition_send_intent(
                 &self.intent_id,
+                &self.attempt_id,
+                &SendIntentState::Pending {
+                    created_at: self.created_at,
+                },
                 &SendIntentState::Failed {
                     reason: reason.clone(),
                     created_at: self.created_at,
@@ -139,18 +159,16 @@ impl SendIntent<Pending> {
                 },
             )
             .await?;
-        storage
-            .add_failed_send_attempt(&FailedSendAttemptRecord {
-                attempt_id: Uuid::new_v4(),
+        if !failed {
+            return Err(Error::SendIntentStateConflict {
                 intent_id: self.intent_id,
-                quote_id: self.quote_id.clone(),
-                reason: reason.clone(),
-                failed_at,
-            })
-            .await?;
+                expected: "Pending",
+            });
+        }
 
         Ok(SendIntent {
             intent_id: self.intent_id,
+            attempt_id: self.attempt_id,
             quote_id: self.quote_id,
             address: self.address,
             amount: self.amount,
@@ -165,6 +183,11 @@ impl SendIntent<Pending> {
 
 impl SendIntent<Batched> {
     /// Transition to AwaitingConfirmation state after broadcast
+    ///
+    /// The transition is a compare-and-set against the durable record: it
+    /// fails with [`Error::SendIntentStateConflict`] when the intent is no
+    /// longer stored as `Batched` for this batch, so a stale handle cannot
+    /// overwrite a compensated record or a replacement transaction.
     pub async fn mark_broadcast(
         self,
         storage: &BdkStorage,
@@ -172,9 +195,14 @@ impl SendIntent<Batched> {
         outpoint: String,
         fee_contribution_sat: u64,
     ) -> Result<SendIntent<AwaitingConfirmation>, Error> {
-        storage
-            .update_send_intent(
+        let broadcast = storage
+            .transition_send_intent(
                 &self.intent_id,
+                &self.attempt_id,
+                &SendIntentState::Batched {
+                    batch_id: self.state.batch_id,
+                    created_at: self.created_at,
+                },
                 &SendIntentState::AwaitingConfirmation {
                     batch_id: self.state.batch_id,
                     txid: txid.clone(),
@@ -184,9 +212,16 @@ impl SendIntent<Batched> {
                 },
             )
             .await?;
+        if !broadcast {
+            return Err(Error::SendIntentStateConflict {
+                intent_id: self.intent_id,
+                expected: "Batched",
+            });
+        }
 
         Ok(SendIntent {
             intent_id: self.intent_id,
+            attempt_id: self.attempt_id,
             quote_id: self.quote_id,
             address: self.address,
             amount: self.amount,
@@ -204,21 +239,38 @@ impl SendIntent<Batched> {
     }
 
     /// Revert to Pending state (compensation)
+    ///
+    /// The transition is a compare-and-set against the durable record: it
+    /// fails with [`Error::SendIntentStateConflict`] when the intent is no
+    /// longer stored as `Batched` for this batch, so a stale handle cannot
+    /// rewind an intent another worker already broadcast.
     pub async fn revert_to_pending(
         self,
         storage: &BdkStorage,
     ) -> Result<SendIntent<Pending>, Error> {
-        storage
-            .update_send_intent(
+        let reverted = storage
+            .transition_send_intent(
                 &self.intent_id,
+                &self.attempt_id,
+                &SendIntentState::Batched {
+                    batch_id: self.state.batch_id,
+                    created_at: self.created_at,
+                },
                 &SendIntentState::Pending {
                     created_at: self.created_at,
                 },
             )
             .await?;
+        if !reverted {
+            return Err(Error::SendIntentStateConflict {
+                intent_id: self.intent_id,
+                expected: "Batched",
+            });
+        }
 
         Ok(SendIntent {
             intent_id: self.intent_id,
+            attempt_id: self.attempt_id,
             quote_id: self.quote_id,
             address: self.address,
             amount: self.amount,
@@ -237,8 +289,25 @@ impl SendIntent<AwaitingConfirmation> {
     /// Called after the transaction reaches the required confirmation depth.
     /// The tombstone preserves `total_spent` and `outpoint` so that
     /// `check_outgoing_payment` returns correct data after the intent is gone.
-    pub async fn finalize(self, storage: &BdkStorage) -> Result<(), Error> {
+    pub async fn finalize(self, storage: &BdkStorage) -> Result<bool, Error> {
         let total_spent_sat = self.amount + self.state.fee_contribution_sat;
+        let expected = SendIntentRecord {
+            intent_id: self.intent_id,
+            attempt_id: self.attempt_id,
+            quote_id: self.quote_id.clone(),
+            address: self.address.clone(),
+            amount_sat: self.amount,
+            max_fee_amount_sat: self.max_fee_amount,
+            tier: self.tier,
+            metadata: self.metadata.clone(),
+            state: SendIntentState::AwaitingConfirmation {
+                batch_id: self.state.batch_id,
+                txid: self.state.txid.clone(),
+                outpoint: self.state.outpoint.clone(),
+                fee_contribution_sat: self.state.fee_contribution_sat,
+                created_at: self.created_at,
+            },
+        };
 
         let tombstone = FinalizedSendIntentRecord {
             intent_id: self.intent_id,
@@ -248,10 +317,7 @@ impl SendIntent<AwaitingConfirmation> {
             finalized_at: crate::util::unix_now(),
         };
 
-        storage
-            .finalize_send_intent(&self.intent_id, &tombstone)
-            .await?;
-        Ok(())
+        storage.finalize_send_intent(&expected, &tombstone).await
     }
 }
 
@@ -260,6 +326,7 @@ pub(crate) fn from_record(record: &SendIntentRecord) -> SendIntentAny {
     match &record.state {
         SendIntentState::Pending { created_at } => SendIntentAny::Pending(SendIntent {
             intent_id: record.intent_id,
+            attempt_id: record.attempt_id,
             quote_id: record.quote_id.clone(),
             address: record.address.clone(),
             amount: record.amount_sat,
@@ -274,6 +341,7 @@ pub(crate) fn from_record(record: &SendIntentRecord) -> SendIntentAny {
             created_at,
         } => SendIntentAny::Batched(SendIntent {
             intent_id: record.intent_id,
+            attempt_id: record.attempt_id,
             quote_id: record.quote_id.clone(),
             address: record.address.clone(),
             amount: record.amount_sat,
@@ -293,6 +361,7 @@ pub(crate) fn from_record(record: &SendIntentRecord) -> SendIntentAny {
             created_at,
         } => SendIntentAny::AwaitingConfirmation(SendIntent {
             intent_id: record.intent_id,
+            attempt_id: record.attempt_id,
             quote_id: record.quote_id.clone(),
             address: record.address.clone(),
             amount: record.amount_sat,
@@ -332,287 +401,18 @@ pub(crate) enum SendIntentAny {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
-    use std::sync::{Arc, Mutex as StdMutex};
+    use std::sync::Arc;
+    use std::time::Duration;
 
-    use async_trait::async_trait;
-    use cdk_common::database::{
-        DbTransactionFinalizer, Error as DatabaseError, KVStore, KVStoreDatabase,
-        KVStoreTransaction,
-    };
     use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
     use cdk_common::{Amount, CurrencyUnit, MeltQuoteState};
-    use tokio::sync::Barrier;
 
     use super::*;
-    use crate::storage::{BdkStorage, SEND_INTENT_QUOTE_ID_NAMESPACE};
-
-    type KvKey = (String, String, String);
-
-    /// KV store that lets two concurrent transactions both observe a missing
-    /// quote-id index entry before either writes. `kv_write_if_absent` is
-    /// atomic across transactions, mirroring the SQL backend.
-    #[derive(Clone)]
-    struct RacingKvStore {
-        data: Arc<StdMutex<HashMap<KvKey, Vec<u8>>>>,
-        reservations: Arc<StdMutex<HashSet<KvKey>>>,
-        index_read_barrier: Arc<Barrier>,
-    }
-
-    impl RacingKvStore {
-        fn new(parties: usize) -> Self {
-            Self {
-                data: Arc::new(StdMutex::new(HashMap::new())),
-                reservations: Arc::new(StdMutex::new(HashSet::new())),
-                index_read_barrier: Arc::new(Barrier::new(parties)),
-            }
-        }
-    }
-
-    struct RacingTransaction {
-        store: RacingKvStore,
-        writes: Vec<(KvKey, Option<Vec<u8>>)>,
-        reserved: Vec<KvKey>,
-    }
-
-    #[async_trait]
-    impl DbTransactionFinalizer for RacingTransaction {
-        type Err = DatabaseError;
-
-        async fn commit(self: Box<Self>) -> Result<(), Self::Err> {
-            let mut data = self.store.data.lock().expect("lock racing kv store");
-            for (key, value) in self.writes {
-                if let Some(value) = value {
-                    data.insert(key, value);
-                } else {
-                    data.remove(&key);
-                }
-            }
-            Ok(())
-        }
-
-        async fn rollback(self: Box<Self>) -> Result<(), Self::Err> {
-            let mut reservations = self.store.reservations.lock().expect("lock reservations");
-            for key in &self.reserved {
-                reservations.remove(key);
-            }
-            Ok(())
-        }
-    }
-
-    #[async_trait]
-    impl KVStoreTransaction<DatabaseError> for RacingTransaction {
-        async fn kv_read(
-            &mut self,
-            primary_namespace: &str,
-            secondary_namespace: &str,
-            key: &str,
-        ) -> Result<Option<Vec<u8>>, DatabaseError> {
-            let map_key = (
-                primary_namespace.to_string(),
-                secondary_namespace.to_string(),
-                key.to_string(),
-            );
-            let value = self
-                .writes
-                .iter()
-                .rev()
-                .find(|(candidate, _)| candidate == &map_key)
-                .map(|(_, value)| value.clone())
-                .unwrap_or_else(|| {
-                    self.store
-                        .data
-                        .lock()
-                        .expect("lock racing kv store")
-                        .get(&map_key)
-                        .cloned()
-                });
-
-            if secondary_namespace == SEND_INTENT_QUOTE_ID_NAMESPACE {
-                self.store.index_read_barrier.wait().await;
-            }
-
-            Ok(value)
-        }
-
-        async fn kv_write(
-            &mut self,
-            primary_namespace: &str,
-            secondary_namespace: &str,
-            key: &str,
-            value: &[u8],
-        ) -> Result<(), DatabaseError> {
-            self.writes.push((
-                (
-                    primary_namespace.to_string(),
-                    secondary_namespace.to_string(),
-                    key.to_string(),
-                ),
-                Some(value.to_vec()),
-            ));
-            Ok(())
-        }
-
-        async fn kv_write_if_absent(
-            &mut self,
-            primary_namespace: &str,
-            secondary_namespace: &str,
-            key: &str,
-            value: &[u8],
-        ) -> Result<bool, DatabaseError> {
-            let map_key = (
-                primary_namespace.to_string(),
-                secondary_namespace.to_string(),
-                key.to_string(),
-            );
-
-            let exists = match self
-                .writes
-                .iter()
-                .rev()
-                .find(|(candidate, _)| candidate == &map_key)
-            {
-                Some((_, pending)) => pending.is_some(),
-                None => {
-                    let data = self.store.data.lock().expect("lock racing kv store");
-                    let reservations = self.store.reservations.lock().expect("lock reservations");
-                    data.contains_key(&map_key) || reservations.contains(&map_key)
-                }
-            };
-
-            if exists {
-                return Ok(false);
-            }
-
-            self.store
-                .reservations
-                .lock()
-                .expect("lock reservations")
-                .insert(map_key.clone());
-            self.reserved.push(map_key.clone());
-            self.writes.push((map_key, Some(value.to_vec())));
-
-            Ok(true)
-        }
-
-        async fn kv_remove(
-            &mut self,
-            primary_namespace: &str,
-            secondary_namespace: &str,
-            key: &str,
-        ) -> Result<(), DatabaseError> {
-            self.writes.push((
-                (
-                    primary_namespace.to_string(),
-                    secondary_namespace.to_string(),
-                    key.to_string(),
-                ),
-                None,
-            ));
-            Ok(())
-        }
-
-        async fn kv_write_if_equals(
-            &mut self,
-            primary_namespace: &str,
-            secondary_namespace: &str,
-            key: &str,
-            expected: &[u8],
-            replacement: &[u8],
-        ) -> Result<bool, DatabaseError> {
-            let map_key = (
-                primary_namespace.to_string(),
-                secondary_namespace.to_string(),
-                key.to_string(),
-            );
-
-            let current = self
-                .writes
-                .iter()
-                .rev()
-                .find(|(candidate, _)| candidate == &map_key)
-                .map(|(_, value)| value.clone())
-                .unwrap_or_else(|| {
-                    self.store
-                        .data
-                        .lock()
-                        .expect("lock racing kv store")
-                        .get(&map_key)
-                        .cloned()
-                });
-
-            match current {
-                Some(current) if current == expected => {
-                    self.writes.push((map_key, Some(replacement.to_vec())));
-                    Ok(true)
-                }
-                _ => Ok(false),
-            }
-        }
-
-        async fn kv_list(
-            &mut self,
-            primary_namespace: &str,
-            secondary_namespace: &str,
-        ) -> Result<Vec<String>, DatabaseError> {
-            self.store
-                .kv_list(primary_namespace, secondary_namespace)
-                .await
-        }
-    }
-
-    #[async_trait]
-    impl KVStoreDatabase for RacingKvStore {
-        type Err = DatabaseError;
-
-        async fn kv_read(
-            &self,
-            primary_namespace: &str,
-            secondary_namespace: &str,
-            key: &str,
-        ) -> Result<Option<Vec<u8>>, Self::Err> {
-            Ok(self
-                .data
-                .lock()
-                .expect("lock racing kv store")
-                .get(&(
-                    primary_namespace.to_string(),
-                    secondary_namespace.to_string(),
-                    key.to_string(),
-                ))
-                .cloned())
-        }
-
-        async fn kv_list(
-            &self,
-            primary_namespace: &str,
-            secondary_namespace: &str,
-        ) -> Result<Vec<String>, Self::Err> {
-            Ok(self
-                .data
-                .lock()
-                .expect("lock racing kv store")
-                .keys()
-                .filter(|(primary, secondary, _)| {
-                    primary == primary_namespace && secondary == secondary_namespace
-                })
-                .map(|(_, _, key)| key.clone())
-                .collect())
-        }
-    }
-
-    #[async_trait]
-    impl KVStore for RacingKvStore {
-        async fn begin_transaction(
-            &self,
-        ) -> Result<Box<dyn KVStoreTransaction<Self::Err> + Send + Sync>, DatabaseError> {
-            Ok(Box::new(RacingTransaction {
-                store: self.clone(),
-                writes: Vec::new(),
-                reserved: Vec::new(),
-            }))
-        }
-    }
+    use crate::send::batch_transaction::record::{
+        BatchOutputAssignment, SendBatchRecord, SendBatchState,
+    };
+    use crate::storage::{BdkStorage, BDK_NAMESPACE, SEND_INTENT_QUOTE_ID_NAMESPACE};
+    use crate::testutil::{store_test_signed_batch, GatedKvStore, PausePoint, ReadPath};
 
     /// Helper: create an in-memory KVStore-backed BdkStorage for tests
     async fn test_storage() -> BdkStorage {
@@ -624,10 +424,20 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_duplicate_quote_creates_only_one_intent() {
-        let storage = BdkStorage::new(Arc::new(RacingKvStore::new(2)));
-        let create = || {
+        let kv = GatedKvStore::default();
+        let storage = BdkStorage::new(Arc::new(kv.clone()));
+        let gate = kv.gate_read(
+            ReadPath::Transaction,
+            PausePoint::AfterRead,
+            BDK_NAMESPACE,
+            SEND_INTENT_QUOTE_ID_NAMESPACE,
+            1,
+        );
+
+        let first_storage = storage.clone();
+        let first = tokio::spawn(async move {
             SendIntent::new(
-                &storage,
+                &first_storage,
                 "quote-race".to_string(),
                 "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
                 10_000,
@@ -635,9 +445,29 @@ mod tests {
                 PaymentTier::Immediate,
                 PaymentMetadata::default(),
             )
-        };
+            .await
+        });
 
-        let (first, second) = tokio::join!(create(), create());
+        tokio::time::timeout(Duration::from_secs(5), gate.wait_entered())
+            .await
+            .expect("first create reached the gated quote-id read");
+
+        let second = SendIntent::new(
+            &storage,
+            "quote-race".to_string(),
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            10_000,
+            500,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await;
+
+        gate.release();
+        let first = tokio::time::timeout(Duration::from_secs(5), first)
+            .await
+            .expect("first create timed out")
+            .expect("join first create");
 
         let success_count = usize::from(first.is_ok()) + usize::from(second.is_ok());
         assert_eq!(success_count, 1, "only one intent per quote id");
@@ -683,6 +513,7 @@ mod tests {
 
         // 2. Transition to Batched
         let batch_id = Uuid::new_v4();
+        store_test_signed_batch(&storage, batch_id, &[pending.intent_id]).await;
         let batched = pending
             .assign_to_batch(&storage, batch_id)
             .await
@@ -763,6 +594,7 @@ mod tests {
         .await
         .expect("new");
         let intent_id = pending.intent_id;
+        let attempt_id = pending.attempt_id;
 
         pending
             .fail(&storage, "fee too high".to_string())
@@ -782,6 +614,7 @@ mod tests {
         .expect("retry failed intent");
 
         assert_eq!(retried.intent_id, intent_id);
+        assert_ne!(retried.attempt_id, attempt_id);
         assert_eq!(retried.max_fee_amount, 750);
 
         let persisted = storage
@@ -801,6 +634,146 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_pending_handle_cannot_advance_retried_attempt_with_same_timestamp() {
+        let storage = test_storage().await;
+        let quote_id = "quote-retry-aba".to_string();
+
+        let pending = SendIntent::new(
+            &storage,
+            quote_id.clone(),
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            10_000,
+            500,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("new");
+        let stale = pending.clone();
+        pending
+            .fail(&storage, "first attempt failed".to_string())
+            .await
+            .expect("fail first attempt");
+
+        let replacement_attempt_id = Uuid::new_v4();
+        let replacement = storage
+            .create_or_retry_failed_send_intent(&SendIntentRecord {
+                intent_id: Uuid::new_v4(),
+                attempt_id: replacement_attempt_id,
+                quote_id,
+                address: "bcrt1q6rhpng9evdsfnn833a4f4vej0asu6dk5srld6x".to_string(),
+                amount_sat: 20_000,
+                max_fee_amount_sat: 750,
+                tier: PaymentTier::Standard,
+                metadata: PaymentMetadata::default(),
+                state: SendIntentState::Pending {
+                    created_at: stale.created_at,
+                },
+            })
+            .await
+            .expect("retry with the same state timestamp");
+        assert_eq!(replacement.attempt_id, replacement_attempt_id);
+
+        let stale_batch_id = Uuid::new_v4();
+        store_test_signed_batch(&storage, stale_batch_id, &[replacement.intent_id]).await;
+        let error = stale
+            .assign_to_batch(&storage, stale_batch_id)
+            .await
+            .expect_err("stale handle must not advance the replacement attempt");
+        assert!(matches!(
+            error,
+            Error::SendBatchStateConflict {
+                expected: "Signed with one assignment for exact intent attempt",
+                ..
+            }
+        ));
+
+        let persisted = storage
+            .get_send_intent(&replacement.intent_id)
+            .await
+            .expect("get replacement intent")
+            .expect("replacement intent remains active");
+        assert_eq!(persisted.attempt_id, replacement_attempt_id);
+        assert_eq!(persisted.address, replacement.address);
+        assert!(matches!(persisted.state, SendIntentState::Pending { .. }));
+    }
+
+    #[tokio::test]
+    async fn replacement_attempt_cannot_claim_original_attempts_signed_batch() {
+        let storage = test_storage().await;
+        let quote_id = "quote-signed-attempt-binding".to_string();
+        let original = SendIntent::new(
+            &storage,
+            quote_id.clone(),
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            10_000,
+            500,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("new original attempt");
+        let intent_id = original.intent_id;
+        let original_attempt_id = original.attempt_id;
+        original
+            .fail(&storage, "retry original attempt".to_string())
+            .await
+            .expect("fail original attempt");
+        let replacement = SendIntent::new(
+            &storage,
+            quote_id,
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            10_000,
+            750,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("new replacement attempt");
+        assert_eq!(replacement.intent_id, intent_id);
+        assert_ne!(replacement.attempt_id, original_attempt_id);
+
+        let batch_id = Uuid::new_v4();
+        storage
+            .store_send_batch(&SendBatchRecord {
+                batch_id,
+                state: SendBatchState::Signed {
+                    tx_bytes: vec![0x01],
+                    assignments: vec![BatchOutputAssignment {
+                        intent_id,
+                        attempt_id: original_attempt_id,
+                        vout: 0,
+                        fee_contribution_sat: 0,
+                    }],
+                    fee_sat: 0,
+                },
+            })
+            .await
+            .expect("store original attempt's signed batch");
+
+        let replacement_attempt_id = replacement.attempt_id;
+        let error = replacement
+            .assign_to_batch(&storage, batch_id)
+            .await
+            .expect_err("replacement must not claim original attempt's signed batch");
+        assert!(matches!(
+            error,
+            Error::SendBatchStateConflict {
+                expected: "Signed with one assignment for exact intent attempt",
+                ..
+            }
+        ));
+
+        let persisted = storage
+            .get_send_intent(&intent_id)
+            .await
+            .expect("get replacement")
+            .expect("replacement remains");
+        assert_eq!(persisted.attempt_id, replacement_attempt_id);
+        assert!(matches!(persisted.state, SendIntentState::Pending { .. }));
+    }
+
+    #[tokio::test]
     async fn test_finalize_send_intent_creates_tombstone_and_preserves_total_spent() {
         let storage = test_storage().await;
 
@@ -816,8 +789,10 @@ mod tests {
         .await
         .expect("new");
 
+        let batch_id = Uuid::new_v4();
+        store_test_signed_batch(&storage, batch_id, &[pending.intent_id]).await;
         let batched = pending
-            .assign_to_batch(&storage, Uuid::new_v4())
+            .assign_to_batch(&storage, batch_id)
             .await
             .expect("assign");
 
@@ -835,7 +810,10 @@ mod tests {
         let quote_id = awaiting.quote_id.clone();
         let outpoint = awaiting.state.outpoint.clone();
 
-        awaiting.finalize(&storage).await.expect("finalize");
+        assert!(
+            awaiting.finalize(&storage).await.expect("finalize"),
+            "active intent should be finalized"
+        );
 
         let active = storage
             .get_send_intent(&intent_id)
@@ -885,8 +863,10 @@ mod tests {
         .await
         .expect("new");
 
+        let batch_id = Uuid::new_v4();
+        store_test_signed_batch(&storage, batch_id, &[pending.intent_id]).await;
         let awaiting = pending
-            .assign_to_batch(&storage, Uuid::new_v4())
+            .assign_to_batch(&storage, batch_id)
             .await
             .expect("assign")
             .mark_broadcast(
@@ -912,5 +892,242 @@ mod tests {
         .await;
 
         assert!(matches!(result, Err(Error::DuplicateQuoteId(id)) if id == quote_id));
+    }
+
+    #[tokio::test]
+    async fn stale_pending_handle_cannot_fail_a_batched_intent() {
+        let storage = test_storage().await;
+        let quote_id = "quote-stale-fail".to_string();
+
+        let pending = SendIntent::new(
+            &storage,
+            quote_id.clone(),
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            10_000,
+            500,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("new");
+        let stale = pending.clone();
+        let intent_id = pending.intent_id;
+
+        let batch_id = Uuid::new_v4();
+        store_test_signed_batch(&storage, batch_id, &[intent_id]).await;
+        pending
+            .assign_to_batch(&storage, batch_id)
+            .await
+            .expect("assign");
+
+        let err = stale
+            .fail(&storage, "stale failure".to_string())
+            .await
+            .expect_err("stale handle must not fail a batched intent");
+        assert!(matches!(
+            err,
+            Error::SendIntentStateConflict {
+                intent_id: id,
+                expected: "Pending",
+            } if id == intent_id
+        ));
+
+        let persisted = storage
+            .get_send_intent(&intent_id)
+            .await
+            .expect("get intent")
+            .expect("intent present");
+        assert!(
+            matches!(persisted.state, SendIntentState::Batched { batch_id: b, .. } if b == batch_id),
+            "durable state must remain Batched, got {:?}",
+            persisted.state
+        );
+
+        let attempts = storage
+            .get_failed_send_attempts_by_quote_id(&quote_id)
+            .await
+            .expect("failed attempts");
+        assert!(attempts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_pending_handle_cannot_batch_a_failed_intent() {
+        let storage = test_storage().await;
+        let quote_id = "quote-stale-batch".to_string();
+
+        let pending = SendIntent::new(
+            &storage,
+            quote_id,
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            10_000,
+            500,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("new");
+        let stale = pending.clone();
+        let intent_id = pending.intent_id;
+
+        pending
+            .fail(&storage, "fee too high".to_string())
+            .await
+            .expect("fail");
+
+        let batch_id = Uuid::new_v4();
+        store_test_signed_batch(&storage, batch_id, &[intent_id]).await;
+        let err = stale
+            .assign_to_batch(&storage, batch_id)
+            .await
+            .expect_err("stale handle must not batch a failed intent");
+        assert!(matches!(
+            err,
+            Error::SendIntentStateConflict {
+                intent_id: id,
+                expected: "Pending",
+            } if id == intent_id
+        ));
+
+        let persisted = storage
+            .get_send_intent(&intent_id)
+            .await
+            .expect("get intent")
+            .expect("intent present");
+        assert!(
+            matches!(persisted.state, SendIntentState::Failed { .. }),
+            "durable state must remain Failed, got {:?}",
+            persisted.state
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_batched_handle_cannot_broadcast_a_reverted_intent() {
+        let storage = test_storage().await;
+
+        let pending = SendIntent::new(
+            &storage,
+            "quote-stale-broadcast".to_string(),
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            10_000,
+            500,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("new");
+        let batch_id = Uuid::new_v4();
+        store_test_signed_batch(&storage, batch_id, &[pending.intent_id]).await;
+        let batched = pending
+            .assign_to_batch(&storage, batch_id)
+            .await
+            .expect("assign");
+        let stale = batched.clone();
+        let intent_id = batched.intent_id;
+
+        batched
+            .revert_to_pending(&storage)
+            .await
+            .expect("revert to pending");
+
+        let err = stale
+            .mark_broadcast(
+                &storage,
+                "txid-stale".to_string(),
+                "txid-stale:0".to_string(),
+                250,
+            )
+            .await
+            .expect_err("stale handle must not broadcast a reverted intent");
+        assert!(matches!(
+            err,
+            Error::SendIntentStateConflict {
+                intent_id: id,
+                expected: "Batched",
+            } if id == intent_id
+        ));
+
+        let persisted = storage
+            .get_send_intent(&intent_id)
+            .await
+            .expect("get intent")
+            .expect("intent present");
+        assert!(
+            matches!(persisted.state, SendIntentState::Pending { .. }),
+            "durable state must remain Pending, got {:?}",
+            persisted.state
+        );
+        assert!(
+            storage
+                .get_quote_id_by_send_outpoint("txid-stale:0")
+                .await
+                .expect("outpoint lookup")
+                .is_none(),
+            "no outpoint index entry may be written for a rejected transition"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_batched_handle_cannot_revert_a_broadcast_intent() {
+        let storage = test_storage().await;
+
+        let pending = SendIntent::new(
+            &storage,
+            "quote-stale-revert".to_string(),
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            10_000,
+            500,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("new");
+        let batch_id = Uuid::new_v4();
+        store_test_signed_batch(&storage, batch_id, &[pending.intent_id]).await;
+        let batched = pending
+            .assign_to_batch(&storage, batch_id)
+            .await
+            .expect("assign");
+        let stale = batched.clone();
+        let intent_id = batched.intent_id;
+
+        batched
+            .mark_broadcast(
+                &storage,
+                "txid-live".to_string(),
+                "txid-live:0".to_string(),
+                250,
+            )
+            .await
+            .expect("mark broadcast");
+
+        let err = stale
+            .revert_to_pending(&storage)
+            .await
+            .expect_err("stale handle must not revert a broadcast intent");
+        assert!(matches!(
+            err,
+            Error::SendIntentStateConflict {
+                intent_id: id,
+                expected: "Batched",
+            } if id == intent_id
+        ));
+
+        let persisted = storage
+            .get_send_intent(&intent_id)
+            .await
+            .expect("get intent")
+            .expect("intent present");
+        assert!(
+            matches!(
+                persisted.state,
+                SendIntentState::AwaitingConfirmation {
+                    batch_id: b,
+                    ref txid,
+                    ..
+                } if b == batch_id && txid == "txid-live"
+            ),
+            "durable state must remain AwaitingConfirmation, got {:?}",
+            persisted.state
+        );
     }
 }

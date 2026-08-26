@@ -165,12 +165,15 @@ impl BdkStorage {
                 .await
                 .map_err(Error::from)?
             {
-                match serde_json::from_slice::<T>(&data) {
-                    Ok(record) => records.push(record),
-                    Err(e) => {
-                        tracing::warn!("Failed to deserialize {} {}: {}", T::NAMESPACE, key, e);
-                    }
-                }
+                let record = serde_json::from_slice::<T>(&data).map_err(|error| {
+                    Error::Wallet(format!(
+                        "Failed to deserialize record in namespace {} for key {}: {}",
+                        T::NAMESPACE,
+                        key,
+                        error
+                    ))
+                })?;
+                records.push(record);
             }
         }
 
@@ -303,6 +306,7 @@ mod tests {
     fn make_pending_intent(intent_id: Uuid) -> SendIntentRecord {
         SendIntentRecord {
             intent_id,
+            attempt_id: Uuid::new_v4(),
             quote_id: "test-quote-1".to_string(),
             address: "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
             amount_sat: 50_000,
@@ -356,6 +360,7 @@ mod tests {
         // Also test full SendIntentRecord round-trip
         let intent = SendIntentRecord {
             intent_id: Uuid::new_v4(),
+            attempt_id: Uuid::new_v4(),
             quote_id: "quote-123".to_string(),
             address: "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
             amount_sat: 100_000,
@@ -370,10 +375,22 @@ mod tests {
         let deserialized: SendIntentRecord =
             serde_json::from_str(&json).expect("deserialize intent");
         assert_eq!(intent.intent_id, deserialized.intent_id);
+        assert_eq!(intent.attempt_id, deserialized.attempt_id);
         assert_eq!(intent.quote_id, deserialized.quote_id);
         assert_eq!(intent.address, deserialized.address);
         assert_eq!(intent.amount_sat, deserialized.amount_sat);
         assert_eq!(intent.max_fee_amount_sat, deserialized.max_fee_amount_sat);
+
+        // Records persisted before attempt generations were introduced remain
+        // readable. The first retry replaces this sentinel with a fresh UUID.
+        let mut legacy_json = serde_json::to_value(&intent).expect("serialize legacy intent");
+        legacy_json
+            .as_object_mut()
+            .expect("intent serializes as an object")
+            .remove("attempt_id");
+        let legacy: SendIntentRecord =
+            serde_json::from_value(legacy_json).expect("deserialize legacy intent");
+        assert_eq!(legacy.attempt_id, Uuid::nil());
     }
 
     #[test]
@@ -384,6 +401,7 @@ mod tests {
             .enumerate()
             .map(|(idx, id)| BatchOutputAssignment {
                 intent_id: *id,
+                attempt_id: Uuid::nil(),
                 vout: idx as u32,
                 fee_contribution_sat: 125,
             })
@@ -398,6 +416,12 @@ mod tests {
                 tx_bytes: vec![0x05, 0x06, 0x07, 0x08],
                 assignments: assignments.clone(),
                 fee_sat: 250,
+            },
+            SendBatchState::Cancelled {
+                tx_bytes: vec![0x05, 0x06, 0x07, 0x08],
+                assignments: assignments.clone(),
+                fee_sat: 250,
+                evict_at: 1_700_000_001,
             },
             SendBatchState::Broadcast {
                 txid: "deadbeef1234".to_string(),
@@ -534,6 +558,146 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_send_intents_fails_closed_on_malformed_record() {
+        let storage = test_storage().await;
+        let intent = make_pending_intent(Uuid::new_v4());
+        storage
+            .create_send_intent_if_absent(&intent)
+            .await
+            .expect("store valid intent");
+
+        let malformed_key = Uuid::new_v4().to_string();
+        let mut tx = storage
+            .kv_store
+            .begin_transaction()
+            .await
+            .expect("begin transaction");
+        tx.kv_write(
+            BDK_NAMESPACE,
+            SEND_INTENT_NAMESPACE,
+            &malformed_key,
+            b"{not-json",
+        )
+        .await
+        .expect("write malformed record");
+        tx.commit().await.expect("commit malformed record");
+
+        let error = storage
+            .get_all_send_intents()
+            .await
+            .expect_err("malformed record must fail the complete listing");
+        let message = error.to_string();
+        assert!(message.contains(SEND_INTENT_NAMESPACE));
+        assert!(message.contains(&malformed_key));
+    }
+
+    #[tokio::test]
+    async fn normalize_legacy_pending_attempt_ids_is_idempotent_and_state_scoped() {
+        let storage = test_storage().await;
+        let mut first = make_pending_intent(Uuid::new_v4());
+        first.quote_id = "legacy-pending-one".to_string();
+        first.attempt_id = Uuid::nil();
+        let mut second = make_pending_intent(Uuid::new_v4());
+        second.quote_id = "legacy-pending-two".to_string();
+        second.attempt_id = Uuid::nil();
+        let mut failed = make_pending_intent(Uuid::new_v4());
+        failed.quote_id = "legacy-failed".to_string();
+        failed.attempt_id = Uuid::nil();
+        failed.state = SendIntentState::Failed {
+            reason: "legacy failure".to_string(),
+            created_at: 1_700_000_000,
+            failed_at: 1_700_000_001,
+        };
+        let current = make_pending_intent(Uuid::new_v4());
+        let current_attempt_id = current.attempt_id;
+
+        for intent in [&first, &second, &failed, &current] {
+            storage
+                .create_send_intent_if_absent(intent)
+                .await
+                .expect("store intent");
+        }
+
+        assert_eq!(
+            storage
+                .normalize_legacy_pending_attempt_ids()
+                .await
+                .expect("normalize"),
+            2
+        );
+        let normalized_first = storage
+            .get_send_intent(&first.intent_id)
+            .await
+            .expect("read first")
+            .expect("first exists");
+        let normalized_second = storage
+            .get_send_intent(&second.intent_id)
+            .await
+            .expect("read second")
+            .expect("second exists");
+        assert!(!normalized_first.attempt_id.is_nil());
+        assert!(!normalized_second.attempt_id.is_nil());
+        assert_ne!(normalized_first.attempt_id, normalized_second.attempt_id);
+        assert_eq!(
+            storage
+                .get_send_intent(&failed.intent_id)
+                .await
+                .expect("read failed")
+                .expect("failed exists")
+                .attempt_id,
+            Uuid::nil()
+        );
+        assert_eq!(
+            storage
+                .get_send_intent(&current.intent_id)
+                .await
+                .expect("read current")
+                .expect("current exists")
+                .attempt_id,
+            current_attempt_id
+        );
+        assert_eq!(
+            storage
+                .normalize_legacy_pending_attempt_ids()
+                .await
+                .expect("normalize again"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_transition_atomically_records_the_actual_attempt_id() {
+        let storage = test_storage().await;
+        let intent = make_pending_intent(Uuid::new_v4());
+        let expected_state = intent.state.clone();
+        storage
+            .create_send_intent_if_absent(&intent)
+            .await
+            .expect("store intent");
+
+        assert!(storage
+            .transition_send_intent(
+                &intent.intent_id,
+                &intent.attempt_id,
+                &expected_state,
+                &SendIntentState::Failed {
+                    reason: "pre-sign failure".to_string(),
+                    created_at: 1_700_000_000,
+                    failed_at: 1_700_000_001,
+                },
+            )
+            .await
+            .expect("transition"));
+
+        let attempts = storage
+            .get_failed_send_attempts_by_quote_id(&intent.quote_id)
+            .await
+            .expect("list failed attempts");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].attempt_id, intent.attempt_id);
+    }
+
+    #[tokio::test]
     async fn test_create_send_intent_if_absent_rejects_duplicate_quote_id() {
         let storage = test_storage().await;
         let first = make_pending_intent(Uuid::new_v4());
@@ -622,7 +786,7 @@ mod tests {
             finalized_at: 1_700_000_001,
         };
         storage
-            .finalize_send_intent(&intent_id, &tombstone)
+            .finalize_send_intent(&intent, &tombstone)
             .await
             .expect("finalize intent");
 
@@ -665,7 +829,7 @@ mod tests {
             finalized_at: 1_700_000_001,
         };
         storage
-            .finalize_send_intent(&intent_id, &tombstone)
+            .finalize_send_intent(&intent, &tombstone)
             .await
             .expect("finalize intent");
 
@@ -746,6 +910,7 @@ mod tests {
             .enumerate()
             .map(|(idx, intent_id)| BatchOutputAssignment {
                 intent_id: *intent_id,
+                attempt_id: Uuid::nil(),
                 vout: idx as u32,
                 fee_contribution_sat: 125,
             })
@@ -876,6 +1041,7 @@ mod tests {
         let confirming_id = Uuid::new_v4();
         let confirming = SendIntentRecord {
             intent_id: confirming_id,
+            attempt_id: Uuid::new_v4(),
             quote_id: "quote-confirm".to_string(),
             address: "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
             amount_sat: 75_000,
@@ -989,6 +1155,7 @@ mod tests {
         let storage = test_storage().await;
         let active_intent = SendIntentRecord {
             intent_id: Uuid::new_v4(),
+            attempt_id: Uuid::new_v4(),
             quote_id: "active-legacy-quote".to_string(),
             address: "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
             amount_sat: 75_000,
@@ -1062,11 +1229,13 @@ mod tests {
                 assignments: vec![
                     BatchOutputAssignment {
                         intent_id: intent_id_1,
+                        attempt_id: Uuid::nil(),
                         vout: 0,
                         fee_contribution_sat: 250,
                     },
                     BatchOutputAssignment {
                         intent_id: intent_id_2,
+                        attempt_id: Uuid::nil(),
                         vout: 1,
                         fee_contribution_sat: 250,
                     },
@@ -1080,6 +1249,7 @@ mod tests {
         for (id, quote) in [(intent_id_1, "q1"), (intent_id_2, "q2")] {
             let intent = SendIntentRecord {
                 intent_id: id,
+                attempt_id: Uuid::new_v4(),
                 quote_id: quote.to_string(),
                 address: "bcrt1qaddr".to_string(),
                 amount_sat: 10_000,
@@ -1158,6 +1328,7 @@ mod tests {
                 tx_bytes: vec![0xAA, 0xBB],
                 assignments: vec![BatchOutputAssignment {
                     intent_id: signed_intent_id,
+                    attempt_id: Uuid::nil(),
                     vout: 0,
                     fee_contribution_sat: 100,
                 }],
@@ -1170,7 +1341,9 @@ mod tests {
                 SendBatchState::Signed { assignments, .. } => {
                     assignments.iter().map(|a| a.intent_id).collect()
                 }
-                SendBatchState::Broadcast { .. } => unreachable!(),
+                SendBatchState::Cancelled { .. } | SendBatchState::Broadcast { .. } => {
+                    unreachable!()
+                }
             };
 
             let batch = SendBatchRecord { batch_id, state };
@@ -1179,6 +1352,7 @@ mod tests {
             for intent_id in &intent_ids {
                 let intent = SendIntentRecord {
                     intent_id: *intent_id,
+                    attempt_id: Uuid::new_v4(),
                     quote_id: format!("q-{}", intent_id),
                     address: "bcrt1qaddr".to_string(),
                     amount_sat: 25_000,
@@ -1246,6 +1420,7 @@ mod tests {
                 tx_bytes: vec![0x01, 0x02, 0x03],
                 assignments: vec![BatchOutputAssignment {
                     intent_id: broadcast_intent_id,
+                    attempt_id: Uuid::nil(),
                     vout: 0,
                     fee_contribution_sat: 200,
                 }],
@@ -1256,6 +1431,7 @@ mod tests {
 
         let awaiting_intent = SendIntentRecord {
             intent_id: broadcast_intent_id,
+            attempt_id: Uuid::new_v4(),
             quote_id: "q-broadcast".to_string(),
             address: "bcrt1qaddr".to_string(),
             amount_sat: 40_000,
@@ -1277,6 +1453,7 @@ mod tests {
 
         let orphan_intent = SendIntentRecord {
             intent_id: orphan_intent_id,
+            attempt_id: Uuid::new_v4(),
             quote_id: "q-orphan".to_string(),
             address: "bcrt1qaddr".to_string(),
             amount_sat: 20_000,
@@ -1343,6 +1520,7 @@ mod tests {
 
         let intent = SendIntentRecord {
             intent_id: present_intent_id,
+            attempt_id: Uuid::new_v4(),
             quote_id: "q-present".to_string(),
             address: "bcrt1qaddr".to_string(),
             amount_sat: 25_000,
@@ -1381,6 +1559,7 @@ mod tests {
 
         let intent = SendIntentRecord {
             intent_id,
+            attempt_id: Uuid::new_v4(),
             quote_id: "q-missing-batch".to_string(),
             address: "bcrt1qaddr".to_string(),
             amount_sat: 15_000,
@@ -1442,6 +1621,7 @@ mod tests {
 
         let intent = SendIntentRecord {
             intent_id,
+            attempt_id: Uuid::new_v4(),
             quote_id: "q-membership".to_string(),
             address: "bcrt1qaddr".to_string(),
             amount_sat: 30_000,
@@ -1504,11 +1684,13 @@ mod tests {
                 assignments: vec![
                     BatchOutputAssignment {
                         intent_id: batched_intent_id,
+                        attempt_id: Uuid::nil(),
                         vout: 0,
                         fee_contribution_sat: 200,
                     },
                     BatchOutputAssignment {
                         intent_id: awaiting_intent_id,
+                        attempt_id: Uuid::nil(),
                         vout: 1,
                         fee_contribution_sat: 200,
                     },
@@ -1539,6 +1721,7 @@ mod tests {
         ] {
             let intent = SendIntentRecord {
                 intent_id,
+                attempt_id: Uuid::new_v4(),
                 quote_id: format!("q-{}", intent_id),
                 address: "bcrt1qaddr".to_string(),
                 amount_sat: 10_000,

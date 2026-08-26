@@ -214,18 +214,28 @@ impl SendBatch<Signed> {
         assignments: Vec<BatchOutputAssignment>,
         fee_sat: u64,
     ) -> Result<BroadcastResult, Error> {
+        let expected_state = SendBatchState::Signed {
+            tx_bytes: tx_bytes.clone(),
+            assignments: assignments.clone(),
+            fee_sat,
+        };
+        let broadcast_state = SendBatchState::Broadcast {
+            txid: txid.clone(),
+            tx_bytes,
+            assignments,
+            fee_sat,
+        };
+
         // Persist Broadcast state BEFORE actually broadcasting (crash safety)
-        storage
-            .update_send_batch(
-                &self.batch_id,
-                &SendBatchState::Broadcast {
-                    txid: txid.clone(),
-                    tx_bytes,
-                    assignments,
-                    fee_sat,
-                },
-            )
+        let transitioned = storage
+            .transition_send_batch(&self.batch_id, &expected_state, &broadcast_state)
             .await?;
+        if !transitioned {
+            return Err(Error::SendBatchStateConflict {
+                batch_id: self.batch_id,
+                expected: "Signed",
+            });
+        }
 
         Ok(BroadcastResult {
             intents: self.intents,
@@ -243,6 +253,7 @@ mod tests {
     use crate::send::payment_intent::state::Batched as IntentBatched;
     use crate::send::payment_intent::SendIntent;
     use crate::storage::BdkStorage;
+    use crate::testutil::store_test_signed_batch;
     use crate::types::{PaymentMetadata, PaymentTier};
 
     /// Helper: create an in-memory KVStore-backed BdkStorage for tests
@@ -273,6 +284,7 @@ mod tests {
         .await
         .expect("create pending intent");
 
+        store_test_signed_batch(storage, batch_id, &[pending.intent_id]).await;
         pending
             .assign_to_batch(storage, batch_id)
             .await
@@ -307,11 +319,13 @@ mod tests {
         let assignments = vec![
             BatchOutputAssignment {
                 intent_id: built_batch.intents[0].intent_id,
+                attempt_id: built_batch.intents[0].attempt_id,
                 vout: 0,
                 fee_contribution_sat: 250,
             },
             BatchOutputAssignment {
                 intent_id: built_batch.intents[1].intent_id,
+                attempt_id: built_batch.intents[1].attempt_id,
                 vout: 1,
                 fee_contribution_sat: 250,
             },
@@ -378,15 +392,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_signed_batch_cannot_overwrite_broadcast_batch() {
+        let storage = test_storage().await;
+        let batch_id = Uuid::new_v4();
+        let tx_bytes = vec![0xAA, 0xBB, 0xCC];
+        let assignments = Vec::new();
+        let signed_state = SendBatchState::Signed {
+            tx_bytes: tx_bytes.clone(),
+            assignments: assignments.clone(),
+            fee_sat: 500,
+        };
+        let winning_state = SendBatchState::Broadcast {
+            txid: "winning-txid".to_string(),
+            tx_bytes: tx_bytes.clone(),
+            assignments: assignments.clone(),
+            fee_sat: 500,
+        };
+
+        let signed_batch = SendBatch::new(&storage, batch_id, vec![1, 2, 3], Vec::new())
+            .await
+            .expect("new batch")
+            .sign(&storage, tx_bytes.clone(), assignments.clone(), 500)
+            .await
+            .expect("sign batch");
+        assert!(storage
+            .transition_send_batch(&batch_id, &signed_state, &winning_state)
+            .await
+            .expect("promote batch"));
+
+        let result = signed_batch
+            .mark_broadcast(
+                &storage,
+                "stale-txid".to_string(),
+                tx_bytes,
+                assignments,
+                500,
+            )
+            .await;
+        let error = match result {
+            Ok(_) => panic!("stale promotion must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            Error::SendBatchStateConflict {
+                batch_id: id,
+                expected: "Signed",
+            } if id == batch_id
+        ));
+
+        let persisted = storage
+            .get_send_batch(&batch_id)
+            .await
+            .expect("get batch")
+            .expect("batch remains");
+        assert_eq!(persisted.state, winning_state);
+    }
+
+    #[tokio::test]
     async fn test_assignments_roundtrip_serde() {
         let assignment = BatchOutputAssignment {
             intent_id: Uuid::new_v4(),
+            attempt_id: Uuid::new_v4(),
             vout: 7,
             fee_contribution_sat: 1234,
         };
         let encoded = serde_json::to_vec(&assignment).expect("encode");
         let decoded: BatchOutputAssignment = serde_json::from_slice(&encoded).expect("decode");
         assert_eq!(decoded, assignment);
+
+        let mut legacy = serde_json::to_value(&assignment).expect("encode legacy assignment");
+        legacy
+            .as_object_mut()
+            .expect("assignment serializes as an object")
+            .remove("attempt_id");
+        let decoded_legacy: BatchOutputAssignment =
+            serde_json::from_value(legacy).expect("decode legacy assignment");
+        assert_eq!(decoded_legacy.attempt_id, Uuid::nil());
     }
 
     #[test]

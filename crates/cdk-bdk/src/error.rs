@@ -139,6 +139,30 @@ pub enum Error {
     #[error("Send intent already exists for quote id: {0}")]
     DuplicateQuoteId(String),
 
+    /// Send intent state changed concurrently; the transition was rejected
+    ///
+    /// The durable record no longer matches the state the caller expected,
+    /// meaning another worker advanced or rewound it. No write was performed.
+    #[error("Send intent {intent_id} is no longer in expected state {expected}")]
+    SendIntentStateConflict {
+        /// Intent whose durable state changed under the caller
+        intent_id: Uuid,
+        /// State the transition expected to find
+        expected: &'static str,
+    },
+
+    /// Send batch state changed concurrently; the transition was rejected
+    ///
+    /// The durable record no longer matches the state the caller expected,
+    /// meaning another worker advanced or removed it. No write was performed.
+    #[error("Send batch {batch_id} is no longer in expected state {expected}")]
+    SendBatchStateConflict {
+        /// Batch whose durable state changed under the caller
+        batch_id: Uuid,
+        /// State the transition expected to find
+        expected: &'static str,
+    },
+
     /// Batch fee exceeds the combined max fee of all included intents
     #[error("Batch fee {actual_fee} exceeds combined max fee {max_fee}")]
     BatchFeeTooHigh {

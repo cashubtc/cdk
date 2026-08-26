@@ -14,6 +14,13 @@ use uuid::Uuid;
 pub struct BatchOutputAssignment {
     /// The intent that owns this output.
     pub intent_id: Uuid,
+    /// Unique generation of the send attempt that owns this output.
+    ///
+    /// Assignments written before attempt generations were introduced
+    /// deserialize to the nil UUID. Signed-batch claims and recovery treat that
+    /// sentinel as unbound and cancel conservatively rather than guessing.
+    #[serde(default)]
+    pub attempt_id: Uuid,
     /// Output index in the batch transaction.
     pub vout: u32,
     /// Fee allocated to this intent in satoshis.
@@ -21,7 +28,7 @@ pub struct BatchOutputAssignment {
 }
 
 /// Durable send batch state
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SendBatchState {
     /// PSBT has been constructed but not yet signed
     Built {
@@ -39,13 +46,29 @@ pub enum SendBatchState {
         /// Total transaction fee in satoshis
         fee_sat: u64,
     },
+    /// A signed transaction that must never be broadcast.
+    ///
+    /// This state is persisted before evicting the transaction from BDK or
+    /// reverting any claimed intents. Recovery completes those operations
+    /// idempotently and deletes the batch only after compensation succeeds.
+    Cancelled {
+        /// Serialized signed transaction bytes used to derive the txid to evict.
+        tx_bytes: Vec<u8>,
+        /// Per-intent assignments retained for compensation recovery.
+        assignments: Vec<BatchOutputAssignment>,
+        /// Total transaction fee in satoshis.
+        fee_sat: u64,
+        /// BDK eviction timestamp, chosen after the original apply timestamp.
+        evict_at: u64,
+    },
     /// Transaction has been durably persisted for rebroadcast and reconciliation.
     ///
     /// This state is written before the backend/node broadcast call so recovery
     /// can safely retry the network send after a crash. It does not guarantee
     /// that the transaction was already accepted by the network.
     Broadcast {
-        /// Transaction ID
+        /// Transaction ID. Informational only: consumers must derive the
+        /// canonical txid from `tx_bytes` rather than trusting this string.
         txid: String,
         /// Serialized signed transaction bytes (kept for rebroadcast)
         tx_bytes: Vec<u8>,
