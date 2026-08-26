@@ -448,87 +448,10 @@ mod test {
         let db = MintPgDatabase::new(config)
             .await
             .expect("single-connection mint pool should remain supported");
-        let dispatch = MintDatabase::begin_dispatch_transaction(&db)
-            .await
-            .expect("dispatch transaction");
-        dispatch.rollback().await.expect("dispatch rollback");
         let regular = MintDatabase::begin_transaction(&db)
             .await
             .expect("regular transaction");
         regular.rollback().await.expect("regular rollback");
-    }
-
-    #[tokio::test]
-    async fn try_quote_lock_reports_contended_without_waiting() {
-        use std::sync::Arc;
-
-        use cdk_common::database::mint::QuoteLockAttempt;
-        use cdk_common::database::MintDatabase;
-
-        let test_id = format!("test_try_quote_lock_{}", uuid::Uuid::new_v4());
-        let db = Arc::new(provide_mint_db(test_id).await);
-        let quote_id = QuoteId::new();
-
-        let mut holder = MintDatabase::begin_transaction(&*db).await.expect("tx");
-        assert!(holder
-            .lock_quotes(std::slice::from_ref(&quote_id))
-            .await
-            .expect("lock"));
-
-        let mut waiter = MintDatabase::begin_transaction(&*db).await.expect("tx");
-        assert_eq!(
-            waiter
-                .try_lock_quotes(std::slice::from_ref(&quote_id))
-                .await
-                .expect("try lock"),
-            QuoteLockAttempt::Contended
-        );
-        waiter.rollback().await.expect("rollback");
-
-        holder.commit().await.expect("commit");
-
-        let mut free = MintDatabase::begin_transaction(&*db).await.expect("tx");
-        assert_eq!(
-            free.try_lock_quotes(std::slice::from_ref(&quote_id))
-                .await
-                .expect("try lock"),
-            QuoteLockAttempt::Acquired
-        );
-        free.rollback().await.expect("rollback");
-    }
-
-    #[tokio::test]
-    async fn dispatch_transaction_preserves_regular_pool_capacity() {
-        use std::time::Duration;
-
-        use cdk_common::database::MintDatabase;
-
-        let test_id = format!("test_dispatch_pool_{}", uuid::Uuid::new_v4());
-        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
-            .or_else(|_| std::env::var("PG_DB_URL"))
-            .unwrap_or(
-                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
-                    .to_owned(),
-            );
-        let config = PgConfig::new(
-            &format!("{db_url} schema={test_id}"),
-            None,
-            Some(2),
-            Some(10),
-        );
-        let db = MintPgDatabase::new(config).await.expect("database");
-
-        let dispatch = MintDatabase::begin_dispatch_transaction(&db)
-            .await
-            .expect("dispatch transaction");
-        let regular =
-            tokio::time::timeout(Duration::from_secs(5), MintDatabase::begin_transaction(&db))
-                .await
-                .expect("regular pool capacity must remain available")
-                .expect("regular transaction");
-
-        regular.rollback().await.expect("regular rollback");
-        dispatch.rollback().await.expect("dispatch rollback");
     }
 
     #[tokio::test]

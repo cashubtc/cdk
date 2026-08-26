@@ -435,7 +435,7 @@ async fn test_saga_deletion_on_success() {
     };
 
     // A paid backend result must be durably handed off before make_payment
-    // returns and releases the cross-replica dispatch lock.
+    // returns and releases the process-local quote guard.
     let finalizing_saga = assert_saga_exists(&mint, &operation_id).await;
     assert_eq!(
         finalizing_saga.state,

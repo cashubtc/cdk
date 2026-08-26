@@ -166,8 +166,7 @@ impl Mint {
         response
     }
 
-    /// Transaction-scoped internal-settlement check used by reconciliation
-    /// paths that already hold the quote dispatch lock.
+    /// Transaction-scoped internal-settlement check used by reconciliation.
     pub(crate) async fn internal_melt_settlement_response_tx(
         tx: &mut DynMintTransaction,
         quote: &MeltQuote,

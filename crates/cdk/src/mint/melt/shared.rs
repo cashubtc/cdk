@@ -20,76 +20,6 @@ use crate::mint::subscription::PubSubManager;
 use crate::mint::MeltQuote;
 use crate::Mint;
 
-/// Acquire the cross-process lock for a melt quote when the database supports
-/// it. PostgreSQL keeps the returned transaction open to hold its advisory
-/// lock; embedded backends return `None` and continue to use the mint's
-/// process-local quote guard.
-pub(crate) async fn acquire_melt_dispatch_lock(
-    db: &DynMintDatabase,
-    quote_id: &QuoteId,
-) -> Result<Option<DynMintTransaction>, Error> {
-    let mut tx = db.begin_dispatch_transaction().await?;
-    match tx.lock_quotes(std::slice::from_ref(quote_id)).await {
-        Ok(true) => Ok(Some(tx)),
-        Ok(false) => {
-            tx.rollback().await?;
-            Ok(None)
-        }
-        Err(err) => {
-            tx.rollback().await?;
-            Err(err.into())
-        }
-    }
-}
-
-/// Outcome of a non-blocking melt-dispatch lock attempt.
-pub(crate) enum DispatchLockAttempt {
-    /// This transaction holds the cross-process quote lock.
-    Acquired(DynMintTransaction),
-    /// A live dispatch or reconciliation holds the quote lock. The caller must
-    /// fail closed: reload the quote, leave it pending, and never compensate.
-    Contended,
-    /// The backend has no cross-process lock; use the process-local guard.
-    Unsupported,
-}
-
-impl std::fmt::Debug for DispatchLockAttempt {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Acquired(_) => f.write_str("DispatchLockAttempt::Acquired(..)"),
-            Self::Contended => f.write_str("DispatchLockAttempt::Contended"),
-            Self::Unsupported => f.write_str("DispatchLockAttempt::Unsupported"),
-        }
-    }
-}
-
-/// Non-blocking variant of [`acquire_melt_dispatch_lock`] for reconciliation
-/// paths. A contended lock proves a live dispatch owns the quote, so callers
-/// reload state and leave it pending instead of waiting on the advisory lock.
-/// The dispatch pool is used because an acquired transaction may remain open
-/// across payment-backend network I/O during reconciliation.
-pub(crate) async fn try_acquire_melt_dispatch_lock(
-    db: &DynMintDatabase,
-    quote_id: &QuoteId,
-) -> Result<DispatchLockAttempt, Error> {
-    let mut tx = db.begin_dispatch_transaction().await?;
-    match tx.try_lock_quotes(std::slice::from_ref(quote_id)).await {
-        Ok(database::mint::QuoteLockAttempt::Acquired) => Ok(DispatchLockAttempt::Acquired(tx)),
-        Ok(database::mint::QuoteLockAttempt::Contended) => {
-            tx.rollback().await?;
-            Ok(DispatchLockAttempt::Contended)
-        }
-        Ok(database::mint::QuoteLockAttempt::Unsupported) => {
-            tx.rollback().await?;
-            Ok(DispatchLockAttempt::Unsupported)
-        }
-        Err(err) => {
-            tx.rollback().await?;
-            Err(err.into())
-        }
-    }
-}
-
 /// Retrieves fee and amount configuration for the keyset matching the change outputs.
 ///
 /// Searches active keysets for one matching the first output's keyset_id.
@@ -160,12 +90,10 @@ pub(crate) fn total_spent_for_quote_unit(
     }
 }
 
-/// Persist a paid payment result before releasing a quote dispatch lock.
+/// Persist a paid payment result as a durable finalization handoff.
 ///
-/// The caller must commit this update using the transaction that owns the
-/// cross-process quote lock. This closes the handoff between observing a paid
-/// backend result and later finalization: once the lock is released, recovery
-/// will see `Finalizing` and must never compensate the melt.
+/// Once committed, recovery will see `Finalizing` and must never compensate
+/// the melt.
 pub(crate) async fn persist_melt_finalization_handoff(
     tx: &mut DynMintTransaction,
     saga: &mut Acquired<mint_types::Saga>,
@@ -240,64 +168,6 @@ pub async fn rollback_melt_quote(
         quote_id,
         input_ys,
         blinded_secrets,
-        operation_id,
-        None,
-    )
-    .await
-}
-
-/// Roll back while the caller holds this quote's dispatch advisory lock.
-pub(crate) async fn rollback_melt_quote_with_dispatch_lock(
-    tx: DynMintTransaction,
-    pubsub: &PubSubManager,
-    quote_id: &QuoteId,
-    input_ys: &[PublicKey],
-    blinded_secrets: &[PublicKey],
-    operation_id: &uuid::Uuid,
-) -> Result<(), Error> {
-    rollback_melt_quote_inner(
-        tx,
-        pubsub,
-        quote_id,
-        input_ys,
-        blinded_secrets,
-        operation_id,
-        None,
-    )
-    .await
-}
-
-/// Roll back a terminally failed dispatch before releasing its quote lock.
-///
-/// The transaction owns the cross-process dispatch lock. Loading the rollback
-/// metadata and removing the saga in that same transaction prevents another
-/// replica from advancing the saga to `PaymentPending` between the terminal
-/// backend result and compensation.
-pub(crate) async fn rollback_failed_melt_with_dispatch_lock(
-    mut tx: DynMintTransaction,
-    pubsub: &PubSubManager,
-    quote_id: &QuoteId,
-    operation_id: &uuid::Uuid,
-) -> Result<(), Error> {
-    let input_ys = tx.get_proof_ys_by_operation_id(operation_id).await?;
-    let blinded_secrets = tx
-        .get_melt_request_and_blinded_messages(quote_id)
-        .await?
-        .map(|request| {
-            request
-                .change_outputs
-                .into_iter()
-                .map(|output| output.blinded_secret)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    rollback_melt_quote_inner(
-        tx,
-        pubsub,
-        quote_id,
-        &input_ys,
-        &blinded_secrets,
         operation_id,
         None,
     )
@@ -1185,61 +1055,4 @@ pub async fn finalize_melt_quote(
     }
 
     Ok(change_sigs)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    use cdk_common::database::DynMintDatabase;
-    use cdk_common::QuoteId;
-
-    use super::{try_acquire_melt_dispatch_lock, DispatchLockAttempt};
-
-    #[tokio::test]
-    async fn reconciliation_lock_preserves_regular_postgres_pool_capacity() {
-        let postgres_required = std::env::var_os("CDK_REQUIRE_POSTGRES_TESTS").is_some();
-        let db_url =
-            match std::env::var("CDK_MINTD_DATABASE_URL").or_else(|_| std::env::var("PG_DB_URL")) {
-                Ok(db_url) => db_url,
-                Err(err) if postgres_required => {
-                    panic!("PostgreSQL reconciliation-lock test requires a database URL: {err}")
-                }
-                Err(_) => return,
-            };
-        let schema = format!("test_reconciliation_pool_{}", uuid::Uuid::new_v4());
-        let config = cdk_postgres::PgConfig::new(
-            &format!("{db_url} schema={schema}"),
-            None,
-            Some(2),
-            Some(10),
-        );
-        let db = match cdk_postgres::MintPgDatabase::new(config).await {
-            Ok(db) => db,
-            Err(err) if postgres_required => {
-                panic!("Could not create required PostgreSQL reconciliation-lock database: {err}")
-            }
-            Err(err) => {
-                tracing::warn!("Skipping PostgreSQL reconciliation-lock test: {}", err);
-                return;
-            }
-        };
-        let db: DynMintDatabase = Arc::new(db);
-
-        let dispatch = match try_acquire_melt_dispatch_lock(&db, &QuoteId::new())
-            .await
-            .expect("reconciliation lock")
-        {
-            DispatchLockAttempt::Acquired(tx) => tx,
-            attempt => panic!("PostgreSQL must acquire the reconciliation lock: {attempt:?}"),
-        };
-        let regular = tokio::time::timeout(Duration::from_secs(1), db.begin_transaction())
-            .await
-            .expect("reconciliation lock must preserve regular pool capacity")
-            .expect("regular transaction");
-
-        regular.rollback().await.expect("regular rollback");
-        dispatch.rollback().await.expect("dispatch rollback");
-    }
 }

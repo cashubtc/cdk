@@ -85,7 +85,8 @@ tti = 60
 
 [database]
 # Database engine (sqlite/postgres) defaults to sqlite
-# SQLite supports one mint process. Use PostgreSQL for multiple replicas.
+# Only one active mint process may use a database. PostgreSQL is supported but
+# does not currently make multiple active replicas safe.
 engine = "sqlite"
 
 # PostgreSQL configuration (when engine = "postgres")
@@ -97,10 +98,6 @@ url = "env:CDK_MINTD_POSTGRES_URL"
 # TLS mode: "disable", "prefer", "require" (optional, defaults to "disable")
 tls_mode = "disable"
 # Maximum total number of connections (optional, defaults to 20).
-# PostgreSQL reserves part of this budget for long-lived payment-dispatch locks
-# so quote checks and recovery retain database capacity. At least 2 is
-# recommended; with 1, dispatch and ordinary work share the pool and may block
-# each other.
 max_connections = 20
 # Connection timeout in seconds (optional, defaults to 10)
 connection_timeout_seconds = 10

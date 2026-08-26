@@ -229,11 +229,11 @@ impl Mint {
     pub(super) async fn melt_quote_lock(&self, quote_id: &QuoteId) -> Arc<Mutex<()>> {
         let mut locks = self.melt_quote_locks.lock().await;
 
+        locks.retain(|_, lock| lock.strong_count() > 0);
         if let Some(lock) = locks.get(quote_id).and_then(Weak::upgrade) {
             return lock;
         }
 
-        locks.retain(|_, lock| lock.strong_count() > 0);
         let lock = Arc::new(Mutex::new(()));
         locks.insert(quote_id.clone(), Arc::downgrade(&lock));
         lock
@@ -2241,6 +2241,25 @@ mod tests {
             .get_keyset_info(&keyset_info.id)
             .expect("keyset should be found");
         assert_eq!(stored.final_expiry, Some(expiry));
+    }
+
+    #[tokio::test]
+    async fn melt_quote_lock_prunes_expired_entries() {
+        let mint = create_test_mint().await.unwrap();
+        let expired_quote_id = QuoteId::new();
+        let active_quote_id = QuoteId::new();
+
+        let expired_lock = mint.melt_quote_lock(&expired_quote_id).await;
+        let active_lock = mint.melt_quote_lock(&active_quote_id).await;
+        drop(expired_lock);
+
+        let active_lock_again = mint.melt_quote_lock(&active_quote_id).await;
+
+        assert!(Arc::ptr_eq(&active_lock, &active_lock_again));
+
+        let locks = mint.melt_quote_locks.lock().await;
+        assert!(!locks.contains_key(&expired_quote_id));
+        assert!(locks.contains_key(&active_quote_id));
     }
 
     #[tokio::test]

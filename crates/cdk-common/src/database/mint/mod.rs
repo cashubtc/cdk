@@ -666,25 +666,12 @@ pub trait CompletedOperationsDatabase {
     async fn get_completed_operations(&self) -> Result<Vec<mint::Operation>, Self::Err>;
 }
 
-/// Outcome of a non-blocking quote advisory lock attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuoteLockAttempt {
-    /// This transaction holds the cross-process lock.
-    Acquired,
-    /// Another transaction holds the lock. Callers must fail closed (leave the
-    /// quote pending) and never compensate on this outcome.
-    Contended,
-    /// The backend has no cross-process lock; callers retain a process-local
-    /// guard.
-    Unsupported,
-}
-
 /// Base database writer
 ///
-/// Quote advisory locks coordinate operations whose critical section extends
-/// beyond an existing row lock. Callers must acquire all quote locks before
-/// taking row locks, and implementations must acquire a batch in stable order.
-/// Locks are held until the transaction commits or rolls back.
+/// Quote advisory locks coordinate transactional quote updates. Callers must
+/// acquire all quote locks before taking row locks, and implementations must
+/// acquire a batch in stable order. Locks are held until the transaction
+/// commits or rolls back.
 #[async_trait]
 pub trait Transaction<Error>:
     DbTransactionFinalizer<Err = Error>
@@ -698,20 +685,9 @@ pub trait Transaction<Error>:
     /// Lock a set of quote identifiers for this transaction.
     ///
     /// Returns `true` when the backend acquired a cross-process lock. Backends
-    /// that serialize writes without a lock that can span the required critical
-    /// section return `false`, allowing callers to retain a process-local guard.
+    /// without quote advisory locks return `false`.
     async fn lock_quotes(&mut self, _quote_ids: &[QuoteId]) -> Result<bool, Error> {
         Ok(false)
-    }
-
-    /// Non-blocking variant of [`Transaction::lock_quotes`].
-    ///
-    /// Returns [`QuoteLockAttempt::Contended`] when another transaction holds
-    /// any of the locks, instead of waiting for it. Any partial acquisitions
-    /// are held until the transaction ends, so callers should roll back on
-    /// `Contended`.
-    async fn try_lock_quotes(&mut self, _quote_ids: &[QuoteId]) -> Result<QuoteLockAttempt, Error> {
-        Ok(QuoteLockAttempt::Unsupported)
     }
 }
 
@@ -727,16 +703,6 @@ pub trait Database<Error>:
 {
     /// Begins a transaction
     async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;
-
-    /// Begins a transaction that may remain open across payment dispatch.
-    ///
-    /// Backends may override this to isolate long-lived dispatch locks from
-    /// the connection pool used by ordinary database operations.
-    async fn begin_dispatch_transaction(
-        &self,
-    ) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error> {
-        self.begin_transaction().await
-    }
 }
 
 /// Type alias for Mint Database

@@ -165,15 +165,6 @@ where
     /// Creates a new pool
     pub fn new(config: RM::Config) -> Arc<Self> {
         let max_size = config.max_size();
-        Self::new_with_max_size(config, max_size)
-    }
-
-    /// Creates a pool with an explicit size instead of the configuration's
-    /// default.
-    ///
-    /// This is used when one configured connection budget is partitioned into
-    /// separate pools for short database work and long-lived operations.
-    pub(crate) fn new_with_max_size(config: RM::Config, max_size: usize) -> Arc<Self> {
         Arc::new(Self {
             default_timeout: config.default_timeout(),
             max_size,
@@ -476,14 +467,14 @@ mod tests {
         METRICS.set_db_connections_active(0);
 
         let regular_pool = Pool::<TestPool>::new(test_config(1, false));
-        let dispatch_pool = Pool::<TestPool>::new(test_config(1, false));
+        let second_pool = Pool::<TestPool>::new(test_config(1, false));
         let regular = regular_pool.get().await.expect("regular resource");
-        let dispatch = dispatch_pool.get().await.expect("dispatch resource");
+        let second = second_pool.get().await.expect("second resource");
 
         assert_eq!(db_connections_active(), 2.0);
 
         drop(regular);
-        drop(dispatch);
+        drop(second);
         assert_eq!(db_connections_active(), 0.0);
     }
 }

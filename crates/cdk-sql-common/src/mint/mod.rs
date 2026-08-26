@@ -17,7 +17,7 @@ use cdk_common::QuoteId;
 
 use crate::common::migrate;
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
-use crate::pool::{DatabaseConfig, DatabasePool, Pool, PooledResource};
+use crate::pool::{DatabasePool, Pool, PooledResource};
 use crate::stmt::query;
 
 mod auth;
@@ -46,7 +46,6 @@ where
     RM: DatabasePool + 'static,
 {
     pub(crate) pool: Arc<Pool<RM>>,
-    dispatch_pool: Option<Arc<Pool<RM>>>,
 }
 
 /// SQL Transaction Writer
@@ -78,29 +77,11 @@ where
     where
         X: Into<RM::Config>,
     {
-        let config = db.into();
-        let configured_max_size = config.max_size();
-        let (pool, dispatch_pool) =
-            if RM::Connection::name() == "postgres" && configured_max_size >= 2 {
-                // Keep long-lived payment dispatches from consuming the pool used
-                // for quote checks, payment events, and recovery. Both pools share
-                // the configured connection budget.
-                let dispatch_pool_size = (configured_max_size / 4).clamp(1, 8);
-                let regular_pool_size = configured_max_size - dispatch_pool_size;
-                (
-                    Pool::new_with_max_size(config.clone(), regular_pool_size),
-                    Some(Pool::new_with_max_size(config, dispatch_pool_size)),
-                )
-            } else {
-                (Pool::new(config), None)
-            };
+        let pool = Pool::new(db.into());
 
         Self::migrate(pool.get().await.map_err(|e| Error::Database(Box::new(e)))?).await?;
 
-        Ok(Self {
-            pool,
-            dispatch_pool,
-        })
+        Ok(Self { pool })
     }
 
     async fn begin_transaction_from_pool(
@@ -149,37 +130,6 @@ where
 
         Ok(true)
     }
-
-    /// Attempt quote advisory locks without waiting, in stable key order.
-    async fn try_take_quote_locks(
-        &mut self,
-        quote_ids: &[QuoteId],
-    ) -> Result<database::mint::QuoteLockAttempt, Error> {
-        if quote_ids.is_empty() || RM::Connection::name() != "postgres" {
-            return Ok(database::mint::QuoteLockAttempt::Unsupported);
-        }
-
-        // Rows that fail to lock are returned; rows that succeed are locked
-        // until the transaction ends. The caller rolls back on `Contended`,
-        // releasing any partial acquisitions.
-        let missed = query(
-            r#"
-            SELECT key FROM (
-                SELECT key FROM unnest(ARRAY[:keys]::TEXT[]) AS t(key) ORDER BY key
-            ) sorted
-            WHERE NOT pg_try_advisory_xact_lock(hashtextextended(key, 0))
-            "#,
-        )?
-        .bind_vec("keys", quote_lock_keys(quote_ids))?
-        .fetch_all(&self.inner)
-        .await?;
-
-        Ok(if missed.is_empty() {
-            database::mint::QuoteLockAttempt::Acquired
-        } else {
-            database::mint::QuoteLockAttempt::Contended
-        })
-    }
 }
 
 #[async_trait]
@@ -189,13 +139,6 @@ where
 {
     async fn lock_quotes(&mut self, quote_ids: &[QuoteId]) -> Result<bool, Error> {
         self.take_quote_locks(quote_ids).await
-    }
-
-    async fn try_lock_quotes(
-        &mut self,
-        quote_ids: &[QuoteId],
-    ) -> Result<database::mint::QuoteLockAttempt, Error> {
-        self.try_take_quote_locks(quote_ids).await
     }
 }
 
@@ -243,13 +186,6 @@ where
         &self,
     ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {
         Self::begin_transaction_from_pool(&self.pool).await
-    }
-
-    async fn begin_dispatch_transaction(
-        &self,
-    ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {
-        let pool = self.dispatch_pool.as_ref().unwrap_or(&self.pool);
-        Self::begin_transaction_from_pool(pool).await
     }
 }
 
