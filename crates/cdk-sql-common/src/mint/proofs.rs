@@ -505,9 +505,9 @@ where
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
-        let mut current_states = get_current_states(&*conn, ys, false).await?;
+        let current_states = get_current_states(&*conn, ys, false).await?;
 
-        Ok(ys.iter().map(|y| current_states.remove(y)).collect())
+        Ok(ys.iter().map(|y| current_states.get(y).copied()).collect())
     }
 
     async fn get_proofs_by_keyset_id(
