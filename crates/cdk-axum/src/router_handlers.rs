@@ -123,6 +123,13 @@ pub(crate) async fn get_keysets(
     Ok(Json(state.mint.keysets()))
 }
 
+/// Largest websocket frame the mint will buffer.
+///
+/// Comfortably above the biggest legitimate request (a subscribe carrying the
+/// maximum number of filters) while keeping an unauthenticated connection from
+/// making the mint hold megabytes on its behalf.
+const MAX_WS_MESSAGE_SIZE: usize = 1024 * 1024;
+
 /// Upgrade a websocket connection, authenticating it when the endpoint is
 /// protected.
 ///
@@ -167,6 +174,10 @@ pub(crate) async fn ws_handler(
             true
         }
     };
+
+    let ws = ws
+        .max_message_size(MAX_WS_MESSAGE_SIZE)
+        .max_frame_size(MAX_WS_MESSAGE_SIZE);
 
     Ok(ws.on_upgrade(move |ws| main_websocket(ws, state, authenticated)))
 }

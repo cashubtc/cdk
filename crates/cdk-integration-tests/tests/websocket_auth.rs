@@ -538,3 +538,67 @@ async fn a_mint_that_never_answers_authenticate_does_not_pin_the_wallet() {
     .await
     .expect("wallet stayed blocked waiting for an authenticate response");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn too_many_failed_authenticates_close_the_connection() {
+    // Mirrors `MAX_FAILED_AUTH_ATTEMPTS` in `cdk_axum::ws`.
+    const MAX_FAILED_AUTH_ATTEMPTS: usize = 3;
+
+    let mint = Arc::new(build_ws_protected_mint(AuthRequired::Blind).await);
+    let mint_url = serve(mint.clone()).await;
+
+    let ws_url = mint_url
+        .to_string()
+        .replacen("http://", "ws://", 1)
+        .trim_end_matches('/')
+        .to_string()
+        + "/v1/ws";
+
+    let (mut socket, _) = connect_async(&ws_url).await.expect("upgrade");
+
+    // Each rejected token costs the mint a signature verification on a
+    // connection nobody has paid for, so the mint must stop taking them well
+    // before its authentication timeout expires.
+    for id in 0..MAX_FAILED_AUTH_ATTEMPTS {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "authenticate",
+            "params": {"token": "not-a-valid-bat"},
+            "id": id,
+        });
+        socket
+            .send(Message::Text(request.to_string().into()))
+            .await
+            .expect("send authenticate");
+
+        let response = timeout(Duration::from_secs(5), socket.next())
+            .await
+            .expect("mint answers each attempt")
+            .expect("stream open")
+            .expect("no transport error");
+        let Message::Text(text) = response else {
+            panic!("expected a text response, got: {response:?}");
+        };
+        let response: serde_json::Value = serde_json::from_str(&text).expect("json response");
+        assert_eq!(
+            response["error"]["code"],
+            ErrorCode::BlindAuthFailed.to_code()
+        );
+    }
+
+    // The mint closes on its own, well inside its 30 second auth timeout.
+    let closed = timeout(Duration::from_secs(5), async {
+        while let Some(message) = socket.next().await {
+            match message {
+                Ok(Message::Close(_)) | Err(_) => return,
+                Ok(_) => continue,
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        closed.is_ok(),
+        "the mint must close a connection that keeps failing to authenticate"
+    );
+}

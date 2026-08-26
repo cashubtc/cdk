@@ -29,6 +29,15 @@ pub(crate) const MAX_FILTERS_PER_SUBSCRIPTION: usize = 1000;
 /// authenticating before the mint closes it (NUT-22 SHOULD).
 const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How many rejected `authenticate` commands a connection may make before the
+/// mint closes it.
+///
+/// Verifying a blind auth token costs an elliptic curve verification, and until
+/// the connection authenticates nobody has paid for it. Without a cap a single
+/// socket could burn that work in a loop for the whole [`AUTH_TIMEOUT`] window.
+/// The allowance is above one so a client that races a stale token can retry.
+const MAX_FAILED_AUTH_ATTEMPTS: usize = 3;
+
 fn blind_auth_required() -> WsError {
     WsError::ServerError(
         ErrorCode::BlindAuthRequired.to_code() as i32,
@@ -66,6 +75,19 @@ async fn process(
 
 pub use error::WsError;
 
+/// Send a policy close frame. Best effort: the connection is dropped either way.
+async fn close(socket: &mut WebSocket, reason: &'static str) {
+    if let Err(err) = socket
+        .send(Message::Close(Some(CloseFrame {
+            code: axum::extract::ws::close_code::POLICY,
+            reason: reason.into(),
+        })))
+        .await
+    {
+        tracing::debug!("Could not send close frame: {}", err);
+    }
+}
+
 pub struct WsContext {
     state: MintState,
     subscriptions: HashMap<Arc<SubId>, tokio::task::JoinHandle<()>>,
@@ -74,6 +96,9 @@ pub struct WsContext {
     /// endpoints and header-authenticated connections, or by a successful
     /// in-band `authenticate` command.
     authenticated: bool,
+    /// Rejected in-band `authenticate` commands so far, bounded by
+    /// [`MAX_FAILED_AUTH_ATTEMPTS`].
+    failed_auth_attempts: usize,
 }
 
 impl Drop for WsContext {
@@ -97,6 +122,7 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState, authenticat
         subscriptions: HashMap::new(),
         publisher,
         authenticated,
+        failed_auth_attempts: 0,
     };
 
     let auth_timeout = tokio::time::sleep(AUTH_TIMEOUT);
@@ -109,13 +135,7 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState, authenticat
             // authenticated connections are never closed by it.
             () = &mut auth_timeout, if !context.authenticated => {
                 tracing::info!("Closing websocket: no authentication within timeout");
-                // Best effort: the connection is dropped either way.
-                if let Err(err) = socket.send(Message::Close(Some(CloseFrame {
-                    code: axum::extract::ws::close_code::POLICY,
-                    reason: "authentication required".into(),
-                }))).await {
-                    tracing::debug!("Could not send close frame: {}", err);
-                }
+                close(&mut socket, "authentication required").await;
                 break;
             }
             Some((sub_id, payload)) = subscriber.recv() => {
@@ -196,6 +216,12 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState, authenticat
                             .await
                         {
                             tracing::error!("Could not send request: {}", err);
+                            break;
+                        }
+
+                        if context.failed_auth_attempts >= MAX_FAILED_AUTH_ATTEMPTS {
+                            tracing::info!("Closing websocket: too many failed authentications");
+                            close(&mut socket, "authentication failed").await;
                             break;
                         }
                     }
@@ -308,6 +334,7 @@ mod tests {
             subscriptions: HashMap::new(),
             publisher,
             authenticated,
+            failed_auth_attempts: 0,
         }
     }
 
@@ -530,6 +557,55 @@ mod tests {
             .expect("process serializes");
 
         assert_eq!(response["result"]["status"], "OK");
+    }
+
+    #[tokio::test]
+    async fn failed_authenticate_attempts_are_counted_up_to_the_cap() {
+        let mint = create_test_mint().await;
+        let mut context = make_context_with_auth(mint, false);
+
+        for expected in 1..=MAX_FAILED_AUTH_ATTEMPTS {
+            let response = process(
+                &mut context,
+                WsRequest {
+                    jsonrpc: "2.0".to_string(),
+                    method: WsMethodRequest::Authenticate(cdk::ws::WsAuthenticateRequest {
+                        token: "not-a-valid-bat".to_string(),
+                    }),
+                    id: expected,
+                },
+            )
+            .await
+            .expect("process serializes");
+
+            assert_eq!(response["error"]["code"], 31002);
+            assert_eq!(context.failed_auth_attempts, expected);
+        }
+
+        assert!(
+            context.failed_auth_attempts >= MAX_FAILED_AUTH_ATTEMPTS,
+            "the connection must be closable once the cap is reached"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeat_authenticate_on_an_authenticated_connection_is_not_a_failure() {
+        let mint = create_test_mint().await;
+        let mut context = make_context_with_auth(mint, true);
+
+        authenticate::handle(
+            &mut context,
+            cdk::ws::WsAuthenticateRequest {
+                token: "not-a-valid-bat".to_string(),
+            },
+        )
+        .await
+        .expect("no-op");
+
+        assert_eq!(
+            context.failed_auth_attempts, 0,
+            "an already-authenticated connection must not accrue failures"
+        );
     }
 
     #[tokio::test]
