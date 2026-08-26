@@ -207,7 +207,7 @@ impl Wallet {
     }
 
     /// Create a mint quote for the given payment method and amount
-    #[instrument(skip(self, method))]
+    #[instrument(skip(self, method, extra))]
     pub async fn mint_quote(
         &self,
         method: PaymentMethod,

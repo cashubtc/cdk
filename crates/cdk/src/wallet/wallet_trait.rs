@@ -117,7 +117,7 @@ impl WalletTrait for super::Wallet {
         self.get_keyset_fees_and_amounts_by_id(keyset_id).await
     }
 
-    #[instrument(skip(self, method))]
+    #[instrument(skip(self, method, extra))]
     async fn mint_quote(
         &self,
         method: PaymentMethod,
@@ -480,9 +480,11 @@ impl WalletTrait for super::Wallet {
 mod tests {
     use std::sync::Arc;
 
+    use cdk_common::nut00::KnownMethod;
     use cdk_common::rate_limit::RateLimitConfig;
 
     use super::*;
+    use crate::wallet::test_utils::{MockMintConnector, TraceWriter};
     use crate::wallet::WalletBuilder;
 
     async fn test_wallet() -> super::super::Wallet {
@@ -512,5 +514,40 @@ mod tests {
     async fn flushing_an_untouched_wallet_returns() {
         let wallet = test_wallet().await;
         WalletTrait::flush_rate_limits(&wallet).await;
+    }
+
+    #[tokio::test]
+    async fn custom_payment_extra_is_omitted_from_mint_quote_spans() {
+        let extra = "private-custom-payment-extra";
+        let description = "public-description-marker";
+        let store = Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap());
+        let connector = Arc::new(MockMintConnector::new());
+        connector.push_post_mint_quote_response(Err(Error::UnsupportedPaymentMethod));
+        let wallet = WalletBuilder::default()
+            .mint_url(MintUrl::from_str("https://mint.example.com").unwrap())
+            .unit(CurrencyUnit::Sat)
+            .localstore(store)
+            .seed([0u8; 64])
+            .shared_client(connector)
+            .build()
+            .unwrap();
+        let capture = TraceWriter::default();
+        let subscriber = capture.subscriber();
+        let guard = tracing::subscriber::set_default(subscriber);
+
+        let _ = WalletTrait::mint_quote(
+            &wallet,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            Some(Amount::from(7)),
+            Some(description.to_string()),
+            Some(extra.to_string()),
+        )
+        .await;
+
+        drop(guard);
+        let trace = capture.output();
+        assert!(trace.contains("mint_quote"));
+        assert!(trace.contains(description));
+        assert!(!trace.contains(extra));
     }
 }

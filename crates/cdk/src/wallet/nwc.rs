@@ -428,7 +428,7 @@ impl cdk_nostr::nwc::NwcRequestHandler for WalletNwcHandler {
         })
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, request))]
     async fn make_invoice(
         &self,
         request: MakeInvoiceRequest,
@@ -474,7 +474,7 @@ impl cdk_nostr::nwc::NwcRequestHandler for WalletNwcHandler {
         })
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, request))]
     async fn pay_invoice(
         &self,
         request: PayInvoiceRequest,
@@ -540,7 +540,7 @@ impl cdk_nostr::nwc::NwcRequestHandler for WalletNwcHandler {
         })
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, request))]
     async fn lookup_invoice(
         &self,
         request: LookupInvoiceRequest,
@@ -627,7 +627,7 @@ impl cdk_nostr::nwc::NwcRequestHandler for WalletNwcHandler {
         Err(nip47_err(ErrorCode::NotFound, "invoice not found"))
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, request))]
     async fn list_transactions(
         &self,
         request: ListTransactionsRequest,
@@ -769,9 +769,89 @@ mod tests {
 
     use super::*;
     use crate::nuts::{MintInfo, MintMethodSettings, NUT04Settings, Nuts};
-    use crate::wallet::test_utils::MockMintConnector;
+    use crate::wallet::test_utils::{MockMintConnector, TraceWriter};
 
     const TEST_BOLT11: &str = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq";
+
+    #[tokio::test]
+    async fn request_arguments_are_omitted_from_nwc_spans() {
+        const MAKE_MARKER: &str = "private-make-invoice-description-hash";
+        const PAY_MARKER: &str = "private-pay-invoice";
+        const LOOKUP_MARKER: &str = "private-lookup-invoice";
+        const MAKE_AMOUNT: u64 = 9_123_451;
+        const LIST_LIMIT: u64 = 7_654_321;
+
+        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            localstore,
+            [0x24; 64],
+            None,
+        )
+        .expect("wallet");
+        let handler = WalletNwcHandler::new(Arc::new(wallet), None);
+        let capture = TraceWriter::default();
+        let subscriber = capture.subscriber();
+        let guard = tracing::subscriber::set_default(subscriber);
+
+        let _ = cdk_nostr::nwc::NwcRequestHandler::make_invoice(
+            &handler,
+            MakeInvoiceRequest {
+                amount: MAKE_AMOUNT,
+                description: None,
+                description_hash: Some(MAKE_MARKER.to_string()),
+                expiry: None,
+            },
+        )
+        .await;
+        let _ = cdk_nostr::nwc::NwcRequestHandler::pay_invoice(
+            &handler,
+            PayInvoiceRequest {
+                id: None,
+                invoice: PAY_MARKER.to_string(),
+                amount: None,
+            },
+        )
+        .await;
+        let _ = cdk_nostr::nwc::NwcRequestHandler::lookup_invoice(
+            &handler,
+            LookupInvoiceRequest {
+                payment_hash: None,
+                invoice: Some(LOOKUP_MARKER.to_string()),
+            },
+        )
+        .await;
+        let _ = cdk_nostr::nwc::NwcRequestHandler::list_transactions(
+            &handler,
+            ListTransactionsRequest {
+                limit: Some(LIST_LIMIT),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        drop(guard);
+        let trace = capture.output();
+
+        for span_name in [
+            "make_invoice",
+            "pay_invoice",
+            "lookup_invoice",
+            "list_transactions",
+        ] {
+            assert!(trace.contains(span_name));
+        }
+        for private_value in [
+            MAKE_MARKER.to_string(),
+            PAY_MARKER.to_string(),
+            LOOKUP_MARKER.to_string(),
+            MAKE_AMOUNT.to_string(),
+            LIST_LIMIT.to_string(),
+        ] {
+            assert!(!trace.contains(&private_value));
+        }
+    }
 
     #[test]
     fn sat_amounts_convert_to_and_from_msat() {

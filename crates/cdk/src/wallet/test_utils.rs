@@ -3,6 +3,7 @@
 #![allow(clippy::missing_panics_doc)]
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::{self, Write};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
@@ -20,6 +21,8 @@ use cdk_common::{
     MeltQuoteResponse, MeltRequest, MintQuoteRequest, MintQuoteResponse, MintRequest, MintResponse,
     RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
+use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::fmt::MakeWriter;
 
 use crate::nuts::{
     nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, BlindSignature, BlindedMessage,
@@ -29,6 +32,47 @@ use crate::nuts::{
 use crate::secret::Secret;
 use crate::wallet::{MintConnector, Wallet};
 use crate::Error;
+
+/// In-memory writer for asserting on tracing output.
+#[derive(Debug, Clone, Default)]
+pub struct TraceWriter {
+    buffer: Arc<Mutex<Vec<u8>>>,
+}
+
+impl TraceWriter {
+    /// Build a subscriber that records span creation and events.
+    pub fn subscriber(&self) -> impl tracing::Subscriber + Send + Sync {
+        tracing_subscriber::fmt()
+            .with_writer(self.clone())
+            .with_span_events(FmtSpan::NEW)
+            .without_time()
+            .finish()
+    }
+
+    /// Return all tracing output captured so far.
+    pub fn output(&self) -> String {
+        String::from_utf8(self.buffer.lock().unwrap().clone()).unwrap()
+    }
+}
+
+impl Write for TraceWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.buffer.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for TraceWriter {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
 
 /// Create test database
 pub async fn create_test_db() -> Arc<dyn WalletDatabase<cdk_common::database::Error> + Send + Sync>
