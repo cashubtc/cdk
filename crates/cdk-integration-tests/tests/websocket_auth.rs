@@ -11,7 +11,8 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use axum::extract::Request;
+use axum::extract::ws::WebSocketUpgrade;
+use axum::extract::{FromRequestParts, Request};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
@@ -34,10 +35,11 @@ use cdk::wallet::{WalletBuilder, WalletSubscription};
 use cdk_common::wallet::ProofInfo;
 use cdk_fake_wallet::FakeWallet;
 use cdk_sqlite::wallet::memory;
+use futures::{SinkExt, StreamExt};
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::http::StatusCode;
-use tokio_tungstenite::tungstenite::Error as WsHandshakeError;
+use tokio_tungstenite::tungstenite::{Error as WsHandshakeError, Message};
 
 /// Build an auth-enabled mint whose only protected endpoint is `/v1/ws`.
 /// `/v1/auth/blind/mint` is left unprotected (no clear auth), so no OIDC/CAT is
@@ -170,6 +172,31 @@ async fn serve_header_only_blind_auth(mint: Arc<Mint>) -> MintUrl {
         .await
         .layer(middleware::from_fn(reject_header_less_ws));
     serve_router(router).await
+}
+
+/// Serve a mint that accepts the websocket upgrade and then never answers.
+///
+/// Models a hostile mint, or a MITM on a plaintext `ws://` connection, that
+/// keeps the wallet's consumer blocked instead of refusing it outright.
+async fn serve_silent_ws(mint: Arc<Mint>) -> MintUrl {
+    let router = mint_router(mint)
+        .await
+        .layer(middleware::from_fn(swallow_ws));
+    serve_router(router).await
+}
+
+async fn swallow_ws(request: Request, next: Next) -> Response {
+    if !request.uri().path().ends_with("/v1/ws") {
+        return next.run(request).await;
+    }
+
+    let (mut parts, _body) = request.into_parts();
+    match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
+        Ok(upgrade) => {
+            upgrade.on_upgrade(|mut socket| async move { while socket.recv().await.is_some() {} })
+        }
+        Err(rejection) => rejection.into_response(),
+    }
 }
 
 async fn reject_header_less_ws(request: Request, next: Next) -> Response {
@@ -436,4 +463,78 @@ async fn rejected_blind_auth_tokens_stop_draining_the_wallet() {
         expected,
         "a terminal websocket authentication failure must stop spending tokens"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mint_that_never_answers_authenticate_does_not_pin_the_wallet() {
+    // Mirrors `MAX_CONSECUTIVE_AUTH_FAILURES` in `cdk::wallet::subscription`.
+    const MAX_AUTH_ATTEMPTS: usize = 3;
+    const SEEDED_TOKENS: usize = 5;
+
+    let mint = Arc::new(build_ws_protected_mint(AuthRequired::Blind).await);
+    let mint_url = serve_silent_ws(mint.clone()).await;
+
+    let db = Arc::new(memory::empty().await.expect("wallet db"));
+    let wallet = WalletBuilder::new()
+        .mint_url(mint_url.clone())
+        .unit(CurrencyUnit::Sat)
+        .localstore(db.clone())
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .build()
+        .expect("wallet");
+
+    wallet
+        .fetch_mint_info()
+        .await
+        .expect("mint info")
+        .expect("mint info present");
+
+    let mut bats = Vec::new();
+    for _ in 0..SEEDED_TOKENS {
+        let bat = mint_bat(&mint).await;
+        bats.push(
+            ProofInfo::new(bat, mint_url.clone(), State::Unspent, CurrencyUnit::Auth)
+                .expect("proof info"),
+        );
+    }
+    db.update_proofs(bats, vec![]).await.expect("seed bats");
+
+    let quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
+        .await
+        .expect("mint quote");
+
+    let _subscription = wallet
+        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
+            .id
+            .clone()]))
+        .await
+        .expect("subscribe");
+
+    let remaining = || {
+        let db = db.clone();
+        let mint_url = mint_url.clone();
+        async move {
+            db.get_proofs(
+                Some(mint_url),
+                Some(CurrencyUnit::Auth),
+                Some(vec![State::Unspent]),
+                None,
+            )
+            .await
+            .expect("auth proofs")
+            .len()
+        }
+    };
+
+    // Without a client-side timeout the very first authenticate blocks forever,
+    // the consumer never retries, and exactly one token is spent.
+    let expected = SEEDED_TOKENS - MAX_AUTH_ATTEMPTS;
+    timeout(Duration::from_secs(180), async {
+        while remaining().await > expected {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("wallet stayed blocked waiting for an authenticate response");
 }

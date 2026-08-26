@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut17::ws::{
@@ -521,6 +522,26 @@ impl Transport for SubscriptionClient {
 /// the websocket stream is abandoned for HTTP polling.
 const MAX_CONSECUTIVE_AUTH_FAILURES: usize = 3;
 
+/// How long to wait for the mint's answer to the `authenticate` command.
+///
+/// Answering costs the mint one signature verification, so a peer that accepts
+/// the upgrade and then goes quiet is not going to answer at all. Generous for
+/// a single round trip, short enough that a hostile or broken mint cannot pin
+/// the consumer.
+const AUTHENTICATE_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn sleep(duration: Duration) {
+    tokio::time::sleep(duration).await;
+}
+
+/// `tokio::time` has no timer driver under wasm, so fall back to the browser's
+/// `setTimeout` via gloo.
+#[cfg(target_arch = "wasm32")]
+async fn sleep(duration: Duration) {
+    gloo_timers::future::TimeoutFuture::new(duration.as_millis() as u32).await;
+}
+
 fn new_subscription_id() -> String {
     Uuid::now_v7().to_string()
 }
@@ -632,14 +653,34 @@ async fn ensure_authenticated(
     Ok(())
 }
 
-/// Read until the mint answers the `authenticate` command.
+/// Wait for the mint's answer to the `authenticate` command, but not forever.
 ///
 /// A rejected token must not be discovered later, as a 31001 on the following
 /// subscribe, because the BAT was already spent and the reconnect would spend
 /// another one. Nothing else can be in flight here: this only runs before the
 /// first subscribe of a connection, so the mint has no subscription to notify
 /// us about.
+///
+/// A mint that accepts the upgrade and then never answers, or floods
+/// undecodable messages, would otherwise block this consumer forever and starve
+/// every subscription to that mint, including the HTTP polling fallback. The
+/// timeout counts as an auth failure so the bounded-failure logic can give up
+/// on the websocket and degrade to polling.
 async fn await_authenticate_response(
+    client: &SubscriptionClient,
+    receiver: &mut WsReceiver,
+    pending_requests: &mut HashMap<usize, PendingRequest>,
+    request_id: usize,
+) -> Result<(), PubsubError> {
+    tokio::select! {
+        result = read_authenticate_response(client, receiver, pending_requests, request_id) => result,
+        () = sleep(AUTHENTICATE_TIMEOUT) => Err(client.note_auth_failure(
+            "timed out waiting for the authenticate response".to_string(),
+        )),
+    }
+}
+
+async fn read_authenticate_response(
     client: &SubscriptionClient,
     receiver: &mut WsReceiver,
     pending_requests: &mut HashMap<usize, PendingRequest>,
