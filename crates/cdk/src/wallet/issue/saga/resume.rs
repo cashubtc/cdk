@@ -311,11 +311,13 @@ impl Wallet {
                 }
                 None => continue,
             };
-            let amount = quote_amounts.get(index).copied().unwrap_or_else(|| {
-                quote_proofs
-                    .iter()
-                    .fold(Amount::ZERO, |sum, proof| sum + proof.proof.amount)
-            });
+            let amount = match quote_amounts.get(index).copied() {
+                Some(amount) => amount,
+                None => quote_proofs.iter().try_fold(Amount::ZERO, |sum, proof| {
+                    sum.checked_add(proof.proof.amount)
+                        .ok_or(Error::AmountOverflow)
+                })?,
+            };
             let mut metadata = HashMap::new();
             if is_batch {
                 metadata.insert("batch_quote_id".to_string(), quote_id.clone());
@@ -772,6 +774,44 @@ mod tests {
             .unwrap()
             .expect("transaction for quote C");
         assert_eq!(tx_c.ys, vec![expected_ys[2]]);
+    }
+
+    #[tokio::test]
+    async fn test_recovered_batch_transaction_rejects_proof_amount_overflow() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+        let quote_a = test_mint_quote(mint_url.clone());
+        let quote_b = test_mint_quote(mint_url.clone());
+        db.add_mint_quote(quote_a.clone()).await.unwrap();
+        db.add_mint_quote(quote_b.clone()).await.unwrap();
+
+        let proof_infos = vec![
+            crate::wallet::test_utils::test_proof_info(
+                test_keyset_id(),
+                u64::MAX,
+                mint_url.clone(),
+            ),
+            crate::wallet::test_utils::test_proof_info(test_keyset_id(), 1, mint_url),
+        ];
+        let mut data = MintOperationData::new_batch(
+            vec![quote_a.id, quote_b.id],
+            Amount::ZERO,
+            None,
+            None,
+            None,
+        );
+        data.batch_output_counts = Some(vec![0, 2]);
+
+        let wallet = create_test_wallet_with_mock(db, Arc::new(MockMintConnector::new())).await;
+        let result = wallet
+            .record_recovered_issue_transaction(&saga_id, &data, &proof_infos)
+            .await;
+
+        assert!(
+            matches!(result, Err(crate::Error::AmountOverflow)),
+            "expected amount overflow, got {result:?}"
+        );
     }
 
     #[tokio::test]

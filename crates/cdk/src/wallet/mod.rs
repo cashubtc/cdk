@@ -657,7 +657,11 @@ impl Wallet {
 
         for amount in amounts_needed_refill {
             let values_sum = Amount::try_sum(values.clone().into_iter())?;
-            if values_sum + amount <= change_amount {
+            if values_sum
+                .checked_add(amount)
+                .ok_or(Error::AmountOverflow)?
+                <= change_amount
+            {
                 values.push(amount);
             }
         }
@@ -805,14 +809,23 @@ impl Wallet {
                         |(mut proofs, mut restored_result), proof_info| {
                             match proof_info.state {
                                 State::Spent => {
-                                    restored_result.spent += proof_info.proof.amount;
+                                    restored_result.spent = restored_result
+                                        .spent
+                                        .checked_add(proof_info.proof.amount)
+                                        .ok_or(Error::AmountOverflow)?;
                                 }
-                                State::Unspent =>  {
-                                    restored_result.unspent += proof_info.proof.amount;
+                                State::Unspent => {
+                                    restored_result.unspent = restored_result
+                                        .unspent
+                                        .checked_add(proof_info.proof.amount)
+                                        .ok_or(Error::AmountOverflow)?;
                                     proofs.push(proof_info);
                                 }
                                 State::Pending => {
-                                    restored_result.pending += proof_info.proof.amount;
+                                    restored_result.pending = restored_result
+                                        .pending
+                                        .checked_add(proof_info.proof.amount)
+                                        .ok_or(Error::AmountOverflow)?;
                                     proofs.push(proof_info);
                                 }
                                 _ => {
@@ -1143,6 +1156,7 @@ impl Drop for Wallet {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::Mutex;
 
     use async_trait::async_trait;
@@ -1614,6 +1628,105 @@ mod tests {
         assert!(wallet.auth_wallet.read().await.is_some());
         assert_eq!(*keysets_calls.lock().expect("lock"), 1);
         assert_eq!(*keyset_calls.lock().expect("lock"), 1);
+    }
+
+    #[tokio::test]
+    async fn determine_split_target_values_rejects_amount_overflow() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let mut wallet = create_test_wallet_with_mock(db, mock_client).await;
+        wallet.set_target_proof_count(1);
+        let fee_and_amounts = FeeAndAmounts::from((0, vec![u64::MAX - 1, u64::MAX]));
+
+        let result = wallet
+            .determine_split_target_values(Amount::from(u64::MAX), &fee_and_amounts)
+            .await;
+
+        assert!(
+            matches!(result, Err(Error::AmountOverflow)),
+            "expected amount overflow, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_rejects_unspent_amount_overflow() {
+        use crate::nuts::{CheckStateResponse, Keys, ProofState, RestoreResponse};
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, test_mint_info, MockMintConnector,
+        };
+
+        let seed = [7; 64];
+        let max_key = SecretKey::from_slice(&[1; 32]).expect("valid secret key");
+        let one_key = SecretKey::from_slice(&[2; 32]).expect("valid secret key");
+        let keys = Keys::new(BTreeMap::from([
+            (Amount::from(1), one_key.public_key()),
+            (Amount::from(u64::MAX), max_key.public_key()),
+        ]));
+        let keyset_id = Id::v1_from_keys(&keys);
+        let keyset = KeySet {
+            id: keyset_id,
+            unit: CurrencyUnit::Sat,
+            active: Some(true),
+            keys,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+        let premint_secrets = PreMintSecrets::restore_batch(keyset_id, &seed, 0, 2)
+            .expect("restore secrets should derive");
+        let outputs = premint_secrets.blinded_messages();
+        let signatures = vec![
+            BlindSignature {
+                amount: Amount::from(u64::MAX),
+                keyset_id,
+                c: crate::dhke::sign_message(&max_key, &outputs[0].blinded_secret)
+                    .expect("blind signature should be valid"),
+                dleq: None,
+            },
+            BlindSignature {
+                amount: Amount::from(1),
+                keyset_id,
+                c: crate::dhke::sign_message(&one_key, &outputs[1].blinded_secret)
+                    .expect("blind signature should be valid"),
+                dleq: None,
+            },
+        ];
+        let states = premint_secrets
+            .secrets
+            .iter()
+            .map(|premint| {
+                ProofState::from((
+                    crate::dhke::hash_to_curve(premint.secret.as_bytes())
+                        .expect("proof Y should derive"),
+                    State::Unspent,
+                ))
+            })
+            .collect();
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_active_keyset(keyset);
+        let mut mint_info = test_mint_info();
+        mint_info.time = None;
+        mock_client.set_mint_info_response(Ok(mint_info));
+        mock_client._set_restore_response(Ok(RestoreResponse {
+            outputs,
+            signatures,
+        }));
+        mock_client.set_check_state_response(Ok(CheckStateResponse { states }));
+        let wallet = create_test_wallet_with_mock_seed(db, mock_client, seed).await;
+
+        let result = wallet
+            .restore_with_opts(NUT13Options::new(2, 1).expect("valid restore options"))
+            .await;
+
+        assert!(
+            matches!(result, Err(Error::AmountOverflow)),
+            "expected amount overflow, got {result:?}"
+        );
     }
 
     #[tokio::test]
