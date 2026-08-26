@@ -27,8 +27,32 @@ pub struct RotateKeyArguments {
     pub input_fee_ppk: u64,
     /// KeySet Version
     pub keyset_id_type: KeySetVersion,
-    /// FinalExpiry
-    pub final_expiry: Option<u64>,
+    /// Final expiry, which must be in the future when set
+    pub final_expiry: Option<KeysetExpiry>,
+}
+
+/// A validated keyset expiry timestamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeysetExpiry(u64);
+
+impl KeysetExpiry {
+    /// Create a future keyset expiry.
+    pub fn new(expiry: u64) -> Result<Self, Error> {
+        let current_time = cdk_common::util::unix_time();
+
+        match expiry <= current_time {
+            true => Err(Error::InvalidKeysetExpiry {
+                expiry,
+                current_time,
+            }),
+            false => Ok(Self(expiry)),
+        }
+    }
+
+    /// Return the unix timestamp.
+    pub fn to_u64(self) -> u64 {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone)]

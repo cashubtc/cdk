@@ -288,6 +288,16 @@ pub enum Error {
     /// Keyset has expired
     #[error("Keyset has expired")]
     ExpiredKeyset,
+    /// Keyset expiry is not in the future
+    #[error(
+        "Invalid keyset expiry: `{expiry}` must be greater than current time `{current_time}`"
+    )]
+    InvalidKeysetExpiry {
+        /// Requested keyset expiry
+        expiry: u64,
+        /// Current unix time when the expiry was validated
+        current_time: u64,
+    },
     /// Transaction unbalanced
     #[error("Inputs: `{0}`, Outputs: `{1}`, Expected Fee: `{2}`")]
     TransactionUnbalanced(u64, u64, u64),
@@ -729,6 +739,7 @@ impl Error {
             | Self::UnknownKeySet
             | Self::InactiveKeyset
             | Self::ExpiredKeyset
+            | Self::InvalidKeysetExpiry { .. }
             | Self::TransactionUnbalanced(_, _, _)
             | Self::DuplicateInputs
             | Self::DuplicateOutputs

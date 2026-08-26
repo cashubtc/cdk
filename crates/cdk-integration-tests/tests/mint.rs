@@ -297,7 +297,7 @@ async fn test_concurrent_duplicate_payment_handling() {
     );
 }
 
-/// Test that rotating a keyset with a final_expiry sets the expiry on the old keyset
+/// Test that rotating a keyset with a final_expiry sets the expiry on the new keyset
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rotate_keyset_with_expiry() {
     let mnemonic = Mnemonic::generate(12).unwrap();
@@ -349,17 +349,19 @@ async fn test_rotate_keyset_with_expiry() {
     let initial_keyset = mint.get_keyset_info(active_id).expect("There is keyset");
     assert!(initial_keyset.active);
 
-    // Rotate with a past expiry timestamp
-    let past_expiry = cdk::util::unix_time().saturating_sub(3600);
-    mint.rotate_keyset(
-        CurrencyUnit::Sat,
-        cdk_integration_tests::standard_keyset_amounts(32),
-        0,
-        true,
-        Some(past_expiry),
-    )
-    .await
-    .unwrap();
+    // Rotate with a future expiry timestamp
+    let future_expiry = unix_time() + 1_000_000;
+    let rotated_keyset = mint
+        .rotate_keyset(
+            CurrencyUnit::Sat,
+            cdk_integration_tests::standard_keyset_amounts(32),
+            0,
+            true,
+            Some(future_expiry),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rotated_keyset.final_expiry, Some(future_expiry));
 
     // The old keyset should now be inactive
     let old_keyset = mint
@@ -372,6 +374,7 @@ async fn test_rotate_keyset_with_expiry() {
     let new_active_id = active
         .get(&CurrencyUnit::Sat)
         .expect("There is an active keyset");
+    assert_eq!(*new_active_id, rotated_keyset.id);
     assert_ne!(
         *new_active_id, initial_keyset.id,
         "New active keyset should differ from old"
