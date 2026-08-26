@@ -546,6 +546,9 @@ pub enum Error {
     /// NUT05 error
     #[error(transparent)]
     NUT05(#[from] crate::nuts::nut05::Error),
+    /// NUT06 Error
+    #[error(transparent)]
+    NUT06(#[from] crate::nuts::nut06::Error),
     /// NUT10 Error
     #[error(transparent)]
     NUT10(crate::nuts::nut10::Error),
@@ -829,6 +832,7 @@ impl Error {
             Self::NUT03(_) => true,
             Self::NUT04(_) => true,
             Self::NUT05(_) => true,
+            Self::NUT06(_) => true,
             Self::NUT11(_) => true,
             Self::NUT12(_) => true,
             #[cfg(feature = "wallet")]

@@ -7,9 +7,8 @@
 use std::sync::Arc;
 
 use cdk_signatory::db_signatory::DbSignatory;
-use cdk_signatory::identity;
 use cdk_signatory::signatory::Signatory;
-use cdk_signatory::{start_grpc_server_with_incoming, SignatoryRpcClient};
+use cdk_signatory::{identity, start_grpc_server_with_incoming, SignatoryRpcClient};
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 
