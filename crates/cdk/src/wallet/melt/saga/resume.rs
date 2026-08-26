@@ -18,6 +18,7 @@ use crate::wallet::melt::saga::compensation::ReleaseMeltQuote;
 use crate::wallet::melt::MeltQuoteStatusResponse;
 use crate::wallet::recovery::OutputRecoveryResult;
 use crate::wallet::saga::{CompensatingAction, RevertProofReservation};
+use crate::wallet::util::escape_log_value;
 use crate::{Error, Wallet};
 
 impl Wallet {
@@ -196,7 +197,7 @@ impl Wallet {
                 tracing::warn!(
                     "Melt saga {} - can't check quote state ({}), skipping",
                     saga_id,
-                    e
+                    escape_log_value(&e)
                 );
                 Ok(None)
             }
@@ -276,7 +277,7 @@ impl Wallet {
                     tracing::warn!(
                         "Failed to release melt quote for saga {} after recovery finalization: {}",
                         saga_id,
-                        e
+                        escape_log_value(&e)
                     );
                 }
 
@@ -347,7 +348,7 @@ impl Wallet {
                                 "Melt saga {} - failed to recover change: {}. \
                                  Skipping final transaction recording until change can be recovered.",
                                 saga_id,
-                                e
+                                escape_log_value(&e)
                             );
                             return Err(e);
                         }
@@ -424,7 +425,7 @@ impl Wallet {
             tracing::warn!(
                 "Failed to release melt quote for saga {} after recovery finalization: {}",
                 saga_id,
-                e
+                escape_log_value(&e)
             );
         }
 
@@ -455,7 +456,7 @@ impl Wallet {
             tracing::warn!(
                 "Failed to release melt quote for saga {}: {}. Continuing with saga cleanup.",
                 saga_id,
-                e
+                escape_log_value(&e)
             );
         }
 

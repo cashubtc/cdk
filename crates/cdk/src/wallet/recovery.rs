@@ -26,6 +26,7 @@ use crate::nuts::{CheckStateRequest, PreMintSecrets, Proofs, RestoreRequest, Sta
 use crate::wallet::blind_signature::{
     validate_mint_response_signatures, SignatureAmountValidation,
 };
+use crate::wallet::util::escape_log_value;
 use crate::{Error, Wallet};
 
 /// Parameters for recovering outputs using stored blinded messages.
@@ -250,7 +251,7 @@ impl RecoveryHelpers for Wallet {
                     "{} saga {} - replay failed ({}), falling back to other recovery",
                     saga_type,
                     saga_id,
-                    e
+                    escape_log_value(&e)
                 );
                 return Ok(None);
             }
@@ -395,7 +396,11 @@ impl Wallet {
                     report.skipped += 1;
                 }
                 Err(e) => {
-                    tracing::error!("Failed to recover saga {}: {}", saga.id, e);
+                    tracing::error!(
+                        "Failed to recover saga {}: {}",
+                        saga.id,
+                        escape_log_value(&e)
+                    );
                     report.failed += 1;
                 }
             }
@@ -451,7 +456,7 @@ impl Wallet {
                          Run wallet.restore() to recover any missing proofs.",
                         saga_type,
                         saga_id,
-                        e
+                        escape_log_value(&e)
                     );
                     return Ok(OutputRecoveryResult::Unavailable);
                 } else {
@@ -460,7 +465,7 @@ impl Wallet {
                          Skipping recovery to retry later.",
                         saga_type,
                         saga_id,
-                        e
+                        escape_log_value(&e)
                     );
                     return Err(e);
                 }
@@ -639,23 +644,23 @@ impl Wallet {
                             // No saga found - this is an orphaned reservation
                             tracing::warn!(
                                 "Found orphaned melt quote reservation: quote={}, operation={}. Releasing.",
-                                quote.id,
+                                escape_log_value(&quote.id),
                                 operation_id
                             );
                             if let Err(e) = self.localstore.release_melt_quote(&operation_id).await
                             {
                                 tracing::error!(
                                     "Failed to release orphaned melt quote {}: {}",
-                                    quote.id,
-                                    e
+                                    escape_log_value(&quote.id),
+                                    escape_log_value(&e)
                                 );
                             }
                         }
                         Err(e) => {
                             tracing::warn!(
                                 "Failed to check saga for melt quote {}: {}",
-                                quote.id,
-                                e
+                                escape_log_value(&quote.id),
+                                escape_log_value(&e)
                             );
                         }
                     }
@@ -682,23 +687,23 @@ impl Wallet {
                             // No saga found - this is an orphaned reservation
                             tracing::warn!(
                                 "Found orphaned mint quote reservation: quote={}, operation={}. Releasing.",
-                                quote.id,
+                                escape_log_value(&quote.id),
                                 operation_id
                             );
                             if let Err(e) = self.localstore.release_mint_quote(&operation_id).await
                             {
                                 tracing::error!(
                                     "Failed to release orphaned mint quote {}: {}",
-                                    quote.id,
-                                    e
+                                    escape_log_value(&quote.id),
+                                    escape_log_value(&e)
                                 );
                             }
                         }
                         Err(e) => {
                             tracing::warn!(
                                 "Failed to check saga for mint quote {}: {}",
-                                quote.id,
-                                e
+                                escape_log_value(&quote.id),
+                                escape_log_value(&e)
                             );
                         }
                     }

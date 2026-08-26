@@ -18,6 +18,7 @@ use crate::dhke::hash_to_curve;
 use crate::nuts::{PreMintSecrets, State};
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::{CompensatingAction, RevertProofReservation};
+use crate::wallet::util::escape_log_value;
 use crate::{Error, Wallet};
 
 impl Wallet {
@@ -144,7 +145,7 @@ impl Wallet {
                     tracing::warn!(
                         "Swap saga {} - can't check proof states ({}), skipping",
                         saga_id,
-                        e
+                        escape_log_value(&e)
                     );
                     return Ok(RecoveryAction::Skipped);
                 }
@@ -162,7 +163,7 @@ impl Wallet {
                         tracing::warn!(
                             "Restore failed for orphaned saga {} ({}). Cleaning up.",
                             saga_id,
-                            e
+                            escape_log_value(&e)
                         );
                         self.localstore.delete_saga(saga_id).await?;
                         Ok(RecoveryAction::Recovered)

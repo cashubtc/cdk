@@ -39,6 +39,7 @@ use tokio::sync::Mutex;
 use web_time::Instant;
 
 use crate::nuts::Id;
+use crate::wallet::util::escape_log_value;
 use crate::wallet::{AuthMintConnector, AuthWallet, MintConnector};
 use crate::{Error, Wallet};
 
@@ -665,7 +666,10 @@ impl MintMetadataCache {
         client: Option<&Arc<dyn MintConnector + Send + Sync>>,
         auth_client: Option<&Arc<dyn AuthMintConnector + Send + Sync>>,
     ) -> Result<Arc<MintMetadata>, Error> {
-        tracing::debug!("Fetching mint metadata from HTTP for {}", self.mint_url);
+        tracing::debug!(
+            "Fetching mint metadata from HTTP for {}",
+            escape_log_value(&self.mint_url)
+        );
 
         // Start with current cache to preserve data from other sources
         let mut new_metadata = (*self.metadata.load().clone()).clone();
@@ -675,7 +679,11 @@ impl MintMetadataCache {
         if let Some(client) = client.as_ref() {
             // Get mint information
             new_metadata.mint_info = client.get_mint_info().await.inspect_err(|err| {
-                tracing::error!("Failed to fetch mint info for {}: {}", self.mint_url, err);
+                tracing::error!(
+                    "Failed to fetch mint info for {}: {}",
+                    escape_log_value(&self.mint_url),
+                    escape_log_value(err)
+                );
             })?;
 
             // Get list of keysets
@@ -684,7 +692,11 @@ impl MintMetadataCache {
                     .get_mint_keysets()
                     .await
                     .inspect_err(|err| {
-                        tracing::error!("Failed to fetch keysets for {}: {}", self.mint_url, err);
+                        tracing::error!(
+                            "Failed to fetch keysets for {}: {}",
+                            escape_log_value(&self.mint_url),
+                            escape_log_value(err)
+                        );
                     })?
                     .keysets,
             );
@@ -698,7 +710,7 @@ impl MintMetadataCache {
         tracing::debug!(
             "Fetched {} keysets for {}",
             keysets_to_fetch.len(),
-            self.mint_url
+            escape_log_value(&self.mint_url)
         );
 
         // Fetch keys for each keyset

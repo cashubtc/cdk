@@ -9,6 +9,7 @@ use clap::Args;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
+use super::cat_login::token_display_line;
 use crate::terminal::escape_control;
 use crate::token_storage;
 
@@ -47,8 +48,8 @@ pub async fn cat_device_login(
     // Print a cute ASCII cat
     println!("\nAuthentication successful! 🎉\n");
     println!("\nYour tokens:");
-    println!("access_token: {access_token}");
-    println!("refresh_token: {refresh_token}");
+    println!("{}", token_display_line("access_token", &access_token));
+    println!("{}", token_display_line("refresh_token", &refresh_token));
 
     Ok(())
 }

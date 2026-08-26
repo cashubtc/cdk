@@ -1,13 +1,23 @@
 //! Wallet Utility Functions
 
 use std::collections::HashMap;
+use std::fmt;
 use std::str::FromStr;
 
 use bitcoin::XOnlyPublicKey;
+use cdk_common::terminal::escape_control;
 
 use crate::nuts::nut10::Kind;
 use crate::nuts::{Conditions, Proof, Proofs, PublicKey, SecretKey};
 use crate::{Error, SECP256K1};
+
+/// Render a value without allowing terminal controls to reach a log sink.
+pub(crate) fn escape_log_value<T>(value: &T) -> String
+where
+    T: fmt::Display + ?Sized,
+{
+    escape_control(&value.to_string())
+}
 
 /// Returns `true` if the proof has a P2PK (NUT-11) spending condition.
 ///
@@ -186,6 +196,23 @@ mod tests {
     use crate::nuts::nut28::{blind_public_key, ecdh_kdf};
     use crate::nuts::{CurrencyUnit, Id, Proof, SpendingConditions, Token};
     use crate::Amount;
+
+    #[test]
+    fn escape_log_value_neutralizes_terminal_and_bidi_controls() {
+        let error = Error::HttpError(
+            Some(500),
+            "safe\u{1b}]52;c;clipboard\u{07}\r\u{85}\u{202e}".to_string(),
+        );
+        let escaped = escape_log_value(&error);
+
+        assert_eq!(
+            escaped,
+            "Http transport error Some(500): safe\\e]52;c;clipboard\\a\\r\\u{85}\\u{202e}"
+        );
+        assert!(!escaped
+            .chars()
+            .any(|ch| { ch.is_control() || cdk_common::terminal::is_bidi_control_character(ch) }));
+    }
 
     fn make_p2pk_proof(pubkey: PublicKey) -> Proof {
         let spending_conditions = SpendingConditions::new_p2pk(pubkey, None);

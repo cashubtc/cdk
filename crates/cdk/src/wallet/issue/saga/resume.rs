@@ -29,6 +29,7 @@ use crate::wallet::issue::saga::compensation::ReleaseMintQuote;
 use crate::wallet::issue::saga::state::PreparedMintRequest;
 use crate::wallet::recovery::{OutputRecoveryResult, RecoveryAction};
 use crate::wallet::saga::CompensatingAction;
+use crate::wallet::util::escape_log_value;
 use crate::{Error, Wallet};
 
 fn is_mint_limit_error(error: &Error) -> bool {
@@ -301,11 +302,14 @@ impl Wallet {
                     if let Err(e) = self.check_state(&mut quote).await {
                         tracing::warn!(
                             "Failed to check quote state for transaction recording: {}",
-                            e
+                            escape_log_value(&e)
                         );
                     }
                     if let Err(e) = self.localstore.add_mint_quote(quote.clone()).await {
-                        tracing::warn!("Failed to save updated quote state: {}", e);
+                        tracing::warn!(
+                            "Failed to save updated quote state: {}",
+                            escape_log_value(&e)
+                        );
                     }
                     quote
                 }
@@ -464,7 +468,7 @@ impl Wallet {
                         tracing::warn!(
                             "Issue saga {} - batch replay failed with mint limit: {}",
                             saga_id,
-                            e
+                            escape_log_value(&e)
                         );
                         return Err(e);
                     }
@@ -472,7 +476,7 @@ impl Wallet {
                     tracing::info!(
                         "Issue saga {} - batch replay failed ({}), falling back to restore",
                         saga_id,
-                        e
+                        escape_log_value(&e)
                     );
                     return Ok(None);
                 }
@@ -556,7 +560,7 @@ impl Wallet {
                 tracing::warn!(
                     "Issue saga {} - failed to sign mint request: {}, cannot replay",
                     saga_id,
-                    e
+                    escape_log_value(&e)
                 );
                 return Ok(None);
             }
@@ -587,7 +591,7 @@ impl Wallet {
                     tracing::warn!(
                         "Issue saga {} - replay failed with mint limit: {}",
                         saga_id,
-                        e
+                        escape_log_value(&e)
                     );
                     return Err(e);
                 }
@@ -595,7 +599,7 @@ impl Wallet {
                 tracing::info!(
                     "Issue saga {} - replay failed ({}), falling back to restore",
                     saga_id,
-                    e
+                    escape_log_value(&e)
                 );
                 return Ok(None);
             }
@@ -667,7 +671,7 @@ impl Wallet {
             tracing::warn!(
                 "Failed to release mint quote for saga {}: {}. Continuing with saga cleanup.",
                 saga_id,
-                e
+                escape_log_value(&e)
             );
         }
 

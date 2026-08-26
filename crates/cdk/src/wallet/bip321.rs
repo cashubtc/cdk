@@ -53,6 +53,8 @@ use crate::bip353::Bip353Address;
 use crate::error::Error;
 use crate::nuts::PaymentRequest;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+use crate::wallet::util::escape_log_value;
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use crate::wallet::MintConnector;
 
 /// Parsed payment instruction with all available payment methods.
@@ -215,18 +217,25 @@ pub async fn resolve_bip353_payment_instruction(
     network: bitcoin::Network,
 ) -> Result<ParsedPaymentInstruction, Error> {
     let address = Bip353Address::from_str(bip353_address).map_err(|e| {
-        tracing::error!("Failed to parse BIP353 address '{}': {}", bip353_address, e);
+        tracing::error!(
+            "Failed to parse BIP353 address '{}': {}",
+            escape_log_value(bip353_address),
+            escape_log_value(&e)
+        );
         Error::Bip353Parse(e.to_string())
     })?;
 
-    tracing::debug!("Resolving BIP353 address: {}", address);
     let address_string = address.to_string();
+    tracing::debug!(
+        "Resolving BIP353 address: {}",
+        escape_log_value(&address_string)
+    );
 
     let resolved_uri = address.resolve(client).await.map_err(|e| {
         tracing::error!(
             "Failed to resolve BIP353 address '{}': {}",
-            address_string,
-            e
+            escape_log_value(&address_string),
+            escape_log_value(&e)
         );
         Error::Bip353Resolve(e.to_string())
     })?;
@@ -236,8 +245,8 @@ pub async fn resolve_bip353_payment_instruction(
         .map_err(|e| {
             tracing::error!(
                 "Failed to parse resolved BIP353 payment instruction '{}': {}",
-                resolved_uri,
-                e
+                escape_log_value(&resolved_uri),
+                escape_log_value(&e)
             );
             Error::Bip321Parse(format!("Invalid resolved bitcoin URI: {e}"))
         })
@@ -394,6 +403,21 @@ fn format_btc_amount_from_sats(sats: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    #[test]
+    fn bip353_log_values_escape_terminal_controls() {
+        let value = "alice\u{1b}]52;c;clipboard\u{07}\r\u{85}\u{202e}@example.com";
+        let escaped = escape_log_value(value);
+
+        assert_eq!(
+            escaped,
+            "alice\\e]52;c;clipboard\\a\\r\\u{85}\\u{202e}@example.com"
+        );
+        assert!(!escaped
+            .chars()
+            .any(|ch| { ch.is_control() || cdk_common::terminal::is_bidi_control_character(ch) }));
+    }
 
     const TEST_CREQ: &str = "CREQB1QYQQWER9D4HNZV3NQGQQSQQQQQQQQQQRAQPSQQGQQSQQZQG9QQVXSAR5WPEN5TE0D45KUAPWV4UXZMTSD3JJUCM0D5RQQRJRDANXVET9YPCXZ7TDV4H8GXHR3TQ";
     const TEST_BOLT11: &str = "lnbc1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6twvus8g6rfwvs8qun0dfjkxaq9qrsgq357wnc5r2ueh7ck6q93dj32dlqnls087fxdwk8qakdyafkq3yap9us6v52vjjsrvywa6rt52cm9r9zqt8r2t7mlcwspyetp5h2tztugp9lfyql";
