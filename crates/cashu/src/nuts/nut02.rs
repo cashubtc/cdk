@@ -584,8 +584,16 @@ fn default_input_fee_ppk() -> u64 {
 }
 
 #[cfg(feature = "mint")]
-/// MintKeyset
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Mint keyset.
+///
+/// This type intentionally does not implement [`Serialize`] because it contains
+/// mint signing keys.
+///
+/// ```compile_fail
+/// fn assert_serialize<T: serde::Serialize>() {}
+/// assert_serialize::<cashu::nuts::nut02::MintKeySet>();
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct MintKeySet {
     /// Keyset [`Id`]
     pub id: Id,
@@ -596,7 +604,6 @@ pub struct MintKeySet {
     /// Input Fee PPK
     #[serde(default)]
     pub input_fee_ppk: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
     /// Expiry [`Option<u64>`]
     pub final_expiry: Option<u64>,
 }

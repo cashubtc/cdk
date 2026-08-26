@@ -148,8 +148,16 @@ pub struct KeysResponse {
     pub keysets: Vec<KeySet>,
 }
 
-/// Mint key pairs per amount
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Mint key pairs per amount.
+///
+/// This type intentionally does not implement [`Serialize`] because it contains
+/// mint signing keys.
+///
+/// ```compile_fail
+/// fn assert_serialize<T: serde::Serialize>() {}
+/// assert_serialize::<cashu::nuts::nut01::MintKeys>();
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct MintKeys(BTreeMap<Amount, MintKeyPair>);
 
 impl Deref for MintKeys {
@@ -174,8 +182,16 @@ impl MintKeys {
     }
 }
 
-/// Mint Public Private key pair
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Mint public-private key pair.
+///
+/// This type intentionally does not implement [`Serialize`] so the secret key
+/// cannot be exposed through generic serialization.
+///
+/// ```compile_fail
+/// fn assert_serialize<T: serde::Serialize>() {}
+/// assert_serialize::<cashu::nuts::nut01::MintKeyPair>();
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct MintKeyPair {
     /// Publickey
     pub public_key: PublicKey,
