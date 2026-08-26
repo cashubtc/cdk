@@ -7,6 +7,22 @@
 
 ## [Unreleased]
 
+## [0.17.6](https://github.com/cashubtc/cdk/releases/tag/v0.17.6)
+
+### Added
+
+- cdk-mint-rpc: Add operator deposit address generation to the management RPC and CLI ([thesimplekid]).
+- cdk-mint-rpc: Expose transaction output quote details and input outpoints in BDK wallet transaction results ([thesimplekid]).
+
+### Changed
+
+- ci: Enable fallback for all Nix commands ([thesimplekid]).
+
+### Fixed
+
+- cdk-lnd: Classify validation and no-route errors before payment dispatch as authoritative failures ([thesimplekid]).
+- cdk-ldk-node: Wake payment waiters from terminal LDK events instead of polling ([thesimplekid]).
+
 ## [0.17.5](https://github.com/cashubtc/cdk/releases/tag/v0.17.5)
 
 ### Added
