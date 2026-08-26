@@ -52,7 +52,8 @@ impl fmt::Debug for Prepared {
             .field("operation_id", &self.operation_id)
             .field("amount", &self.amount)
             .field("amount_split_target", &self.amount_split_target)
-            .field("input_ys", &self.input_ys)
+            .field("input_ys", &"[REDACTED]")
+            .field("input_y_count", &self.input_ys.len())
             .field("spending_conditions", &self.spending_conditions)
             .field(
                 "input_amounts",
@@ -177,7 +178,7 @@ mod tests {
             operation_id,
             amount: Some(Amount::from(1)),
             amount_split_target: SplitTarget::default(),
-            input_ys: Vec::new(),
+            input_ys: vec![input_proof.y().expect("valid proof Y")],
             spending_conditions: None,
             pre_swap: PreSwap {
                 pre_mint_secrets,
@@ -196,5 +197,7 @@ mod tests {
         let finalized_debug = format!("{finalized:?}");
         assert!(!prepared_debug.contains(SECRET_MARKER));
         assert!(!finalized_debug.contains(SECRET_MARKER));
+        assert!(prepared_debug.contains("input_ys: \"[REDACTED]\""));
+        assert!(prepared_debug.contains("input_y_count: 1"));
     }
 }

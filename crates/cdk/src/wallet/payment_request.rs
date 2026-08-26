@@ -4,8 +4,7 @@
 //! Nostr or HTTP transports when available. If no transport is present in the request, an error
 //! is returned so callers can handle alternative delivery mechanisms explicitly.
 
-use std::str::FromStr;
-use std::sync::Arc;
+use std::{fmt, str::FromStr, sync::Arc};
 
 use anyhow::Result;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -523,6 +522,26 @@ mod tests {
         assert!(params.amount.is_none());
         assert!(params.mint_preferred.is_none());
         assert!(params.supported_methods.is_empty());
+    }
+
+    #[allow(clippy::use_debug)]
+    #[test]
+    fn create_request_params_debug_redacts_preimage() {
+        let preimage = "known-request-preimage";
+        let params = CreateRequestParams {
+            amount: Some(42),
+            preimage: Some(preimage.to_string()),
+            transport: "nostr".to_string(),
+            ..Default::default()
+        };
+
+        let debug = format!("{params:?}");
+
+        assert!(!debug.contains(preimage));
+        assert!(debug.contains("amount: Some(42)"));
+        assert!(debug.contains("unit: \"sat\""));
+        assert!(debug.contains("preimage: Some(\"[REDACTED]\")"));
+        assert!(debug.contains("transport: \"nostr\""));
     }
 
     #[test]
@@ -1178,7 +1197,7 @@ fn payment_request_method_fee_from_melt_methods(
 /// This mirrors the CLI inputs and is used by `create_request` to build a
 /// NUT-18 PaymentRequest. When `transport` is set to `nostr`, the function
 /// also returns a `NostrWaitInfo` that can be passed to `wait_for_nostr_payment`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CreateRequestParams {
     /// Optional amount to request (in the smallest unit for the chosen currency unit)
     pub amount: Option<u64>,
@@ -1206,6 +1225,26 @@ pub struct CreateRequestParams {
     pub mint_preferred: Option<bool>,
     /// Payment methods the payer's mint must support, with optional per-method fees
     pub supported_methods: Vec<SupportedMethod>,
+}
+
+impl fmt::Debug for CreateRequestParams {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CreateRequestParams")
+            .field("amount", &self.amount)
+            .field("unit", &self.unit)
+            .field("description", &self.description)
+            .field("pubkeys", &self.pubkeys)
+            .field("num_sigs", &self.num_sigs)
+            .field("hash", &self.hash)
+            .field("preimage", &self.preimage.as_ref().map(|_| "[REDACTED]"))
+            .field("transport", &self.transport)
+            .field("http_url", &self.http_url)
+            .field("nostr_relays", &self.nostr_relays)
+            .field("mints", &self.mints)
+            .field("mint_preferred", &self.mint_preferred)
+            .field("supported_methods", &self.supported_methods)
+            .finish()
+    }
 }
 
 impl Default for CreateRequestParams {

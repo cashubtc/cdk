@@ -2,7 +2,7 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/10.md>
 
-use std::str::FromStr;
+use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
@@ -57,7 +57,7 @@ pub enum Kind {
 }
 
 /// Secret Date
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SecretData {
     /// Unique random string
     nonce: String,
@@ -66,6 +66,16 @@ pub struct SecretData {
     /// Additional data committed to and can be used for feature extensions
     #[serde(skip_serializing_if = "Option::is_none")]
     tags: Option<Vec<Vec<String>>>,
+}
+
+impl fmt::Debug for SecretData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecretData")
+            .field("nonce", &"[REDACTED]")
+            .field("data", &"[REDACTED]")
+            .field("tags", &self.tags.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 impl SecretData {
@@ -499,6 +509,36 @@ mod tests {
         );
 
         assert_eq!(serde_json::to_string(&secret).unwrap(), secret_str);
+    }
+
+    #[allow(clippy::use_debug)]
+    #[test]
+    fn secret_debug_redacts_canonical_secret_data() {
+        let secret = Secret::new(
+            Kind::P2PK,
+            SecretData {
+                nonce: "known-secret-nonce".to_string(),
+                data: "known-secret-data".to_string(),
+                tags: Some(vec![vec!["known-secret-tag".to_string()]]),
+            },
+        );
+
+        let debug = format!("{secret:?}");
+        let secret_data_debug = format!("{:?}", secret.secret_data());
+
+        for secret_value in [
+            "known-secret-nonce",
+            "known-secret-data",
+            "known-secret-tag",
+        ] {
+            assert!(!debug.contains(secret_value));
+            assert!(!secret_data_debug.contains(secret_value));
+        }
+        assert!(debug.contains("kind: P2PK"));
+        assert!(debug.contains("secret_data: SecretData"));
+        assert!(secret_data_debug.contains("nonce: \"[REDACTED]\""));
+        assert!(secret_data_debug.contains("data: \"[REDACTED]\""));
+        assert!(secret_data_debug.contains("tags: Some(\"[REDACTED]\")"));
     }
 
     #[test]

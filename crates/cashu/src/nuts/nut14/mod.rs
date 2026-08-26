@@ -2,7 +2,7 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/14.md>
 
-use std::str::FromStr;
+use std::{fmt, str::FromStr};
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -72,13 +72,22 @@ pub enum Error {
 }
 
 /// HTLC Witness
-#[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct HTLCWitness {
     /// Preimage
     pub preimage: String,
     /// Signatures
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signatures: Option<Vec<String>>,
+}
+
+impl fmt::Debug for HTLCWitness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HTLCWitness")
+            .field("preimage", &"[REDACTED]")
+            .field("signatures", &self.signatures)
+            .finish()
+    }
 }
 
 impl HTLCWitness {
@@ -393,6 +402,23 @@ mod tests {
     use crate::nuts::Nut10Secret;
     use crate::secret::Secret as SecretString;
     use crate::{SecretData, SecretKey};
+
+    #[allow(clippy::use_debug)]
+    #[test]
+    fn htlc_witness_debug_redacts_preimage() {
+        let preimage = "known-htlc-preimage";
+        let signature = "public-signature";
+        let witness = HTLCWitness {
+            preimage: preimage.to_string(),
+            signatures: Some(vec![signature.to_string()]),
+        };
+
+        let debug = format!("{witness:?}");
+
+        assert!(!debug.contains(preimage));
+        assert!(debug.contains("preimage: \"[REDACTED]\""));
+        assert!(debug.contains(signature));
+    }
 
     fn htlc_proof(
         preimage_bytes: [u8; 32],

@@ -11,12 +11,21 @@ use crate::nut10::Error;
 use crate::{Kind, SecretData};
 
 /// NUT10 Secret
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Secret {
     ///  Kind of the spending condition
     kind: Kind,
     /// Secret Data
     secret_data: SecretData,
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Secret")
+            .field("kind", &self.kind)
+            .field("secret_data", &self.secret_data)
+            .finish()
+    }
 }
 
 impl Secret {
