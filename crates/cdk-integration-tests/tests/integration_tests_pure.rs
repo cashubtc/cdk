@@ -1166,7 +1166,7 @@ async fn test_mint_change_with_fee_melt() {
         .unwrap();
 
     let prepared = wallet_alice
-        .prepare_melt_proofs(&melt_quote.id, proofs, std::collections::HashMap::new())
+        .prepare_melt_proofs(&melt_quote.id, proofs, &[], std::collections::HashMap::new())
         .await
         .unwrap();
     let w = prepared.confirm().await.unwrap();
