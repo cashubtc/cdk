@@ -81,10 +81,15 @@ mod tests;
 /// - User can retry with same proofs
 ///
 /// **After payment attempt (PaymentAttempted state):**
-/// - Compensation is NOT executed (would cause fund loss)
+/// - Compensation is NOT executed directly (would cause fund loss)
 /// - Startup check will verify payment status with the payment backend
 /// - If payment succeeded: finalize is retried
-/// - If payment failed or is unpaid: compensation runs
+/// - An authoritative `Unpaid`/`Failed` status records `PaymentFailed`;
+///   `Pending`/`Unknown` leave the payment pending
+///
+/// **After authoritative failure (PaymentFailed state):**
+/// - The backend completed the payment operation without paying
+/// - Compensation may run without another backend status check
 ///
 /// This two-phase approach prevents fund loss where the mint pays the invoice
 /// but returns the proofs to the user.
@@ -93,7 +98,9 @@ mod tests;
 ///
 /// Unlike swap, melt must handle uncertain payment states:
 /// - **Paid**: Proceed to finalize
-/// - **Failed/Unpaid**: Compensate and return error
+/// - **Failed/Unpaid**: Authoritative terminal outcome by backend contract
+///   (see [`MintPayment::check_outgoing_payment`]) — record the terminal
+///   failure, then compensate
 /// - **Pending/Unknown**: Proofs remain pending, saga cannot complete
 ///   (leave proofs pending for startup check to resolve)
 ///
@@ -101,7 +108,9 @@ mod tests;
 ///
 /// The saga persists its state for crash recovery:
 /// - **SetupComplete**: Payment was never attempted → safe to compensate
-/// - **PaymentAttempted**: Check the backend and trust its current status
+/// - **PaymentAttempted/PaymentPending**: Polling finalizes a paid result and
+///   compensates an authoritative negative one; `Pending`/`Unknown` stay pending
+/// - **PaymentFailed**: An authoritative terminal result was recorded → compensate
 ///
 /// On startup, the recovery process checks the persisted saga state and takes
 /// appropriate action to either finalize (if payment succeeded) or compensate
@@ -609,7 +618,7 @@ impl MeltSaga<SetupComplete> {
     /// Makes payment via the payment backend or internal settlement.
     ///
     /// This is an external operation that happens after `setup_melt` and before `finalize`.
-    /// No database changes occur in this step (except for internal settlement case).
+    /// Durable dispatch and terminal-result markers make it crash recoverable.
     ///
     /// # What This Does
     ///
@@ -628,7 +637,8 @@ impl MeltSaga<SetupComplete> {
     /// crashes after payment but before finalize, the startup recovery will:
     /// - See `PaymentAttempted` state
     /// - Check with the payment backend to determine if payment succeeded
-    /// - Finalize if paid, compensate if failed
+    /// - Finalize if paid, compensate an authoritative negative result, and
+    ///   leave `Pending`/`Unknown` polling results pending
     ///
     /// # Idempotent Payment Verification
     ///
@@ -644,8 +654,8 @@ impl MeltSaga<SetupComplete> {
     ///
     /// # Failure Handling
     ///
-    /// If payment is confirmed as failed/unpaid, all registered compensations are
-    /// executed to roll back the setup transaction.
+    /// If `make_payment` authoritatively returns failed/unpaid, `PaymentFailed`
+    /// is persisted before all registered compensations roll back the setup.
     ///
     /// # Errors
     ///
@@ -795,13 +805,13 @@ impl MeltSaga<SetupComplete> {
         {
             Ok(pay) if pay.status == MeltQuoteState::Paid => Ok((pay, true)),
             Ok(pay) => {
-                let acknowledged = pay.status != MeltQuoteState::Unknown;
                 let response = self.verify_ambiguous_payment(payment_backend, pay).await?;
+                let acknowledged = response.status != MeltQuoteState::Unknown;
                 Ok((response, acknowledged))
             }
             Err(err) => {
                 let response = self.handle_payment_error(payment_backend, err).await?;
-                let acknowledged = response.status == MeltQuoteState::Pending;
+                let acknowledged = response.status != MeltQuoteState::Unknown;
                 Ok((response, acknowledged))
             }
         }
@@ -835,37 +845,22 @@ impl MeltSaga<SetupComplete> {
             return Ok(check_response);
         }
 
-        // Pending and Unknown are monotonic for an immediate verification. A
-        // contradictory Unpaid/Failed/Unknown read may come from a lagging
-        // backend replica; refunding here would return proofs while the payment
-        // can still settle.
-        if matches!(
-            pay.status,
-            MeltQuoteState::Pending | MeltQuoteState::Unknown
-        ) {
-            tracing::warn!(
-                "Payment was initially {} but verification returned {}. Keeping the initial status for safety.",
-                pay.status,
-                check_response.status
-            );
-            return Ok(pay);
-        }
-
-        // An Ok response with a terminal negative status is the backend's
-        // authoritative outcome, unlike an Err whose dispatch phase is
-        // unknown. A positive or in-flight follow-up overrides it, but a
-        // missing/Unknown observation does not erase that terminal result.
-        if matches!(pay.status, MeltQuoteState::Unpaid | MeltQuoteState::Failed)
-            && check_response.status == MeltQuoteState::Unknown
+        // An indeterminate recheck cannot erase a definite initial result: an
+        // `Ok` terminal status from make_payment is the backend's authoritative
+        // outcome, and an initial Pending proves an in-flight attempt. Keep the
+        // initial response when the follow-up cannot identify the payment.
+        if check_response.status == MeltQuoteState::Unknown && pay.status != MeltQuoteState::Unknown
         {
             tracing::warn!(
-                "Payment backend returned authoritative {} for quote {}, but verification returned Unknown. Keeping the terminal response.",
+                "Payment was initially {} but verification returned Unknown. Keeping the initial status for safety.",
                 pay.status,
-                self.state_data.quote.id
             );
             return Ok(pay);
         }
 
+        // Every other follow-up is taken at face value: by backend contract
+        // `Unpaid`/`Failed` are authoritative terminal outcomes and `Pending`
+        // proves an in-flight attempt (see MintPayment::check_outgoing_payment).
         Ok(check_response)
     }
 
@@ -900,7 +895,7 @@ impl MeltSaga<SetupComplete> {
                 Error::Internal
             })?;
 
-        let mut check_response = self.check_payment_state(payment_backend, lookup_id).await?;
+        let check_response = self.check_payment_state(payment_backend, lookup_id).await?;
 
         tracing::info!(
             "Initial payment attempt for {} errored. Follow up check status: {}",
@@ -908,28 +903,16 @@ impl MeltSaga<SetupComplete> {
             check_response.status
         );
 
-        // make_payment returned no authoritative terminal result. A positive
-        // Paid check can safely finalize and Pending remains pending, but a
-        // Failed or Unpaid follow-up may be a stale backend read after an
-        // ambiguous dispatch error. Keep every non-positive terminal read
-        // indeterminate so the melt cannot compensate while payment may settle.
-        if matches!(
-            check_response.status,
-            MeltQuoteState::Unpaid | MeltQuoteState::Failed
-        ) {
-            tracing::warn!(
-                "Payment attempt for {} errored and follow up check returned {}. Keeping payment status Unknown for safety.",
-                self.state_data.quote.id,
-                check_response.status
-            );
-            check_response.status = MeltQuoteState::Unknown;
-        }
-
+        // make_payment returned no result of its own. The follow-up status
+        // check is taken at face value: by backend contract `Unpaid`/`Failed`
+        // are authoritative terminal outcomes, `Pending` proves the backend
+        // can identify an in-flight attempt, and `Unknown` leaves dispatch
+        // ambiguous (see MintPayment::check_outgoing_payment).
         Ok(check_response)
     }
 
-    /// Persists the backend's payment lookup id and, when the backend
-    /// acknowledged the attempt, a durable pending marker.
+    /// Persists the backend's payment lookup id and, when the backend returned
+    /// an authoritative result, a durable pending or failed marker.
     ///
     /// For bolt12 melts the quote is created with `request_lookup_id: None`
     /// (no invoice exists until `make_payment`), so the id returned by the
@@ -973,12 +956,17 @@ impl MeltSaga<SetupComplete> {
             return Err(Error::UnknownPaymentState);
         }
 
-        if acknowledged {
-            tx.update_acquired_saga(
-                &mut saga,
-                SagaStateEnum::Melt(MeltSagaState::PaymentPending),
-            )
-            .await?;
+        let next_state = match (acknowledged, payment_response.status) {
+            (true, MeltQuoteState::Unpaid | MeltQuoteState::Failed) => {
+                Some(MeltSagaState::PaymentFailed)
+            }
+            (true, MeltQuoteState::Pending) => Some(MeltSagaState::PaymentPending),
+            _ => None,
+        };
+
+        if let Some(next_state) = next_state {
+            tx.update_acquired_saga(&mut saga, SagaStateEnum::Melt(next_state))
+                .await?;
         }
 
         tx.commit().await?;
@@ -1163,8 +1151,9 @@ pub enum PaymentOutcome {
     /// Payment was confirmed by the backend; the saga is ready to be finalized.
     Confirmed(Box<MeltSaga<PaymentConfirmed>>),
     /// Payment is still pending at the backend. Inputs and outputs remain
-    /// reserved and the quote is left in `Pending`; finalization or rollback
-    /// will happen later via a payment event or a status-check reconciliation.
+    /// reserved and the quote is left in `Pending`; polling may finalize a
+    /// successful payment, while rollback requires an authoritative permanent
+    /// failure event.
     Pending {
         /// Metrics guard carried into the pending waiter so the operation is
         /// recorded when the waiter reaches a terminal result.

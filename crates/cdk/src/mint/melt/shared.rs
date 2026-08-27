@@ -201,6 +201,33 @@ pub(crate) async fn rollback_setup_melt_quote(
     .await
 }
 
+/// Roll back a melt only after an authoritative payment failure was recorded.
+pub(crate) async fn rollback_failed_melt_quote(
+    db: &DynMintDatabase,
+    pubsub: &PubSubManager,
+    quote_id: &QuoteId,
+    input_ys: &[PublicKey],
+    blinded_secrets: &[PublicKey],
+    operation_id: &uuid::Uuid,
+) -> Result<(), Error> {
+    if input_ys.is_empty() && blinded_secrets.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = db.begin_transaction().await?;
+    tx.lock_quotes(std::slice::from_ref(quote_id)).await?;
+    rollback_melt_quote_inner(
+        tx,
+        pubsub,
+        quote_id,
+        input_ys,
+        blinded_secrets,
+        operation_id,
+        Some(mint_types::MeltSagaState::PaymentFailed),
+    )
+    .await
+}
+
 async fn rollback_melt_quote_inner(
     mut tx: DynMintTransaction,
     pubsub: &PubSubManager,
