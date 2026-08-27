@@ -845,6 +845,19 @@ impl MintPayment for Cln {
     }
 
     #[instrument(skip(self))]
+    /// Check the status of an outgoing payment.
+    ///
+    /// CLN never reports `Unpaid`/`Failed` for a dispatched payment: an
+    /// `xpay` command may survive a client disconnect and keep retrying, so a
+    /// not-paid observation is not an authoritative terminal outcome and is
+    /// reported as `Unknown` to keep the mint fail-closed (see
+    /// [`MintPayment::check_outgoing_payment`]). A failed payment's BOLT12
+    /// quote binding is retained for the same reason — releasing it would
+    /// turn a later poll's missing-binding answer into an authoritative
+    /// `Unpaid`. The one exception is a BOLT12 quote with no recorded
+    /// payment-hash binding: the binding is written before any payment is
+    /// dispatched, so its absence proves the payment was never attempted and
+    /// `Unpaid` is truthful.
     async fn check_outgoing_payment(
         &self,
         payment_identifier: &PaymentIdentifier,
@@ -859,7 +872,7 @@ impl MintPayment for Cln {
                 .map_err(payment::Error::from)?
             {
                 Bolt12QuotePaymentHashLookup::Found(payment_hash) => {
-                    (payment_hash, MeltQuoteState::Unpaid)
+                    (payment_hash, MeltQuoteState::Unknown)
                 }
                 Bolt12QuotePaymentHashLookup::Missing => {
                     return Ok(outgoing_payment_response_with_status(
@@ -896,14 +909,19 @@ impl MintPayment for Cln {
 
         match select_cln_payment(&listpays_response.pays) {
             Some(pays_response) => {
-                let status = cln_pays_status_to_mint_state(pays_response.status);
-
-                if status == MeltQuoteState::Failed {
-                    if let PaymentIdentifier::QuoteId(quote_id) = payment_identifier {
-                        self.cleanup_bolt12_quote_payment_hash(quote_id, &payment_hash)
-                            .await;
-                    }
-                }
+                // A negative CLN status is not an authoritative terminal
+                // outcome for the mint; report it as Unknown so recovery
+                // cannot refund proofs while the payment may still settle.
+                // The BOLT12 quote binding is deliberately retained as well:
+                // releasing it would let a later poll observe the missing
+                // binding as authoritative `Unpaid` and compensate a payment
+                // that may still settle. Only the synchronous make_payment
+                // error path may release a binding, once it holds a
+                // definitive terminal failure.
+                let status = match cln_pays_status_to_mint_state(pays_response.status) {
+                    MeltQuoteState::Unpaid | MeltQuoteState::Failed => MeltQuoteState::Unknown,
+                    status => status,
+                };
 
                 Ok(MakePaymentResponse {
                     payment_lookup_id: payment_identifier.clone(),
