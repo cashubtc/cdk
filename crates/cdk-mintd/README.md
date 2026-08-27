@@ -193,6 +193,36 @@ and are loaded from the database during normal startup.
 Primary database settings are immutable through `config apply`: moving the
 authoritative database requires a separate data-migration procedure.
 
+### Database Schema Migrations
+
+Normal `cdk-mintd` startup applies pending forward migrations to the primary
+mint database. Schema rollback is deliberately never automatic. To prepare a
+database for an older binary, stop every mintd instance, create and verify a
+backup, and use the newer binary that contains the backward migrations:
+
+```bash
+# Roll back the latest applied migration in one transaction.
+cdk-mintd database rollback --steps 1 --yes
+```
+
+The command uses the same working-directory, database-engine, PostgreSQL, and
+SQLCipher bootstrap settings as startup. It opens the database without applying
+forward migrations first. The requested range is checked before any SQL runs;
+if one of those migrations has no paired `.down.sql` file, the entire command
+fails without changing the schema.
+
+Rollback updates the `migrations` history in the same transaction as the schema
+changes and prints the migrations in the order they were undone. Do not restart
+the newer binary afterward because normal startup would immediately apply them
+again. Start the intended older binary and verify it before reopening traffic.
+This command operates only on the primary mint database; a separately configured
+authentication database must follow its own release-specific downgrade steps.
+
+Backward schema migrations cannot reconstruct application data discarded by an
+older irreversible migration and do not roll back configuration or external
+payment-backend state. Retain the backup until the downgraded mint has been
+fully verified.
+
 ### Signing Modes
 
 Configure exactly one signing mode:

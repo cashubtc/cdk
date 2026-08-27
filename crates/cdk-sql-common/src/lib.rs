@@ -13,7 +13,10 @@ pub mod stmt;
 pub mod value;
 
 pub use cdk_common::database::ConversionError;
-pub use common::{migrate, run_db_operation, run_db_operation_sync};
+pub use common::{
+    migrate, rollback_migrations, run_db_operation, run_db_operation_sync, Migration,
+    MigrationError,
+};
 
 #[cfg(feature = "mint")]
 pub mod mint;

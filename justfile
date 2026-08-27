@@ -42,7 +42,7 @@ develop shell="stable":
 
   exec nix develop "$flake_ref" -c "${SHELL:-bash}"
 
-# Create a new SQL migration file
+# Create paired forward and backward SQL migration files
 new-migration target name:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -52,12 +52,16 @@ new-migration target name:
   fi
 
   timestamp=$(date +%Y%m%d%H%M%S)
-  migration_path="./crates/cdk-sql-common/src/{{target}}/migrations/${timestamp}_{{name}}.sql"
+  migration_base="./crates/cdk-sql-common/src/{{target}}/migrations/${timestamp}_{{name}}"
+  migration_path="${migration_base}.sql"
+  rollback_path="${migration_base}.down.sql"
 
-  # Create the file
+  # Create the paired files
   mkdir -p "$(dirname "$migration_path")"
   touch "$migration_path"
-  echo "Created new migration: $migration_path"
+  touch "$rollback_path"
+  echo "Created forward migration: $migration_path"
+  echo "Created backward migration: $rollback_path"
 
 
 final-check: lint clippy test
