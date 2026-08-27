@@ -123,9 +123,9 @@ impl<'a> SwapSaga<'a, Initial> {
 
         let input_ys = input_proofs.ys()?;
 
-        let pre_swap = self
+        let reserved_pre_swap = self
             .wallet
-            .create_swap(
+            .create_swap_with_counter_range(
                 &self.state_data.operation_id,
                 active_keyset_id,
                 &fee_and_amounts,
@@ -139,16 +139,13 @@ impl<'a> SwapSaga<'a, Initial> {
                 proof_reservation,
             )
             .await?;
+        let pre_swap = reserved_pre_swap.pre_swap;
 
         let fee = pre_swap.fee;
         let input_amount = input_proofs.total_amount()?;
 
-        let counter_end = self
-            .wallet
-            .localstore
-            .increment_keyset_counter(&active_keyset_id, 0)
-            .await?;
-        let counter_start = counter_end.saturating_sub(pre_swap.derived_secret_count);
+        let counter_start = reserved_pre_swap.counter_start;
+        let counter_end = reserved_pre_swap.counter_end;
         let output_amount = input_amount
             .checked_sub(fee)
             .ok_or(Error::InsufficientFunds)?;
@@ -196,6 +193,8 @@ impl<'a> SwapSaga<'a, Initial> {
                 input_ys,
                 spending_conditions,
                 pre_swap,
+                counter_start,
+                counter_end,
                 saga,
             },
         })

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::Network;
-use cdk_common::amount::FeeAndAmounts;
+use cdk_common::amount::{FeeAndAmounts, MAX_SPLIT_OUTPUTS};
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::{KeysetLoadPolicy, ProofInfo};
@@ -109,6 +109,18 @@ pub use types::{CrossMintTransferQuote, MeltQuote, MintQuote, SendKind};
 pub use wallet_repository::{TokenData, WalletConfig, WalletRepository, WalletRepositoryBuilder};
 
 use crate::nuts::nut00::ProofsMethods;
+
+/// Validate the aggregate number of outputs generated for one wallet operation.
+pub(crate) fn validate_generated_output_count(output_count: usize) -> Result<(), Error> {
+    if output_count > MAX_SPLIT_OUTPUTS {
+        return Err(Error::MaxOutputsExceeded {
+            actual: output_count,
+            max: MAX_SPLIT_OUTPUTS,
+        });
+    }
+
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum DerivationCounterNamespace {
@@ -613,7 +625,7 @@ impl Wallet {
             .get_proofs_with(Some(vec![State::Unspent]), None)
             .await?;
 
-        let amounts_count: HashMap<u64, u64> =
+        let amounts_count: HashMap<u64, usize> =
             unspent_proofs
                 .iter()
                 .fold(HashMap::new(), |mut acc, proof| {
@@ -623,20 +635,27 @@ impl Wallet {
                     acc
                 });
 
-        let needed_amounts =
-            fee_and_amounts
-                .amounts()
-                .iter()
-                .fold(Vec::new(), |mut acc, amount| {
-                    let count_needed = (self.target_proof_count as u64)
-                        .saturating_sub(*amounts_count.get(amount).unwrap_or(&0));
+        // Calculate and validate the exact allocation before constructing it.
+        // `target_proof_count` is public for backwards compatibility, so this
+        // check must not rely on callers having used the builder or setter.
+        let mut needed_count = 0usize;
+        for amount in fee_and_amounts.amounts() {
+            let count_needed = self
+                .target_proof_count
+                .saturating_sub(*amounts_count.get(amount).unwrap_or(&0));
+            needed_count = needed_count
+                .checked_add(count_needed)
+                .ok_or(Error::AmountOverflow)?;
+            validate_generated_output_count(needed_count)?;
+        }
 
-                    for _i in 0..count_needed {
-                        acc.push(Amount::from(*amount));
-                    }
-
-                    acc
-                });
+        let mut needed_amounts = Vec::with_capacity(needed_count);
+        for amount in fee_and_amounts.amounts() {
+            let count_needed = self
+                .target_proof_count
+                .saturating_sub(*amounts_count.get(amount).unwrap_or(&0));
+            needed_amounts.extend(std::iter::repeat_n(Amount::from(*amount), count_needed));
+        }
         Ok(needed_amounts)
     }
 
@@ -1650,6 +1669,32 @@ mod tests {
             matches!(result, Err(Error::AmountOverflow)),
             "expected amount overflow, got {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn state_target_rejects_oversized_allocation_when_builder_is_bypassed() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let mut wallet = create_test_wallet_with_mock(db, mock_client).await;
+        // Exercise the public field path retained for backwards compatibility.
+        wallet.target_proof_count = usize::MAX;
+        let fee_and_amounts = FeeAndAmounts::from((0, vec![1, 2]));
+
+        let result = wallet
+            .amounts_needed_for_state_target(&fee_and_amounts)
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(Error::MaxOutputsExceeded {
+                max: MAX_SPLIT_OUTPUTS,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]

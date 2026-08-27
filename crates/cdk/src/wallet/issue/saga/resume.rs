@@ -190,6 +190,12 @@ impl Wallet {
             _ => return Ok(()),
         };
 
+        crate::wallet::recovery::validate_recovery_output_data(
+            blinded_messages,
+            counter_start,
+            counter_end,
+        )?;
+
         let premint_secrets = PreMintSecrets::restore_batch(
             blinded_messages[0].keyset_id,
             &self.seed,
@@ -379,6 +385,21 @@ impl Wallet {
                 return Ok(None);
             }
         };
+        let (counter_start, counter_end) = match (data.counter_start, data.counter_end) {
+            (Some(start), Some(end)) => (start, end),
+            _ => {
+                tracing::debug!(
+                    "Issue saga {} - no counter range stored, cannot replay",
+                    saga_id
+                );
+                return Ok(None);
+            }
+        };
+        crate::wallet::recovery::validate_recovery_output_data(
+            blinded_messages,
+            counter_start,
+            counter_end,
+        )?;
 
         let quote_ids = data.quote_ids();
         let is_batch = data.is_batch();
@@ -493,6 +514,12 @@ impl Wallet {
                     return Ok(None);
                 }
             };
+
+            crate::wallet::recovery::validate_recovery_output_data(
+                blinded_messages,
+                counter_start,
+                counter_end,
+            )?;
 
             let keyset_id = blinded_messages[0].keyset_id;
 
@@ -623,6 +650,12 @@ impl Wallet {
                 return Ok(None);
             }
         };
+
+        crate::wallet::recovery::validate_recovery_output_data(
+            blinded_messages,
+            counter_start,
+            counter_end,
+        )?;
 
         let keyset_id = blinded_messages[0].keyset_id;
 

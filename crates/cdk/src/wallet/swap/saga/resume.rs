@@ -16,10 +16,27 @@ use tracing::instrument;
 
 use crate::dhke::hash_to_curve;
 use crate::nuts::{PreMintSecrets, State};
-use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
+use crate::wallet::recovery::{validate_recovery_output_data, RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::{CompensatingAction, RevertProofReservation};
 use crate::wallet::util::escape_log_value;
 use crate::{Error, Wallet};
+
+fn validate_swap_recovery_counter_range(data: &SwapOperationData) -> Result<(), Error> {
+    let (blinded_messages, counter_start, counter_end) = match (
+        data.blinded_messages.as_deref(),
+        data.counter_start,
+        data.counter_end,
+    ) {
+        (Some(blinded_messages), Some(counter_start), Some(counter_end))
+            if !blinded_messages.is_empty() =>
+        {
+            (blinded_messages, counter_start, counter_end)
+        }
+        _ => return Ok(()),
+    };
+
+    validate_recovery_output_data(blinded_messages, counter_start, counter_end)
+}
 
 impl Wallet {
     /// Resume an incomplete swap saga after crash recovery.
@@ -87,6 +104,8 @@ impl Wallet {
         saga_id: &uuid::Uuid,
         data: &SwapOperationData,
     ) -> Result<RecoveryAction, Error> {
+        validate_swap_recovery_counter_range(data)?;
+
         // 1. Fast Path: Check if new proofs are already in the DB (Local Success)
         if self.check_db_for_swap_success(saga_id, data).await? {
             return Ok(RecoveryAction::Recovered);
@@ -304,6 +323,120 @@ mod tests {
 
     use crate::nuts::{PreMintSecrets, SecretKey as NutSecretKey};
     use crate::wallet::test_utils::*;
+
+    fn swap_operation_data_with_counter_range(
+        start: u32,
+        end: u32,
+        blinded_message_count: usize,
+    ) -> SwapOperationData {
+        let keyset_id = test_keyset_id();
+        let blinded_message = PreMintSecrets::random(
+            keyset_id,
+            Amount::ONE,
+            &cdk_common::amount::SplitTarget::None,
+            &(0, vec![1]).into(),
+        )
+        .unwrap()
+        .secrets
+        .remove(0)
+        .blinded_message;
+        let blinded_messages = vec![blinded_message; blinded_message_count];
+
+        SwapOperationData {
+            input_amount: Amount::ONE,
+            output_amount: Amount::ONE,
+            counter_start: Some(start),
+            counter_end: Some(end),
+            blinded_messages: Some(blinded_messages),
+        }
+    }
+
+    #[test]
+    fn test_swap_recovery_rejects_reversed_counter_range() {
+        let data = swap_operation_data_with_counter_range(2, 1, 1);
+        assert!(validate_swap_recovery_counter_range(&data).is_err());
+    }
+
+    #[test]
+    fn test_swap_recovery_rejects_counter_range_output_mismatch() {
+        // More counters than blinded messages can never be valid: every
+        // counter-derived secret produces exactly one output.
+        let data = swap_operation_data_with_counter_range(0, 2, 1);
+        assert!(validate_swap_recovery_counter_range(&data).is_err());
+    }
+
+    #[test]
+    fn test_swap_recovery_rejects_oversized_counter_range() {
+        let data = swap_operation_data_with_counter_range(
+            0,
+            MAX_RECOVERY_COUNTER_RANGE + 1,
+            (MAX_RECOVERY_COUNTER_RANGE + 1) as usize,
+        );
+        assert!(validate_swap_recovery_counter_range(&data).is_err());
+    }
+
+    /// Regression test: swaps with spending conditions (P2PK, HTLC, P2BK)
+    /// derive only their change outputs from the seed counter, so the
+    /// persisted counter range is smaller than the blinded message count.
+    /// Recovery validation must accept these sagas.
+    #[tokio::test]
+    async fn test_swap_recovery_accepts_spending_condition_counter_range() {
+        use std::collections::HashMap;
+
+        use cdk_common::amount::{FeeAndAmounts, SplitTarget};
+        use cdk_common::nuts::SpendingConditions;
+
+        use crate::fees::ProofsFeeBreakdown;
+        use crate::wallet::swap::ProofReservation;
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let keyset_id = test_keyset_id();
+
+        let proofs = vec![test_proof(keyset_id, 100)];
+        let fee_and_amounts: FeeAndAmounts =
+            (0u64, (0..7).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
+        let fee_breakdown = ProofsFeeBreakdown {
+            total: Amount::ZERO,
+            per_keyset: HashMap::new(),
+        };
+        let conditions = SpendingConditions::new_p2pk(NutSecretKey::generate().public_key(), None);
+
+        let reserved_pre_swap = wallet
+            .create_swap_with_counter_range(
+                &uuid::Uuid::new_v4(),
+                keyset_id,
+                &fee_and_amounts,
+                Some(Amount::from(2)),
+                SplitTarget::None,
+                proofs,
+                Some(conditions),
+                false,
+                false,
+                &fee_breakdown,
+                ProofReservation::Skip,
+            )
+            .await
+            .expect("create_swap with P2PK conditions");
+        let pre_swap = reserved_pre_swap.pre_swap;
+
+        // The counter range covers only the counter-derived change outputs,
+        // fewer than the total blinded messages.
+        assert!((pre_swap.derived_secret_count as usize) < pre_swap.swap_request.outputs().len());
+
+        // Build the saga data exactly as the swap saga persists it.
+        let data = SwapOperationData {
+            input_amount: Amount::from(100),
+            output_amount: Amount::from(100),
+            counter_start: Some(reserved_pre_swap.counter_start),
+            counter_end: Some(reserved_pre_swap.counter_end),
+            blinded_messages: Some(pre_swap.swap_request.outputs().clone()),
+        };
+
+        validate_swap_recovery_counter_range(&data)
+            .expect("spending-condition swap saga must pass recovery validation");
+    }
 
     #[tokio::test]
     async fn test_recover_swap_proofs_reserved() {

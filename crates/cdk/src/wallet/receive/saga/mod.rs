@@ -332,9 +332,9 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         )
         .await;
 
-        let mut pre_swap = self
+        let reserved_pre_swap = self
             .wallet
-            .create_swap(
+            .create_swap_with_counter_range(
                 &operation_id,
                 self.state_data.active_keyset_id,
                 &fee_and_amounts,
@@ -348,6 +348,9 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 ProofReservation::Skip,
             )
             .await?;
+        let counter_start = reserved_pre_swap.counter_start;
+        let counter_end = reserved_pre_swap.counter_end;
+        let mut pre_swap = reserved_pre_swap.pre_swap;
 
         // Determine if SigAll signing is needed
         let sig_flag = self.determine_sig_flag()?;
@@ -360,14 +363,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 }
             }
         }
-
-        // Get counter range for recovery (before the swap request is sent)
-        let counter_end = self
-            .wallet
-            .localstore
-            .increment_keyset_counter(&self.state_data.active_keyset_id, 0)
-            .await?;
-        let counter_start = counter_end.saturating_sub(pre_swap.derived_secret_count);
 
         // Update saga state to SwapRequested BEFORE making the mint call.
         // This is write-ahead logging - if a crash occurs after this, recovery knows

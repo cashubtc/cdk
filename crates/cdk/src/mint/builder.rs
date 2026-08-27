@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bitcoin::bip32::DerivationPath;
+use cdk_common::amount::MAX_SPLIT_OUTPUTS;
 use cdk_common::database::{DynMintAuthDatabase, DynMintDatabase, MintKeysDatabase};
 use cdk_common::error::Error;
 use cdk_common::nut00::KnownMethod;
@@ -322,11 +323,26 @@ impl MintBuilder {
         self
     }
 
-    /// Set transaction limits for DoS protection
+    /// Set transaction limits for DoS protection.
+    ///
+    /// The output limit must not exceed [`MAX_SPLIT_OUTPUTS`]. The builder
+    /// validates this when the mint is built because internally generated
+    /// output amounts are subject to that global limit.
     pub fn with_limits(mut self, max_inputs: usize, max_outputs: usize) -> Self {
         self.max_inputs = max_inputs;
         self.max_outputs = max_outputs;
         self
+    }
+
+    fn validate_limits(&self) -> Result<(), Error> {
+        if self.max_outputs > MAX_SPLIT_OUTPUTS {
+            return Err(Error::Custom(format!(
+                "Mint max_outputs ({}) cannot exceed Amount split limit ({MAX_SPLIT_OUTPUTS})",
+                self.max_outputs
+            )));
+        }
+
+        Ok(())
     }
 
     /// Set batch minting settings (NUT-29)
@@ -601,6 +617,8 @@ impl MintBuilder {
         #[allow(unused_mut)] mut self,
         signatory: Arc<dyn Signatory + Send + Sync>,
     ) -> Result<Mint, Error> {
+        self.validate_limits()?;
+
         // Check active keysets and rotate if necessary
         let active_keysets = signatory.keysets().await?;
 
@@ -910,6 +928,35 @@ mod tests {
             .expect("mnemonic")
             .to_seed_normalized("")
             .to_vec()
+    }
+
+    #[tokio::test]
+    async fn test_mint_builder_rejects_output_limit_above_split_limit() {
+        let localstore = Arc::new(memory::empty().await.expect("mint db"));
+        let builder = MintBuilder::new(localstore.clone())
+            .with_limits(1000, MAX_SPLIT_OUTPUTS.saturating_add(1));
+
+        let err = builder
+            .build_with_seed(localstore, &seed())
+            .await
+            .expect_err("output limit above Amount split limit must be rejected");
+
+        assert!(matches!(
+            err,
+            Error::Custom(message)
+                if message.contains(&MAX_SPLIT_OUTPUTS.to_string())
+                    && message.contains("max_outputs")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_mint_builder_accepts_output_limit_at_split_limit() {
+        let localstore = Arc::new(memory::empty().await.expect("mint db"));
+        let builder = MintBuilder::new(localstore).with_limits(1000, MAX_SPLIT_OUTPUTS);
+
+        builder
+            .validate_limits()
+            .expect("output limit at Amount split limit should be accepted");
     }
 
     #[tokio::test]
