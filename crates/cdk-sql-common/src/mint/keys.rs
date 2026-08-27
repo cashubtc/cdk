@@ -163,11 +163,11 @@ where
         .bind("id", keyset.id.to_string())
         .bind("unit", keyset.unit.to_string())
         .bind("active", keyset.active)
-        .bind("valid_from", keyset.valid_from as i64)
-        .bind("valid_to", keyset.final_expiry.map(|v| v as i64))
+        .bind("valid_from", keyset.valid_from.to_string())
+        .bind("valid_to", keyset.final_expiry.map(|v| v.to_string()))
         .bind("derivation_path", keyset.derivation_path.to_string())
         .bind("amounts", serde_json::to_string(&keyset.amounts).ok())
-        .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
+        .bind("input_fee_ppk", keyset.input_fee_ppk.to_string())
         .bind("derivation_path_index", keyset.derivation_path_index)
         .bind(
             "issuer_version",
@@ -379,6 +379,51 @@ mod test {
                 keyset.issuer_version,
                 Some(IssuerVersion::from_str("cdk/0.1.0").unwrap())
             );
+        }
+    }
+
+    mod keyset_u64_column_tests {
+        use super::*;
+
+        /// Build a row whose `valid_from`, `valid_to` and `input_fee_ppk`
+        /// columns are the given values.
+        fn row(valid_from: Column, valid_to: Column, input_fee_ppk: Column) -> Vec<Column> {
+            let amounts = (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
+            vec![
+                Column::Text("0083a60439303340".to_owned()),
+                Column::Text("sat".to_owned()),
+                Column::Integer(1),
+                valid_from,
+                valid_to,
+                Column::Text("0'/0'/0'".to_owned()),
+                Column::Integer(0),
+                Column::Text(serde_json::to_string(&amounts).expect("valid json")),
+                input_fee_ppk,
+                Column::Text("cdk/0.1.0".to_owned()),
+            ]
+        }
+
+        #[test]
+        fn text_columns_parse_full_u64_range() {
+            let max = || Column::Text(u64::MAX.to_string());
+            let keyset = sql_row_to_keyset_info(row(max(), max(), max())).expect("parses");
+            assert_eq!(keyset.valid_from, u64::MAX);
+            assert_eq!(keyset.final_expiry, Some(u64::MAX));
+            assert_eq!(keyset.input_fee_ppk, u64::MAX);
+        }
+
+        /// Rows written before the columns became text are still integers.
+        #[test]
+        fn integer_columns_still_parse() {
+            let keyset = sql_row_to_keyset_info(row(
+                Column::Integer(1749844864),
+                Column::Null,
+                Column::Integer(100),
+            ))
+            .expect("parses");
+            assert_eq!(keyset.valid_from, 1749844864);
+            assert_eq!(keyset.final_expiry, None);
+            assert_eq!(keyset.input_fee_ppk, 100);
         }
     }
 }

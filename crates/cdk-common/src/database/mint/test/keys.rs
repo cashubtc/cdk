@@ -77,6 +77,9 @@ where
     assert_eq!(retrieved.active, keyset_info.active);
     assert_eq!(retrieved.amounts, keyset_info.amounts);
     assert_eq!(retrieved.issuer_version, keyset_info.issuer_version);
+    assert_eq!(retrieved.valid_from, keyset_info.valid_from);
+    assert_eq!(retrieved.final_expiry, keyset_info.final_expiry);
+    assert_eq!(retrieved.input_fee_ppk, keyset_info.input_fee_ppk);
 }
 
 /// Test adding duplicate keyset info is idempotent
@@ -328,4 +331,53 @@ where
     // Try to get active keyset when none is set
     let active_id = active_keyset_id(&db, &CurrencyUnit::Sat).await;
     assert!(active_id.is_none());
+}
+
+/// The `u64` keyset fields must survive a round trip at their full range.
+///
+/// They used to be narrowed to `i64` on write and widened back on read, so an
+/// oversized value committed as a negative number that no later read could
+/// decode, failing every keyset read in the table rather than only its own row.
+pub async fn keyset_u64_extremes_roundtrip<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let cases = [
+        ("00916bbf7ef91a36", "m/0'/0'/0'", 0, 2_147_483_648u64),
+        ("00916bbf7ef91a37", "m/0'/0'/1'", 1, u64::MAX),
+    ];
+
+    let mut expected = Vec::new();
+    for (id, derivation_path, index, value) in cases {
+        let keyset_info = MintKeySetInfo {
+            id: Id::from_str(id).unwrap(),
+            unit: CurrencyUnit::Sat,
+            active: false,
+            valid_from: value,
+            final_expiry: Some(value),
+            derivation_path: DerivationPath::from_str(derivation_path).unwrap(),
+            derivation_path_index: Some(index),
+            input_fee_ppk: value,
+            amounts: standard_keyset_amounts(32),
+            issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
+        };
+
+        let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
+        tx.add_keyset_info(keyset_info.clone()).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let retrieved = find_keyset_info(&db, &keyset_info.id).await.unwrap();
+        assert_eq!(retrieved.valid_from, value);
+        assert_eq!(retrieved.final_expiry, Some(value));
+        assert_eq!(retrieved.input_fee_ppk, value);
+
+        expected.push(keyset_info.id);
+    }
+
+    let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
+    let all_keysets = tx.get_keyset_infos().await.unwrap();
+    tx.commit().await.unwrap();
+    for id in expected {
+        assert!(all_keysets.iter().any(|k| k.id == id));
+    }
 }
