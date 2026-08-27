@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
+use crate::wallet::payment_request::parse_nostr_payment_payload;
 use crate::wallet::streams::RecvFuture;
 
 #[allow(clippy::type_complexity)]
@@ -79,9 +80,7 @@ impl NostrPaymentEventStream {
                                 match client.unwrap_gift_wrap(&event).await {
                                     Ok(unwrapped) => {
                                         let rumor = unwrapped.rumor;
-                                        match serde_json::from_str::<PaymentRequestPayload>(
-                                            &rumor.content,
-                                        ) {
+                                        match parse_nostr_payment_payload(&rumor.content) {
                                             Ok(payload) => {
                                                 // Best-effort send; if receiver closed, instruct exit
                                                 if tx.send(Ok(payload)).await.is_err() {
