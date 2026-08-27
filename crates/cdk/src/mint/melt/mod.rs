@@ -940,11 +940,12 @@ impl Mint {
                                     }
                                 };
 
+                                let sub_id = crate::subscription::SubId::from(format!(
+                                    "melt_sync_wait_{}",
+                                    quote_id_for_log
+                                ));
                                 let params = Params {
-                                    id: Arc::new(crate::subscription::SubId::from(format!(
-                                        "melt_sync_wait_{}",
-                                        quote_id_for_log
-                                    ))),
+                                    id: Arc::new(sub_id),
                                     kind,
                                     filters: vec![quote_id_for_log.to_string()],
                                 };
