@@ -80,7 +80,7 @@ pub use bip321::resolve_bip353_payment_instruction;
 pub use bip321::{
     parse_payment_instruction, Bip321UriBuilder, ParsedPaymentInstruction, PaymentRequestBip321Ext,
 };
-pub use builder::WalletBuilder;
+pub use builder::{WalletBuilder, MAX_TARGET_PROOF_COUNT};
 pub use cdk_common::wallet as types;
 pub use cdk_common::wallet::{
     NUT13Options, P2PKLockedProofSendMode, ReceiveOptions, SendMemo, SendOptions,
