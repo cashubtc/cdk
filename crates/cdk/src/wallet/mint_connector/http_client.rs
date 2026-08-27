@@ -41,6 +41,9 @@ const HTTP_RETRY_INITIAL_BACKOFF: Duration = Duration::from_millis(50);
 /// Upper bound for the exponential backoff between replays.
 const HTTP_RETRY_MAX_BACKOFF: Duration = Duration::from_secs(1);
 
+/// Maximum replay window accepted from untrusted NUT-19 mint settings.
+const NUT19_MAX_TTL_SECS: u64 = 300;
+
 fn payment_method_path_segment(method: &PaymentMethod) -> Result<&str, Error> {
     match method {
         PaymentMethod::Known(known) => Ok(known.as_str()),
@@ -939,7 +942,11 @@ where
 
         if let Ok(mut cache_support) = self.cache_support.write() {
             *cache_support = (
-                info.nuts.nut19.ttl.unwrap_or(300),
+                info.nuts
+                    .nut19
+                    .ttl
+                    .unwrap_or(NUT19_MAX_TTL_SECS)
+                    .min(NUT19_MAX_TTL_SECS),
                 info.nuts
                     .nut19
                     .cached_endpoints
@@ -1301,6 +1308,30 @@ mod tests {
 
         assert!(debug.contains("https://mint.example.com"));
         assert!(debug.contains("auth_wallet: \"[REDACTED]\""));
+    }
+
+    #[tokio::test]
+    async fn mint_info_clamps_nut19_ttl() {
+        let mint_info = MintInfo::new()
+            .nuts(crate::nuts::Nuts::new().nut19(Some(NUT19_MAX_TTL_SECS + 1), Vec::new()));
+        let transport = MockTransport {
+            get_response: Arc::new(Mutex::new(Some(
+                serde_json::to_string(&mint_info).expect("serialize mint info"),
+            ))),
+            ..Default::default()
+        };
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+
+        client
+            .get_mint_info()
+            .await
+            .expect("get mint info should succeed");
+
+        assert_eq!(
+            client.cache_support.read().expect("cache lock").0,
+            NUT19_MAX_TTL_SECS
+        );
     }
 
     /// Regression test: `post_mint_quote` must send only the
