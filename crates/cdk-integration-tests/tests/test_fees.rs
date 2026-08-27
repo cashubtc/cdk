@@ -125,6 +125,7 @@ async fn test_fake_melt_change_in_quote() {
         .prepare_melt_proofs(
             &melt_quote.id,
             proofs.clone(),
+            &[],
             std::collections::HashMap::new(),
         )
         .await
