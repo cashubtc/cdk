@@ -728,6 +728,62 @@ mod test {
         );
     }
 
+    /// Keyset rows are insert-only today, so the mutated info is handed to
+    /// `publish_snapshot` directly rather than written to storage.
+    #[tokio::test]
+    async fn reload_publishes_info_final_expiry_over_cached_key() {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let signatory = DbSignatory::new(
+            store,
+            b"test-seed-snapshot-final-expiry",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .expect("DbSignatory::new");
+
+        let rotated = signatory
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::Sat,
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: 0,
+                keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                final_expiry: Some(unix_time() + 1_000),
+            })
+            .await
+            .expect("rotate_keyset");
+
+        let (epoch, active, mut info) = {
+            let current = signatory.keysets.load();
+            let epoch = current.epoch.expect("snapshot is loaded");
+            let (info, _) = current
+                .by_id
+                .get(&rotated.id)
+                .expect("rotated keyset is in the snapshot");
+            (epoch, current.active_by_unit.clone(), info.clone())
+        };
+
+        let new_expiry = Some(unix_time() + 9_000);
+        info.final_expiry = new_expiry;
+        signatory.publish_snapshot(epoch + 1, active, vec![info]);
+
+        let published = signatory
+            .keysets_snapshot()
+            .keysets
+            .into_iter()
+            .find(|k| k.id == rotated.id)
+            .expect("rotated keyset is published");
+
+        assert_eq!(
+            published.final_expiry, new_expiry,
+            "published keyset must carry the info's final_expiry, not the cached key's"
+        );
+    }
+
     #[tokio::test]
     async fn subscribe_keysets_pushes_rotation() {
         let store = Arc::new(
