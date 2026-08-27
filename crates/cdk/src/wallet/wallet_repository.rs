@@ -592,6 +592,68 @@ impl WalletRepository {
         Ok(())
     }
 
+    /// Move all wallets for a mint to a new mint URL
+    ///
+    /// Persists the migration through the wallet database, then rebuilds every
+    /// affected wallet against the new URL so their connectors and
+    /// subscriptions target the new endpoint. Wallet clones obtained before
+    /// this call keep the old URL and stale connectors; fetch them again from
+    /// the repository afterwards. Returns the rebuilt wallets.
+    ///
+    /// Each rebuilt wallet keeps its target proof count and uses this
+    /// repository's transport configuration (default, proxy, or Tor). A wallet
+    /// created with a custom mint connector is rebuilt without it, because the
+    /// custom connector targets the old URL; use [`Self::set_mint_config`] to
+    /// install a replacement connector afterwards.
+    ///
+    /// Intended for when a mint moves or announces an alternative endpoint,
+    /// for example through the NUT-06 `urls` field. The caller is responsible
+    /// for verifying that the new endpoint serves the same mint (its keysets
+    /// match) before migrating.
+    #[instrument(skip(self))]
+    pub async fn update_mint_url(
+        &self,
+        old_mint_url: MintUrl,
+        new_mint_url: MintUrl,
+    ) -> Result<Vec<Wallet>, Error> {
+        if old_mint_url == new_mint_url {
+            return Err(Error::Custom(
+                "New mint URL is the same as the old mint URL".to_string(),
+            ));
+        }
+
+        let mut wallets = self.wallets.write().await;
+
+        let affected: Vec<WalletKey> = wallets
+            .keys()
+            .filter(|key| key.mint_url == old_mint_url)
+            .cloned()
+            .collect();
+
+        // The database migration moves every row for the mint across all
+        // currency units, so it runs once rather than per wallet.
+        self.localstore
+            .update_mint_url(old_mint_url.clone(), new_mint_url.clone())
+            .await?;
+
+        let mut rebuilt = Vec::with_capacity(affected.len());
+        for key in affected {
+            let config = wallets.remove(&key).map(|wallet| {
+                WalletConfig::new().with_target_proof_count(wallet.target_proof_count)
+            });
+            let wallet = self
+                .create_wallet_internal(new_mint_url.clone(), key.unit.clone(), config.as_ref())
+                .await?;
+            wallets.insert(
+                WalletKey::new(new_mint_url.clone(), key.unit),
+                wallet.clone(),
+            );
+            rebuilt.push(wallet);
+        }
+
+        Ok(rebuilt)
+    }
+
     /// Get all wallets
     #[instrument(skip(self))]
     pub async fn get_wallets(&self) -> Vec<Wallet> {
@@ -1368,6 +1430,57 @@ mod tests {
 
         let wallets = repo.get_wallets().await;
         assert_eq!(wallets.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_update_mint_url_rebuilds_wallets_against_new_url() {
+        let repo = create_test_repository().await;
+
+        let old_url: MintUrl = "https://old-mint.example.com".parse().unwrap();
+        let new_url: MintUrl = "https://new-mint.example.com".parse().unwrap();
+        let other_url: MintUrl = "https://other-mint.example.com".parse().unwrap();
+
+        repo.create_wallet(
+            old_url.clone(),
+            CurrencyUnit::Sat,
+            Some(WalletConfig::new().with_target_proof_count(7)),
+        )
+        .await
+        .expect("Failed to create sat wallet");
+        repo.create_wallet(old_url.clone(), CurrencyUnit::Usd, None)
+            .await
+            .expect("Failed to create usd wallet");
+        repo.create_wallet(other_url.clone(), CurrencyUnit::Sat, None)
+            .await
+            .expect("Failed to create unrelated wallet");
+
+        let rebuilt = repo
+            .update_mint_url(old_url.clone(), new_url.clone())
+            .await
+            .expect("Failed to update mint url");
+
+        // Both wallets for the old mint are rebuilt against the new URL
+        assert_eq!(rebuilt.len(), 2);
+        assert!(rebuilt.iter().all(|wallet| wallet.mint_url == new_url));
+
+        // The map is rekeyed and per-wallet config survives the rebuild
+        assert!(!repo.has_mint(&old_url).await);
+        let sat_wallet = repo
+            .get_wallet(&new_url, &CurrencyUnit::Sat)
+            .await
+            .expect("Missing rebuilt sat wallet");
+        assert_eq!(sat_wallet.mint_url, new_url);
+        assert_eq!(sat_wallet.target_proof_count, 7);
+        assert!(repo.has_wallet(&new_url, &CurrencyUnit::Usd).await);
+
+        // Unrelated mints are untouched
+        assert!(repo.has_wallet(&other_url, &CurrencyUnit::Sat).await);
+
+        // Migrating a mint onto its own URL is rejected
+        assert!(repo
+            .update_mint_url(new_url.clone(), new_url.clone())
+            .await
+            .is_err());
     }
 
     #[tokio::test]
