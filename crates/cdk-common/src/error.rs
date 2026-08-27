@@ -46,6 +46,7 @@ pub enum Error {
     ///
     /// The token remains a pending send. Callers can pass `operation_id` to
     /// `Wallet::revoke_send` to reclaim it if the receiver has not claimed it.
+    #[cfg(feature = "wallet")]
     #[error("Payment token created but delivery failed for operation {operation_id}: {source}")]
     PaymentRequestDeliveryFailed {
         /// Pending send operation that can be passed to `Wallet::revoke_send`.
@@ -623,6 +624,7 @@ mod tests {
         assert!(!Error::ConcurrentUpdate.is_definitive_failure());
         assert!(!Error::BlindedMessageAlreadySigned.is_definitive_failure());
         assert!(!Error::TokenAlreadySpent.is_definitive_failure());
+        #[cfg(feature = "wallet")]
         assert!(!Error::PaymentRequestDeliveryFailed {
             operation_id: uuid::Uuid::new_v4(),
             source: Box::new(Error::Timeout),
@@ -784,7 +786,6 @@ impl Error {
             // Ambiguous Errors (Unsafe to revert)
             Self::Timeout
             | Self::Internal
-            | Self::PaymentRequestDeliveryFailed { .. }
             | Self::UnknownPaymentState
             | Self::PendingQuote
             | Self::TokenPending
@@ -797,6 +798,9 @@ impl Error {
             | Self::TransferTimeout { .. }
             | Self::Bip353Resolve(_)
             | Self::LightningAddressRequest(_) => false,
+
+            #[cfg(feature = "wallet")]
+            Self::PaymentRequestDeliveryFailed { .. } => false,
 
             // Network/IO/Parsing Errors (Usually ambiguous as they could happen reading response)
             Self::HttpError(None, _) // No status code means network error

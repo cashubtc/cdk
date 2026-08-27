@@ -1419,8 +1419,6 @@ async fn configure_onchain_backend_with_wallet_info(
 
     #[cfg(all(feature = "management-rpc", feature = "bdk"))]
     let mut wallet_info_provider = no_wallet_info_provider();
-    #[cfg(not(all(feature = "management-rpc", feature = "bdk")))]
-    let wallet_info_provider = no_wallet_info_provider();
 
     if let Some(onchain_settings) = &settings.onchain {
         match onchain_settings.onchain_backend {
@@ -1515,7 +1513,14 @@ async fn configure_onchain_backend_with_wallet_info(
         }
     }
 
-    Ok((mint_builder, wallet_info_provider))
+    #[cfg(all(feature = "management-rpc", feature = "bdk"))]
+    {
+        Ok((mint_builder, wallet_info_provider))
+    }
+    #[cfg(not(all(feature = "management-rpc", feature = "bdk")))]
+    {
+        Ok((mint_builder, no_wallet_info_provider()))
+    }
 }
 
 #[cfg(test)]

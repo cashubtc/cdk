@@ -97,7 +97,9 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Build shared Crane dependencies
-        run: nix build -L .#deps --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
+        run: |
+          set -o pipefail
+          nix build -L .#deps --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
       # Deps change only with Cargo.lock/toolchain, so this mostly dedupes.
       - name: Push to Attic cache
         # Never push from fork PRs (secrets are withheld there anyway; belt and braces).
@@ -127,7 +129,9 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Build MSRV Crane dependencies
-        run: nix build -L .#deps-msrv --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths-msrv.txt"
+        run: |
+          set -o pipefail
+          nix build -L .#deps-msrv --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths-msrv.txt"
       # MSRV deps change only with Cargo.lock.msrv/toolchain, so this mostly
       # dedupes; without it every new revision rebuilds them from scratch.
       - name: Push to Attic cache
@@ -238,7 +242,9 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Run clippy and tests
-        run: nix build -L .#checks.x86_64-linux.${{ matrix.check }} --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
+        run: |
+          set -o pipefail
+          nix build -L .#checks.x86_64-linux.${{ matrix.check }} --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
       # Push per-revision check outputs so re-runs and rebased PRs substitute
       # them instead of recompiling; cachix's 5 GB quota evicts them within
       # days (this is why Check jobs bounce between ~0.2 min and ~20 min).
@@ -270,6 +276,7 @@ jobs:
         continue-on-error: true
       - name: Build nextest archive and harness binaries
         run: |
+          set -o pipefail
           nix build -L \
             .#itest-archive \
             .#start-fake-mint \

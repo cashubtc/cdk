@@ -296,6 +296,9 @@
           # Environment variables
           PROTOC = "${pkgs.protobuf}/bin/protoc";
           PROTOC_INCLUDE = "${pkgs.protobuf}/include";
+          # reqwest's rustls platform verifier loads the native CA store while
+          # building a client. Nix build sandboxes do not provide /etc/ssl.
+          SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         };
 
         # Common args for MSRV builds - uses srcMsrv with pinned deps

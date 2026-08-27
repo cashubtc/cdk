@@ -2093,6 +2093,7 @@ mod tests {
     /// into two different keys and hide the duplicate from verification. The
     /// rejection has to land before any output is built.
     #[test]
+    #[cfg(feature = "wallet")]
     fn test_with_p2bk_rejects_duplicate_pubkeys_before_blinding() {
         use crate::amount::{FeeAndAmounts, SplitTarget};
         use crate::nuts::nut11::SigFlag;
@@ -2142,6 +2143,7 @@ mod tests {
     /// Every output in the batch carries the same conditions, so the batch has
     /// to be rejected before the first secret is built.
     #[test]
+    #[cfg(feature = "wallet")]
     fn test_with_conditions_rejects_duplicate_pubkeys() {
         use crate::amount::{FeeAndAmounts, SplitTarget};
         use crate::nuts::nut11::SigFlag;
@@ -2186,6 +2188,7 @@ mod tests {
     /// Twelve slots have to fail as TooManyPubkeys, not as the
     /// InvalidCanonicalSlot the key derivation would raise on its own.
     #[test]
+    #[cfg(feature = "wallet")]
     fn test_with_p2bk_rejects_more_slots_than_nut28_allows() {
         use crate::amount::{FeeAndAmounts, SplitTarget};
         use crate::nuts::nut11::SigFlag;
