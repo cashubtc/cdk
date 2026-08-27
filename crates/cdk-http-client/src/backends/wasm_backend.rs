@@ -12,10 +12,120 @@ use super::url_for_debug;
 use crate::error::HttpError;
 use crate::response::{RawResponse, Response};
 
+struct RequestDeadline {
+    controller: web_sys::AbortController,
+    window: web_sys::Window,
+    timer_id: i32,
+    _callback: Closure<dyn FnMut()>,
+}
+
+impl RequestDeadline {
+    fn new() -> Result<Self, HttpError> {
+        let controller = web_sys::AbortController::new()
+            .map_err(|e| HttpError::Build(format!("Failed to create abort controller: {:?}", e)))?;
+        let window = web_sys::window()
+            .ok_or_else(|| HttpError::Build("Window is unavailable".to_string()))?;
+        let timeout_controller = controller.clone();
+        let callback = Closure::new(move || timeout_controller.abort());
+        let timeout_ms =
+            i32::try_from(crate::DEFAULT_REQUEST_TIMEOUT.as_millis()).unwrap_or(i32::MAX);
+        let timer_id = window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                callback.as_ref().unchecked_ref(),
+                timeout_ms,
+            )
+            .map_err(|e| HttpError::Build(format!("Failed to set request timeout: {:?}", e)))?;
+
+        Ok(Self {
+            controller,
+            window,
+            timer_id,
+            _callback: callback,
+        })
+    }
+
+    fn signal(&self) -> web_sys::AbortSignal {
+        self.controller.signal()
+    }
+}
+
+impl Drop for RequestDeadline {
+    fn drop(&mut self) {
+        self.window.clear_timeout_with_handle(self.timer_id);
+    }
+}
+
+fn fetch_error(signal: &web_sys::AbortSignal, error: JsValue) -> HttpError {
+    if signal.aborted() {
+        HttpError::Timeout
+    } else {
+        HttpError::Connection(format!("Fetch failed: {:?}", error))
+    }
+}
+
+fn body_error(signal: &web_sys::AbortSignal, error: HttpError) -> HttpError {
+    if signal.aborted() {
+        HttpError::Timeout
+    } else {
+        error
+    }
+}
+
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_name = "fetch")]
     fn js_fetch(input: &web_sys::Request) -> js_sys::Promise;
+}
+
+/// Read a response body chunk by chunk, rejecting it as soon as it grows
+/// past [`crate::MAX_RESPONSE_BYTES`].
+///
+/// Responses come from untrusted mints; streaming with a running total
+/// prevents a malicious server from exhausting wallet memory, which is
+/// especially constrained under WASM.
+async fn read_bounded_body(resp: &web_sys::Response) -> Result<Vec<u8>, HttpError> {
+    let Some(body) = resp.body() else {
+        return Ok(Vec::new());
+    };
+
+    let reader: web_sys::ReadableStreamDefaultReader =
+        body.get_reader().dyn_into().map_err(|_| {
+            HttpError::Other("Response body reader is not a default reader".to_string())
+        })?;
+
+    let mut bytes = Vec::new();
+    loop {
+        let result = JsFuture::from(reader.read())
+            .await
+            .map_err(|e| HttpError::Other(format!("Failed to read body chunk: {:?}", e)))?;
+        let result: web_sys::ReadableStreamReadResult = result
+            .dyn_into()
+            .map_err(|_| HttpError::Other("Unexpected body chunk result".to_string()))?;
+
+        if result.get_done().unwrap_or(true) {
+            break;
+        }
+
+        let chunk = result
+            .get_value()
+            .dyn_into::<js_sys::Uint8Array>()
+            .map_err(|_| HttpError::Other("Body chunk is not a Uint8Array".to_string()))?;
+        let chunk_len = chunk.length() as usize;
+        if chunk_len > crate::MAX_RESPONSE_BYTES.saturating_sub(bytes.len()) {
+            reader.release_lock();
+            return Err(HttpError::Other(format!(
+                "HTTP response body exceeds the {}-byte limit",
+                crate::MAX_RESPONSE_BYTES
+            )));
+        }
+
+        let start = bytes.len();
+        bytes.resize(start + chunk_len, 0);
+        chunk.copy_to(&mut bytes[start..]);
+    }
+
+    reader.release_lock();
+    Ok(bytes)
 }
 
 /// HTTP client wrapper
@@ -156,6 +266,9 @@ impl WasmRequestBuilder {
         }
         let opts = web_sys::RequestInit::new();
         opts.set_method(&self.method);
+        let deadline = RequestDeadline::new()?;
+        let timeout_signal = deadline.signal();
+        opts.set_signal(Some(&timeout_signal));
         if self.no_redirects {
             opts.set_redirect(web_sys::RequestRedirect::Error);
         }
@@ -184,7 +297,7 @@ impl WasmRequestBuilder {
 
         let resp_value = JsFuture::from(js_fetch(&request))
             .await
-            .map_err(|e| HttpError::Connection(format!("Fetch failed: {:?}", e)))?;
+            .map_err(|e| fetch_error(&timeout_signal, e))?;
 
         let resp: web_sys::Response = resp_value
             .dyn_into()
@@ -192,16 +305,9 @@ impl WasmRequestBuilder {
 
         let status = resp.status();
 
-        let body_promise = resp
-            .array_buffer()
-            .map_err(|e| HttpError::Other(format!("Failed to read body: {:?}", e)))?;
-
-        let body_value = JsFuture::from(body_promise)
+        let body = read_bounded_body(&resp)
             .await
-            .map_err(|e| HttpError::Other(format!("Failed to read body: {:?}", e)))?;
-
-        let body_array = js_sys::Uint8Array::new(&body_value);
-        let body = body_array.to_vec();
+            .map_err(|e| body_error(&timeout_signal, e))?;
 
         Ok(RawResponse::new(status, body))
     }

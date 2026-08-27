@@ -74,7 +74,7 @@ pub(crate) const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 ///
 /// Bounds the total time a request may take, including reading the response
 /// body, so a malicious or broken server cannot stall the wallet forever by
-/// dripping bytes. The Tor transport uses its own read timeout.
+/// dripping bytes. The Tor transport uses its own overall response timeout.
 pub(crate) const DEFAULT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[cfg(all(
