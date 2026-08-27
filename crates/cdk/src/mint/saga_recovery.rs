@@ -12,46 +12,6 @@ use crate::mint::subscription::PubSubManager;
 use crate::mint::Mint;
 use crate::Error;
 
-/// Maximum time to wait for a payment-backend status check during melt
-/// reconciliation.
-///
-/// Bounding the call prevents a slow or unreachable Lightning node from
-/// indefinitely tying up a reconciliation task. On timeout the reconciler
-/// fails closed and leaves the melt pending for a later pass.
-#[cfg(not(test))]
-const MELT_PAYMENT_STATUS_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-/// Shorter timeout in tests so the fail-closed path is exercised without
-/// slowing the suite.
-#[cfg(test)]
-const MELT_PAYMENT_STATUS_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-
-/// Check the payment status with the backend using a bounded wait.
-///
-/// Returns `Ok(None)` on timeout (treated as indeterminate, fail closed);
-/// backend errors propagate so the caller can apply its own handling.
-async fn check_melt_payment_status_bounded(
-    mint: &Mint,
-    quote: &MeltQuote,
-) -> Result<Option<MakePaymentResponse>, Error> {
-    match tokio::time::timeout(
-        MELT_PAYMENT_STATUS_CHECK_TIMEOUT,
-        mint.check_melt_payment_status(quote),
-    )
-    .await
-    {
-        Ok(Ok(response)) => Ok(Some(response)),
-        Ok(Err(err)) => Err(err),
-        Err(_elapsed) => {
-            tracing::warn!(
-                "Payment status check for melt quote {} timed out after {:?}. Leaving pending.",
-                quote.id,
-                MELT_PAYMENT_STATUS_CHECK_TIMEOUT
-            );
-            Ok(None)
-        }
-    }
-}
-
 /// Process the outcome of a melt saga based on payment status.
 ///
 /// This function handles the shared logic for deciding whether to finalize, compensate, or skip
@@ -61,21 +21,13 @@ async fn check_melt_payment_status_bounded(
 /// is the single finalization path — it handles operation recording, saga deletion, and all
 /// cleanup atomically.
 ///
-/// For the `Unpaid`/`Failed` case, compensation is only allowed after these
-/// checks:
-/// 1. the melt did not settle internally (a credited mint quote can never be
-///    compensated — that would return the payer's proofs while the recipient
-///    keeps the credit),
-/// 2. a fresh backend status check confirms the payment did not succeed (the
-///    caller's observation may be stale),
-/// 3. the durable saga state proves either that dispatch never began
-///    (`SetupComplete`) or that the backend acknowledged the attempt
-///    (`PaymentPending`); an ambiguous write-ahead marker (`PaymentAttempted`)
-///    remains fail-closed, and
-/// 4. the saga has not advanced to `Finalizing`.
-///
-/// Any check that cannot be answered fails closed: the quote is left pending
-/// rather than compensated.
+/// Polling is finalization-only for non-terminal states: `Pending` and
+/// `Unknown` observations leave the melt pending because a payment
+/// orchestrator may be between attempts. `Unpaid` and `Failed` are
+/// authoritative terminal outcomes by backend contract (see
+/// [`cdk_common::payment::MintPayment::check_outgoing_payment`]); the failure
+/// is persisted as `PaymentFailed` before compensation so a crash cannot turn
+/// it back into an ambiguous payment attempt.
 ///
 /// # Arguments
 /// * `saga` - The melt saga being processed
@@ -96,37 +48,38 @@ pub(crate) async fn process_melt_saga_outcome(
     pubsub: &PubSubManager,
     mint: &Mint,
 ) -> Result<(), Error> {
-    process_melt_saga_outcome_inner(saga, quote, payment_response, db, pubsub, mint).await
-}
-
-/// Process a failure delivered by the payment-backend event stream.
-/// Event and polling paths use the same state validation and backend recheck.
-pub(crate) async fn process_melt_saga_failure_event(
-    saga: &Saga,
-    quote: &mut MeltQuote,
-    payment_response: &MakePaymentResponse,
-    db: &cdk_common::database::DynMintDatabase,
-    pubsub: &PubSubManager,
-    mint: &Mint,
-) -> Result<(), Error> {
-    process_melt_saga_outcome_inner(saga, quote, payment_response, db, pubsub, mint).await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn process_melt_saga_outcome_inner(
-    saga: &Saga,
-    quote: &mut MeltQuote,
-    payment_response: &MakePaymentResponse,
-    db: &cdk_common::database::DynMintDatabase,
-    pubsub: &PubSubManager,
-    mint: &Mint,
-) -> Result<(), Error> {
     match payment_response.status {
         MeltQuoteState::Paid => {
             finalize_paid_melt_outcome(saga, quote, payment_response, db, pubsub, mint).await
         }
         MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
-            reconcile_terminal_melt(saga, quote, db, pubsub, mint).await
+            match mint.internal_melt_settlement_response(quote).await {
+                Ok(Some(internal_response)) => {
+                    return finalize_paid_melt_outcome(
+                        saga,
+                        quote,
+                        &internal_response,
+                        db,
+                        pubsub,
+                        mint,
+                    )
+                    .await;
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::error!(
+                        "Could not determine internal settlement state for melt quote {} (saga {}): {}. Leaving pending.",
+                        quote.id,
+                        saga.operation_id,
+                        err
+                    );
+                    return Ok(());
+                }
+            }
+
+            persist_permanent_payment_failure(saga, quote, db, payment_response).await?;
+
+            recover_recorded_payment_failure(saga, quote, db, pubsub).await
         }
         MeltQuoteState::Pending => {
             persist_pending_after_dispatch(saga, quote, payment_response, db).await?;
@@ -149,6 +102,22 @@ async fn process_melt_saga_outcome_inner(
     }
 }
 
+/// Process a permanent failure delivered by the payment-backend event stream.
+///
+/// [`cdk_common::payment::Event::PaymentFailed`] is an orchestration-level
+/// terminal signal, so event and polling outcomes share the same processing
+/// path.
+pub(crate) async fn process_melt_saga_failure_event(
+    saga: &Saga,
+    quote: &mut MeltQuote,
+    payment_response: &MakePaymentResponse,
+    db: &cdk_common::database::DynMintDatabase,
+    pubsub: &PubSubManager,
+    mint: &Mint,
+) -> Result<(), Error> {
+    process_melt_saga_outcome(saga, quote, payment_response, db, pubsub, mint).await
+}
+
 async fn persist_pending_after_dispatch(
     stale_saga: &Saga,
     quote: &mut MeltQuote,
@@ -158,125 +127,92 @@ async fn persist_pending_after_dispatch(
     persist_payment_lookup_id(stale_saga, quote, payment_response, db).await
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn reconcile_terminal_melt(
-    saga: &Saga,
+async fn persist_permanent_payment_failure(
+    stale_saga: &Saga,
     quote: &mut MeltQuote,
     db: &cdk_common::database::DynMintDatabase,
-    pubsub: &PubSubManager,
-    mint: &Mint,
+    payment_response: &MakePaymentResponse,
 ) -> Result<(), Error> {
-    let result = reconcile_terminal_melt_inner(saga, quote, db, pubsub, mint).await;
+    let mut tx = db.begin_transaction().await?;
+    let Some(mut current_saga) = tx.get_saga_for_update(&stale_saga.operation_id).await? else {
+        tx.rollback().await?;
+        return Ok(());
+    };
 
-    match result? {
-        Some((saga, payment_response)) => {
-            finalize_paid_melt_outcome(&saga, quote, &payment_response, db, pubsub, mint).await
+    match &current_saga.state {
+        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted | MeltSagaState::PaymentPending) => {}
+        SagaStateEnum::Melt(MeltSagaState::PaymentFailed) => {
+            tx.rollback().await?;
+            return Ok(());
         }
-        None => Ok(()),
+        SagaStateEnum::Melt(MeltSagaState::SetupComplete | MeltSagaState::Finalizing)
+        | SagaStateEnum::Swap(_) => {
+            tracing::warn!(
+                "Ignoring permanent payment failure for melt quote {} because saga {} is {}",
+                quote.id,
+                stale_saga.operation_id,
+                current_saga.state.state()
+            );
+            tx.rollback().await?;
+            return Ok(());
+        }
     }
+
+    let mut current_quote = tx
+        .get_melt_quote(&quote.id)
+        .await?
+        .ok_or(Error::UnknownQuote)?;
+    if current_quote.request_lookup_id.as_ref() != Some(&payment_response.payment_lookup_id) {
+        tx.update_melt_quote_request_lookup_id(
+            &mut current_quote,
+            &payment_response.payment_lookup_id,
+        )
+        .await?;
+    }
+
+    tx.update_acquired_saga(
+        &mut current_saga,
+        SagaStateEnum::Melt(MeltSagaState::PaymentFailed),
+    )
+    .await?;
+    tx.commit().await?;
+    quote.request_lookup_id = Some(payment_response.payment_lookup_id.clone());
+    Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn reconcile_terminal_melt_inner(
+/// Compensate a melt only when a durable authoritative failure was recorded.
+pub(crate) async fn recover_recorded_payment_failure(
     stale_saga: &Saga,
     quote: &mut MeltQuote,
     db: &cdk_common::database::DynMintDatabase,
     pubsub: &PubSubManager,
-    mint: &Mint,
-) -> Result<Option<(Saga, MakePaymentResponse)>, Error> {
+) -> Result<(), Error> {
     let current_saga = db.get_melt_saga_by_quote_id(&quote.id).await?;
     let Some(saga) = current_saga else {
         *quote = db
             .get_melt_quote(&quote.id)
             .await?
             .ok_or(Error::UnknownQuote)?;
-        if quote.state != MeltQuoteState::Paid {
-            tracing::warn!(
-                "Melt saga {} disappeared while quote {} is {}; leaving it unchanged",
-                stale_saga.operation_id,
-                quote.id,
-                quote.state
-            );
-        }
-        return Ok(None);
+        return Ok(());
     };
 
-    *quote = db
-        .get_melt_quote(&quote.id)
-        .await?
-        .ok_or(Error::UnknownQuote)?;
-
-    match mint.internal_melt_settlement_response(quote).await {
-        Ok(Some(internal_response)) => {
-            return Ok(Some((saga, internal_response)));
-        }
-        Ok(None) => {}
-        Err(err) => {
-            tracing::error!(
-                "Could not determine internal settlement state for melt quote {} (saga {}): {}. Leaving pending.",
-                quote.id,
-                saga.operation_id,
-                err
-            );
-            return Ok(None);
-        }
-    }
-
-    let fresh_response = match check_melt_payment_status_bounded(mint, quote).await {
-        Ok(Some(response)) => response,
-        Ok(None) => {
-            // Timed out: fail closed, leave pending.
-            return Ok(None);
-        }
-        Err(err) => {
-            tracing::error!(
-                "Cannot verify payment status for melt quote {} (saga {}): {}. Leaving pending.",
-                quote.id,
-                saga.operation_id,
-                err
-            );
-            return Ok(None);
-        }
-    };
-
-    match fresh_response.status {
-        MeltQuoteState::Paid => return Ok(Some((saga, fresh_response))),
-        MeltQuoteState::Pending => {
-            persist_payment_lookup_id(&saga, quote, &fresh_response, db).await?;
-            return Ok(None);
-        }
-        MeltQuoteState::Unknown => return Ok(None),
-        MeltQuoteState::Unpaid | MeltQuoteState::Failed => {}
-    }
-
-    match &saga.state {
-        SagaStateEnum::Melt(MeltSagaState::SetupComplete | MeltSagaState::PaymentPending) => {}
-        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted) => {
-            tracing::warn!(
-                "Ignoring terminal {} status for melt quote {} because saga {} has an ambiguous dispatch state",
-                fresh_response.status,
-                quote.id,
-                saga.operation_id
-            );
-            return Ok(None);
-        }
-        SagaStateEnum::Melt(MeltSagaState::Finalizing) => {
-            tracing::info!(
-                "Ignoring terminal {} status for melt quote {} because saga {} is already finalizing",
-                fresh_response.status,
-                quote.id,
-                saga.operation_id
-            );
-            return Ok(None);
-        }
-        SagaStateEnum::Swap(_) => return Ok(None),
+    if saga.operation_id != stale_saga.operation_id
+        || saga.state != SagaStateEnum::Melt(MeltSagaState::PaymentFailed)
+    {
+        tracing::warn!(
+            "Ignoring negative payment observation for melt quote {} because saga {} is {}",
+            quote.id,
+            saga.operation_id,
+            saga.state.state()
+        );
+        return Ok(());
     }
 
     let input_ys = db.get_proof_ys_by_operation_id(&saga.operation_id).await?;
     let blinded_secrets = db
         .get_blinded_secrets_by_operation_id(&saga.operation_id)
         .await?;
-    let rollback = super::melt::shared::rollback_melt_quote(
+    let rollback = super::melt::shared::rollback_failed_melt_quote(
         db,
         pubsub,
         &quote.id,
@@ -303,7 +239,7 @@ async fn reconcile_terminal_melt_inner(
         Err(err) => return Err(err),
     }
 
-    Ok(None)
+    Ok(())
 }
 
 /// Persists a backend-provided lookup id so later checks can recover a pending
@@ -465,11 +401,11 @@ mod tests {
     use crate::mint::melt::melt_saga::MeltSaga;
     use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
 
-    /// A slow backend must not pin the reconciliation locks for the full
-    /// duration of its response: the bounded status check times out and the
-    /// reconciler fails closed, leaving the melt pending.
+    /// A negative observation must not trigger a second backend check: the
+    /// status is an authoritative terminal outcome by contract, so the melt
+    /// is compensated without re-querying the (here hanging) backend.
     #[tokio::test]
-    async fn slow_backend_status_check_fails_closed_without_holding_locks() {
+    async fn negative_outcome_compensates_without_a_second_backend_check() {
         use std::sync::Arc;
         use std::time::Duration;
 
@@ -478,7 +414,8 @@ mod tests {
         use crate::mint::{MintBuilder, MintMeltLimits};
         use crate::types::{FeeReserve, QuoteTTL};
 
-        // Backend whose status check never answers within the bounded window.
+        // Backend whose status check never answers. The outcome processor must
+        // not call it for a negative observation.
         struct HangingStatusBackend {
             inner: cdk_fake_wallet::FakeWallet,
         }
@@ -522,7 +459,6 @@ mod tests {
                 &self,
                 _payment_identifier: &PaymentIdentifier,
             ) -> Result<MakePaymentResponse, Self::Err> {
-                // Longer than MELT_PAYMENT_STATUS_CHECK_TIMEOUT.
                 std::future::pending::<()>().await;
                 unreachable!("pending never resolves")
             }
@@ -597,8 +533,7 @@ mod tests {
         let operation_id = assert_single_melt_saga_operation_id(&mint).await;
         drop(setup_saga);
 
-        // Park the saga as a backend-acknowledged payment so reconciliation
-        // takes the status-check path.
+        // Park the saga as a backend-acknowledged payment.
         let mut tx = mint.localstore.begin_transaction().await.unwrap();
         let mut acquired = tx
             .get_saga_for_update(&operation_id)
@@ -630,8 +565,6 @@ mod tests {
             total_spent: quote.amount(),
         };
 
-        // The reconciler would normally block for the full backend response;
-        // the bounded check must return within the timeout instead.
         let started = std::time::Instant::now();
         process_melt_saga_outcome(
             &saga,
@@ -646,14 +579,15 @@ mod tests {
         let elapsed = started.elapsed();
 
         assert!(
-            elapsed < Duration::from_secs(60),
-            "reconciliation returned after the bounded status check, not the hanging backend (elapsed {:?})",
+            elapsed < Duration::from_secs(1),
+            "negative polling unexpectedly called the hanging backend (elapsed {:?})",
             elapsed
         );
-        // Failed-closed: the melt stays pending and the saga survives.
-        assert_eq!(quote.state, MeltQuoteState::Pending);
-        assert_saga_exists(&mint, &operation_id).await;
-        assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
+        // The terminal status is authoritative: the melt is compensated, the
+        // saga is gone, and the proofs are released back to the user.
+        assert_eq!(quote.state, MeltQuoteState::Unpaid);
+        assert_saga_not_exists(&mint, &operation_id).await;
+        assert_proofs_state(&mint, &input_ys, None).await;
     }
 
     #[tokio::test]
@@ -733,10 +667,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_failed_outcome_rolls_back_and_deletes_saga() {
-        // Compensation requires the fresh backend re-check to confirm the
-        // failure, so seed the fake backend with a terminal Failed state for
-        // this invoice's payment hash.
+    async fn test_recorded_payment_failure_rolls_back_and_deletes_saga() {
         let fake_description = FakeInvoiceDescription {
             pay_invoice_state: MeltQuoteState::Failed,
             check_payment_state: MeltQuoteState::Failed,
@@ -794,32 +725,22 @@ mod tests {
         let operation_id = assert_single_melt_saga_operation_id(&mint).await;
         drop(setup_saga);
 
-        let mut quote = mint
-            .localstore
-            .get_melt_quote(&quote.id)
+        let mut tx = mint.localstore.begin_transaction().await.unwrap();
+        let mut acquired_saga = tx
+            .get_saga_for_update(&operation_id)
             .await
             .unwrap()
-            .unwrap();
-        let saga = assert_saga_exists(&mint, &operation_id).await;
-        let payment_response = MakePaymentResponse {
-            payment_lookup_id: PaymentIdentifier::CustomId("failed_outcome_lookup".to_string()),
-            payment_proof: None,
-            status: MeltQuoteState::Failed,
-            total_spent: quote.amount(),
-        };
-
-        process_melt_saga_outcome(
-            &saga,
-            &mut quote,
-            &payment_response,
-            &mint.localstore,
-            &mint.pubsub_manager,
-            &mint,
+            .expect("saga should exist");
+        tx.update_acquired_saga(
+            &mut acquired_saga,
+            SagaStateEnum::Melt(MeltSagaState::PaymentFailed),
         )
         .await
         .unwrap();
+        tx.commit().await.unwrap();
 
-        assert_eq!(quote.state, MeltQuoteState::Unpaid);
+        mint.recover_from_incomplete_melt_sagas().await.unwrap();
+
         assert_saga_not_exists(&mint, &operation_id).await;
         assert_proofs_state(&mint, &input_ys, None).await;
 
@@ -832,8 +753,143 @@ mod tests {
         assert_eq!(recovered_quote.state, MeltQuoteState::Unpaid);
     }
 
+    /// An `Unknown` poll is not an authoritative outcome (e.g. CLN reports it
+    /// whenever a payment may still settle), so it must keep the melt
+    /// reserved from either dispatch marker; only a later authoritative
+    /// failure may compensate it.
     #[tokio::test]
-    async fn test_terminal_recovery_respects_dispatch_marker() {
+    async fn test_unknown_poll_waits_for_permanent_failure_event() {
+        for saga_state in [
+            MeltSagaState::PaymentAttempted,
+            MeltSagaState::PaymentPending,
+        ] {
+            let fake_description = FakeInvoiceDescription {
+                pay_invoice_state: MeltQuoteState::Unknown,
+                check_payment_state: MeltQuoteState::Unknown,
+                pay_err: false,
+                check_err: false,
+            };
+            let amount_msats: u64 = Amount::from(9_000).into();
+            let invoice = create_fake_invoice(
+                amount_msats,
+                serde_json::to_string(&fake_description).unwrap(),
+            );
+            let payment_states = std::collections::HashMap::from([(
+                invoice.payment_hash().to_string(),
+                (
+                    MeltQuoteState::Unknown,
+                    Amount::from(9_000).with_unit(CurrencyUnit::Sat),
+                ),
+            )]);
+            let mint = create_test_mint_with_payment_states(payment_states)
+                .await
+                .unwrap();
+            let request = cdk_common::melt::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+                request: invoice,
+                unit: CurrencyUnit::Sat,
+                options: None,
+            });
+            let quote_response = mint.get_melt_quote(request).await.unwrap();
+            let quote = mint
+                .localstore
+                .get_melt_quote(quote_response.quote().unwrap())
+                .await
+                .unwrap()
+                .expect("quote should exist");
+            let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+            let input_ys = proofs.ys().unwrap();
+            let melt_request = create_test_melt_request(&proofs, &quote);
+            let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+            let saga = MeltSaga::new(
+                std::sync::Arc::new(mint.clone()),
+                mint.localstore(),
+                mint.pubsub_manager(),
+            );
+            let setup_saga = saga
+                .setup_melt(
+                    &melt_request,
+                    verification,
+                    PaymentMethod::Known(KnownMethod::Bolt11),
+                )
+                .await
+                .unwrap();
+            let operation_id = assert_single_melt_saga_operation_id(&mint).await;
+            drop(setup_saga);
+
+            let mut tx = mint.localstore.begin_transaction().await.unwrap();
+            let mut acquired_saga = tx
+                .get_saga_for_update(&operation_id)
+                .await
+                .unwrap()
+                .expect("saga should exist");
+            tx.update_acquired_saga(&mut acquired_saga, SagaStateEnum::Melt(saga_state.clone()))
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+
+            let saga = assert_saga_exists(&mint, &operation_id).await;
+            let mut quote = mint
+                .localstore
+                .get_melt_quote(&quote.id)
+                .await
+                .unwrap()
+                .expect("quote should exist");
+            let lookup_id = quote
+                .request_lookup_id
+                .clone()
+                .expect("bolt11 quote should have a lookup id");
+            let unknown_response = MakePaymentResponse {
+                payment_lookup_id: lookup_id.clone(),
+                payment_proof: None,
+                status: MeltQuoteState::Unknown,
+                total_spent: quote.amount(),
+            };
+
+            process_melt_saga_outcome(
+                &saga,
+                &mut quote,
+                &unknown_response,
+                &mint.localstore,
+                &mint.pubsub_manager,
+                &mint,
+            )
+            .await
+            .unwrap();
+
+            let stored_saga = assert_saga_exists(&mint, &operation_id).await;
+            assert_eq!(stored_saga.state, SagaStateEnum::Melt(saga_state.clone()));
+            assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
+            assert_eq!(quote.state, MeltQuoteState::Pending);
+
+            let failed_response = MakePaymentResponse {
+                payment_lookup_id: lookup_id,
+                payment_proof: None,
+                status: MeltQuoteState::Failed,
+                total_spent: quote.amount(),
+            };
+            process_melt_saga_failure_event(
+                &stored_saga,
+                &mut quote,
+                &failed_response,
+                &mint.localstore,
+                &mint.pubsub_manager,
+                &mint,
+            )
+            .await
+            .unwrap();
+
+            assert_saga_not_exists(&mint, &operation_id).await;
+            assert_proofs_state(&mint, &input_ys, None).await;
+            assert_eq!(quote.state, MeltQuoteState::Unpaid);
+        }
+    }
+
+    /// A terminal `Unpaid`/`Failed` poll is an authoritative outcome by
+    /// backend contract: the negative observation is persisted as
+    /// `PaymentFailed` and the melt is compensated from either dispatch
+    /// marker, without waiting for a permanent-failure event.
+    #[tokio::test]
+    async fn test_terminal_poll_compensates_dispatched_payment() {
         for saga_state in [
             MeltSagaState::PaymentAttempted,
             MeltSagaState::PaymentPending,
@@ -934,42 +990,17 @@ mod tests {
                 .await
                 .unwrap();
 
-                match saga_state {
-                    MeltSagaState::PaymentAttempted => {
-                        let stored_saga = assert_saga_exists(&mint, &operation_id).await;
-                        assert_eq!(
-                            stored_saga.state,
-                            SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
-                        );
-                        assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
-                        assert_eq!(quote.state, MeltQuoteState::Pending);
+                assert_saga_not_exists(&mint, &operation_id).await;
+                assert_proofs_state(&mint, &input_ys, None).await;
+                assert_eq!(quote.state, MeltQuoteState::Unpaid);
 
-                        process_melt_saga_failure_event(
-                            &stored_saga,
-                            &mut quote,
-                            &payment_response,
-                            &mint.localstore,
-                            &mint.pubsub_manager,
-                            &mint,
-                        )
-                        .await
-                        .unwrap();
-
-                        let stored_saga = assert_saga_exists(&mint, &operation_id).await;
-                        assert_eq!(
-                            stored_saga.state,
-                            SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
-                        );
-                        assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
-                        assert_eq!(quote.state, MeltQuoteState::Pending);
-                    }
-                    MeltSagaState::PaymentPending => {
-                        assert_saga_not_exists(&mint, &operation_id).await;
-                        assert_proofs_state(&mint, &input_ys, None).await;
-                        assert_eq!(quote.state, MeltQuoteState::Unpaid);
-                    }
-                    state => panic!("unexpected test saga state: {state}"),
-                }
+                let persisted_quote = mint
+                    .localstore
+                    .get_melt_quote(&quote.id)
+                    .await
+                    .unwrap()
+                    .expect("quote should still exist after rollback");
+                assert_eq!(persisted_quote.state, MeltQuoteState::Unpaid);
             }
         }
     }
@@ -1341,8 +1372,9 @@ mod tests {
             amount_msats,
             serde_json::to_string(&fake_description).unwrap(),
         );
-        // The fresh backend re-check confirms the failure, so compensation
-        // proceeds all the way to the rollback guard.
+        // The negative observation is authoritative, but persisting the
+        // failure must reach the Finalizing guard without changing the
+        // already-finalizing saga.
         let payment_states = std::collections::HashMap::from([(
             invoice.payment_hash().to_string(),
             (

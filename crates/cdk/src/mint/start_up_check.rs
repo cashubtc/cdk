@@ -390,9 +390,10 @@ impl Mint {
     /// - **Finalize**: If payment was confirmed as PAID on the payment backend, the
     ///   saga already reached `Finalizing`, or the melt settled internally
     /// - **Compensate**: If the saga is `SetupComplete` (payment never
-    ///   attempted), or the backend confirms `Unpaid`/`Failed`
-    /// - **Skip**: If payment is `Pending`/`Unknown`, or its status cannot be
-    ///   verified
+    ///   attempted), or `PaymentFailed` (authoritative failure was recorded),
+    ///   or the backend reports an authoritative `Unpaid`/`Failed` status
+    /// - **Skip**: For `Pending`/`Unknown` polling results, which are not
+    ///   authoritative because an orchestrator may be between attempts
     ///
     /// This recovery handles SetupComplete state which means:
     /// - Proofs were reserved (marked as PENDING)
@@ -409,7 +410,9 @@ impl Mint {
     /// 2. Mint crashed before finalize() committed
     /// 3. Recovery compensated (returned proofs) instead of finalizing
     ///
-    /// Now we check the payment backend payment status before deciding whether to compensate or finalize.
+    /// Recovery checks backend status to finalize a paid result, and to
+    /// compensate an authoritative `Unpaid`/`Failed` result. `Pending` and
+    /// `Unknown` cannot compensate a payment that may still be retried.
     pub async fn recover_from_incomplete_melt_sagas(&self) -> Result<(), Error> {
         let incomplete_sagas = self
             .localstore
@@ -579,6 +582,13 @@ impl Mint {
                             // Setup complete but payment never attempted - always compensate
                             tracing::info!(
                                 "Saga {} in SetupComplete state - payment never attempted, will compensate",
+                                saga.operation_id
+                            );
+                            true
+                        }
+                        cdk_common::mint::MeltSagaState::PaymentFailed => {
+                            tracing::info!(
+                                "Saga {} has an authoritative payment failure - will compensate",
                                 saga.operation_id
                             );
                             true
@@ -757,6 +767,9 @@ impl Mint {
                                 continue; // Saga handled
                             }
                             MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
+                                // A negative status is an authoritative
+                                // terminal result by backend contract (see
+                                // MintPayment::check_outgoing_payment).
                                 if let Err(err) = super::saga_recovery::process_melt_saga_outcome(
                                     &saga,
                                     &mut quote,
@@ -777,7 +790,8 @@ impl Mint {
                                 continue; // Saga handled
                             }
                             MeltQuoteState::Pending | MeltQuoteState::Unknown => {
-                                // Payment still pending - skip for check_pending_melt_quotes
+                                // Not authoritative: an orchestrator may be
+                                // between payment attempts.
                                 tracing::info!(
                                     "Saga {} for quote {} - payment {} on the payment backend, skipping",
                                     saga.operation_id,
@@ -810,16 +824,37 @@ impl Mint {
                     blinded_secrets.len()
                 );
 
-                if let Err(err) = super::melt::shared::rollback_setup_melt_quote(
-                    &self.localstore,
-                    &self.pubsub_manager,
-                    &quote_id_parsed,
-                    &input_ys,
-                    &blinded_secrets,
-                    &saga.operation_id,
-                )
-                .await
-                {
+                let rollback = match &saga.state {
+                    cdk_common::mint::SagaStateEnum::Melt(
+                        cdk_common::mint::MeltSagaState::SetupComplete,
+                    ) => {
+                        super::melt::shared::rollback_setup_melt_quote(
+                            &self.localstore,
+                            &self.pubsub_manager,
+                            &quote_id_parsed,
+                            &input_ys,
+                            &blinded_secrets,
+                            &saga.operation_id,
+                        )
+                        .await
+                    }
+                    cdk_common::mint::SagaStateEnum::Melt(
+                        cdk_common::mint::MeltSagaState::PaymentFailed,
+                    ) => {
+                        super::melt::shared::rollback_failed_melt_quote(
+                            &self.localstore,
+                            &self.pubsub_manager,
+                            &quote_id_parsed,
+                            &input_ys,
+                            &blinded_secrets,
+                            &saga.operation_id,
+                        )
+                        .await
+                    }
+                    _ => continue,
+                };
+
+                if let Err(err) = rollback {
                     tracing::error!(
                         "Failed to rollback melt quote {} for saga {}: {}",
                         quote_id_parsed,
@@ -869,6 +904,18 @@ impl Mint {
                 return Ok(());
             }
         };
+
+        if saga.state
+            == cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentFailed)
+        {
+            return super::saga_recovery::recover_recorded_payment_failure(
+                &saga,
+                quote,
+                &self.localstore,
+                &self.pubsub_manager,
+            )
+            .await;
+        }
 
         // An internal settlement commits the mint-quote credit and marks this
         // quote Paid in one transaction, so the quote may be Paid here while

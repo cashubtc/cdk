@@ -497,6 +497,13 @@ pub trait MintPayment {
     ) -> Result<Vec<WaitPaymentResponse>, Self::Err>;
 
     /// Check the status of an outgoing payment
+    ///
+    /// The reported status must be conservative about finality. The mint
+    /// treats `Unpaid` and `Failed` as authoritative terminal outcomes and
+    /// may compensate the melt, returning the reserved proofs to the user.
+    /// A backend that cannot guarantee a not-paid payment will never
+    /// settle — for example because an orchestrator may be between attempts
+    /// of the same payment — MUST report `Pending` or `Unknown` instead.
     async fn check_outgoing_payment(
         &self,
         payment_identifier: &PaymentIdentifier,

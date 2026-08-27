@@ -166,8 +166,11 @@ pub enum MeltSagaState {
     /// A terminal negative status cannot prove that the payment was not sent.
     PaymentAttempted,
     /// The backend acknowledged the payment attempt.
-    /// Later authoritative status checks may finalize or compensate it.
+    /// Later status checks may finalize it, but must never compensate it.
     PaymentPending,
+    /// The backend authoritatively reported that the payment operation ended
+    /// without paying. Recovery may safely compensate this melt.
+    PaymentFailed,
     /// TX1 committed (proofs Spent, quote Paid) - change signing + cleanup pending
     Finalizing,
 }
@@ -178,6 +181,7 @@ impl fmt::Display for MeltSagaState {
             MeltSagaState::SetupComplete => write!(f, "setup_complete"),
             MeltSagaState::PaymentAttempted => write!(f, "payment_attempted"),
             MeltSagaState::PaymentPending => write!(f, "payment_pending"),
+            MeltSagaState::PaymentFailed => write!(f, "payment_failed"),
             MeltSagaState::Finalizing => write!(f, "finalizing"),
         }
     }
@@ -191,6 +195,7 @@ impl FromStr for MeltSagaState {
             "setup_complete" => Ok(MeltSagaState::SetupComplete),
             "payment_attempted" => Ok(MeltSagaState::PaymentAttempted),
             "payment_pending" => Ok(MeltSagaState::PaymentPending),
+            "payment_failed" => Ok(MeltSagaState::PaymentFailed),
             "finalizing" => Ok(MeltSagaState::Finalizing),
             _ => Err(Error::Custom(format!("Invalid melt saga state: {}", value))),
         }
@@ -232,6 +237,7 @@ impl SagaStateEnum {
                 MeltSagaState::SetupComplete => "setup_complete",
                 MeltSagaState::PaymentAttempted => "payment_attempted",
                 MeltSagaState::PaymentPending => "payment_pending",
+                MeltSagaState::PaymentFailed => "payment_failed",
                 MeltSagaState::Finalizing => "finalizing",
             },
         }
