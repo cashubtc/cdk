@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use cdk_common::amount::SplitTarget;
+use cdk_common::amount::{SplitTarget, MAX_SPLIT_OUTPUTS};
 use cdk_common::MintQuoteState;
 use futures::Stream;
 use tokio::sync::mpsc;
@@ -17,6 +17,28 @@ use crate::nuts::{Proofs, SpendingConditions};
 use crate::wallet::types::MintQuote;
 use crate::wallet::wallet_repository::WalletRepository;
 use crate::wallet::Wallet;
+
+fn validate_remote_quote_output_budget(
+    amount: crate::Amount,
+    split_target: &SplitTarget,
+) -> Result<(), Error> {
+    let SplitTarget::Value(target) = split_target else {
+        return Ok(());
+    };
+    if target == &crate::Amount::ZERO {
+        return Ok(());
+    }
+
+    let output_groups = u64::from(amount).div_ceil(u64::from(*target));
+    if output_groups > MAX_SPLIT_OUTPUTS as u64 {
+        return Err(Error::Custom(format!(
+            "NpubCash quote requires at least {output_groups} outputs, maximum is \
+             {MAX_SPLIT_OUTPUTS}"
+        )));
+    }
+
+    Ok(())
+}
 
 /// Stream that continuously polls NpubCash and yields proofs as payments arrive
 #[allow(missing_debug_implementations)]
@@ -50,6 +72,16 @@ impl NpubCashProofStream {
                             Ok(quotes) => {
                                 for quote in quotes {
                                     if matches!(quote.state, MintQuoteState::Paid) {
+                                        let split_budget = validate_remote_quote_output_budget(
+                                            quote.amount_mintable(),
+                                            &split_target,
+                                        );
+                                        if let Err(error) = split_budget {
+                                            if tx.send(Err(error)).await.is_err() {
+                                                return;
+                                            }
+                                            continue;
+                                        }
                                         let quote_id = quote.id.clone();
                                         let mint_url = quote.mint_url.clone();
                                         tracing::info!("Minting NpubCash quote {}...", quote_id);
@@ -136,6 +168,16 @@ impl WalletNpubCashProofStream {
                             Ok(quotes) => {
                                 for quote in quotes {
                                     if matches!(quote.state, MintQuoteState::Paid) {
+                                        let split_budget = validate_remote_quote_output_budget(
+                                            quote.amount_mintable(),
+                                            &split_target,
+                                        );
+                                        if let Err(error) = split_budget {
+                                            if tx.send(Err(error)).await.is_err() {
+                                                return;
+                                            }
+                                            continue;
+                                        }
                                         let quote_id = quote.id.clone();
                                         let mint_url = quote.mint_url.clone();
 
@@ -188,5 +230,23 @@ impl Stream for WalletNpubCashProofStream {
 impl Drop for WalletNpubCashProofStream {
     fn drop(&mut self) {
         self.cancel.cancel();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_quote_output_budget_rejects_oversized_value_split() {
+        let at_limit = crate::Amount::from(MAX_SPLIT_OUTPUTS as u64);
+        assert!(
+            validate_remote_quote_output_budget(at_limit, &SplitTarget::Value(1.into())).is_ok()
+        );
+
+        let over_limit = crate::Amount::from(MAX_SPLIT_OUTPUTS as u64 + 1);
+        assert!(
+            validate_remote_quote_output_budget(over_limit, &SplitTarget::Value(1.into())).is_err()
+        );
     }
 }
