@@ -48,7 +48,7 @@ use self::compensation::{ReleaseMeltQuote, RevertProofReservation};
 use self::state::{Finalized, Initial, MeltRequested, PaymentPending, Prepared};
 use super::MeltConfirmOptions;
 use crate::nuts::nut00::{KnownMethod, ProofsMethods};
-use crate::nuts::{MeltRequest, PreMintSecrets, Proofs, State};
+use crate::nuts::{MeltRequest, PreMintSecrets, Proofs, SecretKey, State};
 use crate::util::unix_time;
 use crate::wallet::blind_signature::{
     validate_mint_response_signatures, SignatureAmountValidation,
@@ -503,7 +503,8 @@ impl<'a> MeltSaga<'a, Initial> {
     pub async fn prepare_with_proofs(
         mut self,
         quote_id: &str,
-        proofs: Proofs,
+        mut proofs: Proofs,
+        p2pk_signing_keys: &[SecretKey],
         metadata: HashMap<String, String>,
     ) -> Result<MeltSaga<'a, Prepared>, Error> {
         tracing::info!(
@@ -513,6 +514,25 @@ impl<'a> MeltSaga<'a, Initial> {
         );
 
         let quote_info = self.initialize_melt(quote_id).await?;
+
+        // External proofs (e.g. from a token) may be P2PK/HTLC locked and
+        // need witnesses before the mint will accept them as melt inputs.
+        // Sign with the caller's keys plus any wallet-known signing keys,
+        // mirroring how the receive path resolves keys.
+        let mut signing_keys = p2pk_signing_keys.to_vec();
+        for pubkey in crate::wallet::util::collect_p2pk_pubkeys(&proofs)? {
+            let x_only = pubkey.x_only_public_key();
+            if signing_keys
+                .iter()
+                .any(|key| key.x_only_public_key(&crate::SECP256K1).0 == x_only)
+            {
+                continue;
+            }
+            if let Some(key) = self.wallet.get_signing_key(&pubkey).await? {
+                signing_keys.push(key);
+            }
+        }
+        crate::wallet::util::sign_proofs(&mut proofs, &signing_keys)?;
 
         let proofs_total = proofs.total_amount()?;
         let inputs_needed = quote_info
@@ -1380,7 +1400,7 @@ mod tests {
 
         let saga = MeltSaga::new(&wallet);
         let prepared = saga
-            .prepare_with_proofs(&quote_id, vec![proof], HashMap::new())
+            .prepare_with_proofs(&quote_id, vec![proof], &[], HashMap::new())
             .await
             .unwrap();
 
@@ -1437,6 +1457,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_prepare_melt_signs_p2pk_locked_external_proofs() {
+        let db = create_test_db().await;
+        let keyset_id = test_keyset_id();
+
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        // Build an external P2PK-locked proof, as extracted from a token
+        let signing_key = crate::nuts::SecretKey::generate();
+        let spending_conditions =
+            crate::nuts::SpendingConditions::new_p2pk(signing_key.public_key(), None);
+        let nut10_secret: crate::nuts::nut10::Secret = spending_conditions.try_into().unwrap();
+        let secret: crate::secret::Secret = nut10_secret.try_into().unwrap();
+        let proof = crate::nuts::Proof::new(
+            Amount::from(2000),
+            keyset_id,
+            secret,
+            crate::nuts::SecretKey::generate().public_key(),
+        );
+        let proof_y = proof.y().unwrap();
+        assert!(proof.witness.is_none());
+
+        let saga = MeltSaga::new(&wallet);
+        saga.prepare_with_proofs(&quote_id, vec![proof], &[signing_key], HashMap::new())
+            .await
+            .unwrap();
+
+        // The reserved proof must carry a witness so the mint will accept
+        // it as a melt input
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Reserved);
+        assert!(stored[0].proof.witness.is_some());
+    }
+
+    #[tokio::test]
     async fn test_prepare_melt_proofs_persists_metadata_in_saga() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
@@ -1457,7 +1518,7 @@ mod tests {
         metadata.insert("purpose".to_string(), "ffi-pending-proofs".to_string());
 
         let prepared = MeltSaga::new(&wallet)
-            .prepare_with_proofs(&quote_id, vec![proof], metadata.clone())
+            .prepare_with_proofs(&quote_id, vec![proof], &[], metadata.clone())
             .await
             .unwrap();
 
@@ -1586,7 +1647,7 @@ mod tests {
 
         let saga = MeltSaga::new(&wallet);
         let requested = saga
-            .prepare_with_proofs(&quote_id, vec![proof], HashMap::new())
+            .prepare_with_proofs(&quote_id, vec![proof], &[], HashMap::new())
             .await
             .unwrap()
             .request_melt_with_options(MeltConfirmOptions::new())
@@ -1686,7 +1747,7 @@ mod tests {
         ));
 
         let requested = MeltSaga::new(wallet)
-            .prepare_with_proofs(&quote_id, vec![proof], HashMap::new())
+            .prepare_with_proofs(&quote_id, vec![proof], &[], HashMap::new())
             .await
             .unwrap()
             .request_melt_with_options(MeltConfirmOptions::new())

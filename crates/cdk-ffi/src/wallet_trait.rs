@@ -338,11 +338,12 @@ impl WalletTraitDef for Wallet {
         &self,
         quote_id: &str,
         proofs: cdk_common::Proofs,
+        p2pk_signing_keys: &[cdk_common::SecretKey],
         metadata: HashMap<String, String>,
     ) -> Result<PreparedMelt, Self::Error> {
         let prepared = self
             .inner()
-            .prepare_melt_proofs(quote_id, proofs, metadata)
+            .prepare_melt_proofs(quote_id, proofs, p2pk_signing_keys, metadata)
             .await?;
         Ok(PreparedMelt::new(self.inner().clone(), &prepared))
     }
@@ -351,11 +352,12 @@ impl WalletTraitDef for Wallet {
         &self,
         quote_id: &str,
         encoded_token: &str,
+        p2pk_signing_keys: &[cdk_common::SecretKey],
         metadata: HashMap<String, String>,
     ) -> Result<PreparedMelt, Self::Error> {
         let prepared = self
             .inner()
-            .prepare_melt_token(quote_id, encoded_token, metadata)
+            .prepare_melt_token(quote_id, encoded_token, p2pk_signing_keys, metadata)
             .await?;
         Ok(PreparedMelt::new(self.inner().clone(), &prepared))
     }

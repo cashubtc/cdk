@@ -277,24 +277,27 @@ impl WalletTrait for super::Wallet {
         self.prepare_melt(quote_id, metadata).await
     }
 
-    #[instrument(skip(self, proofs, metadata))]
+    #[instrument(skip(self, proofs, p2pk_signing_keys, metadata))]
     async fn prepare_melt_proofs(
         &self,
         quote_id: &str,
         proofs: Proofs,
+        p2pk_signing_keys: &[SecretKey],
         metadata: HashMap<String, String>,
     ) -> Result<super::melt::PreparedMelt<'_>, Self::Error> {
-        self.prepare_melt_proofs(quote_id, proofs, metadata).await
+        self.prepare_melt_proofs(quote_id, proofs, p2pk_signing_keys, metadata)
+            .await
     }
 
-    #[instrument(skip(self, encoded_token, metadata))]
+    #[instrument(skip(self, encoded_token, p2pk_signing_keys, metadata))]
     async fn prepare_melt_token(
         &self,
         quote_id: &str,
         encoded_token: &str,
+        p2pk_signing_keys: &[SecretKey],
         metadata: HashMap<String, String>,
     ) -> Result<super::melt::PreparedMelt<'_>, Self::Error> {
-        self.prepare_melt_token(quote_id, encoded_token, metadata)
+        self.prepare_melt_token(quote_id, encoded_token, p2pk_signing_keys, metadata)
             .await
     }
 

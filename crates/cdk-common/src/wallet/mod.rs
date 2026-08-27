@@ -1188,10 +1188,15 @@ pub trait Wallet: Send + Sync {
     ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
 
     /// Prepare a melt operation with specific proofs
+    ///
+    /// P2PK/HTLC-locked proofs are signed with `p2pk_signing_keys` plus any
+    /// signing keys known to the wallet before being reserved. Pass an empty
+    /// slice when the proofs are unlocked.
     async fn prepare_melt_proofs(
         &self,
         quote_id: &str,
         proofs: Proofs,
+        p2pk_signing_keys: &[SecretKey],
         metadata: HashMap<String, String>,
     ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
 
@@ -1200,10 +1205,13 @@ pub trait Wallet: Send + Sync {
     /// Decodes the token, extracts proofs (handling keyset state internally),
     /// and prepares the melt. This is useful when the caller has a token and
     /// wants to skip manual decoding, which requires keyset state for v2 keysets.
+    /// P2PK-locked tokens are signed with `p2pk_signing_keys` plus any signing
+    /// keys known to the wallet.
     async fn prepare_melt_token(
         &self,
         quote_id: &str,
         encoded_token: &str,
+        p2pk_signing_keys: &[SecretKey],
         metadata: HashMap<String, String>,
     ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
 
