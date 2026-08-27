@@ -37,6 +37,24 @@ async fn process(
     serde_json::to_value(response)
 }
 
+fn deserialize_request(text: &str) -> Result<WsRequest, (serde_json::Error, Option<usize>)> {
+    let value = serde_json::from_str::<serde_json::Value>(text).map_err(|err| (err, None))?;
+    let request_id = value
+        .get("id")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|id| usize::try_from(id).ok());
+
+    serde_json::from_value(value).map_err(|err| (err, request_id))
+}
+
+fn error_response(
+    request_id: usize,
+    error: WsError,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let response: WsMessageOrResponse = (request_id, Err(WsErrorBody::from(error))).into();
+    serde_json::to_value(response)
+}
+
 pub use error::WsError;
 
 pub struct WsContext {
@@ -132,15 +150,20 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
                 };
 
 
-                let request = match serde_json::from_str::<WsRequest>(&text) {
-                    Ok(request) => request,
-                    Err(err) => {
+                let result = match deserialize_request(&text) {
+                    Ok(request) => process(&mut context, request).await,
+                    Err((err, request_id)) => {
                         tracing::error!("Could not parse request: {}", err);
-                        continue;
+                        match request_id {
+                            Some(request_id) => {
+                                error_response(request_id, WsError::InvalidParams)
+                            }
+                            None => continue,
+                        }
                     }
                 };
 
-                match process(&mut context, request).await {
+                match result {
                     Ok(result) => {
                         if let Err(err) = socket
                             .send(Message::Text(result.to_string().into()))
@@ -172,6 +195,7 @@ mod tests {
 
     use cdk::mint::{Mint, QuoteId};
     use cdk::nuts::nut02::KeySetVersion;
+    use cdk::nuts::nut17::{MAX_CUSTOM_KIND_LEN, MAX_SUBSCRIPTION_ID_LEN};
     use cdk::nuts::{CurrencyUnit, MintInfo};
     use cdk::subscription::{Params, SubId};
     use cdk::ws::WsUnsubscribeRequest;
@@ -181,6 +205,57 @@ mod tests {
 
     use super::*;
     use crate::cache::HttpCache;
+
+    #[test]
+    fn oversized_subscription_fields_return_invalid_params() {
+        for request in [
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "subscribe",
+                "params": {
+                    "kind": "bolt11_mint_quote",
+                    "filters": [],
+                    "subId": "a".repeat(MAX_SUBSCRIPTION_ID_LEN + 1),
+                },
+                "id": 1,
+            }),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "subscribe",
+                "params": {
+                    "kind": "a".repeat(MAX_CUSTOM_KIND_LEN + 1),
+                    "filters": [],
+                    "subId": "subscription",
+                },
+                "id": 2,
+            }),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "unsubscribe",
+                "params": {
+                    "subId": "a".repeat(MAX_SUBSCRIPTION_ID_LEN + 1),
+                },
+                "id": 3,
+            }),
+        ] {
+            let (err, request_id) =
+                deserialize_request(&request.to_string()).expect_err("oversized request");
+            assert!(
+                err.to_string().contains("exceeds"),
+                "unexpected error: {err}"
+            );
+
+            let response = error_response(request_id.expect("request ID"), WsError::InvalidParams)
+                .expect("error response");
+            assert_eq!(response["error"]["code"], serde_json::json!(-32602));
+            assert_eq!(
+                response["error"]["message"],
+                serde_json::json!("Invalid params")
+            );
+            assert_eq!(response["jsonrpc"], serde_json::json!("2.0"));
+            assert_eq!(response["id"], request["id"]);
+        }
+    }
 
     async fn create_test_mint_with_limits(max_inputs: usize, max_outputs: usize) -> Arc<Mint> {
         let localstore = Arc::new(memory::empty().await.expect("in-memory db"));

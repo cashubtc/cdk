@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 
-use cdk_common::{Amount, BlindedMessage, CurrencyUnit, Id, Proofs, ProofsMethods, PublicKey};
+use cdk_common::nuts::nut17::MAX_CUSTOM_KIND_LEN;
+use cdk_common::{
+    Amount, BlindedMessage, CurrencyUnit, Id, PaymentMethod, Proofs, ProofsMethods, PublicKey,
+};
 use tracing::instrument;
 
 use super::{Error, Mint};
@@ -8,8 +11,26 @@ use super::{Error, Mint};
 /// Maximum allowed length in bytes for proof secret or witness content
 const MAX_PROOF_CONTENT_LEN: usize = 1024;
 
-/// Maximum allowed length in bytes for request fields (description, extra)
+/// Maximum allowed length in bytes for request fields (description, request, extra)
 pub(crate) const MAX_REQUEST_FIELD_LEN: usize = 1024;
+
+// Both custom quote kind suffixes (`_mint_quote` and `_melt_quote`) are 11 bytes.
+const CUSTOM_QUOTE_KIND_SUFFIX_LEN: usize = "_mint_quote".len();
+pub(crate) const MAX_CUSTOM_PAYMENT_METHOD_LEN: usize =
+    MAX_CUSTOM_KIND_LEN - CUSTOM_QUOTE_KIND_SUFFIX_LEN;
+
+pub(crate) fn validate_custom_payment_method(method: &PaymentMethod) -> Result<(), Error> {
+    match method {
+        PaymentMethod::Custom(method) if method.len() > MAX_CUSTOM_PAYMENT_METHOD_LEN => {
+            Err(Error::RequestFieldTooLarge {
+                field: "method".to_string(),
+                actual: method.len(),
+                max: MAX_CUSTOM_PAYMENT_METHOD_LEN,
+            })
+        }
+        _ => Ok(()),
+    }
+}
 
 /// Verification result with typed amount
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]

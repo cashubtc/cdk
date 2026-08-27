@@ -149,7 +149,6 @@ fn validate_retained_strings(
 }
 
 /// Subscription Id wrapper
-///
 #[derive(Debug, Clone, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize)]
 pub struct SubId(String);
 

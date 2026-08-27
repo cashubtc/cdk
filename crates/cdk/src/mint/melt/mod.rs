@@ -27,7 +27,7 @@ use super::{
     CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
     MeltQuoteBolt12Response, MeltRequest, Mint, PaymentMethod,
 };
-use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
+use crate::mint::verification::{validate_custom_payment_method, MAX_REQUEST_FIELD_LEN};
 use crate::nuts::MeltQuoteState;
 use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
@@ -95,6 +95,29 @@ impl std::future::IntoFuture for PendingMelt {
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(self.wait())
     }
+}
+
+fn validate_custom_quote_fields(request: &str, extra: &serde_json::Value) -> Result<(), Error> {
+    if request.len() > MAX_REQUEST_FIELD_LEN {
+        return Err(Error::RequestFieldTooLarge {
+            field: "request".to_string(),
+            actual: request.len(),
+            max: MAX_REQUEST_FIELD_LEN,
+        });
+    }
+
+    if !extra.is_null() {
+        let extra_str = extra.to_string();
+        if extra_str.len() > MAX_REQUEST_FIELD_LEN {
+            return Err(Error::RequestFieldTooLarge {
+                field: "extra".to_string(),
+                actual: extra_str.len(),
+                max: MAX_REQUEST_FIELD_LEN,
+            });
+        }
+    }
+
+    Ok(())
 }
 
 impl Mint {
@@ -621,22 +644,15 @@ impl Mint {
                 extra,
             } = melt_request;
 
-            if !extra.is_null() {
-                let extra_str = extra.to_string();
-                if extra_str.len() > MAX_REQUEST_FIELD_LEN {
-                    return Err(Error::RequestFieldTooLarge {
-                        field: "extra".to_string(),
-                        actual: extra_str.len(),
-                        max: MAX_REQUEST_FIELD_LEN,
-                    });
-                }
-            }
+            let payment_method = PaymentMethod::from(method.as_str());
+            validate_custom_payment_method(&payment_method)?;
+            validate_custom_quote_fields(request, extra)?;
 
             let payment_backend = self
                 .payment_processors
                 .get(&PaymentProcessorKey::new(
                     unit.clone(),
-                    PaymentMethod::from(method.as_str()),
+                    payment_method.clone(),
                 ))
                 .ok_or_else(|| {
                     tracing::info!("Could not get payment backend for {}, {} ", unit, method);
@@ -685,7 +701,7 @@ impl Mint {
             // the payment processor handles method-specific validation
             self.check_melt_request_acceptable(
                 payment_quote.amount.clone(),
-                PaymentMethod::from(method.as_str()),
+                payment_method.clone(),
                 request.clone(),
                 None, // Custom methods don't use options
             )
@@ -709,7 +725,7 @@ impl Mint {
                 unix_time() + melt_ttl,
                 payment_quote.request_lookup_id.clone(),
                 None, // Custom methods don't use options
-                PaymentMethod::from(method.as_str()),
+                payment_method,
                 payment_quote.extra_json,
                 payment_quote.estimated_blocks,
             );

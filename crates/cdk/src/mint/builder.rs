@@ -15,6 +15,7 @@ use cdk_signatory::signatory::{RotateKeyArguments, Signatory};
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
+use super::verification::validate_custom_payment_method;
 use super::Nuts;
 use crate::amount::Amount;
 use crate::cdk_database;
@@ -414,6 +415,8 @@ impl MintBuilder {
         limits: MintMeltLimits,
         payment_processor: DynMintPayment,
     ) -> Result<(), Error> {
+        validate_custom_payment_method(&method)?;
+
         let key = PaymentProcessorKey {
             unit: unit.clone(),
             method: method.clone(),
@@ -812,6 +815,7 @@ mod tests {
     use KnownMethod;
 
     use super::*;
+    use crate::mint::verification::MAX_CUSTOM_PAYMENT_METHOD_LEN;
 
     // Mock payment processor for testing
     struct MockPaymentProcessor {
@@ -1369,6 +1373,42 @@ mod tests {
         assert_eq!(melt_method.min_amount, Some(limits.melt_min));
         assert_eq!(melt_method.max_amount, Some(limits.melt_max));
         assert!(melt_method.options.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_add_payment_processor_rejects_oversized_custom_method() {
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let mut builder = MintBuilder::new(localstore);
+        let method_name = "a".repeat(MAX_CUSTOM_PAYMENT_METHOD_LEN + 1);
+        let method = PaymentMethod::Custom(method_name.clone());
+        let settings = SettingsResponse {
+            unit: "usd".to_string(),
+            bolt11: None,
+            bolt12: None,
+            onchain: None,
+            custom: HashMap::from([(method_name, "{}".to_string())]),
+        };
+
+        let err = builder
+            .add_payment_processor(
+                CurrencyUnit::Usd,
+                method,
+                MintMeltLimits::new(100, 10_000),
+                Arc::new(MockPaymentProcessor { settings }),
+            )
+            .await
+            .expect_err("oversized custom method");
+
+        assert!(matches!(
+            err,
+            Error::RequestFieldTooLarge {
+                field,
+                actual,
+                max,
+            } if field == "method"
+                && actual == MAX_CUSTOM_PAYMENT_METHOD_LEN + 1
+                && max == MAX_CUSTOM_PAYMENT_METHOD_LEN
+        ));
     }
 
     #[tokio::test]

@@ -15,7 +15,7 @@ use cdk_common::{
 };
 use tracing::instrument;
 
-use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
+use crate::mint::verification::{validate_custom_payment_method, MAX_REQUEST_FIELD_LEN};
 use crate::Mint;
 
 mod auth;
@@ -209,6 +209,8 @@ impl Mint {
             let unit = mint_quote_request.unit();
             let amount = mint_quote_request.amount();
             let payment_method = mint_quote_request.payment_method();
+
+            validate_custom_payment_method(&payment_method)?;
 
             // Validate the request before processing
             self.check_mint_request_acceptable(&mint_quote_request)
@@ -1026,14 +1028,16 @@ mod batch_mint_tests {
     };
     use cdk_common::{
         Amount, BatchMintRequest, CurrencyUnit, Error, MintQuoteBolt11Request,
-        MintQuoteBolt11Response, MintQuoteState, MintRequest, PaymentMethod, PublicKey, QuoteId,
+        MintQuoteBolt11Response, MintQuoteCustomRequest, MintQuoteState, MintRequest,
+        PaymentMethod, PublicKey, QuoteId,
     };
     use cdk_fake_wallet::FakeWallet;
     use futures::Stream;
     use tokio::time::sleep;
 
     use crate::mint::payment_backend::MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS;
-    use crate::mint::{Mint, MintBuilder, MintMeltLimits};
+    use crate::mint::verification::MAX_CUSTOM_PAYMENT_METHOD_LEN;
+    use crate::mint::{Mint, MintBuilder, MintMeltLimits, MintQuoteRequest};
     use crate::types::{FeeReserve, QuoteTTL};
 
     struct OnchainTestBackend {
@@ -1113,6 +1117,36 @@ mod batch_mint_tests {
 
     async fn create_test_mint() -> Mint {
         create_test_mint_with_onchain_limits(1, 10_000).await
+    }
+
+    #[tokio::test]
+    async fn custom_mint_quote_method_must_fit_subscription_kind() {
+        let mint = create_test_mint().await;
+        let method = "a".repeat(MAX_CUSTOM_PAYMENT_METHOD_LEN + 1);
+        let err = mint
+            .get_mint_quote(MintQuoteRequest::Custom {
+                method: PaymentMethod::from(method),
+                request: MintQuoteCustomRequest {
+                    amount: None,
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                    extra: serde_json::Value::Null,
+                },
+            })
+            .await
+            .expect_err("oversized custom method");
+
+        assert!(matches!(
+            err,
+            Error::RequestFieldTooLarge {
+                field,
+                actual,
+                max,
+            } if field == "method"
+                && actual == MAX_CUSTOM_PAYMENT_METHOD_LEN + 1
+                && max == MAX_CUSTOM_PAYMENT_METHOD_LEN
+        ));
     }
 
     async fn create_test_mint_with_onchain_limits(onchain_min: u64, onchain_max: u64) -> Mint {
