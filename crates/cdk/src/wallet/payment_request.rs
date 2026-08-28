@@ -4,7 +4,9 @@
 //! Nostr or HTTP transports when available. If no transport is present in the request, an error
 //! is returned so callers can handle alternative delivery mechanisms explicitly.
 
-use std::{fmt, str::FromStr, sync::Arc};
+use std::fmt;
+use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::Result;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;

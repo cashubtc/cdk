@@ -2,7 +2,8 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/14.md>
 
-use std::{fmt, str::FromStr};
+use std::fmt;
+use std::str::FromStr;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;

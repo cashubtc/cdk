@@ -2,7 +2,8 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/10.md>
 
-use std::{fmt, str::FromStr};
+use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
