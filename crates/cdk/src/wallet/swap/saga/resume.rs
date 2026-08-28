@@ -321,7 +321,9 @@ mod tests {
     };
     use cdk_common::Amount;
 
+    use super::validate_swap_recovery_counter_range;
     use crate::nuts::{PreMintSecrets, SecretKey as NutSecretKey};
+    use crate::wallet::recovery::MAX_RECOVERY_COUNTER_RANGE;
     use crate::wallet::test_utils::*;
 
     fn swap_operation_data_with_counter_range(
