@@ -2671,6 +2671,65 @@ fn load_database_bootstrap_settings() -> Result<config::Settings> {
     Ok(settings)
 }
 
+/// Rolls back the most recently applied migrations in mintd's primary database.
+///
+/// Unlike normal database initialization, this function opens the selected
+/// database without first applying pending forward migrations. The caller must
+/// ensure the daemon is stopped and the database has been backed up.
+pub async fn rollback_database_migrations(
+    _work_dir: &Path,
+    _db_password: Option<String>,
+    steps: usize,
+) -> Result<Vec<String>> {
+    let bootstrap = load_database_bootstrap_settings()?;
+
+    match bootstrap.database.engine {
+        #[cfg(feature = "sqlite")]
+        DatabaseEngine::Sqlite => {
+            let sql_db_path = _work_dir.join("cdk-mintd.sqlite");
+            if !sql_db_path.is_file() {
+                bail!(
+                    "SQLite mint database {} does not exist",
+                    sql_db_path.display()
+                );
+            }
+
+            #[cfg(not(feature = "sqlcipher"))]
+            let rolled_back = MintSqliteDatabase::rollback(&sql_db_path, steps).await?;
+            #[cfg(feature = "sqlcipher")]
+            let rolled_back = {
+                let password = _db_password.ok_or_else(|| {
+                    anyhow!("Password required when sqlcipher feature is enabled")
+                })?;
+                MintSqliteDatabase::rollback((sql_db_path, password), steps).await?
+            };
+
+            Ok(rolled_back)
+        }
+        #[cfg(feature = "postgres")]
+        DatabaseEngine::Postgres => {
+            let pg_config = bootstrap.database.postgres.as_ref().ok_or_else(|| {
+                anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
+            })?;
+            let db_config = PgConfig::new(
+                pg_config.url.as_str(),
+                pg_config.tls_mode.as_deref(),
+                pg_config.max_connections,
+                pg_config.connection_timeout_seconds,
+            );
+            Ok(MintPgDatabase::rollback(db_config, steps).await?)
+        }
+        #[cfg(not(feature = "sqlite"))]
+        DatabaseEngine::Sqlite => {
+            bail!("SQLite support not compiled in. Enable the 'sqlite' feature to use SQLite database.")
+        }
+        #[cfg(not(feature = "postgres"))]
+        DatabaseEngine::Postgres => {
+            bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
+        }
+    }
+}
+
 fn configuration_service(
     store: Arc<dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync>,
     settings: &config::Settings,

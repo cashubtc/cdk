@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
@@ -52,6 +53,33 @@ pub struct CLIArgs {
 pub enum Commands {
     /// Manage the database-backed mintd configuration.
     Config(ConfigArgs),
+    /// Manage the primary mint database schema.
+    Database(DatabaseArgs),
+}
+
+/// Arguments for primary database schema management.
+#[derive(Debug, Args)]
+pub struct DatabaseArgs {
+    #[command(subcommand)]
+    pub command: DatabaseCommands,
+}
+
+/// Primary database schema operations.
+#[derive(Debug, Subcommand)]
+pub enum DatabaseCommands {
+    /// Roll back the most recently applied reversible migrations.
+    Rollback(RollbackDatabaseArgs),
+}
+
+/// Arguments for rolling back database migrations.
+#[derive(Debug, Args)]
+pub struct RollbackDatabaseArgs {
+    /// Number of applied migrations to roll back.
+    #[arg(long, default_value = "1")]
+    pub steps: NonZeroUsize,
+    /// Confirm the destructive schema change.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 /// Arguments for database-backed configuration management.
@@ -216,5 +244,29 @@ mod tests {
     fn no_subcommand_still_parses_daemon_startup() {
         let args = CLIArgs::try_parse_from(["cdk-mintd"]).expect("daemon arguments should parse");
         assert!(args.command.is_none());
+    }
+
+    #[test]
+    fn parses_database_rollback_command() {
+        let args =
+            CLIArgs::try_parse_from(["cdk-mintd", "database", "rollback", "--steps", "3", "--yes"])
+                .expect("database rollback should parse");
+
+        assert!(matches!(
+            args.command,
+            Some(Commands::Database(DatabaseArgs {
+                command: DatabaseCommands::Rollback(RollbackDatabaseArgs { steps, yes: true }),
+            })) if steps.get() == 3
+        ));
+
+        assert!(CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "database",
+            "rollback",
+            "--steps",
+            "0",
+            "--yes",
+        ])
+        .is_err());
     }
 }

@@ -407,6 +407,8 @@ pub async fn new_wallet_pg_database(conn_str: &str) -> Result<WalletPgDatabase, 
 #[cfg(test)]
 mod test {
     use cdk_common::{mint_db_test, wallet_db_test, QuoteId};
+    use cdk_sql_common::pool::Pool;
+    use cdk_sql_common::stmt::query;
 
     use super::*;
 
@@ -425,7 +427,104 @@ mod test {
             .expect("database")
     }
 
+    async fn migration_query_succeeds(db_url: &str, sql: &str) -> bool {
+        let pool = Pool::<PgConnectionPool>::new(db_url.into());
+        let conn = pool.get().await.expect("valid migration test connection");
+        query(sql)
+            .expect("valid migration test query")
+            .fetch_all(&*conn)
+            .await
+            .is_ok()
+    }
+
     mint_db_test!(provide_mint_db);
+
+    #[tokio::test]
+    async fn backward_migrations_are_preflighted_and_can_be_reapplied() {
+        let test_id = format!("test_backward_migrations_{}", uuid::Uuid::new_v4().simple());
+        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .unwrap_or(
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned(),
+            );
+        let db_url = format!("{db_url} schema={test_id}");
+
+        let db = MintPgDatabase::new(db_url.as_str())
+            .await
+            .expect("apply forward migrations");
+        drop(db);
+
+        let error = MintPgDatabase::rollback(db_url.as_str(), 4)
+            .await
+            .expect_err("rollback must stop before an irreversible migration");
+        assert!(
+            error
+                .to_string()
+                .contains("20260520120000_rename_selected_estimated_blocks_to_fee_index.sql"),
+            "unexpected rollback error: {error}"
+        );
+        assert!(
+            migration_query_succeeds(
+                db_url.as_str(),
+                "SELECT last_checked FROM mint_quote LIMIT 1"
+            )
+            .await,
+            "preflight failure must not roll back the newest migration"
+        );
+        assert!(
+            migration_query_succeeds(db_url.as_str(), "SELECT epoch FROM keyset_epoch LIMIT 1")
+                .await,
+            "preflight failure must not roll back earlier migrations"
+        );
+
+        let rolled_back = MintPgDatabase::rollback(db_url.as_str(), 3)
+            .await
+            .expect("roll back reversible migrations");
+        assert_eq!(
+            rolled_back,
+            vec![
+                "20260811000000_add_last_checked_to_mint_quote.sql",
+                "20260728000000_add_keyset_epoch.sql",
+                "20260630000000_add_updated_at_to_mint_quote.sql",
+            ]
+        );
+        assert!(
+            !migration_query_succeeds(
+                db_url.as_str(),
+                "SELECT last_checked FROM mint_quote LIMIT 1"
+            )
+            .await
+        );
+        assert!(
+            !migration_query_succeeds(db_url.as_str(), "SELECT epoch FROM keyset_epoch LIMIT 1")
+                .await
+        );
+        assert!(
+            !migration_query_succeeds(db_url.as_str(), "SELECT updated_at FROM mint_quote LIMIT 1")
+                .await
+        );
+
+        let db = MintPgDatabase::new(db_url.as_str())
+            .await
+            .expect("reapply rolled-back migrations");
+        drop(db);
+        assert!(
+            migration_query_succeeds(
+                db_url.as_str(),
+                "SELECT last_checked FROM mint_quote LIMIT 1"
+            )
+            .await
+        );
+        assert!(
+            migration_query_succeeds(db_url.as_str(), "SELECT epoch FROM keyset_epoch LIMIT 1")
+                .await
+        );
+        assert!(
+            migration_query_succeeds(db_url.as_str(), "SELECT updated_at FROM mint_quote LIMIT 1")
+                .await
+        );
+    }
 
     #[tokio::test]
     async fn mint_pool_accepts_single_connection_configuration() {

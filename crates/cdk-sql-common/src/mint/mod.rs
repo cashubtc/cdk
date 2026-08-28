@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use cdk_common::database::{self, DbTransactionFinalizer, Error, MintDatabase};
 use cdk_common::QuoteId;
 
-use crate::common::migrate;
+use crate::common::{migrate, rollback_migrations};
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
 use crate::pool::{DatabasePool, Pool, PooledResource};
 use crate::stmt::query;
@@ -77,11 +77,42 @@ where
     where
         X: Into<RM::Config>,
     {
-        let pool = Pool::new(db.into());
+        let pool = Pool::<RM>::new(db.into());
 
         Self::migrate(pool.get().await.map_err(|e| Error::Database(Box::new(e)))?).await?;
 
         Ok(Self { pool })
+    }
+
+    /// Rolls back the most recently applied mint database migrations.
+    ///
+    /// This opens the database without applying pending forward migrations and
+    /// executes the requested rollback in a single transaction. It is intended
+    /// for an explicit operator command while the mint is stopped.
+    pub async fn rollback<X>(db: X, steps: usize) -> Result<Vec<String>, Error>
+    where
+        X: Into<RM::Config>,
+    {
+        let pool = Pool::<RM>::new(db.into());
+        let tx = ConnectionWithTransaction::new(
+            pool.get().await.map_err(|e| Error::Database(Box::new(e)))?,
+        )
+        .await?;
+        match rollback_migrations(&tx, RM::Connection::name(), MIGRATIONS, steps).await {
+            Ok(rolled_back) => {
+                tx.commit().await?;
+                Ok(rolled_back)
+            }
+            Err(error) => {
+                if let Err(rollback_error) = tx.rollback().await {
+                    tracing::error!(
+                        "Could not roll back failed database migration transaction: {}",
+                        rollback_error
+                    );
+                }
+                Err(error)
+            }
+        }
     }
 
     async fn begin_transaction_from_pool(

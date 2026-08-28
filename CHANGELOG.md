@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- cdk-sql-common/cdk-mintd: SQL migrations can include paired backward scripts, and operators can transactionally roll back the primary mint database with `cdk-mintd database rollback` before downgrading.
+
 ## [0.18.0-rc.1](https://github.com/cashubtc/cdk/releases/tag/v0.18.0-rc.1)
 
 ### Summary

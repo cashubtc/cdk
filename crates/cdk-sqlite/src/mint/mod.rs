@@ -16,6 +16,7 @@ pub type MintSqliteAuthDatabase = SQLMintAuthDatabase<SqliteConnectionManager>;
 #[cfg(test)]
 mod test {
     use std::fs::remove_file;
+    use std::path::Path;
     use std::str::FromStr;
     use std::sync::Arc;
     use std::time::Duration;
@@ -31,6 +32,27 @@ mod test {
 
     async fn provide_db(_test_name: String) -> MintSqliteDatabase {
         memory::empty().await.unwrap()
+    }
+
+    fn migration_test_config(path: &Path) -> Config {
+        #[cfg(not(feature = "sqlcipher"))]
+        {
+            path.to_path_buf().into()
+        }
+        #[cfg(feature = "sqlcipher")]
+        {
+            (path.to_path_buf(), "test".to_owned()).into()
+        }
+    }
+
+    async fn migration_query_succeeds(path: &Path, sql: &str) -> bool {
+        let pool = Pool::<SqliteConnectionManager>::new(migration_test_config(path));
+        let conn = pool.get().await.expect("valid migration test connection");
+        query(sql)
+            .expect("valid migration test query")
+            .fetch_all(&*conn)
+            .await
+            .is_ok()
     }
 
     mint_db_test!(provide_db);
@@ -153,5 +175,67 @@ mod test {
         assert!(conn.is_ok(), "Failed with {:?}", conn.unwrap_err());
 
         let _ = remove_file(&file);
+    }
+
+    #[tokio::test]
+    async fn backward_migrations_are_preflighted_and_can_be_reapplied() {
+        let path = std::env::temp_dir().join(format!(
+            "cdk-mint-backward-migrations-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+
+        let db = MintSqliteDatabase::new(migration_test_config(&path))
+            .await
+            .expect("apply forward migrations");
+        drop(db);
+
+        let error = MintSqliteDatabase::rollback(migration_test_config(&path), 4)
+            .await
+            .expect_err("rollback must stop before an irreversible migration");
+        assert!(
+            error
+                .to_string()
+                .contains("20260520120000_rename_selected_estimated_blocks_to_fee_index.sql"),
+            "unexpected rollback error: {error}"
+        );
+        assert!(
+            migration_query_succeeds(&path, "SELECT last_checked FROM mint_quote LIMIT 1").await,
+            "preflight failure must not roll back the newest migration"
+        );
+        assert!(
+            migration_query_succeeds(&path, "SELECT epoch FROM keyset_epoch LIMIT 1").await,
+            "preflight failure must not roll back earlier migrations"
+        );
+
+        let rolled_back = MintSqliteDatabase::rollback(migration_test_config(&path), 3)
+            .await
+            .expect("roll back reversible migrations");
+        assert_eq!(
+            rolled_back,
+            vec![
+                "20260811000000_add_last_checked_to_mint_quote.sql",
+                "20260728000000_add_keyset_epoch.sql",
+                "20260630000000_add_updated_at_to_mint_quote.sql",
+            ]
+        );
+        assert!(
+            !migration_query_succeeds(&path, "SELECT last_checked FROM mint_quote LIMIT 1").await
+        );
+        assert!(!migration_query_succeeds(&path, "SELECT epoch FROM keyset_epoch LIMIT 1").await);
+        assert!(
+            !migration_query_succeeds(&path, "SELECT updated_at FROM mint_quote LIMIT 1").await
+        );
+
+        let db = MintSqliteDatabase::new(migration_test_config(&path))
+            .await
+            .expect("reapply rolled-back migrations");
+        drop(db);
+        assert!(
+            migration_query_succeeds(&path, "SELECT last_checked FROM mint_quote LIMIT 1").await
+        );
+        assert!(migration_query_succeeds(&path, "SELECT epoch FROM keyset_epoch LIMIT 1").await);
+        assert!(migration_query_succeeds(&path, "SELECT updated_at FROM mint_quote LIMIT 1").await);
+
+        remove_file(path).expect("remove migration test database");
     }
 }

@@ -4,7 +4,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use cdk_mintd::cli::{CLIArgs, Commands, ConfigCommands};
+use cdk_mintd::cli::{CLIArgs, Commands, ConfigCommands, DatabaseCommands};
 use cdk_mintd::get_work_directory;
 use clap::Parser;
 use tokio::runtime::Runtime;
@@ -134,6 +134,33 @@ fn main() -> Result<()> {
                         .await?;
                     export_document(&file.file, &document, file.force)?;
                     println!("Configuration exported to {}.", file.file.display());
+                    Ok(())
+                }
+            },
+            Some(Commands::Database(database)) => match database.command {
+                DatabaseCommands::Rollback(rollback) => {
+                    if !rollback.yes {
+                        bail!(
+                            "database rollback changes the schema and may discard data; stop mintd, create a verified database backup, then rerun with --yes"
+                        );
+                    }
+                    let work_dir = work_dir
+                        .as_deref()
+                        .expect("database commands have a work directory");
+                    let rolled_back = cdk_mintd::rollback_database_migrations(
+                        work_dir,
+                        password,
+                        rollback.steps.get(),
+                    )
+                    .await?;
+
+                    println!("Rolled back {} migration(s):", rolled_back.len());
+                    for migration in rolled_back {
+                        println!("- {migration}");
+                    }
+                    println!(
+                        "Do not restart this version of cdk-mintd: it would apply these migrations again. Start the intended older version instead."
+                    );
                     Ok(())
                 }
             },
