@@ -178,6 +178,8 @@ required-features = ["wallet"]
 
 [dev-dependencies]
 rand.workspace = true
+bitcoin.workspace = true
+serde_json.workspace = true
 cdk-sqlite.workspace = true
 cdk-postgres.workspace = true
 cdk-fake-wallet.workspace = true
