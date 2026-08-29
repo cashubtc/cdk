@@ -791,7 +791,7 @@ where
         dleq_r = excluded.dleq_r,
         used_by_operation = excluded.used_by_operation,
         created_by_operation = excluded.created_by_operation,
-        derivation_index = excluded.derivation_index,
+        derivation_index = COALESCE(excluded.derivation_index, proof.derivation_index),
         p2pk_e = excluded.p2pk_e
     ;
             "#,

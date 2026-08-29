@@ -525,7 +525,21 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         {
             let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
-            for proof_info in added.iter() {
+            for mut proof_info in added {
+                if proof_info.derivation_index.is_none() {
+                    proof_info.derivation_index = match table
+                        .get(proof_info.y.to_bytes().as_slice())
+                        .map_err(Error::from)?
+                    {
+                        Some(stored) => {
+                            serde_json::from_str::<ProofInfo>(stored.value())
+                                .map_err(Error::from)?
+                                .derivation_index
+                        }
+                        None => None,
+                    };
+                }
+
                 table
                     .insert(
                         proof_info.y.to_bytes().as_slice(),

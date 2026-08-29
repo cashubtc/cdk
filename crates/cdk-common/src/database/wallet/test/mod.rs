@@ -619,6 +619,16 @@ where
     let proofs = db.get_proofs_by_ys(ys).await.unwrap();
     assert!(!proofs.is_empty());
     assert_eq!(proofs[0].derivation_index, Some(42));
+
+    // Upserting legacy or reconstructed proof metadata must not erase the
+    // immutable derivation index.
+    let mut proof_without_index = proof_info.clone();
+    proof_without_index.derivation_index = None;
+    db.update_proofs(vec![proof_without_index], vec![])
+        .await
+        .unwrap();
+    let proofs = db.get_proofs_by_ys(vec![proof_info.y]).await.unwrap();
+    assert_eq!(proofs[0].derivation_index, Some(42));
 }
 
 /// Test getting proofs in transaction

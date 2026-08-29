@@ -243,7 +243,7 @@ impl SupabaseWalletDatabase {
     /// This must match the latest `schema_version` value set in the migration files.
     /// When adding new migrations, update this constant and set the same value
     /// in the new migration's `INSERT INTO schema_info` statement.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 9;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 10;
 
     /// Get the full database schema SQL
     ///
@@ -3351,6 +3351,12 @@ mod tests {
         assert!(schema_sql.contains("CREATE TABLE IF NOT EXISTS wallet_encryption_metadata"));
         assert!(schema_sql.contains("CREATE TABLE IF NOT EXISTS derivation_counter"));
         assert!(schema_sql.contains("CREATE OR REPLACE FUNCTION increment_derivation_counter"));
+        assert!(schema_sql
+            .contains("ALTER TABLE proof ADD COLUMN IF NOT EXISTS derivation_index INTEGER"));
+        assert!(schema_sql.contains("ALTER TABLE proof ADD COLUMN IF NOT EXISTS p2pk_e TEXT"));
+        assert!(schema_sql.contains(
+            "derivation_index = COALESCE(\n                EXCLUDED.derivation_index,\n                existing.derivation_index"
+        ));
         assert_eq!(
             versions.last().copied(),
             Some(SupabaseWalletDatabase::REQUIRED_SCHEMA_VERSION)
@@ -3359,6 +3365,24 @@ mod tests {
             versions.iter().max().copied(),
             Some(SupabaseWalletDatabase::REQUIRED_SCHEMA_VERSION)
         );
+    }
+
+    #[test]
+    fn proof_update_function_has_a_dedicated_migration() {
+        let (_, _, sql) = migrations::MIGRATIONS
+            .iter()
+            .find(|(_, name, _)| *name == "20260811000002_fn_update_proofs_atomic.sql")
+            .expect("proof update function migration should be embedded");
+
+        assert!(sql.contains("CREATE OR REPLACE FUNCTION update_proofs_atomic"));
+        assert!(sql.contains("SET search_path = ''"));
+        assert!(sql.contains("INSERT INTO public.proof AS existing"));
+        assert!(!sql.contains("ALTER TABLE"));
+        assert!(!sql.contains("schema_info"));
+        assert!(sql.contains("used_by_operation"));
+        assert!(sql.contains("created_by_operation"));
+        assert!(sql.contains("p2pk_e"));
+        assert!(sql.contains("derivation_index"));
     }
 
     #[tokio::test]
