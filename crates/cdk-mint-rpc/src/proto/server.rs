@@ -78,6 +78,7 @@ pub struct MintRPCServer {
     socket_addr: SocketAddr,
     mint: Arc<Mint>,
     mutation_guard: Option<Arc<dyn MintMutationGuard>>,
+    allow_mint_quote_payment_override: bool,
     wallet_info_provider: Option<DynWalletInfoProvider>,
     shutdown: Arc<Notify>,
     handle: Option<Arc<JoinHandle<Result<(), Error>>>>,
@@ -95,6 +96,7 @@ impl MintRPCServer {
             socket_addr: format!("{addr}:{port}").parse()?,
             mint,
             mutation_guard: None,
+            allow_mint_quote_payment_override: false,
             wallet_info_provider: None,
             shutdown: Arc::new(Notify::new()),
             handle: None,
@@ -104,6 +106,16 @@ impl MintRPCServer {
     /// Adds a guard that runs before every mutating management RPC.
     pub fn with_mutation_guard(mut self, guard: Arc<dyn MintMutationGuard>) -> Self {
         self.mutation_guard = Some(guard);
+        self
+    }
+
+    /// Enables or disables management RPC mint quote state overrides.
+    ///
+    /// This includes the legacy quote-state update endpoint and is disabled by
+    /// default because the paid state records a payment without confirmation
+    /// from the configured payment backend.
+    pub fn with_mint_quote_payment_override(mut self, enabled: bool) -> Self {
+        self.allow_mint_quote_payment_override = enabled;
         self
     }
 
@@ -118,6 +130,16 @@ impl MintRPCServer {
             }
             MintMutationGuardError::Internal(message) => Status::internal(message),
         })
+    }
+
+    fn ensure_mint_quote_state_override_allowed(&self) -> Result<(), Status> {
+        if !self.allow_mint_quote_payment_override {
+            return Err(Status::permission_denied(
+                "Mint quote state override is disabled",
+            ));
+        }
+
+        Ok(())
     }
 
     /// Configures the on-chain wallet management provider.
@@ -370,6 +392,8 @@ impl MintRPCServer {
     /// Returns the quote as it stands after the update. Shared by the legacy
     /// [`CdkMint`] service and [`QuoteService`] while both are served.
     async fn set_mint_quote_paid(&self, quote_id: &str) -> Result<MintQuote, Status> {
+        self.ensure_mint_quote_state_override_allowed()?;
+
         let quote_id = quote_id
             .parse()
             .map_err(|_| Status::invalid_argument("Invalid quote id".to_string()))?;
@@ -1018,6 +1042,7 @@ impl CdkMint for MintRPCServer {
         request: Request<UpdateNut04QuoteRequest>,
     ) -> Result<Response<UpdateNut04QuoteRequest>, Status> {
         self.ensure_mutation_allowed().await?;
+        self.ensure_mint_quote_state_override_allowed()?;
         let request = request.into_inner();
 
         let state = MintQuoteState::from_str(&request.state)
@@ -1596,6 +1621,7 @@ mod tests {
             socket_addr: "127.0.0.1:0".parse().unwrap(),
             mint: Arc::new(mint),
             mutation_guard: None,
+            allow_mint_quote_payment_override: false,
             wallet_info_provider: None,
             shutdown: Arc::new(Notify::new()),
             handle: None,
@@ -1854,7 +1880,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_quote_service_update_mint_quote_state_marks_quote_paid() {
-        let server = create_test_rpc_server_with_payment_delay(3600).await;
+        let server = create_test_rpc_server_with_payment_delay(3600)
+            .await
+            .with_mint_quote_payment_override(true);
         let quote_id = create_test_mint_quote(&server, 100).await;
 
         assert_eq!(amount_paid(&server, &quote_id).await, 0);
@@ -1877,7 +1905,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_quote_service_update_mint_quote_state_paid_twice_pays_once() {
-        let server = create_test_rpc_server_with_payment_delay(3600).await;
+        let server = create_test_rpc_server_with_payment_delay(3600)
+            .await
+            .with_mint_quote_payment_override(true);
         let quote_id = create_test_mint_quote(&server, 100).await;
 
         for _ in 0..2 {
@@ -1900,7 +1930,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_quote_service_update_mint_quote_state_reports_state_of_issued_quote() {
-        let server = create_test_rpc_server_with_payment_delay(3600).await;
+        let server = create_test_rpc_server_with_payment_delay(3600)
+            .await
+            .with_mint_quote_payment_override(true);
         let quote_id = create_test_mint_quote(&server, 32).await;
 
         QuoteService::update_mint_quote_state(
@@ -1970,7 +2002,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_quote_service_update_mint_quote_state_unknown_quote() {
-        let server = create_test_rpc_server().await;
+        let server = create_test_rpc_server()
+            .await
+            .with_mint_quote_payment_override(true);
 
         let status = QuoteService::update_mint_quote_state(
             &server,
@@ -1984,6 +2018,49 @@ mod tests {
 
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
         assert_eq!(status.message(), "Could not find quote");
+    }
+
+    #[tokio::test]
+    async fn test_mint_quote_state_overrides_are_disabled_by_default() {
+        let server = create_test_rpc_server_with_payment_delay(3600).await;
+        let quote_id = create_test_mint_quote(&server, 100).await;
+
+        let status = QuoteService::update_mint_quote_state(
+            &server,
+            Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                quote_id: quote_id.clone(),
+                state: crate::quote::MintQuoteState::Paid.into(),
+            }),
+        )
+        .await
+        .expect_err("payment override should be disabled");
+
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert_eq!(status.message(), "Mint quote state override is disabled");
+        assert_eq!(amount_paid(&server, &quote_id).await, 0);
+
+        for state in [
+            MintQuoteState::Unpaid,
+            MintQuoteState::Paid,
+            MintQuoteState::Issued,
+        ] {
+            let legacy_status = CdkMint::update_nut04_quote(
+                &server,
+                Request::new(UpdateNut04QuoteRequest {
+                    quote_id: quote_id.clone(),
+                    state: state.to_string(),
+                }),
+            )
+            .await
+            .expect_err("legacy quote state override should be disabled");
+
+            assert_eq!(legacy_status.code(), tonic::Code::PermissionDenied);
+            assert_eq!(
+                legacy_status.message(),
+                "Mint quote state override is disabled"
+            );
+        }
+        assert_eq!(amount_paid(&server, &quote_id).await, 0);
     }
 
     #[tokio::test]

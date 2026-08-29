@@ -2038,7 +2038,10 @@ impl PreparedMintd {
                 if rpc_settings.enabled {
                     let addr = rpc_settings.address.unwrap_or("127.0.0.1".to_string());
                     let port = rpc_settings.port.unwrap_or(8086);
-                    let mut mint_rpc = cdk_mint_rpc::MintRPCServer::new(&addr, port, mint.clone())?;
+                    let mut mint_rpc = cdk_mint_rpc::MintRPCServer::new(&addr, port, mint.clone())?
+                        .with_mint_quote_payment_override(
+                            rpc_settings.allow_mint_quote_payment_override,
+                        );
                     if let Some(activation) = activation.as_ref() {
                         mint_rpc =
                             mint_rpc.with_mutation_guard(Arc::new(ConfigurationMutationGuard {

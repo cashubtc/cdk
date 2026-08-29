@@ -11,6 +11,8 @@ pub const ENV_MINT_MANAGEMENT_ADDRESS: &str = "CDK_MINTD_MANAGEMENT_ADDRESS";
 pub const ENV_MINT_MANAGEMENT_PORT: &str = "CDK_MINTD_MANAGEMENT_PORT";
 pub const ENV_MINT_MANAGEMENT_TLS_DIR: &str = "CDK_MINTD_MANAGEMENT_TLS_DIR";
 pub const ENV_MINT_MANAGEMENT_ALLOW_INSECURE: &str = "CDK_MINTD_MANAGEMENT_ALLOW_INSECURE";
+pub const ENV_MINT_MANAGEMENT_ALLOW_MINT_QUOTE_PAYMENT_OVERRIDE: &str =
+    "CDK_MINTD_MANAGEMENT_ALLOW_MINT_QUOTE_PAYMENT_OVERRIDE";
 
 impl MintManagementRpc {
     pub fn from_env(mut self) -> Self {
@@ -42,6 +44,11 @@ impl MintManagementRpc {
             }
         }
 
+        if let Ok(allow_override) = env::var(ENV_MINT_MANAGEMENT_ALLOW_MINT_QUOTE_PAYMENT_OVERRIDE)
+        {
+            self.allow_mint_quote_payment_override = allow_override.parse().unwrap_or(false);
+        }
+
         self
     }
 }
@@ -64,6 +71,7 @@ mod tests {
         env::remove_var(ENV_MINT_MANAGEMENT_PORT);
         env::remove_var(ENV_MINT_MANAGEMENT_TLS_DIR);
         env::remove_var(ENV_MINT_MANAGEMENT_ALLOW_INSECURE);
+        env::remove_var(ENV_MINT_MANAGEMENT_ALLOW_MINT_QUOTE_PAYMENT_OVERRIDE);
     }
 
     #[test]
@@ -74,6 +82,7 @@ mod tests {
             ENV_MINT_MANAGEMENT_PORT,
             ENV_MINT_MANAGEMENT_TLS_DIR,
             ENV_MINT_MANAGEMENT_ALLOW_INSECURE,
+            ENV_MINT_MANAGEMENT_ALLOW_MINT_QUOTE_PAYMENT_OVERRIDE,
         ];
 
         let prefixes: BTreeSet<&str> = names
@@ -103,6 +112,10 @@ mod tests {
         env::set_var(ENV_MINT_MANAGEMENT_PORT, "10000");
         env::set_var(ENV_MINT_MANAGEMENT_TLS_DIR, "/var/lib/cdk/tls");
         env::set_var(ENV_MINT_MANAGEMENT_ALLOW_INSECURE, "true");
+        env::set_var(
+            ENV_MINT_MANAGEMENT_ALLOW_MINT_QUOTE_PAYMENT_OVERRIDE,
+            "true",
+        );
 
         let management_rpc = MintManagementRpc::default().from_env();
 
@@ -114,6 +127,7 @@ mod tests {
             Some(PathBuf::from("/var/lib/cdk/tls"))
         );
         assert!(management_rpc.allow_insecure);
+        assert!(management_rpc.allow_mint_quote_payment_override);
 
         clear_env_vars();
     }
@@ -144,6 +158,36 @@ mod tests {
         assert!(management_rpc.enabled);
         assert_eq!(management_rpc.tls_dir, None);
         assert!(!management_rpc.allow_insecure);
+        assert!(!management_rpc.allow_mint_quote_payment_override);
+
+        clear_env_vars();
+    }
+
+    #[test]
+    fn management_rpc_payment_override_env_fails_closed() {
+        let _guard = env_lock();
+        clear_env_vars();
+        let management_rpc = MintManagementRpc {
+            allow_mint_quote_payment_override: true,
+            ..Default::default()
+        };
+
+        env::set_var(
+            ENV_MINT_MANAGEMENT_ALLOW_MINT_QUOTE_PAYMENT_OVERRIDE,
+            "false",
+        );
+        assert!(
+            !management_rpc
+                .clone()
+                .from_env()
+                .allow_mint_quote_payment_override
+        );
+
+        env::set_var(
+            ENV_MINT_MANAGEMENT_ALLOW_MINT_QUOTE_PAYMENT_OVERRIDE,
+            "not-a-boolean",
+        );
+        assert!(!management_rpc.from_env().allow_mint_quote_payment_override);
 
         clear_env_vars();
     }

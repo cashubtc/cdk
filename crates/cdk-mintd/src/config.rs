@@ -1222,6 +1222,12 @@ pub struct MintManagementRpc {
     pub tls_dir: Option<PathBuf>,
     #[serde(default)]
     pub allow_insecure: bool,
+    /// Allow management RPC callers to use mint quote state override endpoints.
+    ///
+    /// This includes marking quotes paid without backend confirmation and is
+    /// disabled by default.
+    #[serde(default)]
+    pub allow_mint_quote_payment_override: bool,
 }
 
 impl Settings {
@@ -1419,6 +1425,33 @@ mod tests {
         assert!(auth_debug.contains("postgres://db.example.com/cdk"));
         assert!(!database_debug.contains(secret));
         assert!(!auth_debug.contains(secret));
+    }
+
+    #[cfg(feature = "management-rpc")]
+    #[test]
+    fn mint_quote_payment_override_is_explicitly_opt_in() {
+        let default_settings =
+            Settings::try_from_toml("").expect("default settings should deserialize");
+        assert!(
+            !default_settings
+                .mint_management_rpc
+                .unwrap_or_default()
+                .allow_mint_quote_payment_override
+        );
+
+        let enabled_settings = Settings::try_from_toml(
+            r#"
+[mint_management_rpc]
+allow_mint_quote_payment_override = true
+"#,
+        )
+        .expect("management RPC payment override should deserialize");
+        assert!(
+            enabled_settings
+                .mint_management_rpc
+                .expect("management RPC settings should be present")
+                .allow_mint_quote_payment_override
+        );
     }
 
     #[cfg(feature = "ldk-node")]
