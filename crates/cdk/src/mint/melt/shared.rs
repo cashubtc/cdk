@@ -6,12 +6,12 @@
 //!
 //! The functions here ensure consistency between these two code paths.
 
-use cdk_common::amount::MSAT_IN_SAT;
+use cdk_common::amount::{FeeAndAmounts, MSAT_IN_SAT};
 use cdk_common::database::mint::Acquired;
 use cdk_common::database::{self, DynMintDatabase, DynMintTransaction};
 use cdk_common::mint::{self as mint_types};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, Proofs, State};
-use cdk_common::{Amount, CurrencyUnit, Error, PublicKey, QuoteId};
+use cdk_common::{Amount, CurrencyUnit, Error, Id, PublicKey, QuoteId};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use cdk_signatory::signatory::SignatoryKeySet;
@@ -20,35 +20,155 @@ use crate::mint::subscription::PubSubManager;
 use crate::mint::MeltQuote;
 use crate::Mint;
 
-/// Retrieves fee and amount configuration for the keyset matching the change outputs.
+/// Finds a keyset by id in the loaded snapshot, active or not.
 ///
-/// Searches active keysets for one matching the first output's keyset_id.
-/// Used during change calculation for melts.
+/// Change outputs are accepted while their keyset is active but signed after
+/// the payment settles, so the keyset may have rotated in between and must
+/// still be resolvable to read its denominations.
+fn keyset_by_id(keysets: &[SignatoryKeySet], id: &Id) -> Option<SignatoryKeySet> {
+    keysets.iter().find(|keyset| &keyset.id == id).cloned()
+}
+
+/// Picks the keyset a rotated-away change output should be signed with.
 ///
-/// # Arguments
-///
-/// * `keysets` - Arc reference to the loaded keysets
-/// * `outputs` - Change output blinded messages
-///
-/// # Returns
-///
-/// Fee per thousand and allowed amounts for the keyset, or default if not found
-pub fn get_keyset_fee_and_amounts(
-    keysets: &arc_swap::ArcSwap<Vec<SignatoryKeySet>>,
-    outputs: &[BlindedMessage],
-) -> cdk_common::amount::FeeAndAmounts {
+/// Ties are broken by id so concurrent finalizers of the same quote agree.
+fn active_keyset_for_unit(
+    keysets: &[SignatoryKeySet],
+    unit: &CurrencyUnit,
+) -> Option<SignatoryKeySet> {
     keysets
-        .load()
         .iter()
-        .filter_map(|keyset| {
-            if keyset.active && Some(keyset.id) == outputs.first().map(|x| x.keyset_id) {
-                Some((keyset.input_fee_ppk, keyset.amounts.clone()).into())
-            } else {
-                None
-            }
+        .filter(|keyset| keyset.active && !keyset.is_expired() && &keyset.unit == unit)
+        .min_by_key(|keyset| (keyset.input_fee_ppk, keyset.id))
+        .cloned()
+}
+
+/// Assigns amounts and the signing keyset to the wallet's blank change outputs.
+///
+/// The blinded secret is keyset-independent, so a blank output accepted under
+/// one keyset can be signed by another; only the denominations it is split
+/// into have to come from the signing keyset.
+fn build_change_messages(
+    quote_id: &QuoteId,
+    change_target: Amount,
+    keyset: &SignatoryKeySet,
+    change_outputs: &[BlindedMessage],
+) -> Result<Vec<BlindedMessage>, Error> {
+    let fee_and_amounts: FeeAndAmounts = (keyset.input_fee_ppk, keyset.amounts.clone()).into();
+
+    let mut amounts: Vec<Amount> = change_target.split(&fee_and_amounts)?;
+
+    if change_outputs.len() < amounts.len() {
+        amounts.sort_by(|a, b| b.cmp(a));
+        let forfeited: u64 = amounts[change_outputs.len()..]
+            .iter()
+            .map(|amount| u64::from(*amount))
+            .sum();
+        tracing::warn!(
+            "Change for quote {} requires {} blinded messages under keyset {} but only {} were provided, forfeiting {}",
+            quote_id,
+            amounts.len(),
+            keyset.id,
+            change_outputs.len(),
+            forfeited
+        );
+    }
+
+    Ok(amounts
+        .iter()
+        .zip(change_outputs.iter().cloned())
+        .map(|(amount, mut blinded_message)| {
+            blinded_message.amount = *amount;
+            blinded_message.keyset_id = keyset.id;
+            blinded_message
         })
-        .next()
-        .unwrap_or_else(|| (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into())
+        .collect())
+}
+
+/// Signs the blank change outputs, falling back to the currently active keyset.
+///
+/// The payment has already settled by the time this runs, so a keyset rotation
+/// in the meantime must not strand the melt: the outputs are re-issued under
+/// the active keyset rather than rejected. The retry is not gated on the error
+/// variant because the loaded snapshot can lag the signatory and a remote
+/// signatory does not preserve every variant across the wire.
+///
+/// `Ok(None)` means no keyset can issue this change and the caller should
+/// finalize without it, since retrying would fail the same way and the payment
+/// has already settled. An `Err` is a failure worth retrying.
+async fn sign_melt_change(
+    mint: &super::super::Mint,
+    quote_id: &QuoteId,
+    change_target: Amount,
+    change_outputs: &[BlindedMessage],
+    fallback_unit: &CurrencyUnit,
+) -> Result<Option<(Vec<BlindedMessage>, Vec<BlindSignature>)>, Error> {
+    let keysets = mint.keysets.load();
+    let requested_id = change_outputs
+        .first()
+        .map(|output| output.keyset_id)
+        .ok_or(Error::UnknownKeySet)?;
+    let requested = keyset_by_id(&keysets, &requested_id);
+
+    let unit = requested
+        .as_ref()
+        .map(|keyset| &keyset.unit)
+        .unwrap_or(fallback_unit);
+    let substitute = active_keyset_for_unit(&keysets, unit)
+        .filter(|keyset| Some(keyset.id) != requested.as_ref().map(|k| k.id));
+
+    let mut sign_error = None;
+
+    for keyset in requested.into_iter().chain(substitute) {
+        let believed_active = keyset.active && !keyset.is_expired();
+        if keyset.id != requested_id {
+            tracing::warn!(
+                "Change keyset {} for quote {} is no longer signable, re-issuing change under {}",
+                requested_id,
+                quote_id,
+                keyset.id
+            );
+        }
+
+        let messages = match build_change_messages(quote_id, change_target, &keyset, change_outputs)
+        {
+            Ok(messages) => messages,
+            Err(err) => {
+                tracing::warn!(
+                    "Cannot split change for quote {} under keyset {}: {}",
+                    quote_id,
+                    keyset.id,
+                    err
+                );
+                continue;
+            }
+        };
+
+        match mint.blind_sign(messages.clone()).await {
+            Ok(signatures) => return Ok(Some((messages, signatures))),
+            Err(err) => {
+                tracing::warn!(
+                    "Signing change for quote {} under keyset {} failed: {}",
+                    quote_id,
+                    keyset.id,
+                    err
+                );
+                // The signatory refusing a keyset the loaded snapshot calls
+                // active means the snapshot is stale, not that the change is
+                // unissuable: a later attempt reads a fresher one, so keep the
+                // melt retryable. Forfeiting is only right once every keyset
+                // has genuinely been ruled out.
+                if believed_active || !err.is_definitive_failure() {
+                    sign_error.get_or_insert(err);
+                }
+            }
+        }
+    }
+
+    match sign_error {
+        Some(err) => Err(err),
+        None => Ok(None),
+    }
 }
 
 #[cfg(feature = "prometheus")]
@@ -488,30 +608,24 @@ pub(super) async fn process_melt_change(
         return begin_melt_change_without_signatures(db, quote_id).await;
     }
 
-    // Get keyset configuration
-    let fee_and_amounts = get_keyset_fee_and_amounts(&mint.keysets, &change_outputs);
-
-    // Split change into denominations
-    let mut amounts: Vec<Amount> = change_target.split(&fee_and_amounts)?;
-
-    if change_outputs.len() < amounts.len() {
-        tracing::debug!(
-            "Providing change requires {} blinded messages, but only {} provided",
-            amounts.len(),
-            change_outputs.len()
-        );
-        amounts.sort_by(|a, b| b.cmp(a));
-    }
-
-    // Prepare blinded messages with amounts
-    let mut blinded_messages_to_sign = vec![];
-    for (amount, mut blinded_message) in amounts.iter().zip(change_outputs.iter().cloned()) {
-        blinded_message.amount = *amount;
-        blinded_messages_to_sign.push(blinded_message);
-    }
-
     // External call: sign change outputs (no DB transaction held)
-    let change_sigs = mint.blind_sign(blinded_messages_to_sign.clone()).await?;
+    let signed = sign_melt_change(
+        mint,
+        quote_id,
+        change_target,
+        &change_outputs,
+        inputs_amount.unit(),
+    )
+    .await?;
+
+    let Some((blinded_messages_to_sign, change_sigs)) = signed else {
+        tracing::error!(
+            "No keyset can issue the {} change for quote {}, finalizing the paid melt without it",
+            change_target,
+            quote_id
+        );
+        return begin_melt_change_without_signatures(db, quote_id).await;
+    };
 
     // Open a transaction with quote, melt-request, and change-output locks
     // acquired in the same order as finalization and rollback.

@@ -105,6 +105,7 @@ impl From<cdk_common::Error> for super::Error {
             cdk_common::Error::DuplicateOutputs => ErrorCode::DuplicateInputsProvided,
             cdk_common::Error::UnknownKeySet => ErrorCode::KeysetNotKnown,
             cdk_common::Error::InactiveKeyset => ErrorCode::KeysetInactive,
+            cdk_common::Error::ExpiredKeyset => ErrorCode::KeysetExpired,
             _ => ErrorCode::Unspecified,
         };
 
@@ -117,15 +118,19 @@ impl From<cdk_common::Error> for super::Error {
 
 impl From<super::Error> for cdk_common::Error {
     fn from(val: super::Error) -> Self {
-        match val.code.try_into().expect("valid code") {
+        let Ok(code) = ErrorCode::try_from(val.code) else {
+            return cdk_common::Error::Custom(val.detail);
+        };
+
+        match code {
             ErrorCode::AmountOutsideLimit => {
                 cdk_common::Error::AmountError(cdk_common::amount::Error::AmountOverflow)
             }
             ErrorCode::DuplicateInputsProvided => cdk_common::Error::DuplicateInputs,
             ErrorCode::KeysetNotKnown => cdk_common::Error::UnknownKeySet,
             ErrorCode::KeysetInactive => cdk_common::Error::InactiveKeyset,
-            ErrorCode::Unspecified => cdk_common::Error::Custom(val.detail),
-            _ => todo!(),
+            ErrorCode::KeysetExpired => cdk_common::Error::ExpiredKeyset,
+            _ => cdk_common::Error::Custom(val.detail),
         }
     }
 }

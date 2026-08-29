@@ -170,6 +170,25 @@ impl Wallet {
             .ok_or(Error::UnknownKeySet)
     }
 
+    /// Get a keyset by ID, refreshing from the mint if it is not yet cached.
+    ///
+    /// A keyset created by a rotation is absent from the cache until the next
+    /// refresh, so signatures issued under it cannot be resolved without one.
+    /// [`KeysetLoadPolicy::CacheOnly`] is honored and never escalated.
+    pub(crate) async fn keyset_or_refresh(
+        &self,
+        keyset_id: Id,
+        policy: KeysetLoadPolicy,
+    ) -> Result<KeySet, Error> {
+        match self.keyset_with_policy(keyset_id, policy).await {
+            Err(Error::UnknownKeySet) if policy != KeysetLoadPolicy::CacheOnly => {
+                self.keyset_with_policy(keyset_id, KeysetLoadPolicy::Refresh)
+                    .await
+            }
+            other => other,
+        }
+    }
+
     /// Decode proofs from a token using all keysets for this mint.
     ///
     /// Loads both active and inactive keysets so that proofs minted under

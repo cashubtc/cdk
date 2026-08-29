@@ -5,8 +5,11 @@ use std::str::FromStr;
 
 use cashu::{Amount, BlindSignature, Id, SecretKey};
 
+use cashu::nut00::KnownMethod;
+
 use crate::database::mint::{Database, Error, KeysDatabase, QuoteId};
 use crate::database::MintSignaturesDatabase;
+use crate::mint::Operation;
 
 /// Test adding and retrieving blind signatures
 pub async fn add_and_get_blind_signatures<DB>(db: DB)
@@ -282,4 +285,85 @@ where
         .await;
     assert!(result.is_err());
     tx.rollback().await.unwrap();
+}
+
+/// A pre-registered blinded message signed under a different keyset must report
+/// the keyset that actually signed it.
+///
+/// Melt change outputs are registered while their keyset is active but signed
+/// after the payment settles, so a rotation in between makes the mint issue
+/// them under another keyset. A row still naming the requested keyset would
+/// hand wallets a signature its own keys cannot verify.
+pub async fn fill_blinded_message_records_signing_keyset<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error> + MintSignaturesDatabase<Err = Error>,
+{
+    let requested_keyset = Id::from_str("001711afb1de20cb").unwrap();
+    let signing_keyset = Id::from_str("00ad268c4d1f5826").unwrap();
+    let quote_id = QuoteId::new();
+
+    let blinded_message = cashu::BlindedMessage {
+        blinded_secret: SecretKey::generate().public_key(),
+        keyset_id: requested_keyset,
+        amount: Amount::ZERO,
+        witness: None,
+    };
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blinded_messages(
+        Some(&quote_id),
+        std::slice::from_ref(&blinded_message),
+        &Operation::new_melt(
+            Amount::ZERO,
+            Amount::ZERO,
+            cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        ),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let signature = BlindSignature {
+        amount: Amount::from(64u64),
+        keyset_id: signing_keyset,
+        c: SecretKey::generate().public_key(),
+        dleq: None,
+    };
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blind_signatures(
+        &[blinded_message.blinded_secret],
+        std::slice::from_ref(&signature),
+        Some(quote_id.clone()),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let for_quote = db.get_blind_signatures_for_quote(&quote_id).await.unwrap();
+    assert_eq!(for_quote.len(), 1);
+    assert_eq!(for_quote[0].keyset_id, signing_keyset);
+
+    let by_message = db
+        .get_blind_signatures(&[blinded_message.blinded_secret])
+        .await
+        .unwrap();
+    assert_eq!(by_message[0].as_ref().unwrap().keyset_id, signing_keyset);
+
+    assert!(db
+        .get_blind_signatures_for_keyset(&requested_keyset)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        db.get_blind_signatures_for_keyset(&signing_keyset)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let total_issued = db.get_total_issued().await.unwrap();
+    assert_eq!(total_issued.get(&signing_keyset), Some(&signature.amount));
+    assert_eq!(total_issued.get(&requested_keyset), None);
 }

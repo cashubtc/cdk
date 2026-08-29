@@ -24,7 +24,7 @@ use tracing::instrument;
 use crate::dhke::construct_proofs;
 use crate::nuts::{CheckStateRequest, PreMintSecrets, Proofs, RestoreRequest, State, SwapRequest};
 use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
+    construct_proofs_per_keyset, validate_mint_response_signatures, OutputSignaturePolicy,
 };
 use crate::wallet::util::escape_log_value;
 use crate::{Error, Wallet};
@@ -279,7 +279,7 @@ impl RecoveryHelpers for Wallet {
             self,
             &swap_response.signatures,
             blinded_messages.iter(),
-            SignatureAmountValidation::Exact,
+            OutputSignaturePolicy::Exact,
         )
         .await?;
 
@@ -526,26 +526,25 @@ impl Wallet {
             );
         }
 
-        // Load keyset keys for proof construction
-        let keys = self.keyset(keyset_id).await?.keys;
-
         validate_mint_response_signatures(
             self,
             &restore_response.signatures,
             matched
                 .iter()
                 .map(|(_, requested_output)| *requested_output),
-            SignatureAmountValidation::AllowZeroAmountPlaceholder,
+            OutputSignaturePolicy::BlankOutput,
         )
         .await?;
 
         // Construct proofs from signatures
-        let proofs = construct_proofs(
+        let proofs = construct_proofs_per_keyset(
+            self,
             restore_response.signatures,
             matched.iter().map(|(p, _)| p.r.clone()).collect(),
             matched.iter().map(|(p, _)| p.secret.clone()).collect(),
-            &keys,
-        )?;
+            Default::default(),
+        )
+        .await?;
 
         tracing::info!(
             "{} saga {} - recovered {} proofs",

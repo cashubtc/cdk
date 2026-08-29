@@ -22,7 +22,6 @@ use tracing::instrument;
 use zeroize::Zeroize;
 
 use crate::amount::SplitTarget;
-use crate::dhke::construct_proofs;
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
@@ -31,6 +30,9 @@ use crate::nuts::nut17::Kind;
 use crate::nuts::{
     nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
     RestoreRequest, SpendingConditions, State,
+};
+use crate::wallet::blind_signature::{
+    construct_proofs_per_keyset, validate_mint_response_signatures, OutputSignaturePolicy,
 };
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::p2pk::{P2PK_ACCOUNT, P2PK_PURPOSE};
@@ -705,7 +707,6 @@ impl Wallet {
         let mut restored_result = Restored::default();
 
         for keyset in keysets {
-            let keys = self.keyset(keyset.id).await?.keys;
             let mut empty_batch: u32 = 0;
             let mut start_counter: u32 = 0;
             // Track the highest counter value that had a signature
@@ -775,13 +776,28 @@ impl Wallet {
                     )));
                 }
 
+                let signatures: Vec<_> = matched_secrets
+                    .iter()
+                    .map(|(_, _, sig)| sig.clone())
+                    .collect();
+
+                validate_mint_response_signatures(
+                    self,
+                    &signatures,
+                    matched_secrets.iter().map(|(_, p, _)| &p.blinded_message),
+                    OutputSignaturePolicy::BlankOutput,
+                )
+                .await?;
+
                 // Extract signatures, rs, and secrets in matching order
-                // Each tuple (idx, premint, signature) ensures correct pairing
-                let proofs = construct_proofs(
-                    matched_secrets
-                        .iter()
-                        .map(|(_, _, sig)| sig.clone())
-                        .collect(),
+                // Each tuple (idx, premint, signature) ensures correct pairing.
+                // Change issued after a mint-side keyset rotation is found while
+                // scanning the keyset its secrets derive from, but is signed by
+                // whichever keyset the mint used, so keys are resolved per
+                // signature rather than per scanned keyset.
+                let proofs = construct_proofs_per_keyset(
+                    self,
+                    signatures,
                     matched_secrets
                         .iter()
                         .map(|(_, p, _)| p.r.clone())
@@ -790,8 +806,9 @@ impl Wallet {
                         .iter()
                         .map(|(_, p, _)| p.secret.clone())
                         .collect(),
-                    &keys,
-                )?;
+                    Default::default(),
+                )
+                .await?;
 
                 tracing::debug!("Restored {} proofs", proofs.len());
 

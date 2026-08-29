@@ -35,7 +35,6 @@
 use std::collections::HashMap;
 
 use cdk_common::amount::SplitTarget;
-use cdk_common::dhke::construct_proofs;
 use cdk_common::wallet::{
     KeysetLoadPolicy, MeltOperationData, MeltQuote, MeltSagaState, OperationData, ProofInfo,
     Transaction, TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
@@ -51,7 +50,7 @@ use crate::nuts::nut00::{KnownMethod, ProofsMethods};
 use crate::nuts::{MeltRequest, PreMintSecrets, Proofs, State};
 use crate::util::unix_time;
 use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
+    construct_proofs_per_keyset, validate_mint_response_signatures, OutputSignaturePolicy,
 };
 use crate::wallet::saga::{add_compensation, new_compensations, Compensations};
 use crate::{ensure_cdk, Amount, Error, Wallet};
@@ -98,12 +97,6 @@ async fn finalize_melt_common<'a>(
     metadata: HashMap<String, String>,
     keyset_policy: KeysetLoadPolicy,
 ) -> Result<MeltSaga<'a, Finalized>, Error> {
-    let active_keyset_id = wallet.active_keyset_with_policy(keyset_policy).await?.id;
-    let active_keys = wallet
-        .keyset_with_policy(active_keyset_id, keyset_policy)
-        .await?
-        .keys;
-
     let change_proofs = match change {
         Some(change) => {
             let num_change_proof = change.len();
@@ -125,16 +118,20 @@ async fn finalize_melt_common<'a>(
                 premint_secrets.secrets[..num_change_proof]
                     .iter()
                     .map(|p| &p.blinded_message),
-                SignatureAmountValidation::AllowZeroAmountPlaceholder,
+                OutputSignaturePolicy::BlankOutput,
             )
             .await?;
 
-            Some(construct_proofs(
-                change,
-                premint_secrets.rs()[..num_change_proof].to_vec(),
-                premint_secrets.secrets()[..num_change_proof].to_vec(),
-                &active_keys,
-            )?)
+            Some(
+                construct_proofs_per_keyset(
+                    wallet,
+                    change,
+                    premint_secrets.rs()[..num_change_proof].to_vec(),
+                    premint_secrets.secrets()[..num_change_proof].to_vec(),
+                    keyset_policy,
+                )
+                .await?,
+            )
         }
         None => None,
     };
@@ -1885,5 +1882,194 @@ mod tests {
             .expect("quote should be stored");
         assert_eq!(stored_quote.state, MeltQuoteState::Paid);
         assert_eq!(stored_quote.payment_proof.as_deref(), Some("preimage123"));
+    }
+}
+
+#[cfg(test)]
+mod rotated_change_tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use cdk_common::nuts::MeltQuoteState;
+
+    use super::finalize_melt_common;
+    use crate::dhke::{sign_message, verify_message};
+    use crate::nuts::{BlindSignature, PreMintSecrets};
+    use crate::wallet::saga::new_compensations;
+    use crate::wallet::test_utils::{
+        create_test_db, create_test_wallet_with_mock, signing_keyset, test_keyset, test_keyset_id,
+        test_melt_quote, test_mint_url, test_proof_info, MockMintConnector,
+    };
+    use crate::Amount;
+
+    /// A mint that rotated its keyset between accepting the blank change
+    /// outputs and issuing the change signs under the new keyset. The wallet
+    /// must accept that and unblind with the signing keyset's key, not with
+    /// whichever keyset it currently considers active.
+    #[tokio::test]
+    async fn test_finalize_melt_accepts_change_from_rotated_keyset() {
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let mut requested_keyset = test_keyset();
+        requested_keyset.active = Some(false);
+        let (new_keyset, signing_keys) = signing_keyset(true);
+        mock_client.set_mint_keys_response(Ok(vec![requested_keyset, new_keyset.clone()]));
+
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let requested_keyset_id = test_keyset_id();
+        let quote = test_melt_quote();
+        let final_proofs = vec![test_proof_info(requested_keyset_id, 1008, test_mint_url()).proof];
+        let premint_secrets =
+            PreMintSecrets::blank(requested_keyset_id, Amount::from(8)).expect("blank secrets");
+
+        let blinded_secret = premint_secrets.blinded_messages()[0].blinded_secret;
+        let signing_key = signing_keys
+            .get(&Amount::from(8))
+            .expect("signing key for amount");
+        let change = vec![BlindSignature {
+            amount: Amount::from(8),
+            keyset_id: new_keyset.id,
+            c: sign_message(signing_key, &blinded_secret).expect("blind signature"),
+            dleq: None,
+        }];
+
+        let finalized = finalize_melt_common(
+            &wallet,
+            new_compensations(),
+            uuid::Uuid::new_v4(),
+            &quote,
+            &final_proofs,
+            &premint_secrets,
+            MeltQuoteState::Paid,
+            None,
+            Some(change),
+            HashMap::new(),
+            Default::default(),
+        )
+        .await
+        .expect("change under a rotated keyset must be accepted");
+
+        let change_proofs = finalized.into_change().expect("change proofs");
+        assert_eq!(change_proofs.len(), 1);
+        assert_eq!(change_proofs[0].keyset_id, new_keyset.id);
+        assert_eq!(change_proofs[0].amount, Amount::from(8));
+
+        // The proof only spends if it was unblinded with the signing keyset's key.
+        verify_message(
+            signing_key,
+            change_proofs[0].c,
+            change_proofs[0].secret.as_bytes(),
+        )
+        .expect("change proof must verify under the keyset that signed it");
+    }
+
+    /// Change must be unblinded with the key of the keyset that signed it, not
+    /// with whichever keyset the wallet would pick as active. The two differ
+    /// whenever the mint keeps more than one keyset active, and unblinding with
+    /// the wrong key yields a proof that only fails when it is spent.
+    #[tokio::test]
+    async fn test_finalize_melt_unblinds_change_with_the_signing_keyset() {
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let (mut new_keyset, signing_keys) = signing_keyset(true);
+        // The wallet prefers the cheaper keyset, so it would pick the requested
+        // one as active even though the mint signed with this one.
+        new_keyset.input_fee_ppk = test_keyset().input_fee_ppk + 1;
+        mock_client.set_mint_keys_response(Ok(vec![test_keyset(), new_keyset.clone()]));
+
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+        assert_eq!(
+            wallet.active_keyset().await.expect("active keyset").id,
+            test_keyset_id()
+        );
+
+        let requested_keyset_id = test_keyset_id();
+        let quote = test_melt_quote();
+        let final_proofs = vec![test_proof_info(requested_keyset_id, 1008, test_mint_url()).proof];
+        let premint_secrets =
+            PreMintSecrets::blank(requested_keyset_id, Amount::from(8)).expect("blank secrets");
+
+        let blinded_secret = premint_secrets.blinded_messages()[0].blinded_secret;
+        let signing_key = signing_keys
+            .get(&Amount::from(8))
+            .expect("signing key for amount");
+        let change = vec![BlindSignature {
+            amount: Amount::from(8),
+            keyset_id: new_keyset.id,
+            c: sign_message(signing_key, &blinded_secret).expect("blind signature"),
+            dleq: None,
+        }];
+
+        let finalized = finalize_melt_common(
+            &wallet,
+            new_compensations(),
+            uuid::Uuid::new_v4(),
+            &quote,
+            &final_proofs,
+            &premint_secrets,
+            MeltQuoteState::Paid,
+            None,
+            Some(change),
+            HashMap::new(),
+            Default::default(),
+        )
+        .await
+        .expect("change under a second active keyset must be accepted");
+
+        let change_proofs = finalized.into_change().expect("change proofs");
+        verify_message(
+            signing_key,
+            change_proofs[0].c,
+            change_proofs[0].secret.as_bytes(),
+        )
+        .expect("change proof must verify under the keyset that signed it");
+    }
+
+    /// A keyset the mint does not publish for this unit is never acceptable,
+    /// even for blank outputs.
+    #[tokio::test]
+    async fn test_finalize_melt_rejects_change_from_unpublished_keyset() {
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let (foreign_keyset, signing_keys) = signing_keyset(true);
+
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let requested_keyset_id = test_keyset_id();
+        let quote = test_melt_quote();
+        let final_proofs = vec![test_proof_info(requested_keyset_id, 1008, test_mint_url()).proof];
+        let premint_secrets =
+            PreMintSecrets::blank(requested_keyset_id, Amount::from(8)).expect("blank secrets");
+
+        let blinded_secret = premint_secrets.blinded_messages()[0].blinded_secret;
+        let change = vec![BlindSignature {
+            amount: Amount::from(8),
+            keyset_id: foreign_keyset.id,
+            c: sign_message(
+                signing_keys.get(&Amount::from(8)).expect("signing key"),
+                &blinded_secret,
+            )
+            .expect("blind signature"),
+            dleq: None,
+        }];
+
+        let result = finalize_melt_common(
+            &wallet,
+            new_compensations(),
+            uuid::Uuid::new_v4(),
+            &quote,
+            &final_proofs,
+            &premint_secrets,
+            MeltQuoteState::Paid,
+            None,
+            Some(change),
+            HashMap::new(),
+            Default::default(),
+        )
+        .await;
+
+        assert!(matches!(result, Err(crate::Error::InvalidMintResponse(_))));
     }
 }

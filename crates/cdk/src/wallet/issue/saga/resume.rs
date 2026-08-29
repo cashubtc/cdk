@@ -22,9 +22,7 @@ use tracing::instrument;
 use crate::dhke::{construct_proofs, hash_to_curve};
 use crate::nuts::{MintRequest, PreMintSecrets, State};
 use crate::util::unix_time;
-use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
-};
+use crate::wallet::blind_signature::{validate_mint_response_signatures, OutputSignaturePolicy};
 use crate::wallet::issue::saga::compensation::ReleaseMintQuote;
 use crate::wallet::issue::saga::state::PreparedMintRequest;
 use crate::wallet::recovery::{OutputRecoveryResult, RecoveryAction};
@@ -509,7 +507,7 @@ impl Wallet {
                 self,
                 &mint_response.signatures,
                 blinded_messages.iter(),
-                SignatureAmountValidation::Exact,
+                OutputSignaturePolicy::Exact,
             )
             .await?;
 
@@ -639,7 +637,7 @@ impl Wallet {
             self,
             &mint_response.signatures,
             blinded_messages.iter(),
-            SignatureAmountValidation::Exact,
+            OutputSignaturePolicy::Exact,
         )
         .await?;
 

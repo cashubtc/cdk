@@ -41,9 +41,7 @@ use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{nut10, Proofs, SpendingConditions, State};
-use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
-};
+use crate::wallet::blind_signature::{validate_mint_response_signatures, OutputSignaturePolicy};
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
     RevertProofReservation as RevertSwapProofReservation,
@@ -253,7 +251,7 @@ impl<'a> SwapSaga<'a, Prepared> {
             self.wallet,
             &swap_response.signatures,
             self.state_data.pre_swap.swap_request.outputs().iter(),
-            SignatureAmountValidation::Exact,
+            OutputSignaturePolicy::Exact,
         )
         .await?;
 

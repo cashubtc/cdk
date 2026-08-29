@@ -4779,3 +4779,288 @@ async fn test_different_lookup_ids_allow_concurrent_pending() {
 
     // SUCCESS: Different lookup_ids allow concurrent pending!
 }
+
+// ============================================================================
+// Change Signing Across a Keyset Rotation
+// ============================================================================
+
+/// Rotates the sat keyset and returns the id that becomes active.
+async fn rotate_sat_keyset(mint: &crate::Mint, amounts: Vec<u64>) -> cdk_common::nuts::Id {
+    mint.rotate_keyset(CurrencyUnit::Sat, amounts, 0, true, None)
+        .await
+        .expect("rotation must succeed")
+        .id
+}
+
+/// Drives a melt with change outputs up to the point where the payment has
+/// settled but the change has not been signed yet.
+async fn paid_melt_awaiting_change(
+    mint: &crate::Mint,
+    change_amount: Amount,
+) -> (MeltQuote, Vec<cdk_common::nuts::BlindedMessage>, uuid::Uuid) {
+    use crate::test_helpers::mint::create_test_blinded_messages;
+
+    let proofs = mint_test_proofs(mint, Amount::from(10_000)).await.unwrap();
+    let quote = create_test_melt_quote(mint, Amount::from(9_000)).await;
+    let (change_outputs, _premint) = create_test_blinded_messages(mint, change_amount)
+        .await
+        .unwrap();
+    let melt_request = MeltRequest::new(quote.id.clone(), proofs, Some(change_outputs.clone()));
+
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup_saga = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+    let operation_id = setup_saga.operation_id;
+
+    let (payment_saga, decision) = setup_saga
+        .attempt_internal_settlement(&melt_request)
+        .await
+        .unwrap();
+    let PaymentOutcome::Confirmed(_) = payment_saga.make_payment(decision).await.unwrap() else {
+        panic!("Expected Confirmed outcome");
+    };
+
+    (quote, change_outputs, operation_id)
+}
+
+/// A paid melt whose change keyset rotated before the change was signed must
+/// still finalize, with the change re-issued under the new active keyset.
+#[tokio::test]
+async fn test_paid_melt_change_survives_keyset_rotation() {
+    let mint = create_test_mint().await.unwrap();
+    let (quote, change_outputs, operation_id) =
+        paid_melt_awaiting_change(&mint, Amount::from(1_000)).await;
+    let old_keyset_id = change_outputs[0].keyset_id;
+
+    let new_keyset_id = rotate_sat_keyset(&mint, (0..32).map(|i| 2u64.pow(i)).collect()).await;
+    assert_ne!(old_keyset_id, new_keyset_id);
+    assert!(
+        !mint
+            .get_keyset_info(&old_keyset_id)
+            .expect("reserved keyset must still exist")
+            .active
+    );
+
+    let change = finalize_melt_quote(
+        &mint,
+        &mint.localstore(),
+        &mint.pubsub_manager(),
+        &quote,
+        Amount::new(9_000, CurrencyUnit::Sat),
+        Some("rotation_preimage".to_string()),
+        &PaymentIdentifier::CustomId("rotation_lookup".to_string()),
+        Some(operation_id),
+    )
+    .await
+    .expect("a paid melt must remain finalizable after its change keyset rotates")
+    .expect("change must be issued");
+
+    assert!(!change.is_empty());
+    for signature in &change {
+        assert_eq!(signature.keyset_id, new_keyset_id);
+    }
+
+    // The blinded secrets are unchanged, only the signing keyset moved.
+    let signed_secrets: Vec<_> = change_outputs
+        .iter()
+        .map(|output| output.blinded_secret)
+        .take(change.len())
+        .collect();
+    assert_eq!(signed_secrets.len(), change.len());
+}
+
+/// The change split must come from the substituted keyset's denominations, not
+/// from the ones the wallet's outputs were accepted under.
+#[tokio::test]
+async fn test_melt_change_uses_substituted_keyset_denominations() {
+    let mint = create_test_mint().await.unwrap();
+    let (quote, _change_outputs, operation_id) =
+        paid_melt_awaiting_change(&mint, Amount::from(1_000)).await;
+
+    let restricted: Vec<u64> = (0..8).map(|i| 2u64.pow(i)).collect();
+    let new_keyset_id = rotate_sat_keyset(&mint, restricted.clone()).await;
+
+    let change = finalize_melt_quote(
+        &mint,
+        &mint.localstore(),
+        &mint.pubsub_manager(),
+        &quote,
+        Amount::new(9_000, CurrencyUnit::Sat),
+        Some("restricted_preimage".to_string()),
+        &PaymentIdentifier::CustomId("restricted_lookup".to_string()),
+        Some(operation_id),
+    )
+    .await
+    .unwrap()
+    .expect("change must be issued under the restricted keyset");
+
+    for signature in &change {
+        assert_eq!(signature.keyset_id, new_keyset_id);
+        assert!(
+            restricted.contains(&u64::from(signature.amount)),
+            "amount {} is not a denomination of the substituted keyset",
+            signature.amount
+        );
+    }
+}
+
+/// The stored blind signature rows must carry the keyset that actually signed
+/// them, so quote status and NUT-09 restore report a usable keyset.
+#[tokio::test]
+async fn test_melt_change_persists_substituted_keyset_id() {
+    let mint = create_test_mint().await.unwrap();
+    let (quote, _change_outputs, operation_id) =
+        paid_melt_awaiting_change(&mint, Amount::from(1_000)).await;
+
+    let new_keyset_id = rotate_sat_keyset(&mint, (0..32).map(|i| 2u64.pow(i)).collect()).await;
+
+    finalize_melt_quote(
+        &mint,
+        &mint.localstore(),
+        &mint.pubsub_manager(),
+        &quote,
+        Amount::new(9_000, CurrencyUnit::Sat),
+        Some("persisted_preimage".to_string()),
+        &PaymentIdentifier::CustomId("persisted_lookup".to_string()),
+        Some(operation_id),
+    )
+    .await
+    .unwrap()
+    .expect("change must be issued");
+
+    let stored = mint
+        .localstore
+        .get_blind_signatures_for_quote(&quote.id)
+        .await
+        .unwrap();
+    assert!(!stored.is_empty());
+    for signature in &stored {
+        assert_eq!(signature.keyset_id, new_keyset_id);
+    }
+
+    let total_issued = mint.total_issued().await.unwrap();
+    let issued_under_new = total_issued
+        .get(&new_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    assert_eq!(
+        issued_under_new,
+        Amount::try_sum(stored.iter().map(|sig| sig.amount)).unwrap()
+    );
+}
+
+/// With no keyset able to issue the change, the paid melt must still complete
+/// rather than stay stuck forever.
+#[tokio::test]
+async fn test_melt_change_degrades_when_no_keyset_can_issue_it() {
+    let mint = create_test_mint().await.unwrap();
+    let (quote, _change_outputs, operation_id) =
+        paid_melt_awaiting_change(&mint, Amount::from(1_000)).await;
+
+    // 1000 is not expressible with these denominations, and neither the
+    // original nor the substituted keyset can split it.
+    rotate_sat_keyset(&mint, vec![1024, 2048]).await;
+
+    let change = finalize_melt_quote(
+        &mint,
+        &mint.localstore(),
+        &mint.pubsub_manager(),
+        &quote,
+        Amount::new(9_000, CurrencyUnit::Sat),
+        Some("degraded_preimage".to_string()),
+        &PaymentIdentifier::CustomId("degraded_lookup".to_string()),
+        Some(operation_id),
+    )
+    .await
+    .expect("finalization must not fail when change cannot be issued");
+
+    assert!(change.is_none());
+
+    let quote_state = mint
+        .localstore
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .expect("quote must exist");
+    assert_eq!(quote_state.state, MeltQuoteState::Paid);
+}
+
+/// A stale keyset snapshot must keep the melt retryable rather than forfeit the
+/// change.
+///
+/// The substitute keyset is picked from the mint's in-memory snapshot, which can
+/// lag the signatory. If the keyset it names as active is already rotated away,
+/// signing fails for a reason a later attempt would not hit, so finalization
+/// must return an error instead of finalizing without change.
+#[tokio::test]
+async fn test_melt_change_retries_when_the_keyset_snapshot_is_stale() {
+    let mint = create_test_mint().await.unwrap();
+    let (quote, change_outputs, operation_id) =
+        paid_melt_awaiting_change(&mint, Amount::from(1_000)).await;
+    let stale_keyset_id = change_outputs[0].keyset_id;
+
+    rotate_sat_keyset(&mint, (0..32).map(|i| 2u64.pow(i)).collect()).await;
+
+    // Model a snapshot that has not caught up: it still advertises the rotated
+    // keyset as the active one for the unit.
+    let stale_snapshot: Vec<_> = mint
+        .keysets
+        .load()
+        .iter()
+        .map(|keyset| {
+            let mut keyset = keyset.clone();
+            keyset.active = keyset.id == stale_keyset_id;
+            keyset
+        })
+        .collect();
+    mint.keysets.store(std::sync::Arc::new(stale_snapshot));
+
+    let result = finalize_melt_quote(
+        &mint,
+        &mint.localstore(),
+        &mint.pubsub_manager(),
+        &quote,
+        Amount::new(9_000, CurrencyUnit::Sat),
+        Some("stale_preimage".to_string()),
+        &PaymentIdentifier::CustomId("stale_lookup".to_string()),
+        Some(operation_id),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "a stale snapshot must leave the melt retryable, not forfeit the change"
+    );
+
+    // A later attempt sees the real keyset state and issues the change.
+    let refreshed = mint.signatory.keysets().await.unwrap();
+    mint.keysets.store(std::sync::Arc::new(refreshed.keysets));
+
+    let change = finalize_melt_quote(
+        &mint,
+        &mint.localstore(),
+        &mint.pubsub_manager(),
+        &quote,
+        Amount::new(9_000, CurrencyUnit::Sat),
+        Some("stale_preimage".to_string()),
+        &PaymentIdentifier::CustomId("stale_lookup".to_string()),
+        Some(operation_id),
+    )
+    .await
+    .expect("the retry must succeed once the snapshot catches up")
+    .expect("change must be issued");
+
+    assert!(!change.is_empty());
+    assert_ne!(change[0].keyset_id, stale_keyset_id);
+}

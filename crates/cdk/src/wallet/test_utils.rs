@@ -400,6 +400,33 @@ pub fn make_inactive_keyset() -> KeySet {
     ks
 }
 
+/// A second keyset with known secret keys, for exercising signatures the mint
+/// issued under a keyset the wallet did not request.
+pub fn signing_keyset(active: bool) -> (KeySet, BTreeMap<Amount, SecretKey>) {
+    let mut signing_keys = BTreeMap::new();
+    let mut public_keys = BTreeMap::new();
+    for power in 0..32u8 {
+        let amount = Amount::from(1u64 << power);
+        let secret_key =
+            SecretKey::from_slice(&[power + 101; 32]).expect("test key is a valid secret");
+        public_keys.insert(amount, secret_key.public_key());
+        signing_keys.insert(amount, secret_key);
+    }
+    let keys = Keys::new(public_keys);
+
+    (
+        KeySet {
+            id: Id::v1_from_keys(&keys),
+            unit: CurrencyUnit::Sat,
+            active: Some(active),
+            keys,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        },
+        signing_keys,
+    )
+}
+
 /// Create a test melt quote
 pub fn test_melt_quote() -> MeltQuote {
     MeltQuote {

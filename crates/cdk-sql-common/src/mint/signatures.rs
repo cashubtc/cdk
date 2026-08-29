@@ -154,11 +154,12 @@ where
                             query(
                                 r#"
                                 UPDATE blind_signature
-                                SET c = :c, dleq_e = :dleq_e, dleq_s = :dleq_s, signed_time = :signed_time, amount = :amount
+                                SET c = :c, dleq_e = :dleq_e, dleq_s = :dleq_s, signed_time = :signed_time, amount = :amount, keyset_id = :keyset_id
                                 WHERE blinded_message = :blinded_message
                                 "#,
                             )?
                             .bind("c", signature.c.to_bytes().to_vec())
+                            .bind("keyset_id", signature.keyset_id.to_string())
                             .bind(
                                 "dleq_e",
                                 signature.dleq.as_ref().map(|dleq| dleq.e.to_secret_hex()),
