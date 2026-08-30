@@ -543,6 +543,28 @@ impl fmt::Debug for ReceiveOptions {
     }
 }
 
+/// Melt prepare options
+#[derive(Clone, Default)]
+pub struct MeltPrepareOptions {
+    /// Signing keys for P2PK/HTLC-locked input proofs; keys known to the wallet
+    /// are merged in automatically
+    pub p2pk_signing_keys: Vec<SecretKey>,
+    /// Preimages for HTLC-locked input proofs
+    pub preimages: Vec<String>,
+    /// Metadata
+    pub metadata: HashMap<String, String>,
+}
+
+impl fmt::Debug for MeltPrepareOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeltPrepareOptions")
+            .field("p2pk_signing_keys", &"[redacted]")
+            .field("preimages", &"[redacted]")
+            .field("metadata", &self.metadata)
+            .finish()
+    }
+}
+
 /// Send Kind
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SendKind {
@@ -1188,16 +1210,33 @@ pub trait Wallet: Send + Sync {
     ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
 
     /// Prepare a melt operation with specific proofs
-    ///
-    /// P2PK/HTLC-locked proofs are signed with `p2pk_signing_keys` plus any
-    /// signing keys known to the wallet before being reserved. Pass an empty
-    /// slice when the proofs are unlocked.
     async fn prepare_melt_proofs(
         &self,
         quote_id: &str,
         proofs: Proofs,
-        p2pk_signing_keys: &[SecretKey],
         metadata: HashMap<String, String>,
+    ) -> Result<Self::PreparedMelt<'_>, Self::Error> {
+        self.prepare_melt_proofs_with_options(
+            quote_id,
+            proofs,
+            MeltPrepareOptions {
+                metadata,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Prepare a melt operation with specific proofs and additional options
+    ///
+    /// P2PK/HTLC-locked proofs are signed with `options.p2pk_signing_keys` plus
+    /// any signing keys known to the wallet, and HTLC preimages from
+    /// `options.preimages` are attached, before the proofs are reserved.
+    async fn prepare_melt_proofs_with_options(
+        &self,
+        quote_id: &str,
+        proofs: Proofs,
+        options: MeltPrepareOptions,
     ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
 
     /// Prepare a melt operation from an encoded token
@@ -1205,14 +1244,33 @@ pub trait Wallet: Send + Sync {
     /// Decodes the token, extracts proofs (handling keyset state internally),
     /// and prepares the melt. This is useful when the caller has a token and
     /// wants to skip manual decoding, which requires keyset state for v2 keysets.
-    /// P2PK-locked tokens are signed with `p2pk_signing_keys` plus any signing
-    /// keys known to the wallet.
     async fn prepare_melt_token(
         &self,
         quote_id: &str,
         encoded_token: &str,
-        p2pk_signing_keys: &[SecretKey],
         metadata: HashMap<String, String>,
+    ) -> Result<Self::PreparedMelt<'_>, Self::Error> {
+        self.prepare_melt_token_with_options(
+            quote_id,
+            encoded_token,
+            MeltPrepareOptions {
+                metadata,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Prepare a melt operation from an encoded token with additional options
+    ///
+    /// Same as [`prepare_melt_token`](Wallet::prepare_melt_token), with locked
+    /// inputs signed as described in
+    /// [`prepare_melt_proofs_with_options`](Wallet::prepare_melt_proofs_with_options).
+    async fn prepare_melt_token_with_options(
+        &self,
+        quote_id: &str,
+        encoded_token: &str,
+        options: MeltPrepareOptions,
     ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
 
     /// Swap proofs
