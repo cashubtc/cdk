@@ -275,7 +275,9 @@ if [[ "$SUITE" == "all" || "$SUITE" == "ln" ]]; then
     fi
 
     echo "Running regtest test with cln mint for bolt12 (CLN client)"
-    run_test bolt12
+    # The tests share one CLN node and mint. Concurrent BOLT12 RPC bursts can
+    # leave CLN requests timing out before payment dispatch.
+    run_test bolt12 -- --test-threads 1
     if [ $? -ne 0 ]; then
         echo "regtest test failed, exiting"
         exit 1

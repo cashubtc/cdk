@@ -334,15 +334,28 @@ jobs:
       - name: Start Supabase local stack
         run: |
           docker compose -f misc/supabase/docker-compose.yml up -d
+          curl_bin="$(nix develop --fallback -i -L .#stable --command sh -c 'command -v curl')"
+          if [ ! -x "$curl_bin" ]; then
+            echo "The stable Nix development shell did not provide curl" >&2
+            exit 1
+          fi
+
           # Wait until PostgREST is reachable (it starts after Postgres is healthy)
+          ready=0
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:54321/rest/v1/ -H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRFA0NiK7kyqd6gq8zofHRnNe0pZzjJAVHf3nQzRoFk" > /dev/null 2>&1; then
+            if "$curl_bin" -sf http://localhost:54321/rest/v1/ -H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRFA0NiK7kyqd6gq8zofHRnNe0pZzjJAVHf3nQzRoFk" > /dev/null 2>&1; then
               echo "Supabase REST API is ready"
+              ready=1
               break
             fi
             echo "Waiting for Supabase... ($i/30)"
             sleep 3
           done
+          if [ "$ready" -ne 1 ]; then
+            echo "Supabase REST API did not become ready" >&2
+            docker compose -f misc/supabase/docker-compose.yml logs >&2 || true
+            exit 1
+          fi
       - name: Apply CDK wallet schema
         env:
           SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRFA0NiK7kyqd6gq8zofHRnNe0pZzjJAVHf3nQzRoFk"
@@ -353,6 +366,11 @@ jobs:
           trap 'rm -f "$schema_file"' EXIT
 
           nix develop --fallback -i -L .#stable --command cargo run --quiet -p cdk-supabase --example print_schema > "$schema_file"
+          curl_bin="$(nix develop --fallback -i -L .#stable --command sh -c 'command -v curl')"
+          if [ ! -x "$curl_bin" ]; then
+            echo "The stable Nix development shell did not provide curl" >&2
+            exit 1
+          fi
 
           # Apply the schema. ON_ERROR_STOP makes psql fail (and the step fail)
           # if any statement errors, instead of silently leaving a partial schema.
@@ -371,7 +389,7 @@ jobs:
           # Authorization bearer) so PostgREST resolves the anon role directly.
           ready=0
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" \
+            code=$("$curl_bin" -s -o /dev/null -w "%{http_code}" \
               "http://localhost:54321/rest/v1/schema_info?limit=1" \
               -H "apikey: ${SUPABASE_ANON_KEY}")
             if [ "$code" = "200" ]; then
@@ -616,11 +634,17 @@ jobs:
         run: |
           # Wait a bit more for import to complete
           sleep 5
+          curl_bin="$(nix develop --fallback -i -L .#stable --command sh -c 'command -v curl')"
+          if [ ! -x "$curl_bin" ]; then
+            echo "The stable Nix development shell did not provide curl" >&2
+            exit 1
+          fi
           # Check if the realm endpoint is accessible (better verification than log grep)
-          curl -f -s http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration > /dev/null && echo "Keycloak realm successfully imported" || (docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") && exit 1)
+          "$curl_bin" -fsS http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration > /dev/null && echo "Keycloak realm successfully imported" || (docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") && exit 1)
       - name: Test fake auth mint
         run: nix develop --fallback -i -L .#integration --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just fake-auth-mint-itest ${{ matrix.database }} http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration"
       - name: Stop and clean up Docker Compose
+        if: always()
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml down
 
