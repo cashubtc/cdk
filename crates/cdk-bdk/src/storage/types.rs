@@ -55,3 +55,24 @@ pub struct FinalizedReceiveIntentRecord {
     /// When finalization occurred (unix timestamp seconds)
     pub finalized_at: u64,
 }
+
+/// Durable record of consecutive deterministic broadcast rejections.
+///
+/// Tracks how many times in a row a chain backend has definitively rejected
+/// a `Broadcast` batch's transaction, so the rebroadcast loop can stop
+/// hammering the backend and surface the batch for operator review instead
+/// of retrying forever. Cleared on any accepted or already-known broadcast
+/// outcome and when the batch record is deleted.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BroadcastRejectionRecord {
+    /// Batch whose transaction is being rejected
+    pub batch_id: Uuid,
+    /// Computed transaction ID that was rejected
+    pub txid: String,
+    /// Consecutive deterministic rejections since the last success
+    pub consecutive_rejections: u32,
+    /// Last rejection message from the backend
+    pub last_error: String,
+    /// When the last rejection was recorded (unix timestamp seconds)
+    pub last_rejected_at: u64,
+}

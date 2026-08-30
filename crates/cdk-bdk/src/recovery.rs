@@ -853,8 +853,11 @@ impl CdkBdk {
                     }
 
                     match self.broadcast_transaction_internal(tx).await {
-                        Ok(BroadcastOutcome::Accepted) => {}
+                        Ok(BroadcastOutcome::Accepted) => {
+                            self.note_broadcast_success(batch_record.batch_id).await;
+                        }
                         Ok(BroadcastOutcome::AlreadyKnown) => {
+                            self.note_broadcast_success(batch_record.batch_id).await;
                             tracing::info!(
                                 "Recovered signed batch {} txid {} was already known to backend",
                                 batch_record.batch_id,
@@ -867,7 +870,8 @@ impl CdkBdk {
                                 batch_record.batch_id,
                                 &txid_str,
                                 &failure,
-                            );
+                            )
+                            .await;
                         }
                     }
                 }
@@ -895,11 +899,33 @@ impl CdkBdk {
                         continue;
                     };
                     let txid = tx.compute_txid();
+                    // The reservation was already refreshed above; an
+                    // escalated batch waits for operator review instead of
+                    // retrying the backend on every restart.
+                    if self
+                        .storage
+                        .get_broadcast_rejection(&batch_record.batch_id)
+                        .await?
+                        .is_some_and(|rejection| {
+                            rejection.consecutive_rejections
+                                >= crate::send::service::MAX_CONSECUTIVE_BROADCAST_REJECTIONS
+                        })
+                    {
+                        tracing::warn!(
+                            batch_id = %batch_record.batch_id,
+                            %txid,
+                            "Skipping recovery rebroadcast of escalated batch"
+                        );
+                        continue;
+                    }
                     tracing::info!("Re-broadcasting batch {} during recovery", txid);
 
                     match self.broadcast_transaction_internal(tx).await {
-                        Ok(BroadcastOutcome::Accepted) => {}
+                        Ok(BroadcastOutcome::Accepted) => {
+                            self.note_broadcast_success(batch_record.batch_id).await;
+                        }
                         Ok(BroadcastOutcome::AlreadyKnown) => {
+                            self.note_broadcast_success(batch_record.batch_id).await;
                             tracing::info!("Recovery rebroadcast tx {} already known", txid);
                         }
                         Err(failure) => {
@@ -908,7 +934,8 @@ impl CdkBdk {
                                 batch_record.batch_id,
                                 &txid.to_string(),
                                 &failure,
-                            );
+                            )
+                            .await;
                         }
                     }
                 }

@@ -3,7 +3,8 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 use super::{
-    outpoint_to_key, BdkStorage, FailedSendAttemptRecord, FinalizedSendIntentRecord, BDK_NAMESPACE,
+    outpoint_to_key, BdkStorage, BroadcastRejectionRecord, FailedSendAttemptRecord,
+    FinalizedSendIntentRecord, BDK_NAMESPACE, BROADCAST_REJECTION_NAMESPACE,
     FAILED_SEND_ATTEMPT_NAMESPACE, FINALIZED_INTENT_NAMESPACE,
     FINALIZED_SEND_INTENT_QUOTE_ID_NAMESPACE, SEND_BATCH_NAMESPACE, SEND_INTENT_NAMESPACE,
     SEND_INTENT_QUOTE_ID_NAMESPACE, SEND_OUTPOINT_QUOTE_ID_BACKFILL_KEY,
@@ -663,6 +664,268 @@ impl BdkStorage {
         Ok(normalized)
     }
 
+    /// Write-once binding of pre-attempt-generation Broadcast batches to
+    /// their member intents.
+    ///
+    /// Broadcast records written before attempt generations were introduced
+    /// deserialize with nil assignment attempt IDs, and the rebroadcast
+    /// eligibility gate fences such batches permanently. When every member
+    /// intent is still bound to this exact batch (state, batch ID, computed
+    /// txid, outpoint, and fee all match), each nil assignment is bound to
+    /// the member's current attempt, assigning a fresh attempt ID to legacy
+    /// members first. Batches with missing, replaced, or mismatched members
+    /// are left untouched and stay fenced for operator review.
+    ///
+    /// `txid` must be the transaction ID computed from the batch's persisted
+    /// transaction bytes, not the record's informational `txid` field.
+    ///
+    /// All rewrites for one batch commit atomically. A concurrent
+    /// modification rolls the transaction back and returns `Ok(false)`; the
+    /// next processor cycle retries.
+    pub async fn normalize_legacy_broadcast_attempt_ids(
+        &self,
+        batch_id: &Uuid,
+        txid: &str,
+    ) -> Result<bool, Error> {
+        let batch_key = batch_id.to_string();
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(Error::from)?;
+
+        let Some(batch_bytes) = tx
+            .kv_read(BDK_NAMESPACE, SEND_BATCH_NAMESPACE, &batch_key)
+            .await
+            .map_err(Error::from)?
+        else {
+            tx.rollback().await.map_err(Error::from)?;
+            return Ok(false);
+        };
+        let mut batch: SendBatchRecord = serde_json::from_slice(&batch_bytes).map_err(|error| {
+            Error::Wallet(format!(
+                "Failed to deserialize record in namespace {} for key {}: {}",
+                SEND_BATCH_NAMESPACE, batch_key, error
+            ))
+        })?;
+        let SendBatchState::Broadcast {
+            txid: stored_txid,
+            tx_bytes,
+            assignments,
+            fee_sat,
+        } = batch.state
+        else {
+            tx.rollback().await.map_err(Error::from)?;
+            return Ok(false);
+        };
+        if !assignments.iter().any(|a| a.attempt_id.is_nil()) {
+            tx.rollback().await.map_err(Error::from)?;
+            return Ok(false);
+        }
+
+        // Validate every member's binding to this exact batch and plan the
+        // rewrites before writing anything: a batch is bound only as a
+        // whole.
+        let mut member_rewrites: Vec<(String, Vec<u8>, Vec<u8>)> = Vec::new();
+        let mut bound_assignments = assignments.clone();
+        for (index, assignment) in assignments.iter().enumerate() {
+            let intent_key = assignment.intent_id.to_string();
+            let Some(intent_bytes) = tx
+                .kv_read(BDK_NAMESPACE, SEND_INTENT_NAMESPACE, &intent_key)
+                .await
+                .map_err(Error::from)?
+            else {
+                // Missing member: leave the batch fenced.
+                tx.rollback().await.map_err(Error::from)?;
+                return Ok(false);
+            };
+            let mut intent: SendIntentRecord =
+                serde_json::from_slice(&intent_bytes).map_err(|error| {
+                    Error::Wallet(format!(
+                        "Failed to deserialize record in namespace {} for key {}: {}",
+                        SEND_INTENT_NAMESPACE, intent_key, error
+                    ))
+                })?;
+            let bound_to_batch = match &intent.state {
+                SendIntentState::AwaitingConfirmation {
+                    batch_id: member_batch_id,
+                    txid: member_txid,
+                    outpoint,
+                    fee_contribution_sat,
+                    ..
+                } => {
+                    *member_batch_id == *batch_id
+                        && member_txid == txid
+                        && *outpoint == format!("{txid}:{}", assignment.vout)
+                        && *fee_contribution_sat == assignment.fee_contribution_sat
+                }
+                // A Batched member has not been advanced to its final
+                // broadcast fields yet; the eligibility gate repairs it.
+                SendIntentState::Batched {
+                    batch_id: member_batch_id,
+                    ..
+                } => *member_batch_id == *batch_id,
+                _ => false,
+            };
+            if !bound_to_batch {
+                tx.rollback().await.map_err(Error::from)?;
+                return Ok(false);
+            }
+
+            let target_attempt = if intent.attempt_id.is_nil() {
+                let fresh = Uuid::new_v4();
+                intent.attempt_id = fresh;
+                let replacement = serde_json::to_vec(&intent)?;
+                member_rewrites.push((intent_key, intent_bytes, replacement));
+                fresh
+            } else {
+                intent.attempt_id
+            };
+            bound_assignments[index].attempt_id = target_attempt;
+        }
+
+        for (intent_key, intent_bytes, replacement) in member_rewrites {
+            let rewritten = tx
+                .kv_write_if_equals(
+                    BDK_NAMESPACE,
+                    SEND_INTENT_NAMESPACE,
+                    &intent_key,
+                    &intent_bytes,
+                    &replacement,
+                )
+                .await
+                .map_err(Error::from)?;
+            if !rewritten {
+                tx.rollback().await.map_err(Error::from)?;
+                return Ok(false);
+            }
+        }
+
+        batch.state = SendBatchState::Broadcast {
+            txid: stored_txid,
+            tx_bytes,
+            assignments: bound_assignments,
+            fee_sat,
+        };
+        let batch_replacement = serde_json::to_vec(&batch)?;
+        let rewritten = tx
+            .kv_write_if_equals(
+                BDK_NAMESPACE,
+                SEND_BATCH_NAMESPACE,
+                &batch_key,
+                &batch_bytes,
+                &batch_replacement,
+            )
+            .await
+            .map_err(Error::from)?;
+        if !rewritten {
+            tx.rollback().await.map_err(Error::from)?;
+            return Ok(false);
+        }
+
+        tx.commit().await.map_err(Error::from)?;
+        Ok(true)
+    }
+
+    /// Record a deterministic broadcast rejection for a batch, returning the
+    /// consecutive rejection count.
+    ///
+    /// Only rejections the backend will never reconsider may be recorded
+    /// here; transient or ambiguous outcomes must not increment the counter.
+    /// A concurrent modification rolls the transaction back and returns an
+    /// error; the caller logs it and the next cycle retries.
+    pub async fn record_broadcast_rejection(
+        &self,
+        batch_id: &Uuid,
+        txid: &str,
+        error: &str,
+    ) -> Result<u32, Error> {
+        let key = batch_id.to_string();
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(Error::from)?;
+        let existing = tx
+            .kv_read(BDK_NAMESPACE, BROADCAST_REJECTION_NAMESPACE, &key)
+            .await
+            .map_err(Error::from)?;
+
+        let mut record = match &existing {
+            Some(bytes) => serde_json::from_slice::<BroadcastRejectionRecord>(bytes)?,
+            None => BroadcastRejectionRecord {
+                batch_id: *batch_id,
+                txid: txid.to_string(),
+                consecutive_rejections: 0,
+                last_error: String::new(),
+                last_rejected_at: 0,
+            },
+        };
+        record.consecutive_rejections = record.consecutive_rejections.saturating_add(1);
+        record.txid = txid.to_string();
+        record.last_error = error.to_string();
+        record.last_rejected_at = crate::util::unix_now();
+        let replacement = serde_json::to_vec(&record)?;
+
+        let written = match &existing {
+            Some(bytes) => tx
+                .kv_write_if_equals(
+                    BDK_NAMESPACE,
+                    BROADCAST_REJECTION_NAMESPACE,
+                    &key,
+                    bytes,
+                    &replacement,
+                )
+                .await
+                .map_err(Error::from)?,
+            None => tx
+                .kv_write_if_absent(
+                    BDK_NAMESPACE,
+                    BROADCAST_REJECTION_NAMESPACE,
+                    &key,
+                    &replacement,
+                )
+                .await
+                .map_err(Error::from)?,
+        };
+        if !written {
+            tx.rollback().await.map_err(Error::from)?;
+            return Err(Error::Wallet(format!(
+                "Broadcast rejection record changed while updating batch {key}"
+            )));
+        }
+
+        tx.commit().await.map_err(Error::from)?;
+        Ok(record.consecutive_rejections)
+    }
+
+    /// Clear a batch's rejection record after an accepted or already-known
+    /// broadcast outcome, or when the batch record is deleted. Idempotent.
+    pub async fn clear_broadcast_rejection(&self, batch_id: &Uuid) -> Result<(), Error> {
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(Error::from)?;
+        tx.kv_remove(
+            BDK_NAMESPACE,
+            BROADCAST_REJECTION_NAMESPACE,
+            &batch_id.to_string(),
+        )
+        .await
+        .map_err(Error::from)?;
+        tx.commit().await.map_err(Error::from)?;
+        Ok(())
+    }
+
+    /// Read a batch's broadcast rejection record, if any.
+    pub async fn get_broadcast_rejection(
+        &self,
+        batch_id: &Uuid,
+    ) -> Result<Option<BroadcastRejectionRecord>, Error> {
+        self.get_record(&batch_id.to_string()).await
+    }
+
     /// Store a failed pre-sign send attempt tombstone.
     pub async fn add_failed_send_attempt(
         &self,
@@ -1115,6 +1378,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::send::batch_transaction::record::BatchOutputAssignment;
     use crate::send::payment_intent::SendIntent;
     use crate::testutil::{store_test_signed_batch, GatedKvStore, PausePoint, ReadPath};
     use crate::types::{PaymentMetadata, PaymentTier};
@@ -1496,6 +1760,245 @@ mod tests {
                 .expect("get tombstone")
                 .is_some());
         }
+    }
+
+    /// Pre-attempt-generation Broadcast batches are bound to their member
+    /// intents' current attempts in one atomic write, so the rebroadcast
+    /// eligibility gate can evaluate them. Covers both an advanced
+    /// AwaitingConfirmation member and a crash-leftover Batched member.
+    #[tokio::test]
+    async fn normalize_legacy_broadcast_attempt_ids_binds_matching_members() {
+        let db = cdk_sqlite::mint::memory::empty()
+            .await
+            .expect("in-memory database");
+        let storage = BdkStorage::new(Arc::new(db));
+        let batch_id = Uuid::new_v4();
+        let txid = "aa".repeat(32);
+        let awaiting_id = Uuid::new_v4();
+        let batched_id = Uuid::new_v4();
+
+        let awaiting = SendIntentRecord {
+            intent_id: awaiting_id,
+            attempt_id: Uuid::nil(),
+            quote_id: format!("quote-{awaiting_id}"),
+            address: ADDR.to_string(),
+            amount_sat: 20_000,
+            max_fee_amount_sat: 1_000,
+            tier: PaymentTier::Immediate,
+            metadata: PaymentMetadata::default(),
+            state: SendIntentState::AwaitingConfirmation {
+                batch_id,
+                txid: txid.clone(),
+                outpoint: format!("{txid}:0"),
+                fee_contribution_sat: 250,
+                created_at: 1_700_000_000,
+            },
+        };
+        let batched = SendIntentRecord {
+            intent_id: batched_id,
+            attempt_id: Uuid::nil(),
+            quote_id: format!("quote-{batched_id}"),
+            address: ADDR.to_string(),
+            amount_sat: 10_000,
+            max_fee_amount_sat: 500,
+            tier: PaymentTier::Immediate,
+            metadata: PaymentMetadata::default(),
+            state: SendIntentState::Batched {
+                batch_id,
+                created_at: 1_700_000_000,
+            },
+        };
+        for intent in [&awaiting, &batched] {
+            storage
+                .create_send_intent_if_absent(intent)
+                .await
+                .expect("store member");
+        }
+        storage
+            .store_send_batch(&SendBatchRecord {
+                batch_id,
+                state: SendBatchState::Broadcast {
+                    txid: txid.clone(),
+                    tx_bytes: vec![0x01],
+                    assignments: vec![
+                        BatchOutputAssignment {
+                            intent_id: awaiting_id,
+                            attempt_id: Uuid::nil(),
+                            vout: 0,
+                            fee_contribution_sat: 250,
+                        },
+                        BatchOutputAssignment {
+                            intent_id: batched_id,
+                            attempt_id: Uuid::nil(),
+                            vout: 1,
+                            fee_contribution_sat: 250,
+                        },
+                    ],
+                    fee_sat: 500,
+                },
+            })
+            .await
+            .expect("store legacy broadcast batch");
+
+        assert!(storage
+            .normalize_legacy_broadcast_attempt_ids(&batch_id, &txid)
+            .await
+            .expect("normalize"));
+
+        let awaiting_after = storage
+            .get_send_intent(&awaiting_id)
+            .await
+            .expect("read awaiting member")
+            .expect("awaiting member exists");
+        let batched_after = storage
+            .get_send_intent(&batched_id)
+            .await
+            .expect("read batched member")
+            .expect("batched member exists");
+        assert!(!awaiting_after.attempt_id.is_nil());
+        assert!(!batched_after.attempt_id.is_nil());
+        let batch_after = storage
+            .get_send_batch(&batch_id)
+            .await
+            .expect("read batch")
+            .expect("batch exists");
+        match batch_after.state {
+            SendBatchState::Broadcast { assignments, .. } => {
+                assert_eq!(assignments[0].attempt_id, awaiting_after.attempt_id);
+                assert_eq!(assignments[1].attempt_id, batched_after.attempt_id);
+            }
+            other => panic!("expected Broadcast, got {:?}", other),
+        }
+
+        // Idempotent: nothing left to normalize.
+        assert!(!storage
+            .normalize_legacy_broadcast_attempt_ids(&batch_id, &txid)
+            .await
+            .expect("normalize again"));
+    }
+
+    /// A batch whose member no longer matches its assignment must stay
+    /// untouched and fenced for operator review.
+    #[tokio::test]
+    async fn normalize_legacy_broadcast_attempt_ids_leaves_mismatched_batch_fenced() {
+        let db = cdk_sqlite::mint::memory::empty()
+            .await
+            .expect("in-memory database");
+        let storage = BdkStorage::new(Arc::new(db));
+        let batch_id = Uuid::new_v4();
+        let txid = "bb".repeat(32);
+        let intent_id = Uuid::new_v4();
+
+        // The member's outpoint does not match the assignment's vout: the
+        // batch cannot be proven to belong to this intent.
+        let member = SendIntentRecord {
+            intent_id,
+            attempt_id: Uuid::nil(),
+            quote_id: format!("quote-{intent_id}"),
+            address: ADDR.to_string(),
+            amount_sat: 20_000,
+            max_fee_amount_sat: 1_000,
+            tier: PaymentTier::Immediate,
+            metadata: PaymentMetadata::default(),
+            state: SendIntentState::AwaitingConfirmation {
+                batch_id,
+                txid: txid.clone(),
+                outpoint: format!("{txid}:1"),
+                fee_contribution_sat: 250,
+                created_at: 1_700_000_000,
+            },
+        };
+        storage
+            .create_send_intent_if_absent(&member)
+            .await
+            .expect("store member");
+        storage
+            .store_send_batch(&SendBatchRecord {
+                batch_id,
+                state: SendBatchState::Broadcast {
+                    txid: txid.clone(),
+                    tx_bytes: vec![0x01],
+                    assignments: vec![BatchOutputAssignment {
+                        intent_id,
+                        attempt_id: Uuid::nil(),
+                        vout: 0,
+                        fee_contribution_sat: 250,
+                    }],
+                    fee_sat: 250,
+                },
+            })
+            .await
+            .expect("store legacy broadcast batch");
+
+        assert!(!storage
+            .normalize_legacy_broadcast_attempt_ids(&batch_id, &txid)
+            .await
+            .expect("normalize must not error"));
+
+        // Neither record was rewritten.
+        let member_after = storage
+            .get_send_intent(&intent_id)
+            .await
+            .expect("read member")
+            .expect("member exists");
+        assert_eq!(member_after.attempt_id, Uuid::nil());
+        let batch_after = storage
+            .get_send_batch(&batch_id)
+            .await
+            .expect("read batch")
+            .expect("batch exists");
+        match batch_after.state {
+            SendBatchState::Broadcast { assignments, .. } => {
+                assert_eq!(assignments[0].attempt_id, Uuid::nil());
+            }
+            other => panic!("expected Broadcast, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn broadcast_rejection_record_counts_and_clears() {
+        let db = cdk_sqlite::mint::memory::empty()
+            .await
+            .expect("in-memory database");
+        let storage = BdkStorage::new(Arc::new(db));
+        let batch_id = Uuid::new_v4();
+
+        assert!(storage
+            .get_broadcast_rejection(&batch_id)
+            .await
+            .expect("read")
+            .is_none());
+
+        for expected in 1..=3_u32 {
+            let count = storage
+                .record_broadcast_rejection(&batch_id, "txid", "bad-txns-inputs-missingorspent")
+                .await
+                .expect("record rejection");
+            assert_eq!(count, expected);
+        }
+        let record = storage
+            .get_broadcast_rejection(&batch_id)
+            .await
+            .expect("read")
+            .expect("record exists");
+        assert_eq!(record.consecutive_rejections, 3);
+        assert_eq!(record.last_error, "bad-txns-inputs-missingorspent");
+
+        storage
+            .clear_broadcast_rejection(&batch_id)
+            .await
+            .expect("clear");
+        assert!(storage
+            .get_broadcast_rejection(&batch_id)
+            .await
+            .expect("read")
+            .is_none());
+
+        // Clearing is idempotent.
+        storage
+            .clear_broadcast_rejection(&batch_id)
+            .await
+            .expect("clear again");
     }
 
     #[tokio::test]

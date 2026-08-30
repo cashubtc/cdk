@@ -18,6 +18,16 @@ use crate::send::payment_intent::{self, state as intent_state, SendIntent, SendI
 use crate::types::PaymentTier;
 use crate::CdkBdk;
 
+/// Consecutive deterministic backend rejections after which a batch stops
+/// being automatically rebroadcast and waits for operator intervention.
+///
+/// Transient or ambiguous failures never count toward this limit, and
+/// escalation touches nothing but the retry decision: the batch record, its
+/// durable evidence, and its wallet input reservations are all retained,
+/// because a rejection from this backend never proves the transaction is not
+/// in someone else's mempool.
+pub(crate) const MAX_CONSECUTIVE_BROADCAST_REJECTIONS: u32 = 10;
+
 impl CdkBdk {
     async fn fail_send_intents(&self, intents: &[SendIntent<intent_state::Pending>], reason: &str) {
         for intent in intents {
@@ -182,7 +192,7 @@ impl CdkBdk {
         self.chain_source.broadcast(tx).await
     }
 
-    pub(crate) fn log_broadcast_failure(
+    pub(crate) async fn log_broadcast_failure(
         &self,
         context: &str,
         batch_id: Uuid,
@@ -191,12 +201,42 @@ impl CdkBdk {
     ) {
         match failure.kind {
             BroadcastErrorKind::Rejected => {
-                tracing::error!(
-                    %batch_id,
-                    %txid,
-                    error = %failure.message,
-                    "{context}: backend rejected signed transaction; keeping batch for operator review/retry"
-                );
+                let count = match self
+                    .storage
+                    .record_broadcast_rejection(&batch_id, txid, &failure.message)
+                    .await
+                {
+                    Ok(count) => Some(count),
+                    Err(err) => {
+                        tracing::error!(
+                            %batch_id,
+                            %txid,
+                            error = %err,
+                            "Could not record broadcast rejection"
+                        );
+                        None
+                    }
+                };
+                match count {
+                    Some(count) if count >= MAX_CONSECUTIVE_BROADCAST_REJECTIONS => {
+                        tracing::error!(
+                            %batch_id,
+                            %txid,
+                            consecutive_rejections = count,
+                            error = %failure.message,
+                            "{context}: backend keeps rejecting signed transaction; \
+                             suspending automatic rebroadcast until operator review"
+                        );
+                    }
+                    _ => {
+                        tracing::error!(
+                            %batch_id,
+                            %txid,
+                            error = %failure.message,
+                            "{context}: backend rejected signed transaction; keeping batch for operator review/retry"
+                        );
+                    }
+                }
             }
             BroadcastErrorKind::Transient => {
                 tracing::warn!(
@@ -214,6 +254,18 @@ impl CdkBdk {
                     "{context}: ambiguous broadcast failure; will retry conservatively"
                 );
             }
+        }
+    }
+
+    /// Clear any recorded broadcast rejections after the backend accepted (or
+    /// already knew) the transaction.
+    pub(crate) async fn note_broadcast_success(&self, batch_id: Uuid) {
+        if let Err(err) = self.storage.clear_broadcast_rejection(&batch_id).await {
+            tracing::warn!(
+                %batch_id,
+                error = %err,
+                "Could not clear broadcast rejection record"
+            );
         }
     }
 
@@ -255,6 +307,35 @@ impl CdkBdk {
                 normalized,
                 "Assigned attempt IDs to legacy pending send intents"
             );
+        }
+
+        // Bind pre-attempt-generation Broadcast batches to their member
+        // intents' current attempts. Without this write-once binding the
+        // eligibility gate fences legacy durable evidence from rebroadcast
+        // permanently, wedging any payment that was in flight during the
+        // upgrade.
+        for batch in self.storage.get_all_send_batches().await? {
+            if !matches!(
+                &batch.state,
+                SendBatchState::Broadcast { assignments, .. }
+                    if assignments.iter().any(|a| a.attempt_id.is_nil())
+            ) {
+                continue;
+            }
+            let Some((_, txid, _)) = decode_broadcast_reservation(&batch.batch_id, &batch.state)
+            else {
+                continue;
+            };
+            if self
+                .storage
+                .normalize_legacy_broadcast_attempt_ids(&batch.batch_id, &txid.to_string())
+                .await?
+            {
+                tracing::info!(
+                    batch_id = %batch.batch_id,
+                    "Bound legacy Broadcast batch to current send attempts"
+                );
+            }
         }
 
         // Cancellation is durable precisely so transient wallet/storage
@@ -731,8 +812,11 @@ impl CdkBdk {
 
         // 7. Broadcast
         match self.broadcast_transaction_internal(tx.clone()).await {
-            Ok(BroadcastOutcome::Accepted) => {}
+            Ok(BroadcastOutcome::Accepted) => {
+                self.note_broadcast_success(batch_id).await;
+            }
             Ok(BroadcastOutcome::AlreadyKnown) => {
+                self.note_broadcast_success(batch_id).await;
                 tracing::info!(
                     "Batch {} txid {} was already known to backend",
                     batch_id,
@@ -745,7 +829,8 @@ impl CdkBdk {
                     batch_id,
                     &txid_string,
                     &failure,
-                );
+                )
+                .await;
                 // Post-Broadcast-persist failure: the batch record and intents are
                 // already marked for reconciliation. Recovery will attempt rebroadcast.
                 return Err(Error::Wallet(format!(
@@ -854,6 +939,17 @@ impl CdkBdk {
                 self.storage
                     .delete_send_batch_if_state(&batch.batch_id, &batch.state)
                     .await?;
+                if let Err(err) = self
+                    .storage
+                    .clear_broadcast_rejection(&batch.batch_id)
+                    .await
+                {
+                    tracing::warn!(
+                        batch_id = %batch.batch_id,
+                        error = %err,
+                        "Could not clear broadcast rejection record during batch cleanup"
+                    );
+                }
             } else {
                 tracing::warn!(
                     batch_id = %batch.batch_id,
@@ -888,6 +984,22 @@ impl CdkBdk {
             if let Some(reservation) = decode_broadcast_reservation(&record.batch_id, &record.state)
             {
                 reservations.push(reservation);
+            }
+            // An escalated batch keeps its input reservation but is not
+            // retried against the backend until an operator intervenes.
+            if self
+                .storage
+                .get_broadcast_rejection(&record.batch_id)
+                .await?
+                .is_some_and(|rejection| {
+                    rejection.consecutive_rejections >= MAX_CONSECUTIVE_BROADCAST_REJECTIONS
+                })
+            {
+                tracing::debug!(
+                    batch_id = %record.batch_id,
+                    "Skipping escalated batch; awaiting operator review"
+                );
+                continue;
             }
             if let Some((txid, tx)) = self
                 .prepare_broadcast_batch(record.batch_id, &record.state)
@@ -958,16 +1070,20 @@ impl CdkBdk {
         for (batch_id, txid, tx) in candidates {
             tracing::info!(%batch_id, %txid, "Rebroadcasting stuck batch");
             match self.broadcast_transaction_internal(tx.clone()).await {
-                Ok(outcome) => match outcome {
-                    BroadcastOutcome::Accepted => {
-                        tracing::info!(%batch_id, %txid, "Rebroadcast accepted");
+                Ok(outcome) => {
+                    self.note_broadcast_success(batch_id).await;
+                    match outcome {
+                        BroadcastOutcome::Accepted => {
+                            tracing::info!(%batch_id, %txid, "Rebroadcast accepted");
+                        }
+                        BroadcastOutcome::AlreadyKnown => {
+                            tracing::info!(%batch_id, %txid, "Rebroadcast tx already known");
+                        }
                     }
-                    BroadcastOutcome::AlreadyKnown => {
-                        tracing::info!(%batch_id, %txid, "Rebroadcast tx already known");
-                    }
-                },
+                }
                 Err(failure) => {
-                    self.log_broadcast_failure("Rebroadcast failed", batch_id, &txid, &failure);
+                    self.log_broadcast_failure("Rebroadcast failed", batch_id, &txid, &failure)
+                        .await;
                     // Swallow: next reconciliation tick will retry.
                 }
             }
@@ -2354,6 +2470,172 @@ mod tests {
                 panic!("reserved transaction must remain canonical and unconfirmed");
             };
             assert!(last_seen > sync_started_at);
+        }
+
+        /// Pre-attempt-generation durable Broadcast evidence is fenced from
+        /// rebroadcast until a processor cycle binds its assignments to the
+        /// member intents' current attempts.
+        #[tokio::test]
+        async fn legacy_broadcast_batch_is_normalized_and_unfenced() {
+            let backend = build_test_instance().await;
+            let batch_id = Uuid::new_v4();
+            let tx = wallet_relevant_tx(&backend).await;
+            let txid = tx.compute_txid();
+            let intent_id = Uuid::new_v4();
+            let address = Address::from_script(&tx.output[0].script_pubkey, backend.network)
+                .expect("test output script has an address");
+
+            // Legacy shape: nil attempt IDs on both the member intent and
+            // the batch assignment, as written before attempt generations
+            // existed.
+            backend
+                .storage
+                .create_send_intent_if_absent(&SendIntentRecord {
+                    intent_id,
+                    attempt_id: Uuid::nil(),
+                    quote_id: format!("quote-{intent_id}"),
+                    address: address.to_string(),
+                    amount_sat: 10_000,
+                    max_fee_amount_sat: 500,
+                    tier: PaymentTier::Immediate,
+                    metadata: PaymentMetadata::default(),
+                    state: SendIntentState::AwaitingConfirmation {
+                        batch_id,
+                        txid: txid.to_string(),
+                        outpoint: OutPoint::new(txid, 0).to_string(),
+                        fee_contribution_sat: 500,
+                        created_at: 1_700_000_000,
+                    },
+                })
+                .await
+                .expect("store legacy intent");
+            backend
+                .storage
+                .store_send_batch(&SendBatchRecord {
+                    batch_id,
+                    state: SendBatchState::Broadcast {
+                        txid: txid.to_string(),
+                        tx_bytes: consensus::serialize(&tx),
+                        assignments: vec![BatchOutputAssignment {
+                            intent_id,
+                            attempt_id: Uuid::nil(),
+                            vout: 0,
+                            fee_contribution_sat: 500,
+                        }],
+                        fee_sat: 500,
+                    },
+                })
+                .await
+                .expect("store legacy broadcast batch");
+
+            let stored = backend
+                .storage
+                .get_send_batch(&batch_id)
+                .await
+                .expect("read batch")
+                .expect("batch exists");
+            assert!(
+                backend
+                    .prepare_broadcast_batch(batch_id, &stored.state)
+                    .await
+                    .expect("prepare legacy batch")
+                    .is_none(),
+                "legacy broadcast must be fenced before normalization"
+            );
+
+            backend
+                .process_ready_intents()
+                .await
+                .expect("processor cycle");
+
+            let stored = backend
+                .storage
+                .get_send_batch(&batch_id)
+                .await
+                .expect("read batch")
+                .expect("batch exists");
+            assert!(
+                backend
+                    .prepare_broadcast_batch(batch_id, &stored.state)
+                    .await
+                    .expect("prepare normalized batch")
+                    .is_some(),
+                "normalized broadcast must be eligible for rebroadcast"
+            );
+        }
+
+        /// A batch the backend keeps deterministically rejecting stops being
+        /// retried after the escalation threshold, but keeps its wallet
+        /// reservation: rejection by this backend never proves the
+        /// transaction is not in someone else's mempool.
+        #[tokio::test]
+        async fn rebroadcast_escalates_after_repeated_deterministic_rejection() {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            let mut backend = build_test_instance().await;
+            let batch_id = Uuid::new_v4();
+            let tx = wallet_relevant_tx(&backend).await;
+            let txid = tx.compute_txid();
+            store_eligible_broadcast(&backend, batch_id, &tx).await;
+
+            let requests = Arc::new(AtomicUsize::new(0));
+            let counted = requests.clone();
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind test Esplora server");
+            let address = listener.local_addr().expect("test server address");
+            let server = tokio::spawn(async move {
+                loop {
+                    let (mut stream, _) = listener.accept().await.expect("accept");
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    let mut request = [0u8; 4096];
+                    let _ = stream.read(&mut request).await.expect("read request");
+                    let body = "bad-txns-inputs-missingorspent";
+                    let response = format!(
+                        "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("write rejection");
+                }
+            });
+            backend.chain_source = ChainSource::Esplora(EsploraConfig {
+                url: format!("http://{address}"),
+                parallel_requests: 1,
+            });
+
+            let threshold = super::super::MAX_CONSECUTIVE_BROADCAST_REJECTIONS;
+            for _ in 0..threshold {
+                backend
+                    .rebroadcast_stuck_batches()
+                    .await
+                    .expect("rebroadcast");
+            }
+            assert_eq!(requests.load(Ordering::SeqCst), threshold as usize);
+            let record = backend
+                .storage
+                .get_broadcast_rejection(&batch_id)
+                .await
+                .expect("read rejection record")
+                .expect("rejection record exists");
+            assert_eq!(record.consecutive_rejections, threshold);
+
+            // Escalated: no further network I/O, reservation retained.
+            backend
+                .rebroadcast_stuck_batches()
+                .await
+                .expect("escalated rebroadcast run");
+            assert_eq!(requests.load(Ordering::SeqCst), threshold as usize);
+            {
+                let wallet_with_db = backend.wallet_with_db.lock().await;
+                assert!(
+                    wallet_with_db.wallet.get_tx(txid).is_some(),
+                    "escalated batch must keep its input reservation"
+                );
+            }
+            server.abort();
         }
 
         /// An already-known response proves the backend has the transaction,

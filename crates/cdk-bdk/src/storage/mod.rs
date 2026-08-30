@@ -15,7 +15,10 @@ pub mod receive;
 pub mod send;
 mod types;
 
-pub use types::{FailedSendAttemptRecord, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord};
+pub use types::{
+    BroadcastRejectionRecord, FailedSendAttemptRecord, FinalizedReceiveIntentRecord,
+    FinalizedSendIntentRecord,
+};
 
 /// Primary namespace for BDK KV store operations
 pub const BDK_NAMESPACE: &str = "bdk";
@@ -40,6 +43,10 @@ pub const SEND_BATCH_NAMESPACE: &str = "send_batch";
 
 /// Secondary namespace for failed pre-sign send attempt tombstones.
 pub const FAILED_SEND_ATTEMPT_NAMESPACE: &str = "failed_send_attempt";
+
+/// Secondary namespace for consecutive deterministic broadcast rejection
+/// counters (keyed by batch_id).
+pub const BROADCAST_REJECTION_NAMESPACE: &str = "broadcast_rejection";
 
 /// Secondary namespace for finalized (confirmed) intents.
 /// Stores tombstone records so `check_outgoing_payment` can return
@@ -234,6 +241,14 @@ impl KvRecord for FailedSendAttemptRecord {
 
     fn key(&self) -> String {
         self.attempt_id.to_string()
+    }
+}
+
+impl KvRecord for BroadcastRejectionRecord {
+    const NAMESPACE: &'static str = BROADCAST_REJECTION_NAMESPACE;
+
+    fn key(&self) -> String {
+        self.batch_id.to_string()
     }
 }
 
