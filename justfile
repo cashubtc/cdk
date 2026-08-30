@@ -1237,14 +1237,14 @@ binding-kotlin:
   cd "{{justfile_directory()}}"
   result=$(nix build .#kotlin-bindings --print-out-paths --no-link)
   cp -r "$result"/* bindings/kotlin/
-  chmod -R u+w bindings/kotlin/cdk-jvm/src/main/kotlin bindings/kotlin/cdk-jvm/src/main/resources
+  chmod -R u+w bindings/kotlin
 
 # Run Kotlin binding tests
 test-kotlin:
   #!/usr/bin/env bash
   set -euo pipefail
   cd "{{justfile_directory()}}/bindings/kotlin"
-  ./gradlew :cdk-jvm:test
+  ./gradlew -PcdkJvmOnly=true :cdk-jvm:test
 
 
 # Run Swift binding tests

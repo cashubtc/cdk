@@ -752,7 +752,7 @@ jobs:
         run: |
           result=$(nix build -L .#kotlin-bindings --print-out-paths --no-link)
           cp -r "$result"/* bindings/kotlin/
-          chmod -R u+w bindings/kotlin/cdk-jvm/src/main/kotlin bindings/kotlin/cdk-jvm/src/main/resources
+          chmod -R u+w bindings/kotlin
       - name: Run Kotlin tests
         run: nix develop --fallback -L .#bindings --command just test-kotlin
 

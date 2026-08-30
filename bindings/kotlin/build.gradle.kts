@@ -1,7 +1,5 @@
 plugins {
     kotlin("jvm") version "1.9.24" apply false
-    kotlin("android") version "1.9.24" apply false
-    id("com.android.library") version "8.5.1" apply false
     id("com.vanniktech.maven.publish.base") version "0.34.0" apply false
 }
 
