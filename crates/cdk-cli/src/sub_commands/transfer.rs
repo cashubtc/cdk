@@ -211,7 +211,7 @@ pub async fn transfer(
             };
             let source_proofs = source_wallet.get_unspent_proofs().await?;
             let prepared = source_wallet
-                .prepare_melt_proofs(&quote.melt_quote.id, source_proofs, &[], HashMap::new())
+                .prepare_melt_proofs(&quote.melt_quote.id, source_proofs, HashMap::new())
                 .await?;
             prepared
                 .confirm_with_options(MeltConfirmOptions::skip_swap())

@@ -2304,7 +2304,6 @@ async fn test_melt_proofs_external() {
         .prepare_melt_proofs(
             &melt_quote.id,
             proofs.clone(),
-            &[],
             std::collections::HashMap::new(),
         )
         .await
