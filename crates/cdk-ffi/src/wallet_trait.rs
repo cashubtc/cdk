@@ -338,12 +338,24 @@ impl WalletTraitDef for Wallet {
         &self,
         quote_id: &str,
         proofs: cdk_common::Proofs,
-        p2pk_signing_keys: &[cdk_common::SecretKey],
         metadata: HashMap<String, String>,
     ) -> Result<PreparedMelt, Self::Error> {
         let prepared = self
             .inner()
-            .prepare_melt_proofs(quote_id, proofs, p2pk_signing_keys, metadata)
+            .prepare_melt_proofs(quote_id, proofs, metadata)
+            .await?;
+        Ok(PreparedMelt::new(self.inner().clone(), &prepared))
+    }
+
+    async fn prepare_melt_proofs_with_options(
+        &self,
+        quote_id: &str,
+        proofs: cdk_common::Proofs,
+        options: cdk_common::wallet::MeltPrepareOptions,
+    ) -> Result<PreparedMelt, Self::Error> {
+        let prepared = self
+            .inner()
+            .prepare_melt_proofs_with_options(quote_id, proofs, options)
             .await?;
         Ok(PreparedMelt::new(self.inner().clone(), &prepared))
     }
@@ -352,12 +364,24 @@ impl WalletTraitDef for Wallet {
         &self,
         quote_id: &str,
         encoded_token: &str,
-        p2pk_signing_keys: &[cdk_common::SecretKey],
         metadata: HashMap<String, String>,
     ) -> Result<PreparedMelt, Self::Error> {
         let prepared = self
             .inner()
-            .prepare_melt_token(quote_id, encoded_token, p2pk_signing_keys, metadata)
+            .prepare_melt_token(quote_id, encoded_token, metadata)
+            .await?;
+        Ok(PreparedMelt::new(self.inner().clone(), &prepared))
+    }
+
+    async fn prepare_melt_token_with_options(
+        &self,
+        quote_id: &str,
+        encoded_token: &str,
+        options: cdk_common::wallet::MeltPrepareOptions,
+    ) -> Result<PreparedMelt, Self::Error> {
+        let prepared = self
+            .inner()
+            .prepare_melt_token_with_options(quote_id, encoded_token, options)
             .await?;
         Ok(PreparedMelt::new(self.inner().clone(), &prepared))
     }

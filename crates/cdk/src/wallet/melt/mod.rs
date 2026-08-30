@@ -43,15 +43,15 @@ use std::time::Duration;
 
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
-    CrossMintTransferQuote, MeltQuote, MeltSagaState, OperationData, Transaction,
-    TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
+    CrossMintTransferQuote, MeltPrepareOptions, MeltQuote, MeltSagaState, OperationData,
+    Transaction, TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
 };
 use cdk_common::{Error, MeltQuoteState, PaymentMethod, ProofsMethods, State};
 use tracing::instrument;
 use uuid::Uuid;
 
 use crate::nuts::nut00::KnownMethod;
-use crate::nuts::{MeltOptions, Proofs, SecretKey, Token};
+use crate::nuts::{MeltOptions, Proofs, Token};
 use crate::types::FinalizedMelt;
 use crate::wallet::subscription::NotificationPayload;
 use crate::wallet::WalletSubscription;
@@ -1098,23 +1098,42 @@ impl Wallet {
     }
 
     /// Prepare a melt operation with specific proofs.
-    ///
-    /// P2PK/HTLC-locked proofs are signed before being reserved, using
-    /// `p2pk_signing_keys` plus any signing keys known to the wallet,
-    /// mirroring how [`receive_proofs`](Wallet::receive_proofs) resolves
-    /// keys. Pass an empty slice when the proofs are unlocked.
-    #[instrument(skip(self, proofs, p2pk_signing_keys, metadata))]
+    #[instrument(skip(self, proofs, metadata))]
     pub async fn prepare_melt_proofs(
         &self,
         quote_id: &str,
         proofs: crate::nuts::Proofs,
-        p2pk_signing_keys: &[SecretKey],
         metadata: HashMap<String, String>,
     ) -> Result<PreparedMelt<'_>, Error> {
+        self.prepare_melt_proofs_with_options(
+            quote_id,
+            proofs,
+            MeltPrepareOptions {
+                metadata,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Prepare a melt operation with specific proofs and additional options.
+    ///
+    /// P2PK/HTLC-locked proofs are signed before being reserved, using
+    /// `options.p2pk_signing_keys` plus any signing keys known to the wallet,
+    /// mirroring how [`receive_proofs`](Wallet::receive_proofs) resolves keys.
+    /// HTLC preimages from `options.preimages` are attached to matching
+    /// proofs. SIG_ALL-locked proofs are rejected: their witness must commit
+    /// to the melt request's change outputs, which only exist at confirmation.
+    #[instrument(skip(self, proofs, options))]
+    pub async fn prepare_melt_proofs_with_options(
+        &self,
+        quote_id: &str,
+        proofs: crate::nuts::Proofs,
+        options: MeltPrepareOptions,
+    ) -> Result<PreparedMelt<'_>, Error> {
+        let metadata = options.metadata.clone();
         let saga = MeltSaga::new(self);
-        let prepared_saga = saga
-            .prepare_with_proofs(quote_id, proofs, p2pk_signing_keys, metadata.clone())
-            .await?;
+        let prepared_saga = saga.prepare_with_proofs(quote_id, proofs, options).await?;
 
         Ok(PreparedMelt {
             saga: prepared_saga,
@@ -1126,15 +1145,35 @@ impl Wallet {
     ///
     /// Decodes the token, validates unit and mint URL, extracts proofs,
     /// and delegates to [`prepare_melt_proofs`](Wallet::prepare_melt_proofs).
-    /// P2PK-locked tokens are signed with `p2pk_signing_keys` plus any
-    /// signing keys known to the wallet.
-    #[instrument(skip(self, encoded_token, p2pk_signing_keys, metadata))]
+    #[instrument(skip(self, encoded_token, metadata))]
     pub async fn prepare_melt_token(
         &self,
         quote_id: &str,
         encoded_token: &str,
-        p2pk_signing_keys: &[SecretKey],
         metadata: HashMap<String, String>,
+    ) -> Result<PreparedMelt<'_>, Error> {
+        self.prepare_melt_token_with_options(
+            quote_id,
+            encoded_token,
+            MeltPrepareOptions {
+                metadata,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Prepare a melt operation from an encoded token with additional options.
+    ///
+    /// Same as [`prepare_melt_token`](Wallet::prepare_melt_token), with locked
+    /// inputs handled as described in
+    /// [`prepare_melt_proofs_with_options`](Wallet::prepare_melt_proofs_with_options).
+    #[instrument(skip(self, encoded_token, options))]
+    pub async fn prepare_melt_token_with_options(
+        &self,
+        quote_id: &str,
+        encoded_token: &str,
+        options: MeltPrepareOptions,
     ) -> Result<PreparedMelt<'_>, Error> {
         let token = Token::from_str(encoded_token)?;
 
@@ -1144,7 +1183,7 @@ impl Wallet {
 
         let proofs = self.token_proofs(&token).await?;
 
-        self.prepare_melt_proofs(quote_id, proofs, p2pk_signing_keys, metadata)
+        self.prepare_melt_proofs_with_options(quote_id, proofs, options)
             .await
     }
 
@@ -2280,7 +2319,6 @@ mod tests {
                     .get_unspent_proofs()
                     .await
                     .expect("source proofs"),
-                &[],
                 HashMap::new(),
             )
             .await
@@ -2478,7 +2516,6 @@ mod tests {
                     .get_unspent_proofs()
                     .await
                     .expect("source proofs"),
-                &[],
                 HashMap::new(),
             )
             .await
@@ -2562,7 +2599,6 @@ mod tests {
                     .get_unspent_proofs()
                     .await
                     .expect("source proofs"),
-                &[],
                 HashMap::new(),
             )
             .await
@@ -2593,7 +2629,7 @@ mod tests {
         let mock_client = Arc::new(MockMintConnector::new());
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let prepared = wallet
-            .prepare_melt_proofs(&quote_id, vec![proof], &[], HashMap::new())
+            .prepare_melt_proofs(&quote_id, vec![proof], HashMap::new())
             .await
             .unwrap();
 
@@ -2651,7 +2687,7 @@ mod tests {
         let mock_client = Arc::new(MockMintConnector::new());
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let prepared = wallet
-            .prepare_melt_proofs(&quote_id, vec![proof], &[], HashMap::new())
+            .prepare_melt_proofs(&quote_id, vec![proof], HashMap::new())
             .await
             .unwrap();
         let operation_id = prepared.operation_id();
@@ -2742,7 +2778,7 @@ mod tests {
         let mock_client = Arc::new(MockMintConnector::new());
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let prepared = wallet
-            .prepare_melt_proofs(&quote_id, vec![proof], &[], HashMap::new())
+            .prepare_melt_proofs(&quote_id, vec![proof], HashMap::new())
             .await
             .unwrap();
         db.update_proofs_state(vec![proof_y], State::Spent)
@@ -2792,7 +2828,7 @@ mod tests {
         let mock_client = Arc::new(MockMintConnector::new());
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let prepared = wallet
-            .prepare_melt_proofs(&quote_id, vec![reserved_proof], &[], HashMap::new())
+            .prepare_melt_proofs(&quote_id, vec![reserved_proof], HashMap::new())
             .await
             .unwrap();
 
@@ -2996,7 +3032,7 @@ mod tests {
         let encoded_token = build_token(test_mint_url(), CurrencyUnit::Usd);
 
         let result = wallet
-            .prepare_melt_token(&quote_id, &encoded_token, &[], HashMap::new())
+            .prepare_melt_token(&quote_id, &encoded_token, HashMap::new())
             .await;
 
         assert!(matches!(result, Err(Error::UnsupportedUnit)));
@@ -3011,7 +3047,7 @@ mod tests {
         );
 
         let result = wallet
-            .prepare_melt_token(&quote_id, &encoded_token, &[], HashMap::new())
+            .prepare_melt_token(&quote_id, &encoded_token, HashMap::new())
             .await;
 
         assert!(matches!(result, Err(Error::IncorrectMint)));
@@ -3033,7 +3069,7 @@ mod tests {
             Token::new(test_mint_url(), vec![proof], None, CurrencyUnit::Sat).to_string();
 
         let prepared = wallet
-            .prepare_melt_token(&quote_id, &encoded_token, &[], HashMap::new())
+            .prepare_melt_token(&quote_id, &encoded_token, HashMap::new())
             .await
             .unwrap();
 
@@ -3063,7 +3099,7 @@ mod tests {
 
         let proof = test_proof(crate::wallet::test_utils::test_keyset_id(), 1200);
         let prepared = wallet
-            .prepare_melt_proofs(&quote_id, vec![proof], &[], metadata.clone())
+            .prepare_melt_proofs(&quote_id, vec![proof], metadata.clone())
             .await
             .unwrap();
 
@@ -3093,7 +3129,7 @@ mod tests {
 
         let proof = test_proof(crate::wallet::test_utils::test_keyset_id(), 1200);
         let prepared = wallet
-            .prepare_melt_proofs(&quote_id, vec![proof], &[], saga_metadata.clone())
+            .prepare_melt_proofs(&quote_id, vec![proof], saga_metadata.clone())
             .await
             .unwrap();
 
@@ -3139,7 +3175,7 @@ mod tests {
 
         let proof = test_proof(crate::wallet::test_utils::test_keyset_id(), 1200);
         let prepared = wallet
-            .prepare_melt_proofs(&quote_id, vec![proof], &[], stale_metadata)
+            .prepare_melt_proofs(&quote_id, vec![proof], stale_metadata)
             .await
             .unwrap();
 
@@ -3191,7 +3227,7 @@ mod tests {
 
         let proof = test_proof(crate::wallet::test_utils::test_keyset_id(), 1200);
         let prepared = wallet
-            .prepare_melt_proofs(&quote_id, vec![proof], &[], saga_metadata.clone())
+            .prepare_melt_proofs(&quote_id, vec![proof], saga_metadata.clone())
             .await
             .unwrap();
 
@@ -3298,7 +3334,7 @@ mod tests {
         };
 
         let prepared = wallet
-            .prepare_melt_proofs(&quote_id, vec![proof], &[], metadata)
+            .prepare_melt_proofs(&quote_id, vec![proof], metadata)
             .await
             .unwrap();
         let operation_id = prepared.operation_id();
