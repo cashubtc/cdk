@@ -22,7 +22,11 @@ env:
   # jobs on that host, instead of once per job into each job's TMPDIR
   # (per-job extraction multiplied disk usage and filled self-hosted runner
   # disks when several itest jobs ran concurrently).
+  # /var/tmp is writable in the ephemeral runner containers. The physical
+  # hosts' /data mount is not exposed inside those containers.
   CDK_NEXTEST_EXTRACT_ROOT: /var/tmp/cdk-nextest-extract
+  # Reserve five minutes of the 30-minute integration-job limit for cleanup.
+  CDK_ITEST_SUITE_TIMEOUT_SECONDS: 1500
 
 jobs:
   pre-commit-checks:
@@ -455,7 +459,10 @@ jobs:
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test
-        run: nix develop --fallback -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest-ln ${{ matrix.database }}"
+        run: |
+          export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
+          nix develop --fallback -i -L -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS .#regtest \
+            --command misc/with_ci_tmpdir.sh just itest-ln ${{ matrix.database }}
 
   regtest-onchain-itest:
     name: "Integration regtest Onchain tests"
@@ -479,7 +486,10 @@ jobs:
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test
-        run: nix develop --fallback -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest-onchain ${{ matrix.database }}"
+        run: |
+          export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
+          nix develop --fallback -i -L -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS .#regtest \
+            --command misc/with_ci_tmpdir.sh just itest-onchain ${{ matrix.database }}
 
   fake-mint-itest:
     name: "Integration fake mint tests"
@@ -503,7 +513,10 @@ jobs:
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test fake mint
-        run: nix develop --fallback -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just fake-mint-itest ${{ matrix.database }}"
+        run: |
+          export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
+          nix develop --fallback -i -L -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS .#regtest \
+            --command misc/with_ci_tmpdir.sh just fake-mint-itest ${{ matrix.database }}
 
   pure-itest:
     name: "Integration fake wallet tests"
@@ -527,14 +540,17 @@ jobs:
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test pure
-        run: nix develop --fallback -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just test-pure ${{ matrix.database }}"
+        run: |
+          export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
+          nix develop --fallback -i -L -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS .#regtest \
+            --command misc/with_ci_tmpdir.sh just test-pure ${{ matrix.database }}
       - name: Basic mint integration test
         if: matrix.database == 'memory'
         run: |
-          nix develop --fallback -i -L .#regtest --command bash -c "
+          export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
+          nix develop --fallback -i -L -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS .#regtest \
+            --command misc/with_ci_tmpdir.sh bash -c "
             set -euo pipefail
-            export TMPDIR=\$(mktemp -d -p \"\$PWD\")
-            export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
             source ./misc/itest_helpers.sh
             run_test mint
           "
@@ -561,7 +577,10 @@ jobs:
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test
-        run: nix develop --fallback -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest-payment-processor ${{matrix.ln}}"
+        run: |
+          export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
+          nix develop --fallback -i -L -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS .#regtest \
+            --command misc/with_ci_tmpdir.sh just itest-payment-processor ${{matrix.ln}}
 
   msrv-build:
     name: "MSRV: ${{ matrix.check }}"
@@ -642,7 +661,12 @@ jobs:
           # Check if the realm endpoint is accessible (better verification than log grep)
           "$curl_bin" -fsS http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration > /dev/null && echo "Keycloak realm successfully imported" || (docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") && exit 1)
       - name: Test fake auth mint
-        run: nix develop --fallback -i -L .#integration --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just fake-auth-mint-itest ${{ matrix.database }} http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration"
+        run: |
+          export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
+          nix develop --fallback -i -L -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS .#integration \
+            --command misc/with_ci_tmpdir.sh just fake-auth-mint-itest \
+            ${{ matrix.database }} \
+            http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration
       - name: Stop and clean up Docker Compose
         if: always()
         run: |

@@ -947,7 +947,15 @@
           ++ (with pkgs; [
             mprocs
             nostr-rs-relay
-          ]);
+          ])
+          # Integration-test cleanup starts the regtest process tree in a
+          # dedicated session on Linux and uses procps to catch any child that
+          # daemonizes out of that group. Bash job control is the portable
+          # fallback on Darwin, where these Linux tools are unavailable.
+          ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.procps
+            pkgs.util-linux
+          ];
 
         commonShellHook = ''
           # Needed for github ci
