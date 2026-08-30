@@ -1002,6 +1002,25 @@
           PGPASSWORD="${postgresConf.pgPassword}"
           PGDATABASE="${postgresConf.pgDatabase}"
 
+          start_postgres_server() {
+            # Override old clusters too: a .pg_data created before this fix can
+            # still contain an absolute Unix-socket directory that is no longer
+            # valid after moving the workspace.
+            if ! ${pkgs.postgresql_16}/bin/pg_ctl \
+              -D "$PGDATA" \
+              -l "$PGDATA/logfile" \
+              -o "-c unix_socket_directories=" \
+              start; then
+              echo "PostgreSQL failed to start. Server log:" >&2
+              if [ -f "$PGDATA/logfile" ]; then
+                cat "$PGDATA/logfile" >&2
+              else
+                echo "No PostgreSQL logfile was created." >&2
+              fi
+              return 1
+            fi
+          }
+
           # Stop any existing instance first
           if [ -d "$PGDATA" ] && ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" status > /dev/null 2>&1; then
             echo "Stopping existing PostgreSQL instance..."
@@ -1015,10 +1034,12 @@
             # Configure PostgreSQL
             echo "listen_addresses = 'localhost'" >> "$PGDATA/postgresql.conf"
             echo "port = $PGPORT" >> "$PGDATA/postgresql.conf"
-            echo "unix_socket_directories = '$PGDATA'" >> "$PGDATA/postgresql.conf"
+            # All clients use TCP. Disabling Unix sockets avoids PostgreSQL's
+            # short Unix-socket pathname limit in deeply nested CI workspaces.
+            printf "unix_socket_directories = '%s'\n" "" >> "$PGDATA/postgresql.conf"
 
             # Start temporarily to create user and database
-            ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" -l "$PGDATA/logfile" start
+            start_postgres_server
             sleep 2
 
             # Create user and database
@@ -1031,7 +1052,7 @@
           fi
 
           echo "Starting PostgreSQL on port $PGPORT..."
-          ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" -l "$PGDATA/logfile" start
+          start_postgres_server
           echo "PostgreSQL started. Connection URL: postgresql://$PGUSER:$PGPASSWORD@localhost:$PGPORT/$PGDATABASE"
         '';
 
