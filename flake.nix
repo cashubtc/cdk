@@ -218,23 +218,32 @@
         # Source for crane builds - uses lib.fileset for efficient filtering
         # This is much faster than nix-gitignore when large directories (like target/) exist
         # because it uses a whitelist approach rather than scanning everything first
+        srcFileset = lib.fileset.intersection (lib.fileset.fromSource (lib.sources.cleanSource ./.)) (
+          lib.fileset.unions [
+            ./Cargo.toml
+            ./Cargo.lock
+            ./Cargo.lock.msrv
+            ./clippy.toml
+            ./.typos.toml
+            ./rustfmt.toml
+            ./README.md
+            ./.cargo
+            ./crates
+            fuzzSrc
+            ./bindings
+          ]
+        );
+
         src = lib.fileset.toSource {
           root = ./.;
-          fileset = lib.fileset.intersection (lib.fileset.fromSource (lib.sources.cleanSource ./.)) (
-            lib.fileset.unions [
-              ./Cargo.toml
-              ./Cargo.lock
-              ./Cargo.lock.msrv
-              ./clippy.toml
-              ./.typos.toml
-              ./rustfmt.toml
-              ./README.md
-              ./.cargo
-              ./crates
-              fuzzSrc
-              ./bindings
-            ]
-          );
+          fileset = srcFileset;
+        };
+
+        # The integration-test harness binaries do not compile the test targets.
+        # Keep changes confined to those tests from invalidating their cache keys.
+        itestHarnessSrc = lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.difference srcFileset ./crates/cdk-integration-tests/tests;
         };
 
         # Source for MSRV builds - uses Cargo.lock.msrv with MSRV-compatible deps
@@ -1376,6 +1385,7 @@
             commonCraneArgs
             // {
               pname = "cdk-itest-${name}";
+              src = itestHarnessSrc;
               cargoArtifacts = workspaceDeps;
               inherit cargoExtraArgs;
               # Only install the specific binary, not the entire workspace
