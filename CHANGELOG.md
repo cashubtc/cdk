@@ -7,6 +7,35 @@
 
 ## [Unreleased]
 
+## [0.18.0-rc.2](https://github.com/cashubtc/cdk/releases/tag/v0.18.0-rc.2)
+
+### Summary
+
+Version 0.18.0-rc.2 hardens pending-melt recovery, bounds untrusted protocol fields, and persists NUT-13 proof derivation indices for safer wallet proof selection. It also disables mint-quote payment overrides by default and further reduces exposure of secret-bearing data.
+
+### Breaking Changes
+
+- cdk-common/cdk-postgres/cdk-sql-common: The short-lived `QuoteLockAttempt`, `Transaction::try_lock_quotes`, and `MintDatabase::begin_dispatch_transaction` APIs are removed; custom database backends must remove the corresponding implementations.
+- cashu/cdk-common: `PreMint` and `ProofInfo` gain an optional `derivation_index` field, so downstream Rust struct literals must initialize it. Wallet SQL and Supabase schemas add a nullable proof derivation-index column and index when opened or migrated.
+- cashu: Mint private-key containers (`MintKeys`, `MintKeyPair`, and `MintKeySet`) no longer implement `Serialize`, preventing accidental export of mint signing keys.
+
+### Added
+
+- cdk/cdk-common/cdk-ffi: Wallets persist NUT-13 derivation indices across supported database backends, expose them through FFI `ProofInfo`, and prefer spending unindexed and older deterministic proofs when otherwise equivalent.
+- cdk-mintd/cdk-mint-rpc: Mint-quote state override RPCs have an explicit configuration and environment opt-in.
+
+### Changed
+
+- cdk-mint: Melt dispatch no longer holds database connections across payment-backend network calls, while durable pending and terminal saga states drive polling, backend-event, and startup reconciliation.
+- cdk-mint-rpc: Mint-quote state overrides, including marking a quote paid without backend confirmation, are disabled by default.
+
+### Fixed
+
+- cashu/cdk-axum/cdk-mint: NUT-17 subscription IDs, custom kinds, filters, custom payment-method names, and custom melt request fields are length-bounded before they reach persistent or pub/sub state.
+- cdk-mint: Duplicate proof Ys no longer lose their existing proof state, and signatory keyset unit and expiry are sourced from authoritative keyset metadata.
+- cdk: Extreme mint-controlled amounts return `AmountOverflow` instead of panicking, and Nostr payment-request delivery fails when every relay rejects the event.
+- cdk: Mint signing keys cannot be serialized; secret-bearing debug and trace output is redacted, signed P2PK metadata is stripped, and remaining peer-controlled terminal/log strings are escaped.
+
 ## [0.18.0-rc.1](https://github.com/cashubtc/cdk/releases/tag/v0.18.0-rc.1)
 
 ### Summary
