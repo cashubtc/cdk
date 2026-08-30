@@ -237,10 +237,14 @@ pub fn validate_fee_options(fee_options: &[PaymentTier]) -> Result<(), String> {
 ///
 /// Stored for future extensions. In v1 no behavior is driven by metadata
 /// values. Future features like payjoin may consume this metadata.
+///
+/// Entries use a `BTreeMap` so serialization is canonical: the same metadata
+/// always produces the same stored bytes regardless of how the map was
+/// constructed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PaymentMetadata {
     /// Key-value pairs
-    pub entries: std::collections::HashMap<String, String>,
+    pub entries: std::collections::BTreeMap<String, String>,
 }
 
 impl PaymentMetadata {
@@ -257,7 +261,7 @@ impl PaymentMetadata {
             return meta;
         }
         // Fall back to interpreting the JSON as a bare key-value map
-        if let Ok(entries) = serde_json::from_str::<std::collections::HashMap<String, String>>(s) {
+        if let Ok(entries) = serde_json::from_str::<std::collections::BTreeMap<String, String>>(s) {
             return Self { entries };
         }
         Self::default()

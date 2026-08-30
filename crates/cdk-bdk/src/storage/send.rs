@@ -1025,7 +1025,6 @@ impl BdkStorage {
         }
 
         let key = expected.intent_id.to_string();
-        let expected_bytes = serde_json::to_vec(expected)?;
         let serialized = serde_json::to_vec(record)?;
         let mut tx = self
             .kv_store
@@ -1041,21 +1040,28 @@ impl BdkStorage {
             return Ok(false);
         };
         let intent: SendIntentRecord = serde_json::from_slice(&active_bytes)?;
-        if active_bytes != expected_bytes {
+        // Compare records semantically, not by raw bytes: the caller's
+        // expected record round-tripped through storage and a fresh
+        // serialization, so identity must not depend on the exact byte
+        // representation.
+        if intent != *expected {
             tx.rollback().await.map_err(Error::from)?;
             return Ok(false);
         }
 
         // Take ownership of this exact active record before creating the
-        // tombstone. Writing the same bytes is intentional: the conditional
-        // update locks the row in SQL stores and gives all backends one atomic
-        // winner, while preserving the record until the transaction removes it.
+        // tombstone. Writing back the bytes just read is intentional: the
+        // conditional update locks the row in SQL stores and gives all
+        // backends one atomic winner, while preserving the record until the
+        // transaction removes it. The condition is the stored bytes, not a
+        // re-serialization, so the lock does not depend on how a fresh
+        // serialization would represent the record.
         let won = tx
             .kv_write_if_equals(
                 BDK_NAMESPACE,
                 SEND_INTENT_NAMESPACE,
                 &key,
-                &expected_bytes,
+                &active_bytes,
                 &active_bytes,
             )
             .await
@@ -1422,6 +1428,74 @@ mod tests {
             .expect("get batch")
             .expect("broadcast batch remains");
         assert_eq!(persisted.state, broadcast_state);
+    }
+
+    /// Regression test: finalizing an intent whose expected record
+    /// round-tripped through storage must not be mistaken for a concurrent
+    /// modification. The identity comparison must be semantic, never based
+    /// on the serialized byte representation of the record.
+    #[tokio::test]
+    async fn finalize_send_intent_with_multi_entry_metadata() {
+        let db = cdk_sqlite::mint::memory::empty()
+            .await
+            .expect("in-memory database");
+        let storage = BdkStorage::new(Arc::new(db));
+
+        for _ in 0..25 {
+            let intent_id = Uuid::new_v4();
+            let txid = format!("txid-{intent_id}");
+            let intent = SendIntentRecord {
+                intent_id,
+                attempt_id: Uuid::new_v4(),
+                quote_id: format!("quote-{intent_id}"),
+                address: ADDR.to_string(),
+                amount_sat: 20_000,
+                max_fee_amount_sat: 1_000,
+                tier: PaymentTier::Immediate,
+                metadata: PaymentMetadata::from_optional_json(Some(
+                    r#"{"key1": "value1", "key2": "value2", "key3": "value3"}"#,
+                )),
+                state: SendIntentState::AwaitingConfirmation {
+                    batch_id: Uuid::new_v4(),
+                    txid: txid.clone(),
+                    outpoint: format!("{txid}:0"),
+                    fee_contribution_sat: 250,
+                    created_at: 1_700_000_000,
+                },
+            };
+            storage
+                .create_send_intent_if_absent(&intent)
+                .await
+                .expect("store intent");
+
+            // Mirror the confirmation flow: the record handed to
+            // `finalize_send_intent` is deserialized from storage, not the
+            // originally inserted value.
+            let active = storage
+                .get_send_intent(&intent_id)
+                .await
+                .expect("read intent")
+                .expect("intent exists");
+            let tombstone = FinalizedSendIntentRecord {
+                intent_id,
+                quote_id: active.quote_id.clone(),
+                total_spent_sat: 20_250,
+                outpoint: format!("{txid}:0"),
+                finalized_at: 1_700_000_001,
+            };
+            assert!(
+                storage
+                    .finalize_send_intent(&active, &tombstone)
+                    .await
+                    .expect("finalize"),
+                "finalization must not be rejected for multi-entry metadata"
+            );
+            assert!(storage
+                .get_finalized_intent(&intent_id)
+                .await
+                .expect("get tombstone")
+                .is_some());
+        }
     }
 
     #[tokio::test]
