@@ -1446,7 +1446,8 @@ impl PaymentMethodService for MintRPCServer {
 impl From<MintMethodSettings> for crate::payment_method::UpdateMintMethodResponse {
     fn from(settings: MintMethodSettings) -> Self {
         let options = settings.options.and_then(|options| match options {
-            cdk::nuts::nut04::MintMethodOptions::Bolt11 { description } => {
+            cdk::nuts::nut04::MintMethodOptions::Bolt11 { description }
+            | cdk::nuts::nut04::MintMethodOptions::Bolt12 { description } => {
                 Some(crate::payment_method::Bolt11MintMethodOptions { description })
             }
             _ => None,
@@ -2227,6 +2228,30 @@ mod tests {
             .into_inner()
             .tos_url
             .is_none());
+    }
+
+    #[test]
+    fn test_update_mint_method_response_maps_bolt12_description_options() {
+        let settings = MintMethodSettings {
+            method: PaymentMethod::Known(KnownMethod::Bolt12),
+            unit: CurrencyUnit::Sat,
+            method_name: Some("Bolt12".to_string()),
+            min_amount: Some(Amount::from(1)),
+            max_amount: Some(Amount::from(1_000)),
+            options: Some(cdk::nuts::nut04::MintMethodOptions::Bolt12 { description: true }),
+        };
+
+        let response: crate::payment_method::UpdateMintMethodResponse = settings.into();
+
+        assert_eq!(response.unit, "sat");
+        assert_eq!(response.method, "bolt12");
+        assert_eq!(response.min_amount, Some(1));
+        assert_eq!(response.max_amount, Some(1_000));
+        assert_eq!(
+            response.options,
+            Some(crate::payment_method::Bolt11MintMethodOptions { description: true })
+        );
+        assert_eq!(response.method_name.as_deref(), Some("Bolt12"));
     }
 
     #[tokio::test]
