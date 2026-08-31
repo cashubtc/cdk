@@ -125,19 +125,15 @@ impl Serialize for MintMethodSettings {
             num_fields += 1;
         }
 
-        let mut description_in_top_level = false;
-        let mut bolt12_description: Option<bool> = None;
+        let mut nested_description: Option<bool> = None;
         let mut onchain_confirmations: Option<u32> = None;
 
         match &self.options {
-            Some(MintMethodOptions::Bolt11 { description }) if *description => {
-                num_fields += 1;
-                description_in_top_level = true;
-            }
-            // BOLT12 advertises the description flag in a nested options object
-            // as defined in NUT-25.
-            Some(MintMethodOptions::Bolt12 { description }) => {
-                bolt12_description = Some(*description);
+            // NUT-23 (bolt11) and NUT-25 (bolt12) advertise description support
+            // in a nested options object.
+            Some(MintMethodOptions::Bolt11 { description })
+            | Some(MintMethodOptions::Bolt12 { description }) => {
+                nested_description = Some(*description);
                 num_fields += 1; // for the "options" field
             }
             Some(MintMethodOptions::Onchain { confirmations }) => {
@@ -164,11 +160,6 @@ impl Serialize for MintMethodSettings {
             state.serialize_field("max_amount", max_amount)?;
         }
 
-        // If there's a description flag in Bolt11 options, add it at the top level
-        if description_in_top_level {
-            state.serialize_field("description", &true)?;
-        }
-
         // Serialize onchain options as a nested "options" object
         if let Some(confirmations) = onchain_confirmations {
             #[derive(Serialize)]
@@ -178,13 +169,13 @@ impl Serialize for MintMethodSettings {
             state.serialize_field("options", &OnchainOptions { confirmations })?;
         }
 
-        // Serialize bolt12 options as a nested "options" object (NUT-25)
-        if let Some(description) = bolt12_description {
+        // Serialize bolt11/bolt12 description as a nested "options" object
+        if let Some(description) = nested_description {
             #[derive(Serialize)]
-            struct Bolt12Options {
+            struct DescriptionOptions {
                 description: bool,
             }
-            state.serialize_field("options", &Bolt12Options { description })?;
+            state.serialize_field("options", &DescriptionOptions { description })?;
         }
 
         state.end()
@@ -875,16 +866,16 @@ mod tests {
             _ => panic!("Expected Bolt11 options with description = true"),
         }
 
-        // Serialize it back
+        // Serialize it back as nested options per NUT-23
         let serialized = to_string(&settings).unwrap();
         let parsed: serde_json::Value = from_str(&serialized).unwrap();
 
-        // Verify the description is at the top level
-        assert_eq!(parsed["description"], json!(true));
+        assert_eq!(parsed["options"]["description"], json!(true));
+        assert!(parsed.get("description").is_none());
     }
 
     #[test]
-    fn test_mint_method_settings_does_not_serialize_false_description() {
+    fn test_mint_method_settings_serializes_false_description_in_options() {
         let settings = MintMethodSettings {
             method: PaymentMethod::Known(KnownMethod::Bolt11),
             unit: CurrencyUnit::Sat,
@@ -899,7 +890,35 @@ mod tests {
 
         assert_eq!(parsed["method"], json!("bolt11"));
         assert!(parsed.get("description").is_none());
-        assert!(parsed.get("options").is_none());
+        assert_eq!(parsed["options"]["description"], json!(false));
+    }
+
+    #[test]
+    fn test_bolt11_settings_nested_options_round_trip() {
+        let json_str = r#"{
+            "method": "bolt11",
+            "unit": "sat",
+            "min_amount": 0,
+            "max_amount": 10000,
+            "options": {
+                "description": true
+            }
+        }"#;
+
+        let settings: MintMethodSettings = from_str(json_str).unwrap();
+
+        match settings.options {
+            Some(MintMethodOptions::Bolt11 { description }) => {
+                assert!(description);
+            }
+            _ => panic!("Expected Bolt11 options with description = true"),
+        }
+
+        let serialized = to_string(&settings).unwrap();
+        let parsed: serde_json::Value = from_str(&serialized).unwrap();
+
+        assert_eq!(parsed["options"]["description"], json!(true));
+        assert!(parsed.get("description").is_none());
     }
 
     #[test]
