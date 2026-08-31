@@ -2,7 +2,8 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::{InterceptedCdkMintClient, UpdateContactRequest};
+use crate::info::{AddContactRequest, RemoveContactRequest};
+use crate::InterceptedMintInfoServiceClient;
 
 /// Command to add a contact method to the mint
 ///
@@ -24,11 +25,11 @@ pub struct AddContactCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The contact method and information to add
 pub async fn add_contact(
-    client: &mut InterceptedCdkMintClient,
+    client: &mut InterceptedMintInfoServiceClient,
     sub_command_args: &AddContactCommand,
 ) -> Result<()> {
     let _response = client
-        .add_contact(Request::new(UpdateContactRequest {
+        .add_contact(Request::new(AddContactRequest {
             method: sub_command_args.method.clone(),
             info: sub_command_args.info.clone(),
         }))
@@ -57,11 +58,11 @@ pub struct RemoveContactCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The contact method and information to remove
 pub async fn remove_contact(
-    client: &mut InterceptedCdkMintClient,
+    client: &mut InterceptedMintInfoServiceClient,
     sub_command_args: &RemoveContactCommand,
 ) -> Result<()> {
     let _response = client
-        .remove_contact(Request::new(UpdateContactRequest {
+        .remove_contact(Request::new(RemoveContactRequest {
             method: sub_command_args.method.clone(),
             info: sub_command_args.info.clone(),
         }))

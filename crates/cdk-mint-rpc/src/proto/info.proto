@@ -1,0 +1,168 @@
+syntax = "proto3";
+
+package cdk_mint_info_v1;
+
+// Mint metadata administration.
+service MintInfoService {
+    // Returns the mint's public metadata.
+    rpc GetInfo(GetInfoRequest) returns (GetInfoResponse) {}
+    // Sets the mint's name. An empty name clears it.
+    rpc UpdateName(UpdateNameRequest) returns (UpdateNameResponse) {}
+    // Sets the mint's message of the day. An empty message clears it.
+    rpc UpdateMotd(UpdateMotdRequest) returns (UpdateMotdResponse) {}
+    // Sets the mint's short description. An empty description clears it.
+    rpc UpdateShortDescription(UpdateShortDescriptionRequest) returns (UpdateShortDescriptionResponse) {}
+    // Sets the mint's long description. An empty description clears it.
+    rpc UpdateLongDescription(UpdateLongDescriptionRequest) returns (UpdateLongDescriptionResponse) {}
+    // Sets the mint's icon URL. An empty URL clears it.
+    rpc UpdateIconUrl(UpdateIconUrlRequest) returns (UpdateIconUrlResponse) {}
+    // Sets the mint's terms of service URL. An empty URL clears it.
+    rpc UpdateTosUrl(UpdateTosUrlRequest) returns (UpdateTosUrlResponse) {}
+    // Adds a mint URL. Adding a URL that is already listed is a no-op.
+    rpc AddUrl(AddUrlRequest) returns (AddUrlResponse) {}
+    // Removes a mint URL. Removing a URL that is not listed is a no-op.
+    rpc RemoveUrl(RemoveUrlRequest) returns (RemoveUrlResponse) {}
+    // Adds a contact entry. Adding an entry that is already listed is a no-op.
+    rpc AddContact(AddContactRequest) returns (AddContactResponse) {}
+    // Removes a contact entry. Removing an entry that is not listed is a no-op.
+    rpc RemoveContact(RemoveContactRequest) returns (RemoveContactResponse) {}
+}
+
+// A way to reach the mint operator, as defined by NUT-06.
+message ContactInfo {
+    // Contact method, e.g. "email" or "nostr".
+    string method = 1;
+    // Address for the method, e.g. an email address or npub.
+    string info = 2;
+}
+
+message GetInfoRequest {
+}
+
+// The mint's public metadata. Unset fields are absent.
+message GetInfoResponse {
+    // Name of the mint.
+    optional string name = 1;
+    // Version of the mint software.
+    optional string version = 2;
+    // Short description of the mint.
+    optional string description = 3;
+    // Long description of the mint.
+    optional string long_description = 4;
+    // Ways to reach the mint operator.
+    repeated ContactInfo contact = 5;
+    // Message of the day.
+    optional string motd = 6;
+    // URL of the mint's icon.
+    optional string icon_url = 7;
+    // URLs the mint is reachable at.
+    repeated string urls = 8;
+    // URL of the mint's terms of service.
+    optional string tos_url = 9;
+}
+
+message UpdateNameRequest {
+    // New name. Empty clears the name.
+    string name = 1;
+}
+
+// The name in effect after the update, absent when cleared.
+message UpdateNameResponse {
+    optional string name = 1;
+}
+
+message UpdateMotdRequest {
+    // New message of the day. Empty clears the message.
+    string motd = 1;
+}
+
+// The message of the day in effect after the update, absent when cleared.
+message UpdateMotdResponse {
+    optional string motd = 1;
+}
+
+message UpdateShortDescriptionRequest {
+    // New short description. Empty clears the description.
+    string description = 1;
+}
+
+// The short description in effect after the update, absent when cleared.
+message UpdateShortDescriptionResponse {
+    optional string description = 1;
+}
+
+message UpdateLongDescriptionRequest {
+    // New long description. Empty clears the description.
+    string long_description = 1;
+}
+
+// The long description in effect after the update, absent when cleared.
+message UpdateLongDescriptionResponse {
+    optional string long_description = 1;
+}
+
+message UpdateIconUrlRequest {
+    // New icon URL. Empty clears the URL.
+    string icon_url = 1;
+}
+
+// The icon URL in effect after the update, absent when cleared.
+message UpdateIconUrlResponse {
+    optional string icon_url = 1;
+}
+
+message UpdateTosUrlRequest {
+    // New terms of service URL. Empty clears the URL.
+    string tos_url = 1;
+}
+
+// The terms of service URL in effect after the update, absent when cleared.
+message UpdateTosUrlResponse {
+    optional string tos_url = 1;
+}
+
+message AddUrlRequest {
+    // URL to add. An empty URL fails with gRPC status INVALID_ARGUMENT.
+    string url = 1;
+}
+
+// The mint URLs in effect after the update.
+message AddUrlResponse {
+    repeated string urls = 1;
+}
+
+message RemoveUrlRequest {
+    // URL to remove.
+    string url = 1;
+}
+
+// The mint URLs in effect after the update.
+message RemoveUrlResponse {
+    repeated string urls = 1;
+}
+
+message AddContactRequest {
+    // Contact method, e.g. "email" or "nostr". An empty method fails with
+    // gRPC status INVALID_ARGUMENT.
+    string method = 1;
+    // Address for the method. An empty address fails with gRPC status
+    // INVALID_ARGUMENT.
+    string info = 2;
+}
+
+// The contact entries in effect after the update.
+message AddContactResponse {
+    repeated ContactInfo contact = 1;
+}
+
+message RemoveContactRequest {
+    // Contact method of the entry to remove.
+    string method = 1;
+    // Address of the entry to remove.
+    string info = 2;
+}
+
+// The contact entries in effect after the update.
+message RemoveContactResponse {
+    repeated ContactInfo contact = 1;
+}

@@ -23,6 +23,14 @@ pub type InterceptedCdkMintClient = cdk_mint_client::CdkMintClient<
     >,
 >;
 
+/// Type alias for MintInfoServiceClient with the version header interceptor over a Channel
+pub type InterceptedMintInfoServiceClient = info::mint_info_service_client::MintInfoServiceClient<
+    tonic::codegen::InterceptedService<
+        tonic::transport::Channel,
+        cdk_common::grpc::VersionInterceptor,
+    >,
+>;
+
 /// Type alias for KeysetServiceClient with the version header interceptor over a Channel
 pub type InterceptedKeysetServiceClient = keyset::keyset_service_client::KeysetServiceClient<
     tonic::codegen::InterceptedService<

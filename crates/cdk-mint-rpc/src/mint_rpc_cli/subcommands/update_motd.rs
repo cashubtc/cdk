@@ -2,7 +2,8 @@ use anyhow::Result;
 use clap::Args;
 use tonic::Request;
 
-use crate::{InterceptedCdkMintClient, UpdateMotdRequest};
+use crate::info::UpdateMotdRequest;
+use crate::InterceptedMintInfoServiceClient;
 
 /// Command to update the mint's message of the day
 ///
@@ -22,7 +23,7 @@ pub struct UpdateMotdCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The new message of the day to set
 pub async fn update_motd(
-    client: &mut InterceptedCdkMintClient,
+    client: &mut InterceptedMintInfoServiceClient,
     sub_command_args: &UpdateMotdCommand,
 ) -> Result<()> {
     let _response = client

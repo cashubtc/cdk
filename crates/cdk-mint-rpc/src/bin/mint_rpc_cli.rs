@@ -4,16 +4,14 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 use cdk_common::grpc::{VersionInterceptor, VERSION_HEADER};
-use cdk_mint_rpc::cdk_mint_client::CdkMintClient;
+use cdk_mint_rpc::info::mint_info_service_client::MintInfoServiceClient;
 use cdk_mint_rpc::keyset::keyset_service_client::KeysetServiceClient;
 use cdk_mint_rpc::mint_rpc_cli::subcommands;
 use cdk_mint_rpc::payment_method::payment_method_service_client::PaymentMethodServiceClient;
 use cdk_mint_rpc::quote::quote_service_client::QuoteServiceClient;
 use cdk_mint_rpc::wallet::wallet_service_client::WalletServiceClient;
-use cdk_mint_rpc::GetInfoRequest;
 use clap::{Parser, Subcommand};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
-use tonic::Request;
 use tracing_subscriber::EnvFilter;
 
 /// Common CLI arguments for CDK binaries
@@ -173,73 +171,53 @@ async fn main() -> Result<()> {
     // Shared version header interceptor
     let interceptor =
         VersionInterceptor::new(VERSION_HEADER, cdk_common::MINT_RPC_PROTOCOL_VERSION);
-    let mut client = CdkMintClient::with_interceptor(channel.clone(), interceptor.clone());
     let mut wallet_client =
         WalletServiceClient::with_interceptor(channel.clone(), interceptor.clone());
 
     match cli.command {
         Commands::GetInfo => {
-            let response = client.get_info(Request::new(GetInfoRequest {})).await?;
-            let info = response.into_inner();
-            println!(
-                "name:             {}",
-                info.name.unwrap_or("None".to_string())
-            );
-            println!(
-                "version:          {}",
-                info.version.unwrap_or("None".to_string())
-            );
-            println!(
-                "description:      {}",
-                info.description.unwrap_or("None".to_string())
-            );
-            println!(
-                "long description: {}",
-                info.long_description.unwrap_or("None".to_string())
-            );
-            println!("motd: {}", info.motd.unwrap_or("None".to_string()));
-            println!("icon_url: {}", info.icon_url.unwrap_or("None".to_string()));
-            println!("tos_url: {}", info.tos_url.unwrap_or("None".to_string()));
-
-            for url in info.urls {
-                println!("mint_url: {url}");
-            }
-
-            for contact in info.contact {
-                println!("method: {}, info: {}", contact.method, contact.info);
-            }
-            println!("total issued:     {} sat", info.total_issued);
-            println!("total redeemed:   {} sat", info.total_redeemed);
+            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            subcommands::get_info(&mut info_client).await?;
         }
         Commands::UpdateMotd(sub_command_args) => {
-            subcommands::update_motd(&mut client, &sub_command_args).await?;
+            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            subcommands::update_motd(&mut info_client, &sub_command_args).await?;
         }
         Commands::UpdateShortDescription(sub_command_args) => {
-            subcommands::update_short_description(&mut client, &sub_command_args).await?;
+            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            subcommands::update_short_description(&mut info_client, &sub_command_args).await?;
         }
         Commands::UpdateLongDescription(sub_command_args) => {
-            subcommands::update_long_description(&mut client, &sub_command_args).await?;
+            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            subcommands::update_long_description(&mut info_client, &sub_command_args).await?;
         }
         Commands::UpdateName(sub_command_args) => {
-            subcommands::update_name(&mut client, &sub_command_args).await?;
+            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            subcommands::update_name(&mut info_client, &sub_command_args).await?;
         }
         Commands::UpdateIconUrl(sub_command_args) => {
-            subcommands::update_icon_url(&mut client, &sub_command_args).await?;
+            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            subcommands::update_icon_url(&mut info_client, &sub_command_args).await?;
         }
         Commands::UpdateTosUrl(sub_command_args) => {
-            subcommands::update_tos_url(&mut client, &sub_command_args).await?;
+            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            subcommands::update_tos_url(&mut info_client, &sub_command_args).await?;
         }
         Commands::AddUrl(sub_command_args) => {
-            subcommands::add_url(&mut client, &sub_command_args).await?;
+            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            subcommands::add_url(&mut info_client, &sub_command_args).await?;
         }
         Commands::RemoveUrl(sub_command_args) => {
-            subcommands::remove_url(&mut client, &sub_command_args).await?;
+            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            subcommands::remove_url(&mut info_client, &sub_command_args).await?;
         }
         Commands::AddContact(sub_command_args) => {
-            subcommands::add_contact(&mut client, &sub_command_args).await?;
+            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            subcommands::add_contact(&mut info_client, &sub_command_args).await?;
         }
         Commands::RemoveContact(sub_command_args) => {
-            subcommands::remove_contact(&mut client, &sub_command_args).await?;
+            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            subcommands::remove_contact(&mut info_client, &sub_command_args).await?;
         }
         Commands::UpdateMintMethod(sub_command_args) => {
             let mut payment_method_client =

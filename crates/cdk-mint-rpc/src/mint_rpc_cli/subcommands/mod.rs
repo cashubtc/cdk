@@ -1,5 +1,7 @@
 //! Subcommands for the mint RPC CLI
 
+/// Module for fetching the mint's public metadata
+mod get_info;
 /// Module for rotating to the next keyset
 mod rotate_next_keyset;
 /// Module for updating mint contact information
@@ -31,6 +33,7 @@ mod update_urls;
 /// Module for inspecting the mint's BDK on-chain wallet.
 mod wallet;
 
+pub use get_info::get_info;
 pub use rotate_next_keyset::{rotate_next_keyset, RotateNextKeysetCommand};
 pub use update_contact::{add_contact, remove_contact, AddContactCommand, RemoveContactCommand};
 pub use update_disabled::{update_disabled, UpdateDisabledCommand};

@@ -17,6 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .compile_protos(
             &[
                 "src/proto/cdk-mint-rpc.proto",
+                "src/proto/info.proto",
                 "src/proto/keyset.proto",
                 "src/proto/payment_method.proto",
                 "src/proto/quote.proto",
