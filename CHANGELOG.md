@@ -97,7 +97,7 @@ Key highlights include:
     ```bash
     cdk-mintd config migrate --file /path/to/legacy-config.toml --output /path/to/migrated-config.toml
     cdk-mintd config validate --file /path/to/migrated-config.toml
-    cdk-mintd config init --file /path/to/migrated-config.toml
+    cdk-mintd config init --existing-mint --file /path/to/migrated-config.toml
     cdk-mintd
     ```
 

@@ -180,12 +180,12 @@ run_mintd_bg() {
 
     if command -v cdk-mintd &>/dev/null; then
         echo "Using pre-built binary: cdk-mintd"
-        cdk-mintd --work-dir "$work_dir" config init --file "$config_file" || return 1
+        cdk-mintd --work-dir "$work_dir" config init --new-mint --file "$config_file" || return 1
         cdk-mintd --work-dir "$work_dir" &
     else
         echo "Pre-built cdk-mintd not found, falling back to cargo run"
         cargo run --bin cdk-mintd --no-default-features --features grpc-processor,sqlite -- \
-            --work-dir "$work_dir" config init --file "$config_file" || return 1
+            --work-dir "$work_dir" config init --new-mint --file "$config_file" || return 1
         cargo run --bin cdk-mintd --no-default-features --features grpc-processor,sqlite -- \
             --work-dir "$work_dir" &
     fi

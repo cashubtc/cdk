@@ -92,11 +92,14 @@ mkdir -p ~/.cdk-mintd
 cp example.config.toml ~/.cdk-mintd/config.toml
 # Edit the document and provide any env: secrets it references.
 cdk-mintd config validate --file ~/.cdk-mintd/config.toml
-cdk-mintd config init --file ~/.cdk-mintd/config.toml
+cdk-mintd config init --new-mint --file ~/.cdk-mintd/config.toml
 cdk-mintd
 ```
 
-`config init` refuses to replace an existing record. On the first start, mintd
+`config init` requires `--new-mint` for a database that has never served a mint
+or `--existing-mint` when importing configuration during an upgrade. Each mode
+validates the selected database state and refuses to replace an existing
+configuration record. On the first start, mintd
 applies the imported mint metadata and quote TTL and marks that document
 applied. Later starts preserve canonical database values changed through the
 management RPC while loading the remaining daemon settings from the stored
@@ -116,8 +119,11 @@ cdk-mintd config migrate \
 # Validate locally; no database or RPC mutation
 cdk-mintd config validate --file /path/to/config.toml
 
-# Initialize the bootstrap-selected configuration database directly
-cdk-mintd config init --file /path/to/config.toml
+# Initialize a database that has never served a mint
+cdk-mintd config init --new-mint --file /path/to/config.toml
+
+# Import configuration into an existing mint database
+cdk-mintd config init --existing-mint --file /path/to/config.toml
 
 # Validate against the stored database and signer without writing
 cdk-mintd config apply --file /path/to/config.toml --validate-only
@@ -187,8 +193,11 @@ database. `config apply
 
 `config init` opens the database selected by the same bootstrap settings as
 normal startup and rejects an import document whose primary database settings
-do not match it. All other TOML and environment values are operational settings
-and are loaded from the database during normal startup.
+do not match it. `--new-mint` rejects existing mint identity or keyset state;
+`--existing-mint` requires persisted identity and, for embedded signatories,
+keyset history. Remote signatory keysets remain in the signatory database. All
+other TOML and environment values are operational settings and are loaded from
+the database during normal startup.
 
 Primary database settings are immutable through `config apply`: moving the
 authoritative database requires a separate data-migration procedure.
@@ -281,7 +290,8 @@ and defaults to `unit = "sat"`. For multiple fake wallet units, use one
 `[[payment_backend]]` entry per unit.
 
 For Docker setups, put these operational values in the TOML import document and
-run `config init` once against the persistent database. Setting the former
+run `config init` once against the persistent database with the appropriate
+new- or existing-mint mode. Setting the former
 `CDK_MINTD_FAKE_WALLET_*` variables when starting mintd does not override the
 database-backed configuration.
 
@@ -468,6 +478,7 @@ CDK Mintd provides ready-to-use Docker images with multiple payment backend opti
 #### Standard mint with fakewallet backend (testing only):
 ```bash
 export CDK_MINTD_MNEMONIC="your stable BIP39 mnemonic"
+export CDK_MINTD_INIT_MODE=new
 docker compose up
 ```
 
@@ -475,6 +486,7 @@ docker compose up
 ```bash
 export CDK_MINTD_MNEMONIC="your stable mint BIP39 mnemonic"
 export CDK_MINTD_LDK_NODE_MNEMONIC="your distinct stable LDK Node BIP39 mnemonic"
+export CDK_MINTD_INIT_MODE=new
 docker compose -f docker-compose.ldk-node.yaml up
 ```
 
@@ -493,19 +505,22 @@ by `env:` secret references.
 ```yaml
 environment:
   - CDK_MINTD_DATABASE=sqlite
+  - CDK_MINTD_INIT_MODE=new
   - CDK_MINTD_WORK_DIR=/data
 volumes:
   - mint-data:/data
   - ./mint.toml:/config/mint.toml:ro
 ```
 
-Run `cdk-mintd config init --file /config/mint.toml` once with the same
-persistent volume before starting `cdk-mintd`. Later file changes are activated
-only by an explicit `config apply` followed by a restart.
+Run `cdk-mintd config init --new-mint --file /config/mint.toml` once with the
+same persistent volume before starting a new mint. Use `--existing-mint` when
+importing configuration into a database from an earlier version. Later file
+changes are activated only by an explicit `config apply` followed by a restart.
 
-The repository Compose files automate only that idempotent first initialization
-using the documents under `misc/docker-configs/`. They never apply later edits
-automatically.
+The repository Compose files perform that one-shot initialization only when
+`CDK_MINTD_INIT_MODE` is explicitly set to `new` or `existing`. With no mode,
+an uninitialized or unreadable configuration fails closed. They never apply
+later edits automatically.
 
 ### Monitoring
 
@@ -543,7 +558,7 @@ For detailed Docker documentation, see [README-ldk-node.md](../../README-ldk-nod
 cdk-mintd
 
 # Initialize once from a TOML import document
-cdk-mintd config init --file /path/to/config.toml
+cdk-mintd config init --new-mint --file /path/to/config.toml
 
 # Validate or explicitly stage a changed document directly
 cdk-mintd config validate --file /path/to/config.toml

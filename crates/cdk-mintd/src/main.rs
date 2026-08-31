@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use cdk_mintd::cli::{CLIArgs, Commands, ConfigCommands};
-use cdk_mintd::get_work_directory;
+use cdk_mintd::{get_work_directory, MintInitializationMode};
 use clap::Parser;
 use tokio::runtime::Runtime;
 
@@ -23,7 +23,7 @@ fn main() -> Result<()> {
         );
         if args.config.is_some() || (args.seed_file.is_some() && !is_migration) {
             bail!(
-                "--config and --seed-file are no longer startup inputs; migrate a legacy document with `cdk-mintd config migrate --file <old> --output <new>`, import one with `cdk-mintd config init --file <path>`, or replace it with `cdk-mintd config apply --file <path>`"
+                "--config and --seed-file are no longer startup inputs; migrate a legacy document with `cdk-mintd config migrate --file <old> --output <new>`, import one with `cdk-mintd config init --existing-mint --file <path>`, initialize a new mint with `cdk-mintd config init --new-mint --file <path>`, or replace it with `cdk-mintd config apply --file <path>`"
             );
         }
         let work_dir = if matches!(
@@ -73,12 +73,18 @@ fn main() -> Result<()> {
                     );
                     Ok(())
                 }
-                ConfigCommands::Init(file) => {
+                ConfigCommands::Init(init) => {
                     let work_dir = work_dir
                         .as_deref()
                         .expect("database commands have a work directory");
-                    let document = read_document(&file.file)?;
-                    cdk_mintd::initialize_configuration(work_dir, &document, password).await?;
+                    let document = read_document(&init.file)?;
+                    let mode = match (init.new_mint, init.existing_mint) {
+                        (true, false) => MintInitializationMode::New,
+                        (false, true) => MintInitializationMode::Existing,
+                        _ => bail!("exactly one mint initialization mode is required"),
+                    };
+                    cdk_mintd::initialize_configuration(work_dir, &document, mode, password)
+                        .await?;
                     println!("Configuration initialized. Start cdk-mintd to apply it.");
                     Ok(())
                 }

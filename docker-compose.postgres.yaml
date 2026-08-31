@@ -1,6 +1,8 @@
 # Docker Compose configuration for CDK Mint with PostgreSQL
 # Usage: docker-compose -f docker-compose.postgres.yaml up
-# Before starting, export CDK_MINTD_MNEMONIC with a stable BIP39 mnemonic.
+# Before a new mint's first start, export CDK_MINTD_INIT_MODE=new and
+# CDK_MINTD_MNEMONIC with a stable BIP39 mnemonic. Existing-mint upgrades must
+# preserve the database and use CDK_MINTD_INIT_MODE=existing.
 
 services:
   # CDK Mint service with PostgreSQL
@@ -13,6 +15,7 @@ services:
       - "8085:8085"
     environment:
       CDK_MINTD_DATABASE: postgres
+      CDK_MINTD_INIT_MODE: "${CDK_MINTD_INIT_MODE:-}"
       CDK_MINTD_POSTGRES_URL: "${CDK_MINTD_POSTGRES_URL:-postgresql://cdk_user:cdk_password@postgres:5432/cdk_mint}"
       CDK_MINTD_MNEMONIC: "${CDK_MINTD_MNEMONIC:?Set CDK_MINTD_MNEMONIC to a stable BIP39 mnemonic}"
     volumes:

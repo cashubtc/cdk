@@ -1,4 +1,6 @@
-# Before starting, export CDK_MINTD_MNEMONIC with a stable BIP39 mnemonic.
+# Before a new mint's first start, export CDK_MINTD_INIT_MODE=new and
+# CDK_MINTD_MNEMONIC with a stable BIP39 mnemonic. Existing-mint upgrades must
+# seed the persistent database and use CDK_MINTD_INIT_MODE=existing.
 services:
   mint:
     image: cashubtc/mintd:latest
@@ -10,6 +12,7 @@ services:
       - "8085:8085"
     environment:
       CDK_MINTD_DATABASE: sqlite
+      CDK_MINTD_INIT_MODE: "${CDK_MINTD_INIT_MODE:-}"
       CDK_MINTD_MNEMONIC: "${CDK_MINTD_MNEMONIC:?Set CDK_MINTD_MNEMONIC to a stable BIP39 mnemonic}"
     volumes:
       - ./misc/docker-configs/tor-fakewallet-sqlite.toml:/etc/cdk-mintd/config.toml:ro

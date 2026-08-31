@@ -82,7 +82,7 @@ cargo build --bin cdk-mintd
 
 echo "Initializing mintd configuration"
 cargo run --bin cdk-mintd -- \
-  --work-dir "$CDK_MINTD_WORK_DIR" config init --file "$MINTD_CONFIG_FILE"
+  --work-dir "$CDK_MINTD_WORK_DIR" config init --new-mint --file "$MINTD_CONFIG_FILE"
 
 echo "Starting fake mintd"
 cargo run --bin cdk-mintd -- --work-dir "$CDK_MINTD_WORK_DIR" &

@@ -383,6 +383,15 @@ async fn initial_setup(
     Ok((localstore, keystore, kv, configuration_store))
 }
 
+/// Operator intent for the mint database targeted by `config init`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MintInitializationMode {
+    /// Initialize a database that has never served a mint.
+    New,
+    /// Import configuration into a database containing an existing mint.
+    Existing,
+}
+
 /// Sets up and initializes a tracing subscriber with custom log filtering.
 /// Logs can be configured to output to stdout only, file only, or both.
 /// Returns a guard that must be kept alive and properly dropped on shutdown.
@@ -2699,16 +2708,21 @@ pub async fn validate_configuration_document(document: &str) -> Result<()> {
 pub async fn initialize_configuration(
     work_dir: &Path,
     document: &str,
+    mode: MintInitializationMode,
     db_password: Option<String>,
 ) -> Result<()> {
     let bootstrap = load_database_bootstrap_settings()?;
-    let (localstore, _keystore, _kv, configuration_store) =
+    let (localstore, keystore, _kv, configuration_store) =
         initial_setup(work_dir, &bootstrap, db_password).await?;
     let mut mint_builder = MintBuilder::new(localstore);
     mint_builder.init_from_db_if_present().await?;
     let database_pubkey = mint_builder.current_mint_info().pubkey;
+    let mut keyset_transaction = keystore.begin_transaction().await?;
+    let has_keysets = !keyset_transaction.get_keyset_infos().await?.is_empty();
+    keyset_transaction.commit().await?;
+
     configuration_service(configuration_store, &bootstrap)
-        .initialize(document, database_pubkey)
+        .initialize(document, mode, database_pubkey, has_keysets)
         .await?;
     Ok(())
 }
@@ -2824,6 +2838,28 @@ mod tests {
 
     fn temp_seed_file(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("cdk_mintd_{name}_{}", std::process::id()))
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
+    fn sqlite_configuration_document(secret_path: &Path, name: &str) -> String {
+        format!(
+            r#"
+[info]
+mnemonic = "file:{}"
+
+[mint_info]
+name = "{name}"
+
+[payment_backend]
+backend = "fakewallet"
+
+[fake_wallet]
+
+[database]
+engine = "sqlite"
+"#,
+            secret_path.display()
+        )
     }
 
     #[cfg(feature = "sqlite")]
@@ -3056,32 +3092,20 @@ mod tests {
         #[cfg(not(feature = "sqlcipher"))]
         let password: Option<String> = None;
 
-        let first = format!(
-            r#"
-[info]
-mnemonic = "file:{}"
-
-[mint_info]
-name = "first-public"
-
-[payment_backend]
-backend = "fakewallet"
-
-[fake_wallet]
-
-[database]
-engine = "sqlite"
-"#,
-            secret_path.display()
-        );
+        let first = sqlite_configuration_document(&secret_path, "first-public");
         let second = first.replace("first-public", "second-public");
 
         validate_configuration_document(&first)
             .await
             .expect("validate first document");
-        initialize_configuration(&work_dir, &first, password.clone())
-            .await
-            .expect("initialize configuration");
+        initialize_configuration(
+            &work_dir,
+            &first,
+            MintInitializationMode::New,
+            password.clone(),
+        )
+        .await
+        .expect("initialize configuration");
         assert_eq!(
             stored_configuration_document(&work_dir, password.clone())
                 .await
@@ -3114,6 +3138,95 @@ engine = "sqlite"
         let bootstrap = load_database_bootstrap_settings().expect("bootstrap settings");
         assert_eq!(bootstrap.database.engine, DatabaseEngine::Sqlite);
         assert!(bootstrap.database.postgres.is_none());
+
+        let _ = fs::remove_dir_all(&work_dir);
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
+    #[tokio::test]
+    async fn existing_mint_initialization_rejects_empty_database_with_matching_mnemonic() {
+        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_empty_existing_init");
+        fs::create_dir_all(&work_dir).expect("create work dir");
+        let secret_path = work_dir.join("mnemonic.secret");
+        fs::write(&secret_path, TEST_MNEMONIC).expect("write mnemonic secret");
+        let document = sqlite_configuration_document(&secret_path, "empty-existing");
+
+        #[cfg(feature = "sqlcipher")]
+        let password = Some("test-password".to_string());
+        #[cfg(not(feature = "sqlcipher"))]
+        let password: Option<String> = None;
+
+        let error = initialize_configuration(
+            &work_dir,
+            &document,
+            MintInitializationMode::Existing,
+            password,
+        )
+        .await
+        .expect_err("an empty database must not be accepted as an existing mint");
+        assert!(
+            error
+                .to_string()
+                .contains("does not contain a mint identity"),
+            "unexpected error: {error}"
+        );
+
+        let _ = fs::remove_dir_all(&work_dir);
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
+    #[tokio::test]
+    async fn initialization_mode_distinguishes_existing_mint_state() {
+        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_existing_init");
+        fs::create_dir_all(&work_dir).expect("create work dir");
+        let secret_path = work_dir.join("mnemonic.secret");
+        fs::write(&secret_path, TEST_MNEMONIC).expect("write mnemonic secret");
+        let document = sqlite_configuration_document(&secret_path, "existing");
+
+        #[cfg(feature = "sqlcipher")]
+        let password = Some("test-password".to_string());
+        #[cfg(not(feature = "sqlcipher"))]
+        let password: Option<String> = None;
+
+        let bootstrap = load_database_bootstrap_settings().expect("bootstrap settings");
+        let (localstore, keystore, _kv, _configuration_store) =
+            initial_setup(&work_dir, &bootstrap, password.clone())
+                .await
+                .expect("initialize database");
+        let mut builder = MintBuilder::new(localstore);
+        builder
+            .configure_unit(CurrencyUnit::Sat, Default::default())
+            .expect("configure sat unit");
+        let mnemonic = Mnemonic::parse(TEST_MNEMONIC).expect("test mnemonic");
+        let mint = builder
+            .build_with_seed(keystore, &mnemonic.to_seed_normalized(""))
+            .await
+            .expect("create existing mint state");
+        drop(mint);
+
+        let error = initialize_configuration(
+            &work_dir,
+            &document,
+            MintInitializationMode::New,
+            password.clone(),
+        )
+        .await
+        .expect_err("existing state must not be accepted as a new mint");
+        assert!(
+            error
+                .to_string()
+                .contains("contains existing mint identity or keyset state"),
+            "unexpected error: {error}"
+        );
+
+        initialize_configuration(
+            &work_dir,
+            &document,
+            MintInitializationMode::Existing,
+            password,
+        )
+        .await
+        .expect("matching existing mint state should initialize");
 
         let _ = fs::remove_dir_all(&work_dir);
     }

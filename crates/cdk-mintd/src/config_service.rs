@@ -15,6 +15,7 @@ use thiserror::Error;
 use crate::config::{Database, DatabaseEngine, Settings};
 use crate::config_store::{ConfigEnvelope, ConfigRepository, ConfigStoreError, DocumentState};
 use crate::secret::{SecretRef, SecretRefError, SecretResolveError};
+use crate::MintInitializationMode;
 
 const SIGNING_IDENTITY_DOMAIN: &[u8] = b"cdk-mintd/signing-identity/v1\0";
 
@@ -144,6 +145,24 @@ pub enum ConfigurationServiceError {
     )]
     SigningIdentityChange,
 
+    /// New-mint initialization targeted a database containing mint state.
+    #[error(
+        "refusing new-mint initialization because the selected database contains existing mint identity or keyset state"
+    )]
+    NewMintHasExistingState,
+
+    /// Existing-mint initialization targeted a database without a mint identity.
+    #[error(
+        "refusing existing-mint initialization because the selected database does not contain a mint identity; verify the database URL and work directory"
+    )]
+    ExistingMintMissingIdentity,
+
+    /// An embedded-signatory mint database had no historical keysets.
+    #[error(
+        "refusing existing-mint initialization because the selected embedded-signatory database does not contain keyset history; verify the database URL and work directory"
+    )]
+    ExistingMintMissingKeysets,
+
     /// Persistent configuration storage failed.
     #[error(transparent)]
     Store(#[from] ConfigStoreError),
@@ -191,10 +210,18 @@ impl ConfigurationService {
     pub(crate) async fn initialize(
         &self,
         document: &str,
+        mode: MintInitializationMode,
         database_pubkey: Option<cdk::nuts::PublicKey>,
+        has_keysets: bool,
     ) -> Result<(), ConfigurationServiceError> {
         let (resolved, signing_identity) = Self::validated_import(document).await?;
         self.require_primary_database(&resolved.settings.database)?;
+        require_initialization_state(
+            mode,
+            database_pubkey,
+            has_keysets,
+            resolved.settings.enabled_signatory().is_some(),
+        )?;
         if database_pubkey.is_some_and(|pubkey| pubkey != signing_identity.pubkey) {
             return Err(ConfigurationServiceError::SigningIdentityChange);
         }
@@ -296,6 +323,26 @@ impl ConfigurationService {
         let signing_identity = discover_signing_identity_async(&resolved.settings).await?;
         validate_authored_mint_pubkey(&resolved.settings, &signing_identity)?;
         Ok((resolved, signing_identity))
+    }
+}
+
+fn require_initialization_state(
+    mode: MintInitializationMode,
+    database_pubkey: Option<cdk::nuts::PublicKey>,
+    has_keysets: bool,
+    uses_remote_signatory: bool,
+) -> Result<(), ConfigurationServiceError> {
+    match mode {
+        MintInitializationMode::New if database_pubkey.is_some() || has_keysets => {
+            Err(ConfigurationServiceError::NewMintHasExistingState)
+        }
+        MintInitializationMode::Existing if database_pubkey.is_none() => {
+            Err(ConfigurationServiceError::ExistingMintMissingIdentity)
+        }
+        MintInitializationMode::Existing if !uses_remote_signatory && !has_keysets => {
+            Err(ConfigurationServiceError::ExistingMintMissingKeysets)
+        }
+        MintInitializationMode::New | MintInitializationMode::Existing => Ok(()),
     }
 }
 
@@ -907,7 +954,9 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
         );
 
         assert!(matches!(
-            service.initialize(&document, None).await,
+            service
+                .initialize(&document, MintInitializationMode::New, None, false)
+                .await,
             Err(ConfigurationServiceError::LiteralSecret {
                 field: "database.postgres.url"
             })
@@ -959,11 +1008,13 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
         let second = document(&secret_reference, "second");
 
         service
-            .initialize(&first, None)
+            .initialize(&first, MintInitializationMode::New, None, false)
             .await
             .expect("initialize configuration");
         assert!(matches!(
-            service.initialize(&first, None).await,
+            service
+                .initialize(&first, MintInitializationMode::New, None, false)
+                .await,
             Err(ConfigurationServiceError::Store(
                 ConfigStoreError::AlreadyInitialized
             ))
@@ -1188,7 +1239,7 @@ url = "file:{}"
         let service = service().await;
         let first = document(&format!("file:{}", signer_path.display()), "first");
         service
-            .initialize(&first, None)
+            .initialize(&first, MintInitializationMode::New, None, false)
             .await
             .expect("initialize configuration");
 
@@ -1450,6 +1501,34 @@ engine = "sqlite"
         assert!(!same_primary_database(&sqlite, &left));
     }
 
+    #[test]
+    fn initialization_state_allows_remote_keysets_to_remain_external() {
+        let pubkey = cdk::nuts::PublicKey::from_hex(
+            "02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619",
+        )
+        .expect("static pubkey");
+
+        require_initialization_state(MintInitializationMode::Existing, Some(pubkey), false, true)
+            .expect("remote signatory keysets remain in the signatory database");
+        assert!(matches!(
+            require_initialization_state(
+                MintInitializationMode::Existing,
+                Some(pubkey),
+                false,
+                false,
+            ),
+            Err(ConfigurationServiceError::ExistingMintMissingKeysets)
+        ));
+        assert!(matches!(
+            require_initialization_state(MintInitializationMode::Existing, None, false, true),
+            Err(ConfigurationServiceError::ExistingMintMissingIdentity)
+        ));
+        assert!(matches!(
+            require_initialization_state(MintInitializationMode::New, Some(pubkey), false, false,),
+            Err(ConfigurationServiceError::NewMintHasExistingState)
+        ));
+    }
+
     #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
     #[tokio::test]
     async fn initialize_rejects_existing_mint_pubkey_mismatch_and_mark_applied_tracks_document() {
@@ -1477,12 +1556,24 @@ engine = "sqlite"
         std::fs::write(&secret_path, TEST_MNEMONIC_ONE).expect("restore mnemonic");
 
         assert!(matches!(
-            service.initialize(&first, Some(other.pubkey)).await,
+            service
+                .initialize(
+                    &first,
+                    MintInitializationMode::Existing,
+                    Some(other.pubkey),
+                    true,
+                )
+                .await,
             Err(ConfigurationServiceError::SigningIdentityChange)
         ));
 
         service
-            .initialize(&first, Some(identity.pubkey))
+            .initialize(
+                &first,
+                MintInitializationMode::Existing,
+                Some(identity.pubkey),
+                true,
+            )
             .await
             .expect("initialize with matching mint pubkey");
         assert!(service

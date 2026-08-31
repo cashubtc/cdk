@@ -104,7 +104,9 @@ pub enum ConfigStoreError {
     AlreadyInitialized,
 
     /// Configuration has not been initialized.
-    #[error("mintd configuration is not initialized; run `cdk-mintd config init --file <path>`")]
+    #[error(
+        "mintd configuration is not initialized; run `cdk-mintd config init --new-mint --file <path>` for a new mint or `cdk-mintd config init --existing-mint --file <path>` for an existing mint"
+    )]
     NotInitialized,
 
     /// A replacement attempted to change the immutable signer.

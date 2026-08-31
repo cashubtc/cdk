@@ -329,7 +329,7 @@ echo "Database type: \$CDK_MINTD_DATABASE"
 echo "---"
 
 if ! cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR" config show >/dev/null 2>&1; then
-    cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR" config init --file "\$CDK_MINTD_WORK_DIR/config.toml"
+    cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR" config init --new-mint --file "\$CDK_MINTD_WORK_DIR/config.toml"
 fi
 
 exec cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR"
@@ -353,7 +353,7 @@ echo "Database type: \$CDK_MINTD_DATABASE"
 echo "---"
 
 if ! cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR" config show >/dev/null 2>&1; then
-    cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR" config init --file "\$CDK_MINTD_WORK_DIR/config.toml"
+    cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR" config init --new-mint --file "\$CDK_MINTD_WORK_DIR/config.toml"
 fi
 
 exec cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR"
@@ -380,7 +380,7 @@ echo "Database type: \$CDK_MINTD_DATABASE"
 echo "---"
 
 if ! cargo run --bin cdk-mintd --features ldk-node -- --work-dir "\$CDK_MINTD_WORK_DIR" config show >/dev/null 2>&1; then
-    cargo run --bin cdk-mintd --features ldk-node -- --work-dir "\$CDK_MINTD_WORK_DIR" config init --file "\$CDK_MINTD_WORK_DIR/config.toml"
+    cargo run --bin cdk-mintd --features ldk-node -- --work-dir "\$CDK_MINTD_WORK_DIR" config init --new-mint --file "\$CDK_MINTD_WORK_DIR/config.toml"
 fi
 
 exec cargo run --bin cdk-mintd --features ldk-node -- --work-dir "\$CDK_MINTD_WORK_DIR"

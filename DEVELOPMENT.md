@@ -123,7 +123,7 @@ override.
 ```bash
 export CDK_MINTD_MNEMONIC="your stable BIP39 mnemonic"
 cargo run --bin cdk-mintd -- config validate --file crates/cdk-mintd/example.config.toml
-cargo run --bin cdk-mintd -- config init --file crates/cdk-mintd/example.config.toml
+cargo run --bin cdk-mintd -- config init --new-mint --file crates/cdk-mintd/example.config.toml
 cargo run --bin cdk-mintd
 ```
 

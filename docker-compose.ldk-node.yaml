@@ -1,5 +1,7 @@
-# Before starting, export distinct stable BIP39 values for
-# CDK_MINTD_MNEMONIC and CDK_MINTD_LDK_NODE_MNEMONIC.
+# Before a new mint's first start, export CDK_MINTD_INIT_MODE=new and distinct
+# stable BIP39 values for CDK_MINTD_MNEMONIC and
+# CDK_MINTD_LDK_NODE_MNEMONIC. Existing-mint upgrades must seed the persistent
+# database and use CDK_MINTD_INIT_MODE=existing.
 services:
   # CDK Mint service with LDK Node backend
 
@@ -49,6 +51,7 @@ services:
       - "127.0.0.1:8091:8091" # LDK admin dashboard; host-local only because it has no authentication
     environment:
       CDK_MINTD_DATABASE: sqlite
+      CDK_MINTD_INIT_MODE: "${CDK_MINTD_INIT_MODE:-}"
       CDK_MINTD_MNEMONIC: "${CDK_MINTD_MNEMONIC:?Set CDK_MINTD_MNEMONIC to a stable BIP39 mnemonic}"
       CDK_MINTD_LDK_NODE_MNEMONIC: "${CDK_MINTD_LDK_NODE_MNEMONIC:?Set CDK_MINTD_LDK_NODE_MNEMONIC to a stable BIP39 mnemonic}"
 
