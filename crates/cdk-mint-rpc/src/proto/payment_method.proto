@@ -51,7 +51,8 @@ message UpdateMintMethodResponse {
     optional uint64 min_amount = 3;
     // Maximum amount the method accepts, if set.
     optional uint64 max_amount = 4;
-    // Method options. Set only when the method carries bolt11 options.
+    // Method options. Set when the method carries bolt11 or bolt12 description
+    // options. Other method options are omitted.
     optional Bolt11MintMethodOptions options = 5;
     // Human-readable payment method name. When unset, wallets derive one from
     // method by replacing '_' and '-' with spaces and title-casing words.
