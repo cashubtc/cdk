@@ -1177,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "cashu"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "bip39",
  "bitcoin",
@@ -1248,7 +1248,7 @@ dependencies = [
 
 [[package]]
 name = "cdk"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1292,7 +1292,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-axum"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1319,7 +1319,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-bdk"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "async-trait",
  "bdk_bitcoind_rpc",
@@ -1342,7 +1342,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cli"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "anyhow",
  "bip39",
@@ -1369,7 +1369,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cln"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "async-trait",
  "bitcoin",
@@ -1386,7 +1386,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-common"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1421,7 +1421,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-fake-wallet"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "async-trait",
  "bitcoin",
@@ -1443,7 +1443,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "android_logger",
  "async-trait",
@@ -1471,7 +1471,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi-dart"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "camino",
  "cdk-ffi",
@@ -1481,14 +1481,14 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi-go"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "cdk-ffi",
 ]
 
 [[package]]
 name = "cdk-ffi-kotlin"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "cdk-ffi",
  "uniffi",
@@ -1496,7 +1496,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi-swift"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "cdk-ffi",
  "uniffi",
@@ -1504,7 +1504,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-http-client"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "arti-client",
  "arti-hyper",
@@ -1541,7 +1541,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-integration-tests"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1588,7 +1588,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ldk-node"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "async-trait",
  "axum",
@@ -1614,7 +1614,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnd"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1638,7 +1638,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mint-rpc"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1664,7 +1664,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mintd"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1704,7 +1704,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-nostr"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1726,7 +1726,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-payment-processor"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1759,7 +1759,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-postgres"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "async-trait",
  "cdk-common",
@@ -1775,7 +1775,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-prometheus"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "prometheus",
  "sysinfo",
@@ -1787,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-redb"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "async-trait",
  "cdk-common",
@@ -1804,7 +1804,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-signatory"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1830,7 +1830,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sql-common"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "async-trait",
  "bitcoin",
@@ -1846,7 +1846,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sqlite"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "async-trait",
  "cdk-common",
@@ -1862,7 +1862,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-supabase"
-version = "0.18.0-rc.2"
+version = "0.18.0-rc.3"
 dependencies = [
  "aes-gcm",
  "async-trait",

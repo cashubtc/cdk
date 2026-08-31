@@ -7,9 +7,28 @@
 
 ## [Unreleased]
 
+## [0.18.0-rc.3](https://github.com/cashubtc/cdk/releases/tag/v0.18.0-rc.3)
+
+### Summary
+
+Version 0.18.0-rc.3 adds NUT-25 BOLT12 offer-description support and strengthens mint initialization and BDK wallet recovery checks. Mint operators must now explicitly choose whether an imported configuration creates a new mint or restores an existing one.
+
+### Breaking Changes
+
+- cdk-mintd: `config init` now requires exactly one of `--new-mint` or `--existing-mint`; Docker initialization likewise requires an explicit `CDK_MINTD_INIT_MODE`.
+
+### Added
+
+- cashu/cdk/cdk-common/cdk-ffi: Mints can advertise BOLT12 offer-description support, wallets validate the capability before requesting descriptions, and payment backends and RPCs propagate the setting end to end.
+
+### Changed
+
+- workspace: Dependencies and the stable and MSRV lockfiles were refreshed.
+
 ### Fixed
 
 - cdk-mintd: Existing-mint initialization, configuration apply, and ordinary restarts fail closed when a configured BDK wallet database is missing, uninitialized, or does not match the configured mnemonic and network; intentional wallet creation requires a one-shot `--allow-new-bdk-wallet` permission.
+- cashu/cdk-mint-rpc: BOLT11 descriptions are serialized under method options per NUT-23, and payment-method update responses retain BOLT12 description options.
 
 ## [0.18.0-rc.2](https://github.com/cashubtc/cdk/releases/tag/v0.18.0-rc.2)
 
