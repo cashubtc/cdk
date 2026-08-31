@@ -1,6 +1,7 @@
 //! Validation and lifecycle rules for database-backed mintd configuration.
 
 use std::fmt;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -15,7 +16,7 @@ use thiserror::Error;
 use crate::config::{Database, DatabaseEngine, Settings};
 use crate::config_store::{ConfigEnvelope, ConfigRepository, ConfigStoreError, DocumentState};
 use crate::secret::{SecretRef, SecretRefError, SecretResolveError};
-use crate::MintInitializationMode;
+use crate::{BdkWalletPolicy, MintInitializationMode};
 
 const SIGNING_IDENTITY_DOMAIN: &[u8] = b"cdk-mintd/signing-identity/v1\0";
 
@@ -52,6 +53,7 @@ pub(crate) struct StartupConfiguration {
     pub(crate) revision: u64,
     pub(crate) signing_identity: SigningIdentity,
     pub(crate) remote_signatory: Option<Arc<cdk_signatory::SignatoryRpcClient>>,
+    pub(crate) bdk_wallet_policy: BdkWalletPolicy,
 }
 
 impl fmt::Debug for StartupConfiguration {
@@ -62,6 +64,7 @@ impl fmt::Debug for StartupConfiguration {
             .field("revision", &self.revision)
             .field("signing_identity", &self.signing_identity)
             .field("remote_signatory", &self.remote_signatory.is_some())
+            .field("bdk_wallet_policy", &self.bdk_wallet_policy)
             .finish()
     }
 }
@@ -163,6 +166,11 @@ pub enum ConfigurationServiceError {
     )]
     ExistingMintMissingKeysets,
 
+    /// BDK wallet state did not satisfy an existing-wallet preflight.
+    #[cfg(feature = "bdk")]
+    #[error("BDK wallet preflight failed: {0}")]
+    BdkWalletPreflight(#[source] cdk_bdk::Error),
+
     /// Persistent configuration storage failed.
     #[error(transparent)]
     Store(#[from] ConfigStoreError),
@@ -213,6 +221,8 @@ impl ConfigurationService {
         mode: MintInitializationMode,
         database_pubkey: Option<cdk::nuts::PublicKey>,
         has_keysets: bool,
+        work_dir: &Path,
+        bdk_wallet_policy: BdkWalletPolicy,
     ) -> Result<(), ConfigurationServiceError> {
         let (resolved, signing_identity) = Self::validated_import(document).await?;
         self.require_primary_database(&resolved.settings.database)?;
@@ -225,11 +235,22 @@ impl ConfigurationService {
         if database_pubkey.is_some_and(|pubkey| pubkey != signing_identity.pubkey) {
             return Err(ConfigurationServiceError::SigningIdentityChange);
         }
+        let effective_bdk_wallet_policy = match mode {
+            MintInitializationMode::New if has_bdk_wallet(&resolved.settings) => {
+                BdkWalletPolicy::AllowNew
+            }
+            MintInitializationMode::New => BdkWalletPolicy::RequireExisting,
+            MintInitializationMode::Existing => {
+                require_existing_bdk_wallet(&resolved.settings, work_dir, bdk_wallet_policy)?
+            }
+        };
         self.repository
-            .initialize(ConfigEnvelope::new(
-                resolved.document,
-                signing_identity.fingerprint,
-            ))
+            .initialize(
+                ConfigEnvelope::new(resolved.document, signing_identity.fingerprint)
+                    .with_new_bdk_wallet_allowed(
+                        effective_bdk_wallet_policy == BdkWalletPolicy::AllowNew,
+                    ),
+            )
             .await?;
         Ok(())
     }
@@ -239,6 +260,8 @@ impl ConfigurationService {
         &self,
         document: &str,
         validate_only: bool,
+        work_dir: &Path,
+        bdk_wallet_policy: BdkWalletPolicy,
     ) -> Result<ApplyOutcome, ConfigurationServiceError> {
         let (resolved, signing_identity) = Self::validated_import(document).await?;
         self.require_primary_database(&resolved.settings.database)?;
@@ -246,9 +269,15 @@ impl ConfigurationService {
         if current.signing_identity != signing_identity.fingerprint {
             return Err(ConfigurationServiceError::SigningIdentityChange);
         }
+        let effective_bdk_wallet_policy =
+            require_existing_bdk_wallet(&resolved.settings, work_dir, bdk_wallet_policy)?;
         if !validate_only {
             self.repository
-                .replace(resolved.document, &signing_identity.fingerprint)
+                .replace_with_bdk_policy(
+                    resolved.document,
+                    &signing_identity.fingerprint,
+                    effective_bdk_wallet_policy == BdkWalletPolicy::AllowNew,
+                )
                 .await?;
         }
         Ok(ApplyOutcome {
@@ -272,6 +301,10 @@ impl ConfigurationService {
             revision: envelope.revision,
             signing_identity: signing_resolution.identity,
             remote_signatory: signing_resolution.remote_signatory,
+            bdk_wallet_policy: match envelope.allow_new_bdk_wallet {
+                true => BdkWalletPolicy::AllowNew,
+                false => BdkWalletPolicy::RequireExisting,
+            },
         })
     }
 
@@ -324,6 +357,55 @@ impl ConfigurationService {
         validate_authored_mint_pubkey(&resolved.settings, &signing_identity)?;
         Ok((resolved, signing_identity))
     }
+}
+
+#[cfg(feature = "bdk")]
+fn has_bdk_wallet(settings: &Settings) -> bool {
+    settings.bdk.is_some()
+}
+
+#[cfg(not(feature = "bdk"))]
+fn has_bdk_wallet(_settings: &Settings) -> bool {
+    false
+}
+
+#[cfg(feature = "bdk")]
+pub(crate) fn require_existing_bdk_wallet(
+    settings: &Settings,
+    work_dir: &Path,
+    bdk_wallet_policy: BdkWalletPolicy,
+) -> Result<BdkWalletPolicy, ConfigurationServiceError> {
+    let Some(bdk) = settings.bdk.as_ref() else {
+        return Ok(BdkWalletPolicy::RequireExisting);
+    };
+    let wallet_path = work_dir.join("bdk_wallet/bdk_wallet.sqlite");
+    if bdk_wallet_policy == BdkWalletPolicy::AllowNew {
+        match std::fs::metadata(&wallet_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                bdk.validate_wallet_identity()
+                    .map_err(ConfigurationServiceError::BdkWalletPreflight)?;
+                return Ok(BdkWalletPolicy::AllowNew);
+            }
+            Err(error) => {
+                return Err(ConfigurationServiceError::BdkWalletPreflight(
+                    cdk_bdk::Error::Io(error),
+                ));
+            }
+            Ok(_) => {}
+        }
+    }
+    bdk.validate_existing_wallet(work_dir)
+        .map_err(ConfigurationServiceError::BdkWalletPreflight)?;
+    Ok(BdkWalletPolicy::RequireExisting)
+}
+
+#[cfg(not(feature = "bdk"))]
+pub(crate) fn require_existing_bdk_wallet(
+    _settings: &Settings,
+    _work_dir: &Path,
+    _bdk_wallet_policy: BdkWalletPolicy,
+) -> Result<BdkWalletPolicy, ConfigurationServiceError> {
+    Ok(BdkWalletPolicy::RequireExisting)
 }
 
 fn require_initialization_state(
@@ -955,7 +1037,14 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
 
         assert!(matches!(
             service
-                .initialize(&document, MintInitializationMode::New, None, false)
+                .initialize(
+                    &document,
+                    MintInitializationMode::New,
+                    None,
+                    false,
+                    Path::new("."),
+                    BdkWalletPolicy::RequireExisting,
+                )
                 .await,
             Err(ConfigurationServiceError::LiteralSecret {
                 field: "database.postgres.url"
@@ -1008,12 +1097,26 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
         let second = document(&secret_reference, "second");
 
         service
-            .initialize(&first, MintInitializationMode::New, None, false)
+            .initialize(
+                &first,
+                MintInitializationMode::New,
+                None,
+                false,
+                Path::new("."),
+                BdkWalletPolicy::RequireExisting,
+            )
             .await
             .expect("initialize configuration");
         assert!(matches!(
             service
-                .initialize(&first, MintInitializationMode::New, None, false)
+                .initialize(
+                    &first,
+                    MintInitializationMode::New,
+                    None,
+                    false,
+                    Path::new("."),
+                    BdkWalletPolicy::RequireExisting,
+                )
                 .await,
             Err(ConfigurationServiceError::Store(
                 ConfigStoreError::AlreadyInitialized
@@ -1021,7 +1124,12 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
         ));
 
         let outcome = service
-            .apply(&second, true)
+            .apply(
+                &second,
+                true,
+                Path::new("."),
+                BdkWalletPolicy::RequireExisting,
+            )
             .await
             .expect("validate replacement");
         assert!(!outcome.restart_required);
@@ -1033,7 +1141,12 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
             .await
             .expect("mark first document applied"));
         let outcome = service
-            .apply(&second, false)
+            .apply(
+                &second,
+                false,
+                Path::new("."),
+                BdkWalletPolicy::RequireExisting,
+            )
             .await
             .expect("replace configuration");
         assert!(outcome.restart_required);
@@ -1239,13 +1352,27 @@ url = "file:{}"
         let service = service().await;
         let first = document(&format!("file:{}", signer_path.display()), "first");
         service
-            .initialize(&first, MintInitializationMode::New, None, false)
+            .initialize(
+                &first,
+                MintInitializationMode::New,
+                None,
+                false,
+                Path::new("."),
+                BdkWalletPolicy::RequireExisting,
+            )
             .await
             .expect("initialize configuration");
 
         std::fs::write(&signer_path, TEST_MNEMONIC_TWO).expect("replace signing secret");
         assert!(matches!(
-            service.apply(&first, false).await,
+            service
+                .apply(
+                    &first,
+                    false,
+                    Path::new("."),
+                    BdkWalletPolicy::RequireExisting,
+                )
+                .await,
             Err(ConfigurationServiceError::SigningIdentityChange)
         ));
 
@@ -1270,7 +1397,14 @@ url = "file:{}"
             postgres_path.display()
         );
         assert!(matches!(
-            service.apply(&postgres, false).await,
+            service
+                .apply(
+                    &postgres,
+                    false,
+                    Path::new("."),
+                    BdkWalletPolicy::RequireExisting,
+                )
+                .await,
             Err(ConfigurationServiceError::PrimaryDatabaseChange)
         ));
 
@@ -1562,6 +1696,8 @@ engine = "sqlite"
                     MintInitializationMode::Existing,
                     Some(other.pubkey),
                     true,
+                    Path::new("."),
+                    BdkWalletPolicy::RequireExisting,
                 )
                 .await,
             Err(ConfigurationServiceError::SigningIdentityChange)
@@ -1573,6 +1709,8 @@ engine = "sqlite"
                 MintInitializationMode::Existing,
                 Some(identity.pubkey),
                 true,
+                Path::new("."),
+                BdkWalletPolicy::RequireExisting,
             )
             .await
             .expect("initialize with matching mint pubkey");
@@ -1596,7 +1734,12 @@ engine = "sqlite"
 
         let second = document(&format!("file:{}", secret_path.display()), "second");
         service
-            .apply(&second, false)
+            .apply(
+                &second,
+                false,
+                Path::new("."),
+                BdkWalletPolicy::RequireExisting,
+            )
             .await
             .expect("replace document");
         assert!(service

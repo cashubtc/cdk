@@ -56,6 +56,8 @@ pub(crate) struct ConfigEnvelope {
     pub(crate) previous_applied_toml: Option<String>,
     pub(crate) signing_identity: String,
     pub(crate) applied: bool,
+    #[serde(default)]
+    pub(crate) allow_new_bdk_wallet: bool,
 }
 
 impl ConfigEnvelope {
@@ -67,7 +69,13 @@ impl ConfigEnvelope {
             previous_applied_toml: None,
             signing_identity,
             applied: false,
+            allow_new_bdk_wallet: false,
         }
+    }
+
+    pub(crate) fn with_new_bdk_wallet_allowed(mut self, allowed: bool) -> Self {
+        self.allow_new_bdk_wallet = allowed;
+        self
     }
 
     /// Lifecycle state of the stored document.
@@ -219,10 +227,21 @@ impl ConfigRepository {
     ///
     /// Transition: `Pending | Applied` → `Pending`. The currently applied
     /// document, when there is one, is retained for rollback.
+    #[cfg(test)]
     pub(crate) async fn replace(
         &self,
         toml: String,
         signing_identity: &str,
+    ) -> Result<(), ConfigStoreError> {
+        self.replace_with_bdk_policy(toml, signing_identity, false)
+            .await
+    }
+
+    pub(crate) async fn replace_with_bdk_policy(
+        &self,
+        toml: String,
+        signing_identity: &str,
+        allow_new_bdk_wallet: bool,
     ) -> Result<(), ConfigStoreError> {
         for _ in 0..MAX_CAS_ATTEMPTS {
             let (current_bytes, current) = self.active_record().await?;
@@ -245,6 +264,7 @@ impl ConfigRepository {
                 previous_applied_toml,
                 signing_identity: current.signing_identity,
                 applied: false,
+                allow_new_bdk_wallet,
             }
             .encode()?;
             if self
@@ -286,6 +306,7 @@ impl ConfigRepository {
                 current.previous_applied_toml = Some(current.toml);
             }
             current.applied = false;
+            current.allow_new_bdk_wallet = false;
             current.toml = previous;
             let replacement = current.encode()?;
             if self
@@ -319,10 +340,11 @@ impl ConfigRepository {
             if current.revision != expected_revision {
                 return Ok(false);
             }
-            if current.state() == DocumentState::Applied {
+            if current.state() == DocumentState::Applied && !current.allow_new_bdk_wallet {
                 return Ok(true);
             }
             current.applied = true;
+            current.allow_new_bdk_wallet = false;
             let replacement = current.encode()?;
             if self
                 .store
@@ -392,6 +414,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn successful_startup_clears_new_bdk_wallet_permission() {
+        let repository = repository().await;
+        repository
+            .initialize(
+                ConfigEnvelope::new("first".to_owned(), "signer".to_owned())
+                    .with_new_bdk_wallet_allowed(true),
+            )
+            .await
+            .expect("initialize configuration");
+        let pending = repository
+            .active()
+            .await
+            .expect("read pending configuration");
+        assert!(pending.allow_new_bdk_wallet);
+
+        assert!(repository
+            .mark_applied(pending.revision)
+            .await
+            .expect("mark configuration applied"));
+        let applied = repository
+            .active()
+            .await
+            .expect("read applied configuration");
+        assert!(applied.applied);
+        assert!(!applied.allow_new_bdk_wallet);
+    }
+
+    #[tokio::test]
     async fn older_startup_cannot_mark_replacement_applied() {
         let repository = repository().await;
         repository
@@ -458,6 +508,7 @@ mod tests {
             previous_applied_toml: None,
             signing_identity: "signer".to_owned(),
             applied: false,
+            allow_new_bdk_wallet: false,
         })
         .expect("encode test record");
         write_raw(&repository, &unsupported).await;
@@ -715,6 +766,7 @@ mod tests {
         let active = repository.active().await.expect("decode legacy record");
         assert_eq!(active.revision, 0);
         assert!(active.previous_applied_toml.is_none());
+        assert!(!active.allow_new_bdk_wallet);
         assert!(repository
             .mark_applied(0)
             .await

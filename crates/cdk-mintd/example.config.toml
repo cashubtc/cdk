@@ -253,12 +253,14 @@ onchain_backend = "fakewallet"
 # bitcoin_network = "signet"  # REQUIRED: mainnet, testnet, signet, regtest (no default)
 # chain_source_type = "esplora"  # esplora, electrum, bitcoinrpc
 # 
-# # IMPORTANT: LDK Node Seed Configuration
-# # For NEW nodes: ldk_node_mnemonic MUST be set. This is the BIP39 mnemonic used to derive
-# # the LDK node's keys. Keep this secure and backed up!
-# # For EXISTING nodes: If omitted, the node will use its stored seed from the storage directory.
-# # This maintains backward compatibility with nodes created before this configuration was added.
+# # IMPORTANT: LDK Node Identity Configuration
+# # New nodes MUST use a dedicated, stable BIP39 mnemonic. Existing
+# # mnemonic-based nodes MUST retain the exact mnemonic they originally used;
+# # changing it changes the node identity and wallet descriptors.
 # ldk_node_mnemonic = "env:CDK_MINTD_LDK_NODE_MNEMONIC"
+# # Legacy nodes created from <storage_dir_path>/keys_seed must instead preserve
+# # that complete storage directory and omit ldk_node_mnemonic. LDK's binary
+# # keys_seed file is different from cdk-mintd's legacy --seed-file mnemonic.
 # 
 # # Mutinynet configuration (recommended for testing)
 # esplora_url = "https://mutinynet.com/api"

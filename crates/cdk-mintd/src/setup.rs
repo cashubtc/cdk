@@ -603,6 +603,41 @@ impl PaymentBackendSetup for config::LdkNode {
 
 #[cfg(feature = "bdk")]
 impl crate::config::Bdk {
+    fn wallet_identity(&self) -> Result<(bip39::Mnemonic, bitcoin::Network), cdk_bdk::Error> {
+        let network_str = self.network.as_ref().ok_or_else(|| {
+            cdk_bdk::Error::InvalidConfig("BDK network must be set in [bdk].network".to_string())
+        })?;
+        let network = match network_str.to_lowercase().as_str() {
+            "mainnet" | "bitcoin" => bitcoin::Network::Bitcoin,
+            "testnet" => bitcoin::Network::Testnet,
+            "signet" => bitcoin::Network::Signet,
+            "regtest" => bitcoin::Network::Regtest,
+            _ => {
+                return Err(cdk_bdk::Error::InvalidConfig(format!(
+                    "Unknown BDK network: {network_str}"
+                )));
+            }
+        };
+        let mnemonic = self
+            .mnemonic
+            .as_ref()
+            .ok_or_else(|| cdk_bdk::Error::InvalidConfig("BDK mnemonic must be set".to_string()))?;
+        let mnemonic = bip39::Mnemonic::parse(mnemonic)
+            .map_err(|error| cdk_bdk::Error::InvalidConfig(error.to_string()))?;
+
+        Ok((mnemonic, network))
+    }
+
+    pub(crate) fn validate_wallet_identity(&self) -> Result<(), cdk_bdk::Error> {
+        self.wallet_identity().map(|_| ())
+    }
+
+    pub(crate) fn validate_existing_wallet(&self, work_dir: &Path) -> Result<(), cdk_bdk::Error> {
+        let (mnemonic, network) = self.wallet_identity()?;
+        cdk_bdk::validate_existing_wallet(mnemonic, network, work_dir)?;
+        Ok(())
+    }
+
     fn chain_source(&self) -> anyhow::Result<cdk_bdk::ChainSource> {
         use anyhow::bail;
 
@@ -779,10 +814,6 @@ impl OnchainBackendSetup for crate::config::Bdk {
         work_dir: &Path,
         kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_bdk::CdkBdk> {
-        use anyhow::bail;
-        use bip39::Mnemonic;
-        use bitcoin::Network;
-
         self.validate().map_err(anyhow::Error::msg)?;
 
         let fee_reserve = FeeReserve {
@@ -790,25 +821,9 @@ impl OnchainBackendSetup for crate::config::Bdk {
             percent_fee_reserve: self.fee_percent,
         };
 
-        let network_str = self
-            .network
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("BDK network must be set in [bdk].network"))?;
-
-        let network = match network_str.to_lowercase().as_str() {
-            "mainnet" | "bitcoin" => Network::Bitcoin,
-            "testnet" => Network::Testnet,
-            "signet" => Network::Signet,
-            "regtest" => Network::Regtest,
-            _ => bail!("Unknown BDK network: {}", network_str),
-        };
+        let (mnemonic, network) = self.wallet_identity()?;
 
         let chain_source = self.chain_source()?;
-
-        let mnemonic = match &self.mnemonic {
-            Some(m) => Mnemonic::parse(m)?,
-            None => bail!("BDK mnemonic must be set"),
-        };
 
         let min_receive_amount_sat = settings
             .onchain

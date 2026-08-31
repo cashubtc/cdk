@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use cdk_mintd::cli::{CLIArgs, Commands, ConfigCommands};
-use cdk_mintd::{get_work_directory, MintInitializationMode};
+use cdk_mintd::{get_work_directory, BdkWalletPolicy, MintInitializationMode};
 use clap::Parser;
 use tokio::runtime::Runtime;
 
@@ -83,8 +83,18 @@ fn main() -> Result<()> {
                         (false, true) => MintInitializationMode::Existing,
                         _ => bail!("exactly one mint initialization mode is required"),
                     };
-                    cdk_mintd::initialize_configuration(work_dir, &document, mode, password)
-                        .await?;
+                    let bdk_wallet_policy = match init.allow_new_bdk_wallet {
+                        true => BdkWalletPolicy::AllowNew,
+                        false => BdkWalletPolicy::RequireExisting,
+                    };
+                    cdk_mintd::initialize_configuration(
+                        work_dir,
+                        &document,
+                        mode,
+                        bdk_wallet_policy,
+                        password,
+                    )
+                    .await?;
                     println!("Configuration initialized. Start cdk-mintd to apply it.");
                     Ok(())
                 }
@@ -99,10 +109,15 @@ fn main() -> Result<()> {
                         .as_deref()
                         .expect("database commands have a work directory");
                     let document = read_document(&apply.file)?;
+                    let bdk_wallet_policy = match apply.allow_new_bdk_wallet {
+                        true => BdkWalletPolicy::AllowNew,
+                        false => BdkWalletPolicy::RequireExisting,
+                    };
                     cdk_mintd::apply_configuration(
                         work_dir,
                         &document,
                         apply.validate_only,
+                        bdk_wallet_policy,
                         password,
                     )
                     .await?;

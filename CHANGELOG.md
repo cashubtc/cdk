@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- cdk-mintd: Existing-mint initialization, configuration apply, and ordinary restarts fail closed when a configured BDK wallet database is missing, uninitialized, or does not match the configured mnemonic and network; intentional wallet creation requires a one-shot `--allow-new-bdk-wallet` permission.
+
 ## [0.18.0-rc.2](https://github.com/cashubtc/cdk/releases/tag/v0.18.0-rc.2)
 
 ### Summary

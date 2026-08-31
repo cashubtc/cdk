@@ -100,6 +100,9 @@ pub struct InitConfigArgs {
         conflicts_with = "new_mint"
     )]
     pub existing_mint: bool,
+    /// Permit an existing mint to create a BDK wallet when no wallet database exists.
+    #[arg(long, requires = "existing_mint", conflicts_with = "new_mint")]
+    pub allow_new_bdk_wallet: bool,
 }
 
 /// Arguments for migrating a legacy configuration.
@@ -147,6 +150,9 @@ pub struct ApplyConfigArgs {
     /// Validate the document and persisted constraints without writing it.
     #[arg(long)]
     pub validate_only: bool,
+    /// Permit creation of a BDK wallet when no wallet database exists.
+    #[arg(long)]
+    pub allow_new_bdk_wallet: bool,
 }
 
 #[cfg(test)]
@@ -276,6 +282,36 @@ mod tests {
             "/tmp/mint.toml",
         ])
         .is_err());
+        assert!(CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "init",
+            "--new-mint",
+            "--allow-new-bdk-wallet",
+            "--file",
+            "/tmp/mint.toml",
+        ])
+        .is_err());
+
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "init",
+            "--existing-mint",
+            "--allow-new-bdk-wallet",
+            "--file",
+            "/tmp/mint.toml",
+        ])
+        .expect("existing mint may explicitly allow a new BDK wallet");
+        assert!(matches!(
+            args.command,
+            Some(Commands::Config(ConfigArgs {
+                command: ConfigCommands::Init(InitConfigArgs {
+                    allow_new_bdk_wallet: true,
+                    ..
+                }),
+            }))
+        ));
     }
 
     #[test]

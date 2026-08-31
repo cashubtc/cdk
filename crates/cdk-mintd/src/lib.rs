@@ -392,6 +392,15 @@ pub enum MintInitializationMode {
     Existing,
 }
 
+/// Operator intent for BDK wallet persistence during configuration changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BdkWalletPolicy {
+    /// Require a matching, initialized BDK wallet database.
+    RequireExisting,
+    /// Permit creation of a BDK wallet only when its database is absent.
+    AllowNew,
+}
+
 /// Sets up and initializes a tracing subscriber with custom log filtering.
 /// Logs can be configured to output to stdout only, file only, or both.
 /// Returns a guard that must be kept alive and properly dropped on shutdown.
@@ -2709,6 +2718,7 @@ pub async fn initialize_configuration(
     work_dir: &Path,
     document: &str,
     mode: MintInitializationMode,
+    bdk_wallet_policy: BdkWalletPolicy,
     db_password: Option<String>,
 ) -> Result<()> {
     let bootstrap = load_database_bootstrap_settings()?;
@@ -2722,7 +2732,14 @@ pub async fn initialize_configuration(
     keyset_transaction.commit().await?;
 
     configuration_service(configuration_store, &bootstrap)
-        .initialize(document, mode, database_pubkey, has_keysets)
+        .initialize(
+            document,
+            mode,
+            database_pubkey,
+            has_keysets,
+            work_dir,
+            bdk_wallet_policy,
+        )
         .await?;
     Ok(())
 }
@@ -2732,13 +2749,14 @@ pub async fn apply_configuration(
     work_dir: &Path,
     document: &str,
     validate_only: bool,
+    bdk_wallet_policy: BdkWalletPolicy,
     db_password: Option<String>,
 ) -> Result<ApplyOutcome> {
     let bootstrap = load_database_bootstrap_settings()?;
     let (_localstore, _keystore, _kv, configuration_store) =
         initial_setup(work_dir, &bootstrap, db_password).await?;
     Ok(configuration_service(configuration_store, &bootstrap)
-        .apply(document, validate_only)
+        .apply(document, validate_only, work_dir, bdk_wallet_policy)
         .await?)
 }
 
@@ -2781,6 +2799,11 @@ pub async fn run_mintd_from_database(
         initial_setup(work_dir, &bootstrap, db_password.clone()).await?;
     let service = configuration_service(configuration_store, &bootstrap);
     let startup = service.startup().await?;
+    config_service::require_existing_bdk_wallet(
+        &startup.resolved.settings,
+        work_dir,
+        startup.bdk_wallet_policy,
+    )?;
     let validated_signing_source = Some(ValidatedSigningSource {
         expected_pubkey: startup.signing_identity.pubkey,
         remote_signatory: startup
@@ -2858,6 +2881,34 @@ backend = "fakewallet"
 [database]
 engine = "sqlite"
 "#,
+            secret_path.display()
+        )
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "bdk"))]
+    fn sqlite_bdk_configuration_document(secret_path: &Path, name: &str) -> String {
+        format!(
+            r#"
+[info]
+mnemonic = "file:{}"
+
+[mint_info]
+name = "{name}"
+
+[payment_backend]
+backend = "none"
+
+[onchain]
+onchain_backend = "bdk"
+
+[bdk]
+network = "regtest"
+mnemonic = "file:{}"
+
+[database]
+engine = "sqlite"
+"#,
+            secret_path.display(),
             secret_path.display()
         )
     }
@@ -3102,6 +3153,7 @@ engine = "sqlite"
             &work_dir,
             &first,
             MintInitializationMode::New,
+            BdkWalletPolicy::RequireExisting,
             password.clone(),
         )
         .await
@@ -3113,9 +3165,15 @@ engine = "sqlite"
             first
         );
 
-        let validate_only = apply_configuration(&work_dir, &second, true, password.clone())
-            .await
-            .expect("validate-only apply");
+        let validate_only = apply_configuration(
+            &work_dir,
+            &second,
+            true,
+            BdkWalletPolicy::RequireExisting,
+            password.clone(),
+        )
+        .await
+        .expect("validate-only apply");
         assert!(!validate_only.restart_required);
         assert_eq!(
             stored_configuration_document(&work_dir, password.clone())
@@ -3124,9 +3182,15 @@ engine = "sqlite"
             first
         );
 
-        let applied = apply_configuration(&work_dir, &second, false, password.clone())
-            .await
-            .expect("apply replacement");
+        let applied = apply_configuration(
+            &work_dir,
+            &second,
+            false,
+            BdkWalletPolicy::RequireExisting,
+            password.clone(),
+        )
+        .await
+        .expect("apply replacement");
         assert!(applied.restart_required);
         assert_eq!(
             stored_configuration_document(&work_dir, password)
@@ -3160,6 +3224,7 @@ engine = "sqlite"
             &work_dir,
             &document,
             MintInitializationMode::Existing,
+            BdkWalletPolicy::RequireExisting,
             password,
         )
         .await
@@ -3208,6 +3273,7 @@ engine = "sqlite"
             &work_dir,
             &document,
             MintInitializationMode::New,
+            BdkWalletPolicy::RequireExisting,
             password.clone(),
         )
         .await
@@ -3223,10 +3289,85 @@ engine = "sqlite"
             &work_dir,
             &document,
             MintInitializationMode::Existing,
+            BdkWalletPolicy::RequireExisting,
             password,
         )
         .await
         .expect("matching existing mint state should initialize");
+
+        let _ = fs::remove_dir_all(&work_dir);
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "bdk"))]
+    #[tokio::test]
+    async fn existing_mint_requires_explicit_new_bdk_wallet_intent() {
+        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_existing_bdk_init");
+        fs::create_dir_all(&work_dir).expect("create work dir");
+        let secret_path = work_dir.join("mnemonic.secret");
+        fs::write(&secret_path, TEST_MNEMONIC).expect("write mnemonic secret");
+        let document = sqlite_bdk_configuration_document(&secret_path, "existing-with-missing-bdk");
+
+        #[cfg(feature = "sqlcipher")]
+        let password = Some("test-password".to_string());
+        #[cfg(not(feature = "sqlcipher"))]
+        let password: Option<String> = None;
+
+        let bootstrap = load_database_bootstrap_settings().expect("bootstrap settings");
+        let (localstore, keystore, _kv, _configuration_store) =
+            initial_setup(&work_dir, &bootstrap, password.clone())
+                .await
+                .expect("initialize database");
+        let mut builder = MintBuilder::new(localstore);
+        builder
+            .configure_unit(CurrencyUnit::Sat, Default::default())
+            .expect("configure sat unit");
+        let mnemonic = Mnemonic::parse(TEST_MNEMONIC).expect("test mnemonic");
+        drop(
+            builder
+                .build_with_seed(keystore, &mnemonic.to_seed_normalized(""))
+                .await
+                .expect("create existing mint state"),
+        );
+
+        let error = initialize_configuration(
+            &work_dir,
+            &document,
+            MintInitializationMode::Existing,
+            BdkWalletPolicy::RequireExisting,
+            password.clone(),
+        )
+        .await
+        .expect_err("missing BDK wallet must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("Persisted BDK wallet database is missing"),
+            "unexpected error: {error}"
+        );
+
+        initialize_configuration(
+            &work_dir,
+            &document,
+            MintInitializationMode::Existing,
+            BdkWalletPolicy::AllowNew,
+            password.clone(),
+        )
+        .await
+        .expect("explicit new-wallet intent should permit initialization");
+
+        let error = apply_configuration(
+            &work_dir,
+            &document,
+            true,
+            BdkWalletPolicy::RequireExisting,
+            password,
+        )
+        .await
+        .expect_err("apply preflight must also reject a missing BDK wallet");
+        assert!(error
+            .to_string()
+            .contains("Persisted BDK wallet database is missing"));
+        assert!(!work_dir.join("bdk_wallet/bdk_wallet.sqlite").exists());
 
         let _ = fs::remove_dir_all(&work_dir);
     }

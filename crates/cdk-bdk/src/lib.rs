@@ -3,7 +3,7 @@
 #![doc = include_str!("../README.md")]
 
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,9 +16,9 @@ use async_trait::async_trait;
 use bdk_wallet::bitcoin::Network;
 use bdk_wallet::keys::bip39::Mnemonic;
 use bdk_wallet::keys::{DerivableKey, ExtendedKey};
-use bdk_wallet::rusqlite::Connection;
+use bdk_wallet::rusqlite::{Connection, OpenFlags};
 use bdk_wallet::template::Bip84;
-use bdk_wallet::{KeychainKind, PersistedWallet, Update, Wallet};
+use bdk_wallet::{ChangeSet, KeychainKind, PersistedWallet, Update, Wallet};
 use cdk_common::amount::MSAT_IN_SAT;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::KVStore;
@@ -61,6 +61,56 @@ pub use crate::wallet_info::{
 };
 
 const MAX_RECEIVE_ADDRESS_RESERVATION_ATTEMPTS: usize = 100;
+
+/// Verify that an existing BDK wallet is present and belongs to the configured
+/// mnemonic and network without modifying its database.
+pub fn validate_existing_wallet(
+    mnemonic: Mnemonic,
+    network: Network,
+    storage_dir_path: &Path,
+) -> Result<(), Error> {
+    let wallet_path = storage_dir_path.join("bdk_wallet/bdk_wallet.sqlite");
+    match fs::metadata(&wallet_path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Err(Error::ExistingWalletNotInitialized { path: wallet_path }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Error::ExistingWalletMissing { path: wallet_path });
+        }
+        Err(error) => return Err(Error::Io(error)),
+    }
+
+    let mut db = Connection::open_with_flags(&wallet_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let has_wallet_table = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bdk_wallet')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !has_wallet_table {
+        return Err(Error::ExistingWalletNotInitialized { path: wallet_path });
+    }
+
+    let changeset = {
+        let transaction = db.transaction()?;
+        ChangeSet::from_sqlite(&transaction)?
+    };
+
+    let xkey: ExtendedKey = mnemonic.into_extended_key()?;
+    let xprv = xkey.into_xprv(network.into()).ok_or(Error::Path)?;
+    let descriptor = Bip84(xprv, KeychainKind::External);
+    let change_descriptor = Bip84(xprv, KeychainKind::Internal);
+    let wallet = Wallet::load()
+        .descriptor(KeychainKind::External, Some(descriptor))
+        .descriptor(KeychainKind::Internal, Some(change_descriptor))
+        .extract_keys()
+        .check_network(network)
+        .load_wallet_no_persist(changeset)
+        .map_err(|e| Error::Wallet(e.to_string()))?;
+
+    match wallet {
+        Some(_) => Ok(()),
+        None => Err(Error::ExistingWalletNotInitialized { path: wallet_path }),
+    }
+}
 
 /// Wrapper struct that combines wallet and database to prevent deadlocks
 pub(crate) struct WalletWithDb {
@@ -925,6 +975,7 @@ impl MintPayment for CdkBdk {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::str::FromStr;
 
     use bdk_wallet::bitcoin::hashes::Hash as _;
@@ -938,6 +989,55 @@ mod tests {
 
     use super::*;
     use crate::fee::apply_quote_fee_safety;
+
+    const TEST_MNEMONIC: &str =
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    const OTHER_TEST_MNEMONIC: &str =
+        "legal winner thank year wave sausage worth useful legal winner thank yellow";
+
+    #[tokio::test]
+    async fn existing_wallet_preflight_requires_matching_persisted_wallet() {
+        let (backend, tempdir) = build_test_instance_with_tempdir(5).await;
+        drop(backend);
+
+        let mnemonic = Mnemonic::from_str(TEST_MNEMONIC).expect("test mnemonic");
+        validate_existing_wallet(mnemonic, Network::Regtest, tempdir.path())
+            .expect("matching wallet should pass preflight");
+
+        let other_mnemonic = Mnemonic::from_str(OTHER_TEST_MNEMONIC).expect("other mnemonic");
+        assert!(matches!(
+            validate_existing_wallet(other_mnemonic, Network::Regtest, tempdir.path()),
+            Err(Error::Wallet(_))
+        ));
+        assert!(matches!(
+            validate_existing_wallet(
+                Mnemonic::from_str(TEST_MNEMONIC).expect("test mnemonic"),
+                Network::Signet,
+                tempdir.path(),
+            ),
+            Err(Error::Wallet(_))
+        ));
+    }
+
+    #[test]
+    fn existing_wallet_preflight_does_not_create_missing_or_empty_wallet() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let mnemonic = Mnemonic::from_str(TEST_MNEMONIC).expect("test mnemonic");
+        let wallet_path = tempdir.path().join("bdk_wallet/bdk_wallet.sqlite");
+        assert!(matches!(
+            validate_existing_wallet(mnemonic.clone(), Network::Regtest, tempdir.path()),
+            Err(Error::ExistingWalletMissing { .. })
+        ));
+        assert!(!wallet_path.exists());
+
+        fs::create_dir_all(wallet_path.parent().expect("wallet directory"))
+            .expect("create wallet directory");
+        drop(Connection::open(&wallet_path).expect("create empty sqlite file"));
+        assert!(matches!(
+            validate_existing_wallet(mnemonic, Network::Regtest, tempdir.path()),
+            Err(Error::ExistingWalletNotInitialized { .. })
+        ));
+    }
 
     /// Build a `CdkBdk` instance pointed at a bogus Esplora URL so the sync
     /// loop spins without needing a real backend. The ticks are short so
@@ -982,10 +1082,7 @@ mod tests {
         chain_source: ChainSource,
     ) -> Result<(CdkBdk, tempfile::TempDir), Error> {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let mnemonic = Mnemonic::from_str(
-            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-        )
-        .expect("mnemonic");
+        let mnemonic = Mnemonic::from_str(TEST_MNEMONIC).expect("mnemonic");
 
         let kv = cdk_sqlite::mint::memory::empty()
             .await
