@@ -741,11 +741,28 @@ mod tests {
     use cdk_common::nuts::{MeltQuoteBolt11Response, MeltQuoteState, PaymentMethod, State};
     use cdk_common::wallet::{
         IssueSagaState, MeltOperationData, MeltSagaState, MintOperationData, OperationData,
-        ReceiveOperationData, ReceiveSagaState, TransactionDirection, WalletSaga, WalletSagaState,
+        PreparedMeltOperationData, PreparedMeltPurpose, ReceiveOperationData, ReceiveSagaState,
+        TransactionDirection, WalletSaga, WalletSagaState,
     };
     use cdk_common::Amount;
 
     use crate::wallet::test_utils::*;
+
+    fn prepared_melt_data(
+        quote: cdk_common::wallet::MeltQuote,
+        proofs: Vec<crate::nuts::Proof>,
+    ) -> PreparedMeltOperationData {
+        PreparedMeltOperationData {
+            quote,
+            proofs,
+            proofs_to_swap: Vec::new(),
+            swap_fee: Amount::ZERO,
+            input_fee: Amount::ZERO,
+            input_fee_without_swap: Amount::ZERO,
+            metadata: HashMap::new(),
+            purpose: PreparedMeltPurpose::Payment,
+        }
+    }
 
     #[tokio::test]
     async fn test_recover_receive_proofs_pending() {
@@ -844,6 +861,7 @@ mod tests {
         // Create and store proofs, then reserve them
         let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
         let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
         db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
 
@@ -859,17 +877,7 @@ mod tests {
             Amount::from(100),
             mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Sat,
-            OperationData::Melt(MeltOperationData {
-                quote_id: quote.id.clone(),
-                amount: Amount::from(100),
-                fee_reserve: Amount::from(10),
-                counter_start: None,
-                counter_end: None,
-                change_amount: None,
-                metadata: HashMap::new(),
-                final_proof_ys: None,
-                change_blinded_messages: None,
-            }),
+            OperationData::PreparedMelt(prepared_melt_data(quote.clone(), vec![proof])),
         );
         db.add_saga(saga).await.unwrap();
 
@@ -922,6 +930,7 @@ mod tests {
 
             let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
             let proof_y = proof_info.y;
+            let proof = proof_info.proof.clone();
             db.update_proofs(vec![proof_info], vec![]).await.unwrap();
             db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
 
@@ -936,17 +945,7 @@ mod tests {
                 Amount::from(100),
                 mint_url.clone(),
                 cdk_common::nuts::CurrencyUnit::Sat,
-                OperationData::Melt(MeltOperationData {
-                    quote_id: quote.id.clone(),
-                    amount: Amount::from(100),
-                    fee_reserve: Amount::from(10),
-                    counter_start: None,
-                    counter_end: None,
-                    change_amount: None,
-                    metadata: HashMap::new(),
-                    final_proof_ys: None,
-                    change_blinded_messages: None,
-                }),
+                OperationData::PreparedMelt(prepared_melt_data(quote, vec![proof])),
             );
             db.add_saga(saga).await.unwrap();
         }
@@ -1051,9 +1050,9 @@ mod tests {
         );
         db.add_saga(saga).await.unwrap();
 
-        // Mock: quote is Failed
+        // Mock: quote is stably Failed across the safety re-check.
         let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+        let failed_status = MeltQuoteBolt11Response {
             quote: quote_id.clone(),
             amount: Amount::from(100),
             fee_reserve: Amount::from(10),
@@ -1064,7 +1063,9 @@ mod tests {
             request: None,
             unit: None,
             method: PaymentMethod::BOLT11,
-        }));
+        };
+        mock_client.push_melt_quote_status_response(Ok(failed_status.clone()));
+        mock_client.push_melt_quote_status_response(Ok(failed_status));
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let report = wallet.recover_incomplete_sagas().await.unwrap();
@@ -1201,9 +1202,9 @@ mod tests {
         );
         db.add_saga(saga).await.unwrap();
 
-        // Mock: quote is Unpaid (payment was never initiated or was rolled back)
+        // Mock: quote is stably Unpaid across the safety re-check.
         let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+        let unpaid_status = MeltQuoteBolt11Response {
             quote: quote_id.clone(),
             amount: Amount::from(100),
             fee_reserve: Amount::from(10),
@@ -1214,7 +1215,9 @@ mod tests {
             request: None,
             unit: None,
             method: PaymentMethod::BOLT11,
-        }));
+        };
+        mock_client.push_melt_quote_status_response(Ok(unpaid_status.clone()));
+        mock_client.push_melt_quote_status_response(Ok(unpaid_status));
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let report = wallet.recover_incomplete_sagas().await.unwrap();

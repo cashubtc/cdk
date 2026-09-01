@@ -1,7 +1,7 @@
 #![doc = include_str!("./README.md")]
 
 use std::collections::HashMap;
-use std::fmt::Debug;
+use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -72,7 +72,6 @@ pub mod test_utils;
 mod transactions;
 pub mod util;
 pub mod wallet_repository;
-mod wallet_trait;
 
 pub use auth::{AuthMintConnector, AuthWallet};
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -105,7 +104,7 @@ pub use recovery::RecoveryReport;
 pub use send::PreparedSend;
 #[cfg(all(feature = "npubcash", not(target_arch = "wasm32")))]
 pub use streams::npubcash::NpubCashProofStream;
-pub use types::{CrossMintTransferQuote, MeltQuote, MintQuote, SendKind};
+pub use types::{CrossMintTransferQuote, MeltQuote, MintQuote, PreparedMeltPurpose, SendKind};
 pub use wallet_repository::{TokenData, WalletConfig, WalletRepository, WalletRepositoryBuilder};
 
 use crate::nuts::nut00::ProofsMethods;
@@ -139,7 +138,7 @@ impl DerivationCounterNamespace {
 ///
 /// For pending mint quotes, call [`Wallet::mint_unissued_quotes`] which checks
 /// quote states with the mint and mints available tokens. This makes network calls.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Wallet {
     /// Mint Url
     pub mint_url: MintUrl,
@@ -166,6 +165,17 @@ pub struct Wallet {
     /// shares its per-host budgets, so this reconfigures the same limiter the
     /// transport paces through.
     rate_limiter: Option<RateLimiterManager>,
+}
+
+impl fmt::Debug for Wallet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Wallet")
+            .field("mint_url", &self.mint_url)
+            .field("unit", &self.unit)
+            .field("target_proof_count", &self.target_proof_count)
+            .field("rate_limited", &self.rate_limiter.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";

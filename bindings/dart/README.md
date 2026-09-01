@@ -23,6 +23,23 @@ dependencies:
 
 ```dart
 import 'package:cdk/cdk.dart';
+
+final wallet = Wallet.open(
+  request: WalletOpenRequest(
+    mintUrl: 'https://mint.example.com',
+    unit: SatCurrencyUnit(),
+    mnemonic: generateMnemonic(),
+    store: SqliteWalletStore('wallet.sqlite'),
+  ),
+);
+
+final session = await wallet.requestMinting(
+  request: MintRequest(
+    method: Bolt11PaymentMethod(),
+    amount: Amount(value: 1000),
+  ),
+);
+print('Pay this invoice: ${session.initialState().paymentRequest}');
 ```
 
 ## Building
@@ -95,4 +112,3 @@ CDK_DART_TEST_MINT_URL=https://testnut.cashudevkit.org CDK_DART_MINT_SETTLEMENT_
 ## License
 
 [MIT](https://github.com/cashubtc/cdk/blob/main/LICENSE)
-

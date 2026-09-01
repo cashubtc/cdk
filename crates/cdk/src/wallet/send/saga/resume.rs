@@ -30,18 +30,14 @@ impl Wallet {
             }
         };
 
-        let _data = match &saga.data {
-            OperationData::Send(d) => d,
-            _ => {
-                return Err(Error::Custom(format!(
-                    "Invalid operation data type for send saga {}",
-                    saga.id
-                )))
-            }
-        };
-
         match state {
             SendSagaState::ProofsReserved => {
+                if !matches!(saga.data, OperationData::PreparedSend(_)) {
+                    return Err(Error::Custom(format!(
+                        "Invalid prepared operation data for send saga {}",
+                        saga.id
+                    )));
+                }
                 tracing::info!(
                     "Send saga {} in ProofsReserved state - compensating",
                     saga.id
@@ -51,6 +47,12 @@ impl Wallet {
                 Ok(RecoveryAction::Compensated)
             }
             SendSagaState::TokenCreated => {
+                if !matches!(saga.data, OperationData::Send(_)) {
+                    return Err(Error::Custom(format!(
+                        "Invalid operation data for created send token {}",
+                        saga.id
+                    )));
+                }
                 tracing::info!(
                     "Send saga {} in TokenCreated state - checking proof states",
                     saga.id
@@ -58,6 +60,12 @@ impl Wallet {
                 self.recover_or_complete_send(&saga.id).await
             }
             SendSagaState::RollingBack => {
+                if !matches!(saga.data, OperationData::Send(_)) {
+                    return Err(Error::Custom(format!(
+                        "Invalid operation data for rolling-back send {}",
+                        saga.id
+                    )));
+                }
                 tracing::info!(
                     "Send saga {} in RollingBack state - checking proof states",
                     saga.id
@@ -231,8 +239,8 @@ mod tests {
 
     use cdk_common::nuts::{CheckStateResponse, CurrencyUnit, ProofState, State};
     use cdk_common::wallet::{
-        OperationData, SendOperationData, SendSagaState, Transaction, TransactionDirection,
-        TransactionStatus, WalletSaga, WalletSagaState,
+        OperationData, PreparedSendOperationData, SendOperationData, SendOptions, SendSagaState,
+        Transaction, TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
     };
     use cdk_common::Amount;
 
@@ -242,6 +250,17 @@ mod tests {
     use crate::wallet::test_utils::{
         create_test_wallet, create_test_wallet_with_mock, MockMintConnector,
     };
+
+    fn prepared_send_data(proof: crate::nuts::Proof) -> PreparedSendOperationData {
+        PreparedSendOperationData {
+            amount: Amount::from(100),
+            options: SendOptions::default(),
+            proofs_to_swap: Vec::new(),
+            proofs_to_send: vec![proof],
+            swap_fee: Amount::ZERO,
+            send_fee: Amount::ZERO,
+        }
+    }
 
     #[tokio::test]
     async fn test_recover_send_proofs_reserved() {
@@ -253,6 +272,7 @@ mod tests {
         // Create and store proofs, then reserve them
         let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
         let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
         db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
 
@@ -262,14 +282,7 @@ mod tests {
             Amount::from(100),
             mint_url.clone(),
             CurrencyUnit::Sat,
-            OperationData::Send(SendOperationData {
-                amount: Amount::from(100),
-                memo: None,
-                counter_start: None,
-                counter_end: None,
-                token: None,
-                proofs: None,
-            }),
+            OperationData::PreparedSend(prepared_send_data(proof)),
         );
         db.add_saga(saga).await.unwrap();
 
@@ -297,6 +310,7 @@ mod tests {
 
         let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
         let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
         db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
         db.update_proofs_state(vec![proof_y], State::PendingSpent)
@@ -309,14 +323,7 @@ mod tests {
             Amount::from(100),
             mint_url.clone(),
             CurrencyUnit::Sat,
-            OperationData::Send(SendOperationData {
-                amount: Amount::from(100),
-                memo: None,
-                counter_start: None,
-                counter_end: None,
-                token: None,
-                proofs: None,
-            }),
+            OperationData::PreparedSend(prepared_send_data(proof)),
         );
         db.add_saga(saga).await.unwrap();
 
@@ -341,6 +348,7 @@ mod tests {
 
         let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
         let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
 
         db.update_proofs_state(vec![proof_y], State::Reserved)
@@ -353,14 +361,7 @@ mod tests {
             Amount::from(100),
             mint_url,
             CurrencyUnit::Sat,
-            OperationData::Send(SendOperationData {
-                amount: Amount::from(100),
-                memo: None,
-                counter_start: None,
-                counter_end: None,
-                token: None,
-                proofs: None,
-            }),
+            OperationData::PreparedSend(prepared_send_data(proof)),
         );
         db.add_saga(saga).await.unwrap();
 

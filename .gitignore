@@ -58,5 +58,10 @@ local.properties
 gen/
 out/
 bindings/kotlin/cdk-jvm/src/main/kotlin/uniffi/
+bindings/kotlin/cdk-jvm/src/main/kotlin/org/cashudevkit/cdk_ffi.kt
 bindings/kotlin/cdk-jvm/src/main/resources/*.so
 bindings/kotlin/cdk-jvm/src/main/resources/*.dylib
+
+# Dart bindings
+bindings/dart/.dart_tool/
+bindings/dart/lib/src/generated/

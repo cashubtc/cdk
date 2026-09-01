@@ -42,17 +42,22 @@ The CDK must implement the Cashu specs exactly.
 *   **Ergonomic Renaming:** If a field name in the spec is ambiguous or confusing in Rust (e.g., the spec calls it `inputs` but it represents proofs), encourage renaming it internally in Rust (e.g., `proofs`) while preserving the spec output using `#[serde(rename = "input")]`.
 *   **Serialization boundaries:** Ensure `serde` `Serialize`/`Deserialize` traits are used strictly for data parsing, not for mutating data or adding business logic. Logic should live in standard constructors, `FromStr`, or `TryFrom`.
 
-## 4. FFI Sync
+## 4. Portable Wallet Contract
 
-When a PR adds, removes, or changes methods on the `cdk` Wallet API, verify that the `cdk-ffi` crate is updated in the same PR.
+`cdk::Wallet` is the advanced engine and is not manually mirrored into FFI.
+Common application workflows live in `crates/cdk-ffi/src/portable.rs`; those
+same Rust objects are exported through UniFFI.
 
-Check:
+For portable wallet changes, check that:
 
-*   `crates/cdk-ffi/src/wallet.rs` exports the changed API with `#[uniffi::export]`.
-*   `crates/cdk-ffi/src/wallet_trait.rs` stays in sync.
-*   FFI-compatible types and conversions are updated under `crates/cdk-ffi/src/types/`.
+* the workflow belongs in the application facade rather than the advanced engine;
+* request, outcome, and error types do not expose proof/signing/keyset internals;
+* fund-reserving plans are persisted and reconstructable by operation ID;
+* `just ffi-api-check` passes and manifest changes are intentional;
+* affected language examples and tests are updated.
 
-Missing FFI updates should be treated as a warning or critical issue depending on whether the changed API is public/released.
+Treat reintroduction of a mirrored wallet trait or leaked advanced wallet
+objects as a warning or critical issue depending on release impact.
 
 ## 5. Public API & Config Compatibility
 

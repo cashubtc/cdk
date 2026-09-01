@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "FFI bindings for cdk wallet"
+description = "Portable CDK wallet API and UniFFI bindings"
 homepage = "https://github.com/cashubtc/cdk"
 
 [lib]

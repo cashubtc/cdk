@@ -29,4 +29,4 @@ of the PR were done in a specific way -->
 
 * [ ] I followed the [code style guidelines](https://github.com/cashubtc/cdk/blob/main/CODE_STYLE.md)
 * [ ] I ran `just quick-check` before committing
-* [ ] If the Wallet API was modified (added/removed/changed), I have reflected those changes in the FFI bindings (`crates/cdk-ffi`)
+* [ ] If the portable Wallet API changed, I ran `just ffi-api-check`, reviewed the manifest diff, and updated affected binding tests/docs

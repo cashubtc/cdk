@@ -1,0 +1,55 @@
+# Public method signatures on the portable application-facing wallet objects.
+#
+# This intentionally excludes protocol records and the advanced `cdk` engine.
+# Update it only after reviewing a deliberate application API change.
+CashuWallet.balances() -> typing.List[WalletBalanceEntry]
+CashuWallet.cross_mint_transfer_plan(operation_id: str) -> PreparedCrossMintTransfer
+CashuWallet.history(query: HistoryQuery) -> typing.List[Transaction]
+CashuWallet.open(request: CashuWalletOpenRequest) -> CashuWallet
+CashuWallet.plan_cross_mint_transfer(request: CrossMintTransferRequest) -> PreparedCrossMintTransfer
+CashuWallet.synchronize(policy: SyncPolicy) -> typing.List[SyncReport]
+CashuWallet.wallet(mint_url: MintUrl, unit: CurrencyUnit) -> Wallet
+CashuWallet.wallets() -> typing.List[Wallet]
+MintSession.claim() -> Amount
+MintSession.id() -> str
+MintSession.initial_state() -> MintSessionState
+MintSession.refresh() -> MintSessionState
+PaymentPlan.amount() -> Amount
+PaymentPlan.cancel() -> None
+PaymentPlan.confirm() -> PaymentReceipt
+PaymentPlan.confirm_prefer_async() -> PaymentConfirmation
+PaymentPlan.maximum_fee() -> Amount
+PaymentPlan.operation_id() -> str
+PaymentPlan.quote_id() -> str
+PaymentSession.prepare() -> PaymentPlan
+PaymentSession.quote() -> PaymentQuote
+PendingPayment.operation_id() -> str
+PendingPayment.quote_id() -> str
+PendingPayment.wait() -> PaymentReceipt
+PreparedCrossMintTransfer.amount() -> Amount
+PreparedCrossMintTransfer.cancel() -> None
+PreparedCrossMintTransfer.confirm() -> CrossMintTransferOutcome
+PreparedCrossMintTransfer.destination() -> WalletIdentity
+PreparedCrossMintTransfer.destination_quote_id() -> str
+PreparedCrossMintTransfer.maximum_fee() -> Amount
+PreparedCrossMintTransfer.operation_id() -> str
+SendPlan.amount() -> Amount
+SendPlan.cancel() -> None
+SendPlan.confirm() -> Token
+SendPlan.fee() -> Amount
+SendPlan.operation_id() -> str
+Wallet.accept(request: ReceiveRequest) -> ReceiveReceipt
+Wallet.balance() -> WalletBalance
+Wallet.events(params: SubscribeParams) -> ActiveSubscription
+Wallet.history(query: HistoryQuery) -> typing.List[Transaction]
+Wallet.identity() -> WalletIdentity
+Wallet.minting_session(quote_id: str) -> MintSession
+Wallet.open(request: WalletOpenRequest) -> Wallet
+Wallet.payment_plan(operation_id: str) -> PaymentPlan
+Wallet.pending_payment(operation_id: str) -> PendingPayment
+Wallet.plan_send(request: SendRequest) -> SendPlan
+Wallet.quote_payment(request: PaymentQuoteRequest) -> typing.List[PaymentSession]
+Wallet.request_minting(request: MintRequest) -> MintSession
+Wallet.restore_from_seed() -> Restored
+Wallet.send_plan(operation_id: str) -> SendPlan
+Wallet.synchronize(policy: SyncPolicy) -> SyncReport

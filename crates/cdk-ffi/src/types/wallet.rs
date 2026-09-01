@@ -503,45 +503,38 @@ impl From<cdk::wallet::NUT13Options> for NUT13Options {
     }
 }
 
-/// FFI-compatible PreparedSend
+/// Reviewable ecash send plan.
 ///
-/// This wraps the data from a prepared send operation along with a reference
-/// to the wallet. The actual PreparedSend<'a> from cdk has a lifetime parameter
-/// that doesn't work with FFI, so we store the wallet and cached data separately.
+/// The operation ID addresses the authoritative plan persisted by the wallet.
+/// Only immutable preview values are cached on this handle.
 #[derive(uniffi::Object)]
-pub struct PreparedSend {
+pub struct SendPlan {
     wallet: std::sync::Arc<cdk::Wallet>,
     operation_id: uuid::Uuid,
     amount: Amount,
-    options: cdk::wallet::SendOptions,
-    proofs_to_swap: cdk::nuts::Proofs,
-    proofs_to_send: cdk::nuts::Proofs,
     swap_fee: Amount,
     send_fee: Amount,
 }
 
-impl std::fmt::Debug for PreparedSend {
+impl std::fmt::Debug for SendPlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PreparedSend")
+        f.debug_struct("SendPlan")
             .field("operation_id", &self.operation_id)
             .field("amount", &self.amount)
             .finish()
     }
 }
 
-impl PreparedSend {
-    /// Create a new FFI PreparedSend from a cdk::wallet::PreparedSend and wallet
-    pub fn new(
+impl SendPlan {
+    /// Create an application send plan from the protocol engine.
+    pub(crate) fn new(
         wallet: std::sync::Arc<cdk::Wallet>,
-        prepared: &cdk::wallet::PreparedSend<'_>,
+        prepared: &cdk::wallet::PreparedSend,
     ) -> Self {
         Self {
             wallet,
             operation_id: prepared.operation_id(),
             amount: prepared.amount().into(),
-            options: prepared.options().clone(),
-            proofs_to_swap: prepared.proofs_to_swap().clone(),
-            proofs_to_send: prepared.proofs_to_send().clone(),
             swap_fee: prepared.swap_fee().into(),
             send_fee: prepared.send_fee().into(),
         }
@@ -549,7 +542,7 @@ impl PreparedSend {
 }
 
 #[uniffi::export(async_runtime = "tokio")]
-impl PreparedSend {
+impl SendPlan {
     /// Get the operation ID for this prepared send
     pub fn operation_id(&self) -> String {
         self.operation_id.to_string()
@@ -560,76 +553,45 @@ impl PreparedSend {
         self.amount
     }
 
-    /// Get the proofs that will be used
-    pub fn proofs(&self) -> Proofs {
-        let mut all_proofs: Vec<_> = self
-            .proofs_to_swap
-            .iter()
-            .cloned()
-            .map(|p| p.into())
-            .collect();
-        all_proofs.extend(self.proofs_to_send.iter().cloned().map(|p| p.into()));
-        all_proofs
-    }
-
     /// Get the total fee for this send operation
     pub fn fee(&self) -> Amount {
-        Amount::new(self.swap_fee.value + self.send_fee.value)
+        Amount::new(self.swap_fee.value.saturating_add(self.send_fee.value))
     }
 
     /// Confirm the prepared send and create a token
-    pub async fn confirm(
-        self: std::sync::Arc<Self>,
-        memo: Option<String>,
-    ) -> Result<Token, FfiError> {
-        let send_memo = memo.map(|m| cdk::wallet::SendMemo::for_token(&m));
-        let token = self
-            .wallet
-            .confirm_send(
-                self.operation_id,
-                self.amount.into(),
-                self.options.clone(),
-                self.proofs_to_swap.clone(),
-                self.proofs_to_send.clone(),
-                self.swap_fee.into(),
-                self.send_fee.into(),
-                send_memo,
-            )
-            .await?;
+    pub async fn confirm(self: std::sync::Arc<Self>) -> Result<Token, FfiError> {
+        let token = self.wallet.confirm_send(self.operation_id, None).await?;
 
         Ok(token.into())
     }
 
     /// Cancel the prepared send operation
     pub async fn cancel(self: std::sync::Arc<Self>) -> Result<(), FfiError> {
-        self.wallet
-            .cancel_send(
-                self.operation_id,
-                self.proofs_to_swap.clone(),
-                self.proofs_to_send.clone(),
-            )
-            .await?;
+        self.wallet.cancel_send(self.operation_id).await?;
         Ok(())
     }
 }
 
-/// FFI-compatible FinalizedMelt result
+/// Receipt for a finalized outgoing payment.
 #[derive(Clone, uniffi::Record)]
-pub struct FinalizedMelt {
+pub struct PaymentReceipt {
     pub quote_id: String,
     pub state: super::quote::QuoteState,
-    pub preimage: Option<String>,
+    pub payment_proof: Option<String>,
     pub change: Option<Proofs>,
     pub amount: Amount,
     pub fee_paid: Amount,
 }
 
-impl fmt::Debug for FinalizedMelt {
+impl fmt::Debug for PaymentReceipt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FinalizedMelt")
+        f.debug_struct("PaymentReceipt")
             .field("quote_id", &self.quote_id)
             .field("state", &self.state)
-            .field("preimage", &self.preimage.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "payment_proof",
+                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("change_proof_count", &self.change.as_ref().map(Vec::len))
             .field("amount", &self.amount)
             .field("fee_paid", &self.fee_paid)
@@ -637,12 +599,12 @@ impl fmt::Debug for FinalizedMelt {
     }
 }
 
-impl From<cdk_common::common::FinalizedMelt> for FinalizedMelt {
+impl From<cdk_common::common::FinalizedMelt> for PaymentReceipt {
     fn from(finalized: cdk_common::common::FinalizedMelt) -> Self {
         Self {
             quote_id: finalized.quote_id().to_string(),
             state: finalized.state().into(),
-            preimage: finalized.payment_proof().map(|s: &str| s.to_string()),
+            payment_proof: finalized.payment_proof().map(|s: &str| s.to_string()),
             change: finalized
                 .change()
                 .map(|proofs| proofs.iter().cloned().map(|p| p.into()).collect()),
@@ -652,297 +614,199 @@ impl From<cdk_common::common::FinalizedMelt> for FinalizedMelt {
     }
 }
 
-/// A pending async melt accepted by the mint.
+/// An outgoing payment accepted for asynchronous processing by the mint.
 ///
-/// FFI callers receive this handle when the mint accepts a melt for background
-/// processing. Call [`PendingMelt::wait`] from a background task/coroutine to
-/// poll existing wallet recovery until the melt settles.
+/// Applications receive this handle when the mint accepts a payment for
+/// background processing. Call [`PendingPayment::wait`] from a background
+/// task/coroutine to poll durable wallet recovery until it settles.
 ///
-/// Mobile apps should also call [`crate::Wallet::recover_incomplete_sagas`] or
-/// [`crate::Wallet::finalize_pending_melts`] on startup/resume, because
-/// operating systems may suspend or cancel long-running background waits.
+/// Mobile apps should also call [`crate::Wallet::synchronize`] with
+/// [`crate::SyncPolicy::Online`] on startup/resume, because operating systems
+/// may suspend or cancel long-running background waits.
 #[derive(uniffi::Object)]
-pub struct PendingMelt {
+pub struct PendingPayment {
     wallet: Arc<cdk::Wallet>,
     quote_id: String,
     operation_id: uuid::Uuid,
-    payment_method: cdk_common::PaymentMethod,
 }
 
-impl std::fmt::Debug for PendingMelt {
+impl std::fmt::Debug for PendingPayment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PendingMelt")
+        f.debug_struct("PendingPayment")
             .field("operation_id", &self.operation_id)
             .field("quote_id", &self.quote_id)
             .finish()
     }
 }
 
+impl PendingPayment {
+    pub(crate) fn new(wallet: Arc<cdk::Wallet>, pending: &cdk::wallet::PendingMelt) -> Self {
+        Self {
+            wallet,
+            quote_id: pending.quote_id().to_string(),
+            operation_id: pending.operation_id(),
+        }
+    }
+}
+
 #[uniffi::export(async_runtime = "tokio")]
-impl PendingMelt {
-    /// Quote ID for this pending melt.
+impl PendingPayment {
+    /// Quote ID for this pending payment.
     pub fn quote_id(&self) -> String {
         self.quote_id.clone()
     }
 
-    /// Operation ID for this pending melt saga.
+    /// Durable operation ID for this pending payment.
     pub fn operation_id(&self) -> String {
         self.operation_id.to_string()
     }
 
-    /// Wait for this pending melt to complete.
+    /// Wait for this pending payment to complete.
     ///
-    /// This method polls the wallet's existing melt recovery path until the
-    /// pending saga finalizes or fails.
+    /// This method polls the wallet's durable recovery path until the payment
+    /// finalizes or fails.
     ///
     /// This can wait for an extended period. Swift/Kotlin callers should run it
     /// in a cancellable background task or coroutine, not directly in UI
     /// control flow. If the app is suspended or killed before this returns,
-    /// call `Wallet::recover_incomplete_sagas()` or
-    /// `Wallet::finalize_pending_melts()` after restart/resume.
-    pub async fn wait(&self) -> Result<FinalizedMelt, FfiError> {
-        let finalized = self
-            .wallet
-            .wait_pending_melt(
-                self.operation_id,
-                &self.quote_id,
-                self.payment_method.clone(),
-            )
-            .await?;
+    /// call `Wallet::synchronize(SyncPolicy::Online)` after restart/resume.
+    pub async fn wait(&self) -> Result<PaymentReceipt, FfiError> {
+        let finalized = self.wallet.wait_pending_melt(self.operation_id).await?;
 
         Ok(finalized.into())
     }
 }
 
-/// Result of async-preferred melt confirmation.
+/// Result of async-preferred outgoing payment confirmation.
 ///
-/// `Paid` means the melt finalized during confirmation. `Pending` means the
-/// mint accepted the melt for asynchronous processing; call
-/// [`PendingMelt::wait`] to complete the normal app flow.
+/// `Completed` means the payment finalized during confirmation. `Pending`
+/// means the mint accepted it for asynchronous processing; call
+/// [`PendingPayment::wait`] to complete the normal app flow.
 #[derive(Debug, Clone, uniffi::Enum)]
-pub enum MeltConfirmOutcome {
-    /// Melt finalized during confirmation.
-    Paid { finalized: FinalizedMelt },
-    /// Mint accepted async melt processing and the payment is still pending.
-    Pending { pending: Arc<PendingMelt> },
+pub enum PaymentConfirmation {
+    /// Payment finalized during confirmation.
+    Completed { receipt: PaymentReceipt },
+    /// Mint accepted async processing and the payment is still pending.
+    Pending { payment: Arc<PendingPayment> },
 }
 
-/// FFI-compatible PreparedMelt
+/// Reviewable outgoing payment plan.
 ///
-/// This wraps the data from a prepared melt operation along with a reference
-/// to the wallet. The actual PreparedMelt<'a> from cdk has a lifetime parameter
-/// that doesn't work with FFI, so we store the wallet and cached data separately.
+/// The operation ID addresses the authoritative plan persisted by the wallet.
+/// Only immutable preview values are cached on this handle.
 #[derive(uniffi::Object)]
-pub struct PreparedMelt {
+pub struct PaymentPlan {
     wallet: Arc<cdk::Wallet>,
     operation_id: uuid::Uuid,
-    quote: cdk_common::wallet::MeltQuote,
-    proofs: cdk::nuts::Proofs,
-    proofs_to_swap: cdk::nuts::Proofs,
+    quote_id: String,
+    amount: Amount,
+    fee_reserve: Amount,
     swap_fee: Amount,
     input_fee: Amount,
-    input_fee_without_swap: Amount,
-    metadata: HashMap<String, String>,
 }
 
-impl std::fmt::Debug for PreparedMelt {
+impl std::fmt::Debug for PaymentPlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PreparedMelt")
+        f.debug_struct("PaymentPlan")
             .field("operation_id", &self.operation_id)
-            .field("quote_id", &self.quote.id)
-            .field("amount", &self.quote.amount)
+            .field("quote_id", &self.quote_id)
+            .field("amount", &self.amount)
             .finish()
     }
 }
 
-impl PreparedMelt {
-    /// Create a new FFI PreparedMelt from a cdk::wallet::PreparedMelt and wallet
-    pub fn new(wallet: Arc<cdk::Wallet>, prepared: &cdk::wallet::PreparedMelt<'_>) -> Self {
+impl PaymentPlan {
+    /// Create an application payment plan from the protocol engine.
+    pub(crate) fn new(wallet: Arc<cdk::Wallet>, prepared: &cdk::wallet::PreparedMelt) -> Self {
         Self {
             wallet,
             operation_id: prepared.operation_id(),
-            quote: prepared.quote().clone(),
-            proofs: prepared.proofs().clone(),
-            proofs_to_swap: prepared.proofs_to_swap().clone(),
+            quote_id: prepared.quote().id.clone(),
+            amount: prepared.amount().into(),
+            fee_reserve: prepared.quote().fee_reserve.into(),
             swap_fee: prepared.swap_fee().into(),
             input_fee: prepared.input_fee().into(),
-            input_fee_without_swap: prepared.input_fee_without_swap().into(),
-            metadata: prepared.metadata().clone(),
         }
     }
 
     async fn confirm_prefer_async_with_options(
         &self,
-        options: MeltConfirmOptions,
-    ) -> Result<MeltConfirmOutcome, FfiError> {
+        options: cdk::wallet::MeltConfirmOptions,
+    ) -> Result<PaymentConfirmation, FfiError> {
         let outcome = self
             .wallet
-            .confirm_prepared_melt_prefer_async_with_options(
-                self.operation_id,
-                self.quote.clone(),
-                self.proofs.clone(),
-                self.proofs_to_swap.clone(),
-                self.input_fee.into(),
-                self.input_fee_without_swap.into(),
-                self.metadata.clone(),
-                options.into(),
-            )
+            .confirm_prepared_melt_prefer_async_with_options(self.operation_id, options)
             .await?;
 
         match outcome {
-            cdk::wallet::MeltOutcome::Paid(finalized) => Ok(MeltConfirmOutcome::Paid {
-                finalized: finalized.into(),
+            cdk::wallet::MeltOutcome::Paid(finalized) => Ok(PaymentConfirmation::Completed {
+                receipt: finalized.into(),
             }),
-            cdk::wallet::MeltOutcome::Pending(_) => Ok(MeltConfirmOutcome::Pending {
-                pending: Arc::new(PendingMelt {
-                    wallet: Arc::clone(&self.wallet),
-                    quote_id: self.quote.id.clone(),
-                    operation_id: self.operation_id,
-                    payment_method: self.quote.payment_method.clone(),
-                }),
+            cdk::wallet::MeltOutcome::Pending(pending) => Ok(PaymentConfirmation::Pending {
+                payment: Arc::new(PendingPayment::new(Arc::clone(&self.wallet), &pending)),
             }),
         }
     }
 }
 
 #[uniffi::export(async_runtime = "tokio")]
-impl PreparedMelt {
-    /// Get the operation ID for this prepared melt
+impl PaymentPlan {
+    /// Durable operation ID used to resume this plan.
     pub fn operation_id(&self) -> String {
         self.operation_id.to_string()
     }
 
     /// Get the quote ID
     pub fn quote_id(&self) -> String {
-        self.quote.id.clone()
+        self.quote_id.clone()
     }
 
-    /// Get the amount to be melted
+    /// Amount delivered by the payment.
     pub fn amount(&self) -> Amount {
-        self.quote.amount.into()
+        self.amount
     }
 
-    /// Get the fee reserve from the quote
-    pub fn fee_reserve(&self) -> Amount {
-        self.quote.fee_reserve.into()
+    /// Maximum mint, swap, and input fee charged by this plan.
+    pub fn maximum_fee(&self) -> Amount {
+        Amount::new(
+            self.fee_reserve
+                .value
+                .saturating_add(self.swap_fee.value)
+                .saturating_add(self.input_fee.value),
+        )
     }
 
-    /// Get the swap fee
-    pub fn swap_fee(&self) -> Amount {
-        self.swap_fee
-    }
-
-    /// Get the input fee
-    pub fn input_fee(&self) -> Amount {
-        self.input_fee
-    }
-
-    /// Get the total fee (swap fee + input fee)
-    pub fn total_fee(&self) -> Amount {
-        Amount::new(self.swap_fee.value + self.input_fee.value)
-    }
-
-    /// Returns true if a swap would be performed (proofs_to_swap is not empty)
-    pub fn requires_swap(&self) -> bool {
-        !self.proofs_to_swap.is_empty()
-    }
-
-    /// Get the total fee if swap is performed (current default behavior)
-    pub fn total_fee_with_swap(&self) -> Amount {
-        Amount::new(self.swap_fee.value + self.input_fee.value)
-    }
-
-    /// Get the input fee if swap is skipped (fee on all proofs sent directly)
-    pub fn input_fee_without_swap(&self) -> Amount {
-        self.input_fee_without_swap
-    }
-
-    /// Get the fee savings from skipping the swap
-    pub fn fee_savings_without_swap(&self) -> Amount {
-        let total_with = self.swap_fee.value + self.input_fee.value;
-        let total_without = self.input_fee_without_swap.value;
-        if total_with > total_without {
-            Amount::new(total_with - total_without)
-        } else {
-            Amount::new(0)
-        }
-    }
-
-    /// Get the expected change amount if swap is skipped
-    pub fn change_amount_without_swap(&self) -> Amount {
-        use cdk::nuts::nut00::ProofsMethods;
-        let all_proofs_total = self.proofs.total_amount().unwrap_or(cdk::Amount::ZERO)
-            + self
-                .proofs_to_swap
-                .total_amount()
-                .unwrap_or(cdk::Amount::ZERO);
-        let needed =
-            self.quote.amount + self.quote.fee_reserve + self.input_fee_without_swap.into();
-        all_proofs_total
-            .checked_sub(needed)
-            .map(|a| a.into())
-            .unwrap_or(Amount::new(0))
-    }
-
-    /// Get the proofs that will be used
-    pub fn proofs(&self) -> Proofs {
-        self.proofs.iter().cloned().map(|p| p.into()).collect()
-    }
-
-    /// Confirm the prepared melt and execute the payment
-    pub async fn confirm(&self) -> Result<FinalizedMelt, FfiError> {
-        self.confirm_with_options(MeltConfirmOptions::default())
-            .await
-    }
-
-    /// Confirm the prepared melt with custom options
-    pub async fn confirm_with_options(
-        &self,
-        options: MeltConfirmOptions,
-    ) -> Result<FinalizedMelt, FfiError> {
+    /// Confirm the plan and execute the payment.
+    pub async fn confirm(&self) -> Result<PaymentReceipt, FfiError> {
         let finalized = self
             .wallet
             .confirm_prepared_melt_with_options(
                 self.operation_id,
-                self.quote.clone(),
-                self.proofs.clone(),
-                self.proofs_to_swap.clone(),
-                self.input_fee.into(),
-                self.input_fee_without_swap.into(),
-                self.metadata.clone(),
-                options.into(),
+                cdk::wallet::MeltConfirmOptions::default(),
             )
             .await?;
 
         Ok(finalized.into())
     }
 
-    /// Confirm the prepared melt using NUT-05 async support when the mint accepts it.
+    /// Confirm the plan, allowing asynchronous processing when supported.
     ///
     /// If the melt completes immediately, this returns
-    /// `MeltConfirmOutcome::Paid`. If the mint accepts the payment for
-    /// background processing, this returns `MeltConfirmOutcome::Pending` with a
-    /// `PendingMelt` handle.
+    /// `PaymentConfirmation::Completed`. If the mint accepts the payment for
+    /// background processing, this returns `PaymentConfirmation::Pending` with a
+    /// `PendingPayment` handle.
     ///
-    /// FFI callers should call `PendingMelt::wait()` from a background
-    /// task/coroutine to poll for completion. Mobile apps should also call
-    /// `recover_incomplete_sagas()` or `finalize_pending_melts()` on
-    /// startup/resume, because operating systems may suspend or cancel
-    /// long-running background waits.
-    pub async fn confirm_prefer_async(&self) -> Result<MeltConfirmOutcome, FfiError> {
-        self.confirm_prefer_async_with_options(MeltConfirmOptions::default())
+    /// Call `PendingPayment::wait()` from a background task/coroutine to poll
+    /// for completion. Mobile apps should also call
+    /// `Wallet::synchronize(SyncPolicy::Online)` on startup/resume.
+    pub async fn confirm_prefer_async(&self) -> Result<PaymentConfirmation, FfiError> {
+        self.confirm_prefer_async_with_options(cdk::wallet::MeltConfirmOptions::default())
             .await
     }
 
-    /// Cancel the prepared melt and release reserved proofs
+    /// Cancel the plan and release reserved funds.
     pub async fn cancel(&self) -> Result<(), FfiError> {
-        self.wallet
-            .cancel_prepared_melt(
-                self.operation_id,
-                self.proofs.clone(),
-                self.proofs_to_swap.clone(),
-            )
-            .await?;
+        self.wallet.cancel_prepared_melt(self.operation_id).await?;
         Ok(())
     }
 }
@@ -1026,30 +890,6 @@ impl From<cdk::wallet::RecoveryReport> for RecoveryReport {
     }
 }
 
-/// FFI-compatible options for confirming a melt operation
-#[derive(Debug, Clone, Default, Serialize, Deserialize, uniffi::Record)]
-pub struct MeltConfirmOptions {
-    /// Skip the pre-melt swap and send proofs directly to melt.
-    /// When true, saves swap input fees but gets change from melt instead.
-    pub skip_swap: bool,
-}
-
-impl From<MeltConfirmOptions> for cdk::wallet::MeltConfirmOptions {
-    fn from(opts: MeltConfirmOptions) -> Self {
-        cdk::wallet::MeltConfirmOptions {
-            skip_swap: opts.skip_swap,
-        }
-    }
-}
-
-impl From<cdk::wallet::MeltConfirmOptions> for MeltConfirmOptions {
-    fn from(opts: cdk::wallet::MeltConfirmOptions) -> Self {
-        Self {
-            skip_swap: opts.skip_swap,
-        }
-    }
-}
-
 /// FFI-compatible WalletKey
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
 pub struct WalletKey {
@@ -1099,13 +939,13 @@ mod tests {
     }
 
     #[test]
-    fn finalized_melt_debug_redacts_preimage_and_change_proofs() {
+    fn payment_receipt_debug_redacts_payment_proof_and_change_proofs() {
         let preimage = "payment-preimage";
         let proof_secret = "change-proof-secret";
-        let finalized = FinalizedMelt {
+        let finalized = PaymentReceipt {
             quote_id: "public-melt-quote-id".to_string(),
             state: super::super::quote::QuoteState::Paid,
-            preimage: Some(preimage.to_string()),
+            payment_proof: Some(preimage.to_string()),
             change: Some(vec![Proof {
                 amount: Amount::new(1),
                 secret: proof_secret.to_string(),

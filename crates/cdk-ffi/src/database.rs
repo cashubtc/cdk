@@ -2203,7 +2203,7 @@ pub enum WalletDbBackend {
 /// This is an enum rather than accepting `WalletDatabase` directly because UniFFI
 /// does not support trait objects as constructor parameters — only callback interfaces
 /// wrapped in `Arc<dyn Trait>` inside an enum variant work across the FFI boundary.
-#[derive(uniffi::Enum)]
+#[derive(uniffi::Enum, Clone)]
 pub enum WalletStore {
     Sqlite {
         path: String,

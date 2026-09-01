@@ -41,34 +41,24 @@ Then add `"Cdk"` as a dependency of your target:
 ```swift
 import Cdk
 
-// 1. Create a wallet
-let wallet = try Wallet(
+let wallet = try Wallet.open(request: WalletOpenRequest(
     mintUrl: "https://mint.example.com",
     unit: .sat,
     mnemonic: try generateMnemonic(),
-    store: .sqlite(path: "wallet.sqlite"),
-    config: WalletConfig(targetProofCount: nil)
-)
+    store: .sqlite(path: "wallet.sqlite")
+))
 
-// 2. Request a mint quote
-let quote = try await wallet.mintQuote(
-    paymentMethod: .bolt11,
-    amount: Amount(value: 1000),
-    description: nil,
-    extra: nil
-)
-print("Pay this invoice: \(quote.request)")
+let session = try await wallet.requestMinting(request: MintRequest(
+    method: .bolt11,
+    amount: Amount(value: 1_000)
+))
+print("Pay this invoice: \(session.initialState().paymentRequest)")
 
-// 3. After paying the invoice, mint ecash
-let proofs = try await wallet.mint(
-    quoteId: quote.id,
-    amountSplitTarget: .none,
-    spendingConditions: nil
-)
-
-// 4. Check balance
-let balance = try await wallet.totalBalance()
-print("Balance: \(balance.value) sats")
+// After payment settles:
+_ = try await session.refresh()
+let claimed = try await session.claim()
+let balance = try await wallet.balance()
+print("Claimed \(claimed.value); available \(balance.available.value) sats")
 ```
 
 ## Pre-built binaries

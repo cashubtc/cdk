@@ -40,9 +40,9 @@ mod send;
 mod swap;
 
 pub use issue::{IssueSagaState, MintOperationData};
-pub use melt::{MeltOperationData, MeltSagaState};
+pub use melt::{MeltOperationData, MeltSagaState, PreparedMeltOperationData, PreparedMeltPurpose};
 pub use receive::{ReceiveOperationData, ReceiveSagaState};
-pub use send::{SendOperationData, SendSagaState};
+pub use send::{PreparedSendOperationData, SendOperationData, SendSagaState};
 pub use swap::{SwapOperationData, SwapSagaState};
 
 /// Wallet saga state for different operation types
@@ -106,6 +106,8 @@ impl WalletSagaState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum OperationData {
+    /// A send plan that is ready to be confirmed or cancelled.
+    PreparedSend(PreparedSendOperationData),
     /// Send operation data
     Send(SendOperationData),
     /// Receive operation data
@@ -114,6 +116,8 @@ pub enum OperationData {
     Swap(SwapOperationData),
     /// Mint operation data
     Mint(MintOperationData),
+    /// A melt plan that is ready to be confirmed or cancelled.
+    PreparedMelt(PreparedMeltOperationData),
     /// Melt operation data
     Melt(MeltOperationData),
 }
@@ -122,10 +126,12 @@ impl OperationData {
     /// Get the operation kind
     pub fn kind(&self) -> OperationKind {
         match self {
+            OperationData::PreparedSend(_) => OperationKind::Send,
             OperationData::Send(_) => OperationKind::Send,
             OperationData::Receive(_) => OperationKind::Receive,
             OperationData::Swap(_) => OperationKind::Swap,
             OperationData::Mint(_) => OperationKind::Mint,
+            OperationData::PreparedMelt(_) => OperationKind::Melt,
             OperationData::Melt(_) => OperationKind::Melt,
         }
     }
@@ -211,6 +217,7 @@ impl WalletSaga {
 
         let quote_id = match &data {
             OperationData::Mint(d) => Some(d.primary_quote_id().to_string()),
+            OperationData::PreparedMelt(d) => Some(d.quote.id.clone()),
             OperationData::Melt(d) => Some(d.quote_id.clone()),
             _ => None,
         };

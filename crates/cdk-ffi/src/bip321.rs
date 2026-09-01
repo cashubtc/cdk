@@ -53,7 +53,7 @@ pub fn create_bip321_uri(
 }
 
 /// Parse a BIP 321 `bitcoin:` URI or standalone payment instruction string,
-/// validating on-chain addresses against the given [`bitcoin::Network`].
+/// validating on-chain addresses against the given `bitcoin::Network`.
 ///
 /// Returns a [`ParsedPaymentInstruction`] from a BIP 321 URI or standalone
 /// payment string (Cashu, BOLT11, BOLT12, or on-chain address).

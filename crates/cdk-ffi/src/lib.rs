@@ -16,6 +16,7 @@ pub mod nostr;
 pub mod npubcash;
 #[cfg(feature = "nwc")]
 pub mod nwc;
+pub mod portable;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 mod runtime;
@@ -25,8 +26,7 @@ pub mod supabase;
 pub mod token;
 pub mod types;
 pub mod wallet;
-pub mod wallet_repository;
-mod wallet_trait;
+mod wallet_repository;
 
 pub use database::*;
 pub use error::*;
@@ -37,9 +37,9 @@ pub use nostr::*;
 pub use npubcash::*;
 #[cfg(feature = "nwc")]
 pub use nwc::*;
+pub use portable::*;
 pub use types::*;
-pub use wallet::*;
-pub use wallet_repository::*;
+pub use wallet::{generate_mnemonic, mnemonic_to_entropy, RateLimit, Wallet, WalletConfig};
 
 uniffi::setup_scaffolding!();
 

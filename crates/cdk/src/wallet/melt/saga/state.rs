@@ -44,12 +44,8 @@ pub struct Prepared {
     pub proofs: Proofs,
     /// Proofs that need to be swapped first (if any)
     pub proofs_to_swap: Proofs,
-    /// Fee for the swap operation
-    pub swap_fee: Amount,
     /// Input fee for the melt (after swap, on optimized proofs)
     pub input_fee: Amount,
-    /// Input fee if swap is skipped (on all proofs directly)
-    pub input_fee_without_swap: Amount,
     /// Policy controlling how keysets are loaded
     pub keyset_policy: KeysetLoadPolicy,
     /// The persisted saga for optimistic locking
@@ -90,8 +86,4 @@ pub struct PaymentPending {
     pub operation_id: Uuid,
     /// The melt quote
     pub quote: MeltQuote,
-    /// The proofs used for payment
-    pub final_proofs: Proofs,
-    /// Pre-mint secrets for change
-    pub premint_secrets: PreMintSecrets,
 }

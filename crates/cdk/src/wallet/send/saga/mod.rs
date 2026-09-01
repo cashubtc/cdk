@@ -67,8 +67,9 @@ use bitcoin::XOnlyPublicKey;
 use cdk_common::amount::KeysetFeeAndAmounts;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
-    KeysetLoadPolicy, OperationData, P2PKLockedProofSendMode, SendOperationData, SendSagaState,
-    Transaction, TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
+    KeysetLoadPolicy, OperationData, P2PKLockedProofSendMode, PreparedSendOperationData,
+    SendOperationData, SendSagaState, Transaction, TransactionDirection, TransactionStatus,
+    WalletSaga, WalletSagaState,
 };
 use cdk_common::Id;
 use tracing::instrument;
@@ -667,20 +668,19 @@ impl<'a> SendSaga<'a, Initial> {
             .reserve_proofs(proof_ys.clone(), &self.state_data.operation_id)
             .await?;
 
-        let memo_text = opts.memo.as_ref().map(|m| m.memo.clone());
         let saga = WalletSaga::new(
             self.state_data.operation_id,
             WalletSagaState::Send(SendSagaState::ProofsReserved),
             amount,
             self.wallet.mint_url.clone(),
             self.wallet.unit.clone(),
-            OperationData::Send(SendOperationData {
+            OperationData::PreparedSend(PreparedSendOperationData {
                 amount,
-                memo: memo_text.clone(),
-                counter_start: None,
-                counter_end: None,
-                token: None,
-                proofs: None,
+                options: opts.clone(),
+                proofs_to_swap: split_result.proofs_to_swap.clone(),
+                proofs_to_send: split_result.proofs_to_send.clone(),
+                swap_fee: split_result.swap_fee,
+                send_fee: send_fee.total,
             }),
         );
 
@@ -1192,8 +1192,8 @@ mod tests {
     use cdk_common::amount::KeysetFeeAndAmounts;
     use cdk_common::nuts::State;
     use cdk_common::wallet::{
-        KeysetLoadPolicy, OperationData, ProofInfo, SendKind, SendOperationData, SendSagaState,
-        WalletSaga, WalletSagaState,
+        KeysetLoadPolicy, OperationData, PreparedSendOperationData, ProofInfo, SendKind,
+        SendOperationData, SendSagaState, WalletSaga, WalletSagaState,
     };
     use cdk_common::{CurrencyUnit, ProofsMethods};
 
@@ -1274,6 +1274,17 @@ mod tests {
             stored_proofs[0].used_by_operation,
             Some(prepared.operation_id())
         );
+
+        let operation_id = prepared.operation_id();
+        drop(prepared);
+        let resumed = wallet
+            .prepared_send(operation_id)
+            .await
+            .expect("prepared send should be reconstructable by ID");
+        assert_eq!(resumed.operation_id(), operation_id);
+        assert_eq!(resumed.amount(), Amount::from(100));
+        resumed.cancel().await.expect("resumed send should cancel");
+        assert!(db.get_saga(&operation_id).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -1401,11 +1412,11 @@ mod tests {
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
 
         let err = wallet
-            .cancel_send(saga_id, vec![], vec![proof])
+            .cancel_send(saga_id)
             .await
             .expect_err("cancel_send must reject a token-created send saga");
 
-        assert!(matches!(err, crate::Error::Custom(_)));
+        assert!(matches!(err, crate::Error::InvalidOperationState));
 
         let after = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
         assert_eq!(after.len(), 1);
@@ -1427,13 +1438,16 @@ mod tests {
             Amount::from(8),
             mint_url,
             CurrencyUnit::Sat,
-            OperationData::Send(SendOperationData {
+            OperationData::PreparedSend(PreparedSendOperationData {
                 amount: Amount::from(8),
-                memo: None,
-                counter_start: None,
-                counter_end: None,
-                token: None,
-                proofs: None,
+                options: SendOptions {
+                    send_kind: SendKind::OfflineExact,
+                    ..Default::default()
+                },
+                proofs_to_swap: vec![proof.clone()],
+                proofs_to_send: Vec::new(),
+                swap_fee: Amount::ZERO,
+                send_fee: Amount::ZERO,
             }),
         );
         db.add_saga(saga_record.clone()).await.unwrap();

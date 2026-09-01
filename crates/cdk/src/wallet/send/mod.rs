@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 
+use cdk_common::wallet::{OperationData, PreparedSendOperationData};
 use cdk_common::Id;
 use tracing::instrument;
 use uuid::Uuid;
@@ -23,8 +24,8 @@ use saga::SendSaga;
 /// Created by [`Wallet::prepare_send`]. Call [`confirm`](Self::confirm) to complete the send
 /// and create a token, or [`cancel`](Self::cancel) to release reserved proofs.
 #[must_use = "must be confirmed or canceled to release reserved proofs"]
-pub struct PreparedSend<'a> {
-    wallet: &'a Wallet,
+pub struct PreparedSend {
+    wallet: Wallet,
     operation_id: Uuid,
     // Cached display and confirmation data
     amount: Amount,
@@ -35,7 +36,7 @@ pub struct PreparedSend<'a> {
     send_fee: Amount,
 }
 
-impl PreparedSend<'_> {
+impl PreparedSend {
     /// Operation ID for this prepared send
     pub fn operation_id(&self) -> Uuid {
         self.operation_id
@@ -85,29 +86,16 @@ impl PreparedSend<'_> {
 
     /// Confirm the prepared send and create a token
     pub async fn confirm(self, memo: Option<SendMemo>) -> Result<Token, Error> {
-        self.wallet
-            .confirm_send(
-                self.operation_id,
-                self.amount,
-                self.options,
-                self.proofs_to_swap,
-                self.proofs_to_send,
-                self.swap_fee,
-                self.send_fee,
-                memo,
-            )
-            .await
+        self.wallet.confirm_send(self.operation_id, memo).await
     }
 
     /// Cancel the prepared send and release reserved proofs
     pub async fn cancel(self) -> Result<(), Error> {
-        self.wallet
-            .cancel_send(self.operation_id, self.proofs_to_swap, self.proofs_to_send)
-            .await
+        self.wallet.cancel_send(self.operation_id).await
     }
 }
 
-impl Debug for PreparedSend<'_> {
+impl Debug for PreparedSend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PreparedSend")
             .field("operation_id", &self.operation_id)
@@ -136,6 +124,40 @@ impl Debug for PreparedSend<'_> {
 }
 
 impl Wallet {
+    /// Reconstruct a prepared send from its durable operation ID.
+    #[instrument(skip(self))]
+    pub async fn prepared_send(&self, operation_id: Uuid) -> Result<PreparedSend, Error> {
+        let saga = self
+            .localstore
+            .get_saga(&operation_id)
+            .await?
+            .ok_or(Error::OperationNotFound)?;
+        let OperationData::PreparedSend(plan) = saga.data else {
+            return Err(Error::InvalidOperationState);
+        };
+
+        if saga.mint_url != self.mint_url
+            || saga.unit != self.unit
+            || saga.state
+                != cdk_common::wallet::WalletSagaState::Send(
+                    cdk_common::wallet::SendSagaState::ProofsReserved,
+                )
+        {
+            return Err(Error::InvalidOperationState);
+        }
+
+        Ok(PreparedSend {
+            wallet: self.clone(),
+            operation_id,
+            amount: plan.amount,
+            options: plan.options,
+            proofs_to_swap: plan.proofs_to_swap,
+            proofs_to_send: plan.proofs_to_send,
+            swap_fee: plan.swap_fee,
+            send_fee: plan.send_fee,
+        })
+    }
+
     /// Prepare a send transaction
     ///
     /// This function prepares a send transaction by selecting proofs to send and proofs to swap.
@@ -160,7 +182,7 @@ impl Wallet {
         &self,
         amount: Amount,
         opts: SendOptions,
-    ) -> Result<PreparedSend<'_>, Error> {
+    ) -> Result<PreparedSend, Error> {
         let saga = if opts.send_kind.is_offline() {
             SendSaga::new(self).with_keyset_policy(cdk_common::wallet::KeysetLoadPolicy::CacheOnly)
         } else {
@@ -170,7 +192,7 @@ impl Wallet {
 
         // Extract data from the saga into PreparedSend
         let prepared = PreparedSend {
-            wallet: self,
+            wallet: self.clone(),
             operation_id: prepared_saga.operation_id(),
             amount: prepared_saga.amount(),
             options: prepared_saga.options().clone(),
@@ -183,21 +205,14 @@ impl Wallet {
         Ok(prepared)
     }
 
-    /// Internal method called by `PreparedSend::confirm` with cached data.
+    /// Confirm a prepared send identified by its durable operation ID.
     ///
     /// Not intended for direct use - use [`PreparedSend::confirm`] instead.
     #[doc(hidden)]
-    #[instrument(skip(self, options, proofs_to_swap, proofs_to_send))]
-    #[allow(clippy::too_many_arguments)]
+    #[instrument(skip(self))]
     pub async fn confirm_send(
         &self,
         operation_id: Uuid,
-        amount: Amount,
-        options: SendOptions,
-        proofs_to_swap: Proofs,
-        proofs_to_send: Proofs,
-        swap_fee: Amount,
-        send_fee: Amount,
         memo: Option<SendMemo>,
     ) -> Result<Token, Error> {
         let db_saga = self
@@ -205,6 +220,18 @@ impl Wallet {
             .get_saga(&operation_id)
             .await?
             .ok_or(Error::Custom("Saga not found".to_string()))?;
+
+        let OperationData::PreparedSend(PreparedSendOperationData {
+            amount,
+            options,
+            proofs_to_swap,
+            proofs_to_send,
+            swap_fee,
+            send_fee,
+        }) = db_saga.data.clone()
+        else {
+            return Err(Error::InvalidOperationState);
+        };
 
         let saga = SendSaga::from_prepared(
             self,
@@ -221,32 +248,31 @@ impl Wallet {
         Ok(token)
     }
 
-    /// Internal method called by `PreparedSend::cancel` with cached data.
+    /// Cancel a prepared send identified by its durable operation ID.
     ///
     /// Not intended for direct use - use [`PreparedSend::cancel`] instead.
     #[doc(hidden)]
-    #[instrument(skip(self, proofs_to_swap, proofs_to_send))]
-    pub async fn cancel_send(
-        &self,
-        operation_id: Uuid,
-        proofs_to_swap: Proofs,
-        proofs_to_send: Proofs,
-    ) -> Result<(), Error> {
+    #[instrument(skip(self))]
+    pub async fn cancel_send(&self, operation_id: Uuid) -> Result<(), Error> {
         let db_saga = self
             .localstore
             .get_saga(&operation_id)
             .await?
             .ok_or(Error::Custom("Saga not found".to_string()))?;
 
+        let OperationData::PreparedSend(data) = db_saga.data.clone() else {
+            return Err(Error::InvalidOperationState);
+        };
+
         let saga = SendSaga::from_prepared(
             self,
             operation_id,
-            Amount::ZERO,           // Dummy
-            SendOptions::default(), // Dummy
-            proofs_to_swap,
-            proofs_to_send,
-            Amount::ZERO, // Dummy
-            Amount::ZERO, // Dummy
+            data.amount,
+            data.options,
+            data.proofs_to_swap,
+            data.proofs_to_send,
+            data.swap_fee,
+            data.send_fee,
             db_saga,
         )?;
         saga.cancel().await

@@ -607,6 +607,7 @@ mod tests {
     fn test_is_definitive_failure() {
         // Test definitive failures
         assert!(Error::AmountOverflow.is_definitive_failure());
+        assert!(Error::InsufficientFunds.is_definitive_failure());
         assert!(Error::MintingDisabled.is_definitive_failure());
         assert!(Error::MaxInputsExceeded { actual: 2, max: 1 }.is_definitive_failure());
         assert!(Error::MaxOutputsExceeded { actual: 2, max: 1 }.is_definitive_failure());
@@ -704,6 +705,7 @@ impl Error {
         match self {
             // Logic/Validation Errors (Safe to revert)
             Self::AmountKey
+            | Self::InsufficientFunds
             | Self::KeysetUnknown(_)
             | Self::UnsupportedUnit
             | Self::InvoiceAmountUndefined
