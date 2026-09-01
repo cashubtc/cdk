@@ -27,7 +27,8 @@ npubcash = [
 ]
 
 [dependencies]
-nostr-sdk = { workspace = true }
+bitcoin = { version = "0.32.2", default-features = false, features = ["std"] }
+nostr-sdk = { workspace = true, features = ["nip06"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -43,6 +44,7 @@ url = { workspace = true, optional = true }
 web-time = { workspace = true, optional = true }
 
 [dev-dependencies]
+bip39 = { version = "2.0", default-features = false, features = ["std"] }
 chrono = "0.4"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "test-util"] }
 tracing-subscriber = { workspace = true }

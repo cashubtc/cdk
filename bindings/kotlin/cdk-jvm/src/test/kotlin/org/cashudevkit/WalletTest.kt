@@ -131,6 +131,60 @@ class WalletTest {
     }
 
     @Test
+    fun `typed Nostr identity signing NIP-44 and npubcash share one key`() {
+        val mnemonic =
+            "leader monkey parrot ring guide accident before fence cannon height naive bean"
+        val expectedSecret =
+            "7f7ff03d123792d6ac594bfa67bf6d0c0ab55b6b1fdb6249303fe861f1ccba9a"
+        val signer = NostrSigner.fromMnemonic(mnemonic, null)
+        val peer = NostrSigner.generate()
+        val fromNsec = NostrSigner.fromNsec(signer.nsec())
+        val npubCash = NpubCashClient.withSigner("https://npub.cash", signer)
+        val inbox = NostrInbox.withSigner(
+            signer,
+            listOf("wss://relay.example.com"),
+            1_700_000_000UL,
+        )
+
+        try {
+            assertEquals(expectedSecret, signer.secretKeyHex())
+            assertEquals(64, signer.publicKeyHex().length)
+            assertEquals(signer.publicKeyHex(), signer.xOnlyPublicKeyHex())
+            assertEquals("02" + signer.publicKeyHex(), signer.cashuP2pkPublicKey())
+            assertEquals(signer.publicKeyHex(), fromNsec.publicKeyHex())
+
+            val signed = signer.signEvent(
+                NostrUnsignedEvent(
+                    createdAt = 1_700_000_000UL,
+                    kind = 27_235U.toUShort(),
+                    tags = listOf(
+                        listOf("u", "https://example.com/api"),
+                        listOf("method", "POST"),
+                    ),
+                    content = "",
+                ),
+            )
+            assertEquals(signer.publicKeyHex(), signed.pubkey)
+            assertEquals(64, signed.id.length)
+            assertEquals(128, signed.sig.length)
+
+            val payload = signer.nip44Encrypt(peer.publicKeyHex(), "hello cashu")
+            assertEquals(
+                "hello cashu",
+                peer.nip44Decrypt(signer.publicKeyHex(), payload),
+            )
+            assertEquals(signer.publicKeyHex(), npubCash.identityPubkey())
+            assertEquals(signer.publicKeyHex(), inbox.pubkey())
+        } finally {
+            inbox.close()
+            npubCash.close()
+            fromNsec.close()
+            peer.close()
+            signer.close()
+        }
+    }
+
+    @Test
     fun `mint flow`() = runBlocking {
         val quote = wallet.mintQuote(
             paymentMethod = PaymentMethod.Bolt11,

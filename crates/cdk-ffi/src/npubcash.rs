@@ -8,6 +8,7 @@ use std::sync::Arc;
 use cdk_nostr::npubcash::{JwtAuthProvider, NpubCashClient as CdkNpubCashClient};
 
 use crate::error::FfiError;
+use crate::nostr::NostrSigner;
 use crate::types::MintQuote;
 
 /// FFI-compatible NpubCash client
@@ -17,6 +18,20 @@ use crate::types::MintQuote;
 #[derive(uniffi::Object)]
 pub struct NpubCashClient {
     inner: Arc<CdkNpubCashClient>,
+    identity_pubkey: String,
+}
+
+impl NpubCashClient {
+    fn build(base_url: String, keys: cdk_nostr::nostr_sdk::Keys) -> Self {
+        let identity_pubkey = keys.public_key().to_hex();
+        let auth_provider = Arc::new(JwtAuthProvider::new(base_url.clone(), keys));
+        let client = CdkNpubCashClient::new(base_url, auth_provider);
+
+        Self {
+            inner: Arc::new(client),
+            identity_pubkey,
+        }
+    }
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -35,13 +50,24 @@ impl NpubCashClient {
     /// Returns an error if the secret key is invalid or cannot be parsed
     #[uniffi::constructor]
     pub fn new(base_url: String, nostr_secret_key: String) -> Result<Self, FfiError> {
-        let keys = parse_nostr_secret_key(&nostr_secret_key)?;
-        let auth_provider = Arc::new(JwtAuthProvider::new(base_url.clone(), keys));
-        let client = CdkNpubCashClient::new(base_url, auth_provider);
+        let signer = NostrSigner::parse_secret_key(&nostr_secret_key)?;
+        Ok(Self::build(base_url, signer.keys().clone()))
+    }
 
-        Ok(Self {
-            inner: Arc::new(client),
-        })
+    /// Create a client using an existing typed Nostr identity.
+    ///
+    /// This is the recommended mobile constructor. The exact supplied signer
+    /// is used for npub.cash authentication, so a mnemonic-derived, imported,
+    /// or generated active identity can be shared with event signing, NIP-44,
+    /// the NIP-17 inbox, and the application's primary P2PK identity.
+    #[uniffi::constructor]
+    pub fn with_signer(base_url: String, signer: Arc<NostrSigner>) -> Self {
+        Self::build(base_url, signer.keys().clone())
+    }
+
+    /// Hex-encoded x-only public key used for npub.cash authentication.
+    pub fn identity_pubkey(&self) -> String {
+        self.identity_pubkey.clone()
     }
 
     /// Fetch quotes from NpubCash
@@ -261,10 +287,11 @@ impl From<cdk_nostr::npubcash::UserResponse> for NpubCashUserResponse {
     }
 }
 
-/// Derive Nostr keys from a wallet seed
+/// Derive Nostr keys from a wallet seed for Rust compatibility.
 ///
-/// This function derives the same Nostr keys that a wallet would use for NpubCash
-/// authentication, using the NIP-06 path `m/44'/1237'/0'/0/0`.
+/// This is deliberately not exported through UniFFI: Swift and Kotlin should
+/// use `NostrSigner.fromMnemonic` or `NostrSigner.fromWalletRepository` so a
+/// BIP-39 seed never crosses the language boundary.
 ///
 /// # Arguments
 ///
@@ -277,7 +304,6 @@ impl From<cdk_nostr::npubcash::UserResponse> for NpubCashUserResponse {
 /// # Errors
 ///
 /// Returns an error if the seed is too short or key derivation fails
-#[uniffi::export]
 pub fn npubcash_derive_secret_key_from_seed(seed: Vec<u8>) -> Result<String, FfiError> {
     if seed.len() < 64 {
         return Err(FfiError::internal(
@@ -311,22 +337,7 @@ pub fn npubcash_derive_secret_key_from_seed(seed: Vec<u8>) -> Result<String, Ffi
 /// Returns an error if the secret key is invalid
 #[uniffi::export]
 pub fn npubcash_get_pubkey(nostr_secret_key: String) -> Result<String, FfiError> {
-    let keys = parse_nostr_secret_key(&nostr_secret_key)?;
-    Ok(keys.public_key().to_hex())
-}
-
-/// Parse a Nostr secret key from either hex or nsec format
-fn parse_nostr_secret_key(key: &str) -> Result<cdk_nostr::nostr_sdk::Keys, FfiError> {
-    // Try parsing as nsec (bech32) first
-    if key.starts_with("nsec") {
-        cdk_nostr::nostr_sdk::Keys::parse(key)
-            .map_err(|e| FfiError::internal(format!("Invalid nsec key: {}", e)))
-    } else {
-        // Try parsing as hex
-        let secret_key = cdk_nostr::nostr_sdk::SecretKey::parse(key)
-            .map_err(|e| FfiError::internal(format!("Invalid hex secret key: {}", e)))?;
-        Ok(cdk_nostr::nostr_sdk::Keys::new(secret_key))
-    }
+    Ok(NostrSigner::parse_secret_key(&nostr_secret_key)?.public_key_hex())
 }
 
 #[cfg(test)]
@@ -382,6 +393,41 @@ mod tests {
     fn client_rejects_invalid_secret_key() {
         assert!(
             NpubCashClient::new("https://npub.cash".to_string(), "invalid".to_string()).is_err()
+        );
+    }
+
+    #[test]
+    fn client_uses_exactly_the_supplied_typed_signer() {
+        let signer = Arc::new(
+            NostrSigner::from_secret_key_hex(HEX_SECRET_KEY.to_string())
+                .expect("typed signer parses"),
+        );
+        let client = NpubCashClient::with_signer("https://npub.cash".to_string(), signer.clone());
+
+        assert_eq!(client.identity_pubkey(), signer.public_key_hex());
+        assert_eq!(client.identity_pubkey(), HEX_PUBLIC_KEY);
+    }
+
+    #[test]
+    fn client_accepts_mnemonic_derived_and_generated_identities() {
+        let mnemonic = Arc::new(
+            NostrSigner::from_mnemonic(
+                "leader monkey parrot ring guide accident before fence cannon height naive bean"
+                    .to_string(),
+                None,
+            )
+            .expect("mnemonic signer derives"),
+        );
+        let mnemonic_client =
+            NpubCashClient::with_signer("https://npub.cash".to_string(), mnemonic.clone());
+        assert_eq!(mnemonic_client.identity_pubkey(), mnemonic.public_key_hex());
+
+        let generated = Arc::new(NostrSigner::generate());
+        let generated_client =
+            NpubCashClient::with_signer("https://npub.cash".to_string(), generated.clone());
+        assert_eq!(
+            generated_client.identity_pubkey(),
+            generated.public_key_hex()
         );
     }
 

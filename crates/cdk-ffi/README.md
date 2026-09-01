@@ -53,6 +53,53 @@ just ffi-dev-python
 >>> help(cdk_ffi.generate_mnemonic)  # Get help
 ```
 
+## Mobile Nostr identity
+
+`NostrSigner` is the recommended Swift/Kotlin entry point for the wallet's
+active Nostr identity. It derives NIP-06 path `m/44'/1237'/0'/0/0` from a
+BIP-39 mnemonic entirely in Rust, or can import secret-key hex/`nsec` and
+generate a secure random identity. The same object provides canonical Nostr
+event signing (including NIP-98), NIP-44 v2, a strict restartable NIP-17 inbox,
+the compressed Cashu P2PK public key, and npub.cash authentication.
+Use the existing `generateMnemonic()`/`generate_mnemonic()` binding when
+creating a new mnemonic-backed wallet; mobile code never needs to generate or
+pass BIP-39 seed bytes.
+
+Swift:
+
+```swift
+let signer = try NostrSigner.fromMnemonic(mnemonic: words, passphrase: nil)
+let event = try signer.signEvent(event: NostrUnsignedEvent(
+    createdAt: UInt64(Date().timeIntervalSince1970),
+    kind: 27_235,
+    tags: [["u", url], ["method", "POST"]],
+    content: ""
+))
+let npubCash = NpubCashClient.withSigner(baseUrl: "https://npub.cash", signer: signer)
+let inbox = try NostrInbox.withSigner(signer: signer, relays: relays, since: lookback)
+```
+
+Kotlin:
+
+```kotlin
+val signer = NostrSigner.fromMnemonic(words, null)
+val event = signer.signEvent(
+    NostrUnsignedEvent(now, 27_235U.toUShort(), tags, ""),
+)
+val npubCash = NpubCashClient.withSigner("https://npub.cash", signer)
+val inbox = NostrInbox.withSigner(signer, relays, lookback)
+```
+
+When a `WalletRepository` already exists, use
+`NostrSigner.fromWalletRepository(repository)` so the mnemonic is parsed once
+and its BIP-39 seed never crosses the FFI boundary. `NostrInbox.stop()` is
+async and guarantees that the stopped run cannot invoke another callback after
+it returns.
+
+NWC (`m/44'/1237'/1'/0/0`), NUT-27 backups, Cashu proof derivation, and CDK's
+other deterministic P2PK keyring paths remain separate purpose-specific key
+domains.
+
 ## Live Tests
 
 The live Python test in `tests/test_live_async_onchain_melt.py` covers

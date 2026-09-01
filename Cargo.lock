@@ -1708,6 +1708,8 @@ version = "0.18.0-rc.3"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "bip39",
+ "bitcoin",
  "cashu",
  "cdk-common",
  "cdk-http-client",

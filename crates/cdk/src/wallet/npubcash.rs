@@ -6,9 +6,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
-use bitcoin::Network;
-use cdk_common::{database, SECP256K1};
+use cdk_common::database;
 use cdk_nostr::npubcash::{JwtAuthProvider, NpubCashClient, Quote};
 use tracing::instrument;
 
@@ -82,19 +80,9 @@ fn merge_npubcash_quote(mut incoming: MintQuote, existing: MintQuote) -> MintQuo
 ///
 /// Returns an error if the key derivation fails
 pub fn derive_npubcash_secret_key_from_seed(seed: &[u8; 64]) -> Result<SecretKey, Error> {
-    let path = DerivationPath::from(vec![
-        ChildNumber::from_hardened_idx(44)?,
-        ChildNumber::from_hardened_idx(1237)?,
-        ChildNumber::from_hardened_idx(0)?,
-        ChildNumber::from_normal_idx(0)?,
-        ChildNumber::from_normal_idx(0)?,
-    ]);
-
-    let xpriv = Xpriv::new_master(Network::Bitcoin, seed)?;
-
-    Ok(SecretKey::from(
-        xpriv.derive_priv(&SECP256K1, &path)?.private_key,
-    ))
+    let nostr_secret = cdk_nostr::keys::derive_nip06_secret_key_from_seed(seed)
+        .map_err(|e| Error::Custom(e.to_string()))?;
+    Ok(SecretKey::from_slice(nostr_secret.as_secret_bytes())?)
 }
 
 impl Wallet {
@@ -763,7 +751,10 @@ mod tests {
     use std::str::FromStr;
     use std::sync::Arc;
 
+    use bitcoin::bip32::{DerivationPath, Xpriv};
+    use bitcoin::Network;
     use cdk_common::database::{self, WalletDatabase};
+    use cdk_common::SECP256K1;
 
     use super::*;
     use crate::mint_url::MintUrl;
