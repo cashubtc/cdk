@@ -59,5 +59,9 @@ nwc = ["cdk/nwc", "nostr", "cdk-nostr/nwc", "dep:tokio-util"]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
 
+[[example]]
+name = "mobile_nostr_identity"
+required-features = ["npubcash"]
+
 [lints]
 workspace = true

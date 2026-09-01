@@ -10,6 +10,8 @@
 //! - `nostr-rs-relay` must be on `PATH` (provided by the Nix `regtest`
 //!   devShell); the test skips gracefully otherwise.
 
+use std::io;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,9 +24,22 @@ use tokio::sync::mpsc;
 struct NostrRelay {
     child: Option<Child>,
     port: u16,
+    config_path: PathBuf,
+    db_dir: PathBuf,
 }
 
 impl NostrRelay {
+    fn spawn_child(config_path: &Path, db_dir: &Path) -> io::Result<Child> {
+        Command::new("nostr-rs-relay")
+            .arg("--config")
+            .arg(config_path)
+            .arg("--db")
+            .arg(db_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+    }
+
     /// Start a local `nostr-rs-relay` on a free TCP port.
     ///
     /// Returns `None` if `nostr-rs-relay` is not on `PATH` (e.g. running
@@ -46,20 +61,27 @@ address = "127.0.0.1"
         );
         std::fs::write(&config_path, config).ok()?;
 
-        let child = Command::new("nostr-rs-relay")
-            .arg("--config")
-            .arg(&config_path)
-            .arg("--db")
-            .arg(&db_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .ok()?;
+        let child = Self::spawn_child(&config_path, &db_dir).ok()?;
 
         Some(Self {
             child: Some(child),
             port,
+            config_path,
+            db_dir,
         })
+    }
+
+    fn stop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    fn restart(&mut self) -> io::Result<()> {
+        self.stop();
+        self.child = Some(Self::spawn_child(&self.config_path, &self.db_dir)?);
+        Ok(())
     }
 
     fn ws_url(&self) -> String {
@@ -69,10 +91,7 @@ address = "127.0.0.1"
 
 impl Drop for NostrRelay {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        self.stop();
     }
 }
 
@@ -173,7 +192,7 @@ async fn recv_until(
 
 #[tokio::test]
 async fn nip17_inbox_receives_unwrapped_rumor_and_survives_restart() {
-    let Some(relay) = NostrRelay::start() else {
+    let Some(mut relay) = NostrRelay::start() else {
         eprintln!("nostr-rs-relay not on PATH; skipping nip17_inbox_e2e");
         return;
     };
@@ -211,13 +230,33 @@ async fn nip17_inbox_receives_unwrapped_rumor_and_survives_restart() {
     assert_eq!(event.rumor.kind, Kind::from_u16(14));
     assert_eq!(event.rumor.pubkey, sender.public_key());
     assert_eq!(event.rumor.content, content_one);
-    // NIP-59: rumors carry an id (ensured by make_seal) but are unsigned
-    assert!(event.rumor.id.is_some());
+    // NIP-59 rumors are unsigned but their ID is present and was verified by
+    // the inbox before delivery.
+    assert_eq!(event.rumor.id, Some(event.rumor_id));
+
+    // Relay reconnect: interrupt the transport without restarting the inbox.
+    // nostr-sdk must reconnect with its bounded adaptive backoff and replay the
+    // same fixed subscription floor.
+    relay.restart().expect("restart relay process");
+    assert!(
+        wait_for_relay(relay.port, Duration::from_secs(15)).await,
+        "restarted relay did not start listening"
+    );
+
+    let reconnect_content = r#"{"id":"request-after-reconnect"}"#;
+    let reconnect_wrap = publish_gift_wrap(&relay_url, &sender, &receiver, reconnect_content).await;
+    assert!(
+        wait_for_gift_wrap(&relay_url, reconnect_wrap, Duration::from_secs(10)).await,
+        "gift wrap after reconnect not stored by relay"
+    );
+    let event = recv_until(&mut rx, reconnect_wrap, Duration::from_secs(15)).await;
+    assert_eq!(event.rumor.content, reconnect_content);
 
     // Restart: stop, then start again; a wrap published meanwhile must still
     // be delivered (the relay stores it and the fresh subscription replays
     // the window).
-    inbox.stop();
+    inbox.stop().await;
+    while rx.try_recv().is_ok() {}
 
     let content_two =
         r#"{"id":"request-two","mint":"http://localhost:3338","unit":"sat","proofs":[]}"#;
@@ -225,6 +264,11 @@ async fn nip17_inbox_receives_unwrapped_rumor_and_survives_restart() {
     assert!(
         wait_for_gift_wrap(&relay_url, wrap_two, Duration::from_secs(10)).await,
         "gift wrap two not stored by relay"
+    );
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(
+        rx.try_recv().is_err(),
+        "the stopped inbox invoked a callback after stop completed"
     );
 
     inbox
@@ -236,5 +280,5 @@ async fn nip17_inbox_receives_unwrapped_rumor_and_survives_restart() {
     assert_eq!(event.wrap_id, wrap_two);
     assert_eq!(event.rumor.content, content_two);
 
-    inbox.stop();
+    inbox.stop().await;
 }

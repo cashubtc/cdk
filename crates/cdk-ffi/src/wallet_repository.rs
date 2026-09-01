@@ -33,6 +33,12 @@ pub struct WalletRepository {
     inner: Arc<CdkWalletRepository>,
 }
 
+impl WalletRepository {
+    pub(crate) fn inner(&self) -> &CdkWalletRepository {
+        &self.inner
+    }
+}
+
 #[uniffi::export(async_runtime = "tokio")]
 impl WalletRepository {
     /// Create a new WalletRepository from locally persisted wallet state.

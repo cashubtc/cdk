@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- cdk-nostr/cdk-ffi: Mobile wallets can keep a typed Nostr identity in Rust,
+  derive the default NIP-06 key directly from a mnemonic or wallet repository,
+  sign generic/NIP-98 events, perform NIP-44 v2 operations, run a strictly
+  validated restartable NIP-17/NIP-59 inbox with quiescent async shutdown, and
+  give the exact same identity to npub.cash. NWC, NUT-27, proof derivation, and
+  other Cashu P2PK keyring domains remain purpose-separated.
+
 ## [0.18.0-rc.3](https://github.com/cashubtc/cdk/releases/tag/v0.18.0-rc.3)
 
 ### Summary

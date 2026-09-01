@@ -107,6 +107,55 @@ struct CdkTests {
         }
     }
 
+    @Test("Typed Nostr identity, signing, NIP-44, and npub.cash share one key")
+    func typedNostrIdentity() throws {
+        let mnemonic = "leader monkey parrot ring guide accident before fence cannon height naive bean"
+        let expectedSecret = "7f7ff03d123792d6ac594bfa67bf6d0c0ab55b6b1fdb6249303fe861f1ccba9a"
+        let signer = try NostrSigner.fromMnemonic(mnemonic: mnemonic, passphrase: nil)
+
+        #expect(signer.secretKeyHex() == expectedSecret)
+        #expect(signer.publicKeyHex().count == 64)
+        #expect(signer.xOnlyPublicKeyHex() == signer.publicKeyHex())
+        #expect(signer.cashuP2pkPublicKey() == "02" + signer.publicKeyHex())
+        #expect(try NostrSigner.fromNsec(nsec: signer.nsec()).publicKeyHex() == signer.publicKeyHex())
+
+        let signed = try signer.signEvent(event: NostrUnsignedEvent(
+            createdAt: 1_700_000_000,
+            kind: 27_235,
+            tags: [
+                ["u", "https://example.com/api"],
+                ["method", "POST"],
+            ],
+            content: ""
+        ))
+        #expect(signed.pubkey == signer.publicKeyHex())
+        #expect(signed.id.count == 64)
+        #expect(signed.sig.count == 128)
+
+        let peer = NostrSigner.generate()
+        let payload = try signer.nip44Encrypt(
+            recipientPubkey: peer.publicKeyHex(),
+            plaintext: "hello cashu"
+        )
+        #expect(try peer.nip44Decrypt(
+            senderPubkey: signer.publicKeyHex(),
+            payload: payload
+        ) == "hello cashu")
+
+        let npubCash = NpubCashClient.withSigner(
+            baseUrl: "https://npub.cash",
+            signer: signer
+        )
+        #expect(npubCash.identityPubkey() == signer.publicKeyHex())
+
+        let inbox = try NostrInbox.withSigner(
+            signer: signer,
+            relays: ["wss://relay.example.com"],
+            since: 1_700_000_000
+        )
+        #expect(inbox.pubkey() == signer.publicKeyHex())
+    }
+
     @Test("Mint flow completes successfully")
     func mintFlow() async throws {
         let quote = try await wallet.mintQuote(
