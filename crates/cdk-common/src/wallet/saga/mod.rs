@@ -77,6 +77,8 @@ impl WalletSagaState {
     pub fn state_str(&self) -> &'static str {
         match self {
             WalletSagaState::Send(s) => match s {
+                SendSagaState::Preparing => "preparing",
+                SendSagaState::Prepared => "prepared",
                 SendSagaState::ProofsReserved => "proofs_reserved",
                 SendSagaState::TokenCreated => "token_created",
                 SendSagaState::RollingBack => "rolling_back",
@@ -90,10 +92,13 @@ impl WalletSagaState {
                 SwapSagaState::SwapRequested => "swap_requested",
             },
             WalletSagaState::Issue(s) => match s {
+                IssueSagaState::Preparing => "preparing",
                 IssueSagaState::SecretsPrepared => "secrets_prepared",
                 IssueSagaState::MintRequested => "mint_requested",
             },
             WalletSagaState::Melt(s) => match s {
+                MeltSagaState::Preparing => "preparing",
+                MeltSagaState::Prepared => "prepared",
                 MeltSagaState::ProofsReserved => "proofs_reserved",
                 MeltSagaState::MeltRequested => "melt_requested",
                 MeltSagaState::PaymentPending => "payment_pending",

@@ -311,6 +311,30 @@ pub struct CrossMintTransferQuote {
     pub input_fee: Amount,
 }
 
+/// Durable application-level identity for a cross-mint transfer.
+///
+/// This record outlives the source melt saga so an application can resume
+/// destination issuance after the source payment has already finalized.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossMintTransferOperation {
+    /// Source melt operation.
+    pub operation_id: Uuid,
+    /// Wallet that paid the destination invoice.
+    pub source_mint_url: MintUrl,
+    /// Source currency unit.
+    pub source_unit: CurrencyUnit,
+    /// Wallet that owns the destination mint quote.
+    pub destination_mint_url: MintUrl,
+    /// Destination currency unit.
+    pub destination_unit: CurrencyUnit,
+    /// Quote that issues ecash at the destination.
+    pub destination_quote_id: String,
+    /// Amount expected at the destination.
+    pub amount: Amount,
+    /// Maximum source-side fee shown when the plan was prepared.
+    pub maximum_fee: Amount,
+}
+
 impl MintQuote {
     /// Create a new MintQuote
     #[allow(clippy::too_many_arguments)]

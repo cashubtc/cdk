@@ -92,7 +92,7 @@ impl FfiError {
 impl From<CdkError> for FfiError {
     fn from(err: CdkError) -> Self {
         let kind = error_kind(&err);
-        let retryable = !err.is_definitive_failure();
+        let retryable = error_is_retryable(&err);
         let response = ErrorResponse::from(err);
         Self::Cdk {
             kind,
@@ -103,13 +103,49 @@ impl From<CdkError> for FfiError {
     }
 }
 
+fn error_is_retryable(error: &CdkError) -> bool {
+    if let CdkError::HttpError(status, _) = error {
+        return status
+            .is_none_or(|status| status >= 500 || matches!(status, 408 | 409 | 425 | 429));
+    }
+
+    matches!(
+        error,
+        CdkError::InsufficientFunds
+            | CdkError::PaymentPending
+            | CdkError::PendingMeltTimeout { .. }
+            | CdkError::UnknownPaymentState
+            | CdkError::PaymentRequestDeliveryFailed { .. }
+            | CdkError::TransferTimeout { .. }
+            | CdkError::TokenPending
+            | CdkError::ConcurrentUpdate
+            | CdkError::ClearAuthRequired
+            | CdkError::BlindAuthRequired
+            | CdkError::InsufficientBlindAuthTokens
+            | CdkError::Timeout
+            | CdkError::SubscriptionError(_)
+            | CdkError::CouldNotGetMintInfo
+            | CdkError::LightningAddressRequest(_)
+            | CdkError::Bip353Resolve(_)
+            | CdkError::Database(
+                cdk_common::database::Error::QuoteAlreadyInUse
+                    | cdk_common::database::Error::Locked
+            )
+    )
+}
+
 fn error_kind(error: &CdkError) -> WalletErrorKind {
     match error {
         CdkError::InsufficientFunds => WalletErrorKind::InsufficientFunds,
         CdkError::UnknownQuote
         | CdkError::UnknownMint { .. }
         | CdkError::TransactionNotFound
-        | CdkError::OperationNotFound => WalletErrorKind::NotFound,
+        | CdkError::OperationNotFound
+        | CdkError::Database(
+            cdk_common::database::Error::UnknownQuote
+            | cdk_common::database::Error::QuoteNotFound
+            | cdk_common::database::Error::ProofNotFound,
+        ) => WalletErrorKind::NotFound,
         CdkError::UnknownWallet(_) => WalletErrorKind::NotFound,
         CdkError::PaymentFailed
         | CdkError::PaymentPending
@@ -125,7 +161,14 @@ fn error_kind(error: &CdkError) -> WalletErrorKind {
         | CdkError::TokenAlreadySpent
         | CdkError::TokenPending
         | CdkError::ConcurrentUpdate
-        | CdkError::InvalidOperationState => WalletErrorKind::Conflict,
+        | CdkError::InvalidOperationState
+        | CdkError::ExpiredQuote(_, _)
+        | CdkError::DuplicatePaymentId
+        | CdkError::Database(
+            cdk_common::database::Error::QuoteAlreadyInUse
+            | cdk_common::database::Error::Locked
+            | cdk_common::database::Error::ProofNotUnspent,
+        ) => WalletErrorKind::Conflict,
         CdkError::ClearAuthRequired
         | CdkError::BlindAuthRequired
         | CdkError::ClearAuthFailed
@@ -149,19 +192,44 @@ fn error_kind(error: &CdkError) -> WalletErrorKind {
         CdkError::Database(_) => WalletErrorKind::Storage,
         CdkError::InvalidPaymentRequest
         | CdkError::InvoiceAmountUndefined
+        | CdkError::AmountUndefined
+        | CdkError::AmountOverflow
+        | CdkError::AmountLessNotAllowed
+        | CdkError::SplitValuesGreater
         | CdkError::InvalidPaymentMethod
         | CdkError::PaymentMethodRequired
         | CdkError::InvalidInvoice
-        | CdkError::AmountUndefined
+        | CdkError::Bolt12parse
         | CdkError::AmountOutofLimitRange(_, _, _)
+        | CdkError::DuplicateInputs
+        | CdkError::DuplicateOutputs
+        | CdkError::DuplicateQuoteIds
+        | CdkError::BatchSizeExceeded { .. }
+        | CdkError::MaxInputsExceeded { .. }
+        | CdkError::MaxOutputsExceeded { .. }
+        | CdkError::ProofContentTooLarge { .. }
+        | CdkError::RequestFieldTooLarge { .. }
+        | CdkError::MultipleUnits
+        | CdkError::UnitMismatch
         | CdkError::IncorrectMint
         | CdkError::IncorrectWallet(_)
+        | CdkError::MultiMintTokenNotSupported
+        | CdkError::MaxFeeExceeded
+        | CdkError::Bip353Parse(_)
+        | CdkError::Bip353NoBolt12Offer
+        | CdkError::Bip321Parse(_)
+        | CdkError::Bip321Encode(_)
+        | CdkError::LightningAddressParse(_)
         | CdkError::InvalidTransactionDirection
         | CdkError::InvalidTransactionStatus
         | CdkError::InvalidTransactionId
         | CdkError::InvalidOperationKind
         | CdkError::KVStoreInvalidKey(_)
-        | CdkError::InvalidNut13Options { .. } => WalletErrorKind::InvalidInput,
+        | CdkError::InvalidNut13Options { .. }
+        | CdkError::Invoice(_)
+        | CdkError::CashuUrl(_)
+        | CdkError::AmountError(_)
+        | CdkError::NUT00(_) => WalletErrorKind::InvalidInput,
         _ => WalletErrorKind::Internal,
     }
 }
@@ -201,7 +269,7 @@ mod tests {
             error,
             FfiError::Cdk {
                 kind: WalletErrorKind::InsufficientFunds,
-                retryable: false,
+                retryable: true,
                 ..
             }
         ));
@@ -215,6 +283,76 @@ mod tests {
             FfiError::Cdk {
                 kind: WalletErrorKind::Network,
                 retryable: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejected_http_requests_are_not_blindly_retried() {
+        let rejected = FfiError::from(CdkError::HttpError(
+            Some(400),
+            "request rejected".to_string(),
+        ));
+        let rate_limited =
+            FfiError::from(CdkError::HttpError(Some(429), "rate limited".to_string()));
+
+        assert!(matches!(
+            rejected,
+            FfiError::Cdk {
+                kind: WalletErrorKind::Network,
+                retryable: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            rate_limited,
+            FfiError::Cdk {
+                kind: WalletErrorKind::Network,
+                retryable: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn portable_parse_errors_are_invalid_input() {
+        let error = FfiError::from(CdkError::InvalidInvoice);
+        assert!(matches!(
+            error,
+            FfiError::Cdk {
+                kind: WalletErrorKind::InvalidInput,
+                retryable: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn database_reservation_conflicts_are_not_reported_as_storage_failures() {
+        let error = FfiError::from(CdkError::Database(
+            cdk_common::database::Error::QuoteAlreadyInUse,
+        ));
+        assert!(matches!(
+            error,
+            FfiError::Cdk {
+                kind: WalletErrorKind::Conflict,
+                retryable: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn database_not_found_errors_keep_the_not_found_category() {
+        let error = FfiError::from(CdkError::Database(
+            cdk_common::database::Error::QuoteNotFound,
+        ));
+        assert!(matches!(
+            error,
+            FfiError::Cdk {
+                kind: WalletErrorKind::NotFound,
+                retryable: false,
                 ..
             }
         ));

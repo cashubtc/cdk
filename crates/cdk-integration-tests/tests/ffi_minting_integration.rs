@@ -18,9 +18,9 @@ use std::time::Duration;
 
 use bip39::Mnemonic;
 use cdk_ffi::database::WalletStore;
-use cdk_ffi::types::{Amount, CurrencyUnit, QuoteState};
+use cdk_ffi::types::{Amount, CurrencyUnit};
 use cdk_ffi::wallet::Wallet as FfiWallet;
-use cdk_ffi::{MintRequest, PaymentMethod, WalletConfig, WalletOpenRequest};
+use cdk_ffi::{MintRequest, MintingState, PaymentMethod, WalletConfig, WalletOpenRequest};
 use cdk_integration_tests::{get_mint_url_from_env, pay_if_regtest};
 use lightning_invoice::Bolt11Invoice;
 use tokio::time::timeout;
@@ -115,7 +115,7 @@ async fn test_ffi_full_minting_flow() {
     );
     assert_eq!(
         quote.state,
-        QuoteState::Unpaid,
+        MintingState::Unpaid,
         "Initial quote state should be unpaid"
     );
     assert!(
@@ -133,7 +133,7 @@ async fn test_ffi_full_minting_flow() {
     );
     assert_eq!(
         quote_status.state,
-        QuoteState::Unpaid,
+        MintingState::Unpaid,
         "Initial quote state should be unpaid"
     );
     assert!(
@@ -174,11 +174,11 @@ async fn test_ffi_full_minting_flow() {
                 .await
                 .expect("Failed to refresh minting session");
             match current.state {
-                QuoteState::Paid => break session.claim().await.expect("Failed to claim quote"),
-                QuoteState::Unpaid | QuoteState::Pending => {
+                MintingState::Paid => break session.claim().await.expect("Failed to claim quote"),
+                MintingState::Unpaid => {
                     tokio::time::sleep(Duration::from_millis(2000)).await;
                 }
-                QuoteState::Issued => break current.amount_claimed,
+                MintingState::Issued => break current.amount_claimed,
             }
         }
     })
@@ -233,7 +233,7 @@ async fn test_ffi_mint_quote_creation() {
 
         // Verify quote properties
         assert_eq!(quote.amount, Some(amount));
-        assert_eq!(quote.state, QuoteState::Unpaid);
+        assert_eq!(quote.state, MintingState::Unpaid);
         assert!(!quote.id.is_empty());
         assert!(!quote.payment_request.is_empty());
 

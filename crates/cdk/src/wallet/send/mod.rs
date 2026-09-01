@@ -79,9 +79,11 @@ impl PreparedSend {
         proofs
     }
 
-    /// Total fee (swap + send)
-    pub fn fee(&self) -> Amount {
-        self.swap_fee + self.send_fee
+    /// Total fee (swap + send).
+    pub fn fee(&self) -> Result<Amount, Error> {
+        self.swap_fee
+            .checked_add(self.send_fee)
+            .ok_or(Error::AmountOverflow)
     }
 
     /// Confirm the prepared send and create a token
@@ -140,7 +142,7 @@ impl Wallet {
             || saga.unit != self.unit
             || saga.state
                 != cdk_common::wallet::WalletSagaState::Send(
-                    cdk_common::wallet::SendSagaState::ProofsReserved,
+                    cdk_common::wallet::SendSagaState::Prepared,
                 )
         {
             return Err(Error::InvalidOperationState);
@@ -172,7 +174,7 @@ impl Wallet {
     /// let prepared = wallet
     ///     .prepare_send(Amount::from(10), SendOptions::default())
     ///     .await?;
-    /// println!("Fee: {}", prepared.fee());
+    /// println!("Fee: {}", prepared.fee()?);
     /// let token = prepared.confirm(None).await?;
     /// # Ok(())
     /// # }
@@ -215,11 +217,31 @@ impl Wallet {
         operation_id: Uuid,
         memo: Option<SendMemo>,
     ) -> Result<Token, Error> {
+        let _operation_guard = self.lock_operation(operation_id).await;
         let db_saga = self
             .localstore
             .get_saga(&operation_id)
             .await?
-            .ok_or(Error::Custom("Saga not found".to_string()))?;
+            .ok_or(Error::OperationNotFound)?;
+
+        if db_saga.mint_url != self.mint_url || db_saga.unit != self.unit {
+            return Err(Error::InvalidOperationState);
+        }
+
+        if db_saga.state
+            == cdk_common::wallet::WalletSagaState::Send(
+                cdk_common::wallet::SendSagaState::TokenCreated,
+            )
+        {
+            let OperationData::Send(data) = db_saga.data else {
+                return Err(Error::InvalidOperationState);
+            };
+            return data
+                .token
+                .ok_or(Error::InvalidOperationState)?
+                .parse()
+                .map_err(Into::into);
+        }
 
         let OperationData::PreparedSend(PreparedSendOperationData {
             amount,
@@ -244,8 +266,20 @@ impl Wallet {
             send_fee,
             db_saga,
         )?;
-        let (token, _saga) = saga.confirm(memo).await?;
-        Ok(token)
+        match saga.confirm(memo).await {
+            Ok((token, _saga)) => Ok(token),
+            Err(error) if error.is_definitive_failure() => {
+                // Reconstructed portable plans do not carry the in-memory
+                // compensation stack from preparation. Use the persisted saga
+                // to release their reservations immediately on a definitive
+                // local or mint rejection.
+                if let Some(saga) = self.localstore.get_saga(&operation_id).await? {
+                    let _ = self.resume_send_saga(&saga).await?;
+                }
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Cancel a prepared send identified by its durable operation ID.
@@ -254,11 +288,12 @@ impl Wallet {
     #[doc(hidden)]
     #[instrument(skip(self))]
     pub async fn cancel_send(&self, operation_id: Uuid) -> Result<(), Error> {
+        let _operation_guard = self.lock_operation(operation_id).await;
         let db_saga = self
             .localstore
             .get_saga(&operation_id)
             .await?
-            .ok_or(Error::Custom("Saga not found".to_string()))?;
+            .ok_or(Error::OperationNotFound)?;
 
         let OperationData::PreparedSend(data) = db_saga.data.clone() else {
             return Err(Error::InvalidOperationState);
@@ -430,7 +465,8 @@ pub(crate) fn split_proofs_for_send(
 
         // Check if swap is actually needed
         if !proofs_to_swap.is_empty() {
-            let swap_output_needed = (amount + send_fee)
+            let required_amount = amount.checked_add(send_fee).ok_or(Error::AmountOverflow)?;
+            let swap_output_needed = required_amount
                 .checked_sub(proofs_to_send.total_amount()?)
                 .unwrap_or(Amount::ZERO);
 

@@ -4,7 +4,9 @@
 //! by a crash. It determines the actual state by querying the mint and
 //! either completes the operation or compensates.
 
-use cdk_common::wallet::{OperationData, SendSagaState, TransactionStatus, WalletSaga};
+use cdk_common::wallet::{
+    OperationData, SendSagaState, TransactionStatus, WalletSaga, WalletSagaState,
+};
 use tracing::instrument;
 
 use crate::nuts::State;
@@ -20,6 +22,13 @@ impl Wallet {
         &self,
         saga: &WalletSaga,
     ) -> Result<RecoveryAction, Error> {
+        // Recovery callers can hold snapshots while another wallet instance
+        // advances the operation. Always inspect the current persisted state.
+        let saga = match self.localstore.get_saga(&saga.id).await? {
+            Some(saga) => saga,
+            None => return Ok(RecoveryAction::Skipped),
+        };
+
         let state = match &saga.state {
             cdk_common::wallet::WalletSagaState::Send(s) => s,
             _ => {
@@ -31,6 +40,39 @@ impl Wallet {
         };
 
         match state {
+            SendSagaState::Preparing => {
+                if !matches!(saga.data, OperationData::PreparedSend(_)) {
+                    return Err(Error::Custom(format!(
+                        "Invalid preparing operation data for send saga {}",
+                        saga.id
+                    )));
+                }
+                tracing::info!(
+                    "Send saga {} was interrupted during preparation - compensating",
+                    saga.id
+                );
+                if self
+                    .claim_and_compensate_send(&saga.id, &[SendSagaState::Preparing])
+                    .await?
+                {
+                    Ok(RecoveryAction::Compensated)
+                } else {
+                    Ok(RecoveryAction::Skipped)
+                }
+            }
+            SendSagaState::Prepared => {
+                if !matches!(saga.data, OperationData::PreparedSend(_)) {
+                    return Err(Error::Custom(format!(
+                        "Invalid prepared operation data for send saga {}",
+                        saga.id
+                    )));
+                }
+                tracing::info!(
+                    "Send saga {} is a durable plan awaiting confirmation or cancellation",
+                    saga.id
+                );
+                Ok(RecoveryAction::Skipped)
+            }
             SendSagaState::ProofsReserved => {
                 if !matches!(saga.data, OperationData::PreparedSend(_)) {
                     return Err(Error::Custom(format!(
@@ -39,12 +81,17 @@ impl Wallet {
                     )));
                 }
                 tracing::info!(
-                    "Send saga {} in ProofsReserved state - compensating",
+                    "Send saga {} was interrupted during confirmation - compensating",
                     saga.id
                 );
-                self.mark_transaction_failed(saga.id).await?;
-                self.compensate_send(&saga.id).await?;
-                Ok(RecoveryAction::Compensated)
+                if self
+                    .claim_and_compensate_send(&saga.id, &[SendSagaState::ProofsReserved])
+                    .await?
+                {
+                    Ok(RecoveryAction::Compensated)
+                } else {
+                    Ok(RecoveryAction::Skipped)
+                }
             }
             SendSagaState::TokenCreated => {
                 if !matches!(saga.data, OperationData::Send(_)) {
@@ -184,7 +231,7 @@ impl Wallet {
                     "Send saga {} - proofs not spent, token may still be valid",
                     saga_id
                 );
-                Ok(RecoveryAction::Recovered)
+                Ok(RecoveryAction::Skipped)
             }
             Err(e) => {
                 tracing::warn!(
@@ -229,6 +276,41 @@ impl Wallet {
         }
         .execute()
         .await
+    }
+
+    /// Claim the current send state with optimistic locking before rollback.
+    ///
+    /// A stale recovery worker must not release proofs after another process
+    /// has advanced or completed the send.
+    async fn claim_and_compensate_send(
+        &self,
+        saga_id: &uuid::Uuid,
+        expected_states: &[SendSagaState],
+    ) -> Result<bool, Error> {
+        let mut saga = match self.localstore.get_saga(saga_id).await? {
+            Some(saga) => saga,
+            None => return Ok(false),
+        };
+
+        let WalletSagaState::Send(current_state) = saga.state else {
+            return Ok(false);
+        };
+        if saga.mint_url != self.mint_url
+            || saga.unit != self.unit
+            || !expected_states.contains(&current_state)
+            || !matches!(saga.data, OperationData::PreparedSend(_))
+        {
+            return Ok(false);
+        }
+
+        saga.update_state(WalletSagaState::Send(current_state));
+        if !self.localstore.update_saga(saga).await? {
+            return Ok(false);
+        }
+
+        self.mark_transaction_failed(*saga_id).await?;
+        self.compensate_send(saga_id).await?;
+        Ok(true)
     }
 }
 
@@ -298,6 +380,39 @@ mod tests {
         assert_eq!(proofs.len(), 1);
         assert_eq!(proofs[0].used_by_operation, None);
 
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_recover_send_preparing_releases_reserved_proofs() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
+        let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Send(SendSagaState::Preparing),
+            Amount::from(100),
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::PreparedSend(prepared_send_data(proof)),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        let wallet = create_test_wallet(db.clone()).await;
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+
+        assert_eq!(report.compensated, 1);
+        let proofs = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(proofs[0].state, State::Unspent);
+        assert_eq!(proofs[0].used_by_operation, None);
         assert!(db.get_saga(&saga_id).await.unwrap().is_none());
     }
 
@@ -444,6 +559,7 @@ mod tests {
 
         assert_eq!(report.recovered, 1);
         assert_eq!(report.compensated, 0);
+        assert_eq!(report.skipped, 0);
 
         let proofs = db
             .get_proofs(None, None, Some(vec![State::Spent]), None)
@@ -500,8 +616,9 @@ mod tests {
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let report = wallet.recover_incomplete_sagas().await.unwrap();
 
-        assert_eq!(report.recovered, 1);
+        assert_eq!(report.recovered, 0);
         assert_eq!(report.compensated, 0);
+        assert_eq!(report.skipped, 1);
 
         let proofs = db
             .get_proofs(None, None, Some(vec![State::PendingSpent]), None)

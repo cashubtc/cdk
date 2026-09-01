@@ -11,12 +11,24 @@ use crate::error::FfiError;
 use crate::wallet::RateLimit;
 
 /// Configuration used by the portable multi-mint facade.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct WalletRepositoryConfig {
     /// Proxy used by every mint operation. Omit for a direct connection.
     pub(crate) proxy_url: Option<String>,
     /// Shared request pacing. Omit to use the built-in default.
     pub(crate) rate_limit: Option<RateLimit>,
+}
+
+impl std::fmt::Debug for WalletRepositoryConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WalletRepositoryConfig")
+            .field(
+                "proxy_url",
+                &self.proxy_url.as_ref().map(|_| "[CONFIGURED]"),
+            )
+            .field("rate_limit", &self.rate_limit)
+            .finish()
+    }
 }
 
 /// Internal bridge to the engine repository.

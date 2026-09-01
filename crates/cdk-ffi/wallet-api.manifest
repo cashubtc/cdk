@@ -1,55 +1,95 @@
-# Public method signatures on the portable application-facing wallet objects.
+# Generated-language shape of the portable application wallet contract.
 #
-# This intentionally excludes protocol records and the advanced `cdk` engine.
-# Update it only after reviewing a deliberate application API change.
-CashuWallet.balances() -> typing.List[WalletBalanceEntry]
-CashuWallet.cross_mint_transfer_plan(operation_id: str) -> PreparedCrossMintTransfer
-CashuWallet.history(query: HistoryQuery) -> typing.List[Transaction]
-CashuWallet.open(request: CashuWalletOpenRequest) -> CashuWallet
-CashuWallet.plan_cross_mint_transfer(request: CrossMintTransferRequest) -> PreparedCrossMintTransfer
-CashuWallet.synchronize(policy: SyncPolicy) -> typing.List[SyncReport]
-CashuWallet.wallet(mint_url: MintUrl, unit: CurrencyUnit) -> Wallet
-CashuWallet.wallets() -> typing.List[Wallet]
-MintSession.claim() -> Amount
-MintSession.id() -> str
-MintSession.initial_state() -> MintSessionState
-MintSession.refresh() -> MintSessionState
-PaymentPlan.amount() -> Amount
-PaymentPlan.cancel() -> None
-PaymentPlan.confirm() -> PaymentReceipt
-PaymentPlan.confirm_prefer_async() -> PaymentConfirmation
-PaymentPlan.maximum_fee() -> Amount
-PaymentPlan.operation_id() -> str
-PaymentPlan.quote_id() -> str
-PaymentSession.prepare() -> PaymentPlan
-PaymentSession.quote() -> PaymentQuote
-PendingPayment.operation_id() -> str
-PendingPayment.quote_id() -> str
-PendingPayment.wait() -> PaymentReceipt
-PreparedCrossMintTransfer.amount() -> Amount
-PreparedCrossMintTransfer.cancel() -> None
-PreparedCrossMintTransfer.confirm() -> CrossMintTransferOutcome
-PreparedCrossMintTransfer.destination() -> WalletIdentity
-PreparedCrossMintTransfer.destination_quote_id() -> str
-PreparedCrossMintTransfer.maximum_fee() -> Amount
-PreparedCrossMintTransfer.operation_id() -> str
-SendPlan.amount() -> Amount
-SendPlan.cancel() -> None
-SendPlan.confirm() -> Token
-SendPlan.fee() -> Amount
-SendPlan.operation_id() -> str
-Wallet.accept(request: ReceiveRequest) -> ReceiveReceipt
-Wallet.balance() -> WalletBalance
-Wallet.events(params: SubscribeParams) -> ActiveSubscription
-Wallet.history(query: HistoryQuery) -> typing.List[Transaction]
-Wallet.identity() -> WalletIdentity
-Wallet.minting_session(quote_id: str) -> MintSession
-Wallet.open(request: WalletOpenRequest) -> Wallet
-Wallet.payment_plan(operation_id: str) -> PaymentPlan
-Wallet.pending_payment(operation_id: str) -> PendingPayment
-Wallet.plan_send(request: SendRequest) -> SendPlan
-Wallet.quote_payment(request: PaymentQuoteRequest) -> typing.List[PaymentSession]
-Wallet.request_minting(request: MintRequest) -> MintSession
-Wallet.restore_from_seed() -> Restored
-Wallet.send_plan(operation_id: str) -> SendPlan
-Wallet.synchronize(policy: SyncPolicy) -> SyncReport
+# Object methods, request/response records, enum variants, field order, and
+# constructor defaults are all locked. Update this file only after reviewing a
+# deliberate cross-language API change.
+async object CashuWallet.balances() -> typing.List[WalletBalanceEntry]
+async object CashuWallet.cross_mint_transfer_plan(operation_id: str) -> CrossMintTransferPlan
+async object CashuWallet.history(query: HistoryQuery) -> typing.List[HistoryEntry]
+async object CashuWallet.plan_cross_mint_transfer(request: CrossMintTransferRequest) -> CrossMintTransferPlan
+async object CashuWallet.synchronize(policy: SyncPolicy) -> typing.List[SyncReport]
+async object CashuWallet.wallet(mint_url: MintUrl, unit: CurrencyUnit) -> Wallet
+async object CashuWallet.wallets() -> typing.List[Wallet]
+async object MintSession.claim() -> Amount
+async object MintSession.refresh() -> MintSessionState
+async object PaymentPlan.cancel() -> None
+async object PaymentPlan.confirm() -> PaymentReceipt
+async object PaymentPlan.confirm_prefer_async() -> PaymentConfirmation
+async object PaymentSession.prepare() -> PaymentPlan
+async object PendingPayment.wait() -> PaymentReceipt
+async object CrossMintTransferPlan.cancel() -> None
+async object CrossMintTransferPlan.confirm() -> CrossMintTransferOutcome
+async object SendPlan.cancel() -> None
+async object SendPlan.confirm() -> str
+async object Wallet.accept(request: ReceiveRequest) -> ReceiveReceipt
+async object Wallet.balance() -> WalletBalance
+async object Wallet.history(query: HistoryQuery) -> typing.List[HistoryEntry]
+async object Wallet.minting_session(quote_id: str) -> MintSession
+async object Wallet.payment_plan(operation_id: str) -> PaymentPlan
+async object Wallet.pending_payment(operation_id: str) -> PendingPayment
+async object Wallet.plan_send(request: SendRequest) -> SendPlan
+async object Wallet.quote_payment(request: PaymentQuoteRequest) -> typing.List[PaymentSession]
+async object Wallet.request_minting(request: MintRequest) -> MintSession
+async object Wallet.restore_from_seed() -> Restored
+async object Wallet.send_plan(operation_id: str) -> SendPlan
+async object Wallet.synchronize(policy: SyncPolicy) -> SyncReport
+classmethod object CashuWallet.open(request: CashuWalletOpenRequest) -> CashuWallet
+classmethod object Wallet.open(request: WalletOpenRequest) -> Wallet
+enum CrossMintTransferOutcome(COMPLETED(receipt: CrossMintTransferReceipt) | CLAIM_PENDING(pending: CrossMintClaimPending))
+enum CurrencyUnit(SAT() | MSAT() | USD() | EUR() | AUTH() | CUSTOM(unit: str))
+enum FfiError(Cdk(kind: typing.Any, code: typing.Any, error_message: typing.Any, retryable: typing.Any) | Internal(error_message: typing.Any))
+enum MintingState(UNPAID, PAID, ISSUED)
+enum PaymentConfirmation(COMPLETED(receipt: PaymentReceipt) | PENDING(payment: PendingPayment))
+enum PaymentMethod(BOLT11() | BOLT12() | ONCHAIN() | CUSTOM(method: str))
+enum PaymentState(UNPAID, PENDING, PAID, FAILED, UNKNOWN)
+enum PaymentTarget(BOLT11(invoice: str, amount_msat: typing.Optional[Amount]) | BOLT12(offer: str, amount_msat: Amount) | ONCHAIN(address: str, amount: Amount, max_fee: typing.Optional[Amount]) | CUSTOM(method: str, request: str, amount: typing.Optional[Amount], extra: typing.Optional[str]))
+enum RateLimit(DEFAULT() | DISABLED() | CUSTOM(capacity: int, refill_per_minute: int))
+enum SendKind(ONLINE_EXACT() | ONLINE_TOLERANCE(tolerance: Amount) | OFFLINE_EXACT() | OFFLINE_TOLERANCE(tolerance: Amount))
+enum SyncPolicy(LOCAL_ONLY, ONLINE)
+enum TransactionDirection(INCOMING, OUTGOING)
+enum TransactionStatus(PENDING, COMPLETED, FAILED)
+enum WalletErrorKind(INVALID_INPUT, NOT_FOUND, INSUFFICIENT_FUNDS, PAYMENT, CONFLICT, AUTHENTICATION, UNSUPPORTED, NETWORK, STORAGE, INTERNAL)
+enum WalletStore(SQLITE(path: str) | CUSTOM(db: WalletDatabase))
+function generate_mnemonic() -> str
+function mnemonic_to_entropy(mnemonic: str) -> bytes
+object MintSession.id() -> str
+object MintSession.initial_state() -> MintSessionState
+object PaymentPlan.amount() -> Amount
+object PaymentPlan.maximum_fee() -> Amount
+object PaymentPlan.operation_id() -> str
+object PaymentPlan.quote_id() -> str
+object PaymentSession.quote() -> PaymentQuote
+object PendingPayment.operation_id() -> str
+object PendingPayment.quote_id() -> str
+object CrossMintTransferPlan.amount() -> Amount
+object CrossMintTransferPlan.destination() -> WalletIdentity
+object CrossMintTransferPlan.destination_quote_id() -> str
+object CrossMintTransferPlan.maximum_fee() -> Amount
+object CrossMintTransferPlan.operation_id() -> str
+object SendPlan.amount() -> Amount
+object SendPlan.fee() -> Amount
+object SendPlan.operation_id() -> str
+object Wallet.identity() -> WalletIdentity
+record Amount(value: int)
+record CashuWalletOpenRequest(mnemonic: str, store: WalletStore, proxy_url: typing.Optional[str] = default, rate_limit: typing.Optional[RateLimit] = default)
+record CrossMintClaimPending(operation_id: str, destination: WalletIdentity, destination_quote_id: str, amount: Amount, source_fee: Amount, error_message: str, retryable: bool)
+record CrossMintTransferReceipt(operation_id: str, destination: WalletIdentity, destination_quote_id: str, amount: Amount, source_fee: Amount)
+record CrossMintTransferRequest(source: WalletIdentity, destination: WalletIdentity, metadata: dict[str, str] = default)
+record HistoryEntry(id: str, wallet: WalletIdentity, direction: TransactionDirection, amount: Amount, fee: Amount, timestamp: int, memo: typing.Optional[str], metadata: dict[str, str], quote_id: typing.Optional[str], operation_id: typing.Optional[str], payment_method: typing.Optional[PaymentMethod], status: TransactionStatus)
+record HistoryQuery(direction: typing.Optional[TransactionDirection] = default, limit: typing.Optional[int] = default)
+record MintRequest(method: PaymentMethod, amount: typing.Optional[Amount] = default, description: typing.Optional[str] = default, extra: typing.Optional[str] = default)
+record MintSessionState(id: str, payment_request: str, state: MintingState, amount: typing.Optional[Amount], amount_paid: Amount, amount_claimed: Amount, expires_at: int, method: PaymentMethod)
+record MintUrl(url: str)
+record PaymentQuote(id: str, amount: Amount, fee_reserve: Amount, state: PaymentState, expires_at: int, estimated_blocks: typing.Optional[int], method: PaymentMethod)
+record PaymentQuoteRequest(target: PaymentTarget, metadata: dict[str, str] = default)
+record PaymentReceipt(operation_id: str, quote_id: str, payment_proof: typing.Optional[str], amount: Amount, fee_paid: Amount)
+record ReceiveReceipt(amount: Amount, wallet: WalletIdentity)
+record ReceiveRequest(token: str, metadata: dict[str, str] = default)
+record Restored(spent: Amount, unspent: Amount, pending: Amount)
+record SendRequest(amount: Amount, mode: SendKind, memo: typing.Optional[str] = default, include_fee: bool = True, metadata: dict[str, str] = default)
+record SyncReport(wallet: WalletIdentity, balance: WalletBalance, recovered_operations: int, compensated_operations: int, pending_operations: int, failed_operations: int, claimed_amount: Amount, recovered_amount: Amount, finalized_payments: int)
+record WalletBalance(available: Amount, pending: Amount, reserved: Amount)
+record WalletBalanceEntry(wallet: WalletIdentity, balance: WalletBalance)
+record WalletConfig(target_proof_count: typing.Optional[int] = default, rate_limit: typing.Optional[RateLimit] = default)
+record WalletIdentity(mint_url: MintUrl, unit: CurrencyUnit)
+record WalletOpenRequest(mint_url: str, unit: CurrencyUnit, mnemonic: str, store: WalletStore, config: typing.Optional[WalletConfig] = default)

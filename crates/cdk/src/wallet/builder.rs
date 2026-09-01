@@ -369,6 +369,7 @@ impl WalletBuilder {
             client: client.clone(),
             subscription: SubscriptionManager::new(client, self.use_http_subscription),
             rate_limiter: if limiter_is_wired { rate_limiter } else { None },
+            operation_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         })
     }
 }

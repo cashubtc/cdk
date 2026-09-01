@@ -128,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
                 Ok(prepared) => {
                     println!("Prepared melt:");
                     println!("  Amount: {} sats", prepared.amount());
-                    println!("  Total Fee: {} sats", prepared.total_fee());
+                    println!("  Total Fee: {} sats", prepared.total_fee()?);
 
                     // Execute the payment
                     match prepared.confirm().await {

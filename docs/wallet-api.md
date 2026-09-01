@@ -77,7 +77,7 @@ let session = wallet
 
 display_to_payer(session.initial_state().payment_request);
 let current = session.refresh().await?;
-if matches!(current.state, cdk_ffi::QuoteState::Paid) {
+if matches!(current.state, cdk_ffi::MintingState::Paid) {
     session.claim().await?;
 }
 # Ok(())
@@ -93,7 +93,9 @@ The quote ID returned by `MintSession::id` resumes the session with
 `Wallet::plan_send(SendRequest)` reserves funds and returns a `SendPlan`.
 Review `amount()` and `fee()`, then call exactly one of `confirm()` or
 `cancel()`. Persist `operation_id()` before confirmation. Recreate the handle
-after a restart with `Wallet::send_plan(operation_id)`.
+after a restart with `Wallet::send_plan(operation_id)`. Confirmation returns
+the encoded Cashu token as a string; pass an encoded token string to
+`Wallet::accept(ReceiveRequest)`.
 
 ### Pay Lightning or on-chain
 
@@ -111,7 +113,13 @@ resulting `PaymentPlan::operation_id`, and then confirm or cancel it.
 `confirm_prefer_async()` returns `PaymentConfirmation::Completed` or
 `PaymentConfirmation::Pending`. A pending result contains a `PendingPayment`
 that can be reconstructed with `Wallet::pending_payment(operation_id)` and
-awaited with `wait()`.
+awaited with `wait()`. A `PaymentReceipt` exists only for a successful payment;
+failed or indeterminate states are errors rather than receipt variants. Cashu
+change proofs remain internal to the engine.
+
+History methods return `HistoryEntry`, a UI-safe view that omits proof
+identifiers and settlement secrets while retaining wallet identity, direction,
+amount, fee, metadata, payment method, operation ID, and status.
 
 ## Durable operations
 
@@ -129,7 +137,16 @@ request → persisted plan → confirm ──→ completed receipt
 ```
 
 Dropping a plan does not cancel it. Applications should persist operation IDs
-and call `synchronize(Online)` on startup or resume.
+and call `synchronize(Online)` on startup or resume. Synchronization preserves
+plans that are still awaiting an explicit confirm/cancel decision; it only
+compensates abandoned preparations and operations interrupted after confirmation
+began. Recently advanced
+operations receive a five-minute recovery grace window. Recovery defers them
+during that period, which protects normal concurrent requests while still
+allowing an abandoned operation to be reclaimed by a later synchronization.
+Once the mint has answered, the saga advances from `MeltRequested` to
+`PaymentPending`; reconstructed pending-payment handles can then reconcile it
+immediately without waiting for the lease to expire.
 
 ## Synchronization
 
@@ -145,14 +162,19 @@ operation counts, and recovered amounts.
 
 `CashuWallet::plan_cross_mint_transfer` creates a persisted maximum-balance
 transfer from a source wallet to a destination wallet over Lightning. The plan
-is resumed by source operation ID. Confirmation returns either:
+is resumed by source operation ID. Its destination identity is stored
+separately from the source melt saga, so `cross_mint_transfer_plan` works while
+the source payment is prepared or pending and after it has completed. A
+definitively failed or canceled source payment removes that durable identity.
+Confirmation returns either:
 
 - `Completed`, when the source payment and destination issuance both finish;
 - `ClaimPending`, when the source payment succeeded but destination issuance
   must be retried. `synchronize(Online)` retries paid destination quotes.
 
 The second outcome is not a failed source payment and must not be retried by
-creating another transfer.
+creating another transfer. Reconstruct the original operation or call
+`synchronize(Online)` to finish destination issuance.
 
 ## Errors and secrets
 
@@ -161,9 +183,10 @@ human-readable message, and `retryable` flag. Mint failures retain their Cashu
 protocol codes; local request validation uses code `40000`. Applications should
 branch on the category and retryability, not parse messages.
 
-Mnemonic, seed, payment proof, token secret, proof secret, and authentication
-material are redacted from `Debug` output. Public request records deliberately
-do not expose engine signing keys, proofs, or keyset internals.
+The facade redacts mnemonic, storage and proxy credentials, bearer tokens, and
+payment proofs from `Debug` output. The protocol-level token and proof wrappers
+also redact their bearer secrets. Public facade request records deliberately do
+not expose engine signing keys, proofs, or keyset internals.
 
 ## Evolving the facade
 
@@ -171,5 +194,22 @@ Add a workflow to `crates/cdk-ffi/src/portable.rs` only when it belongs in the
 common application path. Keep protocol controls in `cdk`. Run
 `just ffi-api-check` after changing facade objects. The checked-in
 `crates/cdk-ffi/wallet-api.manifest` and generated-binding check lock method
-signatures, prevent accidental object growth, and prevent legacy engine objects
-from leaking back into UniFFI.
+signatures plus every portable request, record, and enum shape. They also
+prevent accidental object growth and legacy engine objects from leaking back
+into the portable contract.
+
+### Binding package boundary
+
+`cdk-ffi` still contains independent protocol utilities, the custom-storage
+adapter reachable through `WalletStore`, and optional Nostr features, so
+UniFFI's flat generated module is larger than the portable wallet contract
+itself. The storage adapter is an intentional facade extension point; the other
+expert APIs are not facade dependencies. `wallet-api.manifest` covers every type
+reachable from a portable signature, but does not lock unrelated bindings.
+
+The next packaging-level simplification should publish the portable wallet as a
+separate generated artifact and keep expert/protocol bindings opt-in. That split
+does not require another wallet implementation: both artifacts should continue
+to call this same Rust facade and `cdk` engine. Until that boundary exists, do
+not add protocol controls to the portable objects merely because the types are
+already present elsewhere in the generated module.

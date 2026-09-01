@@ -116,6 +116,7 @@ impl RateLimit {
 #[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct WalletConfig {
     /// Preferred number of proofs retained by the wallet.
+    #[uniffi(default = None)]
     pub target_proof_count: Option<u32>,
     /// Request pacing. Omit to use the built-in default.
     #[uniffi(default = None)]

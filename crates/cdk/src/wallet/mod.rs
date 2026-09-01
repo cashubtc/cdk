@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::Network;
@@ -17,7 +17,7 @@ pub use mint_connector::http_client::{
     AuthHttpClient as BaseAuthHttpClient, HttpClient as BaseHttpClient,
 };
 use subscription::{ActiveSubscription, SubscriptionManager};
-use tokio::sync::RwLock as TokioRwLock;
+use tokio::sync::{Mutex as TokioMutex, OwnedMutexGuard, RwLock as TokioRwLock};
 use tracing::instrument;
 use zeroize::Zeroize;
 
@@ -165,6 +165,8 @@ pub struct Wallet {
     /// shares its per-host budgets, so this reconfigures the same limiter the
     /// transport paces through.
     rate_limiter: Option<RateLimiterManager>,
+    /// Per-operation guards shared by clones of this wallet.
+    operation_locks: Arc<TokioMutex<HashMap<uuid::Uuid, Weak<TokioMutex<()>>>>>,
 }
 
 impl fmt::Debug for Wallet {
@@ -272,6 +274,23 @@ impl From<WalletSubscription> for WalletParams {
 pub use cdk_common::wallet::Restored;
 
 impl Wallet {
+    /// Serialize state-changing work for one durable operation within this process.
+    pub(crate) async fn lock_operation(&self, operation_id: uuid::Uuid) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut operation_locks = self.operation_locks.lock().await;
+            operation_locks.retain(|_, lock| lock.strong_count() > 0);
+            match operation_locks.get(&operation_id).and_then(Weak::upgrade) {
+                Some(lock) => lock,
+                None => {
+                    let lock = Arc::new(TokioMutex::new(()));
+                    operation_locks.insert(operation_id, Arc::downgrade(&lock));
+                    lock
+                }
+            }
+        };
+        lock.lock_owned().await
+    }
+
     /// Create new [`Wallet`] using the builder pattern
     /// # Synopsis
     /// ```rust

@@ -320,6 +320,11 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             }),
         );
 
+        // Active operations start versioned so concurrent recovery observes
+        // their short lease. Version-zero records remain immediately
+        // recoverable when no owner has claimed them.
+        saga.update_state(WalletSagaState::Receive(ReceiveSagaState::ProofsPending));
+
         self.wallet.localstore.add_saga(saga.clone()).await?;
 
         add_compensation(

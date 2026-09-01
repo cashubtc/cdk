@@ -59,7 +59,7 @@ async def wait_for_paid_mint_session(session):
 
     while time.monotonic() < deadline:
         last_state = await session.refresh()
-        if last_state.state == cdk_ffi.QuoteState.PAID:
+        if last_state.state == cdk_ffi.MintingState.PAID:
             return last_state
         await asyncio.sleep(POLL_INTERVAL)
 
@@ -68,7 +68,6 @@ async def wait_for_paid_mint_session(session):
 
 def assert_payment_receipt(receipt, quote_id):
     assert receipt.quote_id == quote_id
-    assert receipt.state == cdk_ffi.QuoteState.PAID
     assert_amount(receipt.amount, PAYMENT_AMOUNT_SAT)
     assert receipt.fee_paid.value >= 0
 

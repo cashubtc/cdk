@@ -12,10 +12,9 @@ use cdk::nuts::nut00::ProofsMethods;
 
 use crate::database::WalletStore;
 use crate::error::FfiError;
-use crate::token::Token;
 use crate::types::{
-    ActiveSubscription, Amount, CurrencyUnit, MintUrl, PaymentMethod, PaymentPlan, PendingPayment,
-    QuoteState, Restored, SendKind, SendPlan, SubscribeParams, Transaction, TransactionDirection,
+    Amount, CurrencyUnit, MintUrl, PaymentMethod, Restored, SendKind, TransactionDirection,
+    TransactionStatus,
 };
 use crate::wallet::{RateLimit, Wallet, WalletConfig};
 use crate::wallet_repository::{WalletRepository, WalletRepositoryConfig};
@@ -68,7 +67,10 @@ impl fmt::Debug for CashuWalletOpenRequest {
         f.debug_struct("CashuWalletOpenRequest")
             .field("mnemonic", &"[REDACTED]")
             .field("store", &"[REDACTED]")
-            .field("proxy_url", &self.proxy_url)
+            .field(
+                "proxy_url",
+                &self.proxy_url.as_ref().map(|_| "[CONFIGURED]"),
+            )
             .field("rate_limit", &self.rate_limit)
             .finish()
     }
@@ -88,7 +90,7 @@ pub struct WalletIdentity {
 pub struct WalletBalance {
     /// Funds that can be spent now.
     pub available: Amount,
-    /// Funds waiting for a mint-side result.
+    /// Funds committed to an in-flight payment or an unclaimed send.
     pub pending: Amount,
     /// Funds reserved by a prepared local operation.
     pub reserved: Amount,
@@ -101,6 +103,54 @@ pub enum SyncPolicy {
     LocalOnly,
     /// Reconcile sagas, quotes, pending proofs, and payments with the mint.
     Online,
+}
+
+/// Lifecycle of an incoming minting session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MintingState {
+    /// The payer has not completed the payment.
+    Unpaid,
+    /// The mint received value and ecash can be claimed.
+    Paid,
+    /// All paid value has been claimed into the wallet.
+    Issued,
+}
+
+impl From<cdk::nuts::MintQuoteState> for MintingState {
+    fn from(state: cdk::nuts::MintQuoteState) -> Self {
+        match state {
+            cdk::nuts::MintQuoteState::Unpaid => Self::Unpaid,
+            cdk::nuts::MintQuoteState::Paid => Self::Paid,
+            cdk::nuts::MintQuoteState::Issued => Self::Issued,
+        }
+    }
+}
+
+/// Lifecycle of an outgoing payment quote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PaymentState {
+    /// The payment has not started.
+    Unpaid,
+    /// The mint is still processing the payment.
+    Pending,
+    /// The payment completed successfully.
+    Paid,
+    /// The mint reported a definitive payment failure.
+    Failed,
+    /// The mint cannot yet determine the payment result.
+    Unknown,
+}
+
+impl From<cdk::nuts::MeltQuoteState> for PaymentState {
+    fn from(state: cdk::nuts::MeltQuoteState) -> Self {
+        match state {
+            cdk::nuts::MeltQuoteState::Unpaid => Self::Unpaid,
+            cdk::nuts::MeltQuoteState::Pending => Self::Pending,
+            cdk::nuts::MeltQuoteState::Paid => Self::Paid,
+            cdk::nuts::MeltQuoteState::Failed => Self::Failed,
+            cdk::nuts::MeltQuoteState::Unknown => Self::Unknown,
+        }
+    }
 }
 
 /// Result of one explicit wallet synchronization.
@@ -160,7 +210,7 @@ pub struct MintSessionState {
     /// Payment request to present to the payer.
     pub payment_request: String,
     /// Current mint-reported state.
-    pub state: QuoteState,
+    pub state: MintingState,
     /// Requested amount, when fixed.
     pub amount: Option<Amount>,
     /// Amount received by the mint.
@@ -218,14 +268,60 @@ impl MintSession {
         Ok(mint_session_state(&quote))
     }
 
-    /// Claim all currently paid, unissued value into the wallet.
+    /// Ensure all paid value is claimed and return the quote's total claimed amount.
+    ///
+    /// This is idempotent: calling it again after a successful claim returns
+    /// the amount already issued for the quote.
     pub async fn claim(&self) -> Result<Amount, FfiError> {
+        if let Some(amount) = claimed_mint_quote_amount(&self.wallet, &self.quote_id).await? {
+            return Ok(amount);
+        }
+
         let proofs = self
             .wallet
             .mint(&self.quote_id, cdk::amount::SplitTarget::None, None)
-            .await?;
-        Ok(proofs.total_amount()?.into())
+            .await;
+
+        match proofs {
+            Ok(proofs) => match claimed_mint_quote_amount(&self.wallet, &self.quote_id).await? {
+                Some(amount) => Ok(amount),
+                None => Ok(proofs.total_amount()?.into()),
+            },
+            Err(error) => match claimed_mint_quote_amount(&self.wallet, &self.quote_id).await? {
+                Some(amount) => Ok(amount),
+                None => Err(error.into()),
+            },
+        }
     }
+}
+
+async fn claimed_mint_quote_amount(
+    wallet: &cdk::Wallet,
+    quote_id: &str,
+) -> Result<Option<Amount>, FfiError> {
+    let Some(quote) = wallet
+        .localstore
+        .get_mint_quote(quote_id)
+        .await
+        .map_err(cdk::Error::from)?
+    else {
+        return Ok(None);
+    };
+    ensure_mint_quote_belongs_to_wallet(wallet, &quote)?;
+    Ok((quote.state == cdk::nuts::MintQuoteState::Issued).then_some(quote.amount_issued.into()))
+}
+
+fn ensure_mint_quote_belongs_to_wallet(
+    wallet: &cdk::Wallet,
+    quote: &cdk::wallet::MintQuote,
+) -> Result<(), FfiError> {
+    if quote.mint_url != wallet.mint_url {
+        return Err(cdk::Error::IncorrectMint.into());
+    }
+    if quote.unit != wallet.unit {
+        return Err(cdk::Error::UnsupportedUnit.into());
+    }
+    Ok(())
 }
 
 fn mint_session_state(quote: &cdk::wallet::MintQuote) -> MintSessionState {
@@ -247,11 +343,11 @@ fn mint_session_state(quote: &cdk::wallet::MintQuote) -> MintSessionState {
 pub struct SendRequest {
     /// Value to transfer.
     pub amount: Amount,
+    /// Online/offline selection behavior.
+    pub mode: SendKind,
     /// Memo embedded in the token.
     #[uniffi(default = None)]
     pub memo: Option<String>,
-    /// Online/offline selection behavior.
-    pub mode: SendKind,
     /// Add input fees so the receiver obtains the exact requested value.
     #[uniffi(default = true)]
     pub include_fee: bool,
@@ -260,14 +356,93 @@ pub struct SendRequest {
     pub metadata: HashMap<String, String>,
 }
 
+/// Reviewable, durable ecash send plan.
+#[derive(uniffi::Object)]
+pub struct SendPlan {
+    wallet: Arc<cdk::Wallet>,
+    operation_id: uuid::Uuid,
+    amount: Amount,
+    fee: Amount,
+}
+
+impl fmt::Debug for SendPlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SendPlan")
+            .field("operation_id", &self.operation_id)
+            .field("amount", &self.amount)
+            .field("fee", &self.fee)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SendPlan {
+    fn new(
+        wallet: Arc<cdk::Wallet>,
+        prepared: &cdk::wallet::PreparedSend,
+    ) -> Result<Self, FfiError> {
+        let fee = prepared
+            .swap_fee()
+            .checked_add(prepared.send_fee())
+            .ok_or(cdk::Error::AmountOverflow)?;
+        Ok(Self {
+            wallet,
+            operation_id: prepared.operation_id(),
+            amount: prepared.amount().into(),
+            fee: fee.into(),
+        })
+    }
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl SendPlan {
+    /// Durable operation ID used to resume this plan.
+    pub fn operation_id(&self) -> String {
+        self.operation_id.to_string()
+    }
+
+    /// Value encoded into the token.
+    pub fn amount(&self) -> Amount {
+        self.amount
+    }
+
+    /// Maximum fee charged by this plan.
+    pub fn fee(&self) -> Amount {
+        self.fee
+    }
+
+    /// Confirm the plan and return the encoded Cashu token.
+    pub async fn confirm(&self) -> Result<String, FfiError> {
+        Ok(self
+            .wallet
+            .confirm_send(self.operation_id, None)
+            .await?
+            .to_string())
+    }
+
+    /// Cancel the plan and release its reserved funds.
+    pub async fn cancel(&self) -> Result<(), FfiError> {
+        self.wallet.cancel_send(self.operation_id).await?;
+        Ok(())
+    }
+}
+
 /// High-level token receipt request.
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Clone, uniffi::Record)]
 pub struct ReceiveRequest {
-    /// Token to redeem.
-    pub token: Arc<Token>,
+    /// Encoded Cashu token to redeem.
+    pub token: String,
     /// Application metadata stored with the transaction.
     #[uniffi(default)]
     pub metadata: HashMap<String, String>,
+}
+
+impl fmt::Debug for ReceiveRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReceiveRequest")
+            .field("token", &"[REDACTED]")
+            .field("metadata", &self.metadata)
+            .finish()
+    }
 }
 
 /// Receipt for a successfully redeemed token.
@@ -324,7 +499,7 @@ pub struct PaymentQuote {
     /// Maximum mint fee reserved for the payment.
     pub fee_reserve: Amount,
     /// Current quote state.
-    pub state: QuoteState,
+    pub state: PaymentState,
     /// Expiry as a Unix timestamp.
     pub expires_at: u64,
     /// Estimated confirmation target for on-chain payments.
@@ -372,10 +547,18 @@ impl PaymentSession {
             .wallet
             .prepare_melt(&quote.id, self.metadata.clone())
             .await?;
-        Ok(Arc::new(PaymentPlan::new(
-            Arc::clone(&self.wallet),
-            &prepared,
-        )))
+        match PaymentPlan::new(Arc::clone(&self.wallet), &prepared) {
+            Ok(plan) => Ok(Arc::new(plan)),
+            Err(error) => {
+                if let Err(cleanup_error) = prepared.cancel().await {
+                    tracing::warn!(
+                        "Could not cancel payment plan after facade construction failed: {}",
+                        cleanup_error
+                    );
+                }
+                Err(error)
+            }
+        }
     }
 }
 
@@ -391,6 +574,220 @@ fn payment_quote(quote: &cdk::wallet::MeltQuote) -> PaymentQuote {
     }
 }
 
+/// Receipt for a successfully finalized outgoing payment.
+///
+/// A receipt exists only for a paid operation, so it does not carry a
+/// redundant state field. Cashu change proofs remain an engine detail and are
+/// not exposed through the application facade.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PaymentReceipt {
+    /// Durable operation ID.
+    pub operation_id: String,
+    /// Mint quote ID.
+    pub quote_id: String,
+    /// Method-specific settlement proof, such as a Lightning preimage.
+    pub payment_proof: Option<String>,
+    /// Value delivered by the payment.
+    pub amount: Amount,
+    /// Actual fee charged.
+    pub fee_paid: Amount,
+}
+
+impl fmt::Debug for PaymentReceipt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PaymentReceipt")
+            .field("operation_id", &self.operation_id)
+            .field("quote_id", &self.quote_id)
+            .field(
+                "payment_proof",
+                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("amount", &self.amount)
+            .field("fee_paid", &self.fee_paid)
+            .finish()
+    }
+}
+
+fn payment_receipt(
+    operation_id: uuid::Uuid,
+    finalized: cdk_common::common::FinalizedMelt,
+) -> PaymentReceipt {
+    PaymentReceipt {
+        operation_id: operation_id.to_string(),
+        quote_id: finalized.quote_id().to_string(),
+        payment_proof: finalized.payment_proof().map(str::to_owned),
+        amount: finalized.amount().into(),
+        fee_paid: finalized.fee_paid().into(),
+    }
+}
+
+/// An outgoing payment accepted for asynchronous processing by the mint.
+#[derive(uniffi::Object)]
+pub struct PendingPayment {
+    wallet: Arc<cdk::Wallet>,
+    quote_id: String,
+    operation_id: uuid::Uuid,
+}
+
+impl fmt::Debug for PendingPayment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingPayment")
+            .field("operation_id", &self.operation_id)
+            .field("quote_id", &self.quote_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PendingPayment {
+    fn new(wallet: Arc<cdk::Wallet>, pending: &cdk::wallet::PendingMelt) -> Self {
+        Self {
+            wallet,
+            quote_id: pending.quote_id().to_string(),
+            operation_id: pending.operation_id(),
+        }
+    }
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl PendingPayment {
+    /// Quote ID for this pending payment.
+    pub fn quote_id(&self) -> String {
+        self.quote_id.clone()
+    }
+
+    /// Durable operation ID for this pending payment.
+    pub fn operation_id(&self) -> String {
+        self.operation_id.to_string()
+    }
+
+    /// Wait for this payment to finalize.
+    ///
+    /// The wallet uses mint notifications when available and bounded polling
+    /// as a fallback. Mobile apps should still call
+    /// `Wallet::synchronize(SyncPolicy::Online)` after startup or resume.
+    pub async fn wait(&self) -> Result<PaymentReceipt, FfiError> {
+        let finalized = self.wallet.wait_pending_melt(self.operation_id).await?;
+        Ok(payment_receipt(self.operation_id, finalized))
+    }
+}
+
+/// Result of async-preferred outgoing payment confirmation.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum PaymentConfirmation {
+    /// Payment finalized during confirmation.
+    Completed { receipt: PaymentReceipt },
+    /// Mint accepted async processing and the payment remains pending.
+    Pending { payment: Arc<PendingPayment> },
+}
+
+/// Reviewable, durable outgoing payment plan.
+#[derive(uniffi::Object)]
+pub struct PaymentPlan {
+    wallet: Arc<cdk::Wallet>,
+    operation_id: uuid::Uuid,
+    quote_id: String,
+    amount: Amount,
+    maximum_fee: Amount,
+}
+
+impl fmt::Debug for PaymentPlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PaymentPlan")
+            .field("operation_id", &self.operation_id)
+            .field("quote_id", &self.quote_id)
+            .field("amount", &self.amount)
+            .field("maximum_fee", &self.maximum_fee)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PaymentPlan {
+    fn new(
+        wallet: Arc<cdk::Wallet>,
+        prepared: &cdk::wallet::PreparedMelt,
+    ) -> Result<Self, FfiError> {
+        let maximum_fee = prepared
+            .quote()
+            .fee_reserve
+            .checked_add(prepared.swap_fee())
+            .and_then(|fee| fee.checked_add(prepared.input_fee()))
+            .ok_or(cdk::Error::AmountOverflow)?;
+        Ok(Self {
+            wallet,
+            operation_id: prepared.operation_id(),
+            quote_id: prepared.quote().id.clone(),
+            amount: prepared.amount().into(),
+            maximum_fee: maximum_fee.into(),
+        })
+    }
+
+    async fn confirm_prefer_async_with_options(
+        &self,
+        options: cdk::wallet::MeltConfirmOptions,
+    ) -> Result<PaymentConfirmation, FfiError> {
+        let outcome = self
+            .wallet
+            .confirm_prepared_melt_prefer_async_with_options(self.operation_id, options)
+            .await?;
+
+        match outcome {
+            cdk::wallet::MeltOutcome::Paid(finalized) => Ok(PaymentConfirmation::Completed {
+                receipt: payment_receipt(self.operation_id, finalized),
+            }),
+            cdk::wallet::MeltOutcome::Pending(pending) => Ok(PaymentConfirmation::Pending {
+                payment: Arc::new(PendingPayment::new(Arc::clone(&self.wallet), &pending)),
+            }),
+        }
+    }
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl PaymentPlan {
+    /// Durable operation ID used to resume this plan.
+    pub fn operation_id(&self) -> String {
+        self.operation_id.to_string()
+    }
+
+    /// Mint quote ID.
+    pub fn quote_id(&self) -> String {
+        self.quote_id.clone()
+    }
+
+    /// Value delivered by the payment.
+    pub fn amount(&self) -> Amount {
+        self.amount
+    }
+
+    /// Maximum mint, swap, and input fee charged by this plan.
+    pub fn maximum_fee(&self) -> Amount {
+        self.maximum_fee
+    }
+
+    /// Confirm the plan and wait for a receipt.
+    pub async fn confirm(&self) -> Result<PaymentReceipt, FfiError> {
+        let finalized = self
+            .wallet
+            .confirm_prepared_melt_with_options(
+                self.operation_id,
+                cdk::wallet::MeltConfirmOptions::default(),
+            )
+            .await?;
+        Ok(payment_receipt(self.operation_id, finalized))
+    }
+
+    /// Confirm the plan, returning early when the mint accepts async processing.
+    pub async fn confirm_prefer_async(&self) -> Result<PaymentConfirmation, FfiError> {
+        self.confirm_prefer_async_with_options(cdk::wallet::MeltConfirmOptions::default())
+            .await
+    }
+
+    /// Cancel the plan and release reserved funds.
+    pub async fn cancel(&self) -> Result<(), FfiError> {
+        self.wallet.cancel_prepared_melt(self.operation_id).await?;
+        Ok(())
+    }
+}
+
 /// Transaction-history filter.
 #[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct HistoryQuery {
@@ -400,6 +797,59 @@ pub struct HistoryQuery {
     /// Maximum number of newest entries to return.
     #[uniffi(default = None)]
     pub limit: Option<u32>,
+}
+
+/// Application-facing wallet history entry.
+///
+/// Proof identifiers and settlement secrets are intentionally omitted.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct HistoryEntry {
+    /// Stable transaction ID.
+    pub id: String,
+    /// Wallet that owns the transaction.
+    pub wallet: WalletIdentity,
+    /// Incoming or outgoing flow.
+    pub direction: TransactionDirection,
+    /// Principal value.
+    pub amount: Amount,
+    /// Fee charged to this wallet.
+    pub fee: Amount,
+    /// Unix timestamp.
+    pub timestamp: u64,
+    /// User-visible memo.
+    pub memo: Option<String>,
+    /// Application metadata.
+    pub metadata: HashMap<String, String>,
+    /// Related mint or melt quote ID.
+    pub quote_id: Option<String>,
+    /// Durable operation ID, when the transaction belongs to a saga.
+    pub operation_id: Option<String>,
+    /// Payment rail, when applicable.
+    pub payment_method: Option<PaymentMethod>,
+    /// Durable transaction status.
+    pub status: TransactionStatus,
+}
+
+impl From<cdk_common::wallet::Transaction> for HistoryEntry {
+    fn from(transaction: cdk_common::wallet::Transaction) -> Self {
+        Self {
+            id: transaction.id().to_string(),
+            wallet: WalletIdentity {
+                mint_url: transaction.mint_url.into(),
+                unit: transaction.unit.into(),
+            },
+            direction: transaction.direction.into(),
+            amount: transaction.amount.into(),
+            fee: transaction.fee.into(),
+            timestamp: transaction.timestamp,
+            memo: transaction.memo,
+            metadata: transaction.metadata,
+            quote_id: transaction.quote_id,
+            operation_id: transaction.saga_id.map(|id| id.to_string()),
+            payment_method: transaction.payment_method.map(Into::into),
+            status: transaction.status.into(),
+        }
+    }
 }
 
 /// Request to move the maximum currently spendable balance between two mint
@@ -461,7 +911,7 @@ pub enum CrossMintTransferOutcome {
 
 /// Durable, reviewable cross-mint transfer plan.
 #[derive(uniffi::Object)]
-pub struct PreparedCrossMintTransfer {
+pub struct CrossMintTransferPlan {
     source: Arc<cdk::Wallet>,
     destination: Arc<cdk::Wallet>,
     operation_id: uuid::Uuid,
@@ -471,9 +921,9 @@ pub struct PreparedCrossMintTransfer {
     maximum_fee: Amount,
 }
 
-impl fmt::Debug for PreparedCrossMintTransfer {
+impl fmt::Debug for CrossMintTransferPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PreparedCrossMintTransfer")
+        f.debug_struct("CrossMintTransferPlan")
             .field("operation_id", &self.operation_id)
             .field("destination", &self.destination_identity)
             .field("destination_quote_id", &self.destination_quote_id)
@@ -483,7 +933,34 @@ impl fmt::Debug for PreparedCrossMintTransfer {
     }
 }
 
-impl PreparedCrossMintTransfer {
+impl CrossMintTransferPlan {
+    fn from_operation(
+        source: Arc<cdk::Wallet>,
+        destination: Arc<cdk::Wallet>,
+        operation: &cdk_common::wallet::CrossMintTransferOperation,
+    ) -> Result<Self, FfiError> {
+        if source.mint_url != operation.source_mint_url
+            || source.unit != operation.source_unit
+            || destination.mint_url != operation.destination_mint_url
+            || destination.unit != operation.destination_unit
+        {
+            return Err(cdk::Error::InvalidOperationState.into());
+        }
+
+        Ok(Self {
+            source,
+            destination,
+            operation_id: operation.operation_id,
+            destination_identity: WalletIdentity {
+                mint_url: operation.destination_mint_url.clone().into(),
+                unit: operation.destination_unit.clone().into(),
+            },
+            destination_quote_id: operation.destination_quote_id.clone(),
+            amount: operation.amount.into(),
+            maximum_fee: operation.maximum_fee.into(),
+        })
+    }
+
     fn new(
         source: Arc<cdk::Wallet>,
         destination: Arc<cdk::Wallet>,
@@ -505,24 +982,54 @@ impl PreparedCrossMintTransfer {
             .fee_reserve
             .checked_add(prepared.input_fee_without_swap())
             .ok_or(cdk::Error::AmountOverflow)?;
-
-        Ok(Self {
-            source,
-            destination,
+        let operation = cdk_common::wallet::CrossMintTransferOperation {
             operation_id: prepared.operation_id(),
-            destination_identity: WalletIdentity {
-                mint_url: destination_mint_url.clone().into(),
-                unit: destination_unit.clone().into(),
-            },
+            source_mint_url: source.mint_url.clone(),
+            source_unit: source.unit.clone(),
+            destination_mint_url: destination_mint_url.clone(),
+            destination_unit: destination_unit.clone(),
             destination_quote_id: destination_quote_id.clone(),
-            amount: prepared.amount().into(),
-            maximum_fee: maximum_fee.into(),
-        })
+            amount: prepared.amount(),
+            maximum_fee,
+        };
+
+        Self::from_operation(source, destination, &operation)
+    }
+
+    fn completed(&self, amount: Amount, source_fee: Amount) -> CrossMintTransferOutcome {
+        CrossMintTransferOutcome::Completed {
+            receipt: CrossMintTransferReceipt {
+                operation_id: self.operation_id.to_string(),
+                destination: self.destination_identity.clone(),
+                destination_quote_id: self.destination_quote_id.clone(),
+                amount,
+                source_fee,
+            },
+        }
+    }
+
+    async fn destination_issued_amount(&self) -> Result<Option<Amount>, FfiError> {
+        let quote = self
+            .destination
+            .localstore
+            .get_mint_quote(&self.destination_quote_id)
+            .await
+            .map_err(cdk::Error::from)?;
+        let Some(quote) = quote else {
+            return Ok(None);
+        };
+        if quote.mint_url != self.destination.mint_url || quote.unit != self.destination.unit {
+            return Err(cdk::Error::InvalidOperationState.into());
+        }
+        Ok(
+            (quote.state == cdk::nuts::MintQuoteState::Issued)
+                .then_some(quote.amount_issued.into()),
+        )
     }
 }
 
 #[uniffi::export(async_runtime = "tokio")]
-impl PreparedCrossMintTransfer {
+impl CrossMintTransferPlan {
     /// Durable operation ID used to resume this plan.
     pub fn operation_id(&self) -> String {
         self.operation_id.to_string()
@@ -550,14 +1057,29 @@ impl PreparedCrossMintTransfer {
 
     /// Pay the destination quote and claim its ecash.
     pub async fn confirm(&self) -> Result<CrossMintTransferOutcome, FfiError> {
-        let finalized = self
+        let finalized = match self
             .source
             .confirm_prepared_melt_with_options(
                 self.operation_id,
                 cdk::wallet::MeltConfirmOptions::skip_swap(),
             )
-            .await?;
+            .await
+        {
+            Ok(finalized) => finalized,
+            Err(cdk::Error::InvalidOperationState) => {
+                self.source
+                    .pending_melt(self.operation_id)
+                    .await?
+                    .wait()
+                    .await?
+            }
+            Err(error) => return Err(error.into()),
+        };
         let source_fee: Amount = finalized.fee_paid().into();
+
+        if let Some(amount) = self.destination_issued_amount().await? {
+            return Ok(self.completed(amount, source_fee));
+        }
 
         match self
             .destination
@@ -568,16 +1090,11 @@ impl PreparedCrossMintTransfer {
             )
             .await
         {
-            Ok(proofs) => Ok(CrossMintTransferOutcome::Completed {
-                receipt: CrossMintTransferReceipt {
-                    operation_id: self.operation_id.to_string(),
-                    destination: self.destination_identity.clone(),
-                    destination_quote_id: self.destination_quote_id.clone(),
-                    amount: proofs.total_amount()?.into(),
-                    source_fee,
-                },
-            }),
+            Ok(proofs) => Ok(self.completed(proofs.total_amount()?.into(), source_fee)),
             Err(error) => {
+                if let Some(amount) = self.destination_issued_amount().await? {
+                    return Ok(self.completed(amount, source_fee));
+                }
                 let retryable = !error.is_definitive_failure();
                 Ok(CrossMintTransferOutcome::ClaimPending {
                     pending: CrossMintClaimPending {
@@ -660,6 +1177,7 @@ impl Wallet {
             .await
             .map_err(cdk::Error::from)?
             .ok_or(cdk::Error::UnknownQuote)?;
+        ensure_mint_quote_belongs_to_wallet(self.inner(), &quote)?;
         let session = MintSession::from_quote(Arc::clone(self.inner()), quote);
         Ok(Arc::new(session))
     }
@@ -680,14 +1198,28 @@ impl Wallet {
             .inner()
             .prepare_send(request.amount.into(), options)
             .await?;
-        Ok(Arc::new(SendPlan::new(Arc::clone(self.inner()), &prepared)))
+        match SendPlan::new(Arc::clone(self.inner()), &prepared) {
+            Ok(plan) => Ok(Arc::new(plan)),
+            Err(error) => {
+                if let Err(cleanup_error) = prepared.cancel().await {
+                    tracing::warn!(
+                        "Could not cancel send plan after facade construction failed: {}",
+                        cleanup_error
+                    );
+                }
+                Err(error)
+            }
+        }
     }
 
     /// Resume a prepared send after a process restart.
     pub async fn send_plan(&self, operation_id: String) -> Result<Arc<SendPlan>, FfiError> {
         let operation_id = parse_operation_id(&operation_id)?;
         let prepared = self.inner().prepared_send(operation_id).await?;
-        Ok(Arc::new(SendPlan::new(Arc::clone(self.inner()), &prepared)))
+        Ok(Arc::new(SendPlan::new(
+            Arc::clone(self.inner()),
+            &prepared,
+        )?))
     }
 
     /// Validate and redeem a token into this wallet.
@@ -696,10 +1228,7 @@ impl Wallet {
             metadata: request.metadata,
             ..Default::default()
         };
-        let amount = self
-            .inner()
-            .receive(&request.token.to_string(), options)
-            .await?;
+        let amount = self.inner().receive(&request.token, options).await?;
         Ok(ReceiveReceipt {
             amount: amount.into(),
             wallet: self.identity(),
@@ -781,7 +1310,7 @@ impl Wallet {
         Ok(Arc::new(PaymentPlan::new(
             Arc::clone(self.inner()),
             &prepared,
-        )))
+        )?))
     }
 
     /// Resume a payment that the mint is still processing.
@@ -798,7 +1327,7 @@ impl Wallet {
     }
 
     /// Read wallet transaction history.
-    pub async fn history(&self, query: HistoryQuery) -> Result<Vec<Transaction>, FfiError> {
+    pub async fn history(&self, query: HistoryQuery) -> Result<Vec<HistoryEntry>, FfiError> {
         let mut transactions = self
             .inner()
             .list_transactions(query.direction.map(Into::into))
@@ -807,20 +1336,6 @@ impl Wallet {
             transactions.truncate(limit as usize);
         }
         Ok(transactions.into_iter().map(Into::into).collect())
-    }
-
-    /// Subscribe to wallet events. Dropping the returned handle cancels the subscription.
-    pub async fn events(
-        &self,
-        params: SubscribeParams,
-    ) -> Result<Arc<ActiveSubscription>, FfiError> {
-        let engine_params: cdk::nuts::nut17::Params<Arc<String>> = params.into();
-        let subscription_id = engine_params.id.to_string();
-        let subscription = self.inner().subscribe(engine_params).await?;
-        Ok(Arc::new(ActiveSubscription::new(
-            subscription,
-            subscription_id,
-        )))
     }
 
     /// Re-scan deterministic wallet history from the seed.
@@ -849,11 +1364,41 @@ fn parse_operation_id(operation_id: &str) -> Result<uuid::Uuid, FfiError> {
 }
 
 async fn wallet_balance(wallet: &cdk::Wallet) -> Result<WalletBalance, FfiError> {
-    Ok(WalletBalance {
-        available: wallet.total_balance().await?.into(),
-        pending: wallet.total_pending_balance().await?.into(),
-        reserved: wallet.total_reserved_balance().await?.into(),
-    })
+    use cdk::nuts::State;
+
+    // Read every non-terminal proof state in one database query. Three
+    // sequential aggregate calls can observe different moments while an
+    // operation moves Unspent -> Reserved -> PendingSpent/Pending.
+    let proofs = wallet
+        .localstore
+        .get_proofs(
+            Some(wallet.mint_url.clone()),
+            Some(wallet.unit.clone()),
+            Some(vec![
+                State::Unspent,
+                State::Reserved,
+                State::Pending,
+                State::PendingSpent,
+            ]),
+            None,
+        )
+        .await
+        .map_err(cdk::Error::from)?;
+
+    let mut balance = WalletBalance::default();
+    for proof in proofs {
+        let bucket = match proof.state {
+            State::Unspent => &mut balance.available,
+            State::Reserved => &mut balance.reserved,
+            State::Pending | State::PendingSpent => &mut balance.pending,
+            State::Spent => continue,
+        };
+        bucket.value = bucket
+            .value
+            .checked_add(u64::from(proof.proof.amount))
+            .ok_or(cdk::Error::AmountOverflow)?;
+    }
+    Ok(balance)
 }
 
 async fn synchronize_wallet(
@@ -880,6 +1425,16 @@ async fn synchronize_wallet(
             )
         }
     };
+    let pending_operations = wallet
+        .localstore
+        .get_incomplete_sagas()
+        .await
+        .map_err(cdk::Error::Database)?
+        .into_iter()
+        .filter(|saga| saga.mint_url == wallet.mint_url && saga.unit == wallet.unit)
+        .count();
+    let pending_operations =
+        u64::try_from(pending_operations).map_err(|_| cdk::Error::AmountOverflow)?;
 
     Ok(SyncReport {
         wallet: WalletIdentity {
@@ -889,7 +1444,7 @@ async fn synchronize_wallet(
         balance: wallet_balance(wallet).await?,
         recovered_operations: recovery.recovered as u64,
         compensated_operations: recovery.compensated as u64,
-        pending_operations: recovery.skipped as u64,
+        pending_operations,
         failed_operations: recovery.failed as u64,
         claimed_amount: claimed_amount.into(),
         recovered_amount: recovered_amount.into(),
@@ -973,47 +1528,48 @@ impl CashuWallet {
     pub async fn plan_cross_mint_transfer(
         &self,
         request: CrossMintTransferRequest,
-    ) -> Result<Arc<PreparedCrossMintTransfer>, FfiError> {
+    ) -> Result<Arc<CrossMintTransferPlan>, FfiError> {
         let source = repository_wallet(&self.repository, &request.source).await?;
         let destination = repository_wallet(&self.repository, &request.destination).await?;
         let prepared = source
             .prepare_cross_mint_transfer(&destination, request.metadata)
             .await?;
-        Ok(Arc::new(PreparedCrossMintTransfer::new(
-            Arc::new(source),
-            Arc::new(destination),
-            &prepared,
-        )?))
+        match CrossMintTransferPlan::new(Arc::new(source), Arc::new(destination), &prepared) {
+            Ok(plan) => Ok(Arc::new(plan)),
+            Err(error) => {
+                if let Err(cleanup_error) = prepared.cancel().await {
+                    tracing::warn!(
+                        "Could not cancel cross-mint plan after facade construction failed: {}",
+                        cleanup_error
+                    );
+                }
+                Err(error)
+            }
+        }
     }
 
     /// Resume a prepared cross-mint transfer from its source operation ID.
     pub async fn cross_mint_transfer_plan(
         &self,
         operation_id: String,
-    ) -> Result<Arc<PreparedCrossMintTransfer>, FfiError> {
+    ) -> Result<Arc<CrossMintTransferPlan>, FfiError> {
         let operation_id = parse_operation_id(&operation_id)?;
         for source in self.repository.get_wallets().await {
-            let prepared = match source.prepared_melt(operation_id).await {
-                Ok(prepared) => prepared,
-                Err(cdk::Error::InvalidOperationState | cdk::Error::OperationNotFound) => continue,
-                Err(error) => return Err(error.into()),
-            };
-            let cdk::wallet::PreparedMeltPurpose::CrossMintTransfer {
-                destination_mint_url,
-                destination_unit,
-                ..
-            } = prepared.purpose()
-            else {
-                return Err(cdk::Error::InvalidOperationState.into());
+            let Some(operation) = source.cross_mint_transfer_operation(operation_id).await? else {
+                continue;
             };
             let destination = self
                 .repository
-                .get_or_create_wallet(destination_mint_url.clone(), destination_unit.clone(), None)
+                .get_or_create_wallet(
+                    operation.destination_mint_url.clone(),
+                    operation.destination_unit.clone(),
+                    None,
+                )
                 .await?;
-            return Ok(Arc::new(PreparedCrossMintTransfer::new(
+            return Ok(Arc::new(CrossMintTransferPlan::from_operation(
                 Arc::new(source),
                 Arc::new(destination),
-                &prepared,
+                &operation,
             )?));
         }
 
@@ -1031,7 +1587,7 @@ impl CashuWallet {
     }
 
     /// Read history across all configured mint wallets.
-    pub async fn history(&self, query: HistoryQuery) -> Result<Vec<Transaction>, FfiError> {
+    pub async fn history(&self, query: HistoryQuery) -> Result<Vec<HistoryEntry>, FfiError> {
         let mut transactions = self
             .repository
             .list_transactions(query.direction.map(Into::into))
@@ -1059,11 +1615,14 @@ async fn repository_wallet(
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
     use crate::database::custom_wallet_store;
     use crate::sqlite::WalletSqliteDatabase;
 
     const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    const TOKEN: &str = "cashuBpGF0gaJhaUgArSaMTR9YJmFwgaNhYQFhc3hAOWE2ZGJiODQ3YmQyMzJiYTc2ZGIwZGYxOTcyMTZiMjlkM2I4Y2MxNDU1M2NkMjc4MjdmYzFjYzk0MmZlZGI0ZWFjWCEDhhhUP_trhpXfStS6vN6So0qWvc2X3O4NfM-Y1HISZ5JhZGlUaGFuayB5b3VhbXVodHRwOi8vbG9jYWxob3N0OjMzMzhhdWNzYXQ=";
 
     fn memory_store() -> WalletStore {
         custom_wallet_store(
@@ -1087,6 +1646,54 @@ mod tests {
         assert!(output.contains("[REDACTED]"));
     }
 
+    #[allow(clippy::use_debug)]
+    #[test]
+    fn multi_mint_open_request_debug_redacts_credentials() {
+        let proxy = "http://wallet-user:wallet-password@proxy.example.com";
+        let request = CashuWalletOpenRequest {
+            mnemonic: MNEMONIC.to_string(),
+            store: memory_store(),
+            proxy_url: Some(proxy.to_string()),
+            rate_limit: None,
+        };
+
+        let output = format!("{request:?}");
+        assert!(!output.contains(MNEMONIC));
+        assert!(!output.contains(proxy));
+        assert!(!output.contains("wallet-password"));
+        assert!(output.contains("[CONFIGURED]"));
+    }
+
+    #[allow(clippy::use_debug)]
+    #[test]
+    fn receive_request_debug_redacts_bearer_token() {
+        let token = "cashuAeyJiZWFyZXIiOiJzZWNyZXQifQ";
+        let request = ReceiveRequest {
+            token: token.to_string(),
+            metadata: HashMap::new(),
+        };
+
+        let output = format!("{request:?}");
+        assert!(!output.contains(token));
+        assert!(output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn payment_receipt_debug_redacts_payment_proof() {
+        let preimage = "payment-preimage";
+        let receipt = PaymentReceipt {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            quote_id: "public-melt-quote-id".to_string(),
+            payment_proof: Some(preimage.to_string()),
+            amount: Amount::new(100),
+            fee_paid: Amount::new(1),
+        };
+
+        let output = format!("{receipt:?}");
+        assert!(output.contains("public-melt-quote-id"));
+        assert!(!output.contains(preimage));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn single_wallet_local_queries_do_not_require_network() {
         let wallet = Wallet::open(WalletOpenRequest {
@@ -1108,6 +1715,29 @@ mod tests {
         assert_eq!(report.balance, WalletBalance::default());
         assert_eq!(report.recovered_operations, 0);
         assert_eq!(report.compensated_operations, 0);
+        assert_eq!(report.pending_operations, 0);
+
+        let operation_id = uuid::Uuid::now_v7();
+        let saga = cdk_common::wallet::WalletSaga::new(
+            operation_id,
+            cdk_common::wallet::WalletSagaState::Send(cdk_common::wallet::SendSagaState::Preparing),
+            cdk::Amount::from(1),
+            wallet.inner().mint_url.clone(),
+            wallet.inner().unit.clone(),
+            cdk_common::wallet::OperationData::PreparedSend(
+                cdk_common::wallet::PreparedSendOperationData {
+                    amount: cdk::Amount::from(1),
+                    options: cdk::wallet::SendOptions::default(),
+                    proofs_to_swap: Vec::new(),
+                    proofs_to_send: Vec::new(),
+                    swap_fee: cdk::Amount::ZERO,
+                    send_fee: cdk::Amount::ZERO,
+                },
+            ),
+        );
+        wallet.inner().localstore.add_saga(saga).await.unwrap();
+        let report = wallet.synchronize(SyncPolicy::LocalOnly).await.unwrap();
+        assert_eq!(report.pending_operations, 1);
 
         let quote = cdk::wallet::MintQuote::new(
             "local-quote".to_string(),
@@ -1134,6 +1764,92 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn balance_classifies_unclaimed_sends_as_pending() {
+        let wallet = Wallet::open(WalletOpenRequest {
+            mint_url: "https://mint.example.com".to_string(),
+            unit: CurrencyUnit::Sat,
+            mnemonic: MNEMONIC.to_string(),
+            store: memory_store(),
+            config: None,
+        })
+        .expect("wallet should open");
+        let token = cdk::nuts::Token::from_str(TOKEN).expect("public test vector should parse");
+        let proof = token
+            .proofs(&[])
+            .expect("test token should expose its proof")
+            .into_iter()
+            .next()
+            .expect("test token should contain a proof");
+        let y = proof.y().expect("test proof should have a Y");
+        let proof_info = cdk_common::wallet::ProofInfo::new(
+            proof,
+            wallet.inner().mint_url.clone(),
+            cdk::nuts::State::Unspent,
+            wallet.inner().unit.clone(),
+        )
+        .expect("test proof should be valid");
+        wallet
+            .inner()
+            .localstore
+            .update_proofs(vec![proof_info], vec![])
+            .await
+            .unwrap();
+
+        let available = wallet.balance().await.unwrap();
+        assert_eq!(available.available, Amount::new(1));
+        assert_eq!(available.pending, Amount::zero());
+
+        wallet
+            .inner()
+            .localstore
+            .update_proofs_state(vec![y], cdk::nuts::State::PendingSpent)
+            .await
+            .unwrap();
+        let pending = wallet.balance().await.unwrap();
+        assert_eq!(pending.available, Amount::zero());
+        assert_eq!(pending.pending, Amount::new(1));
+        assert_eq!(pending.reserved, Amount::zero());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mint_session_claim_is_idempotent_after_issuance() {
+        let wallet = Wallet::open(WalletOpenRequest {
+            mint_url: "https://mint.example.com".to_string(),
+            unit: CurrencyUnit::Sat,
+            mnemonic: MNEMONIC.to_string(),
+            store: memory_store(),
+            config: None,
+        })
+        .expect("wallet should open");
+        let mut quote = cdk::wallet::MintQuote::new(
+            "issued-quote".to_string(),
+            wallet.inner().mint_url.clone(),
+            cdk::nuts::PaymentMethod::BOLT11,
+            Some(cdk::Amount::from(21)),
+            wallet.inner().unit.clone(),
+            "lnbc-issued".to_string(),
+            4_000_000_000,
+            None,
+        );
+        quote.state = cdk::nuts::MintQuoteState::Issued;
+        quote.amount_paid = cdk::Amount::from(21);
+        quote.amount_issued = cdk::Amount::from(21);
+        wallet
+            .inner()
+            .localstore
+            .add_mint_quote(quote)
+            .await
+            .unwrap();
+
+        let session = wallet
+            .minting_session("issued-quote".to_string())
+            .await
+            .unwrap();
+        assert_eq!(session.claim().await.unwrap(), Amount::new(21));
+        assert_eq!(session.claim().await.unwrap(), Amount::new(21));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn multi_mint_root_identifies_each_balance() {
         let root = CashuWallet::open(CashuWalletOpenRequest {
             mnemonic: MNEMONIC.to_string(),
@@ -1155,5 +1871,70 @@ mod tests {
         assert_eq!(balances.len(), 1);
         assert_eq!(balances[0].wallet.mint_url.url, "https://mint.example.com");
         assert_eq!(balances[0].balance, WalletBalance::default());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cross_mint_plan_reconstructs_from_its_durable_identity_without_a_source_saga() {
+        let root = CashuWallet::open(CashuWalletOpenRequest {
+            mnemonic: MNEMONIC.to_string(),
+            store: memory_store(),
+            proxy_url: None,
+            rate_limit: None,
+        })
+        .expect("portfolio should open");
+        let source = root
+            .wallet(
+                MintUrl {
+                    url: "https://source.example.com".to_string(),
+                },
+                CurrencyUnit::Sat,
+            )
+            .await
+            .unwrap();
+        let destination = root
+            .wallet(
+                MintUrl {
+                    url: "https://destination.example.com".to_string(),
+                },
+                CurrencyUnit::Sat,
+            )
+            .await
+            .unwrap();
+        let operation_id = uuid::Uuid::now_v7();
+        let operation = cdk_common::wallet::CrossMintTransferOperation {
+            operation_id,
+            source_mint_url: source.inner().mint_url.clone(),
+            source_unit: source.inner().unit.clone(),
+            destination_mint_url: destination.inner().mint_url.clone(),
+            destination_unit: destination.inner().unit.clone(),
+            destination_quote_id: "destination-quote".to_string(),
+            amount: cdk::Amount::from(100),
+            maximum_fee: cdk::Amount::from(3),
+        };
+        source
+            .inner()
+            .localstore
+            .kv_write(
+                "cdk_wallet",
+                "cross_mint_transfers",
+                &operation_id.to_string(),
+                &serde_json::to_vec(&operation).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let plan = root
+            .cross_mint_transfer_plan(operation_id.to_string())
+            .await
+            .expect("durable transfer identity should reconstruct the plan");
+
+        assert_eq!(plan.operation_id(), operation_id.to_string());
+        assert_eq!(plan.amount(), Amount::new(100));
+        assert_eq!(plan.maximum_fee(), Amount::new(3));
+        assert_eq!(
+            plan.destination().mint_url.url,
+            "https://destination.example.com"
+        );
+        assert_eq!(plan.destination_quote_id(), "destination-quote");
     }
 }

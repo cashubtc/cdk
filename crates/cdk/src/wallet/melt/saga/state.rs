@@ -14,8 +14,9 @@
 //!                                                                 └─> amount(), fee(), change(), etc.
 //! ```
 //!
-//! Note: `PaymentPending` is a persistence state in `WalletSaga`, not a typestate.
-//! When payment is pending, the saga returns an error and recovery handles it later.
+//! `PaymentPending` is both a typestate result and a persisted `WalletSaga`
+//! state. Persisting it records that the mint request has returned, so another
+//! process can reconcile the quote without racing an in-flight request.
 
 use cdk_common::wallet::{KeysetLoadPolicy, WalletSaga};
 use cdk_common::MeltQuoteState;

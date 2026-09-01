@@ -14,11 +14,15 @@ use crate::{Amount, Error, Proofs};
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MeltSagaState {
-    /// Proofs reserved and quote locked, ready to initiate payment
+    /// Durable owner record created before the quote and proofs are reserved.
+    Preparing,
+    /// A durable payment plan awaiting an explicit confirm or cancel decision.
+    Prepared,
+    /// Confirmation started after proofs were reserved and the quote was locked.
     ProofsReserved,
-    /// Melt request sent to mint, Lightning payment initiated
+    /// Melt request durably staged and potentially still in flight.
     MeltRequested,
-    /// Lightning payment in progress, awaiting confirmation from network
+    /// Mint acknowledged the request but payment still awaits a terminal state.
     PaymentPending,
 }
 
@@ -43,6 +47,8 @@ pub enum PreparedMeltPurpose {
 impl std::fmt::Display for MeltSagaState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            MeltSagaState::Preparing => write!(f, "preparing"),
+            MeltSagaState::Prepared => write!(f, "prepared"),
             MeltSagaState::ProofsReserved => write!(f, "proofs_reserved"),
             MeltSagaState::MeltRequested => write!(f, "melt_requested"),
             MeltSagaState::PaymentPending => write!(f, "payment_pending"),
@@ -54,6 +60,8 @@ impl std::str::FromStr for MeltSagaState {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "preparing" => Ok(MeltSagaState::Preparing),
+            "prepared" => Ok(MeltSagaState::Prepared),
             "proofs_reserved" => Ok(MeltSagaState::ProofsReserved),
             "melt_requested" => Ok(MeltSagaState::MeltRequested),
             "payment_pending" => Ok(MeltSagaState::PaymentPending),

@@ -6,23 +6,26 @@
 //! # State Flow
 //!
 //! ```text
-//! [saga created] ──► ProofsReserved ──► MeltRequested ──► PaymentPending ──► [completed]
-//!                         │                   │                 │
-//!                         │                   └─────────────────┤
-//!                         │                                     ├─ quote Paid ─────────► [completed]
-//!                         │                                     ├─ quote Unpaid/Failed ► [compensated]
-//!                         │                                     └─ quote Pending ──────► [skipped]
-//!                         │
-//!                         └─ recovery ────────────────────────────────────────────────► [compensated]
+//! [saga created] ──► Preparing ──► Prepared ──► ProofsReserved ──► MeltRequested ──► PaymentPending ──► [completed]
+//!                        │                │                  │                 │
+//!                        │                │                  └─────────────────┤
+//!                        │                │                                    ├─ quote Paid ─────────► [completed]
+//!                        │                │                                    ├─ quote Unpaid/Failed ► [compensated]
+//!                        │                │                                    └─ quote Pending ──────► [skipped]
+//!                        │                │
+//!                        │                └─ recovery ────────────────────────────────────────────────► [skipped]
+//!                        └─ recovery ─────────────────────────────────────────────────────────────────► [compensated]
 //! ```
 //!
 //! # States
 //!
 //! | State | Description |
 //! |-------|-------------|
-//! | `ProofsReserved` | Proofs reserved and quote locked, ready to initiate payment |
-//! | `MeltRequested` | Melt request sent to mint, Lightning payment initiated |
-//! | `PaymentPending` | Lightning payment in progress, awaiting confirmation from network |
+//! | `Preparing` | Durable owner record created before quote and proof reservations |
+//! | `Prepared` | Durable plan with reserved proofs and quote, awaiting an app decision |
+//! | `ProofsReserved` | Confirmation claimed the plan and began building the payment request |
+//! | `MeltRequested` | Request durably staged and potentially still in flight |
+//! | `PaymentPending` | Mint acknowledged the request; payment awaits a terminal state |
 //!
 //! # Recovery Outcomes
 //!
@@ -30,7 +33,7 @@
 //! |---------|-------------|
 //! | `[completed]` | Payment succeeded, proofs spent, change (if any) claimed |
 //! | `[compensated]` | Payment failed/cancelled, proofs and quote released |
-//! | `[skipped]` | Payment still pending, will retry on next recovery |
+//! | `[skipped]` | Plan awaits an app decision, or payment is still pending |
 
 use std::collections::HashMap;
 
@@ -54,7 +57,9 @@ use crate::util::unix_time;
 use crate::wallet::blind_signature::{
     validate_mint_response_signatures, SignatureAmountValidation,
 };
-use crate::wallet::saga::{add_compensation, new_compensations, Compensations};
+use crate::wallet::saga::{
+    add_compensation, execute_compensations, new_compensations, Compensations,
+};
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
 pub(crate) mod compensation;
@@ -209,21 +214,8 @@ async fn finalize_melt_common<'a>(
         })
         .await?;
 
-    if let Err(e) = wallet.localstore.release_melt_quote(&operation_id).await {
-        tracing::warn!(
-            "Failed to release melt quote for operation {}: {}",
-            operation_id,
-            e
-        );
-    }
-
-    if let Err(e) = wallet.localstore.delete_saga(&operation_id).await {
-        tracing::warn!(
-            "Failed to delete melt saga {}: {}. Will be cleaned up on recovery.",
-            operation_id,
-            e
-        );
-    }
+    wallet.localstore.release_melt_quote(&operation_id).await?;
+    wallet.localstore.delete_saga(&operation_id).await?;
     Ok(MeltSaga {
         wallet,
         compensations,
@@ -253,8 +245,18 @@ impl<'a> MeltSaga<'a, Initial> {
         }
     }
 
+    /// Operation ID allocated for this saga.
+    pub fn operation_id(&self) -> uuid::Uuid {
+        self.state_data.operation_id
+    }
+
     /// Initialize melt operation (common steps for prepare methods)
-    async fn initialize_melt(&mut self, quote_id: &str) -> Result<MeltQuote, Error> {
+    async fn initialize_melt(
+        &mut self,
+        quote_id: &str,
+        metadata: &HashMap<String, String>,
+        purpose: PreparedMeltPurpose,
+    ) -> Result<(MeltQuote, WalletSaga), Error> {
         let quote_info = self
             .wallet
             .localstore
@@ -263,17 +265,52 @@ impl<'a> MeltSaga<'a, Initial> {
             .ok_or(Error::UnknownQuote)?;
 
         ensure_cdk!(
+            quote_info.mint_url.as_ref() == Some(&self.wallet.mint_url),
+            Error::IncorrectMint
+        );
+        ensure_cdk!(quote_info.unit == self.wallet.unit, Error::UnsupportedUnit);
+
+        ensure_cdk!(
             quote_info.expiry.gt(&unix_time()),
             Error::ExpiredQuote(quote_info.expiry, unix_time())
         );
 
-        // Reserve the quote to prevent concurrent operations from using it
-        self.wallet
-            .localstore
-            .reserve_melt_quote(quote_id, &self.state_data.operation_id)
-            .await?;
+        let mut saga = WalletSaga::new(
+            self.state_data.operation_id,
+            WalletSagaState::Melt(MeltSagaState::Preparing),
+            quote_info.amount,
+            self.wallet.mint_url.clone(),
+            self.wallet.unit.clone(),
+            OperationData::PreparedMelt(PreparedMeltOperationData {
+                quote: quote_info.clone(),
+                proofs: Proofs::new(),
+                proofs_to_swap: Proofs::new(),
+                swap_fee: Amount::ZERO,
+                input_fee: Amount::ZERO,
+                input_fee_without_swap: Amount::ZERO,
+                metadata: metadata.clone(),
+                purpose,
+            }),
+        );
+        // Persist an owner before either quote or proof reservation. Recovery
+        // can safely roll this marker back if preparation is interrupted.
+        saga.update_state(WalletSagaState::Melt(MeltSagaState::Preparing));
+        self.wallet.localstore.add_saga(saga.clone()).await?;
 
-        // Register compensation to release quote on failure
+        // This action releases every proof owned by the operation, regardless
+        // of whether selection has completed when rollback begins.
+        add_compensation(
+            &mut self.compensations,
+            Box::new(RevertProofReservation {
+                localstore: self.wallet.localstore.clone(),
+                proof_ys: Vec::new(),
+                saga_id: self.state_data.operation_id,
+            }),
+        )
+        .await;
+
+        // Register before reserving so a partially applied database operation
+        // is still cleaned up. It runs before proof release and saga deletion.
         add_compensation(
             &mut self.compensations,
             Box::new(ReleaseMeltQuote {
@@ -283,7 +320,30 @@ impl<'a> MeltSaga<'a, Initial> {
         )
         .await;
 
-        Ok(quote_info)
+        if let Err(error) = self
+            .wallet
+            .localstore
+            .reserve_melt_quote(quote_id, &self.state_data.operation_id)
+            .await
+        {
+            execute_compensations(&mut self.compensations).await?;
+            return Err(error.into());
+        }
+
+        Ok((quote_info, saga))
+    }
+
+    async fn persist_prepared_melt(
+        &self,
+        mut saga: WalletSaga,
+        data: PreparedMeltOperationData,
+    ) -> Result<WalletSaga, Error> {
+        saga.data = OperationData::PreparedMelt(data);
+        saga.update_state(WalletSagaState::Melt(MeltSagaState::Prepared));
+        if !self.wallet.localstore.update_saga(saga.clone()).await? {
+            return Err(Error::ConcurrentUpdate);
+        }
+        Ok(saga)
     }
 
     /// Prepare the melt operation by selecting and reserving proofs.
@@ -300,13 +360,20 @@ impl<'a> MeltSaga<'a, Initial> {
         quote_id: &str,
         metadata: HashMap<String, String>,
     ) -> Result<MeltSaga<'a, Prepared>, Error> {
+        let _operation_guard = self
+            .wallet
+            .lock_operation(self.state_data.operation_id)
+            .await;
+
         tracing::info!(
             "Preparing melt for quote {} with operation {}",
             quote_id,
             self.state_data.operation_id
         );
 
-        let quote_info = self.initialize_melt(quote_id).await?;
+        let (quote_info, preparing_saga) = self
+            .initialize_melt(quote_id, &metadata, PreparedMeltPurpose::Payment)
+            .await?;
 
         let inputs_needed_amount = quote_info
             .amount
@@ -351,35 +418,21 @@ impl<'a> MeltSaga<'a, Initial> {
                 .reserve_proofs(proof_ys.clone(), &operation_id)
                 .await?;
 
-            let saga = WalletSaga::new(
-                operation_id,
-                WalletSagaState::Melt(MeltSagaState::ProofsReserved),
-                quote_info.amount,
-                self.wallet.mint_url.clone(),
-                self.wallet.unit.clone(),
-                OperationData::PreparedMelt(PreparedMeltOperationData {
-                    quote: quote_info.clone(),
-                    proofs: exact_input_proofs.clone(),
-                    proofs_to_swap: Proofs::new(),
-                    swap_fee: Amount::ZERO,
-                    input_fee,
-                    input_fee_without_swap: input_fee,
-                    metadata: metadata.clone(),
-                    purpose: PreparedMeltPurpose::Payment,
-                }),
-            );
-
-            self.wallet.localstore.add_saga(saga.clone()).await?;
-
-            add_compensation(
-                &mut self.compensations,
-                Box::new(RevertProofReservation {
-                    localstore: self.wallet.localstore.clone(),
-                    proof_ys,
-                    saga_id: operation_id,
-                }),
-            )
-            .await;
+            let saga = self
+                .persist_prepared_melt(
+                    preparing_saga,
+                    PreparedMeltOperationData {
+                        quote: quote_info.clone(),
+                        proofs: exact_input_proofs.clone(),
+                        proofs_to_swap: Proofs::new(),
+                        swap_fee: Amount::ZERO,
+                        input_fee,
+                        input_fee_without_swap: input_fee,
+                        metadata: metadata.clone(),
+                        purpose: PreparedMeltPurpose::Payment,
+                    },
+                )
+                .await?;
 
             return Ok(MeltSaga {
                 wallet: self.wallet,
@@ -445,35 +498,21 @@ impl<'a> MeltSaga<'a, Initial> {
                 .await?;
         }
 
-        let saga = WalletSaga::new(
-            operation_id,
-            WalletSagaState::Melt(MeltSagaState::ProofsReserved),
-            quote_info.amount,
-            self.wallet.mint_url.clone(),
-            self.wallet.unit.clone(),
-            OperationData::PreparedMelt(PreparedMeltOperationData {
-                quote: quote_info.clone(),
-                proofs: proofs_to_send.clone(),
-                proofs_to_swap: proofs_to_swap.clone(),
-                swap_fee,
-                input_fee,
-                input_fee_without_swap: swap_fee,
-                metadata: metadata.clone(),
-                purpose: PreparedMeltPurpose::Payment,
-            }),
-        );
-
-        self.wallet.localstore.add_saga(saga.clone()).await?;
-
-        add_compensation(
-            &mut self.compensations,
-            Box::new(RevertProofReservation {
-                localstore: self.wallet.localstore.clone(),
-                proof_ys,
-                saga_id: operation_id,
-            }),
-        )
-        .await;
+        let saga = self
+            .persist_prepared_melt(
+                preparing_saga,
+                PreparedMeltOperationData {
+                    quote: quote_info.clone(),
+                    proofs: proofs_to_send.clone(),
+                    proofs_to_swap: proofs_to_swap.clone(),
+                    swap_fee,
+                    input_fee,
+                    input_fee_without_swap: swap_fee,
+                    metadata: metadata.clone(),
+                    purpose: PreparedMeltPurpose::Payment,
+                },
+            )
+            .await?;
 
         Ok(MeltSaga {
             wallet: self.wallet,
@@ -519,13 +558,20 @@ impl<'a> MeltSaga<'a, Initial> {
         metadata: HashMap<String, String>,
         purpose: PreparedMeltPurpose,
     ) -> Result<MeltSaga<'a, Prepared>, Error> {
+        let _operation_guard = self
+            .wallet
+            .lock_operation(self.state_data.operation_id)
+            .await;
+
         tracing::info!(
             "Preparing melt with specific proofs for quote {} with operation {}",
             quote_id,
             self.state_data.operation_id
         );
 
-        let quote_info = self.initialize_melt(quote_id).await?;
+        let (quote_info, preparing_saga) = self
+            .initialize_melt(quote_id, &metadata, purpose.clone())
+            .await?;
 
         let proofs_total = proofs.total_amount()?;
         let inputs_needed = quote_info
@@ -574,35 +620,21 @@ impl<'a> MeltSaga<'a, Initial> {
 
         let input_fee = self.wallet.get_proofs_fee(&proofs).await?.total;
 
-        let saga = WalletSaga::new(
-            operation_id,
-            WalletSagaState::Melt(MeltSagaState::ProofsReserved),
-            quote_info.amount,
-            self.wallet.mint_url.clone(),
-            self.wallet.unit.clone(),
-            OperationData::PreparedMelt(PreparedMeltOperationData {
-                quote: quote_info.clone(),
-                proofs: proofs.clone(),
-                proofs_to_swap: Proofs::new(),
-                swap_fee: Amount::ZERO,
-                input_fee,
-                input_fee_without_swap: input_fee,
-                metadata: metadata.clone(),
-                purpose,
-            }),
-        );
-
-        self.wallet.localstore.add_saga(saga.clone()).await?;
-
-        add_compensation(
-            &mut self.compensations,
-            Box::new(RevertProofReservation {
-                localstore: self.wallet.localstore.clone(),
-                proof_ys,
-                saga_id: operation_id,
-            }),
-        )
-        .await;
+        let saga = self
+            .persist_prepared_melt(
+                preparing_saga,
+                PreparedMeltOperationData {
+                    quote: quote_info.clone(),
+                    proofs: proofs.clone(),
+                    proofs_to_swap: Proofs::new(),
+                    swap_fee: Amount::ZERO,
+                    input_fee,
+                    input_fee_without_swap: input_fee,
+                    metadata: metadata.clone(),
+                    purpose,
+                },
+            )
+            .await?;
 
         Ok(MeltSaga {
             wallet: self.wallet,
@@ -684,6 +716,23 @@ impl<'a> MeltSaga<'a, Prepared> {
             operation_id,
             options.skip_swap
         );
+
+        let mut claimed_saga = self.state_data.saga.clone();
+        if claimed_saga.state != WalletSagaState::Melt(MeltSagaState::Prepared)
+            || !matches!(claimed_saga.data, OperationData::PreparedMelt(_))
+        {
+            return Err(Error::InvalidOperationState);
+        }
+        claimed_saga.update_state(WalletSagaState::Melt(MeltSagaState::ProofsReserved));
+        if !self
+            .wallet
+            .localstore
+            .update_saga(claimed_saga.clone())
+            .await?
+        {
+            return Err(Error::ConcurrentUpdate);
+        }
+        self.state_data.saga = claimed_saga;
 
         let keyset_policy = self.state_data.keyset_policy;
         let active_keyset_id = self
@@ -1005,9 +1054,30 @@ impl<'a> MeltSaga<'a, MeltRequested> {
 
                 match self.wallet.internal_check_melt_status(&quote_info.id).await {
                     Ok(response) => match response.state() {
-                        MeltQuoteState::Failed
-                        | MeltQuoteState::Unknown
-                        | MeltQuoteState::Unpaid => {
+                        MeltQuoteState::Unpaid if response.payment_proof().is_none() => {
+                            // A status request can overtake an in-flight POST
+                            // after the client loses the POST response. An
+                            // immediate `Unpaid` result therefore does not
+                            // prove that the melt request was never accepted.
+                            // Keep the persisted state at `MeltRequested` so
+                            // its recovery lease prevents an eager rollback;
+                            // reconciliation can release the proofs once the
+                            // request has had time to settle.
+                            tracing::warn!(
+                                "Quote {} is still Unpaid after an ambiguous melt request; \
+                                 deferring reconciliation",
+                                quote_info.id
+                            );
+                            return Ok(MeltSagaResult::Pending(Box::new(MeltSaga {
+                                wallet: self.wallet,
+                                compensations: self.compensations,
+                                state_data: PaymentPending {
+                                    operation_id: self.state_data.operation_id,
+                                    quote: self.state_data.quote,
+                                },
+                            })));
+                        }
+                        MeltQuoteState::Failed | MeltQuoteState::Unpaid => {
                             // Safety invariant across all payment methods: if
                             // the mint has a `payment_proof` for this quote,
                             // an irreversible settlement artifact has been
@@ -1030,7 +1100,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                                     quote_info.id,
                                     response.state()
                                 );
-                                self.handle_pending().await;
+                                self.handle_pending().await?;
                                 return Ok(MeltSagaResult::Pending(Box::new(MeltSaga {
                                     wallet: self.wallet,
                                     compensations: self.compensations,
@@ -1048,6 +1118,28 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                             );
                             self.handle_failure().await?;
                             return Err(Error::PaymentFailed);
+                        }
+                        MeltQuoteState::Unknown => {
+                            // The request may have reached the mint before the
+                            // transport failed. `Unknown` is not a terminal
+                            // rejection, even when no payment proof is
+                            // available yet. It also does not acknowledge that
+                            // the POST was processed, so preserve MeltRequested
+                            // and its lease rather than allowing a subsequent
+                            // stale Unpaid read to release the proofs.
+                            tracing::warn!(
+                                "Quote {} status is Unknown after an ambiguous melt request; \
+                                 deferring reconciliation",
+                                quote_info.id
+                            );
+                            return Ok(MeltSagaResult::Pending(Box::new(MeltSaga {
+                                wallet: self.wallet,
+                                compensations: self.compensations,
+                                state_data: PaymentPending {
+                                    operation_id: self.state_data.operation_id,
+                                    quote: self.state_data.quote,
+                                },
+                            })));
                         }
                         MeltQuoteState::Paid => {
                             tracing::info!(
@@ -1076,7 +1168,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                                 "Quote {} status is Pending - keeping proofs pending",
                                 quote_info.id
                             );
-                            self.handle_pending().await;
+                            self.handle_pending().await?;
                             return Ok(MeltSagaResult::Pending(Box::new(MeltSaga {
                                 wallet: self.wallet,
                                 compensations: self.compensations,
@@ -1089,11 +1181,11 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                     },
                     Err(check_err) => {
                         tracing::warn!(
-                            "Failed to check quote {} status: {}. Keeping proofs pending.",
+                            "Failed to check quote {} status after an ambiguous melt request: {}. \
+                             Deferring reconciliation.",
                             quote_info.id,
                             check_err
                         );
-                        self.handle_pending().await;
                         return Ok(MeltSagaResult::Pending(Box::new(MeltSaga {
                             wallet: self.wallet,
                             compensations: self.compensations,
@@ -1126,7 +1218,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                 Ok(MeltSagaResult::Finalized(finalized))
             }
             MeltQuoteState::Pending => {
-                self.handle_pending().await;
+                self.handle_pending().await?;
                 Ok(MeltSagaResult::Pending(Box::new(MeltSaga {
                     wallet: self.wallet,
                     compensations: self.compensations,
@@ -1150,7 +1242,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                          payment proof; keeping proofs pending to avoid loss",
                         quote_info.id
                     );
-                    self.handle_pending().await;
+                    self.handle_pending().await?;
                     return Ok(MeltSagaResult::Pending(Box::new(MeltSaga {
                         wallet: self.wallet,
                         compensations: self.compensations,
@@ -1170,7 +1262,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                          payment proof; keeping proofs pending to avoid loss",
                         quote_info.id
                     );
-                    self.handle_pending().await;
+                    self.handle_pending().await?;
                     return Ok(MeltSagaResult::Pending(Box::new(MeltSaga {
                         wallet: self.wallet,
                         compensations: self.compensations,
@@ -1193,7 +1285,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                     "Melt quote {} returned Unknown state - keeping proofs pending",
                     quote_info.id
                 );
-                self.handle_pending().await;
+                self.handle_pending().await?;
                 Ok(MeltSagaResult::Pending(Box::new(MeltSaga {
                     wallet: self.wallet,
                     compensations: self.compensations,
@@ -1207,22 +1299,53 @@ impl<'a> MeltSaga<'a, MeltRequested> {
     }
 
     /// Handle pending payment state.
-    async fn handle_pending(&self) {
+    async fn handle_pending(&self) -> Result<(), Error> {
+        let operation_id = self.state_data.operation_id;
         let quote_info = &self.state_data.quote;
 
         tracing::info!(
             "Melt quote {} is pending - proofs kept in pending state",
             quote_info.id
         );
+
+        let Some(mut saga) = self.wallet.localstore.get_saga(&operation_id).await? else {
+            return Err(Error::OperationNotFound);
+        };
+
+        match saga.state {
+            WalletSagaState::Melt(MeltSagaState::PaymentPending) => return Ok(()),
+            WalletSagaState::Melt(MeltSagaState::MeltRequested) => {}
+            _ => return Err(Error::ConcurrentUpdate),
+        }
+
+        saga.update_state(WalletSagaState::Melt(MeltSagaState::PaymentPending));
+        if self.wallet.localstore.update_saga(saga).await? {
+            return Ok(());
+        }
+
+        // A second waiter may have persisted the same monotonic transition.
+        // Treat that as success, but reject any competing terminal action.
+        let current = self.wallet.localstore.get_saga(&operation_id).await?;
+        if current
+            .is_some_and(|saga| saga.state == WalletSagaState::Melt(MeltSagaState::PaymentPending))
+        {
+            Ok(())
+        } else {
+            Err(Error::ConcurrentUpdate)
+        }
     }
 
     /// Handle failed payment - release proofs and clean up.
     async fn handle_failure(&self) -> Result<(), Error> {
         let operation_id = self.state_data.operation_id;
 
-        self.wallet
+        if !self
+            .wallet
             .claim_and_compensate_melt(&operation_id, &[MeltSagaState::MeltRequested])
-            .await?;
+            .await?
+        {
+            return Err(Error::ConcurrentUpdate);
+        }
         Ok(())
     }
 }
@@ -1276,7 +1399,10 @@ mod tests {
     use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
     use cdk_common::nuts::{CurrencyUnit, State};
     use cdk_common::wallet::{KeysetLoadPolicy, OperationData, TransactionStatus};
-    use cdk_common::{MeltQuoteOnchainResponse, MeltQuoteResponse, MeltQuoteState, PaymentMethod};
+    use cdk_common::{
+        MeltQuoteBolt11Response, MeltQuoteOnchainResponse, MeltQuoteResponse, MeltQuoteState,
+        PaymentMethod,
+    };
     use uuid::Uuid;
 
     use super::{finalize_melt_common, MeltSaga, MeltSagaResult};
@@ -1625,6 +1751,67 @@ mod tests {
         (db, proof_y, requested)
     }
 
+    async fn requested_bolt11_melt_after_transport_error(
+        status: Option<MeltQuoteState>,
+    ) -> (
+        Arc<dyn cdk_common::database::WalletDatabase<cdk_common::database::Error> + Send + Sync>,
+        crate::nuts::PublicKey,
+        super::MeltSaga<'static, super::state::MeltRequested>,
+    ) {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let proof_info = test_proof_info(keyset_id, 1200, mint_url);
+        let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
+
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote.clone()).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        mock_client.set_post_melt_response(Err(Error::HttpError(
+            None,
+            "ambiguous transport failure".to_string(),
+        )));
+        match status {
+            Some(status) => {
+                mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+                    quote: quote_id.clone(),
+                    state: status,
+                    expiry: quote.expiry,
+                    fee_reserve: quote.fee_reserve,
+                    amount: quote.amount,
+                    request: Some(quote.request.clone()),
+                    payment_preimage: None,
+                    change: None,
+                    unit: Some(quote.unit.clone()),
+                    method: quote.payment_method.clone(),
+                }));
+            }
+            None => {
+                mock_client.set_melt_quote_status_response(Err(Error::HttpError(
+                    None,
+                    "status transport failure".to_string(),
+                )));
+            }
+        }
+        let wallet = Box::leak(Box::new(
+            create_test_wallet_with_mock(db.clone(), mock_client).await,
+        ));
+
+        let requested = MeltSaga::new(wallet)
+            .prepare_with_proofs(&quote_id, vec![proof], HashMap::new())
+            .await
+            .unwrap()
+            .request_melt_with_options(MeltConfirmOptions::new())
+            .await
+            .unwrap();
+
+        (db, proof_y, requested)
+    }
+
     #[tokio::test]
     async fn test_execute_async_unpaid_response_compensates_instead_of_finalizing() {
         let (db, proof_y, requested) =
@@ -1666,6 +1853,92 @@ mod tests {
         let transactions = db.list_transactions(None, None, None).await.unwrap();
         assert_eq!(transactions.len(), 1);
         assert_eq!(transactions[0].status, TransactionStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn test_ambiguous_melt_error_with_unknown_status_keeps_proofs_pending() {
+        let (db, proof_y, requested) =
+            requested_bolt11_melt_after_transport_error(Some(MeltQuoteState::Unknown)).await;
+        let operation_id = requested.state_data.operation_id;
+
+        let result = requested.execute_async(HashMap::new()).await.unwrap();
+        assert!(matches!(result, MeltSagaResult::Pending(_)));
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Pending);
+        assert_eq!(stored[0].used_by_operation, Some(operation_id));
+        let saga = db
+            .get_saga(&operation_id)
+            .await
+            .unwrap()
+            .expect("ambiguous melt saga should remain for recovery");
+        assert_eq!(
+            saga.state,
+            cdk_common::wallet::WalletSagaState::Melt(
+                cdk_common::wallet::MeltSagaState::MeltRequested,
+            )
+        );
+        assert!(crate::wallet::recovery::recovery_is_deferred(&saga));
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].status, TransactionStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn test_ambiguous_melt_error_with_unpaid_status_preserves_request_lease() {
+        let (db, proof_y, requested) =
+            requested_bolt11_melt_after_transport_error(Some(MeltQuoteState::Unpaid)).await;
+        let operation_id = requested.state_data.operation_id;
+
+        let result = requested.execute_async(HashMap::new()).await.unwrap();
+        assert!(matches!(result, MeltSagaResult::Pending(_)));
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Pending);
+        assert_eq!(stored[0].used_by_operation, Some(operation_id));
+        let saga = db
+            .get_saga(&operation_id)
+            .await
+            .unwrap()
+            .expect("ambiguous melt saga should remain for recovery");
+        assert_eq!(
+            saga.state,
+            cdk_common::wallet::WalletSagaState::Melt(
+                cdk_common::wallet::MeltSagaState::MeltRequested,
+            )
+        );
+        assert!(crate::wallet::recovery::recovery_is_deferred(&saga));
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].status, TransactionStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn test_ambiguous_melt_error_with_failed_status_check_preserves_request_lease() {
+        let (db, proof_y, requested) = requested_bolt11_melt_after_transport_error(None).await;
+        let operation_id = requested.state_data.operation_id;
+
+        let result = requested.execute_async(HashMap::new()).await.unwrap();
+        assert!(matches!(result, MeltSagaResult::Pending(_)));
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Pending);
+        assert_eq!(stored[0].used_by_operation, Some(operation_id));
+        let saga = db
+            .get_saga(&operation_id)
+            .await
+            .unwrap()
+            .expect("ambiguous melt saga should remain for recovery");
+        assert_eq!(
+            saga.state,
+            cdk_common::wallet::WalletSagaState::Melt(
+                cdk_common::wallet::MeltSagaState::MeltRequested,
+            )
+        );
+        assert!(crate::wallet::recovery::recovery_is_deferred(&saga));
     }
 
     #[tokio::test]

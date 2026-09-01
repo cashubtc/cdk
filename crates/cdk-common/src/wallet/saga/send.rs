@@ -12,7 +12,11 @@ use crate::{Amount, Error};
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SendSagaState {
-    /// Proofs selected and reserved for sending, ready to create token
+    /// Durable owner record created before proofs are reserved.
+    Preparing,
+    /// A durable send plan awaiting an explicit confirm or cancel decision.
+    Prepared,
+    /// Confirmation started after proofs were selected and reserved.
     ProofsReserved,
     /// Token created and ready to share, proofs marked as pending spent awaiting claim
     TokenCreated,
@@ -23,6 +27,8 @@ pub enum SendSagaState {
 impl std::fmt::Display for SendSagaState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            SendSagaState::Preparing => write!(f, "preparing"),
+            SendSagaState::Prepared => write!(f, "prepared"),
             SendSagaState::ProofsReserved => write!(f, "proofs_reserved"),
             SendSagaState::TokenCreated => write!(f, "token_created"),
             SendSagaState::RollingBack => write!(f, "rolling_back"),
@@ -34,6 +40,8 @@ impl std::str::FromStr for SendSagaState {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "preparing" => Ok(SendSagaState::Preparing),
+            "prepared" => Ok(SendSagaState::Prepared),
             "proofs_reserved" => Ok(SendSagaState::ProofsReserved),
             "token_created" => Ok(SendSagaState::TokenCreated),
             "rolling_back" => Ok(SendSagaState::RollingBack),

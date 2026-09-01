@@ -43,13 +43,21 @@ impl Wallet {
     /// Resume an incomplete issue saga after crash recovery.
     ///
     /// Recovery depends on state:
-    /// - SecretsPrepared: No mint request sent, safe to compensate.
+    /// - Preparing/SecretsPrepared: No mint request sent, safe to compensate.
     /// - MintRequested: Mint request sent, attempt to recover outputs.
     #[instrument(skip(self, saga))]
     pub(crate) async fn resume_issue_saga(
         &self,
         saga: &WalletSaga,
     ) -> Result<RecoveryAction, Error> {
+        let saga = match self.localstore.get_saga(&saga.id).await? {
+            Some(saga) => saga,
+            None => return Ok(RecoveryAction::Skipped),
+        };
+        if saga.mint_url != self.mint_url || saga.unit != self.unit {
+            return Ok(RecoveryAction::Skipped);
+        }
+
         let state = match &saga.state {
             cdk_common::wallet::WalletSagaState::Issue(s) => s,
             _ => {
@@ -60,17 +68,27 @@ impl Wallet {
             }
         };
 
-        let data = match &saga.data {
-            OperationData::Mint(d) => d,
-            _ => {
-                return Err(Error::Custom(format!(
-                    "Invalid operation data type for issue saga {}",
-                    saga.id
-                )))
-            }
-        };
-
         match state {
+            IssueSagaState::Preparing => {
+                if !matches!(&saga.data, OperationData::Mint(_)) {
+                    return Err(Error::Custom(format!(
+                        "Invalid operation data type for preparing issue saga {}",
+                        saga.id
+                    )));
+                }
+                tracing::info!(
+                    "Issue saga {} was interrupted during preparation - cleaning up",
+                    saga.id
+                );
+                if self
+                    .claim_and_compensate_issue(&saga.id, IssueSagaState::Preparing)
+                    .await?
+                {
+                    Ok(RecoveryAction::Compensated)
+                } else {
+                    Ok(RecoveryAction::Skipped)
+                }
+            }
             IssueSagaState::SecretsPrepared => {
                 // No mint request was sent - safe to delete saga
                 // Counter increments are not reversed (by design)
@@ -78,9 +96,14 @@ impl Wallet {
                     "Issue saga {} in SecretsPrepared state - cleaning up",
                     saga.id
                 );
-                self.mark_transaction_failed(saga.id).await?;
-                self.compensate_issue(&saga.id).await?;
-                Ok(RecoveryAction::Compensated)
+                if self
+                    .claim_and_compensate_issue(&saga.id, IssueSagaState::SecretsPrepared)
+                    .await?
+                {
+                    Ok(RecoveryAction::Compensated)
+                } else {
+                    Ok(RecoveryAction::Skipped)
+                }
             }
             IssueSagaState::MintRequested => {
                 // Mint request was sent - try to recover outputs
@@ -88,10 +111,63 @@ impl Wallet {
                     "Issue saga {} in MintRequested state - attempting recovery",
                     saga.id
                 );
-                // Return the result directly (RecoveryAction)
+                let Some(claimed_saga) = self
+                    .claim_issue_saga(&saga.id, IssueSagaState::MintRequested)
+                    .await?
+                else {
+                    return Ok(RecoveryAction::Skipped);
+                };
+                let OperationData::Mint(data) = &claimed_saga.data else {
+                    return Err(Error::Custom(format!(
+                        "Invalid operation data type for issue saga {}",
+                        saga.id
+                    )));
+                };
                 self.complete_issue_from_restore(&saga.id, data).await
             }
         }
+    }
+
+    async fn claim_issue_saga(
+        &self,
+        saga_id: &uuid::Uuid,
+        expected_state: IssueSagaState,
+    ) -> Result<Option<WalletSaga>, Error> {
+        let mut saga = match self.localstore.get_saga(saga_id).await? {
+            Some(saga) => saga,
+            None => return Ok(None),
+        };
+        if saga.mint_url != self.mint_url
+            || saga.unit != self.unit
+            || saga.state != cdk_common::wallet::WalletSagaState::Issue(expected_state)
+            || !matches!(&saga.data, OperationData::Mint(_))
+        {
+            return Ok(None);
+        }
+
+        saga.update_state(cdk_common::wallet::WalletSagaState::Issue(expected_state));
+        if !self.localstore.update_saga(saga.clone()).await? {
+            return Ok(None);
+        }
+        Ok(Some(saga))
+    }
+
+    async fn claim_and_compensate_issue(
+        &self,
+        saga_id: &uuid::Uuid,
+        expected_state: IssueSagaState,
+    ) -> Result<bool, Error> {
+        if self
+            .claim_issue_saga(saga_id, expected_state)
+            .await?
+            .is_none()
+        {
+            return Ok(false);
+        }
+
+        self.mark_transaction_failed(*saga_id).await?;
+        self.compensate_issue(saga_id).await?;
+        Ok(true)
     }
 
     /// Complete an issue by first trying replay, then falling back to restore.
@@ -123,6 +199,7 @@ impl Wallet {
             self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Completed)
                 .await?;
 
+            self.localstore.release_mint_quote(saga_id).await?;
             self.localstore.delete_saga(saga_id).await?;
             return Ok(RecoveryAction::Recovered);
         }
@@ -150,6 +227,7 @@ impl Wallet {
                 self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Completed)
                     .await?;
 
+                self.localstore.release_mint_quote(saga_id).await?;
                 self.localstore.delete_saga(saga_id).await?;
                 Ok(RecoveryAction::Recovered)
             }
@@ -161,7 +239,7 @@ impl Wallet {
                 );
                 self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Failed)
                     .await?;
-                self.localstore.delete_saga(saga_id).await?;
+                self.compensate_issue(saga_id).await?;
                 Ok(RecoveryAction::Compensated)
             }
             OutputRecoveryResult::Unavailable => {
@@ -229,7 +307,9 @@ impl Wallet {
                 .await?
                 .is_some()
             {
-                offset += output_counts.get(index).copied().unwrap_or_default();
+                offset = offset
+                    .checked_add(output_counts.get(index).copied().unwrap_or_default())
+                    .ok_or(Error::AmountOverflow)?;
                 continue;
             }
 
@@ -678,20 +758,14 @@ impl Wallet {
 
     /// Compensate an issue saga by releasing the quote and deleting the saga.
     async fn compensate_issue(&self, saga_id: &uuid::Uuid) -> Result<(), Error> {
-        // Release the mint quote reservation (best-effort, continue on error)
-        if let Err(e) = (ReleaseMintQuote {
+        // Keep the saga when quote release fails. It is the durable identity
+        // recovery needs to retry the reservation cleanup safely.
+        (ReleaseMintQuote {
             localstore: self.localstore.clone(),
             operation_id: *saga_id,
-        }
+        })
         .execute()
-        .await)
-        {
-            tracing::warn!(
-                "Failed to release mint quote for saga {}: {}. Continuing with saga cleanup.",
-                saga_id,
-                escape_log_value(&e)
-            );
-        }
+        .await?;
 
         self.localstore.delete_saga(saga_id).await?;
         Ok(())
@@ -886,6 +960,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_recover_issue_preparing_releases_quote() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+        let mut mint_quote = test_mint_quote(mint_url.clone());
+        let quote_id = mint_quote.id.clone();
+        db.add_mint_quote(mint_quote.clone()).await.unwrap();
+        db.reserve_mint_quote(&quote_id, &saga_id).await.unwrap();
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Issue(IssueSagaState::Preparing),
+            Amount::from(1000),
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::Mint(MintOperationData::new_single(
+                quote_id.clone(),
+                Amount::from(1000),
+                None,
+                None,
+                None,
+            )),
+        );
+        db.add_saga(saga.clone()).await.unwrap();
+
+        let wallet =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        let action = wallet.resume_issue_saga(&saga).await.unwrap();
+
+        assert_eq!(action, RecoveryAction::Compensated);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+        mint_quote = db.get_mint_quote(&quote_id).await.unwrap().unwrap();
+        assert!(mint_quote.used_by_operation.is_none());
+    }
+
+    #[tokio::test]
     async fn test_recover_issue_mint_requested_without_recovery_data_stays_pending() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
@@ -979,7 +1089,7 @@ mod tests {
         db.add_saga(saga).await.unwrap();
 
         let mut mint_quote = test_mint_quote(mint_url);
-        mint_quote.id = quote_id;
+        mint_quote.id = quote_id.clone();
         mint_quote.used_by_operation = Some(saga_id.to_string());
         db.add_mint_quote(mint_quote).await.unwrap();
 
@@ -1000,6 +1110,8 @@ mod tests {
         let transactions = db.list_transactions(None, None, None).await.unwrap();
         assert_eq!(transactions.len(), 1);
         assert_eq!(transactions[0].status, TransactionStatus::Failed);
+        let mint_quote = db.get_mint_quote(&quote_id).await.unwrap().unwrap();
+        assert!(mint_quote.used_by_operation.is_none());
     }
 
     #[tokio::test]
