@@ -278,6 +278,36 @@ impl WalletRepository {
             .map_err(|e| e.into()) // Ensure the inner error can convert to FfiError
     }
 
+    /// Move all wallets for a mint to a new mint URL
+    ///
+    /// Persists the migration through the wallet database, then rebuilds every
+    /// affected wallet against the new URL so their connectors target the new
+    /// endpoint. Wallet objects obtained before this call keep the old URL and
+    /// must be fetched again from the repository. Returns the rebuilt wallets.
+    ///
+    /// Intended for when a mint moves or announces an alternative endpoint,
+    /// for example through the NUT-06 `urls` field. The caller is responsible
+    /// for verifying that the new endpoint serves the same mint (its keysets
+    /// match) before migrating.
+    pub async fn update_mint_url(
+        &self,
+        old_mint_url: MintUrl,
+        new_mint_url: MintUrl,
+    ) -> Result<Vec<Arc<crate::wallet::Wallet>>, FfiError> {
+        let cdk_old_mint_url: cdk::mint_url::MintUrl = old_mint_url.try_into()?;
+        let cdk_new_mint_url: cdk::mint_url::MintUrl = new_mint_url.try_into()?;
+
+        let wallets = self
+            .inner
+            .update_mint_url(cdk_old_mint_url, cdk_new_mint_url)
+            .await?;
+
+        Ok(wallets
+            .into_iter()
+            .map(|wallet| Arc::new(crate::wallet::Wallet::from_inner(Arc::new(wallet))))
+            .collect())
+    }
+
     /// Wait until the rate-limit budgets drawn down by every wallet in this
     /// repository have been handed to storage.
     ///
