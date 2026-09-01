@@ -1157,7 +1157,7 @@ impl Wallet {
             Err(err) => return self.recover_failed_melt_confirm(operation_id, err).await,
         };
 
-        let result = match melt_requested.execute_async(metadata.clone()).await {
+        let result = match melt_requested.execute(metadata.clone()).await {
             Ok(result) => result,
             Err(Error::ConcurrentUpdate) => return Err(Error::ConcurrentUpdate),
             Err(err) => return self.recover_failed_melt_confirm(operation_id, err).await,
@@ -1230,7 +1230,7 @@ impl Wallet {
             }
         };
 
-        let result = match melt_requested.execute_async(metadata.clone()).await {
+        let result = match melt_requested.execute_prefer_async(metadata.clone()).await {
             Ok(result) => result,
             Err(Error::ConcurrentUpdate) => return Err(Error::ConcurrentUpdate),
             Err(err) => {
@@ -2719,7 +2719,7 @@ mod tests {
         db.add_melt_quote(quote).await.unwrap();
 
         let mock_client = Arc::new(MockMintConnector::new());
-        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
         let prepared = wallet
             .prepare_melt_proofs(&quote_id, vec![proof], HashMap::new())
             .await
@@ -3254,7 +3254,7 @@ mod tests {
             MeltQuoteState::Paid,
             Some("preimage123".to_string()),
         ))));
-        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
 
         let mut saga_metadata = HashMap::new();
         saga_metadata.insert("memo".to_string(), "persisted saga metadata".to_string());
@@ -3271,6 +3271,14 @@ mod tests {
             .confirm_prepared_melt_with_options(prepared.operation_id(), MeltConfirmOptions::new())
             .await
             .unwrap();
+
+        let (_, request) = mock_client
+            .last_post_melt_request()
+            .expect("confirm should post a melt request");
+        assert!(
+            !request.is_prefer_async(),
+            "synchronous confirm must not request an asynchronous response"
+        );
 
         let transactions = db.list_transactions(None, None, None).await.unwrap();
         assert_eq!(transactions.len(), 1);
@@ -3291,7 +3299,7 @@ mod tests {
             MeltQuoteState::Paid,
             Some("preimage123".to_string()),
         ))));
-        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
 
         let mut stale_metadata = HashMap::new();
         stale_metadata.insert("memo".to_string(), "stale handle metadata".to_string());
@@ -3323,6 +3331,14 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(outcome, MeltOutcome::Paid(_)));
+
+        let (_, request) = mock_client
+            .last_post_melt_request()
+            .expect("async confirm should post a melt request");
+        assert!(
+            request.is_prefer_async(),
+            "async confirm must request an asynchronous response"
+        );
 
         let transactions = db.list_transactions(None, None, None).await.unwrap();
         assert_eq!(transactions.len(), 1);

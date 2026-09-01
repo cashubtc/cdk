@@ -393,23 +393,19 @@ async fn test_melt_with_swap_non_optimal_proofs() -> Result<()> {
     Ok(())
 }
 
-/// Tests recovery when a crash occurs after the swap but before the melt request is persisted.
+/// Tests that a durable prepared melt is not implicitly cancelled by recovery.
 ///
-/// This simulates the "Swap Gap":
-/// 1. MeltSaga prepares (ProofsReserved).
-/// 2. Swap executes (Old proofs spent, New proofs created).
-/// 3. CRASH (MeltSaga not updated to MeltRequested).
-/// 4. Recovery runs.
+/// This simulates an application preparing a melt, manipulating the reserved
+/// proofs as an older caller could during a swap, and then restarting before it
+/// explicitly confirms or cancels the plan.
 ///
 /// Expected behavior:
-/// - The recovery should see ProofsReserved.
-/// - It attempts to revert reservation.
-/// - Since old proofs are spent (deleted from DB), revert does nothing.
-/// - Saga is deleted.
-/// - Wallet contains NEW proofs from the swap.
-/// - No double counting (Old + New).
+/// - Recovery preserves the prepared plan because only the application can
+///   decide whether to confirm or cancel it.
+/// - Explicit cancellation deletes the saga and releases its quote.
+/// - The wallet contains the swapped proofs without double counting.
 #[tokio::test]
-async fn test_melt_swap_gap_recovery() -> Result<()> {
+async fn test_prepared_melt_swap_gap_requires_explicit_cancel() -> Result<()> {
     use cdk::amount::SplitTarget;
     use cdk::nuts::CurrencyUnit;
 
@@ -507,18 +503,24 @@ async fn test_melt_swap_gap_recovery() -> Result<()> {
         .update_proofs_state(ys, cdk::nuts::State::Unspent)
         .await?;
 
-    // 6. Recover
-    // At this point, the MeltSaga in DB is stale (points to spent proofs).
-    // Recovery should clean it up.
+    // 6. Recover. Prepared operations are durable application plans, so
+    // recovery must not guess whether this one should execute or be cancelled.
+    let operation_id = prepared.operation_id();
     let report = wallet.recover_incomplete_sagas().await?;
 
     tracing::info!("Recovery report: {:?}", report);
 
     // 7. Verify
-    // The saga should be gone/handled.
-    // We check the DB directly to ensure saga is gone.
-    let saga = wallet.localstore.get_saga(&prepared.operation_id()).await?;
-    assert!(saga.is_none(), "Saga should be deleted after recovery");
+    assert_eq!(report.skipped, 1);
+    let saga = wallet.localstore.get_saga(&operation_id).await?;
+    assert!(saga.is_some(), "Prepared saga should survive recovery");
+
+    prepared.cancel().await?;
+    let saga = wallet.localstore.get_saga(&operation_id).await?;
+    assert!(
+        saga.is_none(),
+        "Explicit cancellation should delete the saga"
+    );
 
     // Check Balance
     // We expect: Initial - Swap Fees.

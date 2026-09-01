@@ -1630,6 +1630,39 @@ mod tests {
         )
     }
 
+    fn open_test_wallet() -> Wallet {
+        Wallet::open(WalletOpenRequest {
+            mint_url: "https://mint.example.com".to_string(),
+            unit: CurrencyUnit::Sat,
+            mnemonic: MNEMONIC.to_string(),
+            store: memory_store(),
+            config: None,
+        })
+        .expect("wallet should open")
+    }
+
+    fn test_melt_quote(
+        wallet: &Wallet,
+        state: cdk::nuts::MeltQuoteState,
+    ) -> cdk::wallet::MeltQuote {
+        cdk::wallet::MeltQuote {
+            id: "melt-quote".to_string(),
+            mint_url: Some(wallet.inner().mint_url.clone()),
+            unit: wallet.inner().unit.clone(),
+            amount: cdk::Amount::from(100),
+            request: "lnbc-payment-request".to_string(),
+            fee_reserve: cdk::Amount::from(3),
+            state,
+            expiry: 4_000_000_000,
+            payment_proof: None,
+            estimated_blocks: Some(6),
+            fee_index: None,
+            payment_method: cdk::nuts::PaymentMethod::BOLT11,
+            used_by_operation: None,
+            version: 0,
+        }
+    }
+
     #[allow(clippy::use_debug)]
     #[test]
     fn open_request_debug_redacts_seed_and_store() {
@@ -1692,6 +1725,139 @@ mod tests {
         let output = format!("{receipt:?}");
         assert!(output.contains("public-melt-quote-id"));
         assert!(!output.contains(preimage));
+    }
+
+    #[allow(clippy::use_debug)]
+    #[test]
+    fn portable_state_and_payment_adapters_preserve_public_values() {
+        assert_eq!(
+            MintingState::from(cdk::nuts::MintQuoteState::Unpaid),
+            MintingState::Unpaid
+        );
+        assert_eq!(
+            MintingState::from(cdk::nuts::MintQuoteState::Paid),
+            MintingState::Paid
+        );
+        assert_eq!(
+            MintingState::from(cdk::nuts::MintQuoteState::Issued),
+            MintingState::Issued
+        );
+        for (source, expected) in [
+            (cdk::nuts::MeltQuoteState::Unpaid, PaymentState::Unpaid),
+            (cdk::nuts::MeltQuoteState::Pending, PaymentState::Pending),
+            (cdk::nuts::MeltQuoteState::Paid, PaymentState::Paid),
+            (cdk::nuts::MeltQuoteState::Failed, PaymentState::Failed),
+            (cdk::nuts::MeltQuoteState::Unknown, PaymentState::Unknown),
+        ] {
+            assert_eq!(PaymentState::from(source), expected);
+        }
+
+        let wallet = open_test_wallet();
+        let session = payment_session(
+            wallet.inner(),
+            test_melt_quote(&wallet, cdk::nuts::MeltQuoteState::Pending),
+            HashMap::from([("order".to_string(), "123".to_string())]),
+            true,
+        );
+        let quote = session.quote();
+        assert_eq!(quote.id, "melt-quote");
+        assert_eq!(quote.amount, Amount::new(100));
+        assert_eq!(quote.fee_reserve, Amount::new(3));
+        assert_eq!(quote.state, PaymentState::Pending);
+        assert_eq!(quote.expires_at, 4_000_000_000);
+        assert_eq!(quote.estimated_blocks, Some(6));
+        assert_eq!(quote.method, PaymentMethod::Bolt11);
+        assert!(format!("{session:?}").contains("melt-quote"));
+
+        let operation_id = uuid::Uuid::now_v7();
+        let receipt = payment_receipt(
+            operation_id,
+            cdk_common::common::FinalizedMelt::new(
+                "melt-quote".to_string(),
+                cdk::nuts::MeltQuoteState::Paid,
+                Some("payment-preimage".to_string()),
+                cdk::Amount::from(100),
+                cdk::Amount::from(2),
+                None,
+            ),
+        );
+        assert_eq!(receipt.operation_id, operation_id.to_string());
+        assert_eq!(receipt.quote_id, "melt-quote");
+        assert_eq!(receipt.payment_proof.as_deref(), Some("payment-preimage"));
+        assert_eq!(receipt.amount, Amount::new(100));
+        assert_eq!(receipt.fee_paid, Amount::new(2));
+    }
+
+    #[allow(clippy::use_debug)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn portable_local_handles_preserve_durable_identity() {
+        let wallet = open_test_wallet();
+        let mut mint_quote = cdk::wallet::MintQuote::new(
+            "mint-quote".to_string(),
+            wallet.inner().mint_url.clone(),
+            cdk::nuts::PaymentMethod::BOLT11,
+            Some(cdk::Amount::from(21)),
+            wallet.inner().unit.clone(),
+            "lnbc-mint".to_string(),
+            4_000_000_000,
+            None,
+        );
+        mint_quote.state = cdk::nuts::MintQuoteState::Paid;
+        mint_quote.amount_paid = cdk::Amount::from(21);
+        let session = MintSession::from_quote(Arc::clone(wallet.inner()), mint_quote.clone());
+        assert_eq!(session.id(), "mint-quote");
+        assert_eq!(
+            session.initial_state(),
+            MintSessionState {
+                id: "mint-quote".to_string(),
+                payment_request: "lnbc-mint".to_string(),
+                state: MintingState::Paid,
+                amount: Some(Amount::new(21)),
+                amount_paid: Amount::new(21),
+                amount_claimed: Amount::zero(),
+                expires_at: 4_000_000_000,
+                method: PaymentMethod::Bolt11,
+            }
+        );
+        assert!(format!("{session:?}").contains("mint-quote"));
+        ensure_mint_quote_belongs_to_wallet(wallet.inner(), &mint_quote)
+            .expect("matching quote should be accepted");
+        assert_eq!(
+            claimed_mint_quote_amount(wallet.inner(), "unknown-quote")
+                .await
+                .unwrap(),
+            None
+        );
+
+        let mut wrong_mint = mint_quote.clone();
+        wrong_mint.mint_url = "https://other.example.com".parse().unwrap();
+        assert!(ensure_mint_quote_belongs_to_wallet(wallet.inner(), &wrong_mint).is_err());
+        let mut wrong_unit = mint_quote;
+        wrong_unit.unit = cdk::nuts::CurrencyUnit::Msat;
+        assert!(ensure_mint_quote_belongs_to_wallet(wallet.inner(), &wrong_unit).is_err());
+
+        let operation_id = uuid::Uuid::now_v7();
+        let pending = PendingPayment {
+            wallet: Arc::clone(wallet.inner()),
+            quote_id: "melt-quote".to_string(),
+            operation_id,
+        };
+        assert_eq!(pending.quote_id(), "melt-quote");
+        assert_eq!(pending.operation_id(), operation_id.to_string());
+        assert!(format!("{pending:?}").contains("melt-quote"));
+
+        let plan = PaymentPlan {
+            wallet: Arc::clone(wallet.inner()),
+            operation_id,
+            quote_id: "melt-quote".to_string(),
+            amount: Amount::new(100),
+            maximum_fee: Amount::new(5),
+        };
+        assert_eq!(plan.operation_id(), operation_id.to_string());
+        assert_eq!(plan.quote_id(), "melt-quote");
+        assert_eq!(plan.amount(), Amount::new(100));
+        assert_eq!(plan.maximum_fee(), Amount::new(5));
+        assert!(format!("{plan:?}").contains("melt-quote"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1765,14 +1931,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn balance_classifies_unclaimed_sends_as_pending() {
-        let wallet = Wallet::open(WalletOpenRequest {
-            mint_url: "https://mint.example.com".to_string(),
-            unit: CurrencyUnit::Sat,
-            mnemonic: MNEMONIC.to_string(),
-            store: memory_store(),
-            config: None,
-        })
-        .expect("wallet should open");
+        let wallet = open_test_wallet();
         let token = cdk::nuts::Token::from_str(TOKEN).expect("public test vector should parse");
         let proof = token
             .proofs(&[])
@@ -1802,6 +1961,28 @@ mod tests {
         wallet
             .inner()
             .localstore
+            .update_proofs_state(vec![y], cdk::nuts::State::Reserved)
+            .await
+            .unwrap();
+        let reserved = wallet.balance().await.unwrap();
+        assert_eq!(reserved.available, Amount::zero());
+        assert_eq!(reserved.pending, Amount::zero());
+        assert_eq!(reserved.reserved, Amount::new(1));
+
+        wallet
+            .inner()
+            .localstore
+            .update_proofs_state(vec![y], cdk::nuts::State::Pending)
+            .await
+            .unwrap();
+        let pending = wallet.balance().await.unwrap();
+        assert_eq!(pending.available, Amount::zero());
+        assert_eq!(pending.pending, Amount::new(1));
+        assert_eq!(pending.reserved, Amount::zero());
+
+        wallet
+            .inner()
+            .localstore
             .update_proofs_state(vec![y], cdk::nuts::State::PendingSpent)
             .await
             .unwrap();
@@ -1809,6 +1990,109 @@ mod tests {
         assert_eq!(pending.available, Amount::zero());
         assert_eq!(pending.pending, Amount::new(1));
         assert_eq!(pending.reserved, Amount::zero());
+
+        wallet
+            .inner()
+            .localstore
+            .update_proofs_state(vec![y], cdk::nuts::State::Spent)
+            .await
+            .unwrap();
+        assert_eq!(wallet.balance().await.unwrap(), WalletBalance::default());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn history_filters_limits_and_maps_engine_transactions() {
+        let wallet = open_test_wallet();
+        let incoming_id = uuid::Uuid::now_v7();
+        let outgoing_id = uuid::Uuid::now_v7();
+        let newest_id = uuid::Uuid::now_v7();
+        for (direction, timestamp, saga_id, status) in [
+            (
+                cdk_common::wallet::TransactionDirection::Incoming,
+                1,
+                incoming_id,
+                cdk_common::wallet::TransactionStatus::Completed,
+            ),
+            (
+                cdk_common::wallet::TransactionDirection::Outgoing,
+                2,
+                outgoing_id,
+                cdk_common::wallet::TransactionStatus::Pending,
+            ),
+            (
+                cdk_common::wallet::TransactionDirection::Outgoing,
+                3,
+                newest_id,
+                cdk_common::wallet::TransactionStatus::Failed,
+            ),
+        ] {
+            wallet
+                .inner()
+                .localstore
+                .add_transaction(cdk_common::wallet::Transaction {
+                    mint_url: wallet.inner().mint_url.clone(),
+                    direction,
+                    amount: cdk::Amount::from(timestamp * 10),
+                    fee: cdk::Amount::from(timestamp),
+                    unit: wallet.inner().unit.clone(),
+                    ys: Vec::new(),
+                    timestamp,
+                    memo: Some(format!("transaction-{timestamp}")),
+                    metadata: HashMap::from([("index".to_string(), timestamp.to_string())]),
+                    quote_id: Some(format!("quote-{timestamp}")),
+                    payment_request: Some("not-exposed".to_string()),
+                    payment_proof: Some("not-exposed".to_string()),
+                    payment_method: Some(cdk::nuts::PaymentMethod::BOLT11),
+                    saga_id: Some(saga_id),
+                    status,
+                })
+                .await
+                .unwrap();
+        }
+
+        let history = wallet
+            .history(HistoryQuery {
+                direction: Some(TransactionDirection::Outgoing),
+                limit: Some(1),
+            })
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            history[0],
+            HistoryEntry {
+                id: cdk_common::wallet::TransactionId::from_saga_id(newest_id).to_string(),
+                wallet: wallet.identity(),
+                direction: TransactionDirection::Outgoing,
+                amount: Amount::new(30),
+                fee: Amount::new(3),
+                timestamp: 3,
+                memo: Some("transaction-3".to_string()),
+                metadata: HashMap::from([("index".to_string(), "3".to_string())]),
+                quote_id: Some("quote-3".to_string()),
+                operation_id: Some(newest_id.to_string()),
+                payment_method: Some(PaymentMethod::Bolt11),
+                status: TransactionStatus::Failed,
+            }
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn invalid_operation_ids_fail_before_loading_local_plans() {
+        let wallet = open_test_wallet();
+        assert!(parse_operation_id("not-an-operation-id").is_err());
+        assert!(wallet
+            .send_plan("not-an-operation-id".to_string())
+            .await
+            .is_err());
+        assert!(wallet
+            .payment_plan("not-an-operation-id".to_string())
+            .await
+            .is_err());
+        assert!(wallet
+            .pending_payment("not-an-operation-id".to_string())
+            .await
+            .is_err());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1936,5 +2220,41 @@ mod tests {
             "https://destination.example.com"
         );
         assert_eq!(plan.destination_quote_id(), "destination-quote");
+        assert_eq!(plan.destination_issued_amount().await.unwrap(), None);
+
+        let mut quote = cdk::wallet::MintQuote::new(
+            "destination-quote".to_string(),
+            destination.inner().mint_url.clone(),
+            cdk::nuts::PaymentMethod::BOLT11,
+            Some(cdk::Amount::from(100)),
+            destination.inner().unit.clone(),
+            "lnbc-destination".to_string(),
+            4_000_000_000,
+            None,
+        );
+        quote.state = cdk::nuts::MintQuoteState::Issued;
+        quote.amount_issued = cdk::Amount::from(100);
+        destination
+            .inner()
+            .localstore
+            .add_mint_quote(quote)
+            .await
+            .unwrap();
+        assert_eq!(
+            plan.destination_issued_amount().await.unwrap(),
+            Some(Amount::new(100))
+        );
+        assert_eq!(
+            plan.completed(Amount::new(100), Amount::new(2)),
+            CrossMintTransferOutcome::Completed {
+                receipt: CrossMintTransferReceipt {
+                    operation_id: operation_id.to_string(),
+                    destination: plan.destination(),
+                    destination_quote_id: "destination-quote".to_string(),
+                    amount: Amount::new(100),
+                    source_fee: Amount::new(2),
+                }
+            }
+        );
     }
 }

@@ -178,7 +178,6 @@ impl WalletSupabaseDatabase {
     /// - The params_json is not valid JSON
     /// - The HTTP request fails
     /// - The RPC function returns an error status
-    /// ```
     pub async fn call_rpc(
         &self,
         function_name: String,

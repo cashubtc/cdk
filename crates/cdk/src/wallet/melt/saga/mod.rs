@@ -89,7 +89,7 @@ pub(crate) struct MeltSaga<'a, S> {
 }
 
 /// Shared helper function to perform the actual melt finalization.
-/// Used by `execute_async` and `PaymentPending::finalize`.
+/// Used by melt request execution and `PaymentPending::finalize`.
 #[allow(clippy::too_many_arguments)]
 async fn finalize_melt_common<'a>(
     wallet: &'a Wallet,
@@ -849,35 +849,34 @@ impl<'a> MeltSaga<'a, Prepared> {
         // Calculate change accounting for input fees
         let change_amount = proofs_total - quote_info.amount - actual_input_fee;
 
-        let premint_secrets = if change_amount <= Amount::ZERO {
-            PreMintSecrets::new(active_keyset_id)
+        let (premint_secrets, counter_start, counter_end) = if change_amount <= Amount::ZERO {
+            (PreMintSecrets::new(active_keyset_id), None, None)
         } else {
             let num_secrets =
                 ((u64::from(change_amount) as f64).log2().ceil() as u64).max(1) as u32;
 
-            let new_counter = self
+            // `increment_keyset_counter` atomically allocates this operation's
+            // derivation range and returns its exclusive end. Persist that exact
+            // range: reading the global counter again would allow a concurrent
+            // operation to advance it and make recovery derive different secrets.
+            let counter_end = self
                 .wallet
                 .localstore
                 .increment_keyset_counter(&active_keyset_id, num_secrets)
                 .await?;
+            let counter_start = counter_end
+                .checked_sub(num_secrets)
+                .ok_or(Error::AmountOverflow)?;
 
-            let count = new_counter - num_secrets;
-
-            PreMintSecrets::from_seed_blank(
+            let premint_secrets = PreMintSecrets::from_seed_blank(
                 active_keyset_id,
-                count,
+                counter_start,
                 &self.wallet.seed,
                 change_amount,
-            )?
-        };
+            )?;
 
-        // Get counter range for recovery
-        let counter_end = self
-            .wallet
-            .localstore
-            .increment_keyset_counter(&active_keyset_id, 0)
-            .await?;
-        let counter_start = counter_end.saturating_sub(premint_secrets.secrets.len() as u32);
+            (premint_secrets, Some(counter_start), Some(counter_end))
+        };
 
         let change_blinded_messages = if change_amount > Amount::ZERO {
             Some(premint_secrets.blinded_messages())
@@ -897,8 +896,8 @@ impl<'a> MeltSaga<'a, Prepared> {
             quote_id: quote_info.id.clone(),
             amount: quote_info.amount,
             fee_reserve: quote_info.fee_reserve,
-            counter_start: Some(counter_start),
-            counter_end: Some(counter_end),
+            counter_start,
+            counter_end,
             change_amount: if change_amount > Amount::ZERO {
                 Some(change_amount)
             } else {
@@ -998,19 +997,37 @@ impl std::fmt::Debug for MeltSaga<'_, PaymentPending> {
 }
 
 impl<'a> MeltSaga<'a, MeltRequested> {
-    /// Execute the melt request with async support.
+    /// Execute the melt request and wait for the mint's normal response.
     #[instrument(skip_all)]
-    pub async fn execute_async(
+    pub async fn execute(
         self,
         metadata: HashMap<String, String>,
+    ) -> Result<MeltSagaResult<'a>, Error> {
+        self.execute_with_preference(metadata, false).await
+    }
+
+    /// Execute the melt request while preferring an asynchronous response.
+    #[instrument(skip_all)]
+    pub async fn execute_prefer_async(
+        self,
+        metadata: HashMap<String, String>,
+    ) -> Result<MeltSagaResult<'a>, Error> {
+        self.execute_with_preference(metadata, true).await
+    }
+
+    async fn execute_with_preference(
+        self,
+        metadata: HashMap<String, String>,
+        prefer_async: bool,
     ) -> Result<MeltSagaResult<'a>, Error> {
         let operation_id = self.state_data.operation_id;
         let quote_info = &self.state_data.quote;
 
         tracing::info!(
-            "Executing async melt request for quote {} with operation {}",
+            "Executing melt request for quote {} with operation {} (prefer_async: {})",
             quote_info.id,
-            operation_id
+            operation_id,
+            prefer_async
         );
 
         let request = MeltRequest::new(
@@ -1022,7 +1039,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                 Some(self.state_data.premint_secrets.blinded_messages())
             },
         )
-        .prefer_async(true);
+        .prefer_async(prefer_async);
 
         let request = if quote_info.payment_method == PaymentMethod::Known(KnownMethod::Onchain) {
             request.fee_index(quote_info.fee_index.ok_or(Error::InvalidPaymentRequest)?)
@@ -1457,6 +1474,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_concurrent_melts_persist_their_allocated_counter_ranges() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+
+        let proof_infos = (0..3)
+            .map(|_| test_proof_info(keyset_id, 2000, mint_url.clone()))
+            .collect::<Vec<_>>();
+        let proofs = proof_infos
+            .iter()
+            .map(|proof_info| proof_info.proof.clone())
+            .collect::<Vec<_>>();
+        db.update_proofs(proof_infos, vec![]).await.unwrap();
+
+        let quotes = (0..3).map(|_| test_melt_quote()).collect::<Vec<_>>();
+        for quote in &quotes {
+            db.add_melt_quote(quote.clone()).await.unwrap();
+        }
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let prepared_one = MeltSaga::new(&wallet)
+            .prepare_with_proofs(&quotes[0].id, vec![proofs[0].clone()], HashMap::new())
+            .await
+            .unwrap();
+        let prepared_two = MeltSaga::new(&wallet)
+            .prepare_with_proofs(&quotes[1].id, vec![proofs[1].clone()], HashMap::new())
+            .await
+            .unwrap();
+        let prepared_three = MeltSaga::new(&wallet)
+            .prepare_with_proofs(&quotes[2].id, vec![proofs[2].clone()], HashMap::new())
+            .await
+            .unwrap();
+
+        let (requested_one, requested_two, requested_three) = tokio::join!(
+            prepared_one.request_melt_with_options(MeltConfirmOptions::new()),
+            prepared_two.request_melt_with_options(MeltConfirmOptions::new()),
+            prepared_three.request_melt_with_options(MeltConfirmOptions::new()),
+        );
+        let requested = vec![
+            requested_one.unwrap(),
+            requested_two.unwrap(),
+            requested_three.unwrap(),
+        ];
+
+        let mut ranges = Vec::new();
+        for melt in requested {
+            let stored = db
+                .get_saga(&melt.state_data.operation_id)
+                .await
+                .unwrap()
+                .expect("requested melt saga should be stored");
+            let OperationData::Melt(data) = stored.data else {
+                panic!("requested saga should contain melt operation data");
+            };
+            let counter_start = data.counter_start.expect("change should have a range");
+            let counter_end = data.counter_end.expect("change should have a range");
+            assert_eq!(
+                counter_end - counter_start,
+                melt.state_data.premint_secrets.len() as u32
+            );
+
+            let restored =
+                PreMintSecrets::restore_batch(keyset_id, &wallet.seed, counter_start, counter_end)
+                    .unwrap();
+            assert_eq!(
+                restored.blinded_messages(),
+                data.change_blinded_messages
+                    .expect("change outputs should be persisted")
+            );
+            ranges.push((counter_start, counter_end));
+        }
+
+        ranges.sort_unstable();
+        assert!(ranges.windows(2).all(|pair| pair[0].1 <= pair[1].0));
+    }
+
+    #[tokio::test]
     async fn test_prepare_melt_persists_metadata_in_saga() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
@@ -1668,7 +1765,7 @@ mod tests {
             "onchain melt should persist blinded change outputs for recovery"
         );
 
-        let _result = requested.execute_async(HashMap::new()).await.unwrap();
+        let _result = requested.execute(HashMap::new()).await.unwrap();
         let (method, request) = mock_client
             .last_post_melt_request()
             .expect("post_melt request must be captured");
@@ -1813,12 +1910,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_async_unpaid_response_compensates_instead_of_finalizing() {
+    async fn test_execute_unpaid_response_compensates_instead_of_finalizing() {
         let (db, proof_y, requested) =
             requested_onchain_melt_with_response(MeltQuoteState::Unpaid).await;
         let operation_id = requested.state_data.operation_id;
 
-        let result = requested.execute_async(HashMap::new()).await;
+        let result = requested.execute(HashMap::new()).await;
         assert!(matches!(result, Err(Error::PaymentFailed)));
 
         let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
@@ -1834,12 +1931,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_async_unknown_response_stays_pending_instead_of_finalizing() {
+    async fn test_execute_unknown_response_stays_pending_instead_of_finalizing() {
         let (db, proof_y, requested) =
             requested_onchain_melt_with_response(MeltQuoteState::Unknown).await;
         let operation_id = requested.state_data.operation_id;
 
-        let result = requested.execute_async(HashMap::new()).await.unwrap();
+        let result = requested.execute(HashMap::new()).await.unwrap();
         assert!(matches!(result, MeltSagaResult::Pending(_)));
 
         let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
@@ -1861,7 +1958,7 @@ mod tests {
             requested_bolt11_melt_after_transport_error(Some(MeltQuoteState::Unknown)).await;
         let operation_id = requested.state_data.operation_id;
 
-        let result = requested.execute_async(HashMap::new()).await.unwrap();
+        let result = requested.execute(HashMap::new()).await.unwrap();
         assert!(matches!(result, MeltSagaResult::Pending(_)));
 
         let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
@@ -1891,7 +1988,7 @@ mod tests {
             requested_bolt11_melt_after_transport_error(Some(MeltQuoteState::Unpaid)).await;
         let operation_id = requested.state_data.operation_id;
 
-        let result = requested.execute_async(HashMap::new()).await.unwrap();
+        let result = requested.execute(HashMap::new()).await.unwrap();
         assert!(matches!(result, MeltSagaResult::Pending(_)));
 
         let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
@@ -1920,7 +2017,7 @@ mod tests {
         let (db, proof_y, requested) = requested_bolt11_melt_after_transport_error(None).await;
         let operation_id = requested.state_data.operation_id;
 
-        let result = requested.execute_async(HashMap::new()).await.unwrap();
+        let result = requested.execute(HashMap::new()).await.unwrap();
         assert!(matches!(result, MeltSagaResult::Pending(_)));
 
         let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();

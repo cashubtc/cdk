@@ -416,7 +416,7 @@ pub struct Restored {
     pub pending: Amount,
 }
 
-/// Options for [`crate::wallet::Wallet::restore_with_opts`].
+/// Options controlling a NUT-13 wallet restore scan.
 ///
 /// Defaults match the NUT-13 spec recommendation
 /// (<https://github.com/cashubtc/nuts/blob/main/13.md#generate-blindedmessages>):
