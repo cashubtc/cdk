@@ -1,7 +1,7 @@
 > [!Warning]
 > This project is in early development, it does however work with real sats! Always use amounts you don't mind losing.
 
-[![crates.io](https://img.shields.io/crates/v/cdk.svg)](https://crates.io/crates/cdk) [![Documentation](https://docs.rs/cdk/badge.svg)](https://docs.rs/cdk) [![License](https://img.shields.io/github/license/cashubtc/cdk)](https://github.com/cashubtc/cdk/blob/main/LICENSE)
+[![crates.io](https://img.shields.io/crates/v/cdk.svg)](https://crates.io/crates/cdk) [![Documentation](https://docs.rs/cdk/badge.svg)](https://docs.rs/cdk) [![License](https://img.shields.io/github/license/cashubtc/cdk)](https://github.com/cashubtc/cdk/blob/main/LICENSE.md)
 
 # Cashu Development Kit
 
@@ -101,7 +101,9 @@ The project is split up into several crates in the `crates/` directory:
 
 ## License
 
-Code is under the [MIT License](LICENSE)
+Code is licensed under either the [Apache License 2.0](LICENSE-APACHE) or the
+[MIT License](LICENSE-MIT), at your option. See [LICENSE.md](LICENSE.md) for
+details.
 
 ## Contribution
 
