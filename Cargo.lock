@@ -1685,6 +1685,7 @@ dependencies = [
  "cdk-postgres",
  "cdk-prometheus",
  "cdk-signatory",
+ "cdk-sql-common",
  "cdk-sqlite",
  "clap",
  "config",
@@ -1768,8 +1769,11 @@ dependencies = [
  "native-tls",
  "paste",
  "postgres-native-tls",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-postgres",
+ "tracing",
  "uuid",
 ]
 
