@@ -2675,6 +2675,95 @@ mod tests {
         );
     }
 
+    /// Marks every keyset in the mint's snapshot inactive, as a rotation would.
+    fn deactivate_keysets(mint: &Mint) {
+        let inactive: Vec<SignatoryKeySet> = mint
+            .keysets
+            .load()
+            .as_ref()
+            .clone()
+            .into_iter()
+            .map(|mut ks| {
+                ks.active = false;
+                ks
+            })
+            .collect();
+        mint.keysets.store(Arc::new(inactive));
+    }
+
+    /// The inactive-keyset carve-out is for melt change only. A swap must keep
+    /// requiring an active output keyset, otherwise a rotated-out keyset could
+    /// go on issuing indefinitely.
+    #[tokio::test]
+    async fn swap_rejects_outputs_on_inactive_keyset() {
+        use cdk_common::nuts::SwapRequest;
+
+        use crate::test_helpers::mint::create_test_blinded_messages;
+
+        let mint = create_test_mint().await.unwrap();
+        let proofs = mint_test_proofs(&mint, Amount::from(64)).await.unwrap();
+        let (outputs, _premint) = create_test_blinded_messages(&mint, Amount::from(64))
+            .await
+            .unwrap();
+
+        deactivate_keysets(&mint);
+
+        let result = mint
+            .process_swap_request(SwapRequest::new(proofs, outputs))
+            .await;
+
+        assert!(
+            matches!(result, Err(Error::InactiveKeyset)),
+            "expected InactiveKeyset error, got: {:?}",
+            result
+        );
+    }
+
+    /// Same for issuance: only melt change may name a rotated-out keyset.
+    #[tokio::test]
+    async fn issue_rejects_outputs_on_inactive_keyset() {
+        use cdk_common::nuts::MintRequest;
+        use cdk_common::MintQuoteBolt11Request;
+
+        use crate::test_helpers::mint::create_test_blinded_messages;
+
+        let mint = create_test_mint().await.unwrap();
+        let quote: MintQuoteBolt11Response<_> = mint
+            .get_mint_quote(
+                MintQuoteBolt11Request {
+                    amount: Amount::from(64),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                }
+                .into(),
+            )
+            .await
+            .unwrap()
+            .into();
+
+        let (outputs, _premint) = create_test_blinded_messages(&mint, Amount::from(64))
+            .await
+            .unwrap();
+
+        deactivate_keysets(&mint);
+
+        let request = MintRequest {
+            quote: quote.quote,
+            outputs,
+            signature: None,
+        };
+        let result = mint
+            .process_mint_request(MintInput::Single(request.try_into().unwrap()))
+            .await;
+
+        assert!(
+            matches!(result, Err(Error::InactiveKeyset)),
+            "expected InactiveKeyset error, got: {:?}",
+            result
+        );
+    }
+
     #[tokio::test]
     async fn verify_inputs_keyset_rejects_expired_keyset() {
         use cdk_common::nuts::{Proof, SecretKey};

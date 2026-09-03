@@ -360,9 +360,6 @@ impl Signatory for DbSignatory {
                 } = blinded_message;
 
                 let (info, key) = keysets.by_id.get(&keyset_id).ok_or(Error::UnknownKeySet)?;
-                if !info.active {
-                    return Err(Error::InactiveKeyset);
-                }
                 if info.is_expired() {
                     return Err(Error::ExpiredKeyset);
                 }
@@ -726,6 +723,50 @@ mod test {
             "expected ExpiredKeyset error, got: {:?}",
             result
         );
+    }
+
+    #[tokio::test]
+    async fn blind_sign_accepts_inactive_keyset() {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let signatory = DbSignatory::new(
+            store,
+            b"test-seed-inactive-signing",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .expect("DbSignatory::new");
+
+        let args = RotateKeyArguments {
+            unit: CurrencyUnit::Sat,
+            amounts: vec![1, 2, 4, 8],
+            input_fee_ppk: 0,
+            keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+            final_expiry: None,
+        };
+        let first = signatory
+            .rotate_keyset(args.clone())
+            .await
+            .expect("first rotation");
+        signatory
+            .rotate_keyset(args)
+            .await
+            .expect("second rotation deactivates the first");
+
+        let blinded_secret = SecretKey::generate().public_key();
+        let msg = BlindedMessage::new(Amount::from(1), first.id, blinded_secret);
+
+        let signatures = signatory
+            .blind_sign(vec![msg])
+            .await
+            .expect("inactive keysets still sign");
+
+        assert_eq!(signatures.len(), 1);
+        assert_eq!(signatures[0].keyset_id, first.id);
     }
 
     /// Keyset rows are insert-only today, so the mutated info is handed to
