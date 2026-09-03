@@ -766,6 +766,11 @@ impl MintQuote {
         self.changes.take()
     }
 
+    /// Whether this quote has unpersisted changes.
+    pub fn has_changes(&self) -> bool {
+        self.changes.is_some()
+    }
+
     /// Records a new payment received for this mint quote.
     ///
     /// This method validates the payment, updates the quote's internal state, and records the

@@ -36,8 +36,10 @@ mod keysets;
 mod melt;
 mod payment_backend;
 mod proofs;
+mod quotes;
 mod saga_recovery;
 mod start_up_check;
+pub mod state_filters;
 mod subscription;
 mod swap;
 mod verification;
@@ -47,6 +49,7 @@ pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
 pub use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 pub use issue::MintInput;
 pub use melt::PendingMelt;
+pub use state_filters::{SharedStateFilters, StateFilterOptions, StateFilterService, StateFilters};
 pub use verification::Verification;
 
 const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
@@ -95,6 +98,13 @@ pub struct Mint {
     max_inputs: usize,
     /// Maximum number of outputs allowed per transaction
     max_outputs: usize,
+    /// Builds and serves compact state filters, when the mint publishes them
+    state_filter_service: Option<Arc<StateFilterService>>,
+    /// Records filter elements alongside the state changes that produce them
+    ///
+    /// Shared with the subscription manager, which is built before the filter
+    /// service exists, so the recorder is swapped in rather than passed down.
+    state_filters: SharedStateFilters,
 }
 
 impl std::fmt::Debug for Mint {
@@ -112,6 +122,8 @@ struct TaskState {
     supervisor_handle: Option<JoinHandle<Result<(), Error>>>,
     /// Handle to the keyset drain task
     keyset_drain_handle: Option<JoinHandle<()>>,
+    /// Handle to the state filter epoch builder
+    filter_builder_handle: Option<JoinHandle<()>>,
     /// Keyset subscription retained from construction, drained once by the first
     /// `start()`. `None` after it has been taken; a restart re-subscribes.
     keyset_updates: Option<watch::Receiver<SignatoryKeysets>>,
@@ -166,6 +178,7 @@ impl SupervisedStream for PaymentWaiter {
                 if let Err(e) = Mint::handle_payment_notification(
                     &self.localstore,
                     &self.pubsub_manager,
+                    &self.mint.state_filters(),
                     wait_payment_response,
                 )
                 .await
@@ -385,10 +398,16 @@ impl Mint {
         }
 
         let payment_processors = Arc::new(payment_processors);
+        let state_filters: SharedStateFilters =
+            Arc::new(arc_swap::ArcSwap::from_pointee(StateFilters::disabled()));
 
         Ok(Self {
             signatory,
-            pubsub_manager: PubSubManager::new((localstore.clone(), payment_processors.clone())),
+            pubsub_manager: PubSubManager::new((
+                localstore.clone(),
+                payment_processors.clone(),
+                state_filters.clone(),
+            )),
             localstore,
             oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {
                 OidcClient::new(
@@ -407,7 +426,30 @@ impl Mint {
             })),
             max_inputs,
             max_outputs,
+            state_filter_service: None,
+            state_filters,
         })
+    }
+
+    /// Attach the state filter service built from the mint's configuration.
+    pub(crate) fn set_state_filter_service(&mut self, service: Option<Arc<StateFilterService>>) {
+        self.state_filters.store(Arc::new(
+            service
+                .as_ref()
+                .map(|service| service.recorder())
+                .unwrap_or_default(),
+        ));
+        self.state_filter_service = service;
+    }
+
+    /// The recorder that capture points write filter elements through.
+    pub fn state_filters(&self) -> arc_swap::Guard<Arc<StateFilters>> {
+        self.state_filters.load()
+    }
+
+    /// The state filter service, when this mint publishes filters.
+    pub fn state_filter_service(&self) -> Option<&Arc<StateFilterService>> {
+        self.state_filter_service.as_ref()
     }
 
     /// Start the mint's background services and operations
@@ -569,10 +611,37 @@ impl Mint {
             None
         };
 
+        let filter_builder_handle = match self.state_filter_service.clone() {
+            Some(service) => {
+                if let Err(err) = service.build_due_epochs().await {
+                    tracing::error!("Could not build pending state filters: {}", err);
+                }
+
+                let shutdown = shutdown_notify.clone();
+                let interval = service.build_interval();
+                Some(tokio::spawn(async move {
+                    let shutdown_wait = shutdown.notified();
+                    tokio::pin!(shutdown_wait);
+                    loop {
+                        tokio::select! {
+                            _ = &mut shutdown_wait => break,
+                            _ = tokio::time::sleep(interval) => {
+                                if let Err(err) = service.build_due_epochs().await {
+                                    tracing::error!("Could not build state filters: {}", err);
+                                }
+                            }
+                        }
+                    }
+                }))
+            }
+            None => None,
+        };
+
         // Store the handles
         task_state.shutdown_notify = Some(shutdown_notify);
         task_state.supervisor_handle = Some(supervisor_handle);
         task_state.keyset_drain_handle = keyset_drain_handle;
+        task_state.filter_builder_handle = filter_builder_handle;
 
         // Give the background task a tiny bit of time to start waiting
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -597,6 +666,7 @@ impl Mint {
         let shutdown_notify = task_state.shutdown_notify.take();
         let supervisor_handle = task_state.supervisor_handle.take();
         let keyset_drain_handle = task_state.keyset_drain_handle.take();
+        let filter_builder_handle = task_state.filter_builder_handle.take();
 
         // If nothing to stop, return early
         let (shutdown_notify, supervisor_handle) = match (shutdown_notify, supervisor_handle) {
@@ -632,6 +702,12 @@ impl Mint {
         if let Some(handle) = keyset_drain_handle {
             if let Err(join_error) = handle.await {
                 tracing::error!("Keyset drain task panicked: {:?}", join_error);
+            }
+        }
+
+        if let Some(handle) = filter_builder_handle {
+            if let Err(join_error) = handle.await {
+                tracing::error!("State filter builder task panicked: {:?}", join_error);
             }
         }
 
@@ -1131,6 +1207,7 @@ impl Mint {
     async fn handle_payment_notification(
         localstore: &DynMintDatabase,
         pubsub_manager: &Arc<PubSubManager>,
+        filters: &StateFilters,
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
         if wait_payment_response.payment_amount.value() == 0 {
@@ -1147,9 +1224,13 @@ impl Mint {
             .get_mint_quote_by_request_lookup_id(&wait_payment_response.payment_identifier)
             .await
         {
-            let notify =
-                Self::handle_mint_quote_payment(&mut tx, &mut mint_quote, wait_payment_response)
-                    .await?;
+            let notify = Self::handle_mint_quote_payment(
+                &mut tx,
+                filters,
+                &mut mint_quote,
+                wait_payment_response,
+            )
+            .await?;
             if notify {
                 Some((mint_quote.clone(), mint_quote.amount_paid()))
             } else {
@@ -1181,6 +1262,7 @@ impl Mint {
     #[instrument(skip_all)]
     async fn handle_mint_quote_payment(
         tx: &mut Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
+        filters: &StateFilters,
         mint_quote: &mut Acquired<MintQuote>,
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<bool, Error> {
@@ -1223,7 +1305,7 @@ impl Mint {
                     None,
                 ) {
                     Ok(()) => {
-                        tx.update_mint_quote(mint_quote).await?;
+                        Mint::update_mint_quote(tx, filters, mint_quote).await?;
                         return Ok(true);
                     }
                     Err(Error::DuplicatePaymentId) => {

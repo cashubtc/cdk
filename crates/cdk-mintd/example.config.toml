@@ -383,3 +383,21 @@ max_delay_time = 3
 max_inputs = 1000
 # Maximum number of outputs allowed per transaction (mint/swap/melt)
 max_outputs = 1000
+
+[state_filters]
+# Publish compact state filters, which let a wallet follow its ecash and its
+# quotes without telling the mint which objects it is asking about.
+enabled = false
+# Epoch duration in seconds. One filter is published per epoch.
+epoch = 3600
+# Golomb-Rice parameter. The false positive rate is 2^-p per test, so 28 gives
+# about one spurious match in 268 million. Do not go below 24.
+p = 28
+# Number of filters on a full page. Lower this on a busy mint: at one state
+# change per second a filter is about 13 KB.
+page_size = 50
+# Serve the filter of the epoch that is still open, so wallets do not have to
+# wait a full epoch for an answer.
+pending = true
+# Kinds the filters cover. Defaults to all three.
+# kinds = ["proof_state", "mint_quote", "melt_quote"]

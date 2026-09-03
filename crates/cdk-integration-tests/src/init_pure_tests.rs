@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::{env, fs};
 
@@ -12,12 +13,13 @@ use cashu::nut00::KnownMethod;
 use cashu::quote_id::QuoteId;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{self, WalletDatabase};
-use cdk::mint::{MintBuilder, MintMeltLimits};
+use cdk::mint::{MintBuilder, MintMeltLimits, StateFilterOptions};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse,
-    CurrencyUnit, Id, KeySet, KeysetResponse, MeltRequest, MintInfo, MintRequest, MintResponse,
-    PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    CurrencyUnit, GetFiltersInfoResponse, GetFiltersResponse, Id, KeySet, KeysetResponse,
+    MeltRequest, MintInfo, MintRequest, MintResponse, PaymentMethod, PendingFilterResponse,
+    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
@@ -32,6 +34,9 @@ use uuid::Uuid;
 pub struct DirectMintConnection {
     pub mint: Mint,
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
+    /// Counts the requests that name what the wallet is asking about, so tests
+    /// can assert a filter sweep really did stay quiet.
+    identifying_requests: Arc<AtomicUsize>,
 }
 
 impl DirectMintConnection {
@@ -39,7 +44,13 @@ impl DirectMintConnection {
         Self {
             mint,
             auth_wallet: Arc::new(RwLock::new(None)),
+            identifying_requests: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// A handle to the counter of requests that name a proof or a quote.
+    pub fn identifying_requests(&self) -> Arc<AtomicUsize> {
+        self.identifying_requests.clone()
     }
 }
 
@@ -89,6 +100,7 @@ impl MintConnector for DirectMintConnection {
         &self,
         request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error> {
+        self.identifying_requests.fetch_add(1, Ordering::Relaxed);
         match request {
             MintQuoteRequest::Bolt11(req) => {
                 let response = self.mint.get_mint_quote(req.into()).await?;
@@ -278,6 +290,7 @@ impl MintConnector for DirectMintConnection {
         method: PaymentMethod,
         quote_id: &str,
     ) -> Result<MeltQuoteResponse<String>, Error> {
+        self.identifying_requests.fetch_add(1, Ordering::Relaxed);
         let response = self
             .mint
             .check_melt_quote(&QuoteId::from_str(quote_id)?)
@@ -359,11 +372,36 @@ impl MintConnector for DirectMintConnection {
         &self,
         request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
+        self.identifying_requests.fetch_add(1, Ordering::Relaxed);
         self.mint.check_state(&request).await
     }
 
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         self.mint.restore(request).await
+    }
+
+    async fn get_filters_info(&self) -> Result<GetFiltersInfoResponse, Error> {
+        self.mint
+            .state_filter_service()
+            .ok_or(Error::FilterNotAvailable)?
+            .info()
+            .await
+    }
+
+    async fn get_filters(&self, page: u64) -> Result<GetFiltersResponse, Error> {
+        self.mint
+            .state_filter_service()
+            .ok_or(Error::FilterNotAvailable)?
+            .page(page)
+            .await
+    }
+
+    async fn get_filters_pending(&self) -> Result<PendingFilterResponse, Error> {
+        self.mint
+            .state_filter_service()
+            .ok_or(Error::FilterNotAvailable)?
+            .pending()
+            .await
     }
 
     /// Get the auth wallet for the client
@@ -400,6 +438,11 @@ pub fn setup_tracing() {
 
 pub async fn create_and_start_test_mint() -> Result<Mint> {
     create_mint_with_limits(None).await
+}
+
+/// Create a mint that publishes compact state filters.
+pub async fn create_and_start_test_mint_with_filters() -> Result<Mint> {
+    create_mint_with_options(None, Some(StateFilterOptions::default())).await
 }
 
 pub async fn create_mint_with_fee(fee_ppk: u64) -> Result<Mint> {
@@ -487,6 +530,13 @@ pub async fn create_mint_with_fee(fee_ppk: u64) -> Result<Mint> {
 }
 
 pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<Mint> {
+    create_mint_with_options(limits, None).await
+}
+
+pub async fn create_mint_with_options(
+    limits: Option<(usize, usize)>,
+    state_filters: Option<StateFilterOptions>,
+) -> Result<Mint> {
     // Read environment variable to determine database type
     let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
 
@@ -560,6 +610,10 @@ pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<M
         mint_builder = mint_builder.with_limits(2000, 2000);
     }
 
+    if let Some(state_filters) = state_filters {
+        mint_builder = mint_builder.with_state_filters(state_filters);
+    }
+
     let quote_ttl = QuoteTTL::new(10000, 10000);
 
     let mint = mint_builder
@@ -582,7 +636,19 @@ pub async fn create_test_wallet_for_mint(mint: Mint) -> Result<Wallet> {
 ///
 /// Useful for restore tests where two wallets must share the same seed.
 pub async fn create_test_wallet_for_mint_with_seed(mint: Mint, seed: [u8; 64]) -> Result<Wallet> {
+    Ok(create_counted_test_wallet_for_mint_with_seed(mint, seed)
+        .await?
+        .0)
+}
+
+/// Create a test wallet alongside a counter of the requests that name what the
+/// wallet is asking about.
+pub async fn create_counted_test_wallet_for_mint_with_seed(
+    mint: Mint,
+    seed: [u8; 64],
+) -> Result<(Wallet, Arc<AtomicUsize>)> {
     let connector = DirectMintConnection::new(mint.clone());
+    let identifying_requests = connector.identifying_requests();
 
     let mint_info = mint.mint_info().await?;
     let mint_url = mint_info
@@ -633,7 +699,7 @@ pub async fn create_test_wallet_for_mint_with_seed(mint: Mint, seed: [u8; 64]) -
         .client(connector)
         .build()?;
 
-    Ok(wallet)
+    Ok((wallet, identifying_requests))
 }
 
 /// Creates a mint quote for the given amount and checks its state in a loop. Returns when

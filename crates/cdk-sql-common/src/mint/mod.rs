@@ -28,6 +28,7 @@ mod proofs;
 mod quotes;
 mod saga;
 mod signatures;
+mod state_filters;
 
 #[rustfmt::skip]
 mod migrations {

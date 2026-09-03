@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::RandomState;
 use std::pin::Pin;
 use std::str::FromStr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -3852,5 +3853,174 @@ async fn test_p2pk_signing_keys_mixed_locked_and_unlocked_proofs() {
     assert_eq!(
         send_amount, received,
         "Bob should receive exactly the send amount"
+    );
+}
+
+/// A wallet learns that its ecash was spent by testing filters locally, without
+/// ever naming a proof to the mint.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_state_filters_reveal_a_spend_without_naming_it() {
+    setup_tracing();
+    let mint = create_and_start_test_mint_with_filters()
+        .await
+        .expect("Failed to create test mint");
+
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+    let (wallet, identifying_requests) =
+        create_counted_test_wallet_for_mint_with_seed(mint.clone(), seed)
+            .await
+            .expect("Failed to create test wallet");
+
+    fund_wallet(wallet.clone(), 64, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let prepared = wallet
+        .prepare_send(Amount::from(32), SendOptions::default())
+        .await
+        .expect("prepare send");
+    let sent = prepared.proofs().ys().expect("ys");
+    let token = prepared.confirm(None).await.expect("confirm send");
+
+    let receiver = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create receiving wallet");
+    let keysets_info = to_keyset_infos(&wallet.keysets(Default::default()).await.unwrap());
+    receiver
+        .receive_proofs(
+            token.proofs(&keysets_info).expect("token proofs"),
+            ReceiveOptions::default(),
+            None,
+            None,
+        )
+        .await
+        .expect("receive");
+
+    let before = identifying_requests.load(Ordering::Relaxed);
+
+    let matches = wallet
+        .sweep_pending_state_filter()
+        .await
+        .expect("filter sweep");
+
+    assert_eq!(
+        identifying_requests.load(Ordering::Relaxed),
+        before,
+        "a filter sweep must not name anything to the mint"
+    );
+
+    for y in &sent {
+        assert!(
+            matches.proofs.contains(y),
+            "the redeemed proof {y} should have matched the mint's filter"
+        );
+    }
+}
+
+/// A wallet with nothing to report learns nothing and says nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_state_filters_stay_quiet_when_nothing_happened() {
+    setup_tracing();
+    let mint = create_and_start_test_mint_with_filters()
+        .await
+        .expect("Failed to create test mint");
+
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+    let (wallet, identifying_requests) =
+        create_counted_test_wallet_for_mint_with_seed(mint.clone(), seed)
+            .await
+            .expect("Failed to create test wallet");
+
+    fund_wallet(wallet.clone(), 64, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let before = identifying_requests.load(Ordering::Relaxed);
+
+    let matches = wallet.sync_state_filters().await.expect("sync");
+
+    assert!(
+        matches.proofs.is_empty(),
+        "no proof of this wallet has been spent"
+    );
+    assert_eq!(
+        identifying_requests.load(Ordering::Relaxed),
+        before,
+        "nothing matched, so nothing was confirmed"
+    );
+}
+
+/// A seed restore against a filter-publishing mint names only the proofs that
+/// matched, instead of sending every recovered Y.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_restore_through_filters_names_only_what_matched() {
+    setup_tracing();
+    let mint = create_and_start_test_mint_with_filters()
+        .await
+        .expect("Failed to create test mint");
+
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+    let wallet = create_test_wallet_for_mint_with_seed(mint.clone(), seed)
+        .await
+        .expect("Failed to create test wallet");
+
+    fund_wallet(wallet.clone(), 64, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(64));
+
+    let (restored_wallet, identifying_requests) =
+        create_counted_test_wallet_for_mint_with_seed(mint.clone(), seed)
+            .await
+            .expect("Failed to create restore wallet");
+
+    let restored = restored_wallet.restore().await.expect("Restore failed");
+
+    assert_eq!(
+        restored.unspent,
+        Amount::from(64),
+        "restore should recover the full balance"
+    );
+    assert_eq!(
+        restored.spent,
+        Amount::ZERO,
+        "nothing was spent before the restore"
+    );
+    assert_eq!(
+        identifying_requests.load(Ordering::Relaxed),
+        0,
+        "a restore that finds nothing spent must not name a single proof"
+    );
+}
+
+/// The same restore against a mint without filters still works, through NUT-07.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_restore_falls_back_when_the_mint_publishes_no_filters() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+    let wallet = create_test_wallet_for_mint_with_seed(mint.clone(), seed)
+        .await
+        .expect("Failed to create test wallet");
+
+    fund_wallet(wallet.clone(), 64, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let (restored_wallet, identifying_requests) =
+        create_counted_test_wallet_for_mint_with_seed(mint.clone(), seed)
+            .await
+            .expect("Failed to create restore wallet");
+
+    let restored = restored_wallet.restore().await.expect("Restore failed");
+
+    assert_eq!(restored.unspent, Amount::from(64));
+    assert!(
+        identifying_requests.load(Ordering::Relaxed) > 0,
+        "without filters the wallet has to name every recovered proof"
     );
 }

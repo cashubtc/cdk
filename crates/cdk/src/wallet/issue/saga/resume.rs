@@ -299,7 +299,7 @@ impl Wallet {
             let quote = match self.localstore.get_mint_quote(quote_id).await? {
                 Some(mut quote) => {
                     // Update state from mint
-                    if let Err(e) = self.check_state(&mut quote).await {
+                    if let Err(e) = self.check_mint_quote_state(&mut quote).await {
                         tracing::warn!(
                             "Failed to check quote state for transaction recording: {}",
                             escape_log_value(&e)

@@ -1058,6 +1058,18 @@ impl MintConnector for MockMintConnector {
             .expect("MockMintConnector: post_restore called without configured response")
     }
 
+    async fn get_filters_info(&self) -> Result<crate::nuts::GetFiltersInfoResponse, Error> {
+        Err(Error::FilterNotAvailable)
+    }
+
+    async fn get_filters(&self, _page: u64) -> Result<crate::nuts::GetFiltersResponse, Error> {
+        Err(Error::FilterNotAvailable)
+    }
+
+    async fn get_filters_pending(&self) -> Result<crate::nuts::PendingFilterResponse, Error> {
+        Err(Error::FilterNotAvailable)
+    }
+
     async fn get_auth_wallet(&self) -> Option<crate::wallet::AuthWallet> {
         None
     }

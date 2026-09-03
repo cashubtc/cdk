@@ -18,7 +18,7 @@ use cdk_common::{
 use cdk_fake_wallet::FakeWallet;
 use tokio::time::sleep;
 
-use crate::mint::{Mint, MintBuilder, MintMeltLimits};
+use crate::mint::{Mint, MintBuilder, MintMeltLimits, StateFilterOptions};
 use crate::types::{FeeReserve, QuoteTTL};
 use crate::Error;
 
@@ -74,6 +74,13 @@ pub(crate) fn should_fail_for(operation: &str) -> bool {
 /// }
 /// ```
 pub async fn create_test_mint() -> Result<Mint, Error> {
+    create_test_mint_with_state_filters(None).await
+}
+
+/// Creates and starts a test mint, optionally publishing compact state filters.
+pub async fn create_test_mint_with_state_filters(
+    state_filters: Option<StateFilterOptions>,
+) -> Result<Mint, Error> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
 
     let mut mint_builder = MintBuilder::new(db.clone());
@@ -106,6 +113,10 @@ pub async fn create_test_mint() -> Result<Mint, Error> {
         .with_name("test mint".to_string())
         .with_description("test mint for unit tests".to_string())
         .with_urls(vec!["https://test-mint".to_string()]);
+
+    if let Some(state_filters) = state_filters {
+        mint_builder = mint_builder.with_state_filters(state_filters);
+    }
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
 

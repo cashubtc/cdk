@@ -202,7 +202,13 @@ impl<'a> SwapSaga<'a, Initial> {
             Err(err) => return Err(Error::NUT00(err)),
         };
 
-        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut new_proofs, State::Pending).await
+        if let Err(err) = Mint::update_proofs_state(
+            &mut tx,
+            &self.mint.state_filters(),
+            &mut new_proofs,
+            State::Pending,
+        )
+        .await
         {
             tx.rollback().await?;
             return Err(err);
@@ -407,7 +413,14 @@ impl SwapSaga<'_, Signed> {
             }
         };
 
-        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await {
+        if let Err(err) = Mint::update_proofs_state(
+            &mut tx,
+            &self.mint.state_filters(),
+            &mut proofs,
+            State::Spent,
+        )
+        .await
+        {
             tx.rollback().await?;
             self.compensate_all().await?;
             return Err(err);
@@ -467,7 +480,10 @@ impl<S> SwapSaga<'_, S> {
 
         while let Some(compensation) = compensations.pop_front() {
             tracing::debug!("Running compensation: {}", compensation.name());
-            if let Err(e) = compensation.execute(&self.db, &self.pubsub).await {
+            if let Err(e) = compensation
+                .execute(&self.db, &self.pubsub, &self.mint.state_filters())
+                .await
+            {
                 tracing::error!(
                     "Compensation {} failed: {}. Continuing...",
                     compensation.name(),

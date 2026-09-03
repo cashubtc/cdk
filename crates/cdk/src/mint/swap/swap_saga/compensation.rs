@@ -4,11 +4,18 @@ use cdk_common::{Error, PublicKey};
 use tracing::instrument;
 use uuid::Uuid;
 
+use crate::mint::state_filters::StateFilters;
 use crate::mint::subscription::PubSubManager;
+use crate::Mint;
 
 #[async_trait]
 pub trait CompensatingAction: Send + Sync {
-    async fn execute(&self, db: &DynMintDatabase, pubsub: &PubSubManager) -> Result<(), Error>;
+    async fn execute(
+        &self,
+        db: &DynMintDatabase,
+        pubsub: &PubSubManager,
+        filters: &StateFilters,
+    ) -> Result<(), Error>;
     fn name(&self) -> &'static str;
 }
 
@@ -33,7 +40,12 @@ pub struct RemoveSwapSetup {
 #[async_trait]
 impl CompensatingAction for RemoveSwapSetup {
     #[instrument(skip_all)]
-    async fn execute(&self, db: &DynMintDatabase, _pubsub: &PubSubManager) -> Result<(), Error> {
+    async fn execute(
+        &self,
+        db: &DynMintDatabase,
+        _pubsub: &PubSubManager,
+        filters: &StateFilters,
+    ) -> Result<(), Error> {
         if self.blinded_secrets.is_empty() && self.input_ys.is_empty() {
             return Ok(());
         }
@@ -54,7 +66,7 @@ impl CompensatingAction for RemoveSwapSetup {
 
         // Remove proofs (inputs)
         if !self.input_ys.is_empty() {
-            tx.remove_proofs(&self.input_ys, None).await?;
+            Mint::remove_proofs(&mut tx, filters, &self.input_ys, None).await?;
         }
 
         // Delete saga state record

@@ -526,9 +526,16 @@ impl Mint {
         #[cfg(feature = "prometheus")]
         let metrics = super::MintMetricGuard::new("pay_mint_quote");
 
-        let result =
-            async { Self::handle_mint_quote_payment(tx, mint_quote, wait_payment_response).await }
-                .await;
+        let result = async {
+            Self::handle_mint_quote_payment(
+                tx,
+                &self.state_filters(),
+                mint_quote,
+                wait_payment_response,
+            )
+            .await
+        }
+        .await;
 
         #[cfg(feature = "prometheus")]
         {
@@ -980,7 +987,7 @@ impl Mint {
                 }
 
                 mint_quote.add_issuance(amount_issued)?;
-                tx.update_mint_quote(&mut mint_quote).await?;
+                Mint::update_mint_quote(&mut tx, &self.state_filters(), &mut mint_quote).await?;
 
                 // Mint operations have no input fees
                 // Only persist operation for non-batch mints (batch operations are persisted above)

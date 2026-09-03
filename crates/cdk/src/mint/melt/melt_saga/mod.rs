@@ -272,7 +272,14 @@ impl MeltSaga<Initial> {
 
         let mut proofs = tx.get_proofs(&input_ys).await?;
 
-        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Pending).await {
+        if let Err(err) = Mint::update_proofs_state(
+            &mut tx,
+            &self.mint.state_filters(),
+            &mut proofs,
+            State::Pending,
+        )
+        .await
+        {
             tx.rollback().await?;
             return Err(err);
         }
@@ -328,14 +335,19 @@ impl MeltSaga<Initial> {
         }
 
         // Update quote state to Pending
-        match tx
-            .update_melt_quote_state(&mut quote, MeltQuoteState::Pending, None)
-            .await
+        match Mint::update_melt_quote_state(
+            &mut tx,
+            &self.mint.state_filters(),
+            &mut quote,
+            MeltQuoteState::Pending,
+            None,
+        )
+        .await
         {
             Ok(_) => {}
             Err(err) => {
                 tx.rollback().await?;
-                return Err(err.into());
+                return Err(err);
             }
         };
 
@@ -583,12 +595,18 @@ impl MeltSaga<SetupComplete> {
         .await?;
 
         mint_quote.add_payment(amount.clone(), self.state_data.quote.id.to_string(), None)?;
-        tx.update_mint_quote(&mut mint_quote).await?;
+        Mint::update_mint_quote(&mut tx, &self.mint.state_filters(), &mut mint_quote).await?;
 
         // Mark the melt quote Paid in the same transaction as the mint quote
         // credit.
-        tx.update_melt_quote_state(&mut melt_quote, MeltQuoteState::Paid, None)
-            .await?;
+        Mint::update_melt_quote_state(
+            &mut tx,
+            &self.mint.state_filters(),
+            &mut melt_quote,
+            MeltQuoteState::Paid,
+            None,
+        )
+        .await?;
 
         // Internally-settled melts never reach a payment backend, so persist
         // the synthetic lookup id the settlement response will use.
@@ -1189,7 +1207,10 @@ impl<S> MeltSaga<S> {
 
         while let Some(compensation) = compensations.pop_front() {
             tracing::debug!("Running compensation: {}", compensation.name());
-            if let Err(e) = compensation.execute(&self.db, &self.pubsub).await {
+            if let Err(e) = compensation
+                .execute(&self.db, &self.pubsub, &self.mint.state_filters())
+                .await
+            {
                 tracing::error!(
                     "Compensation {} failed: {}. Continuing...",
                     compensation.name(),
