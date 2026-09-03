@@ -1,204 +1,189 @@
 package cdk_ffi
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sync"
 	"testing"
-	"time"
 )
 
-const testMintUrl = "https://testnut.cashudevkit.org"
+const testMintURL = "https://mint.example.com"
 
 func newTestWallet(t *testing.T, path string) *Wallet {
+	t.Helper()
+	return newTestWalletWithConfig(t, path, nil)
+}
+
+func newTestWalletWithConfig(t *testing.T, path string, config *WalletConfig) *Wallet {
 	t.Helper()
 	mnemonic, err := GenerateMnemonic()
 	if err != nil {
 		t.Fatalf("GenerateMnemonic: %v", err)
 	}
-	w, err := NewWallet(
-		testMintUrl,
-		CurrencyUnitSat{},
-		mnemonic,
-		WalletStoreSqlite{Path: path},
-		WalletConfig{TargetProofCount: nil},
-	)
+	wallet, err := WalletOpen(WalletOpenRequest{
+		MintUrl:  testMintURL,
+		Unit:     CurrencyUnitSat{},
+		Mnemonic: mnemonic,
+		Store:    WalletStoreSqlite{Path: path},
+		Config:   config,
+	})
 	if err != nil {
-		t.Fatalf("NewWallet: %v", err)
+		t.Fatalf("WalletOpen: %v", err)
 	}
-	return w
+	return wallet
 }
 
 func tempDBPath(t *testing.T) string {
 	t.Helper()
-	f, err := os.CreateTemp("", "cdk_test_*.sqlite")
+	file, err := os.CreateTemp("", "cdk_test_*.sqlite")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
 	}
-	path := f.Name()
-	f.Close()
-	t.Cleanup(func() { os.Remove(path) })
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
 	return path
 }
 
-func TestInitialBalanceIsZero(t *testing.T) {
-	w := newTestWallet(t, tempDBPath(t))
-	defer w.Destroy()
+func TestWalletOpenProvidesLocalState(t *testing.T) {
+	wallet := newTestWallet(t, tempDBPath(t))
+	defer wallet.Destroy()
 
-	balance, err := w.TotalBalance()
-	if err != nil {
-		t.Fatalf("TotalBalance: %v", err)
+	identity := wallet.Identity()
+	if identity.MintUrl.Url != testMintURL {
+		t.Errorf("expected mint URL %q, got %q", testMintURL, identity.MintUrl.Url)
 	}
-	if balance.Value != 0 {
-		t.Errorf("expected zero balance, got %d", balance.Value)
+	if _, ok := identity.Unit.(CurrencyUnitSat); !ok {
+		t.Errorf("expected sat unit, got %T", identity.Unit)
+	}
+
+	balance, err := wallet.Balance()
+	if err != nil {
+		t.Fatalf("Balance: %v", err)
+	}
+	if balance.Available.Value != 0 || balance.Pending.Value != 0 || balance.Reserved.Value != 0 {
+		t.Errorf("expected zero balance, got %+v", balance)
+	}
+
+	report, err := wallet.Synchronize(SyncPolicyLocalOnly)
+	if err != nil {
+		t.Fatalf("Synchronize(LocalOnly): %v", err)
+	}
+	if report.Wallet.MintUrl.Url != testMintURL || report.FailedOperations != 0 {
+		t.Errorf("unexpected local sync report: %+v", report)
 	}
 }
 
-func TestInMemorySqliteConcurrentAccess(t *testing.T) {
-	w := newTestWallet(t, ":memory:")
-	defer w.Destroy()
+func TestInMemorySqliteConcurrentBalanceReads(t *testing.T) {
+	wallet := newTestWallet(t, ":memory:")
+	defer wallet.Destroy()
 
-	var wg sync.WaitGroup
+	var waitGroup sync.WaitGroup
 	errs := make(chan error, 64)
-
-	for i := 0; i < 64; i++ {
-		wg.Add(1)
+	for range 64 {
+		waitGroup.Add(1)
 		go func() {
-			defer wg.Done()
-			balance, err := w.TotalBalance()
+			defer waitGroup.Done()
+			balance, err := wallet.Balance()
 			if err != nil {
 				errs <- err
 				return
 			}
-			if balance.Value != 0 {
-				errs <- fmt.Errorf("expected zero balance, got %d", balance.Value)
+			if balance.Available.Value != 0 {
+				errs <- fmt.Errorf("expected zero available balance, got %d", balance.Available.Value)
 			}
 		}()
 	}
 
-	wg.Wait()
+	waitGroup.Wait()
 	close(errs)
-
 	for err := range errs {
 		t.Error(err)
 	}
 }
 
-func newRateLimitedWallet(rateLimit *RateLimit) (*Wallet, error) {
+func TestCashuWalletCoordinatesMultipleMints(t *testing.T) {
 	mnemonic, err := GenerateMnemonic()
 	if err != nil {
-		return nil, err
+		t.Fatalf("GenerateMnemonic: %v", err)
 	}
-	return NewWallet(
-		"https://mint.example.com",
-		CurrencyUnitSat{},
-		mnemonic,
-		WalletStoreSqlite{Path: ":memory:"},
-		WalletConfig{TargetProofCount: nil, RateLimit: rateLimit},
-	)
-}
-
-func TestRateLimitDefaultsToPacing(t *testing.T) {
-	// A nil rate limit is the backwards-compatible spelling and must keep
-	// selecting the built-in default.
-	omitted, err := newRateLimitedWallet(nil)
+	root, err := CashuWalletOpen(CashuWalletOpenRequest{
+		Mnemonic: mnemonic,
+		Store:    WalletStoreSqlite{Path: tempDBPath(t)},
+	})
 	if err != nil {
-		t.Fatalf("NewWallet: %v", err)
+		t.Fatalf("CashuWalletOpen: %v", err)
 	}
-	defer omitted.Destroy()
-	if !omitted.IsRateLimited() {
-		t.Error("an omitted rate limit should pace by default")
-	}
+	defer root.Destroy()
 
-	var def RateLimit = RateLimitDefault{}
-	explicit, err := newRateLimitedWallet(&def)
+	first, err := root.Wallet(MintUrl{Url: "https://one.example.com"}, CurrencyUnitSat{})
 	if err != nil {
-		t.Fatalf("NewWallet: %v", err)
+		t.Fatalf("first wallet: %v", err)
 	}
-	defer explicit.Destroy()
-	if !explicit.IsRateLimited() {
-		t.Error("Default should pace the wallet")
+	defer first.Destroy()
+	second, err := root.Wallet(MintUrl{Url: "https://two.example.com"}, CurrencyUnitSat{})
+	if err != nil {
+		t.Fatalf("second wallet: %v", err)
+	}
+	defer second.Destroy()
+
+	balances, err := root.Balances()
+	if err != nil {
+		t.Fatalf("Balances: %v", err)
+	}
+	if len(balances) != 2 {
+		t.Fatalf("expected two wallet balances, got %d", len(balances))
 	}
 }
 
-func TestRateLimitCanBeDisabledAndReEnabled(t *testing.T) {
-	var disabled RateLimit = RateLimitDisabled{}
-	w, err := newRateLimitedWallet(&disabled)
-	if err != nil {
-		t.Fatalf("NewWallet: %v", err)
-	}
-	defer w.Destroy()
-
-	if w.IsRateLimited() {
-		t.Error("Disabled should not pace")
-	}
-
-	if err := w.SetRateLimit(RateLimitDefault{}); err != nil {
-		t.Fatalf("SetRateLimit: %v", err)
-	}
-	if !w.IsRateLimited() {
-		t.Error("a wallet built disabled should be re-enablable")
-	}
-}
-
-func TestCustomRateLimitPaces(t *testing.T) {
-	var custom RateLimit = RateLimitCustom{Capacity: 5, RefillPerMinute: 30}
-	w, err := newRateLimitedWallet(&custom)
-	if err != nil {
-		t.Fatalf("NewWallet: %v", err)
-	}
-	defer w.Destroy()
-
-	if !w.IsRateLimited() {
-		t.Error("Custom should pace the wallet")
-	}
-}
-
-func TestZeroRateLimitValuesAreRejected(t *testing.T) {
-	for _, rl := range []RateLimit{
-		RateLimitCustom{Capacity: 0, RefillPerMinute: 30},
-		RateLimitCustom{Capacity: 5, RefillPerMinute: 0},
+func TestRateLimitConfigurationIsValidatedAtOpen(t *testing.T) {
+	for name, rateLimit := range map[string]RateLimit{
+		"default":  RateLimitDefault{},
+		"disabled": RateLimitDisabled{},
+		"custom":   RateLimitCustom{Capacity: 5, RefillPerMinute: 30},
 	} {
-		rl := rl
-		if w, err := newRateLimitedWallet(&rl); err == nil {
-			w.Destroy()
-			t.Errorf("%v should be rejected", rl)
-		}
+		t.Run(name, func(t *testing.T) {
+			wallet := newTestWalletWithConfig(t, tempDBPath(t), &WalletConfig{RateLimit: &rateLimit})
+			wallet.Destroy()
+		})
 	}
+
+	var invalid RateLimit = RateLimitCustom{Capacity: 0, RefillPerMinute: 30}
+	mnemonic, err := GenerateMnemonic()
+	if err != nil {
+		t.Fatalf("GenerateMnemonic: %v", err)
+	}
+	_, err = WalletOpen(WalletOpenRequest{
+		MintUrl:  testMintURL,
+		Unit:     CurrencyUnitSat{},
+		Mnemonic: mnemonic,
+		Store:    WalletStoreSqlite{Path: tempDBPath(t)},
+		Config:   &WalletConfig{RateLimit: &invalid},
+	})
+	assertInvalidInput(t, err)
 }
 
-func TestMintFlow(t *testing.T) {
-	w := newTestWallet(t, tempDBPath(t))
-	defer w.Destroy()
+func TestInvalidOperationIDReturnsStructuredError(t *testing.T) {
+	wallet := newTestWallet(t, tempDBPath(t))
+	defer wallet.Destroy()
 
-	amount := Amount{Value: 100}
-	quote, err := w.MintQuote(PaymentMethodBolt11{}, &amount, nil, nil)
-	if err != nil {
-		t.Fatalf("MintQuote: %v", err)
-	}
-	if quote.Id == "" {
-		t.Fatal("expected non-empty quote ID")
-	}
-	if quote.Request == "" {
-		t.Fatal("expected non-empty payment request")
-	}
+	_, err := wallet.SendPlan("not-an-operation-id")
+	assertInvalidInput(t, err)
+}
 
-	// testnut pays quotes automatically
-	time.Sleep(3 * time.Second)
-
-	proofs, err := w.Mint(quote.Id, SplitTargetNone{}, nil)
-	if err != nil {
-		t.Fatalf("Mint: %v", err)
+func assertInvalidInput(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected an invalid-input error")
 	}
-	if len(proofs) == 0 {
-		t.Fatal("expected proofs")
+	var cdkErr *FfiErrorCdk
+	if !errors.As(err, &cdkErr) {
+		t.Fatalf("expected FfiErrorCdk, got %T: %v", err, err)
 	}
-
-	balance, err := w.TotalBalance()
-	if err != nil {
-		t.Fatalf("TotalBalance: %v", err)
-	}
-	if balance.Value != 100 {
-		t.Errorf("expected balance 100, got %d", balance.Value)
+	if cdkErr.Kind != WalletErrorKindInvalidInput || cdkErr.Code != 40000 || cdkErr.Retryable {
+		t.Errorf("unexpected structured error: %+v", cdkErr)
 	}
 }

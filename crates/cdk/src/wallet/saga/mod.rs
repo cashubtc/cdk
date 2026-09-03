@@ -45,7 +45,10 @@ pub(crate) fn new_compensations() -> Compensations {
 }
 
 /// Execute all compensating actions in LIFO order.
-/// Errors are logged but execution continues.
+///
+/// Every action is attempted even when one fails. The first failure is
+/// returned after the queue is drained so callers cannot mistake a partial
+/// rollback for a successful cleanup.
 pub(crate) async fn execute_compensations(compensations: &mut Compensations) -> Result<(), Error> {
     if compensations.is_empty() {
         return Ok(());
@@ -53,6 +56,7 @@ pub(crate) async fn execute_compensations(compensations: &mut Compensations) -> 
 
     tracing::warn!("Running {} compensating actions", compensations.len());
 
+    let mut first_error = None;
     while let Some(compensation) = compensations.pop_front() {
         tracing::debug!("Running compensation: {}", compensation.name());
         if let Err(e) = compensation.execute().await {
@@ -61,10 +65,16 @@ pub(crate) async fn execute_compensations(compensations: &mut Compensations) -> 
                 compensation.name(),
                 e
             );
+            if first_error.is_none() {
+                first_error = Some(e);
+            }
         }
     }
 
-    Ok(())
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 /// Clear all compensating actions from the queue.
@@ -121,14 +131,10 @@ impl CompensatingAction for RevertProofReservation {
             .await
             .map_err(Error::Database)?;
 
-        if let Err(e) = self.localstore.delete_saga(&self.saga_id).await {
-            tracing::warn!(
-                "Compensation: Failed to delete saga {}: {}. Will be cleaned up on recovery.",
-                self.saga_id,
-                e
-            );
-            // Don't fail compensation if saga deletion fails - orphaned saga is harmless
-        }
+        self.localstore
+            .delete_saga(&self.saga_id)
+            .await
+            .map_err(Error::Database)?;
 
         Ok(())
     }
@@ -448,9 +454,9 @@ mod tests {
         )
         .await;
 
-        // Execute compensations - should complete without error even though one failed
+        // Execute compensations - report the failure after attempting every action.
         let result = execute_compensations(&mut compensations).await;
-        assert!(result.is_ok());
+        assert!(result.is_err());
 
         // All three should have executed despite the middle one failing
         let order = execution_order.lock().unwrap();

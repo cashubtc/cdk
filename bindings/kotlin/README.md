@@ -57,34 +57,30 @@ import kotlinx.coroutines.runBlocking
 fun main() = runBlocking {
     val mnemonic = generateMnemonic()
 
-    val wallet = Wallet(
-        mintUrl = "https://testnut.cashudevkit.org",
-        unit = CurrencyUnit.Sat,
-        mnemonic = mnemonic,
-        store = WalletStore.Sqlite(path = "wallet.sqlite"),
-        config = WalletConfig(targetProofCount = null),
+    val wallet = Wallet.open(
+        WalletOpenRequest(
+            mintUrl = "https://testnut.cashudevkit.org",
+            unit = CurrencyUnit.Sat,
+            mnemonic = mnemonic,
+            store = WalletStore.Sqlite(path = "wallet.sqlite"),
+        ),
     )
 
-    // Request a mint quote
-    val quote = wallet.mintQuote(
-        paymentMethod = PaymentMethod.Bolt11,
-        amount = Amount(value = 100UL),
-        description = null,
-        extra = null,
+    val session = wallet.requestMinting(
+        MintRequest(
+            method = PaymentMethod.Bolt11,
+            amount = Amount(value = 100UL),
+        ),
     )
+    println("Pay this invoice: ${session.initialState().paymentRequest}")
 
-    println("Pay this invoice: ${quote.request}")
+    // After payment settles:
+    session.refresh()
+    val claimed = session.claim()
+    val balance = wallet.balance()
+    println("Claimed ${claimed.value}; available ${balance.available.value} sats")
 
-    // After payment settles, mint the tokens
-    val proofs = wallet.mint(
-        quoteId = quote.id,
-        amountSplitTarget = SplitTarget.None,
-        spendingConditions = null,
-    )
-
-    val balance = wallet.totalBalance()
-    println("Balance: ${balance.value} sats")
-
+    session.close()
     wallet.close()
 }
 ```

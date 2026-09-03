@@ -93,7 +93,7 @@ async fn main() -> Result<(), Error> {
     println!(
         "Prepared melt - Amount: {}, Total Fee: {}",
         prepared1.amount(),
-        prepared1.total_fee()
+        prepared1.total_fee()?
     );
 
     let confirmed1 = prepared1.confirm().await?;
@@ -130,7 +130,7 @@ async fn main() -> Result<(), Error> {
     println!(
         "Prepared melt - Amount: {}, Total Fee: {}",
         prepared2.amount(),
-        prepared2.total_fee()
+        prepared2.total_fee()?
     );
 
     // confirm_prefer_async waits for the mint's response, which may be quick if async is supported

@@ -5,13 +5,18 @@ use core::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::nuts::Proofs;
+use crate::wallet::SendOptions;
 use crate::{Amount, Error};
 
 /// States specific to send saga
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SendSagaState {
-    /// Proofs selected and reserved for sending, ready to create token
+    /// Durable owner record created before proofs are reserved.
+    Preparing,
+    /// A durable send plan awaiting an explicit confirm or cancel decision.
+    Prepared,
+    /// Confirmation started after proofs were selected and reserved.
     ProofsReserved,
     /// Token created and ready to share, proofs marked as pending spent awaiting claim
     TokenCreated,
@@ -22,6 +27,8 @@ pub enum SendSagaState {
 impl std::fmt::Display for SendSagaState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            SendSagaState::Preparing => write!(f, "preparing"),
+            SendSagaState::Prepared => write!(f, "prepared"),
             SendSagaState::ProofsReserved => write!(f, "proofs_reserved"),
             SendSagaState::TokenCreated => write!(f, "token_created"),
             SendSagaState::RollingBack => write!(f, "rolling_back"),
@@ -33,11 +40,61 @@ impl std::str::FromStr for SendSagaState {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "preparing" => Ok(SendSagaState::Preparing),
+            "prepared" => Ok(SendSagaState::Prepared),
             "proofs_reserved" => Ok(SendSagaState::ProofsReserved),
             "token_created" => Ok(SendSagaState::TokenCreated),
             "rolling_back" => Ok(SendSagaState::RollingBack),
             _ => Err(Error::InvalidOperationState),
         }
+    }
+}
+
+/// Complete, persisted plan for a send that is ready for confirmation.
+///
+/// Keeping the plan in the saga makes the operation ID the source of truth.
+/// Callers do not need to retain proofs or replay internal arguments in order
+/// to confirm or cancel a prepared send.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedSendOperationData {
+    /// Target amount to send.
+    pub amount: Amount,
+    /// Options selected while preparing the send.
+    pub options: SendOptions,
+    /// Proofs that must be swapped before the token is created.
+    pub proofs_to_swap: Proofs,
+    /// Proofs that can be included in the token directly.
+    pub proofs_to_send: Proofs,
+    /// Fee for the pre-send swap.
+    pub swap_fee: Amount,
+    /// Fee paid by the recipient when redeeming the token.
+    pub send_fee: Amount,
+}
+
+impl fmt::Debug for PreparedSendOperationData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PreparedSendOperationData")
+            .field("amount", &self.amount)
+            .field("options", &self.options)
+            .field(
+                "proofs_to_swap",
+                &self
+                    .proofs_to_swap
+                    .iter()
+                    .map(|proof| proof.amount)
+                    .collect::<Vec<_>>(),
+            )
+            .field(
+                "proofs_to_send",
+                &self
+                    .proofs_to_send
+                    .iter()
+                    .map(|proof| proof.amount)
+                    .collect::<Vec<_>>(),
+            )
+            .field("swap_fee", &self.swap_fee)
+            .field("send_fee", &self.send_fee)
+            .finish()
     }
 }
 

@@ -44,14 +44,18 @@ impl From<BitcoinNetwork> for bitcoin::Network {
     }
 }
 
-impl From<bitcoin::Network> for BitcoinNetwork {
-    fn from(network: bitcoin::Network) -> Self {
+impl TryFrom<bitcoin::Network> for BitcoinNetwork {
+    type Error = crate::error::FfiError;
+
+    fn try_from(network: bitcoin::Network) -> Result<Self, Self::Error> {
         match network {
-            bitcoin::Network::Bitcoin => BitcoinNetwork::Bitcoin,
-            bitcoin::Network::Testnet => BitcoinNetwork::Testnet,
-            bitcoin::Network::Signet => BitcoinNetwork::Signet,
-            bitcoin::Network::Regtest => BitcoinNetwork::Regtest,
-            _ => BitcoinNetwork::Bitcoin,
+            bitcoin::Network::Bitcoin => Ok(BitcoinNetwork::Bitcoin),
+            bitcoin::Network::Testnet => Ok(BitcoinNetwork::Testnet),
+            bitcoin::Network::Signet => Ok(BitcoinNetwork::Signet),
+            bitcoin::Network::Regtest => Ok(BitcoinNetwork::Regtest),
+            _ => Err(crate::error::FfiError::internal(format!(
+                "Unsupported Bitcoin network: {network}"
+            ))),
         }
     }
 }

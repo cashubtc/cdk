@@ -1,70 +1,61 @@
-# CDK FFI Bindings
+# CDK portable wallet API
 
-UniFFI bindings for the CDK (Cashu Development Kit), providing foreign function interface access to wallet functionality for multiple programming languages.
+`cdk-ffi` is CDK's application-facing wallet facade. The Rust implementation
+is the single source for Rust applications and generated Python, Swift, Kotlin,
+Dart, and Go bindings.
 
-## Supported Languages
+The facade offers a compact workflow API:
 
-- **🐍 Python** - With REPL integration for development
-- **🍎 Swift** - iOS and macOS development
-- **🎯 Kotlin** - Android and JVM development
+- `Wallet` for one mint and currency unit;
+- `CashuWallet` as a multi-mint root;
+- request records and typed `PaymentTarget` values;
+- mint/payment sessions;
+- durable send, payment, pending-payment, and cross-mint plans;
+- explicit synchronization and structured errors.
 
-## Development Tasks
+Proof, keyset, swap, and other protocol-level controls live in the `cdk` wallet
+engine. The architecture and lifecycle contract are documented in
+[`docs/wallet-api.md`](../../docs/wallet-api.md).
 
-### Build & Check
-```bash
-just ffi-build        # Build FFI library (release)
-just ffi-build --debug # Build debug version
-just ffi-check         # Check compilation
-just ffi-clean         # Clean build artifacts
+## Python example
+
+```python
+import cdk_ffi
+
+wallet = cdk_ffi.Wallet.open(
+    cdk_ffi.WalletOpenRequest(
+        mint_url="https://mint.example.com",
+        unit=cdk_ffi.CurrencyUnit.SAT(),
+        mnemonic=cdk_ffi.generate_mnemonic(),
+        store=cdk_ffi.WalletStore.SQLITE(path="wallet.sqlite"),
+    )
+)
+
+balance = await wallet.balance()
+session = await wallet.request_minting(
+    cdk_ffi.MintRequest(
+        method=cdk_ffi.PaymentMethod.BOLT11(),
+        amount=cdk_ffi.Amount(value=1_000),
+    )
+)
+print(session.initial_state().payment_request)
 ```
 
-### Generate Bindings
-```bash
-# Generate for specific languages
-just ffi-generate python
-just ffi-generate swift
-just ffi-generate kotlin
-
-# Generate all languages
-just ffi-generate-all
-
-# Use --debug for faster development builds
-just ffi-generate python --debug
-```
-
-### Development & Testing
-```bash
-# Python development with REPL
-just ffi-dev-python    # Generates bindings and opens Python REPL with cdk_ffi loaded
-
-# Test bindings
-just ffi-test-python   # Test Python bindings import
-just ffi-test-live-python # Run live Python test against testnut.cashudevkit.org
-```
-
-## Quick Start
+## Development
 
 ```bash
-# Start development
-just ffi-dev-python
-
-# In the Python REPL:
->>> dir(cdk_ffi)  # Explore available functions
->>> help(cdk_ffi.generate_mnemonic)  # Get help
+just ffi-check                 # Rust compile check
+just ffi-api-check             # generated API manifest check
+just ffi-generate python       # one language
+just ffi-generate-all          # Python, Swift, and Kotlin
+just ffi-test                  # deterministic Python tests
+just ffi-test-live-python      # live testnut payment test
 ```
 
-## Live Tests
+The live Python test covers mint sessions, typed on-chain quoting,
+`PaymentPlan.confirm_prefer_async()`, immediate and pending outcomes, durable
+pending-handle reconstruction, and startup-style synchronization.
 
-The live Python test in `tests/test_live_async_onchain_melt.py` covers
-`PreparedMelt.confirm_prefer_async()`, immediate and pending melt outcomes,
-`PendingMelt.wait()`, and `Wallet.finalize_pending_melts()` against
-`https://testnut.cashudevkit.org`.
-
-## Language Packages
-
-For production use, see language-specific repositories:
-
-- [cdk-swift](https://github.com/cashubtc/cdk-swift) - iOS/macOS packages
-- [cdk-kotlin](https://github.com/cashubtc/cdk-kotlin) - Android/JVM packages  
-- [cdk-go](https://github.com/cashubtc/cdk-go) - Golang packages
-- [cdk-python](https://github.com/cashubtc/cdk-python) - PyPI packages
+Production packages are published in the `cashubtc/cdk-swift`,
+`cashubtc/cdk-kotlin`, `cashubtc/cdk-go`, `cashubtc/cdk-dart`, and
+`cashubtc/cdk-python` repositories.

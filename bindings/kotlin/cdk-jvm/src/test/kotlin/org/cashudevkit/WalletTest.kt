@@ -3,9 +3,12 @@ package org.cashudevkit
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.io.File
@@ -18,13 +21,14 @@ class WalletTest {
     @BeforeEach
     fun setUp() {
         dbFile = File.createTempFile("cdk_test_", ".sqlite")
-        val mnemonic = generateMnemonic()
-        wallet = Wallet(
-            mintUrl = "https://testnut.cashudevkit.org",
-            unit = CurrencyUnit.Sat,
-            mnemonic = mnemonic,
-            store = WalletStore.Sqlite(path = dbFile.absolutePath),
-            config = WalletConfig(targetProofCount = null),
+        wallet = Wallet.open(
+            WalletOpenRequest(
+                mintUrl = "https://testnut.cashudevkit.org",
+                unit = CurrencyUnit.Sat,
+                mnemonic = generateMnemonic(),
+                store = WalletStore.Sqlite(path = dbFile.absolutePath),
+                config = WalletConfig(targetProofCount = null),
+            ),
         )
     }
 
@@ -36,124 +40,94 @@ class WalletTest {
 
     @Test
     fun `initial balance is zero`() = runBlocking {
-        val balance = wallet.totalBalance()
-        assertEquals(0UL, balance.value)
+        val balance = wallet.balance()
+        assertEquals(0UL, balance.available.value)
+        assertEquals(0UL, balance.pending.value)
+        assertEquals(0UL, balance.reserved.value)
     }
 
     @Test
     fun `in-memory sqlite handles concurrent access`() = runBlocking {
-        val memoryWallet = Wallet(
-            mintUrl = "https://testnut.cashudevkit.org",
-            unit = CurrencyUnit.Sat,
-            mnemonic = generateMnemonic(),
-            store = WalletStore.Sqlite(path = ":memory:"),
-            config = WalletConfig(targetProofCount = null),
+        val memoryWallet = Wallet.open(
+            WalletOpenRequest(
+                mintUrl = "https://testnut.cashudevkit.org",
+                unit = CurrencyUnit.Sat,
+                mnemonic = generateMnemonic(),
+                store = WalletStore.Sqlite(path = ":memory:"),
+                config = WalletConfig(targetProofCount = null),
+            ),
         )
 
         try {
             val balances = coroutineScope {
                 (0 until 64).map {
-                    async { memoryWallet.totalBalance() }
+                    async { memoryWallet.balance() }
                 }.awaitAll()
             }
-
             balances.forEach { balance ->
-                assertEquals(0UL, balance.value)
+                assertEquals(0UL, balance.available.value)
             }
         } finally {
             memoryWallet.close()
         }
     }
 
-    private fun rateLimitedWallet(rateLimit: RateLimit?): Wallet = Wallet(
-        mintUrl = "https://mint.example.com",
-        unit = CurrencyUnit.Sat,
-        mnemonic = generateMnemonic(),
-        store = WalletStore.Sqlite(path = ":memory:"),
-        config = WalletConfig(targetProofCount = null, rateLimit = rateLimit),
-    )
-
-    @Test
-    fun `rate limit defaults to pacing`() {
-        // Omitting the field is the backwards-compatible spelling and must keep
-        // selecting the built-in default.
-        val omitted = Wallet(
+    private fun configuredWallet(rateLimit: RateLimit?): Wallet = Wallet.open(
+        WalletOpenRequest(
             mintUrl = "https://mint.example.com",
             unit = CurrencyUnit.Sat,
             mnemonic = generateMnemonic(),
             store = WalletStore.Sqlite(path = ":memory:"),
-            config = WalletConfig(targetProofCount = null),
-        )
-        try {
-            assertTrue(omitted.isRateLimited())
-        } finally {
-            omitted.close()
-        }
-
-        val explicit = rateLimitedWallet(RateLimit.Default)
-        try {
-            assertTrue(explicit.isRateLimited())
-        } finally {
-            explicit.close()
-        }
-    }
+            config = WalletConfig(targetProofCount = null, rateLimit = rateLimit),
+        ),
+    )
 
     @Test
-    fun `rate limit can be disabled and re-enabled`() {
-        val disabled = rateLimitedWallet(RateLimit.Disabled)
-        try {
-            assertFalse(disabled.isRateLimited())
-            disabled.setRateLimit(RateLimit.Default)
-            assertTrue(disabled.isRateLimited())
-        } finally {
-            disabled.close()
-        }
-    }
-
-    @Test
-    fun `custom rate limit paces the wallet`() {
-        val custom = rateLimitedWallet(RateLimit.Custom(capacity = 5U, refillPerMinute = 30U))
-        try {
-            assertTrue(custom.isRateLimited())
-        } finally {
-            custom.close()
+    fun `construction accepts supported pacing policies`() {
+        listOf(
+            RateLimit.Default,
+            RateLimit.Disabled,
+            RateLimit.Custom(capacity = 5U, refillPerMinute = 30U),
+        ).forEach { policy ->
+            configuredWallet(policy).use { opened ->
+                assertEquals("https://mint.example.com", opened.identity().mintUrl.url)
+            }
         }
     }
 
     @Test
     fun `zero rate limit values are rejected`() {
         assertThrows(FfiException::class.java) {
-            rateLimitedWallet(RateLimit.Custom(capacity = 0U, refillPerMinute = 30U))
+            configuredWallet(RateLimit.Custom(capacity = 0U, refillPerMinute = 30U))
         }
         assertThrows(FfiException::class.java) {
-            rateLimitedWallet(RateLimit.Custom(capacity = 5U, refillPerMinute = 0U))
+            configuredWallet(RateLimit.Custom(capacity = 5U, refillPerMinute = 0U))
         }
     }
 
     @Test
     fun `mint flow`() = runBlocking {
-        val quote = wallet.mintQuote(
-            paymentMethod = PaymentMethod.Bolt11,
-            amount = Amount(value = 100UL),
-            description = null,
-            extra = null,
+        val session = wallet.requestMinting(
+            MintRequest(
+                method = PaymentMethod.Bolt11,
+                amount = Amount(value = 100UL),
+            ),
         )
+        try {
+            val initial = session.initialState()
+            assertTrue(initial.id.isNotEmpty())
+            assertTrue(initial.paymentRequest.isNotEmpty())
 
-        assertTrue(quote.id.isNotEmpty())
-        assertTrue(quote.request.isNotEmpty())
+            // testnut pays quotes automatically.
+            delay(3000)
+            session.refresh()
+            val claimed = session.claim()
+            assertEquals(100UL, claimed.value)
 
-        // testnut pays quotes automatically, wait for payment to settle
-        kotlinx.coroutines.delay(3000)
-
-        val proofs = wallet.mint(
-            quoteId = quote.id,
-            amountSplitTarget = SplitTarget.None,
-            spendingConditions = null,
-        )
-
-        assertTrue(proofs.isNotEmpty())
-
-        val balance = wallet.totalBalance()
-        assertEquals(100UL, balance.value)
+            val balance = wallet.balance()
+            assertEquals(100UL, balance.available.value)
+        } finally {
+            session.close()
+        }
     }
 }

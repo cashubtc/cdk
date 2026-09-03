@@ -63,9 +63,6 @@ pub struct PreparedPaymentRequest {
     send_fee: Amount,
     input_fee: Amount,
     total_amount: Amount,
-    send_options: SendOptions,
-    proofs_to_swap: crate::nuts::Proofs,
-    proofs_to_send: crate::nuts::Proofs,
 }
 
 impl std::fmt::Debug for PreparedPaymentRequest {
@@ -155,19 +152,7 @@ impl PreparedPaymentRequest {
     #[instrument(skip_all)]
     pub async fn confirm(self) -> Result<(), Error> {
         let operation_id = self.operation_id;
-        let token = self
-            .wallet
-            .confirm_send(
-                operation_id,
-                self.payment_amount,
-                self.send_options,
-                self.proofs_to_swap,
-                self.proofs_to_send,
-                self.swap_fee,
-                self.send_fee,
-                None,
-            )
-            .await?;
+        let token = self.wallet.confirm_send(operation_id, None).await?;
 
         let delivery_result = self
             .wallet
@@ -180,9 +165,7 @@ impl PreparedPaymentRequest {
     /// Cancel the prepared payment and release its reserved proofs.
     #[instrument(skip_all)]
     pub async fn cancel(self) -> Result<(), Error> {
-        self.wallet
-            .cancel_send(self.operation_id, self.proofs_to_swap, self.proofs_to_send)
-            .await
+        self.wallet.cancel_send(self.operation_id).await
     }
 }
 
@@ -349,9 +332,6 @@ impl Wallet {
             send_fee: prepared_send.send_fee(),
             input_fee,
             total_amount,
-            send_options: prepared_send.options().clone(),
-            proofs_to_swap: prepared_send.proofs_to_swap().clone(),
-            proofs_to_send: prepared_send.proofs_to_send().clone(),
         })
     }
 

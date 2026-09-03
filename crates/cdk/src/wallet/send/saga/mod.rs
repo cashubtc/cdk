@@ -9,7 +9,7 @@
 //!                                  Normal Flow
 //!                                  ===========
 //!
-//! [saga created] ──► ProofsReserved ──► TokenCreated ──► [recipient claims] ──► [completed]
+//! [saga created] ──► Preparing ──► Prepared ──► ProofsReserved ──► TokenCreated ──► [recipient claims] ──► [completed]
 //!                                            │
 //!                                            └──► [user revokes]
 //!                                                       │
@@ -32,11 +32,13 @@
 //!                                  Recovery Flow
 //!                                  =============
 //!
-//! ProofsReserved ─────────────────────────────────────────► [compensated]
+//! Preparing ───────────────────────────────────────────────► [compensated]
+//! Prepared ────────────────────────────────────────────────► [skipped] (awaiting app decision)
+//! ProofsReserved ──────────────────────────────────────────► [compensated]
 //!
 //! TokenCreated
 //!     ├─ proofs spent ────────► [completed] (recipient claimed)
-//!     ├─ proofs not spent ────► [completed] (saga deleted, token still valid)
+//!     ├─ proofs not spent ────► [skipped] (token remains valid)
 //!     └─ mint unreachable ────► [skipped]
 //!
 //! RollingBack
@@ -49,7 +51,9 @@
 //!
 //! | State | Description |
 //! |-------|-------------|
-//! | `ProofsReserved` | Proofs selected and reserved for sending, ready to create token |
+//! | `Preparing` | Durable owner record created before proofs are reserved |
+//! | `Prepared` | Durable plan with reserved proofs, awaiting confirmation or cancellation |
+//! | `ProofsReserved` | Confirmation claimed the plan and began creating the token |
 //! | `TokenCreated` | Token created and ready to share, proofs marked as pending spent awaiting claim |
 //! | `RollingBack` | Rollback in progress, reclaiming proofs via swap (transient state) |
 //!
@@ -59,7 +63,7 @@
 //! |---------|-------------|
 //! | `[completed]` | Send finalized - either recipient claimed, or user successfully revoked |
 //! | `[compensated]` | Send cancelled before token created, reserved proofs released |
-//! | `[skipped]` | Recovery deferred (mint unreachable), will retry on next recovery |
+//! | `[skipped]` | Plan awaits an app decision, or recovery is deferred until the mint is reachable |
 
 use std::collections::{HashMap, HashSet};
 
@@ -67,8 +71,9 @@ use bitcoin::XOnlyPublicKey;
 use cdk_common::amount::KeysetFeeAndAmounts;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
-    KeysetLoadPolicy, OperationData, P2PKLockedProofSendMode, SendOperationData, SendSagaState,
-    Transaction, TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
+    KeysetLoadPolicy, OperationData, P2PKLockedProofSendMode, PreparedSendOperationData,
+    SendOperationData, SendSagaState, Transaction, TransactionDirection, TransactionStatus,
+    WalletSaga, WalletSagaState,
 };
 use cdk_common::Id;
 use tracing::instrument;
@@ -192,6 +197,10 @@ fn ensure_selected_proofs_cover_input_fees(
     proof_pool: Proofs,
     context: InputFeeCoverageContext<'_>,
 ) -> Result<Proofs, Error> {
+    let required_amount = context
+        .amount
+        .checked_add(context.send_fee)
+        .ok_or(Error::AmountOverflow)?;
     let keyset_fee_map: HashMap<Id, u64> = context
         .keyset_fees
         .iter()
@@ -215,7 +224,7 @@ fn ensure_selected_proofs_cover_input_fees(
             },
         )?;
 
-        if selected_net >= context.amount + context.send_fee {
+        if selected_net >= required_amount {
             return Ok(selected_proofs);
         }
 
@@ -223,7 +232,7 @@ fn ensure_selected_proofs_cover_input_fees(
             return Err(Error::InsufficientFunds);
         }
 
-        let shortfall = (context.amount + context.send_fee)
+        let shortfall = required_amount
             .checked_sub(selected_net)
             .unwrap_or(Amount::ZERO);
         let additional = Wallet::select_proofs_with_derivation_indices(
@@ -249,6 +258,10 @@ fn split_proofs_for_send_respecting_p2pk_locks(
     p2pk_locked_proof_send_mode: P2PKLockedProofSendMode,
     context: SendSplitContext<'_>,
 ) -> Result<super::ProofSplitResult, Error> {
+    let required_amount = context
+        .amount
+        .checked_add(context.send_fee)
+        .ok_or(Error::AmountOverflow)?;
     // When the wallet holds P2PK-locked proofs and passthrough is not opted in, route them
     // through a swap so the token contains fresh, unlocked proofs. The signing key may come
     // from `SendOptions.p2pk_signing_keys` or be discovered automatically from the wallet
@@ -289,7 +302,7 @@ fn split_proofs_for_send_respecting_p2pk_locks(
             }
 
             if !proofs_to_swap.is_empty() {
-                let swap_output_needed = (context.amount + context.send_fee)
+                let swap_output_needed = required_amount
                     .checked_sub(proofs_to_send.total_amount()?)
                     .unwrap_or(Amount::ZERO);
 
@@ -354,7 +367,9 @@ fn selected_proofs_net_after_swap_fees(
         .checked_sub(split.swap_fee)
         .unwrap_or(Amount::ZERO);
 
-    Ok(direct_total + swap_net)
+    direct_total
+        .checked_add(swap_net)
+        .ok_or(Error::AmountOverflow)
 }
 
 /// Saga pattern implementation for send operations.
@@ -404,6 +419,11 @@ impl<'a> SendSaga<'a, Initial> {
         amount: Amount,
         opts: SendOptions,
     ) -> Result<SendSaga<'a, Prepared>, Error> {
+        let _operation_guard = self
+            .wallet
+            .lock_operation(self.state_data.operation_id)
+            .await;
+
         tracing::info!(
             "Preparing send for {} with operation {}",
             amount,
@@ -518,7 +538,9 @@ impl<'a> SendSaga<'a, Initial> {
         } else {
             (amount.split(&fee_and_amounts)?, Amount::ZERO)
         };
-        let selection_amount = amount + send_amounts.1;
+        let selection_amount = amount
+            .checked_add(send_amounts.1)
+            .ok_or(Error::AmountOverflow)?;
 
         let may_swap_p2pk_locked = opts.p2pk_locked_proof_send_mode
             == P2PKLockedProofSendMode::Swap
@@ -544,7 +566,8 @@ impl<'a> SendSaga<'a, Initial> {
         };
 
         if may_swap_p2pk_locked {
-            let is_exact_or_offline = selected_proofs.total_amount()? == amount + send_fee
+            let required_amount = amount.checked_add(send_fee).ok_or(Error::AmountOverflow)?;
+            let is_exact_or_offline = selected_proofs.total_amount()? == required_amount
                 || opts.send_kind.is_offline()
                 || opts.send_kind.has_tolerance();
             selected_proofs = ensure_selected_proofs_cover_input_fees(
@@ -565,7 +588,8 @@ impl<'a> SendSaga<'a, Initial> {
 
         let selected_total = selected_proofs.total_amount()?;
 
-        if selected_total == amount + send_fee {
+        let required_amount = amount.checked_add(send_fee).ok_or(Error::AmountOverflow)?;
+        if selected_total == required_amount {
             return self
                 .internal_prepare(amount, opts, selected_proofs, force_swap, keyset_policy)
                 .await;
@@ -579,7 +603,12 @@ impl<'a> SendSaga<'a, Initial> {
             _ => None,
         };
         if let Some(tolerance) = tolerance {
-            if selected_total - amount > tolerance && opts.send_kind.is_offline() {
+            if selected_total
+                .checked_sub(amount)
+                .ok_or(Error::InsufficientFunds)?
+                > tolerance
+                && opts.send_kind.is_offline()
+            {
                 return Err(Error::InsufficientFunds);
             }
         }
@@ -629,7 +658,10 @@ impl<'a> SendSaga<'a, Initial> {
             (send_split, send_fee)
         };
 
-        let mut exact_proofs = proofs.total_amount()? == amount + send_fee.total;
+        let required_amount = amount
+            .checked_add(send_fee.total)
+            .ok_or(Error::AmountOverflow)?;
+        let mut exact_proofs = proofs.total_amount()? == required_amount;
         if let Some(max_proofs) = opts.max_proofs {
             exact_proofs &= proofs.len() <= max_proofs;
         }
@@ -662,39 +694,71 @@ impl<'a> SendSaga<'a, Initial> {
         let mut proof_ys = split_result.proofs_to_swap.ys()?;
         proof_ys.extend(split_result.proofs_to_send.ys()?);
 
-        self.wallet
-            .localstore
-            .reserve_proofs(proof_ys.clone(), &self.state_data.operation_id)
-            .await?;
-
-        let memo_text = opts.memo.as_ref().map(|m| m.memo.clone());
-        let saga = WalletSaga::new(
+        let prepared_data = PreparedSendOperationData {
+            amount,
+            options: opts.clone(),
+            proofs_to_swap: split_result.proofs_to_swap.clone(),
+            proofs_to_send: split_result.proofs_to_send.clone(),
+            swap_fee: split_result.swap_fee,
+            send_fee: send_fee.total,
+        };
+        let mut saga = WalletSaga::new(
             self.state_data.operation_id,
-            WalletSagaState::Send(SendSagaState::ProofsReserved),
+            WalletSagaState::Send(SendSagaState::Preparing),
             amount,
             self.wallet.mint_url.clone(),
             self.wallet.unit.clone(),
-            OperationData::Send(SendOperationData {
-                amount,
-                memo: memo_text.clone(),
-                counter_start: None,
-                counter_end: None,
-                token: None,
-                proofs: None,
-            }),
+            OperationData::PreparedSend(prepared_data),
         );
-
+        // Persist ownership before reserving proofs. A versioned Preparing
+        // record is briefly leased to this request and becomes recoverable if
+        // the process stops before the durable plan is completed.
+        saga.update_state(WalletSagaState::Send(SendSagaState::Preparing));
         self.wallet.localstore.add_saga(saga.clone()).await?;
 
         add_compensation(
             &mut self.compensations,
             Box::new(RevertProofReservation {
                 localstore: self.wallet.localstore.clone(),
-                proof_ys,
+                proof_ys: proof_ys.clone(),
                 saga_id: self.state_data.operation_id,
             }),
         )
         .await;
+
+        if let Err(error) = self
+            .wallet
+            .localstore
+            .reserve_proofs(proof_ys, &self.state_data.operation_id)
+            .await
+        {
+            if let Err(compensation_error) = execute_compensations(&mut self.compensations).await {
+                tracing::error!(
+                    "Could not clean up send preparation after proof reservation failed: {}",
+                    compensation_error
+                );
+                return Err(compensation_error);
+            }
+            return Err(error.into());
+        }
+
+        saga.update_state(WalletSagaState::Send(SendSagaState::Prepared));
+        match self.wallet.localstore.update_saga(saga.clone()).await {
+            Ok(true) => (),
+            Ok(false) => return Err(Error::ConcurrentUpdate),
+            Err(error) => {
+                if let Err(compensation_error) =
+                    execute_compensations(&mut self.compensations).await
+                {
+                    tracing::error!(
+                        "Could not clean up send preparation after plan persistence failed: {}",
+                        compensation_error
+                    );
+                    return Err(compensation_error);
+                }
+                return Err(error.into());
+            }
+        }
 
         Ok(SendSaga {
             wallet: self.wallet,
@@ -729,17 +793,12 @@ impl<'a> SendSaga<'a, Prepared> {
         send_fee: Amount,
         saga: WalletSaga,
     ) -> Result<Self, Error> {
-        if saga.id != operation_id {
-            return Err(Error::Custom(format!(
-                "Saga id {} does not match operation id {}",
-                saga.id, operation_id
-            )));
+        if saga.id != operation_id || saga.mint_url != wallet.mint_url || saga.unit != wallet.unit {
+            return Err(Error::InvalidOperationState);
         }
 
-        if saga.state != WalletSagaState::Send(SendSagaState::ProofsReserved) {
-            return Err(Error::Custom(
-                "Operation is not a prepared send".to_string(),
-            ));
+        if saga.state != WalletSagaState::Send(SendSagaState::Prepared) {
+            return Err(Error::InvalidOperationState);
         }
 
         Ok(Self {
@@ -812,11 +871,15 @@ impl<'a> SendSaga<'a, Prepared> {
 
         tracing::info!("Confirming prepared send for operation {}", operation_id);
 
+        self.claim_prepared_plan().await?;
+
         let logic_res = async {
-            let total_send_fee = swap_fee + send_fee;
+            let total_send_fee = swap_fee
+                .checked_add(send_fee)
+                .ok_or(Error::AmountOverflow)?;
             let mut final_proofs_to_send = proofs_to_send.clone();
 
-            let total_send_amount = amount + send_fee;
+            let total_send_amount = amount.checked_add(send_fee).ok_or(Error::AmountOverflow)?;
 
             let mut counter_start = None;
             let mut counter_end = None;
@@ -991,26 +1054,36 @@ impl<'a> SendSaga<'a, Prepared> {
 
     /// Cancel the prepared send and release reserved proofs
     #[instrument(skip(self))]
-    pub async fn cancel(self) -> Result<(), Error> {
+    pub async fn cancel(mut self) -> Result<(), Error> {
         let operation_id = self.state_data.operation_id;
         tracing::info!("Cancelling prepared send for operation {}", operation_id);
 
-        let mut all_ys = self.state_data.proofs_to_swap.ys()?;
-        all_ys.extend(self.state_data.proofs_to_send.ys()?);
+        self.claim_prepared_plan().await?;
 
-        self.wallet
-            .localstore
-            .update_proofs_state(all_ys, State::Unspent)
-            .await?;
+        self.wallet.localstore.release_proofs(&operation_id).await?;
 
-        if let Err(e) = self.wallet.localstore.delete_saga(&operation_id).await {
-            tracing::warn!(
-                "Failed to delete send saga {}: {}. Will be cleaned up on recovery.",
-                operation_id,
-                e
-            );
+        self.wallet.localstore.delete_saga(&operation_id).await?;
+
+        Ok(())
+    }
+
+    /// Atomically claim a durable plan before confirmation or cancellation.
+    ///
+    /// This database transition is the cross-process serialization boundary.
+    /// Recovery preserves `Prepared` plans, while `ProofsReserved` means an
+    /// action started and can be compensated safely after interruption.
+    async fn claim_prepared_plan(&mut self) -> Result<(), Error> {
+        let mut saga = self.state_data.saga.clone();
+        if saga.state != WalletSagaState::Send(SendSagaState::Prepared)
+            || !matches!(saga.data, OperationData::PreparedSend(_))
+        {
+            return Err(Error::InvalidOperationState);
         }
-
+        saga.update_state(WalletSagaState::Send(SendSagaState::ProofsReserved));
+        if !self.wallet.localstore.update_saga(saga.clone()).await? {
+            return Err(Error::ConcurrentUpdate);
+        }
+        self.state_data.saga = saga;
         Ok(())
     }
 }
@@ -1192,8 +1265,8 @@ mod tests {
     use cdk_common::amount::KeysetFeeAndAmounts;
     use cdk_common::nuts::State;
     use cdk_common::wallet::{
-        KeysetLoadPolicy, OperationData, ProofInfo, SendKind, SendOperationData, SendSagaState,
-        WalletSaga, WalletSagaState,
+        KeysetLoadPolicy, OperationData, PreparedSendOperationData, ProofInfo, SendKind,
+        SendOperationData, SendSagaState, WalletSaga, WalletSagaState,
     };
     use cdk_common::{CurrencyUnit, ProofsMethods};
 
@@ -1274,6 +1347,47 @@ mod tests {
             stored_proofs[0].used_by_operation,
             Some(prepared.operation_id())
         );
+
+        let operation_id = prepared.operation_id();
+        drop(prepared);
+
+        let recovery = wallet.recover_incomplete_sagas().await.unwrap();
+        assert_eq!(recovery.skipped, 1);
+        assert_eq!(recovery.compensated, 0);
+        assert!(db.get_saga(&operation_id).await.unwrap().is_some());
+
+        let resumed = wallet
+            .prepared_send(operation_id)
+            .await
+            .expect("prepared send should be reconstructable by ID");
+        assert_eq!(resumed.operation_id(), operation_id);
+        assert_eq!(resumed.amount(), Amount::from(100));
+        resumed.cancel().await.expect("resumed send should cancel");
+        assert!(db.get_saga(&operation_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_confirm_returns_the_same_persisted_token() {
+        let db = create_test_db().await;
+        let proof_info = test_proof_info(test_keyset_id(), 100, test_mint_url());
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+        let prepared = wallet
+            .prepare_send(Amount::from(100), SendOptions::default())
+            .await
+            .unwrap();
+        let operation_id = prepared.operation_id();
+        drop(prepared);
+
+        let (first, second) = tokio::join!(
+            wallet.confirm_send(operation_id, None),
+            wallet.confirm_send(operation_id, None),
+        );
+
+        assert_eq!(first.unwrap().to_string(), second.unwrap().to_string(),);
     }
 
     #[tokio::test]
@@ -1401,15 +1515,55 @@ mod tests {
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
 
         let err = wallet
-            .cancel_send(saga_id, vec![], vec![proof])
+            .cancel_send(saga_id)
             .await
             .expect_err("cancel_send must reject a token-created send saga");
 
-        assert!(matches!(err, crate::Error::Custom(_)));
+        assert!(matches!(err, crate::Error::InvalidOperationState));
 
         let after = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].state, State::PendingSpent);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_send_rejects_operation_owned_by_another_wallet() {
+        let db = create_test_db().await;
+        let saga_id = uuid::Uuid::new_v4();
+        let foreign_mint_url: cdk_common::mint_url::MintUrl =
+            "https://foreign-mint.example.com".parse().unwrap();
+        let proof_info = test_proof_info(test_keyset_id(), 100, foreign_mint_url.clone());
+        let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+
+        let saga_record = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Send(SendSagaState::Prepared),
+            Amount::from(100),
+            foreign_mint_url,
+            CurrencyUnit::Sat,
+            OperationData::PreparedSend(PreparedSendOperationData {
+                amount: Amount::from(100),
+                options: SendOptions::default(),
+                proofs_to_swap: Vec::new(),
+                proofs_to_send: vec![proof],
+                swap_fee: Amount::ZERO,
+                send_fee: Amount::ZERO,
+            }),
+        );
+        db.add_saga(saga_record).await.unwrap();
+
+        let wallet =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        let error = wallet.cancel_send(saga_id).await.unwrap_err();
+
+        assert!(matches!(error, crate::Error::InvalidOperationState));
+        let proofs = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(proofs[0].state, State::Reserved);
+        assert_eq!(proofs[0].used_by_operation, Some(saga_id));
         assert!(db.get_saga(&saga_id).await.unwrap().is_some());
     }
 
@@ -1423,17 +1577,20 @@ mod tests {
 
         let saga_record = WalletSaga::new(
             operation_id,
-            WalletSagaState::Send(SendSagaState::ProofsReserved),
+            WalletSagaState::Send(SendSagaState::Prepared),
             Amount::from(8),
             mint_url,
             CurrencyUnit::Sat,
-            OperationData::Send(SendOperationData {
+            OperationData::PreparedSend(PreparedSendOperationData {
                 amount: Amount::from(8),
-                memo: None,
-                counter_start: None,
-                counter_end: None,
-                token: None,
-                proofs: None,
+                options: SendOptions {
+                    send_kind: SendKind::OfflineExact,
+                    ..Default::default()
+                },
+                proofs_to_swap: vec![proof.clone()],
+                proofs_to_send: Vec::new(),
+                swap_fee: Amount::ZERO,
+                send_fee: Amount::ZERO,
             }),
         );
         db.add_saga(saga_record.clone()).await.unwrap();
@@ -1462,6 +1619,54 @@ mod tests {
         };
 
         assert!(matches!(err, crate::Error::InsufficientFunds));
+    }
+
+    #[tokio::test]
+    async fn reconstructed_confirm_compensates_definitive_failure() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let operation_id = uuid::Uuid::new_v4();
+        let proof_info = test_proof_info(keyset_id, 8, mint_url.clone());
+        let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &operation_id)
+            .await
+            .unwrap();
+
+        let saga_record = WalletSaga::new(
+            operation_id,
+            WalletSagaState::Send(SendSagaState::Prepared),
+            Amount::from(8),
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::PreparedSend(PreparedSendOperationData {
+                amount: Amount::from(8),
+                options: SendOptions {
+                    send_kind: SendKind::OfflineExact,
+                    ..Default::default()
+                },
+                proofs_to_swap: vec![proof],
+                proofs_to_send: Vec::new(),
+                swap_fee: Amount::ZERO,
+                send_fee: Amount::ZERO,
+            }),
+        );
+        db.add_saga(saga_record).await.unwrap();
+
+        let wallet =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        let error = wallet
+            .confirm_send(operation_id, None)
+            .await
+            .expect_err("offline confirmation must reject swap inputs");
+
+        assert!(matches!(error, crate::Error::InsufficientFunds));
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored[0].state, State::Unspent);
+        assert_eq!(stored[0].used_by_operation, None);
+        assert!(db.get_saga(&operation_id).await.unwrap().is_none());
     }
 
     #[tokio::test]

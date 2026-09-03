@@ -105,11 +105,6 @@ pub struct PaymentRequest {
 }
 
 impl PaymentRequest {
-    /// Get inner reference
-    pub(crate) fn inner(&self) -> &cdk::nuts::PaymentRequest {
-        &self.inner
-    }
-
     /// Create from the inner CDK type
     pub(crate) fn from_inner(inner: cdk::nuts::PaymentRequest) -> Self {
         Self { inner }
@@ -215,122 +210,6 @@ impl PaymentRequest {
             .cloned()
             .map(|t| t.into())
             .collect()
-    }
-}
-
-/// FFI-compatible prepared NUT-18 payment request.
-#[derive(uniffi::Object)]
-pub struct PreparedPaymentRequest {
-    inner: std::sync::Mutex<Option<cdk::wallet::PreparedPaymentRequest>>,
-    operation_id: String,
-    mint_url: String,
-    unit: CurrencyUnit,
-    requested_amount: Amount,
-    method: Option<String>,
-    method_fee: Amount,
-    payment_amount: Amount,
-    input_fee: Amount,
-    total_amount: Amount,
-}
-
-impl fmt::Debug for PreparedPaymentRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PreparedPaymentRequest")
-            .field("operation_id", &self.operation_id)
-            .field("mint_url", &self.mint_url)
-            .field("total_amount", &self.total_amount)
-            .finish_non_exhaustive()
-    }
-}
-
-impl PreparedPaymentRequest {
-    /// Wrap a prepared CDK payment request for FFI callers.
-    pub(crate) fn new(inner: cdk::wallet::PreparedPaymentRequest) -> Self {
-        Self {
-            operation_id: inner.operation_id().to_string(),
-            mint_url: inner.mint_url().to_string(),
-            unit: inner.unit().clone().into(),
-            requested_amount: inner.requested_amount().into(),
-            method: inner.method().map(str::to_owned),
-            method_fee: inner.method_fee().into(),
-            payment_amount: inner.payment_amount().into(),
-            input_fee: inner.input_fee().into(),
-            total_amount: inner.total_amount().into(),
-            inner: std::sync::Mutex::new(Some(inner)),
-        }
-    }
-
-    fn take(&self) -> Result<cdk::wallet::PreparedPaymentRequest, FfiError> {
-        self.inner
-            .lock()
-            .map_err(|_| FfiError::internal("Prepared payment lock poisoned"))?
-            .take()
-            .ok_or_else(|| FfiError::internal("Prepared payment already completed or canceled"))
-    }
-}
-
-#[uniffi::export(async_runtime = "tokio")]
-impl PreparedPaymentRequest {
-    /// Operation ID of the reserved send.
-    pub fn operation_id(&self) -> String {
-        self.operation_id.clone()
-    }
-
-    /// Mint selected for the payment.
-    pub fn mint_url(&self) -> String {
-        self.mint_url.clone()
-    }
-
-    /// Currency unit of the payment.
-    pub fn unit(&self) -> CurrencyUnit {
-        self.unit.clone()
-    }
-
-    /// Amount requested before the receiver-selected method fee.
-    pub fn requested_amount(&self) -> Amount {
-        self.requested_amount
-    }
-
-    /// Selected payment method, when restricted by the request.
-    pub fn method(&self) -> Option<String> {
-        self.method.clone()
-    }
-
-    /// Applicable receiver-selected method fee (`mf`).
-    pub fn method_fee(&self) -> Amount {
-        self.method_fee
-    }
-
-    /// Requested amount plus the applicable method fee.
-    pub fn payment_amount(&self) -> Amount {
-        self.payment_amount
-    }
-
-    /// Total mint input fee.
-    pub fn input_fee(&self) -> Amount {
-        self.input_fee
-    }
-
-    /// Total wallet debit.
-    pub fn total_amount(&self) -> Amount {
-        self.total_amount
-    }
-
-    /// Confirm and deliver the prepared payment.
-    ///
-    /// If delivery fails after token creation, this returns
-    /// `FfiError::PaymentRequestDeliveryFailed` with the pending operation ID.
-    /// Do not prepare the payment again. Call `Wallet.revoke_send(operation_id)`
-    /// to reclaim it if it remains unclaimed.
-    pub async fn confirm(&self) -> Result<(), FfiError> {
-        self.take()?.confirm().await?;
-        Ok(())
-    }
-
-    /// Cancel the prepared payment and release reserved proofs.
-    pub async fn cancel(&self) -> Result<(), FfiError> {
-        self.take()?.cancel().await?;
-        Ok(())
     }
 }
 
@@ -711,14 +590,19 @@ mod tests {
             source: Box::new(cdk::Error::Custom("transport failed".to_string())),
         });
 
-        assert_eq!(
-            error.to_string(),
-            FfiError::PaymentRequestDeliveryFailed {
-                operation_id: operation_id.to_string(),
-                error_message: "`transport failed`".to_string(),
-            }
-            .to_string()
-        );
+        let FfiError::Cdk {
+            kind,
+            error_message,
+            retryable,
+            ..
+        } = error
+        else {
+            panic!("expected a structured wallet error");
+        };
+        assert_eq!(kind, crate::error::WalletErrorKind::Payment);
+        assert!(error_message.contains(&operation_id.to_string()));
+        assert!(error_message.contains("transport failed"));
+        assert!(retryable);
     }
 
     #[test]

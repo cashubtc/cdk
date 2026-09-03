@@ -9,6 +9,8 @@ use crate::Error;
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IssueSagaState {
+    /// Durable owner record created before the mint quote is reserved.
+    Preparing,
     /// Pre-mint secrets created and counter incremented, ready to request signatures
     SecretsPrepared,
     /// Mint request sent to mint, awaiting signatures for new proofs
@@ -18,6 +20,7 @@ pub enum IssueSagaState {
 impl std::fmt::Display for IssueSagaState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            IssueSagaState::Preparing => write!(f, "preparing"),
             IssueSagaState::SecretsPrepared => write!(f, "secrets_prepared"),
             IssueSagaState::MintRequested => write!(f, "mint_requested"),
         }
@@ -28,6 +31,7 @@ impl std::str::FromStr for IssueSagaState {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "preparing" => Ok(IssueSagaState::Preparing),
             "secrets_prepared" => Ok(IssueSagaState::SecretsPrepared),
             "mint_requested" => Ok(IssueSagaState::MintRequested),
             _ => Err(Error::InvalidOperationState),

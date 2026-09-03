@@ -888,6 +888,10 @@ ffi-build *ARGS="--release":
 ffi-check:
   cargo check --package cdk-ffi --all-targets
 
+# Verify that generated bindings match the reviewed portable wallet object API
+ffi-api-check PROFILE="debug":
+  bash .github/scripts/check-wallet-api.sh {{PROFILE}}
+
 # Generate bindings for a specific language
 ffi-generate LANGUAGE *ARGS="--release":
   #!/usr/bin/env bash

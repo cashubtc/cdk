@@ -16,6 +16,22 @@ pub(crate) struct RuntimeGuard {
     handle: Handle,
 }
 
+impl Drop for RuntimeGuard {
+    fn drop(&mut self) {
+        if let Some(runtime) = self._runtime.take() {
+            // Wallet handles are often released by a UniFFI future completion
+            // running on Tokio. Runtime's default Drop blocks and panics in
+            // that context, so use a non-blocking shutdown there. Outside a
+            // runtime, retain Tokio's normal graceful shutdown behavior.
+            if Handle::try_current().is_ok() {
+                runtime.shutdown_background();
+            } else {
+                drop(runtime);
+            }
+        }
+    }
+}
+
 impl RuntimeGuard {
     /// Create a new guard.
     ///
@@ -54,5 +70,20 @@ impl RuntimeGuard {
             // Running inside an external runtime — yield the worker thread.
             tokio::task::block_in_place(|| self.handle.block_on(future))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn owned_runtime_can_be_released_from_async_context() {
+        let guard = std::thread::spawn(|| RuntimeGuard::new().expect("runtime should start"))
+            .join()
+            .expect("runtime constructor thread should not panic");
+        assert!(guard._runtime.is_some());
+
+        drop(guard);
     }
 }

@@ -1,9 +1,9 @@
 #![doc = include_str!("./README.md")]
 
 use std::collections::HashMap;
-use std::fmt::Debug;
+use std::fmt;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::Network;
@@ -17,7 +17,7 @@ pub use mint_connector::http_client::{
     AuthHttpClient as BaseAuthHttpClient, HttpClient as BaseHttpClient,
 };
 use subscription::{ActiveSubscription, SubscriptionManager};
-use tokio::sync::RwLock as TokioRwLock;
+use tokio::sync::{Mutex as TokioMutex, OwnedMutexGuard, RwLock as TokioRwLock};
 use tracing::instrument;
 use zeroize::Zeroize;
 
@@ -72,7 +72,6 @@ pub mod test_utils;
 mod transactions;
 pub mod util;
 pub mod wallet_repository;
-mod wallet_trait;
 
 pub use auth::{AuthMintConnector, AuthWallet};
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -105,7 +104,7 @@ pub use recovery::RecoveryReport;
 pub use send::PreparedSend;
 #[cfg(all(feature = "npubcash", not(target_arch = "wasm32")))]
 pub use streams::npubcash::NpubCashProofStream;
-pub use types::{CrossMintTransferQuote, MeltQuote, MintQuote, SendKind};
+pub use types::{CrossMintTransferQuote, MeltQuote, MintQuote, PreparedMeltPurpose, SendKind};
 pub use wallet_repository::{TokenData, WalletConfig, WalletRepository, WalletRepositoryBuilder};
 
 use crate::nuts::nut00::ProofsMethods;
@@ -139,7 +138,7 @@ impl DerivationCounterNamespace {
 ///
 /// For pending mint quotes, call [`Wallet::mint_unissued_quotes`] which checks
 /// quote states with the mint and mints available tokens. This makes network calls.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Wallet {
     /// Mint Url
     pub mint_url: MintUrl,
@@ -166,6 +165,19 @@ pub struct Wallet {
     /// shares its per-host budgets, so this reconfigures the same limiter the
     /// transport paces through.
     rate_limiter: Option<RateLimiterManager>,
+    /// Per-operation guards shared by clones of this wallet.
+    operation_locks: Arc<TokioMutex<HashMap<uuid::Uuid, Weak<TokioMutex<()>>>>>,
+}
+
+impl fmt::Debug for Wallet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Wallet")
+            .field("mint_url", &self.mint_url)
+            .field("unit", &self.unit)
+            .field("target_proof_count", &self.target_proof_count)
+            .field("rate_limited", &self.rate_limiter.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -262,6 +274,23 @@ impl From<WalletSubscription> for WalletParams {
 pub use cdk_common::wallet::Restored;
 
 impl Wallet {
+    /// Serialize state-changing work for one durable operation within this process.
+    pub(crate) async fn lock_operation(&self, operation_id: uuid::Uuid) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut operation_locks = self.operation_locks.lock().await;
+            operation_locks.retain(|_, lock| lock.strong_count() > 0);
+            match operation_locks.get(&operation_id).and_then(Weak::upgrade) {
+                Some(lock) => lock,
+                None => {
+                    let lock = Arc::new(TokioMutex::new(()));
+                    operation_locks.insert(operation_id, Arc::downgrade(&lock));
+                    lock
+                }
+            }
+        };
+        lock.lock_owned().await
+    }
+
     /// Create new [`Wallet`] using the builder pattern
     /// # Synopsis
     /// ```rust

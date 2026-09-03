@@ -1,7 +1,7 @@
 # CDK Language Bindings
 
-Language bindings for the [Cashu Development Kit][cdk], exposing the CDK Wallet
-and its associated traits to non-Rust languages through FFI.
+Language bindings for the [Cashu Development Kit][cdk], exposing the portable
+application wallet facade to non-Rust languages through UniFFI.
 
 This approach is heavily inspired by [Bark FFI Bindings][bark], particularly its
 model for exporting a Rust codebase through [UniFFI][uniffi] and making it
@@ -18,11 +18,13 @@ reaches downstream consumers.
 
 ## Architecture
 
-The bindings follow a two-tier architecture:
+The bindings follow a two-layer API architecture and a thin packaging layout:
 
 ```
-crates/cdk-ffi/          Core FFI crate — defines all exported types,
-                         traits, and functions using UniFFI proc-macros.
+crates/cdk/              Advanced Cashu protocol engine.
+
+crates/cdk-ffi/          Portable application facade — one Rust implementation
+                         used directly by Rust and exported through UniFFI.
 
 bindings/<lang>/rust/    Language-specific wrapper crate — thin layer that
                          re-exports cdk-ffi and adds per-language UniFFI
@@ -32,14 +34,15 @@ bindings/<lang>/         Language project — generated sources, tests, and
                          build tooling for the target language.
 ```
 
-The core `cdk-ffi` crate (`crates/cdk-ffi/`) contains:
-- FFI-compatible wrappers for wallet operations, database traits, token handling,
-  and type conversions
-- `#[uniffi::export]` annotations that produce cross-language metadata
-- A `WalletDatabase` callback interface so foreign languages can provide their
-  own storage backend
-- `WalletStore` enum with factory functions (`sqliteWalletStore`,
-  `postgresWalletStore`, `customWalletStore`) for easy database setup
+The public wallet contract is centered on `Wallet`, `CashuWallet`, request
+records, typed payment targets, sessions, durable operation plans, explicit
+synchronization, and structured errors. Proof/keyset/swap controls stay in the
+`cdk` engine instead of being manually mirrored into every binding.
+
+`WalletDatabase` remains a callback interface for applications that provide a
+custom store, while `WalletStore` selects built-in SQLite/Postgres or custom
+storage. The generated object surface is checked against
+`crates/cdk-ffi/wallet-api.manifest` in CI.
 
 Each language wrapper crate is a single `pub use cdk_ffi::*;` re-export with its
 own `uniffi.toml` controlling language-specific code generation.
@@ -101,6 +104,9 @@ just test-kotlin     # Run tests
 # Go
 just binding-go      # Generate bindings
 just test-go         # Run tests
+
+# Cross-language application object contract
+just ffi-api-check
 ```
 
 ## Releasing

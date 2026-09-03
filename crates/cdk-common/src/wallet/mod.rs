@@ -4,12 +4,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
-use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use bitcoin::hashes::{sha256, Hash, HashEngine};
-use cashu::amount::{FeeAndAmounts, KeysetFeeAndAmounts, SplitTarget};
-use cashu::nuts::nut07::ProofState;
-use cashu::nuts::AuthProof;
+use cashu::amount::SplitTarget;
 use cashu::util::hex;
 use cashu::{nut00, PaymentMethod, Proof, Proofs, PublicKey};
 use serde::{Deserialize, Serialize};
@@ -18,16 +15,15 @@ use uuid::Uuid;
 use crate::mint_quote::quote_state_from_amounts;
 use crate::mint_url::MintUrl;
 use crate::nuts::{
-    CurrencyUnit, Id, MeltQuoteState, MintQuoteState, SecretKey, SpendingConditions, State,
+    CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey, SpendingConditions, State,
 };
-#[cfg(feature = "http")]
-use crate::rate_limit::RateLimitConfig;
 use crate::{Amount, Error};
 
 pub mod saga;
 
 pub use saga::{
     IssueSagaState, MeltOperationData, MeltSagaState, MintOperationData, OperationData,
+    PreparedMeltOperationData, PreparedMeltPurpose, PreparedSendOperationData,
     ReceiveOperationData, ReceiveSagaState, SendOperationData, SendSagaState, SwapOperationData,
     SwapSagaState, WalletSaga, WalletSagaState,
 };
@@ -315,6 +311,30 @@ pub struct CrossMintTransferQuote {
     pub input_fee: Amount,
 }
 
+/// Durable application-level identity for a cross-mint transfer.
+///
+/// This record outlives the source melt saga so an application can resume
+/// destination issuance after the source payment has already finalized.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossMintTransferOperation {
+    /// Source melt operation.
+    pub operation_id: Uuid,
+    /// Wallet that paid the destination invoice.
+    pub source_mint_url: MintUrl,
+    /// Source currency unit.
+    pub source_unit: CurrencyUnit,
+    /// Wallet that owns the destination mint quote.
+    pub destination_mint_url: MintUrl,
+    /// Destination currency unit.
+    pub destination_unit: CurrencyUnit,
+    /// Quote that issues ecash at the destination.
+    pub destination_quote_id: String,
+    /// Amount expected at the destination.
+    pub amount: Amount,
+    /// Maximum source-side fee shown when the plan was prepared.
+    pub maximum_fee: Amount,
+}
+
 impl MintQuote {
     /// Create a new MintQuote
     #[allow(clippy::too_many_arguments)]
@@ -396,7 +416,7 @@ pub struct Restored {
     pub pending: Amount,
 }
 
-/// Options for [`crate::wallet::Wallet::restore_with_opts`].
+/// Options controlling a NUT-13 wallet restore scan.
 ///
 /// Defaults match the NUT-13 spec recommendation
 /// (<https://github.com/cashubtc/nuts/blob/main/13.md#generate-blindedmessages>):
@@ -457,7 +477,7 @@ impl NUT13Options {
 }
 
 /// Send options
-#[derive(Clone, Default)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SendOptions {
     /// Memo
     pub memo: Option<SendMemo>,
@@ -502,7 +522,7 @@ impl fmt::Debug for SendOptions {
 }
 
 /// Send behavior for selected P2PK-locked input proofs
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum P2PKLockedProofSendMode {
     /// Swap locked proofs into fresh proofs before creating the token
     #[default]
@@ -512,7 +532,7 @@ pub enum P2PKLockedProofSendMode {
 }
 
 /// Send memo
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendMemo {
     /// Memo
     pub memo: String,
@@ -944,7 +964,7 @@ pub enum KeysetFilter {
 ///
 /// Determines the data-fetching strategy for keyset queries:
 /// memory cache, local database, and/or network.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum KeysetLoadPolicy {
     /// Use in-memory cache and local database only. Never contacts the network.
     /// Returns an error if neither cache nor database has data.
@@ -960,427 +980,6 @@ pub enum KeysetLoadPolicy {
     /// Falls back to stale cached data if the network call fails;
     /// only returns an error when no cached data exists at all.
     Refresh,
-}
-
-/// Unified wallet trait providing a common interface for wallet operations.
-///
-/// This trait abstracts over different wallet implementations (CDK wallet, FFI
-/// wrappers, etc.) and provides a consistent interface for balance queries,
-/// minting, melting, keyset management, and other core wallet operations.
-///
-/// All domain types are associated types so each implementation can use its own
-/// type system (e.g. FFI-friendly records vs native Rust types).
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait Wallet: Send + Sync {
-    /// Error type
-    type Error: std::error::Error + Send + Sync + 'static;
-    /// Amount type (e.g. `cdk_common::Amount` or FFI `Amount`)
-    type Amount: Clone + Send + Sync;
-    /// Mint URL type
-    type MintUrl: Clone + Send + Sync;
-    /// Currency unit type
-    type CurrencyUnit: Clone + Send + Sync;
-    /// Mint info type
-    type MintInfo: Clone + Send + Sync;
-    /// Keyset info type
-    type KeySetInfo: Clone + Send + Sync;
-    /// Mint quote type
-    type MintQuote: Clone + Send + Sync;
-    /// Melt quote type
-    type MeltQuote: Clone + Send + Sync;
-    /// Cross-mint transfer quote type
-    type CrossMintTransferQuote: Clone + Send + Sync;
-    /// Payment method type
-    type PaymentMethod: Clone + Send + Sync;
-    /// Melt options type
-    type MeltOptions: Clone + Send + Sync;
-    /// Operation ID type (CDK uses `Uuid`, FFI uses `String`)
-    type OperationId: Clone + Send + Sync;
-    /// Prepared send type
-    type PreparedSend<'a>: Send + Sync
-    where
-        Self: 'a;
-    /// Prepared melt type
-    type PreparedMelt<'a>: Send + Sync
-    where
-        Self: 'a;
-    /// Active subscription handle for receiving notifications
-    type Subscription: Send + Sync;
-    /// Subscribe params type
-    type SubscribeParams: Clone + Send + Sync;
-    /// Saga recovery report type
-    type RecoveryReport: Clone + Send + Sync;
-
-    /// Get the mint URL this wallet is connected to
-    fn mint_url(&self) -> Self::MintUrl;
-
-    /// Get the currency unit of this wallet
-    fn unit(&self) -> Self::CurrencyUnit;
-
-    /// Total unspent balance of the wallet
-    async fn total_balance(&self) -> Result<Self::Amount, Self::Error>;
-
-    /// Total pending balance of the wallet
-    async fn total_pending_balance(&self) -> Result<Self::Amount, Self::Error>;
-
-    /// Total reserved balance of the wallet
-    async fn total_reserved_balance(&self) -> Result<Self::Amount, Self::Error>;
-
-    /// Fetch mint info from the mint (always makes a network call)
-    async fn fetch_mint_info(&self) -> Result<Option<Self::MintInfo>, Self::Error>;
-
-    /// Load mint info (from cache if fresh, otherwise fetches)
-    async fn load_mint_info(&self) -> Result<Self::MintInfo, Self::Error>;
-
-    /// Get all keysets for this wallet's unit.
-    ///
-    /// The `policy` parameter controls the fetching strategy:
-    /// - [`CacheOnly`](KeysetLoadPolicy::CacheOnly) — in-memory cache + local DB, no network
-    /// - [`CacheThenNetwork`](KeysetLoadPolicy::CacheThenNetwork) — cache if fresh, network if
-    ///   stale/absent, stale fallback on failure (default)
-    /// - [`Refresh`](KeysetLoadPolicy::Refresh) — network first, stale-cache fallback on failure
-    async fn keysets(&self, policy: KeysetLoadPolicy)
-        -> Result<Vec<Self::KeySetInfo>, Self::Error>;
-
-    /// Get the active keyset with the lowest fees.
-    ///
-    /// Filters the output of [`keysets()`](Self::keysets) for active keysets
-    /// and returns the one with the minimum `input_fee_ppk`.
-    async fn active_keyset(&self) -> Result<Self::KeySetInfo, Self::Error>;
-
-    /// Get a single keyset by ID.
-    async fn keyset(&self, keyset_id: Id) -> Result<Self::KeySetInfo, Self::Error>;
-
-    /// Get fees and available amounts for all keysets
-    async fn get_keyset_fees_and_amounts(&self) -> Result<KeysetFeeAndAmounts, Self::Error>;
-
-    /// Get fee for count of proofs in a keyset
-    async fn get_keyset_count_fee(
-        &self,
-        keyset_id: &Id,
-        count: u64,
-    ) -> Result<Self::Amount, Self::Error>;
-
-    /// Get fees and amounts for a specific keyset ID
-    async fn get_keyset_fees_and_amounts_by_id(
-        &self,
-        keyset_id: Id,
-    ) -> Result<FeeAndAmounts, Self::Error>;
-
-    /// Create a mint quote for the given payment method
-    async fn mint_quote(
-        &self,
-        method: Self::PaymentMethod,
-        amount: Option<Self::Amount>,
-        description: Option<String>,
-        extra: Option<String>,
-    ) -> Result<Self::MintQuote, Self::Error>;
-
-    /// Create a melt quote for the given payment method
-    async fn melt_quote(
-        &self,
-        method: Self::PaymentMethod,
-        request: String,
-        options: Option<Self::MeltOptions>,
-        extra: Option<String>,
-    ) -> Result<Self::MeltQuote, Self::Error>;
-
-    /// Create destination mint and source melt quotes for the maximum amount
-    /// allowed by the source balance and both mints' advertised limits.
-    ///
-    /// # Remote side effects
-    ///
-    /// The search may create multiple quote pairs because the source mint's fee
-    /// reserve is learned from each destination invoice. Only the returned pair
-    /// is persisted locally; unused remote quotes remain until they expire.
-    async fn cross_mint_transfer_quote_max(
-        &self,
-        target_wallet: &Self,
-    ) -> Result<Self::CrossMintTransferQuote, Self::Error>;
-
-    /// List transactions, optionally filtered by direction
-    async fn list_transactions(
-        &self,
-        direction: Option<TransactionDirection>,
-    ) -> Result<Vec<Transaction>, Self::Error>;
-
-    /// Get a transaction by ID
-    async fn get_transaction(&self, id: TransactionId) -> Result<Option<Transaction>, Self::Error>;
-
-    /// Get proofs for a transaction by transaction ID
-    async fn get_proofs_for_transaction(&self, id: TransactionId) -> Result<Proofs, Self::Error>;
-
-    /// Revert a transaction by reclaiming unspent proofs
-    async fn revert_transaction(&self, id: TransactionId) -> Result<(), Self::Error>;
-
-    /// Check all pending proofs and return total amount still pending
-    async fn check_all_pending_proofs(&self) -> Result<Self::Amount, Self::Error>;
-
-    /// Recover from incomplete operations after a crash
-    async fn recover_incomplete_sagas(&self) -> Result<Self::RecoveryReport, Self::Error>;
-
-    /// Check if proofs are spent
-    async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Self::Error>;
-
-    /// Get fees for a specific keyset ID
-    async fn get_keyset_fees_by_id(&self, keyset_id: Id) -> Result<u64, Self::Error>;
-
-    /// Calculate fee for a given number of proofs with the specified keyset
-    async fn calculate_fee(
-        &self,
-        proof_count: u64,
-        keyset_id: Id,
-    ) -> Result<Self::Amount, Self::Error>;
-
-    /// Receive an encoded token
-    async fn receive(
-        &self,
-        encoded_token: &str,
-        options: ReceiveOptions,
-    ) -> Result<Self::Amount, Self::Error>;
-
-    /// Receive proofs directly
-    async fn receive_proofs(
-        &self,
-        proofs: Proofs,
-        options: ReceiveOptions,
-        memo: Option<String>,
-        token: Option<String>,
-    ) -> Result<Self::Amount, Self::Error>;
-
-    /// Prepare a send transaction
-    async fn prepare_send(
-        &self,
-        amount: Self::Amount,
-        options: SendOptions,
-    ) -> Result<Self::PreparedSend<'_>, Self::Error>;
-
-    /// Get pending send operation IDs
-    async fn get_pending_sends(&self) -> Result<Vec<Self::OperationId>, Self::Error>;
-
-    /// Revoke a pending send operation
-    async fn revoke_send(
-        &self,
-        operation_id: Self::OperationId,
-    ) -> Result<Self::Amount, Self::Error>;
-
-    /// Check if a pending send has been claimed
-    async fn check_send_status(&self, operation_id: Self::OperationId)
-        -> Result<bool, Self::Error>;
-
-    /// Mint tokens for a quote
-    async fn mint(
-        &self,
-        quote_id: &str,
-        split_target: SplitTarget,
-        spending_conditions: Option<SpendingConditions>,
-    ) -> Result<Proofs, Self::Error>;
-
-    /// Check and mint any paid but unissued mint quotes
-    async fn mint_unissued_quotes(&self) -> Result<Self::Amount, Self::Error>;
-
-    /// Check mint quote status
-    async fn check_mint_quote_status(&self, quote_id: &str)
-        -> Result<Self::MintQuote, Self::Error>;
-
-    /// Fetch a mint quote from the mint and store it locally
-    async fn fetch_mint_quote(
-        &self,
-        quote_id: &str,
-        payment_method: Option<Self::PaymentMethod>,
-    ) -> Result<Self::MintQuote, Self::Error>;
-
-    /// Prepare a melt operation
-    async fn prepare_melt(
-        &self,
-        quote_id: &str,
-        metadata: HashMap<String, String>,
-    ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
-
-    /// Prepare a melt operation with specific proofs
-    async fn prepare_melt_proofs(
-        &self,
-        quote_id: &str,
-        proofs: Proofs,
-        metadata: HashMap<String, String>,
-    ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
-
-    /// Prepare a melt operation from an encoded token
-    ///
-    /// Decodes the token, extracts proofs (handling keyset state internally),
-    /// and prepares the melt. This is useful when the caller has a token and
-    /// wants to skip manual decoding, which requires keyset state for v2 keysets.
-    async fn prepare_melt_token(
-        &self,
-        quote_id: &str,
-        encoded_token: &str,
-        metadata: HashMap<String, String>,
-    ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
-
-    /// Swap proofs
-    async fn swap(
-        &self,
-        amount: Option<Self::Amount>,
-        split_target: SplitTarget,
-        input_proofs: Proofs,
-        spending_conditions: Option<SpendingConditions>,
-        include_fees: bool,
-        use_p2bk: bool,
-    ) -> Result<Option<Proofs>, Self::Error>;
-
-    /// Set Clear Auth Token (CAT)
-    async fn set_cat(&self, cat: String) -> Result<(), Self::Error>;
-
-    /// Set refresh token
-    async fn set_refresh_token(&self, refresh_token: String) -> Result<(), Self::Error>;
-
-    /// Refresh access token using stored refresh token
-    async fn refresh_access_token(&self) -> Result<(), Self::Error>;
-
-    /// Mint blind auth tokens
-    async fn mint_blind_auth(&self, amount: Self::Amount) -> Result<Proofs, Self::Error>;
-
-    /// Get unspent auth proofs
-    async fn get_unspent_auth_proofs(&self) -> Result<Vec<AuthProof>, Self::Error>;
-
-    /// Restore wallet from seed
-    async fn restore(&self) -> Result<Restored, Self::Error>;
-
-    /// Restore wallet from seed with custom [`NUT13Options`]
-    async fn restore_with_opts(&self, opts: NUT13Options) -> Result<Restored, Self::Error>;
-
-    /// Verify DLEQ proofs in a token
-    async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error>;
-
-    /// Subscribe to mint quote state updates
-    ///
-    /// Returns a subscription handle that receives notifications when
-    /// any of the given mint quotes change state (e.g., Unpaid → Paid → Issued).
-    async fn subscribe_mint_quote_state(
-        &self,
-        quote_ids: Vec<String>,
-        method: Self::PaymentMethod,
-    ) -> Result<Self::Subscription, Self::Error>;
-
-    /// Set metadata cache TTL (time-to-live) in seconds
-    ///
-    /// Controls how long cached mint metadata (keysets, keys, mint info) is considered fresh
-    /// before requiring a refresh from the mint server.
-    /// If `None`, cache never expires and is always used.
-    fn set_metadata_cache_ttl(&self, ttl_secs: Option<u64>);
-
-    /// Configure client-side request pacing, or turn it off with `None`.
-    ///
-    /// Reaches every host the wallet paces, not only its mint, and is
-    /// repository-wide when the wallet came from a wallet repository, since
-    /// those share one limiter. `None` then `Some` is a reversible toggle.
-    #[cfg(feature = "http")]
-    fn set_rate_limiting_config(&self, config: Option<RateLimitConfig>);
-
-    /// Whether requests from this wallet are being paced right now.
-    ///
-    /// Also false when a custom transport left the limiter wired to nothing,
-    /// which is what silently makes [`Self::set_rate_limiting_config`] a no-op.
-    #[cfg(feature = "http")]
-    fn is_rate_limited(&self) -> bool;
-
-    /// Wait until the rate-limit budget drawn down so far has been persisted.
-    ///
-    /// Persistence is otherwise best effort, so a caller that rebuilds the
-    /// wallet or tears down the runtime without this barrier can lose the final
-    /// write and start the next wallet with a full burst.
-    #[cfg(feature = "http")]
-    async fn flush_rate_limits(&self);
-
-    /// Subscribe to wallet events
-    async fn subscribe(
-        &self,
-        params: Self::SubscribeParams,
-    ) -> Result<Self::Subscription, Self::Error>;
-
-    /// Get a melt quote for a BIP353 address
-    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-    async fn melt_bip353_quote(
-        &self,
-        bip353_address: &str,
-        amount_msat: Self::Amount,
-        network: bitcoin::Network,
-    ) -> Result<Self::MeltQuote, Self::Error>;
-
-    /// Get a melt quote for a Lightning address
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn melt_lightning_address_quote(
-        &self,
-        lightning_address: &str,
-        amount_msat: Self::Amount,
-    ) -> Result<Self::MeltQuote, Self::Error>;
-
-    /// Get a melt quote for a human-readable address
-    ///
-    /// Accepts a human-readable address that could be either a BIP353 address
-    /// or a Lightning address. Tries BIP353 first if mint supports Bolt12,
-    /// falls back to Lightning address.
-    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-    async fn melt_human_readable_quote(
-        &self,
-        address: &str,
-        amount_msat: Self::Amount,
-        network: bitcoin::Network,
-    ) -> Result<Self::MeltQuote, Self::Error>;
-
-    /// Get a melt quote for a human-readable address (alias for `melt_human_readable_quote`)
-    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-    async fn melt_human_readable(
-        &self,
-        address: &str,
-        amount_msat: Self::Amount,
-        network: bitcoin::Network,
-    ) -> Result<Self::MeltQuote, Self::Error> {
-        self.melt_human_readable_quote(address, amount_msat, network)
-            .await
-    }
-
-    /// Check a mint quote status (alias for `check_mint_quote_status`)
-    async fn check_mint_quote(&self, quote_id: &str) -> Result<Self::MintQuote, Self::Error> {
-        self.check_mint_quote_status(quote_id).await
-    }
-
-    /// Mint tokens for a quote (alias for `mint`)
-    async fn mint_unified(
-        &self,
-        quote_id: &str,
-        split_target: SplitTarget,
-        spending_conditions: Option<SpendingConditions>,
-    ) -> Result<Proofs, Self::Error> {
-        self.mint(quote_id, split_target, spending_conditions).await
-    }
-
-    /// Get proofs filtered by states
-    ///
-    /// Returns all proofs whose state matches any of the given states.
-    /// The `Spent` state is typically excluded since spent proofs are removed
-    /// from the database.
-    async fn get_proofs_by_states(&self, states: Vec<State>) -> Result<Proofs, Self::Error>;
-
-    // P2PK proofs
-    /// generates and stores public key in database
-    async fn generate_public_key(&self) -> Result<PublicKey, Self::Error>;
-
-    /// gets public key by it's hex value
-    async fn get_public_key(
-        &self,
-        pubkey: &PublicKey,
-    ) -> Result<Option<P2PKSigningKey>, Self::Error>;
-
-    /// gets list of stored public keys in database
-    async fn get_public_keys(&self) -> Result<Vec<P2PKSigningKey>, Self::Error>;
-
-    /// Gets the latest generated P2PK signing key (most recently created)
-    async fn get_latest_public_key(&self) -> Result<Option<P2PKSigningKey>, Self::Error>;
-
-    /// try to get secret key from p2pk signing key in localstore
-    async fn get_signing_key(&self, pubkey: &PublicKey) -> Result<Option<SecretKey>, Self::Error>;
 }
 
 /// Public key generated for proof signing

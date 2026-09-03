@@ -153,7 +153,7 @@ impl<'a> SwapSaga<'a, Initial> {
             .checked_sub(fee)
             .ok_or(Error::InsufficientFunds)?;
 
-        let saga = WalletSaga::new(
+        let mut saga = WalletSaga::new(
             self.state_data.operation_id,
             WalletSagaState::Swap(SwapSagaState::ProofsReserved),
             input_amount,
@@ -167,6 +167,9 @@ impl<'a> SwapSaga<'a, Initial> {
                 blinded_messages: None,
             }),
         );
+        // Mark this newly persisted saga as actively owned. Recovery defers
+        // versioned active states briefly so it cannot race this request.
+        saga.update_state(WalletSagaState::Swap(SwapSagaState::ProofsReserved));
 
         self.wallet.localstore.add_saga(saga.clone()).await?;
 

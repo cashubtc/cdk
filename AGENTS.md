@@ -242,12 +242,18 @@ impl fmt::Display for MyType { ... }
 - `fuzz/` -- fuzzing targets (20 fuzz harnesses, excluded from workspace)
 - `misc/` -- helper scripts, Docker configs, Keycloak setup, Grafana dashboards
 
-### FFI Sync Requirement
+### Portable Wallet API
 
-When adding, removing, or modifying methods on the `cdk` Wallet API, you **must** keep the `cdk-ffi` crate in sync:
-1. Update the exported FFI wallet implementation (`crates/cdk-ffi/src/wallet.rs`) using `#[uniffi::export]`.
-2. Update the `Wallet` trait implementation (`crates/cdk-ffi/src/wallet_trait.rs`).
-3. Add or update any necessary FFI-compatible type conversions in `crates/cdk-ffi/src/types/`.
+`cdk::Wallet` is the advanced protocol engine. The application-facing contract
+lives in `crates/cdk-ffi/src/portable.rs`; the same Rust objects are exported by
+UniFFI, so there is no mirrored wallet trait to update.
+
+When changing application workflows:
+1. Update the portable facade and its FFI-compatible request/outcome types.
+2. Keep proof, keyset, swap, and NUT-specific controls in the `cdk` engine.
+3. Run `just ffi-api-check` and review any change to
+   `crates/cdk-ffi/wallet-api.manifest` deliberately.
+4. Update affected binding examples/tests and `docs/wallet-api.md`.
 
 ### Dependency Flow
 
@@ -297,6 +303,7 @@ Conventional commits: `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`.
 | Security policy | `SECURITY.md` |
 | v0.15 migration guide | `docs/migrations/v0.15.md` |
 | Wallet architecture | `crates/cdk/src/wallet/README.md` |
+| Portable wallet API | `docs/wallet-api.md` |
 | Mint daemon example config | `crates/cdk-mintd/example.config.toml` |
 | LDK Node networking | `crates/cdk-ldk-node/NETWORK_GUIDE.md` |
 | TLS/certificate setup | `crates/cdk-mint-rpc/CERTIFICATES.md` |

@@ -1,14 +1,19 @@
-# CDK Wallet
+# CDK wallet engine
 
-The CDK [`Wallet`] is a high level Cashu wallet. The [`Wallet`] is for a single mint and single unit. Multiple [`Wallet`]s can be created to support multi mints and multi units.
+`cdk::Wallet` is the protocol-level engine for one mint and one currency unit.
+It exposes proof selection, keysets, NUT-specific options, sagas, recovery, and
+other controls needed by advanced integrations.
 
+Most product applications should use the portable application facade in
+`cdk-ffi`. That facade is directly callable from Rust and is also the single
+source for all generated language bindings. See
+[`docs/wallet-api.md`](../../../../docs/wallet-api.md).
 
-## Example
-
-### Create and Initialize [`Wallet`]
+## Engine example
 
 ```rust
 use std::sync::Arc;
+
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::Wallet;
 use cdk_sqlite::wallet::memory;
@@ -17,22 +22,25 @@ use rand::random;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let seed = random::<[u8; 64]>();
-    let mint_url = "https://testnut.cashudevkit.org";
-    let unit = CurrencyUnit::Sat;
-
     let localstore = memory::empty().await?;
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None)?;
+    let wallet = Wallet::new(
+        "https://testnut.cashudevkit.org",
+        CurrencyUnit::Sat,
+        Arc::new(localstore),
+        seed,
+        None,
+    )?;
 
-    // Required: Recover crashed operations (swap, send, receive, melt)
-    // This prevents proofs from being stuck in reserved states.
     let report = wallet.recover_incomplete_sagas().await?;
-    println!("Recovered: {}, Compensated: {}, Skipped: {}, Failed: {}",
-        report.recovered, report.compensated, report.skipped, report.failed);
-
-    // Optional: Check and mint pending mint quotes (makes network calls)
-    let minted = wallet.mint_unissued_quotes().await?;
-    println!("Minted {} from pending quotes", minted);
+    println!(
+        "Recovered: {}, compensated: {}, pending: {}, failed: {}",
+        report.recovered, report.compensated, report.skipped, report.failed
+    );
 
     Ok(())
 }
 ```
+
+Prepared engine operations are persisted by operation ID. Keep the saga store
+authoritative and use the wallet's loader methods when reconstructing a
+prepared or pending operation after restart.

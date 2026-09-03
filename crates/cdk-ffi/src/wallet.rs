@@ -1,61 +1,36 @@
-//! FFI Wallet bindings
+//! Portable wallet object construction and configuration.
 
-use std::str::FromStr;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
 use cdk::wallet::{RateLimitConfig, Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
 
 use crate::error::FfiError;
-#[cfg(feature = "npubcash")]
-use crate::npubcash::NpubCashUserResponse;
-use crate::token::Token;
-#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-use crate::types::bip321::BitcoinNetwork;
-use crate::types::payment_request::{PaymentRequest, PreparedPaymentRequest};
-use crate::types::*;
+use crate::types::CurrencyUnit;
 
-/// FFI-compatible wallet.
+/// Portable application wallet for one mint and currency unit.
 ///
-/// Wallet methods can write to the configured local store while they perform
-/// mint, receive, recovery, subscription, and status operations. Mobile host
-/// apps own platform lifecycle handling around these calls: pause or cancel work
-/// when moving to the background unless background network and storage activity
-/// is intended, and use platform facilities such as iOS `beginBackgroundTask`
-/// when an operation must finish after a lifecycle transition.
+/// Open it with [`Wallet::open`] and use the request, session, and plan objects
+/// from [`crate::portable`]. Protocol-level operations are available directly
+/// from [`cdk::Wallet`].
 #[derive(uniffi::Object)]
 pub struct Wallet {
     inner: Arc<CdkWallet>,
 }
 
 impl Wallet {
-    /// Create a Wallet from an existing CDK wallet (internal use only)
+    /// Wrap an existing engine wallet for internal facade use.
     pub(crate) fn from_inner(inner: Arc<CdkWallet>) -> Self {
         Self { inner }
     }
 
-    /// Access the inner CDK wallet
+    /// Access the protocol engine behind this facade.
     pub(crate) fn inner(&self) -> &Arc<CdkWallet> {
         &self.inner
     }
-}
 
-#[uniffi::export(async_runtime = "tokio")]
-impl Wallet {
-    /// Create a new wallet.
-    ///
-    /// The returned wallet uses `store` for local state. FFI wallet methods may
-    /// write to that store later, so mobile host apps are responsible for
-    /// choosing durable storage locations and coordinating lifecycle transitions
-    /// around wallet calls. For example, use iOS `beginBackgroundTask` if a
-    /// write-capable operation must continue after the app backgrounds.
-    ///
-    /// Accepts a `WalletStore` which can be:
-    /// - `Sqlite { path }` — built-in Rust SQLite backend
-    /// - `Postgres { url }` — built-in Rust Postgres backend
-    /// - `Custom { db }` — foreign-language implementation of `WalletDatabase`
-    #[uniffi::constructor]
-    pub fn new(
+    /// Construct a facade wallet without contacting its mint.
+    pub(crate) fn new_advanced(
         mint_url: String,
         unit: CurrencyUnit,
         mnemonic: String,
@@ -65,33 +40,32 @@ impl Wallet {
         let db = crate::database::resolve_wallet_store(store)?;
         let localstore = crate::database::create_cdk_database_from_ffi(db);
 
-        let m = Mnemonic::parse(&mnemonic)
-            .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
-        let seed = m.to_seed_normalized("");
+        let mnemonic = Mnemonic::parse(&mnemonic)
+            .map_err(|error| FfiError::invalid_input(format!("Invalid mnemonic: {error}")))?;
+        let seed = mnemonic.to_seed_normalized("");
 
         let requested = config
             .rate_limit
             .as_ref()
             .map(RateLimit::to_config)
             .transpose()?;
-        let pace_with = requested.map(|config| config.unwrap_or_default());
+        let pace_with = requested.map(|rate_limit| rate_limit.unwrap_or_default());
         let start_disabled = matches!(requested, Some(None));
 
         let mut builder = CdkWalletBuilder::new()
-            .mint_url(mint_url.parse().map_err(|e: cdk::mint_url::Error| {
-                FfiError::internal(format!("Invalid URL: {}", e))
+            .mint_url(mint_url.parse().map_err(|error: cdk::mint_url::Error| {
+                FfiError::invalid_input(format!("Invalid URL: {error}"))
             })?)
             .unit(unit.into())
             .localstore(localstore)
             .seed(seed)
             .target_proof_count(config.target_proof_count.unwrap_or(3) as usize);
 
-        if let Some(config) = pace_with {
-            builder = builder.with_rate_limiting_config(config);
+        if let Some(rate_limit) = pace_with {
+            builder = builder.with_rate_limiting_config(rate_limit);
         }
 
         let wallet = builder.build().map_err(FfiError::from)?;
-
         if start_disabled {
             wallet.disable_rate_limiting();
         }
@@ -100,971 +74,9 @@ impl Wallet {
             inner: Arc::new(wallet),
         })
     }
-
-    /// Get the mint URL
-    pub fn mint_url(&self) -> MintUrl {
-        self.inner.mint_url.clone().into()
-    }
-
-    /// Get the currency unit
-    pub fn unit(&self) -> CurrencyUnit {
-        self.inner.unit.clone().into()
-    }
-
-    /// Set metadata cache TTL (time-to-live) in seconds
-    ///
-    /// Controls how long cached mint metadata (keysets, keys, mint info) is considered fresh
-    /// before requiring a refresh from the mint server.
-    ///
-    /// # Arguments
-    ///
-    /// * `ttl_secs` - Optional TTL in seconds. If None, cache never expires and is always used.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Cache expires after 5 minutes
-    /// wallet.set_metadata_cache_ttl(Some(300));
-    ///
-    /// // Cache never expires (default)
-    /// wallet.set_metadata_cache_ttl(None);
-    /// ```
-    pub fn set_metadata_cache_ttl(&self, ttl_secs: Option<u64>) {
-        let ttl = ttl_secs.map(std::time::Duration::from_secs);
-        self.inner.set_metadata_cache_ttl(ttl);
-    }
-
-    /// Change client-side request rate limiting on this wallet.
-    ///
-    /// A new wallet starts with whatever `WalletConfig.rate_limit` selected. Use
-    /// this to disable pacing, restore the default, or set a custom burst and
-    /// refill. It takes effect immediately and covers every host the wallet's
-    /// limiter paces, so it reaches the main and blind-auth clients as well as
-    /// any third-party host their transport reaches. For a wallet built through
-    /// a wallet repository the limiter is shared, so the change is
-    /// repository-wide.
-    ///
-    /// Returns an error if a `Custom` value has a zero field.
-    pub fn set_rate_limit(&self, rate_limit: RateLimit) -> Result<(), FfiError> {
-        match rate_limit.to_config()? {
-            Some(config) => self.inner.set_rate_limiting_config(config),
-            None => self.inner.disable_rate_limiting(),
-        }
-        Ok(())
-    }
-
-    /// Whether this wallet's requests are being paced right now.
-    ///
-    /// Also false when the wallet paces nothing at all, which is the case
-    /// [`Wallet::set_rate_limit`] silently ignores.
-    pub fn is_rate_limited(&self) -> bool {
-        self.inner.is_rate_limited()
-    }
-
-    /// Wait until the rate-limit budget this wallet drew down has been stored.
-    ///
-    /// Await this before dropping the wallet on shutdown. Without it,
-    /// persistence is best effort and a rebuild can outrun the detached writer,
-    /// so the rebuilt wallet starts with a full burst against the mint's cap.
-    pub async fn flush_rate_limits(&self) {
-        self.inner.flush_rate_limits().await;
-    }
-
-    /// Get total balance
-    pub async fn total_balance(&self) -> Result<Amount, FfiError> {
-        let balance = self.inner.total_balance().await?;
-        Ok(balance.into())
-    }
-
-    /// Get total pending balance
-    pub async fn total_pending_balance(&self) -> Result<Amount, FfiError> {
-        let balance = self.inner.total_pending_balance().await?;
-        Ok(balance.into())
-    }
-
-    /// Get total reserved balance
-    pub async fn total_reserved_balance(&self) -> Result<Amount, FfiError> {
-        let balance = self.inner.total_reserved_balance().await?;
-        Ok(balance.into())
-    }
-
-    /// Get mint info from mint
-    pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
-        let info = self.inner.fetch_mint_info().await?;
-        Ok(info.map(Into::into))
-    }
-
-    /// Load mint info
-    ///
-    /// This will get mint info from cache if it is fresh
-    pub async fn load_mint_info(&self) -> Result<MintInfo, FfiError> {
-        let info = self.inner.load_mint_info().await?;
-        Ok(info.into())
-    }
-
-    /// Receive tokens.
-    ///
-    /// This verifies and persists received proofs in the local store. Mobile
-    /// hosts should avoid starting it during app background transitions unless
-    /// background network and storage activity is intended.
-    pub async fn receive(
-        &self,
-        token: std::sync::Arc<Token>,
-        options: ReceiveOptions,
-    ) -> Result<Amount, FfiError> {
-        let amount = self
-            .inner
-            .receive(&token.to_string(), options.try_into()?)
-            .await?;
-        Ok(amount.into())
-    }
-
-    /// Restore wallet from seed
-    pub async fn restore(&self) -> Result<Restored, FfiError> {
-        let restored = self.inner.restore().await?;
-        Ok(restored.into())
-    }
-
-    /// Restore wallet from seed with custom NUT-13 options
-    pub async fn restore_with_opts(&self, opts: NUT13Options) -> Result<Restored, FfiError> {
-        let restored = self.inner.restore_with_opts(opts.try_into()?).await?;
-        Ok(restored.into())
-    }
-
-    /// Verify token DLEQ proofs
-    pub async fn verify_token_dleq(&self, token: std::sync::Arc<Token>) -> Result<(), FfiError> {
-        let cdk_token = token.inner.clone();
-        self.inner.verify_token_dleq(&cdk_token).await?;
-        Ok(())
-    }
-
-    /// Receive proofs directly.
-    ///
-    /// This verifies and persists received proofs in the local store. Mobile
-    /// hosts should avoid starting it during app background transitions unless
-    /// background network and storage activity is intended.
-    pub async fn receive_proofs(
-        &self,
-        proofs: Proofs,
-        options: ReceiveOptions,
-        memo: Option<String>,
-        token: Option<String>,
-    ) -> Result<Amount, FfiError> {
-        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
-            proofs.into_iter().map(|p| p.try_into()).collect();
-        let cdk_proofs = cdk_proofs?;
-
-        let amount = self
-            .inner
-            .receive_proofs(cdk_proofs, options.try_into()?, memo, token)
-            .await?;
-        Ok(amount.into())
-    }
-
-    /// Get all pending send operations
-    pub async fn get_pending_sends(&self) -> Result<Vec<String>, FfiError> {
-        let sends = self.inner.get_pending_sends().await?;
-        Ok(sends.into_iter().map(|id| id.to_string()).collect())
-    }
-
-    /// Revoke a pending send operation
-    pub async fn revoke_send(&self, operation_id: String) -> Result<Amount, FfiError> {
-        let uuid = uuid::Uuid::parse_str(&operation_id)
-            .map_err(|e| FfiError::internal(format!("Invalid operation ID: {}", e)))?;
-        let amount = self.inner.revoke_send(uuid).await?;
-        Ok(amount.into())
-    }
-
-    /// Check status of a pending send operation
-    pub async fn check_send_status(&self, operation_id: String) -> Result<bool, FfiError> {
-        let uuid = uuid::Uuid::parse_str(&operation_id)
-            .map_err(|e| FfiError::internal(format!("Invalid operation ID: {}", e)))?;
-        let claimed = self.inner.check_send_status(uuid).await?;
-        Ok(claimed)
-    }
-
-    /// Prepare a send operation
-    pub async fn prepare_send(
-        &self,
-        amount: Amount,
-        options: SendOptions,
-    ) -> Result<std::sync::Arc<PreparedSend>, FfiError> {
-        let prepared = self
-            .inner
-            .prepare_send(amount.into(), options.try_into()?)
-            .await?;
-        Ok(std::sync::Arc::new(PreparedSend::new(
-            self.inner.clone(),
-            &prepared,
-        )))
-    }
-
-    /// Get a mint quote
-    pub async fn mint_quote(
-        &self,
-        payment_method: PaymentMethod,
-        amount: Option<Amount>,
-        description: Option<String>,
-        extra: Option<String>,
-    ) -> Result<MintQuote, FfiError> {
-        let quote = self
-            .inner
-            .mint_quote(
-                payment_method.into(),
-                amount.map(Into::into),
-                description,
-                extra,
-            )
-            .await?;
-        Ok(quote.into())
-    }
-
-    /// Check a mint quote status from the mint.
-    ///
-    /// Calls `GET /v1/mint/quote/{method}/{quote_id}` per NUT-04.
-    /// Updates local store with current state from mint.
-    /// If there was a crashed mid-mint (pending saga), attempts to complete it.
-    /// Does NOT mint tokens directly - use mint() for that.
-    /// This may perform network requests and write recovery/status updates to
-    /// the local store, so mobile hosts should coordinate it with app lifecycle
-    /// transitions.
-    ///
-    /// **Note:** The mint quote must be known to the wallet (stored locally) for this
-    /// function to work. If the quote is not stored locally, use `fetch_mint_quote`
-    /// instead.
-    pub async fn check_mint_quote(&self, quote_id: String) -> Result<MintQuote, FfiError> {
-        self.check_mint_quote_status(quote_id).await
-    }
-
-    /// Check a mint quote status from the mint.
-    ///
-    /// Calls `GET /v1/mint/quote/{method}/{quote_id}` per NUT-04.
-    /// Updates local store with current state from mint.
-    /// If there was a crashed mid-mint (pending saga), attempts to complete it.
-    /// Does NOT mint tokens directly - use mint() for that.
-    /// This may perform network requests and write recovery/status updates to
-    /// the local store, so mobile hosts should coordinate it with app lifecycle
-    /// transitions.
-    ///
-    /// **Note:** The mint quote must be known to the wallet (stored locally) for this
-    /// function to work. If the quote is not stored locally, use `fetch_mint_quote`
-    /// instead.
-    pub async fn check_mint_quote_status(&self, quote_id: String) -> Result<MintQuote, FfiError> {
-        let quote = self.inner.check_mint_quote_status(&quote_id).await?;
-        Ok(quote.into())
-    }
-
-    /// Fetch a mint quote from the mint and store it locally.
-    ///
-    /// This performs network I/O and writes the fetched quote to the local store.
-    /// Mobile hosts should avoid starting it during app background transitions
-    /// unless background network and storage activity is intended.
-    ///
-    /// Works with all payment methods (Bolt11, Bolt12, and custom payment methods).
-    ///
-    /// # Arguments
-    /// * `quote_id` - The ID of the quote to fetch
-    /// * `payment_method` - The payment method for the quote. Required if the quote
-    ///   is not already stored locally. If the quote exists locally, the stored
-    ///   payment method will be used and this parameter is ignored.
-    pub async fn fetch_mint_quote(
-        &self,
-        quote_id: String,
-        payment_method: Option<PaymentMethod>,
-    ) -> Result<MintQuote, FfiError> {
-        let method = payment_method.map(Into::into);
-        let quote = self.inner.fetch_mint_quote(&quote_id, method).await?;
-        Ok(quote.into())
-    }
-
-    /// Mint tokens.
-    ///
-    /// This writes newly issued proofs and saga state to the local store while
-    /// communicating with the mint. Mobile hosts should coordinate it with app
-    /// lifecycle transitions, using platform background-task support when the
-    /// operation must finish after backgrounding.
-    pub async fn mint(
-        &self,
-        quote_id: String,
-        amount_split_target: SplitTarget,
-        spending_conditions: Option<SpendingConditions>,
-    ) -> Result<Proofs, FfiError> {
-        // Convert spending conditions if provided
-        let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
-
-        let proofs = self
-            .inner
-            .mint(&quote_id, amount_split_target.into(), conditions)
-            .await?;
-        Ok(proofs.into_iter().map(|p| p.into()).collect())
-    }
-
-    /// Check and mint any paid but unissued mint quotes.
-    ///
-    /// This is useful during startup or recovery after incomplete mint quote flows.
-    /// It may perform network requests and write newly issued proofs to the wallet store.
-    pub async fn mint_unissued_quotes(&self) -> Result<Amount, FfiError> {
-        let minted = self.inner.mint_unissued_quotes().await?;
-        Ok(minted.into())
-    }
-
-    /// Prepare a melt operation
-    ///
-    /// Returns a `PreparedMelt` that can be confirmed or cancelled.
-    pub async fn prepare_melt(&self, quote_id: String) -> Result<PreparedMelt, FfiError> {
-        let prepared = self
-            .inner
-            .prepare_melt(&quote_id, std::collections::HashMap::new())
-            .await?;
-        Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
-    }
-
-    /// Prepare a melt operation with specific proofs
-    ///
-    /// This method allows melting proofs that may not be in the wallet's database,
-    /// similar to how `receive_proofs` handles external proofs. The proofs will be
-    /// added to the database and used for the melt operation.
-    ///
-    /// # Arguments
-    ///
-    /// * `quote_id` - The melt quote ID (obtained from `melt_quote`)
-    /// * `proofs` - The proofs to melt (can be external proofs not in the wallet's database)
-    ///
-    /// # Returns
-    ///
-    /// A `PreparedMelt` that can be confirmed or cancelled
-    pub async fn prepare_melt_proofs(
-        &self,
-        quote_id: String,
-        proofs: Proofs,
-    ) -> Result<PreparedMelt, FfiError> {
-        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
-            proofs.into_iter().map(|p| p.try_into()).collect();
-        let cdk_proofs = cdk_proofs?;
-
-        let prepared = self
-            .inner
-            .prepare_melt_proofs(&quote_id, cdk_proofs, std::collections::HashMap::new())
-            .await?;
-        Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
-    }
-
-    /// Prepare a melt operation from an encoded token
-    ///
-    /// Decodes the token internally (handling keyset state for v2 keysets),
-    /// extracts proofs, and prepares the melt operation.
-    ///
-    /// # Arguments
-    ///
-    /// * `quote_id` - The melt quote ID (obtained from `melt_quote`)
-    /// * `encoded_token` - The encoded token string (cashuA or cashuB format)
-    ///
-    /// # Returns
-    ///
-    /// A `PreparedMelt` that can be confirmed or cancelled
-    pub async fn prepare_melt_token(
-        &self,
-        quote_id: String,
-        encoded_token: String,
-    ) -> Result<PreparedMelt, FfiError> {
-        let prepared = self
-            .inner
-            .prepare_melt_token(&quote_id, &encoded_token, std::collections::HashMap::new())
-            .await?;
-        Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
-    }
-
-    /// Mint tokens using the unified payment-method interface.
-    ///
-    /// This writes newly issued proofs and saga state to the local store while
-    /// communicating with the mint. Mobile hosts should coordinate it with app
-    /// lifecycle transitions, using platform background-task support when the
-    /// operation must finish after backgrounding.
-    pub async fn mint_unified(
-        &self,
-        quote_id: String,
-        amount_split_target: SplitTarget,
-        spending_conditions: Option<SpendingConditions>,
-    ) -> Result<Proofs, FfiError> {
-        let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
-
-        let proofs = self
-            .inner
-            .mint(&quote_id, amount_split_target.into(), conditions)
-            .await?;
-
-        Ok(proofs.into_iter().map(|p| p.into()).collect())
-    }
-    /// Get a melt quote using a unified interface for any payment method
-    ///
-    /// This method supports bolt11, bolt12, and custom payment methods.
-    /// For custom methods, you can pass extra JSON data that will be forwarded
-    /// to the payment processor.
-    ///
-    /// # Arguments
-    /// * `method` - Payment method to use (bolt11, bolt12, or custom)
-    /// * `request` - Payment request string (invoice, offer, or custom format)
-    /// * `options` - Optional melt options (MPP, amountless, etc.)
-    /// * `extra` - Optional JSON string with extra payment-method-specific fields (for custom methods)
-    pub async fn melt_quote(
-        &self,
-        method: PaymentMethod,
-        request: String,
-        options: Option<MeltOptions>,
-        extra: Option<String>,
-    ) -> Result<MeltQuote, FfiError> {
-        let cdk_options = options.map(Into::into);
-        let quote = self
-            .inner
-            .melt_quote::<cdk::nuts::PaymentMethod, _>(method.into(), request, cdk_options, extra)
-            .await?;
-        Ok(quote.into())
-    }
-
-    /// Create quotes for transferring the maximum amount allowed by the source
-    /// balance and both mints' advertised BOLT11 limits.
-    ///
-    /// The returned input fee assumes all currently unspent source proofs are
-    /// used. Prepare the returned melt quote with those proofs and confirm it
-    /// with `skip_swap` to preserve that accounting.
-    ///
-    /// This search may create multiple quote pairs at the remote mints. Only the
-    /// returned pair is persisted locally; unused remote quotes cannot be
-    /// cancelled and remain until they expire.
-    pub async fn cross_mint_transfer_quote_max(
-        &self,
-        target_wallet: std::sync::Arc<Wallet>,
-    ) -> Result<CrossMintTransferQuote, FfiError> {
-        let quote = self
-            .inner
-            .cross_mint_transfer_quote_max(target_wallet.inner.as_ref())
-            .await?;
-        Ok(quote.into())
-    }
-
-    /// Fetch available onchain melt quote options.
-    ///
-    /// Each returned quote represents one selectable confirmation target/fee reserve.
-    /// Pass the chosen quote to `select_onchain_melt_quote`, then prepare and confirm
-    /// the returned quote ID through the normal melt flow.
-    pub async fn quote_onchain_melt_options(
-        &self,
-        address: String,
-        amount: Amount,
-        max_fee_amount: Option<Amount>,
-    ) -> Result<Vec<MeltQuote>, FfiError> {
-        let quotes = self
-            .inner
-            .quote_onchain_melt_options(&address, amount.into(), max_fee_amount.map(Into::into))
-            .await?;
-
-        Ok(quotes.into_iter().map(Into::into).collect())
-    }
-
-    /// Persist the selected onchain melt quote before preparing it.
-    pub async fn select_onchain_melt_quote(&self, quote: MeltQuote) -> Result<MeltQuote, FfiError> {
-        let quote = self
-            .inner
-            .select_onchain_melt_quote(quote.try_into()?)
-            .await?;
-        Ok(quote.into())
-    }
-
-    /// Check melt quote status and attempt to complete any in-progress saga.
-    pub async fn check_melt_quote_status(&self, quote_id: String) -> Result<MeltQuote, FfiError> {
-        let quote = self.inner.check_melt_quote_status(&quote_id).await?;
-        Ok(quote.into())
-    }
-
-    /// Finalize pending melt operations for this wallet.
-    pub async fn finalize_pending_melts(&self) -> Result<Vec<FinalizedMelt>, FfiError> {
-        let finalized = self.inner.finalize_pending_melts().await?;
-        Ok(finalized.into_iter().map(Into::into).collect())
-    }
-
-    /// Swap proofs
-    pub async fn swap(
-        &self,
-        amount: Option<Amount>,
-        amount_split_target: SplitTarget,
-        input_proofs: Proofs,
-        spending_conditions: Option<SpendingConditions>,
-        include_fees: bool,
-    ) -> Result<Option<Proofs>, FfiError> {
-        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
-            input_proofs.into_iter().map(|p| p.try_into()).collect();
-        let cdk_proofs = cdk_proofs?;
-
-        // Convert spending conditions if provided
-        let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
-
-        let result = self
-            .inner
-            .swap(
-                amount.map(Into::into),
-                amount_split_target.into(),
-                cdk_proofs,
-                conditions,
-                include_fees,
-                false,
-            )
-            .await?;
-
-        Ok(result.map(|proofs| proofs.into_iter().map(|p| p.into()).collect()))
-    }
-
-    /// Get proofs by states
-    pub async fn get_proofs_by_states(&self, states: Vec<ProofState>) -> Result<Proofs, FfiError> {
-        let mut all_proofs = Vec::new();
-
-        for state in states {
-            let proofs = match state {
-                ProofState::Unspent => self.inner.get_unspent_proofs().await?,
-                ProofState::Pending => self.inner.get_pending_proofs().await?,
-                ProofState::Reserved => self.inner.get_reserved_proofs().await?,
-                ProofState::PendingSpent => self.inner.get_pending_spent_proofs().await?,
-                ProofState::Spent => {
-                    // CDK doesn't have a method to get spent proofs directly
-                    // They are removed from the database when spent
-                    continue;
-                }
-            };
-
-            for proof in proofs {
-                all_proofs.push(proof.into());
-            }
-        }
-
-        Ok(all_proofs)
-    }
-
-    /// Check if proofs are spent
-    pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<bool>, FfiError> {
-        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
-            proofs.into_iter().map(|p| p.try_into()).collect();
-        let cdk_proofs = cdk_proofs?;
-
-        let proof_states = self.inner.check_proofs_spent(cdk_proofs).await?;
-        // Convert ProofState to bool (spent = true, unspent = false)
-        let spent_bools = proof_states
-            .into_iter()
-            .map(|proof_state| {
-                matches!(
-                    proof_state.state,
-                    cdk::nuts::State::Spent | cdk::nuts::State::PendingSpent
-                )
-            })
-            .collect();
-        Ok(spent_bools)
-    }
-
-    /// List transactions
-    pub async fn list_transactions(
-        &self,
-        direction: Option<TransactionDirection>,
-    ) -> Result<Vec<Transaction>, FfiError> {
-        let cdk_direction = direction.map(Into::into);
-        let transactions = self.inner.list_transactions(cdk_direction).await?;
-        Ok(transactions.into_iter().map(Into::into).collect())
-    }
-
-    /// Get transaction by ID
-    pub async fn get_transaction(
-        &self,
-        id: TransactionId,
-    ) -> Result<Option<Transaction>, FfiError> {
-        let cdk_id = id.try_into()?;
-        let transaction = self.inner.get_transaction(cdk_id).await?;
-        Ok(transaction.map(Into::into))
-    }
-
-    /// Get proofs for a transaction by transaction ID
-    ///
-    /// This retrieves all proofs associated with a transaction by looking up
-    /// the transaction's Y values and fetching the corresponding proofs.
-    pub async fn get_proofs_for_transaction(
-        &self,
-        id: TransactionId,
-    ) -> Result<Vec<Proof>, FfiError> {
-        let cdk_id = id.try_into()?;
-        let proofs = self.inner.get_proofs_for_transaction(cdk_id).await?;
-        Ok(proofs.into_iter().map(Into::into).collect())
-    }
-
-    /// Revert a transaction
-    pub async fn revert_transaction(&self, id: TransactionId) -> Result<(), FfiError> {
-        let cdk_id = id.try_into()?;
-        self.inner.revert_transaction(cdk_id).await?;
-        Ok(())
-    }
-
-    /// Subscribe to wallet events.
-    ///
-    /// The returned subscription may keep polling or receiving network events
-    /// until it is dropped or closed. Mobile hosts should cancel, drop, or stop
-    /// waiting on subscriptions during app background transitions when
-    /// background network or storage activity is not desired.
-    pub async fn subscribe(
-        &self,
-        params: SubscribeParams,
-    ) -> Result<std::sync::Arc<ActiveSubscription>, FfiError> {
-        let cdk_params: cdk::nuts::nut17::Params<Arc<String>> = params.clone().into();
-        let sub_id = cdk_params.id.to_string();
-        let active_sub = self.inner.subscribe(cdk_params).await?;
-        Ok(std::sync::Arc::new(ActiveSubscription::new(
-            active_sub, sub_id,
-        )))
-    }
-
-    /// Subscribe to mint quote state updates
-    ///
-    /// Convenience method that creates a subscription to receive notifications
-    /// when any of the given mint quotes change state (e.g., Unpaid → Paid → Issued).
-    ///
-    /// Use `recv()` on the returned `ActiveSubscription` to receive updates as
-    /// `NotificationPayload::MintQuoteUpdate`.
-    /// The returned subscription may keep polling or receiving network events
-    /// until it is dropped or closed. Mobile hosts should cancel, drop, or stop
-    /// waiting on subscriptions during app background transitions when
-    /// background network or storage activity is not desired.
-    ///
-    /// All quote IDs must belong to the same payment method.
-    ///
-    /// # Arguments
-    /// * `quote_ids` - The IDs of the mint quotes to monitor
-    /// * `payment_method` - The payment method of the quotes
-    pub async fn subscribe_mint_quote_state(
-        &self,
-        quote_ids: Vec<String>,
-        payment_method: PaymentMethod,
-    ) -> Result<std::sync::Arc<ActiveSubscription>, FfiError> {
-        let cdk_method: cdk_common::PaymentMethod = payment_method.into();
-        let active_sub = self
-            .inner
-            .subscribe_mint_quote_state(quote_ids, cdk_method)
-            .await?;
-        let sub_id = uuid::Uuid::new_v4().to_string();
-        Ok(std::sync::Arc::new(ActiveSubscription::new(
-            active_sub, sub_id,
-        )))
-    }
-
-    /// Get all keysets for this wallet's unit
-    pub async fn keysets(
-        &self,
-        policy: Option<crate::types::wallet::KeysetLoadPolicy>,
-    ) -> Result<Vec<KeySet>, FfiError> {
-        let cdk_policy: cdk_common::wallet::KeysetLoadPolicy = policy.unwrap_or_default().into();
-        let keysets = self.inner.keysets(cdk_policy).await?;
-        Ok(keysets.into_iter().map(Into::into).collect())
-    }
-
-    /// Get the active keyset with the lowest fees
-    pub async fn active_keyset(&self) -> Result<KeySet, FfiError> {
-        let keyset = self.inner.active_keyset().await?;
-        Ok(keyset.into())
-    }
-
-    /// Get a single keyset by ID
-    pub async fn keyset(&self, keyset_id: String) -> Result<KeySet, FfiError> {
-        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
-        let keyset = self.inner.keyset(id).await?;
-        Ok(keyset.into())
-    }
-
-    /// Get fees for a specific keyset ID
-    pub async fn get_keyset_fees_by_id(&self, keyset_id: String) -> Result<u64, FfiError> {
-        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
-        Ok(self.inner.get_keyset_fees_by_id(id).await?)
-    }
-
-    /// Get fees and amounts for all keysets
-    pub async fn get_keyset_fees_and_amounts(
-        &self,
-    ) -> Result<std::collections::HashMap<String, FeeAndAmounts>, FfiError> {
-        let fees = self.inner.get_keyset_fees_and_amounts().await?;
-        Ok(fees
-            .into_iter()
-            .map(|(id, fa)| (id.to_string(), fa.into()))
-            .collect())
-    }
-
-    /// Get fees and amounts for a specific keyset
-    pub async fn get_keyset_fees_and_amounts_by_id(
-        &self,
-        keyset_id: String,
-    ) -> Result<FeeAndAmounts, FfiError> {
-        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
-        let fa = self.inner.get_keyset_fees_and_amounts_by_id(id).await?;
-        Ok(fa.into())
-    }
-
-    /// Get fee for count of proofs in a keyset
-    pub async fn get_keyset_count_fee(
-        &self,
-        keyset_id: String,
-        count: u64,
-    ) -> Result<Amount, FfiError> {
-        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
-        let fee = self.inner.get_keyset_count_fee(&id, count).await?;
-        Ok(fee.into())
-    }
-
-    /// Check all pending proofs and return the total amount still pending
-    ///
-    /// This function checks orphaned pending proofs (not managed by active sagas)
-    /// with the mint and marks spent proofs accordingly.
-    /// It may perform network requests and write proof-state updates to the
-    /// local store, so mobile hosts should coordinate it with app lifecycle
-    /// transitions.
-    pub async fn check_all_pending_proofs(&self) -> Result<Amount, FfiError> {
-        let amount = self.inner.check_all_pending_proofs().await?;
-        Ok(amount.into())
-    }
-
-    /// Recover from incomplete wallet sagas after a crash
-    ///
-    /// Handles interrupted swap, send, receive, issue, and melt operations. Requires
-    /// network access to the mint for states that need external status checks.
-    /// Recovery writes saga, proof, quote, and transaction updates to the local
-    /// store. Mobile hosts should run it only when background network and storage
-    /// activity is acceptable, or wrap it in platform background-task support
-    /// such as iOS `beginBackgroundTask`.
-    pub async fn recover_incomplete_sagas(&self) -> Result<RecoveryReport, FfiError> {
-        let report = self.inner.recover_incomplete_sagas().await?;
-        Ok(report.into())
-    }
-
-    /// Calculate fee for a given number of proofs with the specified keyset
-    pub async fn calculate_fee(
-        &self,
-        proof_count: u32,
-        keyset_id: String,
-    ) -> Result<Amount, FfiError> {
-        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
-        let fee = self.inner.calculate_fee(proof_count as u64, id).await?;
-        Ok(fee.into())
-    }
-
-    /// Prepare a NUT-18 payment request so its method and input fees can be reviewed.
-    ///
-    /// Call `confirm` or `cancel` on the returned object to complete the flow.
-    pub async fn prepare_pay_request(
-        &self,
-        payment_request: std::sync::Arc<PaymentRequest>,
-        custom_amount: Option<Amount>,
-    ) -> Result<std::sync::Arc<PreparedPaymentRequest>, FfiError> {
-        let prepared = self
-            .inner
-            .prepare_pay_request(
-                payment_request.inner().clone(),
-                custom_amount.map(Into::into),
-            )
-            .await?;
-        Ok(std::sync::Arc::new(PreparedPaymentRequest::new(prepared)))
-    }
 }
 
-/// NpubCash methods for Wallet
-#[cfg(feature = "npubcash")]
-#[uniffi::export(async_runtime = "tokio")]
-impl Wallet {
-    /// Enable NpubCash integration for this wallet
-    ///
-    /// Derives the NpubCash Nostr keys from the wallet seed, creates the
-    /// API client, sets this wallet's mint URL on the server, and enables
-    /// NUT-20 quote locking for newly created quotes. The integration is
-    /// only activated once locking has been enabled and confirmed.
-    ///
-    /// Returns an error if quote locking cannot be established — for
-    /// example when the configured mint does not support NUT-20.
-    pub async fn enable_npubcash(&self, npubcash_url: String) -> Result<(), FfiError> {
-        self.inner.enable_npubcash(npubcash_url).await?;
-        Ok(())
-    }
-
-    /// Reconcile the wallet with NpubCash by resolving quotes missing locally
-    ///
-    /// Fetches all quote IDs from the NpubCash server, resolves full data for
-    /// quotes missing from the local store, and refreshes NUT-20 lock
-    /// provenance for quotes already known locally. Unlike
-    /// `claim_npubcash_quotes`, this does not mint anything; it only
-    /// reconciles the local quote store with the server.
-    ///
-    /// Returns the quotes that were missing locally and have now been added.
-    ///
-    /// Requires NpubCash to be enabled on this wallet first.
-    pub async fn sync_missing_npubcash_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
-        let quotes = self.inner.sync_missing_npubcash_quotes().await?;
-        Ok(quotes.into_iter().map(Into::into).collect())
-    }
-
-    /// Claim all pending NpubCash quotes
-    ///
-    /// Syncs quotes from the NpubCash server (including reconciliation of
-    /// quotes missing locally) and mints every paid NpubCash quote that has
-    /// not been issued yet. Only quotes attributable to the wallet's NpubCash
-    /// accounts are claimed; unrelated mint quotes created through normal
-    /// wallet flows are left untouched. Mints that advertise NUT-29 are
-    /// claimed with batch minting automatically; other mints fall back to
-    /// individual minting.
-    ///
-    /// Returns the total amount minted across all claimed quotes.
-    pub async fn claim_npubcash_quotes(&self) -> Result<Amount, FfiError> {
-        let minted = self.inner.claim_npubcash_quotes().await?;
-        Ok(minted.into())
-    }
-
-    /// Fetch this wallet's NpubCash account settings
-    ///
-    /// Returns the configured mint URL and whether quote locking is enabled.
-    /// Requires NpubCash to be enabled on this wallet first.
-    pub async fn get_npubcash_user_info(&self) -> Result<NpubCashUserResponse, FfiError> {
-        let response = self.inner.get_npubcash_user_info().await?;
-        Ok(response.into())
-    }
-}
-
-/// BIP353 methods for Wallet
-#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-#[uniffi::export(async_runtime = "tokio")]
-impl Wallet {
-    /// Get a quote for a BIP353 melt
-    ///
-    /// This method resolves a BIP353 address (e.g., "alice@example.com") to a Bitcoin
-    /// payment instruction, requires a BOLT12 offer, and then creates a melt quote for it.
-    ///
-    /// The `network` parameter controls which on-chain address prefixes are accepted
-    /// in the resolved URI.
-    pub async fn melt_bip353_quote(
-        &self,
-        bip353_address: String,
-        amount_msat: Amount,
-        network: BitcoinNetwork,
-    ) -> Result<MeltQuote, FfiError> {
-        let cdk_amount: cdk::Amount = amount_msat.into();
-        let quote = self
-            .inner
-            .melt_bip353_quote(&bip353_address, cdk_amount, network.into())
-            .await?;
-        Ok(quote.into())
-    }
-
-    /// Get a quote for a Lightning address melt
-    ///
-    /// This method resolves a Lightning address (e.g., "alice@example.com") to a Lightning invoice
-    /// and then creates a melt quote for that invoice.
-    pub async fn melt_lightning_address_quote(
-        &self,
-        lightning_address: String,
-        amount_msat: Amount,
-    ) -> Result<MeltQuote, FfiError> {
-        let cdk_amount: cdk::Amount = amount_msat.into();
-        let quote = self
-            .inner
-            .melt_lightning_address_quote(&lightning_address, cdk_amount)
-            .await?;
-        Ok(quote.into())
-    }
-
-    /// Get a quote for a human-readable address melt
-    ///
-    /// This method accepts a human-readable address that could be either a BIP353 address
-    /// or a Lightning address. It intelligently determines which to try based on mint support:
-    ///
-    /// 1. If the mint supports Bolt12, it tries BIP353 first
-    /// 2. Falls back to Lightning address only if BIP353 resolution fails
-    /// 3. If BIP353 resolves but has no usable BOLT12 offer, it does NOT fall back
-    /// 4. If the mint doesn't support Bolt12, it tries Lightning address directly
-    ///
-    /// The `network` parameter is forwarded to the BIP353 resolver for on-chain address
-    /// validation in the resolved URI.
-    pub async fn melt_human_readable(
-        &self,
-        address: String,
-        amount_msat: Amount,
-        network: BitcoinNetwork,
-    ) -> Result<MeltQuote, FfiError> {
-        self.melt_human_readable_quote(address, amount_msat, network)
-            .await
-    }
-
-    /// Get a quote for a human-readable address melt
-    ///
-    /// Accepts a human-readable address that could be either a BIP353 address
-    /// or a Lightning address. Tries BIP353 first if mint supports Bolt12,
-    /// falls back to Lightning address.
-    pub async fn melt_human_readable_quote(
-        &self,
-        address: String,
-        amount_msat: Amount,
-        network: BitcoinNetwork,
-    ) -> Result<MeltQuote, FfiError> {
-        let cdk_amount: cdk::Amount = amount_msat.into();
-        let quote = self
-            .inner
-            .melt_human_readable_quote(&address, cdk_amount, network.into())
-            .await?;
-        Ok(quote.into())
-    }
-}
-
-/// Auth methods for Wallet
-#[uniffi::export(async_runtime = "tokio")]
-impl Wallet {
-    /// Set Clear Auth Token (CAT) for authentication
-    pub async fn set_cat(&self, cat: String) -> Result<(), FfiError> {
-        self.inner.set_cat(cat).await?;
-        Ok(())
-    }
-
-    /// Set refresh token for authentication
-    pub async fn set_refresh_token(&self, refresh_token: String) -> Result<(), FfiError> {
-        self.inner.set_refresh_token(refresh_token).await?;
-        Ok(())
-    }
-
-    /// Refresh access token using the stored refresh token
-    pub async fn refresh_access_token(&self) -> Result<(), FfiError> {
-        self.inner.refresh_access_token().await?;
-        Ok(())
-    }
-
-    /// Mint blind auth tokens
-    pub async fn mint_blind_auth(&self, amount: Amount) -> Result<Proofs, FfiError> {
-        let proofs = self.inner.mint_blind_auth(amount.into()).await?;
-        Ok(proofs.into_iter().map(|p| p.into()).collect())
-    }
-
-    /// Get unspent auth proofs
-    pub async fn get_unspent_auth_proofs(&self) -> Result<Vec<AuthProof>, FfiError> {
-        let auth_proofs = self.inner.get_unspent_auth_proofs().await?;
-        Ok(auth_proofs.into_iter().map(Into::into).collect())
-    }
-}
-
-/// Client-side request pacing for a wallet's mint traffic.
-///
-/// A wallet starts with whatever [`WalletConfig::rate_limit`] selected, which
-/// defaults to the built-in pacing so it stays under a mint's per-minute request
-/// cap. Pass one of these to [`Wallet::set_rate_limit`] to change it on a live
-/// wallet.
-///
-/// # Example
-///
-/// ```ignore
-/// // Turn pacing off (e.g. a mint with no request cap).
-/// wallet.set_rate_limit(RateLimit::Disabled)?;
-///
-/// // Restore the built-in default pacing.
-/// wallet.set_rate_limit(RateLimit::Default)?;
-///
-/// // Allow a burst of 20 requests, refilling 60 per minute.
-/// wallet.set_rate_limit(RateLimit::Custom {
-///     capacity: 20,
-///     refill_per_minute: 60,
-/// })?;
-/// ```
+/// Client-side request pacing selected when a wallet is opened.
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum RateLimit {
     /// Built-in default pacing (capacity 20, refill 20/min).
@@ -1073,145 +85,66 @@ pub enum RateLimit {
     Disabled,
     /// Custom burst capacity and per-minute refill. Both must be non-zero.
     Custom {
-        /// Maximum burst: requests allowed back-to-back before pacing kicks in.
+        /// Maximum requests allowed back-to-back before pacing starts.
         capacity: u32,
-        /// Sustained rate: requests earned back per minute.
+        /// Requests replenished per minute.
         refill_per_minute: u32,
     },
 }
 
 impl RateLimit {
-    /// Translate into the native config, where `None` means pacing is off.
-    ///
-    /// The only place a zero-valued `Custom` is rejected, since the native
-    /// config's fields are non-zero by construction.
+    /// Translate into the engine config, where `None` disables pacing.
     pub(crate) fn to_config(&self) -> Result<Option<RateLimitConfig>, FfiError> {
         match self {
-            RateLimit::Default => Ok(Some(RateLimitConfig::default())),
-            RateLimit::Disabled => Ok(None),
-            RateLimit::Custom {
+            Self::Default => Ok(Some(RateLimitConfig::default())),
+            Self::Disabled => Ok(None),
+            Self::Custom {
                 capacity,
                 refill_per_minute,
             } => RateLimitConfig::try_new(*capacity, *refill_per_minute)
                 .map(Some)
                 .ok_or_else(|| {
-                    FfiError::internal("rate limit capacity and refill_per_minute must be non-zero")
+                    FfiError::invalid_input(
+                        "rate limit capacity and refill_per_minute must be non-zero",
+                    )
                 }),
         }
     }
 }
 
-/// Configuration for creating wallets
-#[derive(Debug, Clone, uniffi::Record)]
+/// Optional operational tuning applied when a wallet is opened.
+#[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct WalletConfig {
+    /// Preferred number of proofs retained by the wallet.
+    #[uniffi(default = None)]
     pub target_proof_count: Option<u32>,
-    /// Client-side request pacing to start with. Omit it to keep the built-in
-    /// default, which paces the wallet under a mint's per-minute request cap.
-    ///
-    /// `Disabled` builds the limiter but leaves it off, so a later
-    /// [`Wallet::set_rate_limit`] can turn pacing back on.
+    /// Request pacing. Omit to use the built-in default.
     #[uniffi(default = None)]
     pub rate_limit: Option<RateLimit>,
 }
 
-/// Generates a new random mnemonic phrase
+/// Generate a new random BIP-39 mnemonic phrase.
 #[uniffi::export]
 pub fn generate_mnemonic() -> Result<String, FfiError> {
     let mnemonic = Mnemonic::generate(12)
-        .map_err(|e| FfiError::internal(format!("Failed to generate mnemonic: {}", e)))?;
+        .map_err(|error| FfiError::internal(format!("Failed to generate mnemonic: {error}")))?;
     Ok(mnemonic.to_string())
 }
 
-/// Converts a mnemonic phrase to its entropy bytes
+/// Convert a BIP-39 mnemonic phrase to its entropy bytes.
 #[uniffi::export]
 pub fn mnemonic_to_entropy(mnemonic: String) -> Result<Vec<u8>, FfiError> {
-    let m = Mnemonic::parse(&mnemonic)
-        .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
-    Ok(m.to_entropy())
+    let mnemonic = Mnemonic::parse(&mnemonic)
+        .map_err(|error| FfiError::invalid_input(format!("Invalid mnemonic: {error}")))?;
+    Ok(mnemonic.to_entropy())
 }
 
 #[cfg(test)]
 mod tests {
-    use cdk_common::wallet::Wallet as WalletTrait;
-
     use super::*;
-    use crate::database::custom_wallet_store;
-    use crate::sqlite::WalletSqliteDatabase;
-
-    const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-
-    fn wallet_with(rate_limit: Option<RateLimit>) -> Result<Wallet, FfiError> {
-        let db = WalletSqliteDatabase::new_in_memory().expect("in-memory wallet db should open");
-        Wallet::new(
-            "https://mint.example.com".to_string(),
-            CurrencyUnit::Sat,
-            MNEMONIC.to_string(),
-            custom_wallet_store(db),
-            WalletConfig {
-                target_proof_count: None,
-                rate_limit,
-            },
-        )
-    }
-
-    fn test_wallet() -> Wallet {
-        wallet_with(None).expect("wallet should be created")
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn mint_unissued_quotes_is_available_on_wallet_and_trait() {
-        let wallet = test_wallet();
-
-        let minted = wallet
-            .mint_unissued_quotes()
-            .await
-            .expect("empty quote store should mint zero");
-        assert!(minted.is_zero());
-
-        let trait_minted = <Wallet as WalletTrait>::mint_unissued_quotes(&wallet)
-            .await
-            .expect("trait call should mint zero from empty quote store");
-        assert!(trait_minted.is_zero());
-    }
 
     #[test]
-    fn set_rate_limit_accepts_default_disabled_and_custom() {
-        let wallet = test_wallet();
-
-        wallet
-            .set_rate_limit(RateLimit::Default)
-            .expect("default is always valid");
-        wallet
-            .set_rate_limit(RateLimit::Disabled)
-            .expect("disabled is always valid");
-        wallet
-            .set_rate_limit(RateLimit::Custom {
-                capacity: 20,
-                refill_per_minute: 60,
-            })
-            .expect("non-zero custom is valid");
-    }
-
-    #[test]
-    fn set_rate_limit_rejects_zero_custom() {
-        let wallet = test_wallet();
-
-        assert!(wallet
-            .set_rate_limit(RateLimit::Custom {
-                capacity: 0,
-                refill_per_minute: 60,
-            })
-            .is_err());
-        assert!(wallet
-            .set_rate_limit(RateLimit::Custom {
-                capacity: 10,
-                refill_per_minute: 0,
-            })
-            .is_err());
-    }
-
-    #[test]
-    fn to_config_maps_every_variant() {
+    fn rate_limit_conversion_validates_every_variant() {
         assert_eq!(
             RateLimit::Default.to_config().expect("default is valid"),
             Some(RateLimitConfig::default())
@@ -1226,7 +159,7 @@ mod tests {
                 refill_per_minute: 30,
             }
             .to_config()
-            .expect("non-zero custom is valid"),
+            .expect("non-zero custom values are valid"),
             RateLimitConfig::try_new(5, 30)
         );
         assert!(RateLimit::Custom {
@@ -1241,81 +174,5 @@ mod tests {
         }
         .to_config()
         .is_err());
-    }
-
-    #[test]
-    fn wallet_config_selects_the_starting_rate_limit() {
-        for rate_limit in [
-            None,
-            Some(RateLimit::Default),
-            Some(RateLimit::Custom {
-                capacity: 5,
-                refill_per_minute: 30,
-            }),
-        ] {
-            let wallet = wallet_with(rate_limit).expect("wallet should be created");
-            assert!(wallet.is_rate_limited());
-        }
-    }
-
-    #[test]
-    fn wallet_config_disabled_is_reversible() {
-        let wallet = wallet_with(Some(RateLimit::Disabled)).expect("wallet should be created");
-        assert!(!wallet.is_rate_limited());
-
-        wallet
-            .set_rate_limit(RateLimit::Default)
-            .expect("default is always valid");
-        assert!(
-            wallet.is_rate_limited(),
-            "a wallet built disabled still has a limiter to turn back on"
-        );
-    }
-
-    #[test]
-    fn wallet_config_rejects_zero_custom() {
-        assert!(wallet_with(Some(RateLimit::Custom {
-            capacity: 0,
-            refill_per_minute: 30,
-        }))
-        .is_err());
-        assert!(wallet_with(Some(RateLimit::Custom {
-            capacity: 5,
-            refill_per_minute: 0,
-        }))
-        .is_err());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn flush_rate_limits_is_available_on_wallet_and_trait() {
-        let wallet = test_wallet();
-
-        wallet.flush_rate_limits().await;
-        <Wallet as WalletTrait>::flush_rate_limits(&wallet).await;
-    }
-
-    #[test]
-    fn rate_limiting_round_trips_through_the_trait() {
-        let wallet = test_wallet();
-        assert!(<Wallet as WalletTrait>::is_rate_limited(&wallet));
-
-        <Wallet as WalletTrait>::set_rate_limiting_config(&wallet, None);
-        assert!(!<Wallet as WalletTrait>::is_rate_limited(&wallet));
-
-        <Wallet as WalletTrait>::set_rate_limiting_config(
-            &wallet,
-            Some(RateLimitConfig::default()),
-        );
-        assert!(<Wallet as WalletTrait>::is_rate_limited(&wallet));
-    }
-
-    #[cfg(feature = "npubcash")]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn npubcash_methods_require_an_enabled_client() {
-        let wallet = test_wallet();
-
-        assert!(wallet.sync_missing_npubcash_quotes().await.is_err());
-        assert!(wallet.claim_npubcash_quotes().await.is_err());
-        assert!(wallet.get_npubcash_user_info().await.is_err());
     }
 }

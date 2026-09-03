@@ -580,6 +580,12 @@
                 --language python \
                 --out-dir target/bindings/python
 
+              # Reject accidental changes or advanced-engine leaks in the
+              # portable application-facing wallet object API.
+              python3 crates/cdk-ffi/scripts/check-wallet-api.py \
+                target/bindings/python/cdk_ffi.py \
+                crates/cdk-ffi/wallet-api.manifest
+
               # Copy library to bindings directory
               cp target/release/libcdk_ffi.so target/bindings/python/
 
