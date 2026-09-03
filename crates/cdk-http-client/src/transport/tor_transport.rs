@@ -1,7 +1,9 @@
 //! Tor transport implementation (non-wasm32 only)
 
 use std::fmt;
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arti_client::{TorClient, TorClientConfig};
 use arti_hyper::ArtiHttpConnector;
@@ -12,6 +14,7 @@ use dnssec_prover::query::{ProofBuilder, QueryBuf};
 #[cfg(feature = "bip353")]
 use dnssec_prover::rr::TXT_TYPE;
 use http::header::{self, HeaderName, HeaderValue};
+use hyper::body::HttpBody;
 use hyper::http::{Method, Request, Uri};
 use hyper::{Body, Client};
 use serde::de::DeserializeOwned;
@@ -25,6 +28,33 @@ use crate::{HttpError, RawResponse};
 
 /// Fixed-size pool size.
 pub const DEFAULT_TOR_POOL_SIZE: usize = 5;
+
+const TOR_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+
+async fn with_response_timeout<F, T>(response: F, timeout: Duration) -> Result<T, HttpError>
+where
+    F: Future<Output = Result<T, HttpError>>,
+{
+    tokio::time::timeout(timeout, response)
+        .await
+        .map_err(|_| HttpError::Timeout)?
+}
+
+async fn read_response_body(mut body: Body, max_bytes: usize) -> Result<Vec<u8>, HttpError> {
+    let mut bytes = Vec::new();
+
+    while let Some(chunk) = body.data().await {
+        let chunk = chunk.map_err(|e| HttpError::Other(e.to_string()))?;
+        if chunk.len() > max_bytes.saturating_sub(bytes.len()) {
+            return Err(HttpError::Other(format!(
+                "Tor HTTP response body exceeds the {max_bytes}-byte limit"
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    Ok(bytes)
+}
 
 /// Tor transport that maintains a pool of isolated TorClient handles.
 #[derive(Clone)]
@@ -209,17 +239,17 @@ impl TorAsync {
             );
         }
 
-        let resp = client
-            .request(req)
-            .await
-            .map_err(|e| HttpError::Connection(e.to_string()))?;
+        let response = async {
+            let resp = client
+                .request(req)
+                .await
+                .map_err(|e| HttpError::Connection(e.to_string()))?;
+            let status = resp.status().as_u16();
+            let bytes = read_response_body(resp.into_body(), crate::MAX_RESPONSE_BYTES).await?;
+            Ok(RawResponse::new(status, bytes))
+        };
 
-        let status = resp.status().as_u16();
-        let bytes = hyper::body::to_bytes(resp.into_body())
-            .await
-            .map_err(|e| HttpError::Other(e.to_string()))?;
-
-        Ok(RawResponse::new(status, bytes.to_vec()))
+        with_response_timeout(response, TOR_RESPONSE_TIMEOUT).await
     }
 
     async fn request<R>(
@@ -361,5 +391,54 @@ impl Transport for TorAsync {
             Some((body.into_bytes(), "application/x-www-form-urlencoded")),
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn response_body_allows_exact_byte_limit() {
+        let bytes = read_response_body(Body::from(vec![0_u8; 16]), 16)
+            .await
+            .expect("body at the limit should be accepted");
+
+        assert_eq!(bytes.len(), 16);
+    }
+
+    #[tokio::test]
+    async fn response_body_rejects_bytes_over_limit() {
+        let error = read_response_body(Body::from(vec![0_u8; 17]), 16)
+            .await
+            .expect_err("body over the limit should be rejected");
+
+        assert!(matches!(
+            error,
+            HttpError::Other(message) if message.contains("16-byte limit")
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn response_body_read_times_out() {
+        let (sender, body) = Body::channel();
+
+        let error = with_response_timeout(read_response_body(body, 16), Duration::from_secs(1))
+            .await
+            .expect_err("body that never completes should time out");
+        drop(sender);
+
+        assert!(matches!(error, HttpError::Timeout));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn response_header_read_times_out() {
+        let response = std::future::pending::<Result<(), HttpError>>();
+
+        let error = with_response_timeout(response, Duration::from_secs(1))
+            .await
+            .expect_err("response headers that never arrive should time out");
+
+        assert!(matches!(error, HttpError::Timeout));
     }
 }

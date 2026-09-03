@@ -16,6 +16,13 @@
 
 #![warn(missing_docs)]
 
+/// Maximum decrypted payload accepted from a Nostr relay stream.
+///
+/// Relays are untrusted and may ignore subscription filters or event-size
+/// policies. Keeping this bounded prevents oversized plaintext from flowing
+/// into application parsers and callbacks.
+pub(crate) const MAX_DECRYPTED_CONTENT_BYTES: usize = 64 * 1024;
+
 pub mod error;
 pub mod inbox;
 pub mod keys;

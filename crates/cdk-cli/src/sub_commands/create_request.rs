@@ -14,11 +14,36 @@ pub(super) struct StoredNostrWaitInfo {
     pub(super) mints: Vec<MintUrl>,
     #[serde(default)]
     pub(super) mint_preferred: Option<bool>,
+    /// Time at which this request started accepting payments.
+    ///
+    /// Old records omit this field and are queried from the Unix epoch so a
+    /// still-pending payment is not silently missed.
+    #[serde(default)]
+    pub(super) created_at: Option<u64>,
+    /// Inclusive upper timestamp for the next backward history page.
+    #[serde(default)]
+    pub(super) history_until: Option<u64>,
+    /// Event IDs already processed at the inclusive history boundary.
+    #[serde(default)]
+    pub(super) history_boundary_event_ids: Vec<String>,
 }
 
 impl StoredNostrWaitInfo {
     pub(super) fn accepts_mint(&self, mint_url: &MintUrl) -> bool {
         self.mints.is_empty() || self.mint_preferred == Some(true) || self.mints.contains(mint_url)
+    }
+
+    pub(super) fn nostr_query_since(&self, now: u64) -> nostr_sdk::Timestamp {
+        // NIP-59 gift wraps deliberately backdate their timestamps by up to
+        // two days. Include that overlap so an immediate payment is visible.
+        const GIFT_WRAP_BACKDATE_SECS: u64 = 2 * 24 * 60 * 60;
+
+        nostr_sdk::Timestamp::from(
+            self.created_at
+                .unwrap_or_default()
+                .min(now)
+                .saturating_sub(GIFT_WRAP_BACKDATE_SECS),
+        )
     }
 }
 
@@ -30,6 +55,9 @@ impl From<NostrWaitInfo> for StoredNostrWaitInfo {
             pubkey_hex: info.pubkey.to_hex(),
             mints: info.mints,
             mint_preferred: info.mint_preferred,
+            created_at: Some(nostr_sdk::Timestamp::now().as_secs()),
+            history_until: None,
+            history_boundary_event_ids: Vec::new(),
         }
     }
 }
@@ -196,6 +224,9 @@ mod tests {
 
         assert!(info.mints.is_empty());
         assert!(info.mint_preferred.is_none());
+        assert!(info.created_at.is_none());
+        assert!(info.history_until.is_none());
+        assert_eq!(info.nostr_query_since(123), nostr_sdk::Timestamp::from(0));
     }
 
     #[test]
@@ -218,6 +249,24 @@ mod tests {
             pubkey_hex: "pubkey".to_string(),
             mints,
             mint_preferred,
+            created_at: Some(100),
+            history_until: None,
+            history_boundary_event_ids: Vec::new(),
         }
+    }
+
+    #[test]
+    fn stored_request_queries_from_creation_without_seven_day_cutoff() {
+        let mut info = stored_info(vec![], None);
+        info.created_at = Some(1_000_000);
+
+        assert_eq!(
+            info.nostr_query_since(2_000_000),
+            nostr_sdk::Timestamp::from(827_200)
+        );
+        assert_eq!(
+            info.nostr_query_since(900_000),
+            nostr_sdk::Timestamp::from(727_200)
+        );
     }
 }

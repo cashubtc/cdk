@@ -64,6 +64,19 @@ mod response;
 mod transport;
 pub mod ws;
 
+/// Maximum response body size accepted from a mint or related service.
+///
+/// Responses come from untrusted servers; bounding them prevents a malicious
+/// endpoint from exhausting wallet memory with an oversized body.
+pub(crate) const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+
+/// Default per-request timeout for clearnet HTTP backends.
+///
+/// Bounds the total time a request may take, including reading the response
+/// body, so a malicious or broken server cannot stall the wallet forever by
+/// dripping bytes. The Tor transport uses its own overall response timeout.
+pub(crate) const DEFAULT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 #[cfg(all(
     feature = "bitreq",
     not(feature = "reqwest"),

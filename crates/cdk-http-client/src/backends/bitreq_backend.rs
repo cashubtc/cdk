@@ -103,9 +103,15 @@ impl HttpClient {
         HttpClientBuilder::default()
     }
 
-    /// Apply proxy and redirect settings to a request
+    /// Apply proxy, response-size, timeout, and redirect settings to a request
     fn configure_request(&self, request: bitreq::Request, url: &str) -> Response<bitreq::Request> {
         let request = apply_proxy_if_needed(request, url, &self.proxy_config)?;
+        // Bound the response body (bitreq's default cap is 1 GiB): responses
+        // come from untrusted mints and must not exhaust wallet memory.
+        let request = request.with_max_body_size(crate::MAX_RESPONSE_BYTES);
+        // Bound total request time so a malicious or broken server cannot
+        // stall the wallet forever by dripping bytes.
+        let request = request.with_timeout(crate::DEFAULT_REQUEST_TIMEOUT.as_secs());
         Ok(if self.no_redirects {
             request.with_max_redirects(0)
         } else {
@@ -326,6 +332,9 @@ impl BitreqRequestBuilder {
             return Err(err);
         }
         let request = apply_proxy_if_needed(self.inner, &self.url, &self.proxy_config)?;
+        let request = request
+            .with_max_body_size(crate::MAX_RESPONSE_BYTES)
+            .with_timeout(crate::DEFAULT_REQUEST_TIMEOUT.as_secs());
         let request = if self.no_redirects {
             request.with_max_redirects(0)
         } else {
@@ -347,6 +356,9 @@ impl BitreqRequestBuilder {
             return Err(err);
         }
         let request = apply_proxy_if_needed(self.inner, &self.url, &self.proxy_config)?;
+        let request = request
+            .with_max_body_size(crate::MAX_RESPONSE_BYTES)
+            .with_timeout(crate::DEFAULT_REQUEST_TIMEOUT.as_secs());
         let request = if self.no_redirects {
             request.with_max_redirects(0)
         } else {

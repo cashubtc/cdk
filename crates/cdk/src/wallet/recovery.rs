@@ -17,6 +17,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use cdk_common::amount::MAX_SPLIT_OUTPUTS;
 use cdk_common::wallet::{ProofInfo, WalletSagaState};
 use cdk_common::BlindedMessage;
 use tracing::instrument;
@@ -40,6 +41,79 @@ struct OutputRecoveryParams<'a> {
     counter_start: u32,
     /// Counter end for re-deriving secrets
     counter_end: u32,
+}
+
+/// Maximum number of counters re-derived from persisted saga data in a
+/// single recovery attempt.
+///
+/// Mints accept 1,000 outputs by default. Keep recovery compatible with
+/// moderately larger deployments while bounding deterministic re-derivation
+/// from persisted saga data.
+pub(crate) const MAX_RECOVERY_COUNTER_RANGE: u32 = MAX_SPLIT_OUTPUTS as u32;
+
+/// Validate a persisted counter range before re-deriving secrets from it.
+///
+/// Persisted saga data may be corrupted, so reject reversed or oversized
+/// ranges before [`PreMintSecrets::restore_batch`] derives secrets from them.
+pub(crate) fn validate_recovery_counter_range(
+    counter_start: u32,
+    counter_end: u32,
+) -> Result<(), Error> {
+    let counter_count = counter_end.checked_sub(counter_start).ok_or_else(|| {
+        Error::Custom(format!(
+            "Invalid recovery counter range: end {counter_end} precedes start {counter_start}"
+        ))
+    })?;
+
+    if counter_count > MAX_RECOVERY_COUNTER_RANGE {
+        return Err(Error::Custom(format!(
+            "Invalid recovery counter range: {counter_count} counters exceeds maximum \
+             {MAX_RECOVERY_COUNTER_RANGE}"
+        )));
+    }
+
+    Ok(())
+}
+
+/// Validate persisted outputs and their deterministic counter range.
+///
+/// This is intentionally performed on borrowed data before a request clones the
+/// messages. All wallet-generated saga output lists use one keyset, and only
+/// seed-derived outputs consume counters.
+pub(crate) fn validate_recovery_output_data(
+    blinded_messages: &[BlindedMessage],
+    counter_start: u32,
+    counter_end: u32,
+) -> Result<(), Error> {
+    validate_recovery_counter_range(counter_start, counter_end)?;
+
+    if blinded_messages.len() > MAX_SPLIT_OUTPUTS {
+        return Err(Error::MaxOutputsExceeded {
+            actual: blinded_messages.len(),
+            max: MAX_SPLIT_OUTPUTS,
+        });
+    }
+
+    let counter_count = (counter_end - counter_start) as usize;
+    if counter_count > blinded_messages.len() {
+        return Err(Error::Custom(format!(
+            "Invalid recovery data: {counter_count} counters for {} blinded messages",
+            blinded_messages.len()
+        )));
+    }
+
+    if let Some(first) = blinded_messages.first() {
+        if blinded_messages
+            .iter()
+            .any(|message| message.keyset_id != first.keyset_id)
+        {
+            return Err(Error::Custom(
+                "Invalid recovery data: blinded messages contain multiple keysets".to_owned(),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 /// Report of recovery operations performed by [`Wallet::recover_incomplete_sagas`].
@@ -222,12 +296,34 @@ impl RecoveryHelpers for Wallet {
             }
         };
 
+        if let Err(e) = validate_recovery_output_data(blinded_messages, counter_start, counter_end)
+        {
+            tracing::warn!(
+                "{} saga {} - {}. Skipping replay, falling back to other recovery.",
+                saga_type,
+                saga_id,
+                e
+            );
+            return Ok(None);
+        }
+
         // Extract input proofs
         let inputs: Proofs = input_proofs.iter().map(|pi| pi.proof.clone()).collect();
 
         if inputs.is_empty() {
             tracing::debug!(
                 "{} saga {} - no input proofs available, cannot replay",
+                saga_type,
+                saga_id
+            );
+            return Ok(None);
+        }
+
+        let counter_count = (counter_end - counter_start) as usize;
+        if counter_count < blinded_messages.len() {
+            tracing::debug!(
+                "{} saga {} - conditioned outputs cannot be replayed without persisted \
+                 premint secrets; falling back to deterministic output recovery",
                 saga_type,
                 saga_id
             );
@@ -319,12 +415,10 @@ impl Wallet {
         counter_start: Option<u32>,
         counter_end: Option<u32>,
     ) -> Result<OutputRecoveryResult, Error> {
-        let blinded_messages_owned = blinded_messages.map(|bm| bm.to_vec());
-
         let params = match Self::extract_recovery_params(
             saga_id,
             saga_type,
-            blinded_messages_owned.as_ref(),
+            blinded_messages,
             counter_start,
             counter_end,
         ) {
@@ -513,45 +607,61 @@ impl Wallet {
 
         // Match the returned outputs to our premint secrets by B_ value, preserving
         // the mint response order used by the returned signatures.
+        let returned_signature_count = restore_response.signatures.len();
         let matched: Vec<_> = restore_response
             .outputs
-            .iter()
-            .filter_map(|output| {
+            .into_iter()
+            .zip(restore_response.signatures)
+            .filter_map(|(output, signature)| {
                 let premint = premints_by_blinded_secret.get(&output.blinded_secret)?;
                 let requested_output =
                     requested_outputs_by_blinded_secret.get(&output.blinded_secret)?;
-                Some((*premint, *requested_output))
+                Some((signature, *premint, *requested_output))
             })
             .collect();
 
-        if matched.len() != restore_response.signatures.len() {
+        if matched.len() != returned_signature_count {
             tracing::warn!(
-                "{} saga {} - signature count mismatch: {} secrets, {} signatures",
+                "{} saga {} - recovered {} deterministic outputs from {} returned signatures",
                 saga_type,
                 saga_id,
                 matched.len(),
-                restore_response.signatures.len()
+                returned_signature_count
             );
         }
+        if matched.is_empty() {
+            return Ok(OutputRecoveryResult::Unavailable);
+        }
+
+        let matched_signatures: Vec<_> = matched
+            .iter()
+            .map(|(signature, _, _)| signature.clone())
+            .collect();
 
         // Load keyset keys for proof construction
         let keys = self.keyset(keyset_id).await?.keys;
 
         validate_mint_response_signatures(
             self,
-            &restore_response.signatures,
+            &matched_signatures,
             matched
                 .iter()
-                .map(|(_, requested_output)| *requested_output),
+                .map(|(_, _, requested_output)| *requested_output),
             SignatureAmountValidation::AllowZeroAmountPlaceholder,
         )
         .await?;
 
         // Construct proofs from signatures
         let proofs = construct_proofs(
-            restore_response.signatures,
-            matched.iter().map(|(p, _)| p.r.clone()).collect(),
-            matched.iter().map(|(p, _)| p.secret.clone()).collect(),
+            matched_signatures,
+            matched
+                .iter()
+                .map(|(_, premint, _)| premint.r.clone())
+                .collect(),
+            matched
+                .iter()
+                .map(|(_, premint, _)| premint.secret.clone())
+                .collect(),
             &keys,
         )?;
 
@@ -585,7 +695,7 @@ impl Wallet {
     fn extract_recovery_params<'a>(
         saga_id: &uuid::Uuid,
         saga_type: &str,
-        blinded_messages: Option<&'a Vec<BlindedMessage>>,
+        blinded_messages: Option<&'a [BlindedMessage]>,
         counter_start: Option<u32>,
         counter_end: Option<u32>,
     ) -> Option<OutputRecoveryParams<'a>> {
@@ -614,6 +724,17 @@ impl Wallet {
                 return None;
             }
         };
+
+        if let Err(e) = validate_recovery_output_data(blinded_messages, counter_start, counter_end)
+        {
+            tracing::warn!(
+                "{} saga {} - {}. Skipping output recovery.",
+                saga_type,
+                saga_id,
+                e
+            );
+            return None;
+        }
 
         Some(OutputRecoveryParams {
             blinded_messages,
@@ -737,6 +858,7 @@ mod tests {
     use std::str::FromStr;
     use std::sync::Arc;
 
+    use cdk_common::amount::MAX_SPLIT_OUTPUTS;
     use cdk_common::mint_url::MintUrl;
     use cdk_common::nuts::{MeltQuoteBolt11Response, MeltQuoteState, PaymentMethod, State};
     use cdk_common::wallet::{
@@ -745,7 +867,51 @@ mod tests {
     };
     use cdk_common::Amount;
 
+    use super::{validate_recovery_output_data, MAX_RECOVERY_COUNTER_RANGE};
+    use crate::nuts::PreMintSecrets;
     use crate::wallet::test_utils::*;
+    use crate::Error;
+
+    #[test]
+    fn recovery_output_validation_rejects_oversized_messages() {
+        let message = PreMintSecrets::random(
+            test_keyset_id(),
+            Amount::ONE,
+            &cdk_common::amount::SplitTarget::None,
+            &(0, vec![1]).into(),
+        )
+        .expect("premint")
+        .secrets
+        .remove(0)
+        .blinded_message;
+        let messages = vec![message; MAX_SPLIT_OUTPUTS + 1];
+
+        assert!(matches!(
+            validate_recovery_output_data(&messages, 0, 1),
+            Err(Error::MaxOutputsExceeded {
+                actual,
+                max: MAX_SPLIT_OUTPUTS,
+            }) if actual == MAX_SPLIT_OUTPUTS + 1
+        ));
+    }
+
+    #[test]
+    fn recovery_output_validation_accepts_generated_limit() {
+        let message = PreMintSecrets::random(
+            test_keyset_id(),
+            Amount::ONE,
+            &cdk_common::amount::SplitTarget::None,
+            &(0, vec![1]).into(),
+        )
+        .expect("premint")
+        .secrets
+        .remove(0)
+        .blinded_message;
+        let messages = vec![message; MAX_SPLIT_OUTPUTS];
+
+        validate_recovery_output_data(&messages, 0, MAX_RECOVERY_COUNTER_RANGE)
+            .expect("the generation limit must remain recoverable");
+    }
 
     #[tokio::test]
     async fn test_recover_receive_proofs_pending() {

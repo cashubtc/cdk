@@ -217,6 +217,7 @@ impl WalletRepository {
         unit: Option<CurrencyUnit>,
         target_proof_count: Option<u32>,
     ) -> Result<(), FfiError> {
+        let target_proof_count = crate::validate_target_proof_count(target_proof_count)?;
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
 
         let config = target_proof_count.map(|count| {
@@ -243,6 +244,7 @@ impl WalletRepository {
         unit: CurrencyUnit,
         target_proof_count: Option<u32>,
     ) -> Result<Arc<crate::wallet::Wallet>, FfiError> {
+        let target_proof_count = crate::validate_target_proof_count(target_proof_count)?;
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
 
         let config = target_proof_count.map(|count| {
