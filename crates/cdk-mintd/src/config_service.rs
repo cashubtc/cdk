@@ -431,27 +431,37 @@ fn require_initialization_state(
 pub(crate) fn discover_signing_identity(
     settings: &Settings,
 ) -> Result<SigningIdentity, ConfigurationServiceError> {
-    let pubkey = if settings.enabled_signatory().is_some() {
+    if settings.enabled_signatory().is_some() {
         return Err(ConfigurationServiceError::SigningIdentity(
             "remote signatory identity requires asynchronous validation".to_owned(),
         ));
-    } else if let Some(seed) = settings
+    }
+    let seed = local_seed(settings)?.ok_or_else(|| {
+        ConfigurationServiceError::SigningIdentity(
+            "no local signing source is configured".to_owned(),
+        )
+    })?;
+    Ok(signing_identity_from_pubkey(root_pubkey(&seed)?))
+}
+
+/// Seed bytes the local signatory would be built from, if one is configured.
+fn local_seed(settings: &Settings) -> Result<Option<Vec<u8>>, ConfigurationServiceError> {
+    if let Some(seed) = settings
         .info
         .seed
         .as_deref()
         .filter(|seed| !seed.is_empty())
     {
-        root_pubkey(seed.as_bytes())?
-    } else if let Some(mnemonic) = settings.info.mnemonic.as_deref() {
-        let mnemonic = Mnemonic::from_str(mnemonic)
-            .map_err(|error| ConfigurationServiceError::SigningIdentity(error.to_string()))?;
-        root_pubkey(&mnemonic.to_seed_normalized(""))?
-    } else {
-        return Err(ConfigurationServiceError::SigningIdentity(
-            "no local signing source is configured".to_owned(),
-        ));
-    };
-    Ok(signing_identity_from_pubkey(pubkey))
+        return Ok(Some(seed.as_bytes().to_vec()));
+    }
+    match settings.info.mnemonic.as_deref() {
+        Some(mnemonic) => {
+            let mnemonic = Mnemonic::from_str(mnemonic)
+                .map_err(|error| ConfigurationServiceError::SigningIdentity(error.to_string()))?;
+            Ok(Some(mnemonic.to_seed_normalized("").to_vec()))
+        }
+        None => Ok(None),
+    }
 }
 
 /// Resolves the signer, including a configured remote signatory.
@@ -492,6 +502,15 @@ async fn resolve_signing_identity_async(
 }
 
 fn root_pubkey(seed: &[u8]) -> Result<cdk::nuts::PublicKey, ConfigurationServiceError> {
+    Ok(cdk_signatory::identity::derive_identity_key(seed)
+        .map_err(|error| ConfigurationServiceError::SigningIdentity(error.to_string()))?
+        .public_key())
+}
+
+/// Identity key mintd published before it derived one per NUT-06: the BIP-32
+/// master pubkey. Recognized only so an upgrade whose config still pins it can
+/// start.
+fn legacy_root_pubkey(seed: &[u8]) -> Result<cdk::nuts::PublicKey, ConfigurationServiceError> {
     let secp = Secp256k1::new();
     let xpriv = Xpriv::new_master(Network::Bitcoin, seed)
         .map_err(|error| ConfigurationServiceError::SigningIdentity(error.to_string()))?;
@@ -511,14 +530,35 @@ fn validate_authored_mint_pubkey(
     settings: &Settings,
     signing_identity: &SigningIdentity,
 ) -> Result<(), ConfigurationServiceError> {
-    if settings
-        .mint_info
-        .pubkey
-        .is_some_and(|pubkey| pubkey != signing_identity.pubkey)
-    {
-        return Err(ConfigurationServiceError::SigningIdentityChange);
+    let Some(authored) = settings.mint_info.pubkey else {
+        return Ok(());
+    };
+    if authored == signing_identity.pubkey {
+        return Ok(());
     }
-    Ok(())
+    if is_legacy_identity(settings, &authored)? {
+        tracing::warn!(
+            legacy = %authored,
+            current = %signing_identity.pubkey,
+            "mint_info.pubkey pins the pre-NUT-06 identity key; starting with the derived one. \
+             Update the configuration to the current key."
+        );
+        return Ok(());
+    }
+    Err(ConfigurationServiceError::SigningIdentityChange)
+}
+
+/// Whether `pubkey` is what this seed produced under the pre-NUT-06 derivation.
+/// A remote signatory leaves mintd without a seed, so there is nothing to
+/// compare against and the answer is no.
+fn is_legacy_identity(
+    settings: &Settings,
+    pubkey: &cdk::nuts::PublicKey,
+) -> Result<bool, ConfigurationServiceError> {
+    match local_seed(settings)? {
+        Some(seed) => Ok(legacy_root_pubkey(&seed)? == *pubkey),
+        None => Ok(false),
+    }
 }
 
 fn same_primary_database(configured: &Database, bootstrap: &Database) -> bool {
@@ -1570,6 +1610,48 @@ engine = "sqlite"
             .expect("matching pubkey");
         let _ = std::fs::remove_file(secret_one);
         let _ = std::fs::remove_file(secret_two);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[tokio::test]
+    async fn authored_mint_pubkey_may_still_pin_the_pre_nut06_identity() {
+        let secret = crate::test_utils::unique_temp_path("legacy_pubkey_config_secret");
+        std::fs::write(&secret, TEST_MNEMONIC_ONE).expect("write signing secret");
+
+        let mnemonic = Mnemonic::from_str(TEST_MNEMONIC_ONE).expect("parse mnemonic");
+        let seed = mnemonic.to_seed_normalized("");
+        let legacy = legacy_root_pubkey(&seed).expect("legacy pubkey");
+        assert_ne!(
+            legacy,
+            root_pubkey(&seed).expect("current pubkey"),
+            "the two derivations must differ or this test proves nothing"
+        );
+
+        let pinned = format!(
+            r#"
+[info]
+mnemonic = "file:{}"
+
+[mint_info]
+name = "legacy"
+pubkey = "{}"
+
+[payment_backend]
+backend = "fakewallet"
+
+[fake_wallet]
+
+[database]
+engine = "sqlite"
+"#,
+            secret.display(),
+            legacy
+        );
+        ConfigurationService::validate_import(&pinned)
+            .await
+            .expect("a config pinning the legacy identity must still start");
+
+        let _ = std::fs::remove_file(secret);
     }
 
     #[test]

@@ -485,6 +485,9 @@ pub enum Error {
     /// Subscription error
     #[error("Subscription error: {0}")]
     SubscriptionError(String),
+    /// Mint identity key derivation exhausted its counter
+    #[error("Mint identity key derivation failed")]
+    IdentityKeyDerivation,
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),

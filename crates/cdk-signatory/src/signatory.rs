@@ -6,6 +6,7 @@
 //! There is an in memory implementation, when the keys are stored in memory, in the same process,
 //! but it is isolated from the rest of the application, and they communicate through a channel with
 //! the defined API.
+use bitcoin::secp256k1::schnorr::Signature;
 use cdk_common::common::IssuerVersion;
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
@@ -34,7 +35,7 @@ pub struct RotateKeyArguments {
 #[derive(Debug, Clone)]
 /// Signatory keysets
 pub struct SignatoryKeysets {
-    /// The public key
+    /// The public key. Also the key [`Signatory::sign`] signs with.
     pub pubkey: PublicKey,
     /// The list of keysets
     pub keysets: Vec<SignatoryKeySet>,
@@ -152,6 +153,13 @@ pub trait Signatory {
 
     /// Verify [`Proof`] meets conditions and is signed by the mint (ignores P2PK/HTLC signatures"
     async fn verify_proofs(&self, proofs: Vec<Proof>) -> Result<(), Error>;
+
+    /// Sign an arbitrary payload with the signatory's identity key.
+    ///
+    /// Verifies against `SignatoryKeysets::pubkey` through
+    /// [`crate::identity::verify`], which applies the same domain-separated
+    /// digest [`crate::identity::sign`] used. No keyset key is involved.
+    async fn sign(&self, payload: Vec<u8>) -> Result<Signature, Error>;
 
     /// Retrieve the list of all mint keysets
     async fn keysets(&self) -> Result<SignatoryKeysets, Error>;
