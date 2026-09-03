@@ -37,8 +37,9 @@ use std::collections::HashMap;
 use cdk_common::amount::SplitTarget;
 use cdk_common::dhke::construct_proofs;
 use cdk_common::wallet::{
-    KeysetLoadPolicy, MeltOperationData, MeltQuote, MeltSagaState, OperationData, ProofInfo,
-    Transaction, TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
+    KeysetLoadPolicy, MeltOperationData, MeltPrepareOptions, MeltQuote, MeltSagaState,
+    OperationData, ProofInfo, Transaction, TransactionDirection, TransactionStatus, WalletSaga,
+    WalletSagaState,
 };
 use cdk_common::{MeltQuoteState, PaymentMethod};
 use tracing::instrument;
@@ -48,6 +49,7 @@ use self::compensation::{ReleaseMeltQuote, RevertProofReservation};
 use self::state::{Finalized, Initial, MeltRequested, PaymentPending, Prepared};
 use super::MeltConfirmOptions;
 use crate::nuts::nut00::{KnownMethod, ProofsMethods};
+use crate::nuts::nut11::{enforce_sig_flag, SigFlag};
 use crate::nuts::{MeltRequest, PreMintSecrets, Proofs, State};
 use crate::util::unix_time;
 use crate::wallet::blind_signature::{
@@ -503,6 +505,11 @@ impl<'a> MeltSaga<'a, Initial> {
     /// Uses the provided proofs directly without automatic proof selection.
     /// The caller must ensure the proofs cover the quote amount plus fee reserve.
     ///
+    /// P2PK/HTLC-locked proofs are signed with `options.p2pk_signing_keys` plus
+    /// any signing keys known to the wallet, and HTLC preimages from
+    /// `options.preimages` are attached, before the proofs are reserved.
+    /// SIG_ALL-locked proofs are rejected.
+    ///
     /// # Compensation
     ///
     /// Registers a compensation action that will revert proof state
@@ -511,8 +518,8 @@ impl<'a> MeltSaga<'a, Initial> {
     pub async fn prepare_with_proofs(
         mut self,
         quote_id: &str,
-        proofs: Proofs,
-        metadata: HashMap<String, String>,
+        mut proofs: Proofs,
+        options: MeltPrepareOptions,
     ) -> Result<MeltSaga<'a, Prepared>, Error> {
         tracing::info!(
             "Preparing melt with specific proofs for quote {} with operation {}",
@@ -521,6 +528,34 @@ impl<'a> MeltSaga<'a, Initial> {
         );
 
         let quote_info = self.initialize_melt(quote_id).await?;
+
+        // External proofs (e.g. from a token) may be P2PK/HTLC locked and
+        // need witnesses before the mint will accept them as melt inputs.
+        //
+        // SIG_ALL cannot be satisfied here: its signature must commit to the
+        // melt request's change outputs, which are only created at
+        // confirmation. Reject early rather than reserving proofs the mint
+        // would refuse.
+        let sig_flag = enforce_sig_flag(proofs.clone()).sig_flag;
+        if sig_flag == SigFlag::SigAll {
+            return Err(crate::nuts::nut11::Error::SigAllNotSupportedHere.into());
+        }
+
+        crate::wallet::util::add_htlc_preimages(&mut proofs, &options.preimages)?;
+
+        // Sign with the caller's keys plus any wallet-known signing keys,
+        // mirroring how the receive path resolves keys. Signing happens at
+        // prepare so reserved proofs are persisted with their witnesses and
+        // crash recovery can rebuild the melt request.
+        let signing_keys = crate::wallet::util::merge_keyring_keys(
+            self.wallet,
+            &proofs,
+            &options.p2pk_signing_keys,
+        )
+        .await?;
+        crate::wallet::util::sign_proofs(&mut proofs, &signing_keys)?;
+
+        let metadata = options.metadata;
 
         let proofs_total = proofs.total_amount()?;
         let inputs_needed = quote_info
@@ -1377,7 +1412,9 @@ mod tests {
     use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
     use cdk_common::nuts::{CurrencyUnit, State};
-    use cdk_common::wallet::{KeysetLoadPolicy, OperationData, TransactionStatus};
+    use cdk_common::wallet::{
+        KeysetLoadPolicy, MeltPrepareOptions, OperationData, TransactionStatus,
+    };
     use cdk_common::{MeltQuoteOnchainResponse, MeltQuoteResponse, MeltQuoteState, PaymentMethod};
     use uuid::Uuid;
 
@@ -1411,7 +1448,7 @@ mod tests {
 
         let saga = MeltSaga::new(&wallet);
         let prepared = saga
-            .prepare_with_proofs(&quote_id, vec![proof], HashMap::new())
+            .prepare_with_proofs(&quote_id, vec![proof], MeltPrepareOptions::default())
             .await
             .unwrap();
 
@@ -1430,6 +1467,109 @@ mod tests {
             stored[0].used_by_operation,
             Some(prepared.state_data.operation_id)
         );
+    }
+
+    fn p2pk_locked_proof(
+        keyset_id: cdk_common::Id,
+        amount: u64,
+        pubkey: crate::nuts::PublicKey,
+        conditions: Option<crate::nuts::Conditions>,
+    ) -> crate::nuts::Proof {
+        let spending_conditions = crate::nuts::SpendingConditions::new_p2pk(pubkey, conditions);
+        let nut10_secret: crate::nuts::nut10::Secret = spending_conditions.try_into().unwrap();
+        let secret: crate::secret::Secret = nut10_secret.try_into().unwrap();
+        crate::nuts::Proof::new(
+            Amount::from(amount),
+            keyset_id,
+            secret,
+            crate::nuts::SecretKey::generate().public_key(),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_prepare_melt_signs_p2pk_locked_external_proofs() {
+        let db = create_test_db().await;
+        let keyset_id = test_keyset_id();
+
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        // Build an external P2PK-locked proof, as extracted from a token
+        let signing_key = crate::nuts::SecretKey::generate();
+        let proof = p2pk_locked_proof(keyset_id, 2000, signing_key.public_key(), None);
+        let proof_y = proof.y().unwrap();
+        assert!(proof.witness.is_none());
+
+        let saga = MeltSaga::new(&wallet);
+        saga.prepare_with_proofs(
+            &quote_id,
+            vec![proof],
+            MeltPrepareOptions {
+                p2pk_signing_keys: vec![signing_key],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        // The reserved proof must carry a witness so the mint will accept
+        // it as a melt input
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Reserved);
+        assert!(stored[0].proof.witness.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_prepare_melt_rejects_sig_all_proofs() {
+        let db = create_test_db().await;
+        let keyset_id = test_keyset_id();
+
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        // A SIG_ALL witness must commit to the melt request's change outputs,
+        // which do not exist at prepare time, so prepare must reject it.
+        let signing_key = crate::nuts::SecretKey::generate();
+        let conditions = crate::nuts::Conditions {
+            sig_flag: crate::nuts::nut11::SigFlag::SigAll,
+            ..Default::default()
+        };
+        let proof = p2pk_locked_proof(keyset_id, 2000, signing_key.public_key(), Some(conditions));
+        let proof_y = proof.y().unwrap();
+
+        let saga = MeltSaga::new(&wallet);
+        let result = saga
+            .prepare_with_proofs(
+                &quote_id,
+                vec![proof],
+                MeltPrepareOptions {
+                    p2pk_signing_keys: vec![signing_key],
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(Error::NUT11(
+                crate::nuts::nut11::Error::SigAllNotSupportedHere
+            ))
+        ));
+
+        // Nothing should have been reserved
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert!(stored.is_empty());
     }
 
     #[tokio::test]
@@ -1488,7 +1628,14 @@ mod tests {
         metadata.insert("purpose".to_string(), "ffi-pending-proofs".to_string());
 
         let prepared = MeltSaga::new(&wallet)
-            .prepare_with_proofs(&quote_id, vec![proof], metadata.clone())
+            .prepare_with_proofs(
+                &quote_id,
+                vec![proof],
+                MeltPrepareOptions {
+                    metadata: metadata.clone(),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
 
@@ -1617,7 +1764,7 @@ mod tests {
 
         let saga = MeltSaga::new(&wallet);
         let requested = saga
-            .prepare_with_proofs(&quote_id, vec![proof], HashMap::new())
+            .prepare_with_proofs(&quote_id, vec![proof], MeltPrepareOptions::default())
             .await
             .unwrap()
             .request_melt_with_options(MeltConfirmOptions::new())
@@ -1717,7 +1864,7 @@ mod tests {
         ));
 
         let requested = MeltSaga::new(wallet)
-            .prepare_with_proofs(&quote_id, vec![proof], HashMap::new())
+            .prepare_with_proofs(&quote_id, vec![proof], MeltPrepareOptions::default())
             .await
             .unwrap()
             .request_melt_with_options(MeltConfirmOptions::new())

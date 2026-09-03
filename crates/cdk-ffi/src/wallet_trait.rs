@@ -347,6 +347,19 @@ impl WalletTraitDef for Wallet {
         Ok(PreparedMelt::new(self.inner().clone(), &prepared))
     }
 
+    async fn prepare_melt_proofs_with_options(
+        &self,
+        quote_id: &str,
+        proofs: cdk_common::Proofs,
+        options: cdk_common::wallet::MeltPrepareOptions,
+    ) -> Result<PreparedMelt, Self::Error> {
+        let prepared = self
+            .inner()
+            .prepare_melt_proofs_with_options(quote_id, proofs, options)
+            .await?;
+        Ok(PreparedMelt::new(self.inner().clone(), &prepared))
+    }
+
     async fn prepare_melt_token(
         &self,
         quote_id: &str,
@@ -356,6 +369,19 @@ impl WalletTraitDef for Wallet {
         let prepared = self
             .inner()
             .prepare_melt_token(quote_id, encoded_token, metadata)
+            .await?;
+        Ok(PreparedMelt::new(self.inner().clone(), &prepared))
+    }
+
+    async fn prepare_melt_token_with_options(
+        &self,
+        quote_id: &str,
+        encoded_token: &str,
+        options: cdk_common::wallet::MeltPrepareOptions,
+    ) -> Result<PreparedMelt, Self::Error> {
+        let prepared = self
+            .inner()
+            .prepare_melt_token_with_options(quote_id, encoded_token, options)
             .await?;
         Ok(PreparedMelt::new(self.inner().clone(), &prepared))
     }

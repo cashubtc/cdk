@@ -43,8 +43,8 @@ use std::time::Duration;
 
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
-    CrossMintTransferQuote, MeltQuote, MeltSagaState, OperationData, Transaction,
-    TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
+    CrossMintTransferQuote, MeltPrepareOptions, MeltQuote, MeltSagaState, OperationData,
+    Transaction, TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
 };
 use cdk_common::{Error, MeltQuoteState, PaymentMethod, ProofsMethods, State};
 use tracing::instrument;
@@ -1105,10 +1105,35 @@ impl Wallet {
         proofs: crate::nuts::Proofs,
         metadata: HashMap<String, String>,
     ) -> Result<PreparedMelt<'_>, Error> {
+        self.prepare_melt_proofs_with_options(
+            quote_id,
+            proofs,
+            MeltPrepareOptions {
+                metadata,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Prepare a melt operation with specific proofs and additional options.
+    ///
+    /// P2PK/HTLC-locked proofs are signed before being reserved, using
+    /// `options.p2pk_signing_keys` plus any signing keys known to the wallet,
+    /// mirroring how [`receive_proofs`](Wallet::receive_proofs) resolves keys.
+    /// HTLC preimages from `options.preimages` are attached to matching
+    /// proofs. SIG_ALL-locked proofs are rejected: their witness must commit
+    /// to the melt request's change outputs, which only exist at confirmation.
+    #[instrument(skip(self, proofs, options))]
+    pub async fn prepare_melt_proofs_with_options(
+        &self,
+        quote_id: &str,
+        proofs: crate::nuts::Proofs,
+        options: MeltPrepareOptions,
+    ) -> Result<PreparedMelt<'_>, Error> {
+        let metadata = options.metadata.clone();
         let saga = MeltSaga::new(self);
-        let prepared_saga = saga
-            .prepare_with_proofs(quote_id, proofs, metadata.clone())
-            .await?;
+        let prepared_saga = saga.prepare_with_proofs(quote_id, proofs, options).await?;
 
         Ok(PreparedMelt {
             saga: prepared_saga,
@@ -1127,6 +1152,29 @@ impl Wallet {
         encoded_token: &str,
         metadata: HashMap<String, String>,
     ) -> Result<PreparedMelt<'_>, Error> {
+        self.prepare_melt_token_with_options(
+            quote_id,
+            encoded_token,
+            MeltPrepareOptions {
+                metadata,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Prepare a melt operation from an encoded token with additional options.
+    ///
+    /// Same as [`prepare_melt_token`](Wallet::prepare_melt_token), with locked
+    /// inputs handled as described in
+    /// [`prepare_melt_proofs_with_options`](Wallet::prepare_melt_proofs_with_options).
+    #[instrument(skip(self, encoded_token, options))]
+    pub async fn prepare_melt_token_with_options(
+        &self,
+        quote_id: &str,
+        encoded_token: &str,
+        options: MeltPrepareOptions,
+    ) -> Result<PreparedMelt<'_>, Error> {
         let token = Token::from_str(encoded_token)?;
 
         let unit = token.unit().unwrap_or_default();
@@ -1135,7 +1183,8 @@ impl Wallet {
 
         let proofs = self.token_proofs(&token).await?;
 
-        self.prepare_melt_proofs(quote_id, proofs, metadata).await
+        self.prepare_melt_proofs_with_options(quote_id, proofs, options)
+            .await
     }
 
     /// Finalize pending melt operations.
