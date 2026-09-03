@@ -143,6 +143,38 @@ where
     }
 }
 
+/// Upsert the mint URL and return the internal id it is stored under.
+///
+/// Rows reference this id, never the URL, so a write has to have an id to point
+/// at. A wallet is built synchronously and can be handed an empty database, so
+/// it has no opportunity to register its mint before its first write; the store
+/// upserts it on demand instead.
+///
+/// The conflict arm assigns the URL to itself. That leaves an existing mint's
+/// metadata alone, which [`WalletDatabase::add_mint`] owns, while still
+/// producing a row for `RETURNING`, so one statement covers both the mint that
+/// is already stored and the one that is not.
+async fn mint_id_for_write<T>(conn: &T, mint_url: &MintUrl) -> Result<i64, Error>
+where
+    T: DatabaseExecutor,
+{
+    query(
+        r#"
+        INSERT INTO mint (mint_url)
+        VALUES (:mint_url)
+        ON CONFLICT(mint_url) DO UPDATE SET
+            mint_url = excluded.mint_url
+        RETURNING id
+        "#,
+    )?
+    .bind("mint_url", mint_url.to_string())
+    .pluck(conn)
+    .await?
+    .map(|id| Ok::<_, Error>(column_as_number!(id)))
+    .transpose()?
+    .ok_or_else(|| Error::UnknownMint(mint_url.to_string()))
+}
+
 #[async_trait]
 impl<RM> WalletDatabase<database::Error> for SQLWalletDatabase<RM>
 where
@@ -159,22 +191,23 @@ where
         Ok(query(
             r#"
               SELECT
-                  id,
-                  unit,
-                  amount,
-                  request,
-                  fee_reserve,
-                  state,
-                  expiry,
-                  payment_proof,
-                  payment_method,
-                  estimated_blocks,
-                  fee_index,
-                  used_by_operation,
-                  version,
-                  mint_url
+                  q.id,
+                  q.unit,
+                  q.amount,
+                  q.request,
+                  q.fee_reserve,
+                  q.state,
+                  q.expiry,
+                  q.payment_proof,
+                  q.payment_method,
+                  q.estimated_blocks,
+                  q.fee_index,
+                  q.used_by_operation,
+                  q.version,
+                  m.mint_url
               FROM
-                  melt_quote
+                  melt_quote q
+              LEFT JOIN mint m ON m.id = q.mint_id
               "#,
         )?
         .fetch_all(&*conn)
@@ -280,7 +313,7 @@ where
                 final_expiry
             FROM
                 keyset
-            WHERE mint_url = :mint_url
+            WHERE mint_id = (SELECT id FROM mint WHERE mint_url = :mint_url)
             "#,
         )?
         .bind("mint_url", mint_url.to_string())
@@ -336,25 +369,26 @@ where
         query(
             r#"
             SELECT
-                id,
-                mint_url,
-                amount,
-                unit,
-                request,
-                state,
-                expiry,
-                secret_key,
-                payment_method,
-                amount_issued,
-                amount_paid,
-                updated_at,
-                estimated_blocks,
-                used_by_operation,
-                version
+                q.id,
+                m.mint_url,
+                q.amount,
+                q.unit,
+                q.request,
+                q.state,
+                q.expiry,
+                q.secret_key,
+                q.payment_method,
+                q.amount_issued,
+                q.amount_paid,
+                q.updated_at,
+                q.estimated_blocks,
+                q.used_by_operation,
+                q.version
             FROM
-                mint_quote
+                mint_quote q
+            JOIN mint m ON m.id = q.mint_id
             WHERE
-                id = :id
+                q.id = :id
             "#,
         )?
         .bind("id", quote_id.to_string())
@@ -374,23 +408,24 @@ where
         Ok(query(
             r#"
             SELECT
-                id,
-                mint_url,
-                amount,
-                unit,
-                request,
-                state,
-                expiry,
-                secret_key,
-                payment_method,
-                amount_issued,
-                amount_paid,
-                updated_at,
-                estimated_blocks,
-                used_by_operation,
-                version
+                q.id,
+                m.mint_url,
+                q.amount,
+                q.unit,
+                q.request,
+                q.state,
+                q.expiry,
+                q.secret_key,
+                q.payment_method,
+                q.amount_issued,
+                q.amount_paid,
+                q.updated_at,
+                q.estimated_blocks,
+                q.used_by_operation,
+                q.version
             FROM
-                mint_quote
+                mint_quote q
+            JOIN mint m ON m.id = q.mint_id
             "#,
         )?
         .fetch_all(&*conn)
@@ -410,27 +445,28 @@ where
         Ok(query(
             r#"
             SELECT
-                id,
-                mint_url,
-                amount,
-                unit,
-                request,
-                state,
-                expiry,
-                secret_key,
-                payment_method,
-                amount_issued,
-                amount_paid,
-                updated_at,
-                estimated_blocks,
-                used_by_operation,
-                version
+                q.id,
+                m.mint_url,
+                q.amount,
+                q.unit,
+                q.request,
+                q.state,
+                q.expiry,
+                q.secret_key,
+                q.payment_method,
+                q.amount_issued,
+                q.amount_paid,
+                q.updated_at,
+                q.estimated_blocks,
+                q.used_by_operation,
+                q.version
             FROM
-                mint_quote
+                mint_quote q
+            JOIN mint m ON m.id = q.mint_id
             WHERE
-                amount_issued = 0
+                q.amount_issued = 0
                 OR
-                payment_method = 'bolt12'
+                q.payment_method = 'bolt12'
             "#,
         )?
         .fetch_all(&*conn)
@@ -453,24 +489,25 @@ where
         query(
             r#"
             SELECT
-                id,
-                unit,
-                amount,
-                request,
-                fee_reserve,
-                state,
-                expiry,
-                payment_proof,
-                payment_method,
-                estimated_blocks,
-                fee_index,
-                used_by_operation,
-                version,
-                mint_url
+                q.id,
+                q.unit,
+                q.amount,
+                q.request,
+                q.fee_reserve,
+                q.state,
+                q.expiry,
+                q.payment_proof,
+                q.payment_method,
+                q.estimated_blocks,
+                q.fee_index,
+                q.used_by_operation,
+                q.version,
+                m.mint_url
             FROM
-                melt_quote
+                melt_quote q
+            LEFT JOIN mint m ON m.id = q.mint_id
             WHERE
-                id=:id
+                q.id=:id
             "#,
         )?
         .bind("id", quote_id.to_owned())
@@ -521,24 +558,25 @@ where
         Ok(query(
             r#"
             SELECT
-                amount,
-                unit,
-                keyset_id,
-                secret,
-                c,
-                witness,
-                dleq_e,
-                dleq_s,
-                dleq_r,
-                y,
-                mint_url,
-                state,
-                spending_condition,
-                used_by_operation,
-                created_by_operation,
-                derivation_index,
-                p2pk_e
-            FROM proof
+                p.amount,
+                p.unit,
+                p.keyset_id,
+                p.secret,
+                p.c,
+                p.witness,
+                p.dleq_e,
+                p.dleq_s,
+                p.dleq_r,
+                p.y,
+                m.mint_url,
+                p.state,
+                p.spending_condition,
+                p.used_by_operation,
+                p.created_by_operation,
+                p.derivation_index,
+                p.p2pk_e
+            FROM proof p
+            JOIN mint m ON m.id = p.mint_id
             "#,
         )?
         .fetch_all(&*conn)
@@ -569,25 +607,26 @@ where
         Ok(query(
             r#"
             SELECT
-                amount,
-                unit,
-                keyset_id,
-                secret,
-                c,
-                witness,
-                dleq_e,
-                dleq_s,
-                dleq_r,
-                y,
-                mint_url,
-                state,
-                spending_condition,
-                used_by_operation,
-                created_by_operation,
-                derivation_index,
-                p2pk_e
-            FROM proof
-            WHERE y IN (:ys)
+                p.amount,
+                p.unit,
+                p.keyset_id,
+                p.secret,
+                p.c,
+                p.witness,
+                p.dleq_e,
+                p.dleq_s,
+                p.dleq_r,
+                p.y,
+                m.mint_url,
+                p.state,
+                p.spending_condition,
+                p.used_by_operation,
+                p.created_by_operation,
+                p.derivation_index,
+                p.p2pk_e
+            FROM proof p
+            JOIN mint m ON m.id = p.mint_id
+            WHERE p.y IN (:ys)
         "#,
         )?
         .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
@@ -619,7 +658,7 @@ where
             .collect::<Vec<_>>();
 
         if mint_url.is_some() {
-            where_clauses.push("mint_url = :mint_url");
+            where_clauses.push("mint_id = (SELECT id FROM mint WHERE mint_url = :mint_url)");
         }
         if unit.is_some() {
             where_clauses.push("unit = :unit");
@@ -679,25 +718,26 @@ where
         Ok(query(
             r#"
             SELECT
-                mint_url,
-                direction,
-                unit,
-                amount,
-                fee,
-                ys,
-                timestamp,
-                memo,
-                metadata,
-                quote_id,
-                payment_request,
-                payment_proof,
-                payment_method,
-                saga_id,
-                status
+                m.mint_url,
+                t.direction,
+                t.unit,
+                t.amount,
+                t.fee,
+                t.ys,
+                t.timestamp,
+                t.memo,
+                t.metadata,
+                t.quote_id,
+                t.payment_request,
+                t.payment_proof,
+                t.payment_method,
+                t.saga_id,
+                t.status
             FROM
-                transactions
+                transactions t
+            JOIN mint m ON m.id = t.mint_id
             WHERE
-                id = :id
+                t.id = :id
             "#,
         )?
         .bind("id", transaction_id.as_slice().to_vec())
@@ -723,23 +763,24 @@ where
         Ok(query(
             r#"
             SELECT
-                mint_url,
-                direction,
-                unit,
-                amount,
-                fee,
-                ys,
-                timestamp,
-                memo,
-                metadata,
-                quote_id,
-                payment_request,
-                payment_proof,
-                payment_method,
-                saga_id,
-                status
+                m.mint_url,
+                t.direction,
+                t.unit,
+                t.amount,
+                t.fee,
+                t.ys,
+                t.timestamp,
+                t.memo,
+                t.metadata,
+                t.quote_id,
+                t.payment_request,
+                t.payment_proof,
+                t.payment_method,
+                t.saga_id,
+                t.status
             FROM
-                transactions
+                transactions t
+            JOIN mint m ON m.id = t.mint_id
             "#,
         )?
         .fetch_all(&*conn)
@@ -769,15 +810,26 @@ where
             .map_err(|e| Error::Database(Box::new(e)))?;
         let tx = ConnectionWithTransaction::new(conn).await?;
 
+        let mut mint_ids: HashMap<MintUrl, i64> = HashMap::new();
+
         for proof in added {
+            let mint_id = match mint_ids.get(&proof.mint_url) {
+                Some(mint_id) => *mint_id,
+                None => {
+                    let mint_id = mint_id_for_write(&tx, &proof.mint_url).await?;
+                    mint_ids.insert(proof.mint_url.clone(), mint_id);
+                    mint_id
+                }
+            };
+
             query(
                 r#"
     INSERT INTO proof
-    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r, used_by_operation, created_by_operation, derivation_index, p2pk_e)
+    (y, mint_id, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r, used_by_operation, created_by_operation, derivation_index, p2pk_e)
     VALUES
-    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r, :used_by_operation, :created_by_operation, :derivation_index, :p2pk_e)
+    (:y, :mint_id, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r, :used_by_operation, :created_by_operation, :derivation_index, :p2pk_e)
     ON CONFLICT(y) DO UPDATE SET
-        mint_url = excluded.mint_url,
+        mint_id = excluded.mint_id,
         state = excluded.state,
         spending_condition = excluded.spending_condition,
         unit = excluded.unit,
@@ -797,7 +849,7 @@ where
             "#,
             )?
             .bind("y", proof.y.to_bytes().to_vec())
-            .bind("mint_url", proof.mint_url.to_string())
+            .bind("mint_id", mint_id)
             .bind("state", proof.state.to_string())
             .bind(
                 "spending_condition",
@@ -897,7 +949,7 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
 
-        let mint_url = transaction.mint_url.to_string();
+        let mint_id = mint_id_for_write(&*conn, &transaction.mint_url).await?;
         let direction = transaction.direction.to_string();
         let unit = transaction.unit.to_string();
         let amount = u64::from(transaction.amount) as i64;
@@ -913,11 +965,11 @@ where
         query(
                r#"
    INSERT INTO transactions
-   (id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata, quote_id, payment_request, payment_proof, payment_method, saga_id, status)
+   (id, mint_id, direction, unit, amount, fee, ys, timestamp, memo, metadata, quote_id, payment_request, payment_proof, payment_method, saga_id, status)
    VALUES
-   (:id, :mint_url, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata, :quote_id, :payment_request, :payment_proof, :payment_method, :saga_id, :status)
+   (:id, :mint_id, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata, :quote_id, :payment_request, :payment_proof, :payment_method, :saga_id, :status)
    ON CONFLICT(id) DO UPDATE SET
-       mint_url = excluded.mint_url,
+       mint_id = excluded.mint_id,
        direction = excluded.direction,
        unit = excluded.unit,
        amount = excluded.amount,
@@ -935,7 +987,7 @@ where
            "#,
            )?
            .bind("id", id.as_slice().to_vec())
-           .bind("mint_url", mint_url)
+           .bind("mint_id", mint_id)
            .bind("direction", direction)
            .bind("unit", unit)
            .bind("amount", amount)
@@ -960,6 +1012,8 @@ where
     }
 
     #[instrument(skip(self))]
+    /// Every other table references the mint by its internal id, so the URL
+    /// lives only here and nothing else needs rewriting.
     async fn update_mint_url(
         &self,
         old_mint_url: MintUrl,
@@ -970,24 +1024,22 @@ where
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
-        let tx = ConnectionWithTransaction::new(conn).await?;
-        let tables = ["mint_quote", "proof"];
 
-        for table in &tables {
-            query(&format!(
-                r#"
-                UPDATE {table}
-                SET mint_url = :new_mint_url
-                WHERE mint_url = :old_mint_url
-            "#
-            ))?
-            .bind("new_mint_url", new_mint_url.to_string())
-            .bind("old_mint_url", old_mint_url.to_string())
-            .execute(&tx)
-            .await?;
+        let rows_affected = query(
+            r#"
+            UPDATE mint
+            SET mint_url = :new_mint_url
+            WHERE mint_url = :old_mint_url
+            "#,
+        )?
+        .bind("new_mint_url", new_mint_url.to_string())
+        .bind("old_mint_url", old_mint_url.to_string())
+        .execute(&*conn)
+        .await?;
+
+        if rows_affected == 0 {
+            return Err(Error::UnknownMint(old_mint_url.to_string()));
         }
-
-        tx.commit().await?;
 
         Ok(())
     }
@@ -1168,6 +1220,8 @@ where
     }
 
     #[instrument(skip(self))]
+    /// Rows reference the mint id, which disappears with the mint row, so they
+    /// go with it rather than being left dangling.
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), database::Error> {
         let conn = self
             .pool
@@ -1175,10 +1229,33 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
 
+        let tx = ConnectionWithTransaction::new(conn).await?;
+
+        for table in [
+            "keyset",
+            "proof",
+            "mint_quote",
+            "melt_quote",
+            "transactions",
+            "wallet_sagas",
+        ] {
+            query(&format!(
+                r#"
+                DELETE FROM {table}
+                WHERE mint_id IN (SELECT id FROM mint WHERE mint_url = :mint_url)
+            "#
+            ))?
+            .bind("mint_url", mint_url.to_string())
+            .execute(&tx)
+            .await?;
+        }
+
         query(r#"DELETE FROM mint WHERE mint_url=:mint_url"#)?
             .bind("mint_url", mint_url.to_string())
-            .execute(&*conn)
+            .execute(&tx)
             .await?;
+
+        tx.commit().await?;
 
         Ok(())
     }
@@ -1195,20 +1272,21 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
         let tx = ConnectionWithTransaction::new(conn).await?;
+        let mint_id = mint_id_for_write(&tx, &mint_url).await?;
 
         for keyset in keysets {
             query(
                 r#"
         INSERT INTO keyset
-        (mint_url, id, unit, active, input_fee_ppk, final_expiry, keyset_u32)
+        (mint_id, id, unit, active, input_fee_ppk, final_expiry, keyset_u32)
         VALUES
-        (:mint_url, :id, :unit, :active, :input_fee_ppk, :final_expiry, :keyset_u32)
+        (:mint_id, :id, :unit, :active, :input_fee_ppk, :final_expiry, :keyset_u32)
         ON CONFLICT(id) DO UPDATE SET
             active = excluded.active,
             input_fee_ppk = excluded.input_fee_ppk
         "#,
             )?
-            .bind("mint_url", mint_url.to_string())
+            .bind("mint_id", mint_id)
             .bind("id", keyset.id.to_string())
             .bind("unit", keyset.unit.to_string())
             .bind("active", keyset.active)
@@ -1232,17 +1310,19 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
 
+        let mint_id = mint_id_for_write(&*conn, &quote.mint_url).await?;
+
         let expected_version = quote.version;
         let new_version = expected_version.wrapping_add(1);
 
         let rows_affected = query(
                 r#"
     INSERT INTO mint_quote
-    (id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid, updated_at, estimated_blocks, version, used_by_operation)
+    (id, mint_id, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid, updated_at, estimated_blocks, version, used_by_operation)
     VALUES
-    (:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid, :updated_at, :estimated_blocks, :version, :used_by_operation)
+    (:id, :mint_id, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid, :updated_at, :estimated_blocks, :version, :used_by_operation)
     ON CONFLICT(id) DO UPDATE SET
-        mint_url = excluded.mint_url,
+        mint_id = excluded.mint_id,
         amount = excluded.amount,
         unit = excluded.unit,
         request = excluded.request,
@@ -1261,7 +1341,7 @@ where
             "#,
             )?
             .bind("id", quote.id.to_string())
-            .bind("mint_url", quote.mint_url.to_string())
+            .bind("mint_id", mint_id)
             .bind("amount", quote.amount.map(|a| a.to_i64()))
             .bind("unit", quote.unit.to_string())
             .bind("request", quote.request)
@@ -1313,15 +1393,20 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
 
+        let mint_id = match &quote.mint_url {
+            Some(mint_url) => Some(mint_id_for_write(&*conn, mint_url).await?),
+            None => None,
+        };
+
         let expected_version = quote.version;
         let new_version = expected_version.wrapping_add(1);
 
         let rows_affected = query(
             r#"
  INSERT INTO melt_quote
- (id, unit, amount, request, fee_reserve, state, expiry, payment_proof, payment_method, estimated_blocks, fee_index, version, mint_url, used_by_operation)
+ (id, unit, amount, request, fee_reserve, state, expiry, payment_proof, payment_method, estimated_blocks, fee_index, version, mint_id, used_by_operation)
  VALUES
- (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_proof, :payment_method, :estimated_blocks, :fee_index, :version, :mint_url, :used_by_operation)
+ (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_proof, :payment_method, :estimated_blocks, :fee_index, :version, :mint_id, :used_by_operation)
  ON CONFLICT(id) DO UPDATE SET
      unit = excluded.unit,
      amount = excluded.amount,
@@ -1334,7 +1419,7 @@ where
      estimated_blocks = excluded.estimated_blocks,
      fee_index = excluded.fee_index,
      version = :new_version,
-     mint_url = excluded.mint_url,
+     mint_id = excluded.mint_id,
      used_by_operation = excluded.used_by_operation
  WHERE melt_quote.version = :expected_version
  ;
@@ -1354,7 +1439,7 @@ where
         .bind("version", quote.version as i64)
         .bind("new_version", new_version as i64)
         .bind("expected_version", expected_version as i64)
-        .bind("mint_url", quote.mint_url.map(|m| m.to_string()))
+        .bind("mint_id", mint_id)
         .bind("used_by_operation", quote.used_by_operation)
         .execute(&*conn)
         .await?;
@@ -1469,19 +1554,21 @@ where
             )))
         })?;
 
+        let mint_id = mint_id_for_write(&*conn, &saga.mint_url).await?;
+
         query(
             r#"
             INSERT INTO wallet_sagas
-            (id, kind, state, amount, mint_url, unit, quote_id, created_at, updated_at, data, version)
+            (id, kind, state, amount, mint_id, unit, quote_id, created_at, updated_at, data, version)
             VALUES
-            (:id, :kind, :state, :amount, :mint_url, :unit, :quote_id, :created_at, :updated_at, :data, :version)
+            (:id, :kind, :state, :amount, :mint_id, :unit, :quote_id, :created_at, :updated_at, :data, :version)
             "#,
         )?
         .bind("id", saga.id.to_string())
         .bind("kind", saga.kind.to_string())
         .bind("state", state_json)
         .bind("amount", u64::from(saga.amount) as i64)
-        .bind("mint_url", saga.mint_url.to_string())
+        .bind("mint_id", mint_id)
         .bind("unit", saga.unit.to_string())
         .bind("quote_id", saga.quote_id)
         .bind("created_at", saga.created_at as i64)
@@ -1507,9 +1594,10 @@ where
 
         let rows = query(
             r#"
-            SELECT id, kind, state, amount, mint_url, unit, quote_id, created_at, updated_at, data, version
-            FROM wallet_sagas
-            WHERE id = :id
+            SELECT s.id, s.kind, s.state, s.amount, m.mint_url, s.unit, s.quote_id, s.created_at, s.updated_at, s.data, s.version
+            FROM wallet_sagas s
+            JOIN mint m ON m.id = s.mint_id
+            WHERE s.id = :id
             "#,
         )?
         .bind("id", id.to_string())
@@ -1549,10 +1637,12 @@ where
         // for (saga.version - 1) in the WHERE clause.
         let expected_version = saga.version.saturating_sub(1);
 
+        let mint_id = mint_id_for_write(&*conn, &saga.mint_url).await?;
+
         let rows_affected = query(
             r#"
             UPDATE wallet_sagas
-            SET kind = :kind, state = :state, amount = :amount, mint_url = :mint_url,
+            SET kind = :kind, state = :state, amount = :amount, mint_id = :mint_id,
                 unit = :unit, quote_id = :quote_id, updated_at = :updated_at, data = :data,
                 version = :new_version
             WHERE id = :id AND version = :expected_version
@@ -1562,7 +1652,7 @@ where
         .bind("kind", saga.kind.to_string())
         .bind("state", state_json)
         .bind("amount", u64::from(saga.amount) as i64)
-        .bind("mint_url", saga.mint_url.to_string())
+        .bind("mint_id", mint_id)
         .bind("unit", saga.unit.to_string())
         .bind("quote_id", saga.quote_id)
         .bind("updated_at", saga.updated_at as i64)
@@ -1602,9 +1692,10 @@ where
 
         let rows = query(
             r#"
-            SELECT id, kind, state, amount, mint_url, unit, quote_id, created_at, updated_at, data, version
-            FROM wallet_sagas
-            ORDER BY created_at ASC
+            SELECT s.id, s.kind, s.state, s.amount, m.mint_url, s.unit, s.quote_id, s.created_at, s.updated_at, s.data, s.version
+            FROM wallet_sagas s
+            JOIN mint m ON m.id = s.mint_id
+            ORDER BY s.created_at ASC
             "#,
         )?
         .fetch_all(&*conn)
@@ -1693,25 +1784,26 @@ where
         let rows = query(
             r#"
             SELECT
-                amount,
-                unit,
-                keyset_id,
-                secret,
-                c,
-                witness,
-                dleq_e,
-                dleq_s,
-                dleq_r,
-                y,
-                mint_url,
-                state,
-                spending_condition,
-                used_by_operation,
-                created_by_operation,
-                derivation_index,
-                p2pk_e
-            FROM proof
-            WHERE used_by_operation = :operation_id
+                p.amount,
+                p.unit,
+                p.keyset_id,
+                p.secret,
+                p.c,
+                p.witness,
+                p.dleq_e,
+                p.dleq_s,
+                p.dleq_r,
+                p.y,
+                m.mint_url,
+                p.state,
+                p.spending_condition,
+                p.used_by_operation,
+                p.created_by_operation,
+                p.derivation_index,
+                p.p2pk_e
+            FROM proof p
+            JOIN mint m ON m.id = p.mint_id
+            WHERE p.used_by_operation = :operation_id
             "#,
         )?
         .bind("operation_id", operation_id.to_string())
