@@ -150,10 +150,15 @@ pub mod test_utils {
     use cdk_common::wallet::ProofInfo;
     use cdk_common::{Amount, SecretKey};
 
-    /// Create an in-memory test database
+    /// Create an in-memory test database with the test mint already stored
+    ///
+    /// A mint is identified internally, so it has to exist before rows can
+    /// point at it.
     pub async fn create_test_db(
     ) -> Arc<dyn WalletDatabase<cdk_common::database::Error> + Send + Sync> {
-        Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap())
+        let db = cdk_sqlite::wallet::memory::empty().await.unwrap();
+        db.add_mint(test_mint_url(), None).await.unwrap();
+        Arc::new(db)
     }
 
     /// Create a test keyset ID

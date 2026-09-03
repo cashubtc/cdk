@@ -2072,6 +2072,15 @@ mod tests {
                 .expect("valid target URL");
             let seed = [42; 64];
 
+            source_db
+                .add_mint(source_url.clone(), None)
+                .await
+                .expect("store source mint");
+            target_db
+                .add_mint(target_url.clone(), None)
+                .await
+                .expect("store target mint");
+
             let source_wallet = crate::wallet::WalletBuilder::new()
                 .mint_url(source_url.clone())
                 .unit(source_unit)

@@ -240,21 +240,174 @@ where
     assert!(result.is_none());
 }
 
-/// Test updating mint URL
+/// Test that moving a mint carries every row attached to it
 pub async fn update_mint_url<DB>(db: DB)
 where
     DB: Database<crate::database::Error>,
 {
     let old_url = test_mint_url();
     let new_url = test_mint_url_2();
+    let keyset_id = test_keyset_id();
 
-    // Add mint with old URL
     db.add_mint(old_url.clone(), None).await.unwrap();
+    db.add_mint_keysets(old_url.clone(), vec![test_keyset_info(keyset_id, &old_url)])
+        .await
+        .unwrap();
 
-    // Update URL
+    let proof_info = test_proof_info(keyset_id, 100, old_url.clone());
+    db.update_proofs(vec![proof_info.clone()], vec![])
+        .await
+        .unwrap();
+
+    let mint_quote = test_mint_quote(old_url.clone());
+    db.add_mint_quote(mint_quote.clone()).await.unwrap();
+
+    let mut melt_quote = test_melt_quote();
+    melt_quote.mint_url = Some(old_url.clone());
+    db.add_melt_quote(melt_quote.clone()).await.unwrap();
+
+    let transaction = test_transaction(old_url.clone(), TransactionDirection::Incoming);
+    let transaction_id = transaction.id();
+    db.add_transaction(transaction).await.unwrap();
+
+    let saga = test_wallet_saga(old_url.clone());
+    db.add_saga(saga.clone()).await.unwrap();
+
     db.update_mint_url(old_url.clone(), new_url.clone())
         .await
         .unwrap();
+
+    assert!(db.get_mint(old_url.clone()).await.unwrap().is_none());
+    let mints = db.get_mints().await.unwrap();
+    assert!(mints.contains_key(&new_url));
+    assert!(!mints.contains_key(&old_url));
+
+    let keysets = db.get_mint_keysets(new_url.clone()).await.unwrap().unwrap();
+    assert_eq!(keysets.len(), 1);
+    assert!(db
+        .get_mint_keysets(old_url.clone())
+        .await
+        .unwrap()
+        .is_none());
+
+    let proofs = db.get_proofs_by_ys(vec![proof_info.y]).await.unwrap();
+    assert_eq!(proofs[0].mint_url, new_url);
+    assert!(db
+        .get_proofs(Some(old_url.clone()), None, None, None)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        db.get_proofs(Some(new_url.clone()), None, None, None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let stored_mint_quote = db.get_mint_quote(&mint_quote.id).await.unwrap().unwrap();
+    assert_eq!(stored_mint_quote.mint_url, new_url);
+
+    let stored_melt_quote = db.get_melt_quote(&melt_quote.id).await.unwrap().unwrap();
+    assert_eq!(stored_melt_quote.mint_url, Some(new_url.clone()));
+
+    let stored_transaction = db.get_transaction(transaction_id).await.unwrap().unwrap();
+    assert_eq!(stored_transaction.mint_url, new_url);
+    assert!(db
+        .list_transactions(Some(old_url.clone()), None, None)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        db.list_transactions(Some(new_url.clone()), None, None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let stored_saga = db.get_saga(&saga.id).await.unwrap().unwrap();
+    assert_eq!(stored_saga.mint_url, new_url);
+}
+
+/// Test that an unknown mint URL cannot be moved
+pub async fn update_mint_url_unknown_mint<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let result = db.update_mint_url(test_mint_url(), test_mint_url_2()).await;
+
+    assert!(matches!(
+        result,
+        Err(crate::database::Error::UnknownMint(_))
+    ));
+}
+
+/// Test that writing a row for an unknown mint stores the mint
+///
+/// A wallet is built synchronously and can be handed an empty database, so it
+/// cannot register its mint before its first write.
+pub async fn write_creates_unknown_mint<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+
+    assert!(db.get_mints().await.unwrap().is_empty());
+
+    db.add_transaction(test_transaction(
+        mint_url.clone(),
+        TransactionDirection::Incoming,
+    ))
+    .await
+    .expect("a write for an unknown mint stores the mint");
+
+    let mints = db.get_mints().await.unwrap();
+    assert_eq!(mints.len(), 1, "the write stored exactly one mint");
+    // Backends disagree on whether a metadata-less mint reads back as `None` or
+    // as an empty `MintInfo`, which `add_mint_without_info` leaves unspecified
+    // too, so assert on the metadata rather than on the shape.
+    let stored = mints.get(&mint_url).expect("the write stored the mint");
+    assert!(
+        stored
+            .as_ref()
+            .and_then(|info| info.name.as_ref())
+            .is_none(),
+        "the created mint carries no metadata; that is add_mint's job"
+    );
+
+    // The row is readable, so it really does point at the mint that was created.
+    let transactions = db.list_transactions(Some(mint_url), None, None).await;
+    assert_eq!(transactions.unwrap().len(), 1);
+}
+
+/// Test that a write for an unknown mint does not overwrite a stored one
+pub async fn write_for_known_mint_keeps_info<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let mint_info = MintInfo {
+        name: Some("kept".to_string()),
+        ..MintInfo::default()
+    };
+
+    db.add_mint(mint_url.clone(), Some(mint_info.clone()))
+        .await
+        .unwrap();
+
+    db.add_transaction(test_transaction(
+        mint_url.clone(),
+        TransactionDirection::Incoming,
+    ))
+    .await
+    .unwrap();
+
+    assert_eq!(
+        db.get_mint(mint_url).await.unwrap(),
+        Some(mint_info),
+        "a write must not clobber the stored mint info"
+    );
 }
 
 // =============================================================================
@@ -1753,6 +1906,9 @@ macro_rules! wallet_db_test {
             add_mint_without_info,
             remove_mint,
             update_mint_url,
+            update_mint_url_unknown_mint,
+            write_creates_unknown_mint,
+            write_for_known_mint_keeps_info,
             add_and_get_keysets,
             get_keyset_by_id_in_transaction,
             add_and_get_keys,

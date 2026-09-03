@@ -789,9 +789,13 @@ mod tests {
         let wallet = create_test_wallet(db.clone()).await;
         let pubkey = SecretKey::generate().public_key();
         let quote_id = "custom_quote".to_string();
+        let quote_mint_url = MintUrl::from_str("https://mint.example.com").expect("valid mint URL");
+        db.add_mint(quote_mint_url.clone(), None)
+            .await
+            .expect("mint should be stored");
         let mut quote = MintQuote::new(
             quote_id.clone(),
-            MintUrl::from_str("https://mint.example.com").expect("valid mint URL"),
+            quote_mint_url,
             PaymentMethod::Custom("custom".to_string()),
             Some(Amount::from(200)),
             CurrencyUnit::Sat,

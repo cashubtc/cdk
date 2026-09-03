@@ -78,6 +78,7 @@ mod tests {
         // Create a proof with DLEQ
         let keyset_id = Id::from_str("00deadbeef123456").unwrap();
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        db.add_mint(mint_url.clone(), None).await.unwrap();
         let secret = Secret::new("test_secret_for_dleq");
 
         // Create DLEQ components
@@ -158,6 +159,7 @@ mod tests {
 
         // Test PaymentMethod variants
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        db.add_mint(mint_url.clone(), None).await.unwrap();
         let quote_signing_key = SecretKey::generate();
         let payment_methods = [
             PaymentMethod::Known(KnownMethod::Bolt11),
@@ -239,6 +241,7 @@ mod tests {
 
         let keyset_id = Id::from_str("00deadbeef123456").unwrap();
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        db.add_mint(mint_url.clone(), None).await.unwrap();
 
         let mut proof_infos = vec![];
         let mut expected_ys = vec![];
@@ -311,6 +314,7 @@ mod tests {
         let db = WalletSqliteDatabase::new(path).await.unwrap();
 
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        db.add_mint(mint_url.clone(), None).await.unwrap();
 
         // Quote 1: Fully paid and issued (should NOT be returned)
         let quote1 = MintQuote {

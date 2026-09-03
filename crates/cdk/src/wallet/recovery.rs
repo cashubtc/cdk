@@ -1338,6 +1338,7 @@ mod tests {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let other_mint_url = MintUrl::from_str("https://other-mint.example.com").unwrap();
+        db.add_mint(other_mint_url.clone(), None).await.unwrap();
         let saga_id_1 = uuid::Uuid::new_v4();
         let saga_id_2 = uuid::Uuid::new_v4();
         let saga_id_3 = uuid::Uuid::new_v4();
@@ -1416,6 +1417,7 @@ mod tests {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let other_mint_url = MintUrl::from_str("https://other-mint.example.com").unwrap();
+        db.add_mint(other_mint_url.clone(), None).await.unwrap();
 
         // 1. Melt quote for our unit (should be cleaned up)
         // Note: MeltQuote currently lacks mint_url, so we only filter by unit
