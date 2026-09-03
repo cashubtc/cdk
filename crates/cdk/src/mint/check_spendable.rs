@@ -128,7 +128,7 @@ mod tests {
                     .unwrap();
                 tx.commit().await.unwrap();
             }
-            State::Reserved | State::PendingSpent => {
+            State::Reserved | State::PendingSpent | State::PendingReceive => {
                 panic!("mint proof state is not valid for check_state witness tests");
             }
         }

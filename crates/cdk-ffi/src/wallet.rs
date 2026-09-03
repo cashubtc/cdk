@@ -182,6 +182,12 @@ impl Wallet {
         Ok(balance.into())
     }
 
+    /// Get total pending receive balance
+    pub async fn total_pending_receive_balance(&self) -> Result<Amount, FfiError> {
+        let balance = self.inner.total_pending_receive_balance().await?;
+        Ok(balance.into())
+    }
+
     /// Get total reserved balance
     pub async fn total_reserved_balance(&self) -> Result<Amount, FfiError> {
         let balance = self.inner.total_reserved_balance().await?;
@@ -259,6 +265,32 @@ impl Wallet {
             .receive_proofs(cdk_proofs, options.try_into()?, memo, token)
             .await?;
         Ok(amount.into())
+    }
+
+    /// Receive an encoded token offline without contacting the mint
+    ///
+    /// Verifies the token's DLEQ proofs locally (no network call) and stores
+    /// the proofs as `PendingReceive` in the local database. Call
+    /// `finalize_pending_receives` once back online to settle them.
+    pub async fn receive_offline(
+        &self,
+        encoded_token: String,
+        options: OfflineReceiveOptions,
+    ) -> Result<Amount, FfiError> {
+        Ok(self
+            .inner
+            .receive_offline(&encoded_token, options.into())
+            .await?
+            .into())
+    }
+
+    /// Finalize pending offline receives by swapping with the mint
+    ///
+    /// Finds all proofs stored as `PendingReceive` (from prior calls to
+    /// `receive_offline`) and swaps them with the mint, making them fully
+    /// spendable. Requires an active network connection.
+    pub async fn finalize_pending_receives(&self) -> Result<Amount, FfiError> {
+        Ok(self.inner.finalize_pending_receives().await?.into())
     }
 
     /// Get all pending send operations
@@ -623,6 +655,11 @@ impl Wallet {
                 ProofState::Pending => self.inner.get_pending_proofs().await?,
                 ProofState::Reserved => self.inner.get_reserved_proofs().await?,
                 ProofState::PendingSpent => self.inner.get_pending_spent_proofs().await?,
+                ProofState::PendingReceive => {
+                    self.inner
+                        .get_proofs_by_states(vec![cdk::nuts::State::PendingReceive])
+                        .await?
+                }
                 ProofState::Spent => {
                     // CDK doesn't have a method to get spent proofs directly
                     // They are removed from the database when spent

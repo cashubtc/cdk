@@ -664,7 +664,8 @@ where
             | State::Reserved
             | State::Pending
             | State::Spent
-            | State::PendingSpent => {}
+            | State::PendingSpent
+            | State::PendingReceive => {}
         }
     }
     // It's OK if state is None for some implementations
