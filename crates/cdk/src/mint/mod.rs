@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::mint::Acquired;
 use cdk_common::database::{self, DynMintAuthDatabase, DynMintDatabase};
@@ -95,6 +95,19 @@ pub struct Mint {
     max_inputs: usize,
     /// Maximum number of outputs allowed per transaction
     max_outputs: usize,
+    /// Last identity signature over the mint info, with the payload it covers.
+    ///
+    /// `/v1/info` is served on every wallet handshake while the payload only
+    /// changes when the mint's configuration does, so this keeps a repeat
+    /// request off the signatory, which may be a remote service. Signing is
+    /// deterministic, so a cached signature is byte-identical to a fresh one.
+    mint_info_signature: Arc<ArcSwapOption<MintInfoSignature>>,
+}
+
+/// A signature paired with the canonical payload it was produced over.
+struct MintInfoSignature {
+    payload: Vec<u8>,
+    signature: String,
 }
 
 impl std::fmt::Debug for Mint {
@@ -322,9 +335,19 @@ impl Mint {
             );
         }
 
-        // Persist missing pubkey early to avoid losing it on next boot and ensure stable identity across restarts
+        // Persist the pubkey early to avoid losing it on next boot and ensure stable identity across restarts
         let mut computed_info = mint_info;
-        if computed_info.pubkey.is_none() {
+        // Derived from everything else here and recomputed per request, so a
+        // stored one could only ever be stale.
+        computed_info.signature = None;
+        if computed_info.pubkey != Some(keysets.pubkey) {
+            if let Some(stale) = computed_info.pubkey {
+                tracing::warn!(
+                    %stale,
+                    current = %keysets.pubkey,
+                    "advertised pubkey does not match the signatory identity key, replacing it"
+                );
+            }
             computed_info.pubkey = Some(keysets.pubkey);
         }
 
@@ -339,7 +362,10 @@ impl Mint {
             Some(bytes) => {
                 let mut stored: MintInfo = serde_json::from_slice(&bytes)?;
                 let mut mutated = false;
-                if stored.pubkey.is_none() && computed_info.pubkey.is_some() {
+                if stored.signature.take().is_some() {
+                    mutated = true;
+                }
+                if stored.pubkey != computed_info.pubkey {
                     stored.pubkey = computed_info.pubkey;
                     mutated = true;
                 }
@@ -407,6 +433,7 @@ impl Mint {
             })),
             max_inputs,
             max_outputs,
+            mint_info_signature: Arc::new(ArcSwapOption::empty()),
         })
     }
 
@@ -790,10 +817,53 @@ impl Mint {
         Ok(mint_info)
     }
 
-    /// Set mint info
+    /// Get mint info signed with the mint identity key, per NUT-06.
+    ///
+    /// Kept apart from [`Mint::mint_info`], which quote issuance and melting
+    /// call on every request: they need the settings, not an attestation, and
+    /// must not start failing when the signatory is unreachable.
+    ///
+    /// The payload excludes `time`, so the HTTP layer stamping it on afterwards
+    /// does not invalidate the signature.
     #[instrument(skip_all)]
-    pub async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Error> {
+    pub async fn signed_mint_info(&self) -> Result<MintInfo, Error> {
+        let mut mint_info = self.mint_info().await?;
+        mint_info.signature = None;
+
+        let payload = mint_info.signing_payload()?;
+        mint_info.signature = Some(self.sign_mint_info(payload).await?);
+
+        Ok(mint_info)
+    }
+
+    /// Sign the canonical mint info payload, reusing the last signature when
+    /// the payload has not changed.
+    async fn sign_mint_info(&self, payload: Vec<u8>) -> Result<String, Error> {
+        if let Some(cached) = self.mint_info_signature.load().as_ref() {
+            if cached.payload == payload {
+                return Ok(cached.signature.clone());
+            }
+        }
+
+        let signature = self.signatory.sign(payload.clone()).await?.to_string();
+
+        self.mint_info_signature
+            .store(Some(Arc::new(MintInfoSignature {
+                payload,
+                signature: signature.clone(),
+            })));
+
+        Ok(signature)
+    }
+
+    /// Set mint info
+    ///
+    /// The signature is dropped before persisting: it is derived from
+    /// everything else here, never configuration.
+    #[instrument(skip_all)]
+    pub async fn set_mint_info(&self, mut mint_info: MintInfo) -> Result<(), Error> {
         tracing::info!("Updating mint info");
+        mint_info.signature = None;
         let mint_info_bytes = serde_json::to_vec(&mint_info)?;
         let mut tx = self.localstore.begin_transaction().await?;
         tx.kv_write(
@@ -811,10 +881,11 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn set_mint_info_and_quote_ttl(
         &self,
-        mint_info: MintInfo,
+        mut mint_info: MintInfo,
         quote_ttl: QuoteTTL,
     ) -> Result<(), Error> {
         tracing::info!("Updating mint info and quote TTL");
+        mint_info.signature = None;
         let mint_info_bytes = serde_json::to_vec(&mint_info)?;
         let quote_ttl_bytes = serde_json::to_vec(&quote_ttl)?;
         let mut tx = self.localstore.begin_transaction().await?;
@@ -1501,6 +1572,7 @@ mod tests {
     use std::str::FromStr;
     use std::sync::Arc;
 
+    use bitcoin::secp256k1::schnorr::Signature;
     use cdk_common::melt::MeltQuoteRequest;
     use cdk_common::mint::{OperationKind, SagaStateEnum};
     use cdk_common::nut00::KnownMethod;
@@ -1536,12 +1608,17 @@ mod tests {
     /// isolation from `DbSignatory`'s rotation logic.
     struct MockSignatory {
         updates: watch::Sender<SignatoryKeysets>,
+        identity_key: cdk_common::SecretKey,
     }
 
     impl MockSignatory {
         fn new(initial: SignatoryKeysets) -> Self {
             let (updates, _) = watch::channel(initial);
-            Self { updates }
+            Self {
+                updates,
+                identity_key: cdk_signatory::identity::derive_identity_key(b"mock identity seed")
+                    .expect("derive"),
+            }
         }
 
         /// Inject a new keyset snapshot through the subscription.
@@ -1565,6 +1642,10 @@ mod tests {
 
         async fn verify_proofs(&self, _proofs: Vec<cdk_common::Proof>) -> Result<(), Error> {
             Err(Error::Custom("unsupported in mock".to_string()))
+        }
+
+        async fn sign(&self, payload: Vec<u8>) -> Result<Signature, Error> {
+            cdk_signatory::identity::sign(&self.identity_key, &payload)
         }
 
         async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
@@ -1652,6 +1733,190 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    /// A signatory that counts how many times the mint asked it to sign.
+    struct CountingSignatory {
+        inner: Arc<dyn Signatory + Send + Sync>,
+        signs: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Signatory for CountingSignatory {
+        fn name(&self) -> String {
+            self.inner.name()
+        }
+
+        async fn blind_sign(
+            &self,
+            blinded_messages: Vec<BlindedMessage>,
+        ) -> Result<Vec<BlindSignature>, Error> {
+            self.inner.blind_sign(blinded_messages).await
+        }
+
+        async fn verify_proofs(&self, proofs: Vec<cdk_common::Proof>) -> Result<(), Error> {
+            self.inner.verify_proofs(proofs).await
+        }
+
+        async fn sign(&self, payload: Vec<u8>) -> Result<Signature, Error> {
+            self.signs
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.inner.sign(payload).await
+        }
+
+        async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
+            self.inner.keysets().await
+        }
+
+        async fn subscribe_keysets(&self) -> Result<watch::Receiver<SignatoryKeysets>, Error> {
+            self.inner.subscribe_keysets().await
+        }
+
+        async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
+            self.inner.rotate_keyset(args).await
+        }
+    }
+
+    async fn create_counting_mint() -> (Mint, Arc<std::sync::atomic::AtomicUsize>) {
+        let keystore = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory keystore"),
+        );
+        let inner = Arc::new(
+            DbSignatory::new(
+                keystore,
+                b"info signing seed",
+                Default::default(),
+                Default::default(),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+        let signs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let signatory = Arc::new(CountingSignatory {
+            inner,
+            signs: signs.clone(),
+        });
+
+        (create_mint_with_signatory(signatory).await, signs)
+    }
+
+    #[tokio::test]
+    async fn served_mint_info_verifies_against_the_advertised_pubkey() {
+        let (mint, _) = create_counting_mint().await;
+        let mint_info = mint.signed_mint_info().await.expect("signed mint info");
+
+        assert!(mint_info.signature.is_some());
+        mint_info.verify_signature().expect("verify");
+    }
+
+    /// The HTTP layer stamps `time` after the mint signs. NUT-06 excludes it
+    /// from the payload precisely so that stays valid.
+    #[tokio::test]
+    async fn stamping_time_after_signing_does_not_invalidate_the_signature() {
+        let (mint, _) = create_counting_mint().await;
+        let mint_info = mint.signed_mint_info().await.expect("signed mint info");
+
+        mint_info
+            .clone()
+            .time(crate::util::unix_time())
+            .verify_signature()
+            .expect("verify with a stamped time");
+        mint_info
+            .time(1_u64)
+            .verify_signature()
+            .expect("verify with any other time");
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_mint_info_is_signed_once() {
+        let (mint, signs) = create_counting_mint().await;
+
+        let first = mint.signed_mint_info().await.expect("signed mint info");
+        let second = mint.signed_mint_info().await.expect("signed mint info");
+
+        assert_eq!(first.signature, second.signature);
+        assert_eq!(signs.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn changing_the_mint_info_produces_a_new_signature() {
+        let (mint, signs) = create_counting_mint().await;
+        let first = mint.signed_mint_info().await.expect("signed mint info");
+
+        mint.set_mint_info(first.clone().motd("changed"))
+            .await
+            .expect("set mint info");
+
+        let second = mint.signed_mint_info().await.expect("signed mint info");
+
+        assert_ne!(first.signature, second.signature);
+        assert_eq!(signs.load(std::sync::atomic::Ordering::Relaxed), 2);
+        second.verify_signature().expect("verify");
+    }
+
+    /// A mint upgraded across the NUT-06 identity change finds a persisted
+    /// `MintInfo.pubkey` that no longer matches what the signatory signs with.
+    /// It must advertise the signatory's key, not the stored one.
+    #[tokio::test]
+    async fn stored_pubkey_is_replaced_when_the_signatory_identity_changes() {
+        let localstore = Arc::new(
+            new_with_state(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                MintInfo::default(),
+            )
+            .await
+            .expect("in-memory db"),
+        );
+
+        let boot = |seed: &'static [u8]| {
+            let localstore = localstore.clone();
+            async move {
+                let keystore = Arc::new(
+                    cdk_sqlite::mint::memory::empty()
+                        .await
+                        .expect("in-memory keystore"),
+                );
+                let signatory = Arc::new(
+                    DbSignatory::new(keystore, seed, Default::default(), Default::default())
+                        .await
+                        .expect("DbSignatory::new"),
+                );
+                let pubkey = signatory.keysets().await.expect("keysets").pubkey;
+                let mint = Mint::new(
+                    MintInfo::default(),
+                    signatory,
+                    localstore,
+                    HashMap::new(),
+                    1000,
+                    1000,
+                )
+                .await
+                .expect("Mint::new");
+                (mint, pubkey)
+            }
+        };
+
+        let (first, first_pubkey) = boot(b"identity-seed-before-upgrade").await;
+        assert_eq!(
+            first.mint_info().await.expect("mint info").pubkey,
+            Some(first_pubkey)
+        );
+        drop(first);
+
+        let (second, second_pubkey) = boot(b"identity-seed-after-upgrade").await;
+        assert_ne!(first_pubkey, second_pubkey);
+        assert_eq!(
+            second.mint_info().await.expect("mint info").pubkey,
+            Some(second_pubkey),
+            "the persisted pubkey must follow the signatory, not outlive it"
+        );
     }
 
     #[tokio::test]
@@ -1972,6 +2237,10 @@ mod tests {
 
         async fn verify_proofs(&self, proofs: Vec<cdk_common::Proof>) -> Result<(), Error> {
             self.inner.verify_proofs(proofs).await
+        }
+
+        async fn sign(&self, payload: Vec<u8>) -> Result<Signature, Error> {
+            self.inner.sign(payload).await
         }
 
         async fn keysets(&self) -> Result<SignatoryKeysets, Error> {

@@ -175,7 +175,7 @@ pub(crate) async fn get_mint_info(
     Ok(Json(
         state
             .mint
-            .mint_info()
+            .signed_mint_info()
             .await
             .map_err(|err| {
                 tracing::error!("Could not get mint info: {}", err);
