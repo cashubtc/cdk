@@ -301,7 +301,7 @@ impl Mint {
 
             seen_processors.push(Arc::clone(processor));
 
-            tracing::info!("Starting payment wait task for {:?}", key);
+            tracing::info!("Starting payment wait task for processor {:?} (key {:?} - single gRPC processor handles all methods e.g. Bolt11+Bolt12 for Sat)", Arc::as_ptr(processor), key);
 
             match processor.start().await {
                 Ok(()) => {
@@ -646,7 +646,7 @@ impl Mint {
 
             seen_processors.push(Arc::clone(processor));
 
-            tracing::info!("Starting payment wait task for {:?}", key);
+            tracing::info!("Starting payment wait task for processor {:?} (key {:?} - single gRPC processor handles all methods e.g. Bolt11+Bolt12 for Sat)", Arc::as_ptr(processor), key);
 
             // Clone for the spawned task
             let mint = Arc::clone(&mint);
