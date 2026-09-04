@@ -316,22 +316,22 @@ pub fn npubcash_get_pubkey(nostr_secret_key: String) -> Result<String, FfiError>
 }
 
 /// Parse a Nostr secret key from either hex or nsec format
-fn parse_nostr_secret_key(key: &str) -> Result<cdk_nostr::nostr_sdk::Keys, FfiError> {
+fn parse_nostr_secret_key(key: &str) -> Result<cdk_nostr::nostr::prelude::Keys, FfiError> {
     // Try parsing as nsec (bech32) first
     if key.starts_with("nsec") {
-        cdk_nostr::nostr_sdk::Keys::parse(key)
+        cdk_nostr::nostr::prelude::Keys::parse(key)
             .map_err(|e| FfiError::internal(format!("Invalid nsec key: {}", e)))
     } else {
         // Try parsing as hex
-        let secret_key = cdk_nostr::nostr_sdk::SecretKey::parse(key)
+        let secret_key = cdk_nostr::nostr::prelude::SecretKey::parse(key)
             .map_err(|e| FfiError::internal(format!("Invalid hex secret key: {}", e)))?;
-        Ok(cdk_nostr::nostr_sdk::Keys::new(secret_key))
+        Ok(cdk_nostr::nostr::prelude::Keys::new(secret_key))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use cdk_nostr::nostr_sdk::{Keys, ToBech32};
+    use cdk_nostr::nostr::prelude::{Keys, ToBech32};
     use cdk_nostr::npubcash::types::UserDataContainer;
     use cdk_nostr::npubcash::{UserData, UserResponse};
 

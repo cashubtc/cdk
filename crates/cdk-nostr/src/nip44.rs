@@ -3,8 +3,8 @@
 //! The conversation key is derived with secp256k1 ECDH; payloads are padded,
 //! ChaCha20-encrypted, HMAC-SHA256 authenticated and base64-encoded.
 
-use nostr_sdk::nips::nip44 as nostr_nip44;
-use nostr_sdk::{PublicKey, SecretKey};
+use nostr::prelude::nip44 as nostr_nip44;
+use nostr::prelude::{PublicKey, SecretKey};
 
 use crate::error::{Error, Result};
 

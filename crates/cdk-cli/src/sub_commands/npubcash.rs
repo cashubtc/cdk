@@ -10,7 +10,7 @@ use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{Wallet, WalletRepository};
 use cdk::StreamExt;
 use clap::Subcommand;
-use nostr_sdk::ToBech32;
+use nostr::prelude::ToBech32;
 
 /// Helper function to get wallet for a specific mint URL
 async fn get_wallet_for_mint(

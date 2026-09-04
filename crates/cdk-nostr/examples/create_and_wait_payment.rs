@@ -16,7 +16,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use cdk_nostr::nostr_sdk::{Keys, ToBech32};
+use cdk_nostr::nostr::prelude::{Keys, ToBech32};
 use cdk_nostr::npubcash::{JwtAuthProvider, NpubCashClient};
 
 #[tokio::main]

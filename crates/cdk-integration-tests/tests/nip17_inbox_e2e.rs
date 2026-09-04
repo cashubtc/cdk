@@ -15,7 +15,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cdk_nostr::inbox::{Nip17Event, NostrInbox, NostrInboxListener};
-use nostr_sdk::{Client as NostrClient, EventBuilder, EventId, Filter, Keys, Kind, RelayUrl};
+use nostr::prelude::{
+    EventId, Filter, FinalizeEvent, Keys, Kind, PrivateDirectMessageBuilder, RelayUrl,
+};
+use nostr_sdk::prelude::{Client as NostrClient, SignerAuthenticator};
 use tokio::sync::mpsc;
 
 /// Manage a local `nostr-rs-relay` subprocess on a free port.
@@ -96,7 +99,7 @@ async fn wait_for_relay(port: u16, timeout: Duration) -> bool {
 /// Wait until the gift wrap is fetchable from the relay, so the test does not
 /// depend on publish/subscribe timing.
 async fn wait_for_gift_wrap(relay_url: &RelayUrl, wrap_id: EventId, timeout: Duration) -> bool {
-    let client = NostrClient::new(Keys::generate());
+    let client = NostrClient::new();
     if client.add_relay(relay_url.clone()).await.is_err() {
         return false;
     }
@@ -108,7 +111,8 @@ async fn wait_for_gift_wrap(relay_url: &RelayUrl, wrap_id: EventId, timeout: Dur
             return false;
         }
         let events = client
-            .fetch_events(Filter::new().id(wrap_id), Duration::from_secs(2))
+            .fetch_events(Filter::new().id(wrap_id))
+            .timeout(Duration::from_secs(2))
             .await;
         match events {
             Ok(events) if !events.is_empty() => return true,
@@ -124,20 +128,25 @@ async fn publish_gift_wrap(
     receiver: &Keys,
     content: &str,
 ) -> EventId {
-    let client = NostrClient::new(sender.clone());
+    let client = NostrClient::builder()
+        .authenticator(SignerAuthenticator::new(sender.clone()))
+        .build();
     client
         .add_relay(relay_url.clone())
         .await
         .expect("add relay");
     client.connect().await;
 
-    let rumor = EventBuilder::new(Kind::from_u16(14), content).build(sender.public_key());
+    let gift_wrap = PrivateDirectMessageBuilder::new(receiver.public_key(), content)
+        .finalize(sender)
+        .expect("build gift wrap");
     let output = client
-        .gift_wrap_to(vec![relay_url.clone()], &receiver.public_key(), rumor, None)
+        .send_event(&gift_wrap)
+        .broadcast()
         .await
         .expect("publish gift wrap");
 
-    output.val
+    output.value
 }
 
 /// Listener that forwards events into a channel for assertions.
@@ -208,8 +217,16 @@ async fn nip17_inbox_receives_unwrapped_rumor_and_survives_restart() {
     let event = recv_until(&mut rx, wrap_one, Duration::from_secs(15)).await;
     assert_eq!(event.wrap_id, wrap_one);
     assert_eq!(event.sender, sender.public_key());
-    assert_eq!(event.rumor.kind, Kind::from_u16(14));
+    assert_eq!(event.rumor.kind, Kind::PrivateDirectMessage);
     assert_eq!(event.rumor.pubkey, sender.public_key());
+    assert!(
+        event
+            .rumor
+            .tags
+            .public_keys()
+            .any(|public_key| public_key == receiver.public_key()),
+        "rumor must identify the receiver"
+    );
     assert_eq!(event.rumor.content, content_one);
     // NIP-59: rumors carry an id (ensured by make_seal) but are unsigned
     assert!(event.rumor.id.is_some());
