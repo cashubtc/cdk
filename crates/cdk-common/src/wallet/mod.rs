@@ -1226,29 +1226,27 @@ pub trait Wallet: Send + Sync {
         quote_id: &str,
         proofs: Proofs,
         metadata: HashMap<String, String>,
-    ) -> Result<Self::PreparedMelt<'_>, Self::Error> {
-        self.prepare_melt_proofs_with_options(
-            quote_id,
-            proofs,
-            MeltPrepareOptions {
-                metadata,
-                ..Default::default()
-            },
-        )
-        .await
-    }
+    ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
 
     /// Prepare a melt operation with specific proofs and additional options
     ///
     /// P2PK/HTLC-locked proofs are signed with `options.p2pk_signing_keys` plus
     /// any signing keys known to the wallet, and HTLC preimages from
     /// `options.preimages` are attached, before the proofs are reserved.
+    ///
+    /// The default implementation preserves compatibility with existing
+    /// implementors by forwarding only `options.metadata` to
+    /// [`prepare_melt_proofs`](Wallet::prepare_melt_proofs). Implementors that
+    /// support locked-input options should override this method.
     async fn prepare_melt_proofs_with_options(
         &self,
         quote_id: &str,
         proofs: Proofs,
         options: MeltPrepareOptions,
-    ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
+    ) -> Result<Self::PreparedMelt<'_>, Self::Error> {
+        self.prepare_melt_proofs(quote_id, proofs, options.metadata)
+            .await
+    }
 
     /// Prepare a melt operation from an encoded token
     ///
@@ -1260,29 +1258,27 @@ pub trait Wallet: Send + Sync {
         quote_id: &str,
         encoded_token: &str,
         metadata: HashMap<String, String>,
-    ) -> Result<Self::PreparedMelt<'_>, Self::Error> {
-        self.prepare_melt_token_with_options(
-            quote_id,
-            encoded_token,
-            MeltPrepareOptions {
-                metadata,
-                ..Default::default()
-            },
-        )
-        .await
-    }
+    ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
 
     /// Prepare a melt operation from an encoded token with additional options
     ///
     /// Same as [`prepare_melt_token`](Wallet::prepare_melt_token), with locked
     /// inputs signed as described in
     /// [`prepare_melt_proofs_with_options`](Wallet::prepare_melt_proofs_with_options).
+    ///
+    /// The default implementation preserves compatibility with existing
+    /// implementors by forwarding only `options.metadata` to
+    /// [`prepare_melt_token`](Wallet::prepare_melt_token). Implementors that
+    /// support locked-input options should override this method.
     async fn prepare_melt_token_with_options(
         &self,
         quote_id: &str,
         encoded_token: &str,
         options: MeltPrepareOptions,
-    ) -> Result<Self::PreparedMelt<'_>, Self::Error>;
+    ) -> Result<Self::PreparedMelt<'_>, Self::Error> {
+        self.prepare_melt_token(quote_id, encoded_token, options.metadata)
+            .await
+    }
 
     /// Swap proofs
     async fn swap(
