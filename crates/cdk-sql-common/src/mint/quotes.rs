@@ -591,7 +591,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
     let payment_proof = column_as_nullable_string!(payment_proof);
     let options = column_as_nullable_string!(options);
     let options = options.and_then(|o| serde_json::from_str(&o).ok());
-    let created_time: i64 = column_as_number!(created_time);
+    let created_time: u64 = column_as_number!(created_time);
     let paid_time = column_as_nullable_number!(paid_time);
     let payment_method = PaymentMethod::from_str(&column_as_string!(payment_method))?;
     let extra_json = column_as_nullable_string!(&extra_json)
@@ -652,7 +652,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
         payment_proof,
         request_lookup_id,
         options,
-        created_time as u64,
+        created_time,
         paid_time,
         payment_method,
         extra_json,
@@ -686,8 +686,8 @@ where
             "#,
         )?
         .bind("quote_id", quote_id.to_string())
-        .bind("inputs_amount", inputs_amount.to_i64())
-        .bind("inputs_fee", inputs_fee.to_i64())
+        .bind_u64("inputs_amount", inputs_amount.to_u64())?
+        .bind_u64("inputs_fee", inputs_fee.to_u64())?
         .execute(&self.inner)
         .await?;
 
@@ -724,13 +724,13 @@ where
                 "blinded_message",
                 message.blinded_secret.to_bytes().to_vec(),
             )
-            .bind("amount", message.amount.to_i64())
+            .bind_u64("amount", message.amount.to_u64())?
             .bind("keyset_id", message.keyset_id.to_string())
             .bind("quote_id", quote_id.map(|q| q.to_string()))
-            .bind("created_time", current_time as i64)
+            .bind_u64("created_time", current_time)?
             .bind("operation_kind", operation.kind().to_string())
             .bind("operation_id", operation.id().to_string())
-            .bind("order_index", i as i64)
+            .bind_u64("order_index", i as u64)?
             .execute(&self.inner)
             .await
             {
@@ -923,8 +923,8 @@ where
             )?
             .bind("quote_id", quote.id.to_string())
             .bind("payment_id", payment.payment_id)
-            .bind("amount", payment.amount.to_i64())
-            .bind("timestamp", payment.time as i64)
+            .bind_u64("amount", payment.amount.to_u64())?
+            .bind_u64("timestamp", payment.time)?
             .execute(&self.inner)
             .await
             .map_err(|err| {
@@ -944,8 +944,8 @@ where
                 "#,
             )?
             .bind("quote_id", quote.id.to_string())
-            .bind("amount", amount_issued.to_i64())
-            .bind("timestamp", current_time as i64)
+            .bind_u64("amount", amount_issued.to_u64())?
+            .bind_u64("timestamp", current_time)?
             .execute(&self.inner)
             .await?;
         }
@@ -966,9 +966,9 @@ where
             "#,
         )?
         .bind("quote_id", quote.id.to_string())
-        .bind("amount_issued", quote.amount_issued().to_i64())
-        .bind("amount_paid", quote.amount_paid().to_i64())
-        .bind("current_time", current_time as i64)
+        .bind_u64("amount_issued", quote.amount_issued().to_u64())?
+        .bind_u64("amount_paid", quote.amount_paid().to_u64())?
+        .bind_u64("current_time", current_time)?
         .execute(&self.inner)
         .await
         .inspect_err(|err| {
@@ -1016,15 +1016,15 @@ where
             "#,
         )?
         .bind("id", quote.id.to_string())
-        .bind("amount", quote.amount.clone().map(|a| a.to_i64()))
+        .bind_u64("amount", quote.amount.clone().map(|a| a.to_u64()))?
         .bind("unit", quote.unit.to_string())
         .bind("request", quote.request.clone())
-        .bind("expiry", quote.expiry as i64)
+        .bind_u64("expiry", quote.expiry)?
         .bind("request_lookup_id", quote.request_lookup_id.to_string())
         .bind("pubkey", quote.pubkey.map(|p| p.to_string()))
-        .bind("created_time", quote.created_time as i64)
-        .bind("updated_at", quote.updated_at() as i64)
-        .bind("last_checked", quote.last_checked() as i64)
+        .bind_u64("created_time", quote.created_time)?
+        .bind_u64("updated_at", quote.updated_at())?
+        .bind_u64("last_checked", quote.last_checked())?
         .bind("payment_method", quote.payment_method.to_string())
         .bind("request_lookup_id_kind", quote.request_lookup_id.kind())
         .bind(
@@ -1066,11 +1066,11 @@ where
         )?
         .bind("id", quote.id.to_string())
         .bind("unit", quote.unit.to_string())
-        .bind("amount", quote.amount().to_i64())
+        .bind_u64("amount", quote.amount().to_u64())?
         .bind("request", serde_json::to_string(&quote.request)?)
-        .bind("fee_reserve", quote.fee_reserve().to_i64())
+        .bind_u64("fee_reserve", quote.fee_reserve().to_u64())?
         .bind("state", quote.state.to_string())
-        .bind("expiry", quote.expiry as i64)
+        .bind_u64("expiry", quote.expiry)?
         .bind("payment_proof", quote.payment_proof)
         .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
         .bind("fee_options", fee_options_json)
@@ -1082,8 +1082,8 @@ where
             "request_lookup_id",
             quote.request_lookup_id.as_ref().map(|id| id.to_string()),
         )
-        .bind("created_time", quote.created_time as i64)
-        .bind("paid_time", quote.paid_time.map(|t| t as i64))
+        .bind_u64("created_time", quote.created_time)?
+        .bind_u64("paid_time", quote.paid_time)?
         .bind(
             "options",
             quote.options.map(|o| serde_json::to_string(&o).ok()),
@@ -1140,9 +1140,9 @@ where
             quote.payment_proof = payment_proof.clone();
             query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time, payment_proof = :payment_proof, fee_reserve = :fee_reserve, estimated_blocks = :estimated_blocks, selected_fee_index = :selected_fee_index WHERE id = :id"#)?
                 .bind("state", state.to_string())
-                .bind("paid_time", current_time as i64)
+                .bind_u64("paid_time", current_time)?
                 .bind("payment_proof", payment_proof)
-                .bind("fee_reserve", quote.fee_reserve().value() as i64)
+                .bind_u64("fee_reserve", quote.fee_reserve().value())?
                 .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
                 .bind("selected_fee_index", quote.selected_fee_index.map(i64::from))
                 .bind("id", quote.id.to_string())
@@ -1151,7 +1151,7 @@ where
         } else {
             query(r#"UPDATE melt_quote SET state = :state, fee_reserve = :fee_reserve, estimated_blocks = :estimated_blocks, selected_fee_index = :selected_fee_index WHERE id = :id"#)?
                 .bind("state", state.to_string())
-                .bind("fee_reserve", quote.fee_reserve().value() as i64)
+                .bind_u64("fee_reserve", quote.fee_reserve().value())?
                 .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
                 .bind("selected_fee_index", quote.selected_fee_index.map(i64::from))
                 .bind("id", quote.id.to_string())
@@ -1293,8 +1293,8 @@ where
             "#,
         )?
         .bind("quote_id", quote_id.to_string())
-        .bind("last_checked", last_checked as i64)
-        .bind("threshold", threshold as i64)
+        .bind_u64("last_checked", last_checked)?
+        .bind_u64("threshold", threshold)?
         .execute(&*conn)
         .await?;
 

@@ -610,7 +610,8 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
 
-        let mut query_str = "SELECT COALESCE(SUM(amount), 0) as total FROM proof".to_string();
+        let mut query_str =
+            "SELECT CAST(COALESCE(SUM(amount), 0) AS BIGINT) as total FROM proof".to_string();
         let mut where_clauses = Vec::new();
         let states = states
             .unwrap_or_default()
@@ -649,16 +650,15 @@ where
         let balance = q
             .pluck(&*conn)
             .await?
-            .map(|n| {
-                // SQLite SUM returns INTEGER which we need to convert to u64
-                match n {
-                    crate::stmt::Column::Integer(i) => Ok(i as u64),
-                    crate::stmt::Column::Real(f) => Ok(f as u64),
-                    _ => Err(Error::Database(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "Invalid balance type",
-                    )))),
-                }
+            .map(|n| match n {
+                Column::Integer(i) => u64::try_from(i).map_err(|_| {
+                    ConversionError::InvalidConversion("balance".to_owned(), "Number".to_owned())
+                        .into()
+                }),
+                _ => Err(Error::Database(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid balance type",
+                )))),
             })
             .transpose()?
             .unwrap_or(0);
@@ -806,7 +806,7 @@ where
                     .map(|s| serde_json::to_string(&s).ok()),
             )
             .bind("unit", proof.unit.to_string())
-            .bind("amount", u64::from(proof.proof.amount) as i64)
+            .bind_u64("amount", u64::from(proof.proof.amount))?
             .bind("keyset_id", proof.proof.keyset_id.to_string())
             .bind("secret", proof.proof.secret.to_string())
             .bind("c", proof.proof.c.to_bytes().to_vec())
@@ -900,8 +900,8 @@ where
         let mint_url = transaction.mint_url.to_string();
         let direction = transaction.direction.to_string();
         let unit = transaction.unit.to_string();
-        let amount = u64::from(transaction.amount) as i64;
-        let fee = u64::from(transaction.fee) as i64;
+        let amount = u64::from(transaction.amount);
+        let fee = u64::from(transaction.fee);
         let ys = transaction
             .ys
             .iter()
@@ -938,10 +938,10 @@ where
            .bind("mint_url", mint_url)
            .bind("direction", direction)
            .bind("unit", unit)
-           .bind("amount", amount)
-           .bind("fee", fee)
+           .bind_u64("amount", amount)?
+           .bind_u64("fee", fee)?
            .bind("ys", ys)
-           .bind("timestamp", transaction.timestamp as i64)
+           .bind_u64("timestamp", transaction.timestamp)?
            .bind("memo", transaction.memo)
            .bind(
                "metadata",
@@ -1159,7 +1159,7 @@ where
         .bind("icon_url", icon_url)
         .bind("urls", urls)
         .bind("motd", motd)
-        .bind("mint_time", time.map(|v| v as i64))
+        .bind_u64("mint_time", time)?
         .bind("tos_url", tos_url)
         .execute(&*conn)
         .await?;
@@ -1212,8 +1212,8 @@ where
             .bind("id", keyset.id.to_string())
             .bind("unit", keyset.unit.to_string())
             .bind("active", keyset.active)
-            .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
-            .bind("final_expiry", keyset.final_expiry.map(|v| v as i64))
+            .bind_u64("input_fee_ppk", keyset.input_fee_ppk)?
+            .bind_u64("final_expiry", keyset.final_expiry)?
             .bind("keyset_u32", u32::from(keyset.id))
             .execute(&tx)
             .await?;
@@ -1262,23 +1262,23 @@ where
             )?
             .bind("id", quote.id.to_string())
             .bind("mint_url", quote.mint_url.to_string())
-            .bind("amount", quote.amount.map(|a| a.to_i64()))
+            .bind_u64("amount", quote.amount.map(|a| a.to_u64()))?
             .bind("unit", quote.unit.to_string())
             .bind("request", quote.request)
             .bind("state", quote.state.to_string())
-            .bind("expiry", quote.expiry as i64)
+            .bind_u64("expiry", quote.expiry)?
             .bind(
                 "secret_key",
                 quote.secret_key.map(|key| key.to_secret_hex()),
             )
             .bind("payment_method", quote.payment_method.to_string())
-            .bind("amount_issued", quote.amount_issued.to_i64())
-            .bind("amount_paid", quote.amount_paid.to_i64())
-            .bind("updated_at", quote.updated_at as i64)
+            .bind_u64("amount_issued", quote.amount_issued.to_u64())?
+            .bind_u64("amount_paid", quote.amount_paid.to_u64())?
+            .bind_u64("updated_at", quote.updated_at)?
             .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
-            .bind("version", quote.version as i64)
-            .bind("new_version", new_version as i64)
-            .bind("expected_version", expected_version as i64)
+            .bind("version", quote.version)
+            .bind("new_version", new_version)
+            .bind("expected_version", expected_version)
             .bind("used_by_operation", quote.used_by_operation)
             .execute(&*conn).await?;
 
@@ -1342,18 +1342,18 @@ where
         )?
         .bind("id", quote.id.to_string())
         .bind("unit", quote.unit.to_string())
-        .bind("amount", u64::from(quote.amount) as i64)
+        .bind_u64("amount", u64::from(quote.amount))?
         .bind("request", quote.request)
-        .bind("fee_reserve", u64::from(quote.fee_reserve) as i64)
+        .bind_u64("fee_reserve", u64::from(quote.fee_reserve))?
         .bind("state", quote.state.to_string())
-        .bind("expiry", quote.expiry as i64)
+        .bind_u64("expiry", quote.expiry)?
         .bind("payment_proof", quote.payment_proof)
         .bind("payment_method", quote.payment_method.to_string())
         .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
         .bind("fee_index", quote.fee_index.map(i64::from))
-        .bind("version", quote.version as i64)
-        .bind("new_version", new_version as i64)
-        .bind("expected_version", expected_version as i64)
+        .bind("version", quote.version)
+        .bind("new_version", new_version)
+        .bind("expected_version", expected_version)
         .bind("mint_url", quote.mint_url.map(|m| m.to_string()))
         .bind("used_by_operation", quote.used_by_operation)
         .execute(&*conn)
@@ -1480,14 +1480,14 @@ where
         .bind("id", saga.id.to_string())
         .bind("kind", saga.kind.to_string())
         .bind("state", state_json)
-        .bind("amount", u64::from(saga.amount) as i64)
+        .bind_u64("amount", u64::from(saga.amount))?
         .bind("mint_url", saga.mint_url.to_string())
         .bind("unit", saga.unit.to_string())
         .bind("quote_id", saga.quote_id)
-        .bind("created_at", saga.created_at as i64)
-        .bind("updated_at", saga.updated_at as i64)
+        .bind_u64("created_at", saga.created_at)?
+        .bind_u64("updated_at", saga.updated_at)?
         .bind("data", data_json)
-        .bind("version", saga.version as i64)
+        .bind("version", saga.version)
         .execute(&*conn)
         .await?;
 
@@ -1561,14 +1561,14 @@ where
         .bind("id", saga.id.to_string())
         .bind("kind", saga.kind.to_string())
         .bind("state", state_json)
-        .bind("amount", u64::from(saga.amount) as i64)
+        .bind_u64("amount", u64::from(saga.amount))?
         .bind("mint_url", saga.mint_url.to_string())
         .bind("unit", saga.unit.to_string())
         .bind("quote_id", saga.quote_id)
-        .bind("updated_at", saga.updated_at as i64)
+        .bind_u64("updated_at", saga.updated_at)?
         .bind("data", data_json)
-        .bind("new_version", saga.version as i64)
-        .bind("expected_version", expected_version as i64)
+        .bind("new_version", saga.version)
+        .bind("expected_version", expected_version)
         .execute(&*conn)
         .await?;
 
@@ -1933,7 +1933,7 @@ where
             .bind("pubkey", pubkey.to_bytes().to_vec())
             .bind("derivation_index", derivation_index)
             .bind("derivation_path", derivation_path.to_string())
-            .bind("created_time", unix_time() as i64)
+            .bind_u64("created_time", unix_time())?
             .execute(&*conn)
             .await?;
 

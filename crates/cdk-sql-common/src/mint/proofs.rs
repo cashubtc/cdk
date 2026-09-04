@@ -167,7 +167,7 @@ where
                   "#,
             )?
             .bind("y", y)
-            .bind("amount", proof.amount.to_i64())
+            .bind_u64("amount", proof.amount.to_u64())?
             .bind("keyset_id", proof.keyset_id.to_string())
             .bind("secret", proof.secret.to_string())
             .bind("c", proof.c.to_bytes().to_vec())
@@ -177,7 +177,7 @@ where
             )
             .bind("state", "UNSPENT".to_string())
             .bind("quote_id", quote_id.clone().map(|q| q.to_string()))
-            .bind("created_time", current_time as i64)
+            .bind_u64("created_time", current_time)?
             .bind("operation_kind", operation.kind().to_string())
             .bind("operation_id", operation.id().to_string())
             .execute(&self.inner)
