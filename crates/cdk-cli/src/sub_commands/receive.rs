@@ -9,8 +9,9 @@ use cdk::util::unix_time;
 use cdk::wallet::{ReceiveOptions, WalletRepository};
 use cdk::Amount;
 use clap::Args;
-use nostr_sdk::prelude::nip04;
-use nostr_sdk::prelude::{Filter, Keys, Kind, RelayCapabilities, SignerAuthenticator, Timestamp};
+use nostr::prelude::nip04;
+use nostr::prelude::{Filter, Keys, Kind, PublicKey, SecretKey as NostrSecretKey, Timestamp};
+use nostr_sdk::prelude::{Client, RelayCapabilities, SignerAuthenticator};
 
 use crate::nostr_storage;
 use crate::terminal::escape_control;
@@ -54,8 +55,7 @@ pub async fn receive(
             .iter()
             .map(|s| {
                 if s.starts_with("nsec") {
-                    let nostr_key =
-                        nostr_sdk::prelude::SecretKey::from_str(s).expect("Invalid secret key");
+                    let nostr_key = NostrSecretKey::from_str(s).expect("Invalid secret key");
 
                     SecretKey::from_str(&nostr_key.to_secret_hex())
                 } else {
@@ -82,7 +82,7 @@ pub async fn receive(
             //wallet.add_p2pk_signing_key(nostr_signing_key).await;
             let nostr_key = match sub_command_args.nostr_key.as_ref() {
                 Some(nostr_key) => {
-                    let secret_key = nostr_sdk::prelude::SecretKey::from_str(nostr_key)?;
+                    let secret_key = NostrSecretKey::from_str(nostr_key)?;
                     let secret_key = SecretKey::from_str(&secret_key.to_secret_hex())?;
                     Some(secret_key)
                 }
@@ -189,7 +189,7 @@ async fn nostr_receive(
 
     let x_only_pubkey = verifying_key.x_only_public_key();
 
-    let nostr_pubkey = nostr_sdk::prelude::PublicKey::from_hex(&x_only_pubkey.to_string())?;
+    let nostr_pubkey = PublicKey::from_hex(&x_only_pubkey.to_string())?;
 
     let since = since.map(|s| Timestamp::from(s as u64));
 
@@ -204,7 +204,7 @@ async fn nostr_receive(
     };
 
     let keys = Keys::from_str(&(nostr_signing_key).to_secret_hex())?;
-    let client = nostr_sdk::prelude::Client::builder()
+    let client = Client::builder()
         .authenticator(SignerAuthenticator::new(keys.clone()))
         .build();
 

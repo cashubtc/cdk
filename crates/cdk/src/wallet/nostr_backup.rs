@@ -6,8 +6,8 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use nostr_sdk::prelude::*;
-use nostr_sdk::prelude::{Client as NostrClient, Filter, Keys};
+use nostr::prelude::{EventId, Filter, Keys, PublicKey};
+use nostr_sdk::prelude::{Client as NostrClient, RelayCapabilities, SignerAuthenticator};
 use tracing::instrument;
 
 use super::wallet_repository::WalletRepository;

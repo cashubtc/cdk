@@ -12,9 +12,11 @@
 
 use std::sync::{Arc, Mutex};
 
+use nostr::prelude::{
+    EventId, Filter, Keys, Kind, PublicKey, RelayUrl, SecretKey, Timestamp, UnsignedEvent,
+};
 use nostr_sdk::prelude::{
-    Client, ClientNotification, EventId, Filter, Keys, Kind, PublicKey, RelayUrl, SecretKey,
-    SignerAuthenticator, StreamExt, Timestamp, UnsignedEvent, UnwrappedGift,
+    Client, ClientNotification, SignerAuthenticator, StreamExt, UnwrappedGift,
 };
 use tokio_util::sync::CancellationToken;
 

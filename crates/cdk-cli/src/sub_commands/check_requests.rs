@@ -6,9 +6,8 @@ use cdk::mint_url::MintUrl;
 use cdk::nuts::Token;
 use cdk::wallet::{ReceiveOptions, WalletRepository};
 use cdk_common::PaymentRequestPayload;
-use nostr_sdk::prelude::{
-    Filter, Keys, Kind, PublicKey, SecretKey, SignerAuthenticator, UnwrappedGift,
-};
+use nostr::prelude::{Filter, Keys, Kind, PublicKey, SecretKey, UnwrappedGift};
+use nostr_sdk::prelude::{Client, SignerAuthenticator};
 
 use super::create_request::StoredNostrWaitInfo;
 use crate::terminal::escape_control;
@@ -50,7 +49,7 @@ pub async fn check_requests(wallet_repository: &WalletRepository) -> Result<()> 
                 let keys = Keys::new(secret_key);
                 let pubkey = PublicKey::from_hex(&info.pubkey_hex)?;
 
-                let client = nostr_sdk::prelude::Client::builder()
+                let client = Client::builder()
                     .authenticator(SignerAuthenticator::new(keys.clone()))
                     .build();
                 for r in &info.relays {

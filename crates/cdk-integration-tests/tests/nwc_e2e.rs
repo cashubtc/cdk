@@ -25,9 +25,8 @@ use cdk::wallet::WalletNwcHandler;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
 use cdk_nostr::nwc::{NwcService, NwcServiceConfig};
-use nostr_sdk::prelude::{
-    Client as NostrClient, Filter, Keys, Kind, PublicKey, RelayUrl, SecretKey,
-};
+use nostr::prelude::{Filter, Keys, Kind, PublicKey, RelayUrl, SecretKey};
+use nostr_sdk::prelude::Client as NostrClient;
 use nwc::prelude::{
     ListTransactionsRequest, LookupInvoiceRequest, MakeInvoiceRequest, NostrWalletConnect,
     NostrWalletConnectUri, PayInvoiceRequest, TransactionState,

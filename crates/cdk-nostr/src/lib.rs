@@ -27,6 +27,6 @@ pub mod nwc;
 
 pub use error::{Error, Result};
 pub use inbox::{Nip17Event, NostrInbox, NostrInboxListener};
-// Re-export the underlying SDK so downstream crates depend on a single source
-// of truth without pulling `nostr_sdk` into their own dependency lists.
-pub use nostr_sdk;
+// Re-export the protocol and SDK crates so downstream crates use the same
+// versions without adding direct dependencies.
+pub use {nostr, nostr_sdk};

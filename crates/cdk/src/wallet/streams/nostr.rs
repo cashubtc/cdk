@@ -7,6 +7,8 @@ use std::task::Poll;
 
 use cdk_common::PaymentRequestPayload;
 use futures::{FutureExt, Stream, StreamExt};
+use nostr::prelude::{Filter, Keys, Kind, PublicKey, UnwrappedGift};
+use nostr_sdk::prelude::{Client, ClientNotification, RelayCapabilities, SignerAuthenticator};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -35,24 +37,20 @@ pub struct NostrPaymentEventStream {
 }
 
 impl NostrPaymentEventStream {
-    pub fn new(
-        keys: nostr_sdk::prelude::Keys,
-        relays: Vec<String>,
-        pubkey: nostr_sdk::prelude::PublicKey,
-    ) -> Self {
+    pub fn new(keys: Keys, relays: Vec<String>, pubkey: PublicKey) -> Self {
         let cancel = CancellationToken::new();
         let (tx, rx) = mpsc::channel::<Result<PaymentRequestPayload, Error>>(32);
 
         let init_cancel = cancel.clone();
         let init_fut = Box::pin(async move {
-            let client = nostr_sdk::prelude::Client::builder()
-                .authenticator(nostr_sdk::prelude::SignerAuthenticator::new(keys.clone()))
+            let client = Client::builder()
+                .authenticator(SignerAuthenticator::new(keys.clone()))
                 .build();
 
             for r in &relays {
                 client
                     .add_relay(r.clone())
-                    .capabilities(nostr_sdk::prelude::RelayCapabilities::READ)
+                    .capabilities(RelayCapabilities::READ)
                     .await
                     .map_err(|e| Error::Custom(format!("Add relay {r}: {e}")))?;
             }
@@ -60,9 +58,7 @@ impl NostrPaymentEventStream {
             client.connect().await;
 
             // Subscribe to events addressed to `pubkey`
-            let filter = nostr_sdk::prelude::Filter::new()
-                .pubkey(pubkey)
-                .kind(nostr_sdk::prelude::Kind::GiftWrap);
+            let filter = Filter::new().pubkey(pubkey).kind(Kind::GiftWrap);
             let mut notifications = client.notifications();
             client
                 .subscribe(filter)
@@ -77,7 +73,7 @@ impl NostrPaymentEventStream {
                         notification = notifications.next() => notification,
                     };
                     let event = match notification {
-                        Some(nostr_sdk::prelude::ClientNotification::Event { event, .. }) => event,
+                        Some(ClientNotification::Event { event, .. }) => event,
                         Some(_) => continue,
                         None => {
                             let _ = tx
@@ -87,7 +83,7 @@ impl NostrPaymentEventStream {
                         }
                     };
 
-                    match nostr_sdk::prelude::UnwrappedGift::from_gift_wrap(&keys, &event) {
+                    match UnwrappedGift::from_gift_wrap(&keys, &event) {
                         Ok(unwrapped) => {
                             match serde_json::from_str::<PaymentRequestPayload>(
                                 &unwrapped.rumor.content,
