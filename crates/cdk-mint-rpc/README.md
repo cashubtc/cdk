@@ -11,9 +11,25 @@ gRPC server and CLI client for managing Cashu mints in the Cashu Development Kit
 ## Components
 
 This crate includes:
-- gRPC server for mint management
-- CLI client for interacting with the gRPC server
+- gRPC server for mint management, embedded in `cdk-mintd`
+- `cdk-mint-cli`, a CLI client for the gRPC server
 - Protocol definitions for mint management
+
+## Services
+
+The management API is a set of per-domain gRPC services. Each lives in its own
+versioned package under `src/proto/` and is served on the same port.
+
+| Service | Package | Scope |
+|---|---|---|
+| `MintInfoService` | `cdk_mint_info_v1` | Mint metadata: name, descriptions, MOTD, icon and terms-of-service URLs, mint URLs, contacts |
+| `KeysetService` | `cdk_mint_keyset_v1` | Keyset rotation |
+| `PaymentMethodService` | `cdk_mint_payment_method_v1` | Mint (NUT-04) and melt (NUT-05) method settings, and the mint-wide disabled flags |
+| `QuoteService` | `cdk_mint_quote_v1` | Quote time-to-live settings and mint quote state overrides |
+| `WalletService` | `cdk_mint_wallet_v1` | On-chain wallet balance, deposit addresses, and transactions |
+
+Every request must carry the `x-cdk-protocol-version` header set to
+`cdk_common::MINT_RPC_PROTOCOL_VERSION`. The CLI adds it for you.
 
 ## Installation
 
@@ -37,14 +53,25 @@ cdk-mint-rpc = "*"
 cdk-mint-cli --help
 
 # Get mint info
-cdk-mint-cli info
+cdk-mint-cli get-info
 
-# Manage keysets
-cdk-mint-cli keysets list
+# Update the message of the day
+cdk-mint-cli update-motd "Maintenance tonight at 22:00 UTC"
+
+# Rotate to the next keyset for a unit
+cdk-mint-cli rotate-next-keyset --unit sat
+
+# Point at a specific mint
+cdk-mint-cli --addr https://127.0.0.1:8086 get-info
 ```
 
+### TLS
 
-
+When the working directory (`--work-dir`, default `~/.cdk-mint-rpc-cli`)
+contains a `tls/` directory with `ca.pem`, `client.pem`, and `client.key`, the
+CLI connects with mutual TLS. Without it, the CLI connects in plaintext, which
+the mint only accepts when explicitly configured to allow it. See
+[CERTIFICATES.md](CERTIFICATES.md) for generating the certificates.
 
 ## License
 
