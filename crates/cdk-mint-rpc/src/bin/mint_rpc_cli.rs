@@ -95,10 +95,8 @@ enum Commands {
     /// Remove contact
     RemoveContact(subcommands::RemoveContactCommand),
     /// Update mint (NUT-04) payment method settings
-    #[command(alias = "update-nut04")]
     UpdateMintMethod(subcommands::UpdateMintMethodCommand),
     /// Update melt (NUT-05) payment method settings
-    #[command(alias = "update-nut05")]
     UpdateMeltMethod(subcommands::UpdateMeltMethodCommand),
     /// Enable or disable minting and melting
     UpdateDisabled(subcommands::UpdateDisabledCommand),
@@ -107,7 +105,6 @@ enum Commands {
     /// Get quote ttl
     GetQuoteTtl,
     /// Update mint quote state
-    #[command(alias = "update-nut04-quote-state")]
     UpdateMintQuoteState(subcommands::UpdateMintQuoteStateCommand),
     /// Rotate next keyset
     RotateNextKeyset(subcommands::RotateNextKeysetCommand),

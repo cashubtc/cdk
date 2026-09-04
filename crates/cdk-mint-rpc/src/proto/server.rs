@@ -10,7 +10,6 @@ use cdk::nuts::{CurrencyUnit, MintInfo, MintQuoteState, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk::Amount;
 use cdk_common::grpc::create_version_check_interceptor;
-use cdk_common::nut00::KnownMethod;
 use cdk_common::payment::WaitPaymentResponse;
 use thiserror::Error;
 use tokio::sync::Notify;
@@ -19,7 +18,6 @@ use tokio::time::Duration;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status};
 
-use crate::cdk_mint_server::{CdkMint, CdkMintServer};
 use crate::info::mint_info_service_server::{MintInfoService, MintInfoServiceServer};
 use crate::keyset::keyset_service_server::{KeysetService, KeysetServiceServer};
 use crate::payment_method::payment_method_service_server::{
@@ -27,14 +25,7 @@ use crate::payment_method::payment_method_service_server::{
 };
 use crate::quote::quote_service_server::{QuoteService, QuoteServiceServer};
 use crate::wallet::wallet_service_server::{WalletService, WalletServiceServer};
-use crate::{
-    ContactInfo, DynWalletInfoProvider, GetInfoRequest, GetInfoResponse, GetQuoteTtlRequest,
-    GetQuoteTtlResponse, RotateNextKeysetRequest, RotateNextKeysetResponse, UpdateContactRequest,
-    UpdateDescriptionRequest, UpdateIconUrlRequest, UpdateMotdRequest, UpdateNameRequest,
-    UpdateNut04QuoteRequest, UpdateNut04Request, UpdateNut05Request, UpdateQuoteTtlRequest,
-    UpdateResponse, UpdateTosUrlRequest, UpdateUrlRequest, WalletAddressPage,
-    WalletTransactionPage,
-};
+use crate::{DynWalletInfoProvider, WalletAddressPage, WalletTransactionPage};
 
 const DEFAULT_TRANSACTION_LIMIT: u32 = 20;
 const MAX_TRANSACTION_LIMIT: u32 = 100;
@@ -113,9 +104,8 @@ impl MintRPCServer {
 
     /// Enables or disables management RPC mint quote state overrides.
     ///
-    /// This includes the legacy quote-state update endpoint and is disabled by
-    /// default because the paid state records a payment without confirmation
-    /// from the configured payment backend.
+    /// Disabled by default because the paid state records a payment without
+    /// confirmation from the configured payment backend.
     pub fn with_mint_quote_payment_override(mut self, enabled: bool) -> Self {
         self.allow_mint_quote_payment_override = enabled;
         self
@@ -221,13 +211,6 @@ impl MintRPCServer {
 
                 Server::builder()
                     .tls_config(tls_config)?
-                    .add_service(CdkMintServer::with_interceptor(
-                        self.clone(),
-                        create_version_check_interceptor(
-                            cdk_common::grpc::VERSION_HEADER,
-                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
-                        ),
-                    ))
                     .add_service(MintInfoServiceServer::with_interceptor(
                         self.clone(),
                         create_version_check_interceptor(
@@ -267,13 +250,6 @@ impl MintRPCServer {
             None => {
                 tracing::warn!("No valid TLS configuration found, starting insecure server");
                 Server::builder()
-                    .add_service(CdkMintServer::with_interceptor(
-                        self.clone(),
-                        create_version_check_interceptor(
-                            cdk_common::grpc::VERSION_HEADER,
-                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
-                        ),
-                    ))
                     .add_service(MintInfoServiceServer::with_interceptor(
                         self.clone(),
                         create_version_check_interceptor(
@@ -343,9 +319,6 @@ impl MintRPCServer {
 
     /// Applies a mutation to the mint's info and returns the info in effect
     /// after the update
-    ///
-    /// Shared by the legacy [`CdkMint`] service and [`MintInfoService`] while
-    /// both are served.
     async fn update_mint_info_with(
         &self,
         mutate: impl FnOnce(&mut MintInfo) + Send,
@@ -367,9 +340,6 @@ impl MintRPCServer {
     }
 
     /// Rotates to the next keyset for the given unit
-    ///
-    /// Shared by the legacy [`CdkMint`] service and [`KeysetService`] while
-    /// both are served.
     async fn rotate_keyset(
         &self,
         unit: CurrencyUnit,
@@ -392,9 +362,6 @@ impl MintRPCServer {
     }
 
     /// Returns the mint's quote time-to-live settings
-    ///
-    /// Shared by the legacy [`CdkMint`] service and [`QuoteService`] while both
-    /// are served.
     async fn quote_ttl(&self) -> Result<QuoteTTL, Status> {
         self.mint
             .quote_ttl()
@@ -405,8 +372,7 @@ impl MintRPCServer {
     /// Updates the mint's quote time-to-live settings, keeping the current
     /// value of any setting that is not given
     ///
-    /// Returns the settings in effect after the update. Shared by the legacy
-    /// [`CdkMint`] service and [`QuoteService`] while both are served.
+    /// Returns the settings in effect after the update.
     async fn set_quote_ttl(
         &self,
         mint_ttl: Option<u64>,
@@ -430,8 +396,7 @@ impl MintRPCServer {
     /// Records a payment against a mint quote as though the payment backend
     /// had reported it, marking the quote paid
     ///
-    /// Returns the quote as it stands after the update. Shared by the legacy
-    /// [`CdkMint`] service and [`QuoteService`] while both are served.
+    /// Returns the quote as it stands after the update.
     async fn set_mint_quote_paid(&self, quote_id: &str) -> Result<MintQuote, Status> {
         self.ensure_mint_quote_state_override_allowed()?;
 
@@ -506,11 +471,7 @@ impl MintRPCServer {
     /// Updates the settings of one mint (NUT-04) payment method, keeping the
     /// current value of any setting that is not given
     ///
-    /// Returns the method settings in effect after the update. Shared by the
-    /// legacy [`CdkMint`] service and [`PaymentMethodService`] while both are
-    /// served; `disabled` toggles minting for the whole mint and is only
-    /// passed by the legacy service.
-    #[allow(clippy::too_many_arguments)]
+    /// Returns the method settings in effect after the update.
     async fn set_mint_method(
         &self,
         unit: &str,
@@ -519,7 +480,6 @@ impl MintRPCServer {
         max_amount: Option<u64>,
         options: Option<cdk::nuts::nut04::MintMethodOptions>,
         method_name: Option<String>,
-        disabled: Option<bool>,
     ) -> Result<MintMethodSettings, Status> {
         self.ensure_mutation_allowed().await?;
         let mut info = self
@@ -565,10 +525,6 @@ impl MintRPCServer {
             .nut04
             .methods
             .push(updated_method_settings.clone());
-
-        if let Some(disabled) = disabled {
-            info.nuts.nut04.disabled = disabled;
-        }
 
         self.mint
             .set_mint_info(info)
@@ -620,11 +576,7 @@ impl MintRPCServer {
     /// Updates the settings of one melt (NUT-05) payment method, keeping the
     /// current value of any setting that is not given
     ///
-    /// Returns the method settings in effect after the update. Shared by the
-    /// legacy [`CdkMint`] service and [`PaymentMethodService`] while both are
-    /// served; `disabled` toggles melting for the whole mint and is only
-    /// passed by the legacy service.
-    #[allow(clippy::too_many_arguments)]
+    /// Returns the method settings in effect after the update.
     async fn set_melt_method(
         &self,
         unit: &str,
@@ -633,7 +585,6 @@ impl MintRPCServer {
         max_amount: Option<u64>,
         options: Option<cdk::nuts::nut05::MeltMethodOptions>,
         method_name: Option<String>,
-        disabled: Option<bool>,
     ) -> Result<MeltMethodSettings, Status> {
         self.ensure_mutation_allowed().await?;
         let mut info = self
@@ -680,10 +631,6 @@ impl MintRPCServer {
             .methods
             .push(updated_method_settings.clone());
 
-        if let Some(disabled) = disabled {
-            info.nuts.nut05.disabled = disabled;
-        }
-
         self.mint
             .set_mint_info(info)
             .await
@@ -697,389 +644,6 @@ impl Drop for MintRPCServer {
     fn drop(&mut self) {
         tracing::debug!("Dropping mint rpc server");
         self.shutdown.notify_one();
-    }
-}
-
-#[tonic::async_trait]
-impl CdkMint for MintRPCServer {
-    /// Returns information about the mint
-    async fn get_info(
-        &self,
-        _request: Request<GetInfoRequest>,
-    ) -> Result<Response<GetInfoResponse>, Status> {
-        let info = self
-            .mint
-            .mint_info()
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
-
-        let total_issued = self
-            .mint
-            .total_issued()
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
-
-        let total_issued: Amount = Amount::try_sum(total_issued.values().cloned())
-            .map_err(|_| Status::internal("Overflow".to_string()))?;
-
-        let total_redeemed = self
-            .mint
-            .total_redeemed()
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
-
-        let total_redeemed: Amount = Amount::try_sum(total_redeemed.values().cloned())
-            .map_err(|_| Status::internal("Overflow".to_string()))?;
-
-        let contact = info
-            .contact
-            .unwrap_or_default()
-            .into_iter()
-            .map(|c| ContactInfo {
-                method: c.method,
-                info: c.info,
-            })
-            .collect();
-
-        let response = Response::new(GetInfoResponse {
-            name: info.name,
-            description: info.description,
-            long_description: info.description_long,
-            version: info.version.map(|v| v.to_string()),
-            contact,
-            motd: info.motd,
-            icon_url: info.icon_url,
-            tos_url: info.tos_url,
-            urls: info.urls.unwrap_or_default(),
-            total_issued: total_issued.into(),
-            total_redeemed: total_redeemed.into(),
-        });
-
-        Ok(response)
-    }
-
-    /// Updates the mint's message of the day
-    async fn update_motd(
-        &self,
-        request: Request<UpdateMotdRequest>,
-    ) -> Result<Response<UpdateResponse>, Status> {
-        self.ensure_mutation_allowed().await?;
-        let motd = request.into_inner().motd;
-        self.update_mint_info_with(|info| info.motd = Some(motd))
-            .await?;
-
-        Ok(Response::new(UpdateResponse {}))
-    }
-
-    /// Updates the mint's short description
-    async fn update_short_description(
-        &self,
-        request: Request<UpdateDescriptionRequest>,
-    ) -> Result<Response<UpdateResponse>, Status> {
-        self.ensure_mutation_allowed().await?;
-        let description = request.into_inner().description;
-        self.update_mint_info_with(|info| info.description = Some(description))
-            .await?;
-        Ok(Response::new(UpdateResponse {}))
-    }
-
-    /// Updates the mint's long description
-    async fn update_long_description(
-        &self,
-        request: Request<UpdateDescriptionRequest>,
-    ) -> Result<Response<UpdateResponse>, Status> {
-        self.ensure_mutation_allowed().await?;
-        let description = request.into_inner().description;
-        self.update_mint_info_with(|info| info.description_long = Some(description))
-            .await?;
-        Ok(Response::new(UpdateResponse {}))
-    }
-
-    /// Updates the mint's name
-    async fn update_name(
-        &self,
-        request: Request<UpdateNameRequest>,
-    ) -> Result<Response<UpdateResponse>, Status> {
-        self.ensure_mutation_allowed().await?;
-        let name = request.into_inner().name;
-        self.update_mint_info_with(|info| info.name = Some(name))
-            .await?;
-        Ok(Response::new(UpdateResponse {}))
-    }
-
-    /// Updates the mint's icon URL
-    async fn update_icon_url(
-        &self,
-        request: Request<UpdateIconUrlRequest>,
-    ) -> Result<Response<UpdateResponse>, Status> {
-        self.ensure_mutation_allowed().await?;
-        let icon_url = request.into_inner().icon_url;
-        self.update_mint_info_with(|info| info.icon_url = Some(icon_url))
-            .await?;
-        Ok(Response::new(UpdateResponse {}))
-    }
-
-    /// Updates the mint's terms of service URL
-    async fn update_tos_url(
-        &self,
-        request: Request<UpdateTosUrlRequest>,
-    ) -> Result<Response<UpdateResponse>, Status> {
-        self.ensure_mutation_allowed().await?;
-        let tos_url = request.into_inner().tos_url;
-        self.update_mint_info_with(|info| info.tos_url = Some(tos_url))
-            .await?;
-        Ok(Response::new(UpdateResponse {}))
-    }
-
-    /// Adds a URL to the mint's list of URLs
-    async fn add_url(
-        &self,
-        request: Request<UpdateUrlRequest>,
-    ) -> Result<Response<UpdateResponse>, Status> {
-        self.ensure_mutation_allowed().await?;
-        let url = request.into_inner().url;
-        self.update_mint_info_with(|info| info.urls.get_or_insert_with(Vec::new).push(url))
-            .await?;
-        Ok(Response::new(UpdateResponse {}))
-    }
-
-    /// Removes a URL from the mint's list of URLs
-    async fn remove_url(
-        &self,
-        request: Request<UpdateUrlRequest>,
-    ) -> Result<Response<UpdateResponse>, Status> {
-        self.ensure_mutation_allowed().await?;
-        let url = request.into_inner().url;
-        self.update_mint_info_with(|info| {
-            let mut urls = info.urls.take().unwrap_or_default();
-            urls.retain(|u| u != &url);
-            info.urls = if urls.is_empty() { None } else { Some(urls) };
-        })
-        .await?;
-        Ok(Response::new(UpdateResponse {}))
-    }
-
-    /// Adds a contact method to the mint's contact information
-    async fn add_contact(
-        &self,
-        request: Request<UpdateContactRequest>,
-    ) -> Result<Response<UpdateResponse>, Status> {
-        self.ensure_mutation_allowed().await?;
-        let request_inner = request.into_inner();
-        self.update_mint_info_with(|info| {
-            info.contact
-                .get_or_insert_with(Vec::new)
-                .push(cdk::nuts::ContactInfo::new(
-                    request_inner.method,
-                    request_inner.info,
-                ))
-        })
-        .await?;
-        Ok(Response::new(UpdateResponse {}))
-    }
-    /// Removes a contact method from the mint's contact information
-    async fn remove_contact(
-        &self,
-        request: Request<UpdateContactRequest>,
-    ) -> Result<Response<UpdateResponse>, Status> {
-        self.ensure_mutation_allowed().await?;
-        let request_inner = request.into_inner();
-        self.update_mint_info_with(|info| {
-            if let Some(contact) = info.contact.as_mut() {
-                let contact_info =
-                    cdk::nuts::ContactInfo::new(request_inner.method, request_inner.info);
-                contact.retain(|x| x != &contact_info);
-            }
-        })
-        .await?;
-        Ok(Response::new(UpdateResponse {}))
-    }
-
-    /// Updates the mint's NUT-04 (mint) settings
-    async fn update_nut04(
-        &self,
-        request: Request<UpdateNut04Request>,
-    ) -> Result<Response<UpdateResponse>, Status> {
-        let request = request.into_inner();
-
-        let options = request.options.map(|options| {
-            let description = options.description;
-            match PaymentMethod::from_str(&request.method) {
-                Ok(PaymentMethod::Known(KnownMethod::Bolt12)) => {
-                    cdk::nuts::nut04::MintMethodOptions::Bolt12 { description }
-                }
-                _ => cdk::nuts::nut04::MintMethodOptions::Bolt11 { description },
-            }
-        });
-
-        self.set_mint_method(
-            &request.unit,
-            &request.method,
-            request.min_amount,
-            request.max_amount,
-            options,
-            request.method_name,
-            request.disabled,
-        )
-        .await?;
-
-        Ok(Response::new(UpdateResponse {}))
-    }
-
-    /// Updates the mint's NUT-05 (melt) settings
-    async fn update_nut05(
-        &self,
-        request: Request<UpdateNut05Request>,
-    ) -> Result<Response<UpdateResponse>, Status> {
-        let request = request.into_inner();
-
-        let options = request
-            .options
-            .map(|options| cdk::nuts::nut05::MeltMethodOptions::Bolt11 {
-                amountless: options.amountless,
-            });
-
-        self.set_melt_method(
-            &request.unit,
-            &request.method,
-            request.min_amount,
-            request.max_amount,
-            options,
-            request.method_name,
-            request.disabled,
-        )
-        .await?;
-
-        Ok(Response::new(UpdateResponse {}))
-    }
-
-    /// Updates the mint's quote time-to-live settings
-    async fn update_quote_ttl(
-        &self,
-        request: Request<UpdateQuoteTtlRequest>,
-    ) -> Result<Response<UpdateResponse>, Status> {
-        self.ensure_mutation_allowed().await?;
-        let request = request.into_inner();
-
-        self.set_quote_ttl(request.mint_ttl, request.melt_ttl)
-            .await?;
-
-        Ok(Response::new(UpdateResponse {}))
-    }
-
-    /// Gets the mint's quote time-to-live settings
-    async fn get_quote_ttl(
-        &self,
-        _request: Request<GetQuoteTtlRequest>,
-    ) -> Result<Response<GetQuoteTtlResponse>, Status> {
-        let ttl = self.quote_ttl().await?;
-
-        Ok(Response::new(GetQuoteTtlResponse {
-            mint_ttl: ttl.mint_ttl,
-            melt_ttl: ttl.melt_ttl,
-        }))
-    }
-
-    /// Updates a specific NUT-04 quote's state
-    async fn update_nut04_quote(
-        &self,
-        request: Request<UpdateNut04QuoteRequest>,
-    ) -> Result<Response<UpdateNut04QuoteRequest>, Status> {
-        self.ensure_mutation_allowed().await?;
-        self.ensure_mint_quote_state_override_allowed()?;
-        let request = request.into_inner();
-
-        let state = MintQuoteState::from_str(&request.state)
-            .map_err(|_| Status::invalid_argument("Invalid quote state".to_string()))?;
-
-        let mint_quote = match state {
-            MintQuoteState::Paid => self.set_mint_quote_paid(&request.quote_id).await?,
-            _ => {
-                let quote_id = request
-                    .quote_id
-                    .parse()
-                    .map_err(|_| Status::invalid_argument("Invalid quote id".to_string()))?;
-
-                let mint_quote = self
-                    .mint
-                    .localstore()
-                    .get_mint_quote(&quote_id)
-                    .await
-                    .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
-                    .ok_or(Status::invalid_argument("Could not find quote".to_string()))?;
-
-                // Create a new quote with the same values
-                let quote = MintQuote::new(
-                    Some(mint_quote.id.clone()),          // id
-                    mint_quote.request.clone(),           // request
-                    mint_quote.unit.clone(),              // unit
-                    mint_quote.amount.clone(),            // amount
-                    mint_quote.expiry,                    // expiry
-                    mint_quote.request_lookup_id.clone(), // request_lookup_id
-                    mint_quote.pubkey,                    // pubkey
-                    mint_quote.amount_issued(),           // amount_issued
-                    mint_quote.amount_paid(),             // amount_paid
-                    mint_quote.payment_method.clone(),    // method
-                    0,                                    // created_at
-                    0,                                    // updated_at
-                    vec![],                               // blinded_messages
-                    vec![],                               // payment_ids
-                    None,                                 // extra_json
-                );
-
-                let mint_store = self.mint.localstore();
-                let mut tx = mint_store
-                    .begin_transaction()
-                    .await
-                    .map_err(|_| Status::internal("Could not update quote".to_string()))?;
-                tx.add_mint_quote(quote.clone())
-                    .await
-                    .map_err(|_| Status::internal("Could not update quote".to_string()))?;
-                tx.commit()
-                    .await
-                    .map_err(|_| Status::internal("Could not update quote".to_string()))?;
-
-                self.mint
-                    .localstore()
-                    .get_mint_quote(&quote_id)
-                    .await
-                    .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
-                    .ok_or(Status::invalid_argument("Could not find quote".to_string()))?
-            }
-        };
-
-        Ok(Response::new(UpdateNut04QuoteRequest {
-            state: mint_quote.state().to_string(),
-            quote_id: mint_quote.id.to_string(),
-        }))
-    }
-
-    /// Rotates to the next keyset for the specified currency unit
-    async fn rotate_next_keyset(
-        &self,
-        request: Request<RotateNextKeysetRequest>,
-    ) -> Result<Response<RotateNextKeysetResponse>, Status> {
-        let request = request.into_inner();
-
-        let unit = CurrencyUnit::from_str(&request.unit)
-            .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
-
-        let keyset_info = self
-            .rotate_keyset(
-                unit,
-                request.amounts,
-                request.input_fee_ppk,
-                request.use_keyset_v2,
-                request.final_expiry,
-            )
-            .await?;
-
-        Ok(Response::new(RotateNextKeysetResponse {
-            id: keyset_info.id.to_string(),
-            unit: keyset_info.unit.to_string(),
-            amounts: keyset_info.amounts,
-            input_fee_ppk: keyset_info.input_fee_ppk,
-        }))
     }
 }
 
@@ -1551,7 +1115,6 @@ impl PaymentMethodService for MintRPCServer {
                 request.max_amount,
                 options,
                 request.method_name,
-                None,
             )
             .await?;
 
@@ -1587,7 +1150,6 @@ impl PaymentMethodService for MintRPCServer {
                 request.max_amount,
                 options,
                 request.method_name,
-                None,
             )
             .await?;
 
@@ -1670,8 +1232,6 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::*;
-    use crate::cdk_mint_server::CdkMint;
-    use crate::{GetInfoRequest, UpdateTosUrlRequest};
 
     struct TestWalletInfoProvider;
 
@@ -1891,33 +1451,6 @@ mod tests {
             .expect_err("oversized page should fail");
 
         assert_eq!(error.code(), tonic::Code::InvalidArgument);
-    }
-
-    #[tokio::test]
-    async fn test_get_info_tos_url_none_when_not_set() {
-        let server = create_test_rpc_server().await;
-
-        let response = CdkMint::get_info(&server, Request::new(GetInfoRequest {}))
-            .await
-            .unwrap();
-
-        assert!(response.into_inner().tos_url.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_get_info_includes_tos_url() {
-        let server = create_test_rpc_server().await;
-        let tos = "https://example.com/tos";
-
-        let mut info = server.mint.mint_info().await.unwrap();
-        info.tos_url = Some(tos.to_string());
-        server.mint.set_mint_info(info).await.unwrap();
-
-        let response = CdkMint::get_info(&server, Request::new(GetInfoRequest {}))
-            .await
-            .unwrap();
-
-        assert_eq!(response.into_inner().tos_url.unwrap(), tos);
     }
 
     #[tokio::test]
@@ -2213,50 +1746,6 @@ mod tests {
         assert_eq!(status.code(), tonic::Code::PermissionDenied);
         assert_eq!(status.message(), "Mint quote state override is disabled");
         assert_eq!(amount_paid(&server, &quote_id).await, 0);
-
-        for state in [
-            MintQuoteState::Unpaid,
-            MintQuoteState::Paid,
-            MintQuoteState::Issued,
-        ] {
-            let legacy_status = CdkMint::update_nut04_quote(
-                &server,
-                Request::new(UpdateNut04QuoteRequest {
-                    quote_id: quote_id.clone(),
-                    state: state.to_string(),
-                }),
-            )
-            .await
-            .expect_err("legacy quote state override should be disabled");
-
-            assert_eq!(legacy_status.code(), tonic::Code::PermissionDenied);
-            assert_eq!(
-                legacy_status.message(),
-                "Mint quote state override is disabled"
-            );
-        }
-        assert_eq!(amount_paid(&server, &quote_id).await, 0);
-    }
-
-    #[tokio::test]
-    async fn test_update_tos_url() {
-        let server = create_test_rpc_server().await;
-        let tos = "https://example.com/terms";
-
-        CdkMint::update_tos_url(
-            &server,
-            Request::new(UpdateTosUrlRequest {
-                tos_url: tos.to_string(),
-            }),
-        )
-        .await
-        .unwrap();
-
-        let response = CdkMint::get_info(&server, Request::new(GetInfoRequest {}))
-            .await
-            .unwrap();
-
-        assert_eq!(response.into_inner().tos_url.unwrap(), tos);
     }
 
     #[tokio::test]
@@ -2481,18 +1970,6 @@ mod tests {
             .await
             .with_mutation_guard(Arc::new(RejectingMutationGuard));
 
-        let error = CdkMint::update_tos_url(
-            &server,
-            Request::new(UpdateTosUrlRequest {
-                tos_url: "https://example.com/terms".to_owned(),
-            }),
-        )
-        .await
-        .expect_err("mutation should be rejected");
-
-        assert_eq!(error.code(), Code::FailedPrecondition);
-        assert_eq!(error.message(), "configuration restart pending");
-
         let keyset_error = KeysetService::rotate_next_keyset(
             &server,
             Request::new(crate::keyset::RotateNextKeysetRequest {
@@ -2630,13 +2107,6 @@ mod tests {
                 .motd
                 .is_none()
         );
-
-        assert!(CdkMint::get_info(&server, Request::new(GetInfoRequest {}))
-            .await
-            .expect("read should remain available")
-            .into_inner()
-            .tos_url
-            .is_none());
     }
 
     #[test]
@@ -2911,67 +2381,5 @@ mod tests {
             Some(crate::payment_method::Bolt11MeltMethodOptions { amountless: true })
         );
         assert_eq!(response.method_name, Some("Lightning".to_owned()));
-    }
-
-    #[tokio::test]
-    async fn test_legacy_update_nut04_disabled_flag_still_works() {
-        let server = create_test_rpc_server().await;
-
-        server
-            .update_nut04(Request::new(UpdateNut04Request {
-                unit: "sat".to_owned(),
-                method: "bolt11".to_owned(),
-                disabled: Some(true),
-                min_amount: Some(5),
-                max_amount: None,
-                options: None,
-                method_name: None,
-            }))
-            .await
-            .unwrap();
-
-        let info = server.mint.mint_info().await.unwrap();
-        assert!(info.nuts.nut04.disabled);
-        let settings = info
-            .nuts
-            .nut04
-            .get_settings(
-                &CurrencyUnit::Sat,
-                &PaymentMethod::Known(KnownMethod::Bolt11),
-            )
-            .unwrap();
-        assert_eq!(settings.min_amount, Some(Amount::from(5)));
-    }
-
-    #[tokio::test]
-    async fn test_legacy_update_nut05_disabled_flag_still_works() {
-        let server = create_test_rpc_server().await;
-
-        server
-            .update_nut05(Request::new(UpdateNut05Request {
-                unit: "sat".to_owned(),
-                method: "bolt11".to_owned(),
-                disabled: Some(true),
-                min_amount: Some(7),
-                max_amount: Some(700),
-                options: None,
-                method_name: None,
-            }))
-            .await
-            .unwrap();
-
-        let info = server.mint.mint_info().await.unwrap();
-        assert!(info.nuts.nut05.disabled);
-        assert!(!info.nuts.nut04.disabled);
-        let settings = info
-            .nuts
-            .nut05
-            .get_settings(
-                &CurrencyUnit::Sat,
-                &PaymentMethod::Known(KnownMethod::Bolt11),
-            )
-            .unwrap();
-        assert_eq!(settings.min_amount, Some(Amount::from(7)));
-        assert_eq!(settings.max_amount, Some(Amount::from(700)));
     }
 }
