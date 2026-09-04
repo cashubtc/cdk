@@ -87,9 +87,7 @@ impl NostrPaymentEventStream {
                         }
                     };
 
-                    match nostr_sdk::prelude::UnwrappedGift::from_gift_wrap_async(&keys, &event)
-                        .await
-                    {
+                    match nostr_sdk::prelude::UnwrappedGift::from_gift_wrap(&keys, &event) {
                         Ok(unwrapped) => {
                             match serde_json::from_str::<PaymentRequestPayload>(
                                 &unwrapped.rumor.content,
