@@ -7,8 +7,10 @@
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
-use nostr_sdk::nips::nip44::{self, Version};
-use nostr_sdk::{Event, EventBuilder, Keys, Kind, Tag, TagKind};
+use nostr::prelude::nip44::{self, Version};
+use nostr::prelude::{
+    Error as NostrError, Event, EventBuilder, FinalizeEvent, Keys, Kind, PublicKey, SecretKey, Tag,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -26,15 +28,9 @@ const MINT_LIST_IDENTIFIER: &str = "mint-list";
 /// NUT-27 Error
 #[derive(Debug, Error)]
 pub enum Error {
-    /// Nostr key error
+    /// Nostr protocol error
     #[error(transparent)]
-    NostrKey(#[from] nostr_sdk::key::Error),
-    /// Nostr event builder error
-    #[error(transparent)]
-    NostrEventBuilder(#[from] nostr_sdk::event::builder::Error),
-    /// NIP-44 encryption error
-    #[error(transparent)]
-    Nip44(#[from] nip44::Error),
+    Nostr(#[from] NostrError),
     /// JSON serialization error
     #[error(transparent)]
     Json(#[from] serde_json::Error),
@@ -92,7 +88,7 @@ impl MintBackup {
 ///
 /// # Returns
 ///
-/// A nostr_sdk `Keys` struct containing the derived secret and public keys
+/// A Nostr `Keys` struct containing the derived secret and public keys
 ///
 /// # Example
 ///
@@ -117,7 +113,7 @@ pub fn derive_nostr_keys(seed: &[u8; 64]) -> Result<Keys, Error> {
     let hash = Sha256Hash::hash(&combined_data);
     let private_key_bytes = hash.to_byte_array();
 
-    let secret_key = nostr_sdk::SecretKey::from_slice(&private_key_bytes)?;
+    let secret_key = SecretKey::from_slice(&private_key_bytes)?;
     let keys = Keys::new(secret_key);
 
     Ok(keys)
@@ -160,13 +156,10 @@ pub fn create_backup_event(
     .tag(Tag::identifier(MINT_LIST_IDENTIFIER));
 
     if let Some(client_name) = client {
-        builder = builder.tag(Tag::custom(
-            nostr_sdk::TagKind::Custom(std::borrow::Cow::Borrowed("client")),
-            [client_name],
-        ));
+        builder = builder.tag(Tag::custom("client", [client_name]));
     }
 
-    let event = builder.sign_with_keys(keys)?;
+    let event = builder.finalize(keys)?;
 
     Ok(event)
 }
@@ -196,7 +189,7 @@ pub fn decrypt_backup_event(keys: &Keys, event: &Event) -> Result<MintBackup, Er
     let has_mint_list_tag = event
         .tags
         .iter()
-        .any(|tag| tag.kind() == TagKind::d() && tag.content() == Some(MINT_LIST_IDENTIFIER));
+        .any(|tag| tag.kind() == "d" && tag.content() == Some(MINT_LIST_IDENTIFIER));
 
     if !has_mint_list_tag {
         return Err(Error::MissingIdentifierTag(
@@ -223,7 +216,7 @@ pub fn decrypt_backup_event(keys: &Keys, event: &Event) -> Result<MintBackup, Er
 /// # Returns
 ///
 /// A tuple of (kind, authors, d_tag) that can be used to construct a filter
-pub fn backup_filter_params(keys: &Keys) -> (Kind, nostr_sdk::PublicKey, &'static str) {
+pub fn backup_filter_params(keys: &Keys) -> (Kind, PublicKey, &'static str) {
     (
         Kind::Custom(KIND_APPLICATION_SPECIFIC_DATA),
         keys.public_key(),
@@ -346,7 +339,7 @@ mod tests {
         let has_d_tag = event
             .tags
             .iter()
-            .any(|tag| tag.kind() == TagKind::d() && tag.content() == Some(MINT_LIST_IDENTIFIER));
+            .any(|tag| tag.kind() == "d" && tag.content() == Some(MINT_LIST_IDENTIFIER));
         assert!(has_d_tag, "Event should have 'd' tag with 'mint-list'");
 
         // Decrypt and verify content
@@ -363,9 +356,7 @@ mod tests {
         let event = create_backup_event(&keys, &backup, None).unwrap();
 
         // Should not have a client tag
-        let has_client_tag = event.tags.iter().any(
-            |tag| matches!(tag.kind(), nostr_sdk::TagKind::Custom(cow) if cow.as_ref() == "client"),
-        );
+        let has_client_tag = event.tags.iter().any(|tag| tag.kind() == "client");
         assert!(!has_client_tag);
     }
 
@@ -376,7 +367,7 @@ mod tests {
         // Create an event with wrong kind
         let event = EventBuilder::new(Kind::TextNote, "test")
             .tag(Tag::identifier(MINT_LIST_IDENTIFIER))
-            .sign_with_keys(&keys)
+            .finalize(&keys)
             .unwrap();
 
         let result = decrypt_backup_event(&keys, &event);
@@ -398,7 +389,7 @@ mod tests {
 
         // Create event without the d tag
         let event = EventBuilder::new(Kind::Custom(KIND_APPLICATION_SPECIFIC_DATA), encrypted)
-            .sign_with_keys(&keys)
+            .finalize(&keys)
             .unwrap();
 
         let result = decrypt_backup_event(&keys, &event);
@@ -423,7 +414,7 @@ mod tests {
             encrypted.clone(),
         )
         .tag(Tag::identifier("not-mint-list"))
-        .sign_with_keys(&keys)
+        .finalize(&keys)
         .unwrap();
         assert!(matches!(
             decrypt_backup_event(&keys, &wrong_identifier),
@@ -432,11 +423,8 @@ mod tests {
 
         let mint_list_content_on_wrong_tag =
             EventBuilder::new(Kind::Custom(KIND_APPLICATION_SPECIFIC_DATA), encrypted)
-                .tag(Tag::custom(
-                    nostr_sdk::TagKind::Custom(std::borrow::Cow::Borrowed("client")),
-                    [MINT_LIST_IDENTIFIER],
-                ))
-                .sign_with_keys(&keys)
+                .tag(Tag::custom("client", [MINT_LIST_IDENTIFIER]))
+                .finalize(&keys)
                 .unwrap();
         assert!(matches!(
             decrypt_backup_event(&keys, &mint_list_content_on_wrong_tag),

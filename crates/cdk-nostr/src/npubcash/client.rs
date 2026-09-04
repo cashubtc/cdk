@@ -59,7 +59,7 @@ impl NpubCashClient {
     ///
     /// ```no_run
     /// # use cdk_nostr::npubcash::{NpubCashClient, JwtAuthProvider};
-    /// # use cdk_nostr::nostr_sdk::Keys;
+    /// # use cdk_nostr::nostr_sdk::prelude::Keys;
     /// # use std::sync::Arc;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// # let base_url = "https://npubx.cash".to_string();
@@ -496,7 +496,7 @@ impl NpubCashClient {
 
 #[cfg(test)]
 mod tests {
-    use nostr_sdk::Keys;
+    use nostr_sdk::prelude::Keys;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;

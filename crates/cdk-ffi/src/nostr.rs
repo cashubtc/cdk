@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use cdk_nostr::inbox::{Nip17Event, NostrInbox as CdkNostrInbox};
-use cdk_nostr::nostr_sdk::{RelayUrl, Timestamp};
+use cdk_nostr::nostr_sdk::prelude::{RelayUrl, Timestamp};
 use cdk_nostr::{keys as nostr_keys, nip44 as cdk_nip44};
 
 use crate::error::FfiError;

@@ -13,7 +13,7 @@
 //! ```no_run
 //! use std::sync::Arc;
 //!
-//! use cdk_nostr::nostr_sdk::Keys;
+//! use cdk_nostr::nostr_sdk::prelude::Keys;
 //! use cdk_nostr::npubcash::{JwtAuthProvider, NpubCashClient};
 //!
 //! #[tokio::main]

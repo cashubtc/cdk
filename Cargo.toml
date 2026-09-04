@@ -127,12 +127,16 @@ tonic-prost-build = "0.14.2"
 prost = "0.14"
 rustls = { version = "0.23.27", default-features = false, features = ["ring"] }
 prometheus = { version = "0.14", features = ["process"], default-features = false }
-nostr-sdk = { version = "0.44.1", default-features = false, features = [
+nostr-sdk = { version = "0.45.2", default-features = false }
+nostr = { version = "0.45.3", default-features = false, features = [
     "nip04",
     "nip44",
     "nip47",
-    "nip59"
-]}
+    "nip59",
+    "os-rng",
+    "rand",
+    "std"
+] }
 bitcoin-payment-instructions = { version = "0.7.0", default-features = false }
 dnssec-prover = { version = "0.6.9", default-features = false }
 

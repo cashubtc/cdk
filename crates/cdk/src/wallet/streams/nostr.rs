@@ -6,7 +6,7 @@
 use std::task::Poll;
 
 use cdk_common::PaymentRequestPayload;
-use futures::{FutureExt, Stream};
+use futures::{FutureExt, Stream, StreamExt};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -35,17 +35,24 @@ pub struct NostrPaymentEventStream {
 }
 
 impl NostrPaymentEventStream {
-    pub fn new(keys: nostr_sdk::Keys, relays: Vec<String>, pubkey: nostr_sdk::PublicKey) -> Self {
+    pub fn new(
+        keys: nostr_sdk::prelude::Keys,
+        relays: Vec<String>,
+        pubkey: nostr_sdk::prelude::PublicKey,
+    ) -> Self {
         let cancel = CancellationToken::new();
         let (tx, rx) = mpsc::channel::<Result<PaymentRequestPayload, Error>>(32);
 
         let init_cancel = cancel.clone();
         let init_fut = Box::pin(async move {
-            let client = nostr_sdk::Client::new(keys);
+            let client = nostr_sdk::prelude::Client::builder()
+                .authenticator(nostr_sdk::prelude::SignerAuthenticator::new(keys.clone()))
+                .build();
 
             for r in &relays {
                 client
-                    .add_read_relay(r.clone())
+                    .add_relay(r.clone())
+                    .capabilities(nostr_sdk::prelude::RelayCapabilities::READ)
                     .await
                     .map_err(|e| Error::Custom(format!("Add relay {r}: {e}")))?;
             }
@@ -53,71 +60,61 @@ impl NostrPaymentEventStream {
             client.connect().await;
 
             // Subscribe to events addressed to `pubkey`
-            let filter = nostr_sdk::Filter::new().pubkey(pubkey);
+            let filter = nostr_sdk::prelude::Filter::new().pubkey(pubkey);
+            let mut notifications = client.notifications();
             client
-                .subscribe(filter, None)
+                .subscribe(filter)
                 .await
                 .map_err(|e| Error::Custom(format!("Subscribe: {e}")))?;
 
-            let client_for_handler = client.clone();
             // Pump notifications in a background task into the channel until cancelled
             let _bg = tokio::spawn(async move {
-                // Use handle_notifications to avoid manually wiring broadcast receivers
-                let tx_err = tx.clone();
-                let res = client
-                    .handle_notifications(move |notification| {
-                        let tx = tx.clone();
-                        let client = client_for_handler.clone();
-                        let cancel = init_cancel.clone();
-                        async move {
-                            if cancel.is_cancelled() {
-                                return Ok(true);
-                            }
-                            if let nostr_sdk::RelayPoolNotification::Event { event, .. } =
-                                notification
-                            {
-                                match client.unwrap_gift_wrap(&event).await {
-                                    Ok(unwrapped) => {
-                                        let rumor = unwrapped.rumor;
-                                        match serde_json::from_str::<PaymentRequestPayload>(
-                                            &rumor.content,
-                                        ) {
-                                            Ok(payload) => {
-                                                // Best-effort send; if receiver closed, instruct exit
-                                                if tx.send(Ok(payload)).await.is_err() {
-                                                    return Ok(true);
-                                                }
-                                            }
-                                            Err(e) => {
-                                                let _ = tx
-                                                    .send(Err(Error::Custom(format!(
-                                                        "Invalid payload JSON: {e}"
-                                                    ))))
-                                                    .await;
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        let _ = tx
-                                            .send(Err(Error::Custom(format!(
-                                                "Unwrap gift wrap failed: {e}"
-                                            ))))
-                                            .await;
+                loop {
+                    let notification = tokio::select! {
+                        _ = init_cancel.cancelled() => break,
+                        notification = notifications.next() => notification,
+                    };
+                    let event = match notification {
+                        Some(nostr_sdk::prelude::ClientNotification::Event { event, .. }) => event,
+                        Some(_) => continue,
+                        None => {
+                            let _ = tx
+                                .send(Err(Error::Custom("Notification stream closed".to_string())))
+                                .await;
+                            break;
+                        }
+                    };
+
+                    match nostr_sdk::prelude::UnwrappedGift::from_gift_wrap_async(&keys, &event)
+                        .await
+                    {
+                        Ok(unwrapped) => {
+                            match serde_json::from_str::<PaymentRequestPayload>(
+                                &unwrapped.rumor.content,
+                            ) {
+                                Ok(payload) => {
+                                    if tx.send(Ok(payload)).await.is_err() {
+                                        break;
                                     }
                                 }
+                                Err(e) => {
+                                    let _ = tx
+                                        .send(Err(Error::Custom(format!(
+                                            "Invalid payload JSON: {e}"
+                                        ))))
+                                        .await;
+                                }
                             }
-                            Ok(false)
                         }
-                    })
-                    .await;
-
-                if let Err(e) = res {
-                    let _ = tx_err
-                        .send(Err(Error::Custom(format!(
-                            "Notification handler error: {e}"
-                        ))))
-                        .await;
+                        Err(e) => {
+                            let _ = tx
+                                .send(Err(Error::Custom(format!("Unwrap gift wrap failed: {e}"))))
+                                .await;
+                        }
+                    }
                 }
+
+                client.disconnect().await;
             });
 
             Ok(())

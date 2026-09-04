@@ -38,6 +38,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 home.workspace = true
 nostr-sdk = { workspace = true }
+nostr = { workspace = true }
 url.workspace = true
 lightning.workspace = true
 

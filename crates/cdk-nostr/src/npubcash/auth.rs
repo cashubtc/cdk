@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
-use nostr_sdk::{EventBuilder, Keys, Kind, Tag};
+use nostr_sdk::prelude::{EventBuilder, FinalizeEvent, Keys, Kind, Tag};
 use tokio::sync::RwLock;
 use web_time::SystemTime;
 
@@ -170,18 +170,12 @@ impl JwtAuthProvider {
     }
 
     fn create_nip98_token(&self, url: &str, method: &str) -> Result<String> {
-        let u_tag = Tag::custom(
-            nostr_sdk::TagKind::Custom(std::borrow::Cow::Borrowed("u")),
-            vec![url],
-        );
-        let method_tag = Tag::custom(
-            nostr_sdk::TagKind::Custom(std::borrow::Cow::Borrowed("method")),
-            vec![method],
-        );
+        let u_tag = Tag::custom("u", [url]);
+        let method_tag = Tag::custom("method", [method]);
 
         let event = EventBuilder::new(Kind::Custom(27235), "")
             .tags(vec![u_tag, method_tag])
-            .sign_with_keys(&self.keys)
+            .finalize(&self.keys)
             .map_err(|e| Error::Nostr(e.to_string()))?;
 
         let json = serde_json::to_string(&event)?;
