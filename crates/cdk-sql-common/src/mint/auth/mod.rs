@@ -110,11 +110,11 @@ where
         .bind("id", keyset.id.to_string())
         .bind("unit", keyset.unit.to_string())
         .bind("active", keyset.active)
-        .bind("valid_from", keyset.valid_from as i64)
-        .bind("valid_to", keyset.final_expiry.map(|v| v as i64))
+        .bind_u64("valid_from", keyset.valid_from)?
+        .bind_u64("valid_to", keyset.final_expiry)?
         .bind("derivation_path", keyset.derivation_path.to_string())
         .bind("amounts", serde_json::to_string(&keyset.amounts).ok())
-        .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
+        .bind_u64("input_fee_ppk", keyset.input_fee_ppk)?
         .bind("derivation_path_index", keyset.derivation_path_index)
         .execute(&self.inner)
         .await?;
@@ -185,7 +185,7 @@ where
                    "#,
             )?
             .bind("blinded_message", message.to_bytes().to_vec())
-            .bind("amount", u64::from(signature.amount) as i64)
+            .bind_u64("amount", u64::from(signature.amount))?
             .bind("keyset_id", signature.keyset_id.to_string())
             .bind("c", signature.c.to_bytes().to_vec())
             .execute(&self.inner)

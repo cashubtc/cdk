@@ -384,6 +384,7 @@ macro_rules! mint_db_test {
             get_nonexistent_blind_signatures,
             add_duplicate_blind_signatures,
             add_and_get_keyset_info,
+            keyset_u64_column_bounds,
             add_duplicate_keyset_info,
             get_all_keyset_infos,
             set_and_get_active_keyset,

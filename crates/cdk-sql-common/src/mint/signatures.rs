@@ -115,7 +115,7 @@ where
                         "#,
                     )?
                     .bind("blinded_message", message.to_bytes().to_vec())
-                    .bind("amount", u64::from(signature.amount) as i64)
+                    .bind_u64("amount", u64::from(signature.amount))?
                     .bind("keyset_id", signature.keyset_id.to_string())
                     .bind("c", signature.c.to_bytes().to_vec())
                     .bind("quote_id", quote_id.as_ref().map(|q| q.to_string()))
@@ -127,9 +127,9 @@ where
                         "dleq_s",
                         signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()),
                     )
-                    .bind("created_time", current_time as i64)
-                    .bind("signed_time", current_time as i64)
-                    .bind("order_index", i as i64)
+                    .bind_u64("created_time", current_time)?
+                    .bind_u64("signed_time", current_time)?
+                    .bind_u64("order_index", i as u64)?
                     .execute(&self.inner)
                     .await?;
 
@@ -141,7 +141,7 @@ where
                         DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
                         "#,
                     )?
-                    .bind("amount", u64::from(signature.amount) as i64)
+                    .bind_u64("amount", u64::from(signature.amount))?
                     .bind("keyset_id", signature.keyset_id.to_string())
                     .execute(&self.inner)
                     .await?;
@@ -168,8 +168,8 @@ where
                                 signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()),
                             )
                             .bind("blinded_message", message.to_bytes().to_vec())
-                            .bind("signed_time", current_time as i64)
-                            .bind("amount", u64::from(signature.amount) as i64)
+                            .bind_u64("signed_time", current_time)?
+                            .bind_u64("amount", u64::from(signature.amount))?
                             .execute(&self.inner)
                             .await?;
 
@@ -181,7 +181,7 @@ where
                                 DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
                                 "#,
                             )?
-                            .bind("amount", u64::from(signature.amount) as i64)
+                            .bind_u64("amount", u64::from(signature.amount))?
                             .bind("keyset_id", signature.keyset_id.to_string())
                             .execute(&self.inner)
                             .await?;

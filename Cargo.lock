@@ -1768,6 +1768,7 @@ dependencies = [
  "native-tls",
  "paste",
  "postgres-native-tls",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-postgres",
  "uuid",

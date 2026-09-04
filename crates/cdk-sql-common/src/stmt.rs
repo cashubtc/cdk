@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 
-use cdk_common::database::Error;
+use cdk_common::database::{ConversionError, Error};
 
 use crate::database::DatabaseExecutor;
 use crate::value::Value;
@@ -340,6 +340,30 @@ impl Statement {
         self
     }
 
+    /// Binds a given placeholder to a `u64`, or to NULL when it is absent.
+    ///
+    /// Every integer column is signed, so a value past `i64::MAX` used to wrap
+    /// negative and commit a row that no later read could decode, which failed
+    /// every read of that table rather than only its own row. Refusing the
+    /// write keeps the table readable.
+    #[inline]
+    pub fn bind_u64<C, V>(self, name: C, value: V) -> Result<Self, Error>
+    where
+        C: ToString,
+        V: Into<Option<u64>>,
+    {
+        let name = name.to_string();
+        let value = match value.into() {
+            Some(value) => Value::Integer(
+                i64::try_from(value)
+                    .map_err(|_| ConversionError::ValueOutOfRange(name.clone(), value))?,
+            ),
+            None => Value::Null,
+        };
+
+        Ok(self.bind(name, value))
+    }
+
     /// Binds a single variable with a vector.
     ///
     /// This will rewrite the function from `:foo` (where value is vec![1, 2, 3]) to `:foo0, :foo1,
@@ -466,5 +490,56 @@ mod tests {
 
         assert!(sql.contains("$1, $2, $3"));
         assert_eq!(values.len(), 3);
+    }
+
+    #[test]
+    fn bind_u64_accepts_up_to_i64_max() {
+        let largest = u64::try_from(i64::MAX).expect("i64::MAX is not negative");
+        let (_, values) = query("SELECT :a, :b, :c")
+            .unwrap()
+            .bind_u64("a", 0u64)
+            .unwrap()
+            .bind_u64("b", largest)
+            .unwrap()
+            .bind_u64("c", Some(7u64))
+            .unwrap()
+            .to_sql()
+            .unwrap();
+
+        assert_eq!(
+            values,
+            vec![
+                Value::Integer(0),
+                Value::Integer(i64::MAX),
+                Value::Integer(7)
+            ]
+        );
+    }
+
+    #[test]
+    fn bind_u64_binds_null_when_absent() {
+        let (_, values) = query("SELECT :a")
+            .unwrap()
+            .bind_u64("a", None::<u64>)
+            .unwrap()
+            .to_sql()
+            .unwrap();
+
+        assert_eq!(values, vec![Value::Null]);
+    }
+
+    #[test]
+    fn bind_u64_rejects_past_i64_max() {
+        let oversized = u64::try_from(i64::MAX).expect("i64::MAX is not negative") + 1;
+        let err = query("SELECT :expiry")
+            .unwrap()
+            .bind_u64("expiry", oversized)
+            .expect_err("value does not fit");
+
+        assert!(matches!(
+            err,
+            Error::Conversion(ConversionError::ValueOutOfRange(field, value))
+                if field == "expiry" && value == oversized
+        ));
     }
 }

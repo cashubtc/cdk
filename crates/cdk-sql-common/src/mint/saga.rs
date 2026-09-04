@@ -139,8 +139,8 @@ where
                 .transpose()
                 .map_err(|e| Error::Internal(format!("Failed to serialize melt finalization data: {e}")))?,
         )
-        .bind("created_at", saga.created_at as i64)
-        .bind("updated_at", current_time as i64)
+        .bind_u64("created_at", saga.created_at)?
+        .bind_u64("updated_at", current_time)?
         .execute(&self.inner)
         .await?;
 
@@ -162,7 +162,7 @@ where
             "#,
         )?
         .bind("state", new_state.state())
-        .bind("updated_at", current_time as i64)
+        .bind_u64("updated_at", current_time)?
         .bind("operation_id", saga.operation_id.to_string())
         .execute(&self.inner)
         .await?;
@@ -206,7 +206,7 @@ where
                     Error::Internal(format!("Failed to serialize melt finalization data: {e}"))
                 })?,
         )
-        .bind("updated_at", current_time as i64)
+        .bind_u64("updated_at", current_time)?
         .bind("operation_id", saga.operation_id.to_string())
         .execute(&self.inner)
         .await?;

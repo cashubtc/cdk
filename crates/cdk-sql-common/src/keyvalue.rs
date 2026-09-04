@@ -81,8 +81,8 @@ where
     .bind("secondary_namespace", secondary_namespace.to_owned())
     .bind("key", key.to_owned())
     .bind("value", value.to_vec())
-    .bind("created_time", current_time as i64)
-    .bind("updated_time", current_time as i64)
+    .bind_u64("created_time", current_time)?
+    .bind_u64("updated_time", current_time)?
     .execute(conn)
     .await?;
 
@@ -118,8 +118,8 @@ where
     .bind("secondary_namespace", secondary_namespace.to_owned())
     .bind("key", key.to_owned())
     .bind("value", value.to_vec())
-    .bind("created_time", current_time as i64)
-    .bind("updated_time", current_time as i64)
+    .bind_u64("created_time", current_time)?
+    .bind_u64("updated_time", current_time)?
     .execute(conn)
     .await?;
 
@@ -187,7 +187,7 @@ where
     .bind("key", key.to_owned())
     .bind("expected", expected.to_vec())
     .bind("replacement", replacement.to_vec())
-    .bind("updated_time", unix_time() as i64)
+    .bind_u64("updated_time", unix_time())?
     .execute(conn)
     .await?;
 
@@ -273,7 +273,7 @@ where
 {
     validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
 
-    let current_time = unix_time() as i64;
+    let current_time = unix_time();
     let conn = pool.get().await.map_err(|e| Error::Database(Box::new(e)))?;
     let affected = match expected {
         Some(expected) => {
@@ -289,7 +289,7 @@ where
                 "#,
             )?
             .bind("replacement", replacement.to_vec())
-            .bind("updated_time", current_time)
+            .bind_u64("updated_time", current_time)?
             .bind("primary_namespace", primary_namespace.to_owned())
             .bind("secondary_namespace", secondary_namespace.to_owned())
             .bind("key", key.to_owned())
@@ -317,8 +317,8 @@ where
             .bind("secondary_namespace", secondary_namespace.to_owned())
             .bind("key", key.to_owned())
             .bind("replacement", replacement.to_vec())
-            .bind("created_time", current_time)
-            .bind("updated_time", current_time)
+            .bind_u64("created_time", current_time)?
+            .bind_u64("updated_time", current_time)?
             .execute(&*conn)
             .await?
         }
@@ -390,8 +390,8 @@ where
     .bind("secondary_namespace", secondary_namespace.to_owned())
     .bind("key", key.to_owned())
     .bind("value", value.to_vec())
-    .bind("created_time", current_time as i64)
-    .bind("updated_time", current_time as i64)
+    .bind_u64("created_time", current_time)?
+    .bind_u64("updated_time", current_time)?
     .execute(conn)
     .await?;
 
