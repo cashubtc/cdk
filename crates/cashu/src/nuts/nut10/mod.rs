@@ -269,6 +269,34 @@ pub(crate) fn get_pubkeys_and_required_sigs(
 
 use super::Proofs;
 
+/// Domain-separation tag for the NUT-11 v1 SIG_ALL message (P2PK and HTLC).
+const SIG_ALL_SIG_DOMAIN_TAG: &[u8] = b"Cashu_SigAllSig_v1";
+
+/// NUT-11 v1 SIG_ALL message: domain-separated, length-framed bytes.
+///
+/// Commits to the quote id (empty for swaps), each input's secret and C, then
+/// each output's amount (minimal big-endian bytes) and B_.
+pub(crate) fn sig_all_msg_to_sign_v1(
+    quote_id: Option<&str>,
+    inputs: &Proofs,
+    outputs: &[super::BlindedMessage],
+) -> Vec<u8> {
+    use super::nut20::{amount_to_minimal_bytes, append_len_prefixed};
+
+    let mut msg = Vec::new();
+    msg.extend_from_slice(SIG_ALL_SIG_DOMAIN_TAG);
+    append_len_prefixed(&mut msg, quote_id.unwrap_or("").as_bytes());
+    for proof in inputs {
+        append_len_prefixed(&mut msg, proof.secret.to_string().as_bytes());
+        append_len_prefixed(&mut msg, &proof.c.to_bytes());
+    }
+    for output in outputs {
+        append_len_prefixed(&mut msg, &amount_to_minimal_bytes(output.amount));
+        append_len_prefixed(&mut msg, &output.blinded_secret.to_bytes());
+    }
+    msg
+}
+
 /// Trait for requests that spend proofs (SwapRequest, MeltRequest)
 pub trait SpendingConditionVerification {
     /// Get the input proofs
@@ -280,6 +308,22 @@ pub trait SpendingConditionVerification {
     /// For swap: input secrets + output blinded messages
     /// For melt: input secrets + quote/payment request
     fn sig_all_msg_to_sign(&self) -> String;
+
+    /// Construct the NUT-11 v1 (length-framed) SIG_ALL message to sign
+    fn sig_all_msg_to_sign_v1(&self) -> Vec<u8>;
+
+    /// SIG_ALL message formats accepted during verification, newest first.
+    ///
+    /// Signatures that do not verify under any format are ignored; only unique
+    /// pubkeys with valid signatures count towards thresholds (NUT-11). The
+    /// pre-0.14 format (secrets then B_ values) is not accepted: it does not
+    /// commit to input C values or output amounts.
+    fn sig_all_msgs_to_verify(&self) -> Vec<Vec<u8>> {
+        vec![
+            self.sig_all_msg_to_sign_v1(),
+            self.sig_all_msg_to_sign().into_bytes(),
+        ]
+    }
 
     /// Check if at least one proof in the set has SIG_ALL flag set
     ///
@@ -394,12 +438,13 @@ pub trait SpendingConditionVerification {
             Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
 
         // Dispatch based on secret kind
+        let msgs_to_verify = self.sig_all_msgs_to_verify();
         match first_secret.kind() {
             Kind::P2PK => {
-                nut11::verify_sig_all_p2pk(first_input, self.sig_all_msg_to_sign())?;
+                nut11::verify_sig_all_p2pk(first_input, &msgs_to_verify)?;
             }
             Kind::HTLC => {
-                nut14::verify_sig_all_htlc(first_input, self.sig_all_msg_to_sign())?;
+                nut14::verify_sig_all_htlc(first_input, &msgs_to_verify)?;
             }
         }
 
@@ -465,6 +510,10 @@ mod tests {
         fn sig_all_msg_to_sign(&self) -> String {
             "test message".to_string()
         }
+
+        fn sig_all_msg_to_sign_v1(&self) -> Vec<u8> {
+            sig_all_msg_to_sign_v1(None, &self.inputs, &[])
+        }
     }
 
     fn p2pk_proof_with_sig_flag(sig_flag: SigFlag) -> Proof {
@@ -489,6 +538,18 @@ mod tests {
             dleq: None,
             p2pk_e: None,
         }
+    }
+
+    #[test]
+    fn test_sig_all_msgs_to_verify_lists_accepted_formats() {
+        let request = TestSpendRequest {
+            inputs: vec![p2pk_proof_with_sig_flag(SigFlag::SigAll)],
+        };
+        let msgs = request.sig_all_msgs_to_verify();
+        assert_eq!(msgs.len(), 2);
+        // Newest first: the length-framed v1 message, then the current format
+        assert!(msgs[0].starts_with(b"Cashu_SigAllSig_v1"));
+        assert_eq!(msgs[1], b"test message".to_vec());
     }
 
     #[test]

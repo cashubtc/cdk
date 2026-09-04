@@ -115,6 +115,10 @@ impl super::nut10::SpendingConditionVerification for SwapRequest {
 
         msg
     }
+
+    fn sig_all_msg_to_sign_v1(&self) -> Vec<u8> {
+        super::nut10::sig_all_msg_to_sign_v1(None, &self.inputs, &self.outputs)
+    }
 }
 
 /// Split Response [NUT-06]
