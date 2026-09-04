@@ -1,6 +1,6 @@
 //! Nostr key helpers: generation, parsing and public key derivation
 
-use nostr_sdk::{Keys, PublicKey, SecretKey};
+use nostr_sdk::prelude::{Keys, PublicKey, SecretKey};
 
 use crate::error::{Error, Result};
 

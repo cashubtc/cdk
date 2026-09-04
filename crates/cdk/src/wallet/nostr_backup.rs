@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use nostr_sdk::prelude::*;
-use nostr_sdk::{Client as NostrClient, Filter, Keys};
+use nostr_sdk::prelude::{Client as NostrClient, Filter, Keys};
 use tracing::instrument;
 
 use super::wallet_repository::WalletRepository;
@@ -141,11 +141,14 @@ impl WalletRepository {
 
         let event_id = event.id;
 
-        let client = NostrClient::new(keys.clone());
+        let client = NostrClient::builder()
+            .authenticator(SignerAuthenticator::new(keys.clone()))
+            .build();
 
         for relay in relays.iter() {
             client
-                .add_write_relay(relay.as_ref())
+                .add_relay(relay.as_ref())
+                .capabilities(RelayCapabilities::WRITE)
                 .await
                 .map_err(|e| Error::Custom(format!("Failed to add relay: {e}")))?;
         }
@@ -208,11 +211,14 @@ impl WalletRepository {
             .identifier(d_tag)
             .limit(1);
 
-        let client = NostrClient::new(keys.clone());
+        let client = NostrClient::builder()
+            .authenticator(SignerAuthenticator::new(keys.clone()))
+            .build();
 
         for relay in relays.iter() {
             client
-                .add_read_relay(relay.as_ref())
+                .add_relay(relay.as_ref())
+                .capabilities(RelayCapabilities::READ)
                 .await
                 .map_err(|e| Error::Custom(format!("Failed to add relay: {e}")))?;
         }
@@ -220,7 +226,8 @@ impl WalletRepository {
         client.connect().await;
 
         let events = client
-            .fetch_events(filter, options.timeout)
+            .fetch_events(filter)
+            .timeout(options.timeout)
             .await
             .map_err(|e| Error::Custom(format!("Failed to fetch backup events: {e}")))?;
 

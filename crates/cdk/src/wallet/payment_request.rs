@@ -14,11 +14,11 @@ use cdk_common::{
     Amount, HttpClient, PaymentRequest, PaymentRequestPayload, SupportedMethod, TransportType,
 };
 #[cfg(feature = "nostr")]
-use nostr_sdk::nips::nip19::Nip19Profile;
+use nostr_sdk::prelude::nip19::Nip19Profile;
 #[cfg(feature = "nostr")]
 use nostr_sdk::prelude::*;
 #[cfg(feature = "nostr")]
-use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys, ToBech32};
+use nostr_sdk::prelude::{Client as NostrClient, EventBuilder, FromBech32, Keys, ToBech32};
 use tracing::instrument;
 
 use crate::error::Error;
@@ -197,7 +197,7 @@ fn payment_request_delivery_result(
 }
 
 #[cfg(feature = "nostr")]
-fn ensure_nostr_delivery_succeeded(gift_wrap: &Output<EventId>) -> Result<(), Error> {
+fn ensure_nostr_delivery_succeeded(gift_wrap: &SendEventOutput) -> Result<(), Error> {
     if gift_wrap.success.is_empty() {
         let mut failed_relays = gift_wrap
             .failed
@@ -207,7 +207,7 @@ fn ensure_nostr_delivery_succeeded(gift_wrap: &Output<EventId>) -> Result<(), Er
         failed_relays.sort();
 
         return Err(Error::NostrPublishFailed {
-            event_id: gift_wrap.val.to_string(),
+            event_id: gift_wrap.value.to_string(),
             failed_relays,
         });
     }
@@ -378,29 +378,36 @@ impl Wallet {
                 #[cfg(feature = "nostr")]
                 {
                     let keys = Keys::generate();
-                    let client = NostrClient::new(keys.clone());
+                    let client = NostrClient::builder()
+                        .authenticator(SignerAuthenticator::new(keys.clone()))
+                        .build();
                     let nprofile = Nip19Profile::from_bech32(&transport.target)
                         .map_err(|e| Error::Custom(format!("Invalid nprofile: {e}")))?;
 
                     let rumor = EventBuilder::new(
-                        nostr_sdk::Kind::from_u16(14),
+                        nostr_sdk::prelude::Kind::from_u16(14),
                         serde_json::to_string(&payload)
                             .map_err(|e| Error::Custom(format!("Serialize payload: {e}")))?,
                     )
-                    .build(keys.public_key);
+                    .finalize_unsigned(keys.public_key());
                     let relays = nprofile.relays;
 
                     for relay in relays.iter() {
                         client
-                            .add_write_relay(relay)
+                            .add_relay(relay)
+                            .capabilities(RelayCapabilities::WRITE)
                             .await
                             .map_err(|e| Error::Custom(format!("Add relay {relay}: {e}")))?;
                     }
 
                     client.connect().await;
 
+                    let gift_wrap_event = GiftWrapBuilder::new(nprofile.public_key, rumor)
+                        .finalize(&keys)
+                        .map_err(|e| Error::Custom(format!("Build Nostr gift wrap: {e}")))?;
                     let gift_wrap = client
-                        .gift_wrap_to(relays, &nprofile.public_key, rumor, None)
+                        .send_event(&gift_wrap_event)
+                        .to(relays)
                         .await
                         .map_err(|e| Error::Custom(format!("Publish Nostr event: {e}")))?;
 
@@ -420,10 +427,10 @@ impl Wallet {
 
                     tracing::info!(
                         "Published event {} successfully to {}",
-                        gift_wrap.val,
+                        gift_wrap.value,
                         gift_wrap
                             .success
-                            .iter()
+                            .keys()
                             .map(|s| s.to_string())
                             .collect::<Vec<_>>()
                             .join(", ")
@@ -857,8 +864,8 @@ mod tests {
     #[test]
     fn nostr_delivery_fails_when_all_relays_fail() {
         let relay = RelayUrl::parse("wss://relay.example.com").expect("valid relay URL");
-        let gift_wrap = Output {
-            val: EventId::all_zeros(),
+        let gift_wrap = SendEventOutput {
+            value: EventId::from_byte_array([0; 32]),
             success: Default::default(),
             failed: [(relay, "relay rejected event".to_string())]
                 .into_iter()
@@ -872,7 +879,7 @@ mod tests {
                 event_id,
                 failed_relays,
             } => {
-                assert_eq!(event_id, EventId::all_zeros().to_string());
+                assert_eq!(event_id, EventId::from_byte_array([0; 32]).to_string());
                 assert_eq!(failed_relays, vec!["wss://relay.example.com".to_string()]);
             }
             error => panic!("unexpected error: {error}"),
@@ -1282,7 +1289,7 @@ pub struct NostrWaitInfo {
     /// Nostr relays to read from while waiting for the payment
     pub relays: Vec<String>,
     /// The recipient public key to subscribe to for incoming events
-    pub pubkey: nostr_sdk::PublicKey,
+    pub pubkey: nostr_sdk::prelude::PublicKey,
     /// Mint URLs accepted or preferred by the original payment request
     pub mints: Vec<MintUrl>,
     /// Whether the original request's mint list is preferred instead of strict
@@ -1593,7 +1600,7 @@ impl WalletRepository {
                         .map_err(|e| Error::Custom(format!("Couldn't parse relays: {e}")))?;
 
                     let nprofile =
-                        nostr_sdk::nips::nip19::Nip19Profile::new(keys.public_key, relay_urls);
+                        nostr_sdk::prelude::nip19::Nip19Profile::new(keys.public_key(), relay_urls);
                     let nostr_transport = Transport {
                         _type: TransportType::Nostr,
                         target: nprofile.to_bech32().map_err(|e| {
@@ -1811,11 +1818,14 @@ impl WalletRepository {
             mint_preferred,
         } = info;
 
-        let client = nostr_sdk::Client::new(keys);
+        let client = nostr_sdk::prelude::Client::builder()
+            .authenticator(SignerAuthenticator::new(keys.clone()))
+            .build();
 
         for r in &relays {
             client
-                .add_read_relay(r.clone())
+                .add_relay(r.clone())
+                .capabilities(RelayCapabilities::READ)
                 .await
                 .map_err(|e| crate::error::Error::Custom(format!("Add relay {r}: {e}")))?;
         }
@@ -1824,16 +1834,16 @@ impl WalletRepository {
 
         // Subscribe to events addressed to `pubkey`
         let filter = Filter::new().pubkey(pubkey);
+        let mut notifications = client.notifications();
         client
-            .subscribe(filter, None)
+            .subscribe(filter)
             .await
             .map_err(|e| crate::error::Error::Custom(format!("Subscribe: {e}")))?;
 
         // Await notifications until we successfully parse a payment payload and receive it
-        let mut notifications = client.notifications();
-        while let Ok(notification) = notifications.recv().await {
-            if let RelayPoolNotification::Event { event, .. } = notification {
-                match client.unwrap_gift_wrap(&event).await {
+        while let Some(notification) = notifications.next().await {
+            if let ClientNotification::Event { event, .. } = notification {
+                match UnwrappedGift::from_gift_wrap_async(&keys, &event).await {
                     Ok(unwrapped) => {
                         let rumor = unwrapped.rumor;
                         match serde_json::from_str::<PaymentRequestPayload>(&rumor.content) {

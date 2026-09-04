@@ -25,7 +25,9 @@ use cdk::wallet::WalletNwcHandler;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
 use cdk_nostr::nwc::{NwcService, NwcServiceConfig};
-use nostr_sdk::{Client as NostrClient, Filter, Keys, Kind, PublicKey, RelayUrl, SecretKey};
+use nostr_sdk::prelude::{
+    Client as NostrClient, Filter, Keys, Kind, PublicKey, RelayUrl, SecretKey,
+};
 use nwc::prelude::{
     ListTransactionsRequest, LookupInvoiceRequest, MakeInvoiceRequest, NostrWalletConnect,
     NostrWalletConnectUri, PayInvoiceRequest, TransactionState,
@@ -117,7 +119,7 @@ async fn wait_for_info_event(
     service_pubkey: PublicKey,
     timeout: Duration,
 ) -> bool {
-    let client = NostrClient::new(Keys::generate());
+    let client = NostrClient::new();
     if client.add_relay(relay_url.clone()).await.is_err() {
         return false;
     }
@@ -133,7 +135,8 @@ async fn wait_for_info_event(
             break false;
         }
         match client
-            .fetch_events(filter.clone(), Duration::from_secs(2))
+            .fetch_events(filter.clone())
+            .timeout(Duration::from_secs(2))
             .await
         {
             Ok(events) if !events.is_empty() => break true,

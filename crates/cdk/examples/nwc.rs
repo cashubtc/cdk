@@ -7,7 +7,7 @@ use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{Wallet, WalletNwcHandler};
 use cdk_nostr::nwc::{NwcService, NwcServiceConfig};
 use cdk_sqlite::wallet::memory;
-use nostr_sdk::{Keys, RelayUrl, SecretKey};
+use nostr_sdk::prelude::{Keys, RelayUrl, SecretKey};
 use nwc::prelude::{NostrWalletConnect, NostrWalletConnectUri};
 use rand::random;
 use tokio_util::sync::CancellationToken;
