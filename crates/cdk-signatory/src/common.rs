@@ -129,14 +129,18 @@ pub fn derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> Option<Deriv
 }
 
 /// take all the keyset units and if te new keyset is a new unit we check
-pub fn check_unit_string_collision(
-    keysets: Vec<crate::signatory::SignatoryKeySet>,
+///
+/// Takes the existing units by reference rather than whole keysets: the check
+/// only needs the units, and a sweep calls it once per rotating unit, where
+/// materializing every keyset with its derived keys would be wasted work.
+pub fn check_unit_string_collision<'a>(
+    existing_units: impl Iterator<Item = &'a CurrencyUnit>,
     new_keyset: &MintKeySetInfo,
 ) -> Result<(), Error> {
-    let mut unit_hash: HashSet<CurrencyUnit> = HashSet::new();
+    let mut unit_hash: HashSet<&CurrencyUnit> = HashSet::new();
 
-    for key in keysets {
-        unit_hash.insert(key.unit);
+    for unit in existing_units {
+        unit_hash.insert(unit);
     }
 
     if unit_hash.contains(&new_keyset.unit) {
@@ -145,7 +149,7 @@ pub fn check_unit_string_collision(
     }
 
     let new_unit_int = new_keyset.unit.hashed_derivation_index();
-    for unit in unit_hash.iter() {
+    for unit in unit_hash {
         let existing_unit_string = unit.hashed_derivation_index();
         if existing_unit_string == new_unit_int {
             return Err(Error::UnitStringCollision(new_keyset.unit.clone()));
