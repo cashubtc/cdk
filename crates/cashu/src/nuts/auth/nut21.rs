@@ -148,6 +148,8 @@ pub enum RoutePath {
     Wildcard(String),
     /// Mint Quote for a specific payment method
     MintQuote(String),
+    /// Mint Quote lookup by public key (NUT-XX)
+    MintQuoteByPubkey(String),
     /// Mint for a specific payment method
     Mint(String),
     /// Melt Quote for a specific payment method
@@ -193,7 +195,13 @@ impl std::str::FromStr for RoutePath {
             _ => {
                 // Try to parse as a payment method route
                 if let Some(method) = s.strip_prefix("/v1/mint/quote/") {
-                    Ok(RoutePath::MintQuote(normalize_payment_method(method)))
+                    if let Some(method) = method.strip_suffix("/pubkey") {
+                        Ok(RoutePath::MintQuoteByPubkey(normalize_payment_method(
+                            method,
+                        )))
+                    } else {
+                        Ok(RoutePath::MintQuote(normalize_payment_method(method)))
+                    }
                 } else if let Some(method) = s.strip_prefix("/v1/mint/") {
                     Ok(RoutePath::Mint(normalize_payment_method(method)))
                 } else if let Some(method) = s.strip_prefix("/v1/melt/quote/") {
@@ -357,6 +365,7 @@ impl std::fmt::Display for RoutePath {
         match self {
             RoutePath::Wildcard(prefix) => write!(f, "{}*", prefix),
             RoutePath::MintQuote(method) => write!(f, "/v1/mint/quote/{}", method),
+            RoutePath::MintQuoteByPubkey(method) => write!(f, "/v1/mint/quote/{}/pubkey", method),
             RoutePath::Mint(method) => write!(f, "/v1/mint/{}", method),
             RoutePath::MeltQuote(method) => write!(f, "/v1/melt/quote/{}", method),
             RoutePath::Melt(method) => write!(f, "/v1/melt/{}", method),
@@ -709,6 +718,16 @@ mod tests {
 
         let json = serde_json::to_string(&RoutePath::MintQuote("paypal".to_string())).unwrap();
         assert_eq!(json, "\"/v1/mint/quote/paypal\"");
+
+        let json =
+            serde_json::to_string(&RoutePath::MintQuoteByPubkey("bolt11".to_string())).unwrap();
+        assert_eq!(json, "\"/v1/mint/quote/bolt11/pubkey\"");
+
+        let path: RoutePath = serde_json::from_str("\"/v1/mint/quote/bolt11/pubkey\"").unwrap();
+        assert_eq!(
+            path,
+            RoutePath::MintQuoteByPubkey(PaymentMethod::Known(KnownMethod::Bolt11).to_string())
+        );
 
         // Test deserialization of payment method paths
         let path: RoutePath = serde_json::from_str("\"/v1/mint/bolt11\"").unwrap();
