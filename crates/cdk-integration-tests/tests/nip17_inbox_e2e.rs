@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use cdk_nostr::inbox::{Nip17Event, NostrInbox, NostrInboxListener};
 use nostr_sdk::prelude::{
-    Client as NostrClient, EventBuilder, EventId, Filter, FinalizeEvent, FinalizeUnsignedEvent,
-    GiftWrapBuilder, Keys, Kind, RelayUrl, SignerAuthenticator,
+    Client as NostrClient, EventId, Filter, FinalizeEvent, Keys, Kind, PrivateDirectMessageBuilder,
+    RelayUrl, SignerAuthenticator,
 };
 use tokio::sync::mpsc;
 
@@ -137,9 +137,7 @@ async fn publish_gift_wrap(
         .expect("add relay");
     client.connect().await;
 
-    let rumor =
-        EventBuilder::new(Kind::from_u16(14), content).finalize_unsigned(sender.public_key());
-    let gift_wrap = GiftWrapBuilder::new(receiver.public_key(), rumor)
+    let gift_wrap = PrivateDirectMessageBuilder::new(receiver.public_key(), content)
         .finalize(sender)
         .expect("build gift wrap");
     let output = client
@@ -219,8 +217,16 @@ async fn nip17_inbox_receives_unwrapped_rumor_and_survives_restart() {
     let event = recv_until(&mut rx, wrap_one, Duration::from_secs(15)).await;
     assert_eq!(event.wrap_id, wrap_one);
     assert_eq!(event.sender, sender.public_key());
-    assert_eq!(event.rumor.kind, Kind::from_u16(14));
+    assert_eq!(event.rumor.kind, Kind::PrivateDirectMessage);
     assert_eq!(event.rumor.pubkey, sender.public_key());
+    assert!(
+        event
+            .rumor
+            .tags
+            .public_keys()
+            .any(|public_key| public_key == receiver.public_key()),
+        "rumor must identify the receiver"
+    );
     assert_eq!(event.rumor.content, content_one);
     // NIP-59: rumors carry an id (ensured by make_seal) but are unsigned
     assert!(event.rumor.id.is_some());

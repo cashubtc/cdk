@@ -60,7 +60,9 @@ impl NostrPaymentEventStream {
             client.connect().await;
 
             // Subscribe to events addressed to `pubkey`
-            let filter = nostr_sdk::prelude::Filter::new().pubkey(pubkey);
+            let filter = nostr_sdk::prelude::Filter::new()
+                .pubkey(pubkey)
+                .kind(nostr_sdk::prelude::Kind::GiftWrap);
             let mut notifications = client.notifications();
             client
                 .subscribe(filter)
