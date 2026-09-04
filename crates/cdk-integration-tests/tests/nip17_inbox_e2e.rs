@@ -15,10 +15,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cdk_nostr::inbox::{Nip17Event, NostrInbox, NostrInboxListener};
-use nostr_sdk::prelude::{
-    Client as NostrClient, EventId, Filter, FinalizeEvent, Keys, Kind, PrivateDirectMessageBuilder,
-    RelayUrl, SignerAuthenticator,
+use nostr::prelude::{
+    EventId, Filter, FinalizeEvent, Keys, Kind, PrivateDirectMessageBuilder, RelayUrl,
 };
+use nostr_sdk::prelude::{Client as NostrClient, SignerAuthenticator};
 use tokio::sync::mpsc;
 
 /// Manage a local `nostr-rs-relay` subprocess on a free port.
@@ -142,7 +142,7 @@ async fn publish_gift_wrap(
         .expect("build gift wrap");
     let output = client
         .send_event(&gift_wrap)
-        .to([relay_url.clone()])
+        .broadcast()
         .await
         .expect("publish gift wrap");
 

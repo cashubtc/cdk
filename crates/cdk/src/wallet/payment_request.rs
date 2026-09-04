@@ -14,11 +14,23 @@ use cdk_common::{
     Amount, HttpClient, PaymentRequest, PaymentRequestPayload, SupportedMethod, TransportType,
 };
 #[cfg(feature = "nostr")]
-use nostr_sdk::prelude::nip19::Nip19Profile;
+use futures::StreamExt;
 #[cfg(feature = "nostr")]
-use nostr_sdk::prelude::*;
+use nostr::prelude::nip19::Nip19Profile;
+#[cfg(all(feature = "nostr", test))]
+use nostr::prelude::EventId;
+#[cfg(all(feature = "nostr", target_arch = "wasm32"))]
+use nostr::prelude::{Filter, Kind, UnwrappedGift};
 #[cfg(feature = "nostr")]
-use nostr_sdk::prelude::{Client as NostrClient, FromBech32, Keys, ToBech32};
+use nostr::prelude::{
+    FinalizeEvent, FromBech32, Keys, PrivateDirectMessageBuilder, PublicKey, RelayUrl, ToBech32,
+};
+#[cfg(all(feature = "nostr", target_arch = "wasm32"))]
+use nostr_sdk::prelude::ClientNotification;
+#[cfg(feature = "nostr")]
+use nostr_sdk::prelude::{
+    Client as NostrClient, RelayCapabilities, SendEventOutput, SignerAuthenticator,
+};
 use tracing::instrument;
 
 use crate::error::Error;
@@ -405,7 +417,7 @@ impl Wallet {
 
                     let gift_wrap = client
                         .send_event(&gift_wrap_event)
-                        .to(relays)
+                        .broadcast()
                         .await
                         .map_err(|e| Error::Custom(format!("Publish Nostr event: {e}")))?;
 
@@ -1287,7 +1299,7 @@ pub struct NostrWaitInfo {
     /// Nostr relays to read from while waiting for the payment
     pub relays: Vec<String>,
     /// The recipient public key to subscribe to for incoming events
-    pub pubkey: nostr_sdk::prelude::PublicKey,
+    pub pubkey: PublicKey,
     /// Mint URLs accepted or preferred by the original payment request
     pub mints: Vec<MintUrl>,
     /// Whether the original request's mint list is preferred instead of strict
@@ -1597,8 +1609,7 @@ impl WalletRepository {
                         .collect::<Result<Vec<_>, _>>()
                         .map_err(|e| Error::Custom(format!("Couldn't parse relays: {e}")))?;
 
-                    let nprofile =
-                        nostr_sdk::prelude::nip19::Nip19Profile::new(keys.public_key(), relay_urls);
+                    let nprofile = Nip19Profile::new(keys.public_key(), relay_urls);
                     let nostr_transport = Transport {
                         _type: TransportType::Nostr,
                         target: nprofile.to_bech32().map_err(|e| {
@@ -1737,8 +1748,6 @@ impl WalletRepository {
     /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
     #[cfg(all(feature = "nostr", not(target_arch = "wasm32")))]
     pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
-        use futures::StreamExt;
-
         use crate::wallet::streams::nostr::NostrPaymentEventStream;
 
         let NostrWaitInfo {
@@ -1806,8 +1815,6 @@ impl WalletRepository {
     /// wasm32 fallback: Streams are not available; we await the first matching notification and process it.
     #[cfg(all(feature = "nostr", target_arch = "wasm32"))]
     pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
-        use nostr_sdk::prelude::*;
-
         let NostrWaitInfo {
             keys,
             relays,
@@ -1816,7 +1823,7 @@ impl WalletRepository {
             mint_preferred,
         } = info;
 
-        let client = nostr_sdk::prelude::Client::builder()
+        let client = NostrClient::builder()
             .authenticator(SignerAuthenticator::new(keys.clone()))
             .build();
 

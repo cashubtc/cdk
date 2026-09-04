@@ -5,7 +5,7 @@
 //! connected Nostr client (Damus, Amethyst, a website, …).
 //!
 //! The protocol wire types (connection URI, requests, responses, error codes)
-//! come from [`nostr_sdk::prelude::nip47`] and are re-exported here for
+//! come from [`nostr::prelude::nip47`] and are re-exported here for
 //! convenience. This module adds:
 //!
 //! - [`NwcRequestHandler`]: the trait a wallet backend implements to service
@@ -22,7 +22,7 @@
 //!
 //! `get_info`, `get_balance`, `make_invoice`, `pay_invoice`, `lookup_invoice`,
 //! `list_transactions`. Any other command is answered with
-//! [`ErrorCode::NotImplemented`](nostr_sdk::prelude::nip47::ErrorCode::NotImplemented).
+//! [`ErrorCode::NotImplemented`](nostr::prelude::nip47::ErrorCode::NotImplemented).
 //!
 //! All amounts in the NIP-47 protocol are denominated in **millisatoshis**.
 
@@ -33,6 +33,6 @@ pub mod service;
 pub use error::{Error, Result};
 pub use handler::NwcRequestHandler;
 // Re-export the NIP-47 protocol types so downstream crates depend on a single
-// source of truth without pulling `nostr_sdk` paths into their signatures.
-pub use nostr_sdk::prelude::nip47;
+// source of truth without pulling `nostr` paths into their signatures.
+pub use nostr::prelude::nip47;
 pub use service::{NwcService, NwcServiceConfig, SUPPORTED_METHODS};

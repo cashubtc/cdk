@@ -9,10 +9,10 @@
 //! Every method returns either a typed NIP-47 response or a [`NIP47Error`],
 //! which the service serializes into the encrypted response event. Handlers
 //! must never panic: any internal failure should be surfaced as a
-//! [`NIP47Error`] with an appropriate [`ErrorCode`](nostr_sdk::prelude::nip47::ErrorCode).
+//! [`NIP47Error`] with an appropriate [`ErrorCode`](nostr::prelude::nip47::ErrorCode).
 
 use async_trait::async_trait;
-use nostr_sdk::prelude::nip47::{
+use nostr::prelude::nip47::{
     GetBalanceResponse, GetInfoResponse, ListTransactionsRequest, LookupInvoiceRequest,
     LookupInvoiceResponse, MakeInvoiceRequest, MakeInvoiceResponse, NIP47Error, PayInvoiceRequest,
     PayInvoiceResponse,

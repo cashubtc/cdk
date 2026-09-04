@@ -19,9 +19,6 @@ use crate::mint_url::MintUrl;
 /// Domain separator for mint backup key derivation
 const DOMAIN_SEPARATOR: &[u8] = b"cashu-mint-backup";
 
-/// Event kind for addressable events (NIP-78)
-const KIND_APPLICATION_SPECIFIC_DATA: u16 = 30078;
-
 /// The "d" tag identifier for mint list backup
 const MINT_LIST_IDENTIFIER: &str = "mint-list";
 
@@ -149,11 +146,8 @@ pub fn create_backup_event(
         Version::V2,
     )?;
 
-    let mut builder = EventBuilder::new(
-        Kind::Custom(KIND_APPLICATION_SPECIFIC_DATA),
-        encrypted_content,
-    )
-    .tag(Tag::identifier(MINT_LIST_IDENTIFIER));
+    let mut builder = EventBuilder::new(Kind::ApplicationSpecificData, encrypted_content)
+        .tag(Tag::identifier(MINT_LIST_IDENTIFIER));
 
     if let Some(client_name) = client {
         builder = builder.tag(Tag::custom("client", [client_name]));
@@ -178,10 +172,10 @@ pub fn create_backup_event(
 ///
 /// The decrypted mint backup data
 pub fn decrypt_backup_event(keys: &Keys, event: &Event) -> Result<MintBackup, Error> {
-    let expected_kind = Kind::Custom(KIND_APPLICATION_SPECIFIC_DATA);
+    let expected_kind = Kind::ApplicationSpecificData;
     if event.kind != expected_kind {
         return Err(Error::InvalidEventKind {
-            expected: KIND_APPLICATION_SPECIFIC_DATA,
+            expected: Kind::ApplicationSpecificData.as_u16(),
             got: event.kind.as_u16(),
         });
     }
@@ -218,7 +212,7 @@ pub fn decrypt_backup_event(keys: &Keys, event: &Event) -> Result<MintBackup, Er
 /// A tuple of (kind, authors, d_tag) that can be used to construct a filter
 pub fn backup_filter_params(keys: &Keys) -> (Kind, PublicKey, &'static str) {
     (
-        Kind::Custom(KIND_APPLICATION_SPECIFIC_DATA),
+        Kind::ApplicationSpecificData,
         keys.public_key(),
         MINT_LIST_IDENTIFIER,
     )
@@ -330,7 +324,7 @@ mod tests {
         let event = create_backup_event(&keys, &backup, Some("cashu-test")).unwrap();
 
         // Verify event properties
-        assert_eq!(event.kind, Kind::Custom(KIND_APPLICATION_SPECIFIC_DATA));
+        assert_eq!(event.kind, Kind::ApplicationSpecificData);
         assert_eq!(event.pubkey, keys.public_key());
         assert!(!event.content.is_empty());
         assert_ne!(event.content, serde_json::to_string(&backup).unwrap());
@@ -388,7 +382,7 @@ mod tests {
         .unwrap();
 
         // Create event without the d tag
-        let event = EventBuilder::new(Kind::Custom(KIND_APPLICATION_SPECIFIC_DATA), encrypted)
+        let event = EventBuilder::new(Kind::ApplicationSpecificData, encrypted)
             .finalize(&keys)
             .unwrap();
 
@@ -409,20 +403,17 @@ mod tests {
         )
         .unwrap();
 
-        let wrong_identifier = EventBuilder::new(
-            Kind::Custom(KIND_APPLICATION_SPECIFIC_DATA),
-            encrypted.clone(),
-        )
-        .tag(Tag::identifier("not-mint-list"))
-        .finalize(&keys)
-        .unwrap();
+        let wrong_identifier = EventBuilder::new(Kind::ApplicationSpecificData, encrypted.clone())
+            .tag(Tag::identifier("not-mint-list"))
+            .finalize(&keys)
+            .unwrap();
         assert!(matches!(
             decrypt_backup_event(&keys, &wrong_identifier),
             Err(Error::MissingIdentifierTag(_))
         ));
 
         let mint_list_content_on_wrong_tag =
-            EventBuilder::new(Kind::Custom(KIND_APPLICATION_SPECIFIC_DATA), encrypted)
+            EventBuilder::new(Kind::ApplicationSpecificData, encrypted)
                 .tag(Tag::custom("client", [MINT_LIST_IDENTIFIER]))
                 .finalize(&keys)
                 .unwrap();
@@ -437,7 +428,7 @@ mod tests {
         let keys = test_keys();
         let (kind, pubkey, d_tag) = backup_filter_params(&keys);
 
-        assert_eq!(kind, Kind::Custom(KIND_APPLICATION_SPECIFIC_DATA));
+        assert_eq!(kind, Kind::ApplicationSpecificData);
         assert_eq!(pubkey, keys.public_key());
         assert_eq!(d_tag, MINT_LIST_IDENTIFIER);
     }

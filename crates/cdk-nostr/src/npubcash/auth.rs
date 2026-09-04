@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
-use nostr_sdk::prelude::{EventBuilder, FinalizeEvent, Keys, Kind, Tag};
+use nostr::prelude::{EventBuilder, FinalizeEvent, Keys, Kind, Tag};
 use tokio::sync::RwLock;
 use web_time::SystemTime;
 
@@ -173,7 +173,7 @@ impl JwtAuthProvider {
         let u_tag = Tag::custom("u", [url]);
         let method_tag = Tag::custom("method", [method]);
 
-        let event = EventBuilder::new(Kind::Custom(27235), "")
+        let event = EventBuilder::new(Kind::HttpAuth, "")
             .tags(vec![u_tag, method_tag])
             .finalize(&self.keys)
             .map_err(|e| Error::Nostr(e.to_string()))?;

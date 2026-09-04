@@ -23,7 +23,7 @@ use cdk::nuts::CurrencyUnit;
 use cdk::wallet::Wallet;
 use cdk::StreamExt;
 use cdk_sqlite::wallet::memory;
-use nostr_sdk::prelude::{Keys, ToBech32};
+use nostr::prelude::{Keys, ToBech32};
 
 const NPUBCASH_URL: &str = "https://npubx.cash";
 const MINT_URL: &str = "https://testnut.cashudevkit.org";

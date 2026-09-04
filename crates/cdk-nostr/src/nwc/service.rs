@@ -20,12 +20,16 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
-use nostr_sdk::prelude::nip47::{
+use nostr::prelude::nip47::{
     ErrorCode, NIP47Error, NostrWalletConnectUri, Request, RequestParams, Response, ResponseResult,
 };
-use nostr_sdk::prelude::*;
-use nostr_sdk::prelude::{nip04, nip44};
-use nostr_sdk::prelude::{Client as NostrClient, Keys, PublicKey, RelayUrl, SecretKey};
+use nostr::prelude::{
+    nip04, nip44, Event, EventBuilder, EventId, Filter, FinalizeEvent, Keys, Kind, PublicKey,
+    RelayUrl, SecretKey, Tag, Timestamp,
+};
+use nostr_sdk::prelude::{
+    Client as NostrClient, ClientNotification, SignerAuthenticator, StreamExt,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::nwc::error::{Error, Result};
@@ -460,7 +464,7 @@ mod tests {
     }
 
     use async_trait::async_trait;
-    use nostr_sdk::prelude::nip47::{
+    use nostr::prelude::nip47::{
         GetBalanceResponse, GetInfoResponse, ListTransactionsRequest, LookupInvoiceRequest,
         LookupInvoiceResponse, MakeInvoiceRequest, MakeInvoiceResponse, PayInvoiceRequest,
         PayInvoiceResponse, Request,
@@ -557,7 +561,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_unsupported_method_is_not_implemented() {
         // pay_keysend is outside the supported set.
-        let request = Request::pay_keysend(nostr_sdk::prelude::nip47::PayKeysendRequest {
+        let request = Request::pay_keysend(nostr::prelude::nip47::PayKeysendRequest {
             id: None,
             amount: 1000,
             pubkey: "00".repeat(32),
