@@ -554,6 +554,7 @@ impl<'a> MeltSaga<'a, Initial> {
         )
         .await?;
         crate::wallet::util::sign_proofs(&mut proofs, &signing_keys)?;
+        crate::wallet::util::verify_locked_proofs(&proofs)?;
 
         let metadata = options.metadata;
 
@@ -1523,6 +1524,37 @@ mod tests {
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].state, State::Reserved);
         assert!(stored[0].proof.witness.is_some());
+        assert!(stored[0].proof.verify_p2pk().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_prepare_melt_rejects_unsigned_p2pk_proofs() {
+        let db = create_test_db().await;
+        let keyset_id = test_keyset_id();
+
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let signing_key = crate::nuts::SecretKey::generate();
+        let proof = p2pk_locked_proof(keyset_id, 2000, signing_key.public_key(), None);
+        let proof_y = proof.y().unwrap();
+
+        let result = MeltSaga::new(&wallet)
+            .prepare_with_proofs(&quote_id, vec![proof], MeltPrepareOptions::default())
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(Error::NUT11(
+                crate::nuts::nut11::Error::SignaturesNotProvided
+            ))
+        ));
+        assert!(db.get_proofs_by_ys(vec![proof_y]).await.unwrap().is_empty());
     }
 
     #[tokio::test]

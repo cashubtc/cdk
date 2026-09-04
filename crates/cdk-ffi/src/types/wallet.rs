@@ -469,7 +469,7 @@ pub fn encode_receive_options(options: ReceiveOptions) -> Result<String, FfiErro
 }
 
 /// FFI-compatible Melt prepare options
-#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Default, Serialize, Deserialize, uniffi::Record)]
 pub struct MeltPrepareOptions {
     /// Signing keys for P2PK/HTLC-locked input proofs; keys known to the
     /// wallet are merged in automatically
@@ -490,16 +490,6 @@ impl fmt::Debug for MeltPrepareOptions {
             .field("preimages", &"[REDACTED]")
             .field("metadata", &self.metadata)
             .finish()
-    }
-}
-
-impl Default for MeltPrepareOptions {
-    fn default() -> Self {
-        Self {
-            p2pk_signing_keys: Vec::new(),
-            preimages: Vec::new(),
-            metadata: HashMap::new(),
-        }
     }
 }
 
