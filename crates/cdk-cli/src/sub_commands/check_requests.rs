@@ -65,8 +65,7 @@ pub async fn check_requests(wallet_repository: &WalletRepository) -> Result<()> 
                     .await?;
 
                 for event in events {
-                    if let Ok(unwrapped) = UnwrappedGift::from_gift_wrap_async(&keys, &event).await
-                    {
+                    if let Ok(unwrapped) = UnwrappedGift::from_gift_wrap(&keys, &event) {
                         if let Ok(payload) =
                             serde_json::from_str::<PaymentRequestPayload>(&unwrapped.rumor.content)
                         {

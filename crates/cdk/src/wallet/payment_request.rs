@@ -1841,7 +1841,7 @@ impl WalletRepository {
         // Await notifications until we successfully parse a payment payload and receive it
         while let Some(notification) = notifications.next().await {
             if let ClientNotification::Event { event, .. } = notification {
-                match UnwrappedGift::from_gift_wrap_async(&keys, &event).await {
+                match UnwrappedGift::from_gift_wrap(&keys, &event) {
                     Ok(unwrapped) => {
                         let rumor = unwrapped.rumor;
                         match serde_json::from_str::<PaymentRequestPayload>(&rumor.content) {

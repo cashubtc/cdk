@@ -170,7 +170,7 @@ impl NostrInbox {
                         if event.kind != Kind::GiftWrap {
                             continue;
                         }
-                        match UnwrappedGift::from_gift_wrap_async(&keys, &event).await {
+                        match UnwrappedGift::from_gift_wrap(&keys, &event) {
                             Ok(unwrapped) => listener.on_event(Nip17Event {
                                 wrap_id: event.id,
                                 wrap_created_at: event.created_at,
