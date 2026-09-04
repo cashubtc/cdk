@@ -221,6 +221,10 @@ pub enum Error {
     /// Concurrent update detected
     #[error("Concurrent update detected")]
     ConcurrentUpdate,
+
+    /// Unknown mint
+    #[error("Unknown mint: {0}")]
+    UnknownMint(String),
 }
 
 #[cfg(feature = "mint")]

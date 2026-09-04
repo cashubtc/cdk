@@ -770,15 +770,23 @@ mod tests {
     use crate::nuts::CurrencyUnit;
     use crate::wallet::WalletBuilder;
 
+    /// A mint is identified internally, so it has to be stored before rows can
+    /// point at it.
     async fn build_test_wallet(seed: [u8; 64]) -> Wallet {
         let localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync> = Arc::new(
             cdk_sqlite::wallet::memory::empty()
                 .await
                 .expect("memory db"),
         );
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("valid mint url");
+
+        localstore
+            .add_mint(mint_url.clone(), None)
+            .await
+            .expect("store mint");
 
         WalletBuilder::new()
-            .mint_url(MintUrl::from_str("https://mint.example.com").expect("valid mint url"))
+            .mint_url(mint_url)
             .unit(CurrencyUnit::Sat)
             .localstore(localstore)
             .seed(seed)

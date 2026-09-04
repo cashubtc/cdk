@@ -20,6 +20,13 @@ use crate::wallet::{
 pub mod test;
 
 /// Wallet Database trait
+///
+/// A mint is identified internally, not by its URL: the URL is one mutable
+/// attribute of a stored mint. Writing a row that refers to a mint (keysets,
+/// proofs, quotes, transactions, sagas) stores the mint first if the URL is not
+/// known yet, so a wallet handed an empty database can write straight away.
+/// [`Database::add_mint`] attaches metadata to that identity and is not a
+/// precondition for anything.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait Database<Err>: Debug
@@ -105,7 +112,13 @@ where
     /// Add transaction to storage
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), Err>;
 
-    /// Update mint url
+    /// Change the URL a stored mint is reached at.
+    ///
+    /// The mint keeps its identity, so every row attached to it (keysets,
+    /// proofs, mint and melt quotes, transactions, sagas) is reachable under
+    /// `new_mint_url` afterwards and nothing is left behind under
+    /// `old_mint_url`. Returns [`Error::UnknownMint`] if `old_mint_url` is not
+    /// stored.
     async fn update_mint_url(
         &self,
         old_mint_url: MintUrl,
