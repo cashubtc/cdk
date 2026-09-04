@@ -21,6 +21,7 @@ cdk-common.workspace = true
 cdk-sql-common = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 uuid.workspace = true
+thiserror.workspace = true
 tokio-postgres = "0.7.13"
 futures-util = "0.3.31"
 postgres-native-tls = "0.5.1"

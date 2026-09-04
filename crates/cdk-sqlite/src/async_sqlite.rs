@@ -36,7 +36,7 @@ impl AsyncSqlite {
             .map_err(|e| Error::Database(Box::new(e)))?;
 
         for (i, value) in placeholder_values.into_iter().enumerate() {
-            stmt.raw_bind_parameter(i + 1, to_sqlite(value))
+            stmt.raw_bind_parameter(i + 1, to_sqlite(value, i + 1)?)
                 .map_err(|e| Error::Database(Box::new(e)))?;
         }
 

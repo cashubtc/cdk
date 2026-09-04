@@ -263,8 +263,11 @@ impl Statement {
                 .map(|x| match x {
                     SqlPart::Placeholder(name, value) => {
                         match value.ok_or(Error::MissingPlaceholder(name.to_string()))? {
-                            PlaceholderValue::Value(value) => Ok(vec![value]),
-                            PlaceholderValue::Set(values) => Ok(values),
+                            PlaceholderValue::Value(value) => Ok(vec![value.into_signed(&name)?]),
+                            PlaceholderValue::Set(values) => values
+                                .into_iter()
+                                .map(|value| Ok(value.into_signed(&name)?))
+                                .collect(),
                         }
                     }
                     SqlPart::Raw(_) => Ok(vec![]),
@@ -285,13 +288,15 @@ impl Statement {
                 SqlPart::Placeholder(name, value) => {
                     match value.ok_or(Error::MissingPlaceholder(name.to_string()))? {
                         PlaceholderValue::Value(value) => {
-                            placeholder_values.push(value);
+                            placeholder_values.push(value.into_signed(&name)?);
                             Ok::<_, Error>(format!("${}", placeholder_values.len()))
                         }
-                        PlaceholderValue::Set(mut values) => {
+                        PlaceholderValue::Set(values) => {
                             can_be_cached = false;
                             let start_size = placeholder_values.len();
-                            placeholder_values.append(&mut values);
+                            for value in values {
+                                placeholder_values.push(value.into_signed(&name)?);
+                            }
                             let placeholders = (start_size + 1..=placeholder_values.len())
                                 .map(|i| format!("${i}"))
                                 .collect::<Vec<_>>()
@@ -426,6 +431,8 @@ pub fn query(sql: &str) -> Result<Statement, Error> {
 
 #[cfg(test)]
 mod tests {
+    use cdk_common::database::ConversionError;
+
     use super::*;
 
     #[test]
@@ -466,5 +473,70 @@ mod tests {
 
         assert!(sql.contains("$1, $2, $3"));
         assert_eq!(values.len(), 3);
+    }
+
+    #[test]
+    fn unsigned_narrows_up_to_i64_max() {
+        let largest = u64::try_from(i64::MAX).expect("i64::MAX is not negative");
+        let (_, values) = query("SELECT :a, :b, :c")
+            .unwrap()
+            .bind("a", 0u64)
+            .bind("b", largest)
+            .bind("c", Some(7u64))
+            .to_sql()
+            .unwrap();
+
+        assert_eq!(
+            values,
+            vec![
+                Value::Integer(0),
+                Value::Integer(i64::MAX),
+                Value::Integer(7)
+            ]
+        );
+    }
+
+    #[test]
+    fn unsigned_binds_null_when_absent() {
+        let (_, values) = query("SELECT :a")
+            .unwrap()
+            .bind("a", None::<u64>)
+            .to_sql()
+            .unwrap();
+
+        assert_eq!(values, vec![Value::Null]);
+    }
+
+    #[test]
+    fn unsigned_past_i64_max_is_rejected() {
+        let oversized = u64::try_from(i64::MAX).expect("i64::MAX is not negative") + 1;
+        let err = query("SELECT :expiry")
+            .unwrap()
+            .bind("expiry", oversized)
+            .to_sql()
+            .expect_err("value does not fit");
+
+        assert!(matches!(
+            err,
+            Error::Conversion(ConversionError::ValueOutOfRange(field, value))
+                if field == "expiry" && value == oversized
+        ));
+    }
+
+    #[test]
+    fn unsigned_in_a_set_is_rejected() {
+        let oversized = u64::try_from(i64::MAX).expect("i64::MAX is not negative") + 1;
+        let err = query("SELECT * FROM foo WHERE amount IN (:amounts)")
+            .unwrap()
+            .bind_vec("amounts", vec![1u64, oversized])
+            .unwrap()
+            .to_sql()
+            .expect_err("value does not fit");
+
+        assert!(matches!(
+            err,
+            Error::Conversion(ConversionError::ValueOutOfRange(field, value))
+                if field == "amounts" && value == oversized
+        ));
     }
 }

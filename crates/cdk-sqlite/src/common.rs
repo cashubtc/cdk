@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use cdk_sql_common::pool::{self, DatabasePool};
 use cdk_sql_common::value::Value;
+use cdk_sql_common::ConversionError;
 use rusqlite::Connection;
 
 use crate::async_sqlite;
@@ -143,15 +144,24 @@ impl From<(&str, &str)> for Config {
 }
 
 /// Convert cdk_sql_common::value::Value to rusqlite Value
+///
+/// Statements narrow unsigned values before they reach a driver, so the
+/// unsigned arm refuses rather than truncates one that arrives another way.
+/// `position` is the 1-based placeholder index, which is all this layer knows
+/// to name in the error.
 #[inline(always)]
-pub fn to_sqlite(v: Value) -> rusqlite::types::Value {
-    match v {
+pub fn to_sqlite(v: Value, position: usize) -> Result<rusqlite::types::Value, ConversionError> {
+    Ok(match v {
         Value::Blob(blob) => rusqlite::types::Value::Blob(blob),
         Value::Integer(i) => rusqlite::types::Value::Integer(i),
         Value::Null => rusqlite::types::Value::Null,
         Value::Text(t) => rusqlite::types::Value::Text(t),
         Value::Real(r) => rusqlite::types::Value::Real(r),
-    }
+        Value::Unsigned(n) => rusqlite::types::Value::Integer(
+            i64::try_from(n)
+                .map_err(|_| ConversionError::ValueOutOfRange(format!("${position}"), n))?,
+        ),
+    })
 }
 
 /// Convert from rusqlite Valute to cdk_sql_common::value::Value
