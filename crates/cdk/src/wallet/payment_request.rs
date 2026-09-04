@@ -18,7 +18,7 @@ use nostr_sdk::prelude::nip19::Nip19Profile;
 #[cfg(feature = "nostr")]
 use nostr_sdk::prelude::*;
 #[cfg(feature = "nostr")]
-use nostr_sdk::prelude::{Client as NostrClient, EventBuilder, FromBech32, Keys, ToBech32};
+use nostr_sdk::prelude::{Client as NostrClient, FromBech32, Keys, ToBech32};
 use tracing::instrument;
 
 use crate::error::Error;
@@ -384,12 +384,13 @@ impl Wallet {
                     let nprofile = Nip19Profile::from_bech32(&transport.target)
                         .map_err(|e| Error::Custom(format!("Invalid nprofile: {e}")))?;
 
-                    let rumor = EventBuilder::new(
-                        nostr_sdk::prelude::Kind::from_u16(14),
+                    let gift_wrap_event = PrivateDirectMessageBuilder::new(
+                        nprofile.public_key,
                         serde_json::to_string(&payload)
                             .map_err(|e| Error::Custom(format!("Serialize payload: {e}")))?,
                     )
-                    .finalize_unsigned(keys.public_key());
+                    .finalize(&keys)
+                    .map_err(|e| Error::Custom(format!("Build Nostr gift wrap: {e}")))?;
                     let relays = nprofile.relays;
 
                     for relay in relays.iter() {
@@ -402,9 +403,6 @@ impl Wallet {
 
                     client.connect().await;
 
-                    let gift_wrap_event = GiftWrapBuilder::new(nprofile.public_key, rumor)
-                        .finalize(&keys)
-                        .map_err(|e| Error::Custom(format!("Build Nostr gift wrap: {e}")))?;
                     let gift_wrap = client
                         .send_event(&gift_wrap_event)
                         .to(relays)
@@ -1833,7 +1831,7 @@ impl WalletRepository {
         client.connect().await;
 
         // Subscribe to events addressed to `pubkey`
-        let filter = Filter::new().pubkey(pubkey);
+        let filter = Filter::new().pubkey(pubkey).kind(Kind::GiftWrap);
         let mut notifications = client.notifications();
         client
             .subscribe(filter)
