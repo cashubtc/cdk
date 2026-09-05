@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Federated Cashu — BLS, threshold, transport</title>
+<meta name="description" content="Vertical slide lecture for Cashu developers from docs/FEDERATION_NOTES.md.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600&family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/deck.css">
+<link rel="stylesheet" href="css/figures.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-mark" aria-hidden="true"></div>
+  <p class="top-kicker" id="top-kicker"><b>I · BLS</b> · Opening</p>
+  <p class="top-count" id="top-count">01 / 29</p>
+  <p class="top-help"><kbd>j</kbd><kbd>k</kbd> pages · <kbd>n</kbd><kbd>p</kbd> figure · <kbd>t</kbd> index</p>
+</header>
+<nav class="spine" id="spine" aria-label="Progress"></nav>
+<div class="index" id="index">
+  <div style="display:flex;justify-content:space-between;align-items:end;margin-bottom:18px">
+    <h2>Index</h2>
+    <button class="btn" id="index-close" type="button">Close</button>
+  </div>
+  <ol id="index-list"></ol>
+</div>
+
+<main class="deck">
+
+<section class="slide" id="title" data-part="I · BLS" data-title="Opening">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">00</span> Federation notes · Cashu developers</p>
+    <h1>The bearer object should stay boring.</h1>
+    <p class="lede">BLS first, so a wallet can verify against one public key. Threshold later, so no one machine holds <code>k</code>. The token that leaves the wallet is still one v3 proof.</p>
+    <p class="pairing-mark title-pair"><span class="a">e(C, G2)</span>&nbsp;=&nbsp;<span class="b">e(H(secret), K)</span></p>
+    <div class="meta">
+      <span><b>Source</b> docs/FEDERATION_NOTES.md</span>
+      <span><b>Checkout</b> bls-federation</span>
+      <span><b>Not</b> production-safe yet</span>
+    </div>
+    <div class="row row-3 grow">
+      <article class="plate card"><h3>I · Precursor</h3><p><code>main..bls</code> is ten commits. Pairing DHKE, keyset v3, mixed-curve safety. Still single-signer.</p></article>
+      <article class="plate card"><h3>II · Issuer</h3><p>Shamir BLS, mix-and-match, consensus-before-sign, two-plane transport, dealer-free DKG.</p></article>
+      <article class="plate card"><h3>III · Machine</h3><p>FROST treasury, BDK/Bark, roster-as-constitution, crash: peers give the book, not the pen.</p></article>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="branch-map" data-part="I · BLS" data-title="Branch map">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">01</span> Branch map</p>
+    <h2>Two stories. Do not mix them.</h2>
+    <p class="lede"><code>main</code> is standalone CDK. <code>bls</code> sits 10 commits above it. <code>bls-federation</code> is a much larger later layer on the tip of <code>bls</code>.</p>
+    <div class="row row-2-wide grow">
+      <div class="table-wrap plate">
+        <table class="data">
+          <thead><tr><th>Branch</th><th>Role</th></tr></thead>
+          <tbody>
+            <tr><td class="ink">main</td><td>Standalone CDK baseline</td></tr>
+            <tr><td class="ink">bls / origin/bls</td><td>Original BLS integration · ~47 files · +2463 / −272</td></tr>
+            <tr><td class="ink">bls-federation</td><td>Current federated Cashu · 1000+ commits on tip of bls</td></tr>
+            <tr><td class="ink">bls-federation-bdk-frost</td><td>Separate Bitcoin custody hierarchy</td></tr>
+            <tr><td class="ink">codex/pr-2048</td><td>fix: verify v3 BLS blind signatures</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="plate callout">
+        <span class="k">Presentation rule</span>
+        Merge-base of the three with main: <code>e2c0d0a4</code>. Merge-base of federation onto BLS: <code>eb34616e</code> (<code>origin/bls</code>). Threshold types already sitting in current <code>nut01/bls.rs</code> are federation additions. For the precursor, <code>git show bls:path</code>.
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="naming-trap" data-part="I · BLS" data-title="Naming trap">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">02</span> Naming trap</p>
+    <h2>Say this first or every later slide is misread.</h2>
+    <p class="lede">In conversation we say “keyset v3”. In code the enum is <code>Version02</code>. On the wire the first byte is <code>02</code>.</p>
+    <div class="plate table-wrap">
+      <table class="data">
+        <thead><tr><th>Spoken</th><th>Rust enum</th><th>Keyset ID</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td class="ink">v1</td><td>KeySetVersion::Version00</td><td>00 + 7 bytes</td><td>original secp256k1 keyset IDs</td></tr>
+          <tr><td class="ink">v2</td><td>KeySetVersion::Version01</td><td>01 + 32 bytes</td><td>secp IDs that commit unit / fee / expiry</td></tr>
+          <tr><td class="ink">v3 / BLS v3</td><td>KeySetVersion::Version02</td><td>02 + 32 bytes</td><td>BLS12-381 keysets</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="plate callout bad">
+      <span class="k">Second collision</span>
+      Cashu already has <code>TokenV3</code> / <code>ProofV3</code>. Those are token encodings, not BLS keyset v3. Proto mapping is off-by-one the other way: proto <code>3</code> = v3 = <code>Version02</code>.
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="bls-commits" data-part="I · BLS" data-title="Original bls commits">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">03</span> Original bls commits</p>
+    <h2>Ten commits above main.</h2>
+    <p class="lede"><code>feat: bls</code> lands the curve. The rest is rejection sampling, panic-safety, and verifying the <em>blind</em> signature.</p>
+    <div class="plate table-wrap grow">
+      <table class="data">
+        <thead><tr><th>#</th><th>Commit</th><th>Why it matters</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td class="ink">578e26ebd feat: bls</td><td>Types, versioned DHKE, v3 IDs, mint / wallet / signatory</td></tr>
+          <tr><td>2</td><td class="ink">1d71add6e extra hash</td><td>Stop hashing BIP32 child bytes before Fr</td></tr>
+          <tr><td>3–6</td><td class="ink">rejection sampling</td><td>Mint keys, NUT-13 r, batch weights, generate_bls — all Fr*</td></tr>
+          <tr><td>4</td><td class="ink">2dedc3ca7 P2PK</td><td>BLS points in secp-only helpers must error, not panic</td></tr>
+          <tr><td>7</td><td class="ink">63dfceed9 fuzz</td><td>Valid G1/G2 into P2PK; BLS DHKE soundness</td></tr>
+          <tr><td>8</td><td class="ink">289fe9e44 verify blind</td><td><code>e(C_, G2) == e(B, K)</code>, not only the unblinded check</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="meta"><span><b>Trail</b> github.com/cashubtc/cdk/pull/2048</span><span><b>On original bls</b> nut01/bls.rs is ~326 lines: keys, pairing verify, batch weights. No shares.</span></p>
+  </div>
+</section>
+
+<section class="slide" id="why-bls" data-part="I · BLS" data-title="Why BLS first">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">04</span> Why BLS exists before federation</p>
+    <h2>Verify against one K. Share k later.</h2>
+    <p class="lede">Secp DHKE works for one operator. It does not give threshold issuance that a vanilla wallet can still check.</p>
+    <div class="row row-2-fig grow">
+      <div class="eq">secp v1/v2
+<span class="c-g1">Y  = H(secret)</span>
+B_ = Y + rG
+C_ = k · B_
+C  = C_ − rK
+DLEQ proves knowledge of k
+
+BLS v3
+<span class="c-g1">B  = r · H(secret)</span>          G1
+C_ = k · B
+C  = r⁻¹ · C_
+<span class="c-ok">e(C,  G2) == e(H(secret), K)</span>
+<span class="c-ok">e(C_, G2) == e(B, K)</span>
+
+G2 keys 96 B · G1 msgs 48 B
+DST CASHU_BLS12_381_G1_XMD:SHA-256_SSWU_RO_</div>
+      <figure class="figure plate" id="fig-dhke">
+        <div class="figure-stage">
+          <div class="figure-head">
+            <div class="controls">
+              <button class="btn" data-act="prev" type="button">Prev</button>
+              <button class="btn cu" data-act="play" type="button">Play</button>
+              <button class="btn" data-act="next" type="button">Next</button>
+            </div>
+            <p class="figure-note" data-note></p>
+          </div>
+          <div class="pipe">
+            <article class="plate card step" data-pipe="s0"><div class="n">01</div><h3>Blind</h3><p>B = r · H(s)</p></article>
+            <article class="plate card step" data-pipe="s1"><div class="n">02</div><h3>Sign</h3><p>C_ = k · B</p></article>
+            <article class="plate card step" data-pipe="s2"><div class="n">03</div><h3>Check</h3><p>e(C_, G2) = e(B, K)</p></article>
+            <article class="plate card step" data-pipe="s3"><div class="n">04</div><h3>Unblind</h3><p>C = r⁻¹ · C_</p></article>
+          </div>
+          <p class="fig-cap"><span class="fig-tag">Fig. 1</span> Original <code>bls</code> is still one signer. No shares, no DKG, no roster.</p>
+        </div>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="keyset-v3" data-part="I · BLS" data-title="Keyset v3">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">05</span> Keyset v3 transition</p>
+    <h2>Same ID recipe. Different curve.</h2>
+    <p class="lede">No new token format. A third keyset version, then DHKE, derivation, signing, and verify all branch on it.</p>
+    <div class="eq">sort amounts · concat amount:hex(pubkey) · |unit:… · optional fee / expiry
+SHA-256 → 32 B · prefix 02 instead of 01
+Id::v3_from_data() = v2 recipe over compressed G2 keys · still 33 bytes</div>
+    <div class="plate table-wrap">
+      <table class="data">
+        <thead><tr><th></th><th>ID</th><th>Curve</th><th>Blind</th><th>Unblind</th><th>Verify</th><th>DLEQ</th></tr></thead>
+        <tbody>
+          <tr><td class="ink">v1</td><td>8 B</td><td>secp</td><td>Y + rG</td><td>C_ − rK</td><td>secp / DLEQ</td><td>optional</td></tr>
+          <tr><td class="ink">v2</td><td>33 B</td><td>secp</td><td>Y + rG</td><td>C_ − rK</td><td>secp / DLEQ</td><td>optional</td></tr>
+          <tr><td class="ink">v3</td><td>33 B</td><td>BLS12-381</td><td>r · H(s)</td><td>r⁻¹ · C_</td><td>pairing</td><td>forbidden</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="prose tight" style="padding-left:0;list-style:none;display:block;color:var(--mute)">
+      Default: <code>use_keyset_v2 = None</code> → new keysets are v3. Live secp keysets stay until rotated. Vectors: <code>02ce4c47…743c5d</code> (no fee), <code>02b53239…f40588</code> (fee 100, expiry 2e9).
+    </p>
+  </div>
+</section>
+
+<section class="slide" id="crypto" data-part="I · BLS" data-title="Crypto building blocks">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">06</span> Crypto building blocks</p>
+    <h2>33, 48, or 96 bytes.</h2>
+    <div class="row row-3">
+      <article class="plate card"><h3>Parse</h3><p><code>PublicKey</code> is Secp / BlsG1 / BlsG2. Identity rejected. BLS scalars big-endian on the wire, reversed for <code>bls12_381::Scalar</code>.</p></article>
+      <article class="plate card"><h3>DHKE</h3><p><code>blind_message_for_version</code>, pairing verify, batch via transcript <code>Cashu_BLS_Batch_v1</code>. v3 DLEQ is rejected in <code>construct_proofs</code>.</p></article>
+      <article class="plate card"><h3>Landmines</h3><p>Old secp helpers still panic on BLS: uncompressed, x-only, negate, <code>to_scalar</code>. Federation cleanup calls this out.</p></article>
+    </div>
+    <div class="eq grow">derive_batch_weights  (NUT-00)
+transcript = "Cashu_BLS_Batch_v1" ||  for each: C || K || u32_BE(len) || msg
+challenge  = SHA256(transcript)
+h_i        = SHA256(challenge || u32_BE(i) || u32_BE(ctr))
+accept only canonical non-zero Fr*
+<span class="c-cu">first impl reduced bytes + 1-byte counter — failed the published vector. 5d4d0d7ac.</span></div>
+  </div>
+</section>
+
+<section class="slide" id="derivation" data-part="I · BLS" data-title="Deterministic derivation">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">07</span> Deterministic derivation</p>
+    <h2>Reject until it is Fr*.</h2>
+    <div class="row row-2 grow">
+      <div>
+        <p class="lede">NUT-13 secrets reuse the v2 HMAC KDF for v3. Blinding factors add an attempt counter and parse as a canonical BLS scalar.</p>
+        <div class="eq">"Cashu_KDF_HMAC_SHA256" || keyset_id
+  || u64_BE(counter) || 0x01 || u32_BE(attempt)
+reject 0 · accept Fr*</div>
+      </div>
+      <div>
+        <p class="lede">Mint amount keys evolved three times: hash child → reduce child → rejection-sample a second hardened index.</p>
+        <div class="eq">for amount i:
+  child = BIP32(i' / attempt')
+  accept SecretKey::bls_from_slice
+<span class="c-ok">unit test: live key is the two-level child</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="lifecycle" data-part="I · BLS" data-title="v3 proof life cycle">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">08</span> End-to-end v3 proof</p>
+    <h2>Check the blind signature first.</h2>
+    <p class="lede">This walk is what later makes federation obvious. The public HTTP protocol does not change.</p>
+    <ol class="tight">
+      <li>Wallet picks the active keyset. If v3, all later crypto is BLS. Derives <code>secret</code> and <code>r</code>, blinds <code>B = r · H(secret)</code>.</li>
+      <li>Mint looks up amount key <code>k</code>, returns <code>C_ = k · B</code>, attaches no DLEQ.</li>
+      <li>Wallet: <code>e(C_, G2) == e(B, K)</code> → unblind <code>C = r⁻¹ · C_</code> → <code>e(C, G2) == e(H(secret), K)</code>.</li>
+    </ol>
+    <div class="plate callout">
+      <span class="k">289fe9e44</span>
+      Early wallet code could construct a v3 proof and only check the unblinded pairing. The fix wired <code>verify_bls_blind_signature</code> into mint-response, restore, auth mint, and <code>verify_token_signatures</code>. If a v3 proof still carries DLEQ, reject it.
+    </div>
+    <p class="meta"><span><b>Tokens</b> still ordinary Cashu. ProofV4.dleq skipped if none. A v3 token must not encode <code>"d": null</code>.</span></p>
+  </div>
+</section>
+
+<section class="slide" id="mixed-curve" data-part="I · BLS" data-title="Mixed-curve safety">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">09</span> Mixed-curve safety</p>
+    <h2>Valid hex is not a secp key.</h2>
+    <p class="lede">A compressed G1 point is valid <code>PublicKey::from_slice</code> input. Before the fix, P2PK <code>x_only_public_key()</code> panicked.</p>
+    <div class="row row-2 grow">
+      <ul class="tight">
+        <li>P2PK / HTLC stay secp-only → <code>NonSecp256k1Pubkey</code></li>
+        <li>Identity points rejected on G1 and G2 parse</li>
+        <li>Zero scalars rejected for r, mint keys, batch weights</li>
+        <li>NUT-00 batch vector is a unit test in <code>nut01/bls.rs</code></li>
+      </ul>
+      <div class="plate callout">
+        <span class="k">Fuzz had to change</span>
+        Random hex almost never decodes to a subgroup-correct BLS point. <code>fuzz_bls_pubkey_in_conditions</code> injects <em>valid</em> G1/G2 into nut10 <code>data</code>, <code>pubkeys</code>, <code>refund_keys</code>. <code>fuzz_bls_dhke</code> covers parse, DHKE, and batch-weight soundness.
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="files" data-part="I · BLS" data-title="BLS / v3 files">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">10</span> Files in the BLS / v3 story</p>
+    <h2>Read bls, not the current tree.</h2>
+    <div class="row row-3 grow">
+      <article class="plate card"><h3>Protocol</h3><ul><li>nuts/nut01/bls.rs</li><li>public_key.rs · secret_key.rs</li><li>nut02.rs · dhke.rs</li><li>nut12 · nut13 · nut00 · nut11</li></ul></article>
+      <article class="plate card"><h3>Mint</h3><ul><li>mint/builder.rs</li><li>mint/keysets</li><li>cdk-signatory db_signatory</li><li>cdk-mintd config / example.toml</li></ul></article>
+      <article class="plate card"><h3>Wallet + tests</h3><ul><li>wallet/blind_signature.rs</li><li>issue / receive sagas</li><li>auth_wallet.rs</li><li>fuzz_bls_dhke · fuzz_bls_pubkey</li></ul></article>
+    </div>
+    <p class="meta"><span>Current checkout already contains <code>BlsSignerId</code>, <code>BlsSecretKeyShare</code>, <code>BlsThresholdKeySet</code>. Those are federation. Inspect <code>git show bls:<path></code>.</span></p>
+  </div>
+</section>
+
+<section class="slide" id="chapters" data-part="I · BLS" data-title="Opening chapters">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">11</span> Suggested chapters so far</p>
+    <h2>Four chapters cover main..bls.</h2>
+    <p class="lede">Federation should start after this. Do not mix the precursor into the threshold story.</p>
+    <div class="row row-2 grow">
+      <article class="plate card"><h3>1 · Why BLS</h3><p>Secp equations, then pairings. Point: verify against one key, share the secret later. Stay explicit that original <code>bls</code> is single-signer.</p></article>
+      <article class="plate card"><h3>2 · Keyset v3</h3><p>Naming trap, version matrix, v2 ID recipe over G2, default new keysets are v3, live secp stays.</p></article>
+      <article class="plate card"><h3>3 · Proof life</h3><p>Derive → blind → sign → blind pairing → unblind → proof pairing. No DLEQ. Blind-signature fix.</p></article>
+      <article class="plate card"><h3>4 · Mixed curve</h3><p>Length dispatch, P2PK/HTLC secp-only, rejection sampling, fuzzers. The “make the old SDK safe” chapter.</p></article>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="teaser" data-part="I · BLS" data-title="Federation teaser">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">12</span> Federation teaser</p>
+    <h2>Breadcrumbs, not finished chapters.</h2>
+    <div class="row row-2 grow">
+      <ul class="tight">
+        <li>Federation mode is v3/BLS-only. v1/v2 aggregates are rejected.</li>
+        <li>Threshold types sit on top of <code>nut01/bls.rs</code>.</li>
+        <li>Dealer-free BLS DKG, federated rotation, share verify, wallet aggregation into ordinary proofs.</li>
+        <li>Bitcoin custody (FROST / BDK / Bark) is a separate key hierarchy.</li>
+        <li>Consensus, Iroh, Nocean setup are later operational layers.</li>
+      </ul>
+      <div class="eq">next map, same method as BLS
+1  threshold BLS primitives
+2  v3-only federation keyset gates
+3  DKG and keyset rotation
+4  wallet share aggregation
+5  consensus / payments / transport</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="open-questions" data-part="I · BLS" data-title="Open questions">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">13</span> Open questions</p>
+    <h2>Before we call this a spec.</h2>
+    <div class="row row-2 grow">
+      <article class="plate card"><h3>NUT text</h3><p>Is there a published NUT for keyset v3 / BLS DHKE, or are we presenting CDK ahead of the writeup?</p></article>
+      <article class="plate card"><h3>Vectors</h3><p>Which exact NUT-00 / nutshell test vectors belong on a slide?</p></article>
+      <article class="plate card"><h3>Demo</h3><p>Live standalone v3 mint, or only equations plus code pointers?</p></article>
+      <article class="plate card"><h3>Custody appendix</h3><p>Keep FROST/Bark off the first talk so it stays on Cashu issuance?</p></article>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="secp-alt" data-part="II · Issuer" data-title="Secp alternative">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">14</span> Alternative</p>
+    <h2>Multisig federates the token.</h2>
+    <p class="lede">BLS is not the only federation. Each member could return a full secp signature on the same <code>B_</code>. The wallet would keep a set. That is a real federation. It moves the threshold into the bearer object.</p>
+    <div class="row row-2 grow">
+      <div class="plate callout">
+        <span class="k">Naive path</span>
+        t-of-n the way Bitcoin simulates a threshold with bare multisig. Receive, swap, melt, restore all have to understand the bundle. Token size and verify cost grow with t.
+      </div>
+      <div class="plate callout" style="border-left-color:var(--g2)">
+        <span class="k" style="color:var(--g2)">BLS path</span>
+        Members still produce shares. The wallet reconstructs one ordinary Cashu proof <em>before</em> the token exists. The bearer object stays boring.
+      </div>
+    </div>
+    <p class="thesis">Cashu cares about the second thing.</p>
+  </div>
+</section>
+
+<section class="slide" id="design-fork" data-part="II · Issuer" data-title="Design fork">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">15</span> Design fork</p>
+    <h2>Do not collapse the two secp designs.</h2>
+    <div class="row row-2">
+      <article class="plate card"><h3>Bare multisig</h3><p>Each member has its own <code>k_i</code>. Wallet blinds once. Each returns a full <code>C_i</code>. A spendable proof carries t signatures. Token, verify, swap, melt, restore become federation-aware.</p></article>
+      <article class="plate card"><h3>Interpolated secp DHKE</h3><p>Share one <code>k</code>. Each returns <code>C_i = k_i · B_</code>. Wallet interpolates one secp proof. Algebra works. Proving the result is <code>k · Y</code> without anyone holding <code>k</code> does not — DLEQ needs the secret.</p></article>
+    </div>
+    <div class="plate table-wrap">
+      <table class="data">
+        <thead><tr><th></th><th>Bare secp multisig</th><th>BLS threshold shares</th></tr></thead>
+        <tbody>
+          <tr><td>Wallet stores</td><td>t signatures + roster</td><td>one C under one K</td></tr>
+          <tr><td>Who can receive</td><td>federation-aware wallets</td><td>any v3 Cashu wallet</td></tr>
+          <tr><td>Verify</td><td>t secp checks + policy</td><td>one pairing, or a batch</td></tr>
+          <tr><td>Offline mint proof</td><td>per-signer DLEQ</td><td>pairing against advertised K</td></tr>
+          <tr><td>Still need consensus?</td><td>yes</td><td>yes</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="meta"><span>Bitcoin can afford bare multisig because the coin lives in a UTXO that already names its script. Cashu cannot, because the coin <b>is</b> the signature.</span></p>
+  </div>
+</section>
+
+<section class="slide" id="threshold" data-part="II · Issuer" data-title="BLS threshold">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">16</span> BLS threshold scheme</p>
+    <h2>Any t shares, one C.</h2>
+    <p class="lede">Classic Shamir-threshold BLS on Cashu’s blinded G1 message. Not many independent signatures. Not IETF aggregate-BLS on different messages.</p>
+    <div class="row row-2-fig grow">
+      <div class="eq">f(x) = k + a1 x + … + a<sub>t-1</sub> x<sup>t-1</sup>
+k_i = f(i)     K_i = k_i · G2     K = k · G2
+signer ids: non-zero u16  (0 is the secret)
+
+B  = r · H(secret)
+C_i = k_i · B
+e(C_i, G2) == e(B, K_i)
+
+λ_i(0) = Π (−j)/(i−j)
+C = Σ λ_i(0) · C_i = k · B</div>
+      <figure class="figure plate" id="fig-threshold">
+        <div class="figure-stage">
+          <div class="figure-head">
+            <div class="controls">
+              <button class="btn" data-act="prev" type="button">Prev</button>
+              <button class="btn cu" data-act="play" type="button">Play</button>
+              <button class="btn" data-act="next" type="button">Next</button>
+            </div>
+            <p class="figure-note" data-note></p>
+          </div>
+          <svg class="scene" viewBox="0 0 560 220" role="img" aria-label="2-of-3 interpolation">
+            <text class="tiny" x="16" y="22">f(x) = 7 + 3x</text>
+            <line x1="40" y1="170" x2="520" y2="40" stroke="#12171c" stroke-width="1.5"/>
+            <g data-lag="0">
+              <circle cx="120" cy="148" r="6" fill="#c05621"/>
+              <text class="tiny" x="108" y="172">id1 · 10</text>
+              <circle cx="250" cy="112" r="6" fill="#c05621"/>
+              <text class="tiny" x="238" y="96">id2 · 13</text>
+              <circle cx="380" cy="76" r="6" fill="#c05621"/>
+              <text class="tiny" x="368" y="60">id3 · 16</text>
+              <circle cx="40" cy="170" r="5" fill="#5a3472"/>
+              <text class="tiny" x="48" y="188">f(0)=7</text>
+            </g>
+            <text class="label" data-lag="1" x="16" y="210">λ1=2  λ2=−1  →  20B − 13B = 7B</text>
+            <text class="label" data-lag="2" x="300" y="210">λ2=3  λ3=−2  →  39B − 32B = 7B</text>
+          </svg>
+          <p class="fig-cap"><span class="fig-tag">Fig. 2</span> In-tree 3-of-5 test: subsets {1,3,5} and {2,3,4} both equal dealer secret · B. 1-of-1 is ordinary BLS.</p>
+        </div>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="mix-and-match" data-part="II · Issuer" data-title="Mix-and-match">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">17</span> Threshold-signing mix-and-match</p>
+    <h2>Independently valid shares are the attack.</h2>
+    <p class="lede">A share checks against <code>K_i</code> even if nobody else signed that <code>B</code>. Slide windows across the roster and you mint more than the quote paid. Not a BLS-math bug.</p>
+    <figure class="figure plate grow" id="fig-mix">
+      <div class="figure-stage">
+        <div class="figure-head">
+          <div class="controls">
+            <button class="btn" data-act="prev" type="button">Prev</button>
+            <button class="btn cu" data-act="play" type="button">Play</button>
+            <button class="btn" data-act="next" type="button">Next</button>
+            <button class="btn is-on" data-act="mode" data-mode="attack" type="button">Attack</button>
+            <button class="btn" data-act="mode" data-mode="consensus" type="button">Consensus</button>
+          </div>
+          <p class="figure-note" data-note></p>
+        </div>
+        <div class="mm-board">
+          <div></div>
+          <div class="mm-h">A <span data-col="A"></span><br><span class="tiny" style="fill:none;color:var(--mute)">window 1</span></div>
+          <div class="mm-h">B <span data-col="B"></span></div>
+          <div class="mm-h">C <span data-col="C"></span><br><span class="tiny" style="color:var(--mute)">extra</span></div>
+          <div class="mm-m">M1</div><div class="mm-cell" data-cell="A1"><i class="star"></i></div><div class="mm-cell" data-cell="B1"><i class="star"></i></div><div class="mm-cell" data-cell="C1"><i class="star"></i></div>
+          <div class="mm-m">M2</div><div class="mm-cell" data-cell="A2"><i class="star"></i></div><div class="mm-cell" data-cell="B2"><i class="star"></i></div><div class="mm-cell" data-cell="C2"><i class="star"></i></div>
+          <div class="mm-m">M3</div><div class="mm-cell" data-cell="A3"><i class="star"></i></div><div class="mm-cell" data-cell="B3"><i class="star"></i></div><div class="mm-cell" data-cell="C3"><i class="star"></i></div>
+          <div class="mm-m">M4</div><div class="mm-cell" data-cell="A4"><i class="star"></i></div><div class="mm-cell" data-cell="B4"><i class="star"></i></div><div class="mm-cell" data-cell="C4"><i class="star"></i></div>
+          <div class="mm-m">M5</div><div class="mm-cell" data-cell="A5"><i class="star"></i></div><div class="mm-cell" data-cell="B5"><i class="star"></i></div><div class="mm-cell" data-cell="C5"><i class="star"></i></div>
+        </div>
+        <p class="fig-cap"><span class="fig-tag">Fig. 3</span> Use this name. “Sliding window” is the overlapping-subset picture. Tests: <code>runtime_config_rejects_sliding_window_mint_output_attack</code>.</p>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<section class="slide" id="consensus" data-part="II · Issuer" data-title="Consensus before signing">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">18</span> Consensus before signing</p>
+    <h2>Agree on the envelope. Then sign.</h2>
+    <p class="lede">Treat AlephBFT as a black box. A member does not sign because it received HTTP. It signs because that exact envelope came out as accepted.</p>
+    <div class="row row-2-fig grow">
+      <div class="eq">envelope = { federation, kind: Swap, inputs, outputs }
+operation_id = hash(envelope)
+
+S_AB = hash(P1,P2 → A,B)
+S_BC = hash(P1,P2 → B,C)
+
+box accepts one
+P1,P2 spent · sign only A,B
+C is not in the operation</div>
+      <figure class="figure plate" id="fig-consensus">
+        <div class="figure-stage">
+          <div class="figure-head">
+            <div class="controls">
+              <button class="btn" data-act="prev" type="button">Prev</button>
+              <button class="btn cu" data-act="play" type="button">Play</button>
+              <button class="btn" data-act="next" type="button">Next</button>
+            </div>
+            <p class="figure-note" data-note></p>
+          </div>
+          <svg class="scene" viewBox="0 0 560 230" role="img" aria-label="Consensus box">
+            <g data-c="0">
+              <rect x="20" y="30" width="150" height="44" rx="8" fill="#12171c"/>
+              <text class="inv label" x="38" y="57">wallet HTTP</text>
+            </g>
+            <g data-c="1">
+              <rect x="210" y="20" width="140" height="200" rx="12" fill="#12171c"/>
+              <text class="inv label" x="228" y="50">consensus</text>
+              <text class="tiny" x="228" y="72" fill="#8a949d">one total order</text>
+              <text class="inv label" x="228" y="130">S_AB</text>
+              <text class="tiny" x="228" y="152" fill="#8a949d">S_BC waits</text>
+            </g>
+            <g data-c="2">
+              <rect x="390" y="40" width="150" height="70" rx="8" fill="#1d6b3c"/>
+              <text class="inv label" x="408" y="70">spend P1 P2</text>
+              <text class="inv tiny" x="408" y="92" fill="#d7e8dc">sign A,B only</text>
+            </g>
+            <g data-c="3">
+              <rect x="390" y="130" width="150" height="54" rx="8" fill="#c05621"/>
+              <text class="inv label" x="408" y="162">shares → wallet</text>
+            </g>
+          </svg>
+        </div>
+      </figure>
+    </div>
+    <p class="meta"><span>Mint/melt lock on quote id. Swap locks when the first accepted op spends the inputs. Signing T below consensus C is safe only because shares are produced after accept.</span></p>
+  </div>
+</section>
+
+<section class="slide" id="transport" data-part="II · Issuer" data-title="Data flow and transport">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">19</span> Data flow and transport</p>
+    <h2>Two planes. Same members.</h2>
+    <p class="lede"><code>iroh://</code> is not a new protocol. It is the same HTTP-shaped Cashu and <code>/federation/v1</code> traffic, tunneled. The split that matters is public fan-out vs private mesh.</p>
+    <figure class="figure plate grow" id="fig-transport" data-plane="both" data-pipe="http">
+      <div class="figure-stage tall">
+        <div class="figure-head">
+          <div class="controls">
+            <button class="btn" data-act="prev" type="button">Prev</button>
+            <button class="btn cu" data-act="play" type="button">Play</button>
+            <button class="btn" data-act="next" type="button">Next</button>
+            <button class="btn" data-act="plane" data-plane="public" type="button">Public</button>
+            <button class="btn" data-act="plane" data-plane="private" type="button">Private</button>
+            <button class="btn is-on" data-act="plane" data-plane="both" type="button">Both</button>
+            <button class="btn is-on" data-act="pipe" data-pipe="http" type="button">HTTP</button>
+            <button class="btn" data-act="pipe" data-pipe="iroh" type="button">Iroh</button>
+            <span class="stamp" style="border-color:#2c5d86;color:#2c5d86">public star</span>
+            <span class="stamp g2">private mesh</span>
+          </div>
+          <p class="figure-note" data-note></p>
+        </div>
+        <svg class="scene" viewBox="0 0 760 400" role="img" aria-label="Public star and private mesh">
+          <g class="n-wallet public">
+            <rect x="318" y="18" width="124" height="36" rx="8"/>
+            <text class="inv label" x="348" y="41">wallet</text>
+          </g>
+          <path class="edge public" d="M380 54 L70 168"/>
+          <path class="edge public" d="M380 54 L225 168"/>
+          <path class="edge public" d="M380 54 L380 168"/>
+          <path class="edge public" d="M380 54 L535 168"/>
+          <path class="edge public" d="M380 54 L690 168"/>
+          <path class="edge public share" d="M70 168 L380 54"/>
+          <path class="edge public share" d="M225 168 L380 54"/>
+          <path class="edge public share" d="M380 168 L380 54"/>
+          <path class="edge public share" d="M690 168 L380 54"/>
+          <g id="m1" class="n-member"><circle cx="70" cy="180" r="18"/><text class="label" x="58" y="184">M1</text></g>
+          <g id="m2" class="n-member"><circle cx="225" cy="180" r="18"/><text class="label" x="213" y="184">M2</text></g>
+          <g id="m3" class="n-member"><circle cx="380" cy="180" r="18"/><text class="label" x="368" y="184">M3</text></g>
+          <g id="m4" class="n-member"><circle cx="535" cy="180" r="18"/><text class="label" x="523" y="184">M4</text></g>
+          <g id="m5" class="n-member"><circle cx="690" cy="180" r="18"/><text class="label" x="678" y="184">M5</text></g>
+          <text class="tiny public" data-url="public" x="20" y="214">https://mint-n/…</text>
+          <path class="edge private to-box" d="M70 198 L330 318"/>
+          <path class="edge private to-box" d="M225 198 L350 318"/>
+          <path class="edge private to-box" d="M380 198 L380 318"/>
+          <path class="edge private to-box" d="M535 198 L410 318"/>
+          <path class="edge private to-box" d="M690 198 L430 318"/>
+          <path class="edge private" d="M88 180 L207 180"/>
+          <path class="edge private" d="M243 180 L362 180"/>
+          <path class="edge private" d="M398 180 L517 180"/>
+          <path class="edge private" d="M553 180 L672 180"/>
+          <g id="cbox" class="n-box private">
+            <rect x="300" y="318" width="160" height="52" rx="10"/>
+            <text class="inv label" x="328" y="348">consensus box</text>
+          </g>
+          <text class="tiny private" data-url="private" x="300" y="388">/federation/v1</text>
+        </svg>
+        <p class="fig-cap"><span class="fig-tag">Fig. 4</span> Quote create is the exception: first healthy member, then threshold visibility. Sign / swap / melt / restore: full fan-out. Code: <code>wallet/federation.rs</code>.</p>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<section class="slide" id="dkg" data-part="II · Issuer" data-title="BLS DKG">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">20</span> BLS DKG</p>
+    <h2>Nobody ever holds k.</h2>
+    <p class="lede">Dealer-free Pedersen DKG on the private plane. Every member contributes a polynomial. Joint secret is the sum of the constant terms. Same ceremony once per denomination.</p>
+    <figure class="figure plate grow" id="fig-dkg">
+      <div class="figure-stage tall">
+        <div class="figure-head">
+          <div class="controls">
+            <button class="btn" data-act="prev" type="button">Prev</button>
+            <button class="btn cu" data-act="play" type="button">Play</button>
+            <button class="btn" data-act="next" type="button">Next</button>
+          </div>
+          <p class="figure-note" data-note></p>
+        </div>
+        <div class="dkg-layout">
+          <svg class="scene" viewBox="0 0 420 300" role="img" aria-label="Three-member DKG">
+            <path class="edge private dkg-e" d="M210 80 L90 220"/>
+            <path class="edge private dkg-e" d="M210 80 L330 220"/>
+            <path class="edge private dkg-e" d="M100 242 L320 242"/>
+            <g class="dkg-node n-member" data-dkg data-from="0">
+              <circle cx="210" cy="58" r="22"/>
+              <text class="label" x="198" y="62">M1</text>
+              <text class="tiny poly" x="168" y="28">f1=4+x</text>
+              <text class="tiny hash-pill" x="248" y="52">H(·)</text>
+            </g>
+            <g class="dkg-node n-member" data-dkg data-from="0">
+              <circle cx="80" cy="242" r="22"/>
+              <text class="label" x="68" y="246">M2</text>
+              <text class="tiny poly" x="18" y="278">f2=2+5x</text>
+            </g>
+            <g class="dkg-node n-member" data-dkg data-from="0">
+              <circle cx="340" cy="242" r="22"/>
+              <text class="label" x="328" y="246">M3</text>
+              <text class="tiny poly" x="318" y="278">f3=1+2x</text>
+            </g>
+            <g data-dkg data-from="6">
+              <rect x="150" y="130" width="120" height="44" rx="8" fill="#5a3472"/>
+              <text class="inv label" x="162" y="157">K = 7·G2</text>
+            </g>
+            <text class="tiny" data-dkg data-from="4" x="10" y="160">M2 gets 6+12+5=23</text>
+            <text class="tiny" data-dkg data-from="6" x="250" y="120">K = 7·G2</text>
+          </svg>
+          <div class="dkg-math">
+            <p data-math></p>
+            <p style="margin-top:12px"><span class="poly-chip">joint f = 7+8x</span><span class="poly-chip">t = 2</span><span class="poly-chip">n = 3</span></p>
+          </div>
+        </div>
+        <p class="fig-cap"><span class="fig-tag">Fig. 5</span> Hash so nobody adapts, reveal so everyone can check, privately send evaluations, add. Code: <code>cdk-common/…/dkg.rs</code> + <code>nut01/bls.rs</code>.</p>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<section class="slide" id="sig-all" data-part="II · Issuer" data-title="SIG_ALL hole">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">21</span> Challenges · SEC-2026-07-17-01</p>
+    <h2>Consensus does not bind client intent.</h2>
+    <p class="lede">A Byzantine member who saw the bearer proofs can rewrite the outputs and race that envelope first. Honest members cannot tell that X,Y were not the user’s.</p>
+    <div class="row row-2-fig grow">
+      <ul class="tight">
+        <li>Not a BLS bug. The shares are valid — for the wrong outputs.</li>
+        <li>Not mix-and-match. Only one operation wins; it is the attacker’s.</li>
+        <li>Not solved by fan-out. Fan-out is how the evil member learns the proofs.</li>
+        <li>Not solved by DKG. DKG protects <code>k</code>, not the user’s secrets.</li>
+        <li>NUT-11 <code>SIG_ALL</code> commits the owner to the exact outputs. Current code can bind it; it does not require it.</li>
+      </ul>
+      <figure class="figure plate" id="fig-sigall">
+        <div class="figure-stage">
+          <div class="figure-head">
+            <div class="controls">
+              <button class="btn" data-act="prev" type="button">Prev</button>
+              <button class="btn cu" data-act="play" type="button">Play</button>
+              <button class="btn" data-act="next" type="button">Next</button>
+            </div>
+            <p class="figure-note" data-note></p>
+          </div>
+          <svg class="scene" viewBox="0 0 520 200" role="img" aria-label="Byzantine rewrite">
+            <g data-s="0"><rect x="16" y="30" width="150" height="50" rx="8" fill="#12171c"/><text class="inv label" x="32" y="60">P1,P2 → A,B</text></g>
+            <g data-s="1"><rect x="186" y="30" width="150" height="50" rx="8" fill="#a32d32"/><text class="inv label" x="202" y="60">P1,P2 → X,Y</text></g>
+            <g data-s="2"><rect x="356" y="30" width="150" height="50" rx="8" fill="#a32d32"/><text class="inv label" x="372" y="60">box accepts</text></g>
+            <g data-s="3"><rect x="186" y="110" width="320" height="50" rx="8" fill="#1d6b3c"/><text class="inv label" x="202" y="140">SIG_ALL → mutation fails apply</text></g>
+          </svg>
+        </div>
+      </figure>
+    </div>
+    <div class="plate callout bad">
+      <span class="k">Status</span>
+      Still a production blocker. Until SIG_ALL is required on every federated spend, do not describe this as safe against one malicious member.
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="funding" data-part="III · Machine" data-title="Funding backends">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">22</span> Funding backends</p>
+    <h2>Do not federate the printer and keep one piggy bank.</h2>
+    <p class="lede">A Cashu mint is two machines glued together. BLS issues proofs. Lightning or on-chain holds the reserves. If those quorums diverge, the smaller one is the real mint.</p>
+    <div class="row row-2 grow">
+      <article class="plate card"><h3>Classical connectors fail</h3><p>One CLN / LND / BDK / Bark means one operator can mark a quote paid, refuse a melt, or sweep funds while the eCash ledger looks honest.</p></article>
+      <article class="plate card"><h3>Federated BDK</h3><p>Watch the chain, agree addresses and unsigned txs in the same box, jointly sign. One member can propose. It cannot move coins.</p></article>
+      <article class="plate card"><h3>Federated Bark</h3><p>Invoices and melts are consensus operations first. Claiming an HTLC is threshold custody, not “member 3’s CLN paid it.”</p></article>
+      <article class="plate card"><h3>Same roster, same T</h3><p>FROST on secp256k1. Different key, different curve, different job. Fakewallet / <code>development_single_observation</code> are tests. They reintroduce a king.</p></article>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="frost-dkg" data-part="III · Machine" data-title="FROST DKG">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">23</span> FROST DKG</p>
+    <h2>Same roster. Different curve. Different job.</h2>
+    <p class="lede">Startup is not done until both ceremonies exist and every member confirms both public results. Secrets must not be mixed.</p>
+    <div class="dual grow">
+      <article class="plate arm bls">
+        <p class="stamp g2">BLS12-381</p>
+        <h3>eCash keysets</h3>
+        <p>Shares <code>k_i</code>, aggregate <code>K</code>. Blinds and signs Cashu. Pedersen DKG as on the previous slide.</p>
+      </article>
+      <article class="plate arm frost">
+        <p class="stamp">secp256k1 FROST</p>
+        <h3>Treasury root</h3>
+        <p>Shares <code>s_i</code>, group key <code>P</code>. Later: domain tweak → chain code → BIP32 → BIP340 → BIP341. Bark and BDK consume this root. They do not run a second DKG.</p>
+      </article>
+    </div>
+    <div class="eq">round 1  broadcast commitments + proofs     /dkg/frost/round1
+round 2  confidential per-recipient share    /dkg/frost/round2
+round 3  every member confirms the same P
+persist-before-send · exact replay idempotent · different payload = equivocation
+ciphersuite secp256k1_sha256_tr_v1 · frost-secp256k1-tr 3.0.0 · cdk-frost</div>
+  </div>
+</section>
+
+<section class="slide" id="bdk" data-part="III · Machine" data-title="BDK mint and melt">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">24</span> BDK mint and melt</p>
+    <h2>The wallet still speaks Cashu.</h2>
+    <p class="lede">Almost everything that makes federated BDK safe is hidden on the private plane.</p>
+    <figure class="figure plate grow" id="fig-bdk">
+      <div class="figure-stage">
+        <div class="figure-head">
+          <div class="controls">
+            <button class="btn" data-act="prev" type="button">Prev</button>
+            <button class="btn cu" data-act="play" type="button">Play</button>
+            <button class="btn" data-act="next" type="button">Next</button>
+          </div>
+          <p class="figure-note" data-note></p>
+        </div>
+        <div class="pipe">
+          <article class="plate card step" data-b="0"><div class="n">Mint</div><h3>Allocate</h3><p>Quote + address are consensus. Same FROST/BIP32 index on every honest member.</p></article>
+          <article class="plate card step" data-b="1"><div class="n">Observe</div><h3>Quorum</h3><p>Outpoint, amount, depth. Mempool is not payment. Reorg before issue unsays the UTXO.</p></article>
+          <article class="plate card step" data-b="2"><div class="n">Issue</div><h3>BLS</h3><p>Fan-out /mint. Conflict key is the quote. Interpolate one v3 proof.</p></article>
+          <article class="plate card step" data-b="3"><div class="n">Melt</div><h3>Intent</h3><p>Proofs reserved. <code>make_payment</code> does not send coins.</p></article>
+          <article class="plate card step" data-b="4"><div class="n">Sign</div><h3>FROST</h3><p>Proposal → sighash-bound rounds → persist signed bytes → broadcast those bytes only.</p></article>
+        </div>
+        <p class="fig-cap"><span class="fig-tag">Fig. 6</span> Reorg after issuance raises an alarm and does not unmint. Nonces go vacant → reserved → published → consumed; failures burn.</p>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<section class="slide" id="swap" data-part="III · Machine" data-title="Swap step by step">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">25</span> Swap, step by step</p>
+    <h2>No Bitcoin. Still consensus-before-sign.</h2>
+    <p class="lede">One public <code>POST /swap</code>. Response looks like <code>SwapResponse</code>, but each member returns its BLS shares, not a finished mint signature.</p>
+    <div class="row row-2 grow">
+      <ol class="tight">
+        <li>Wallet blinds A,B and fans the same request to every <code>public_mint_url</code>.</li>
+        <li>Member wraps <code>{inputs, witnesses, outputs}</code>, hashes the envelope, does <em>not</em> sign.</li>
+        <li>Admission rejects empty / duplicate / non-v3 / unbalanced before propose.</li>
+        <li>Box accepts one winner. Apply: verify, spend inputs, persist outputs, <code>C_i = k_i · B</code> bound to <code>operation_id</code>.</li>
+        <li>Wallet waits for T matching shares, pairing-checks, interpolates, unblinds.</li>
+      </ol>
+      <div class="plate table-wrap">
+        <table class="data">
+          <thead><tr><th></th><th>Swap</th><th>BDK mint / melt</th></tr></thead>
+          <tbody>
+            <tr><td>Public API</td><td>one POST /swap</td><td>quote, then mint or melt</td></tr>
+            <tr><td>Fan-out</td><td>full, for shares</td><td>first-healthy quote; full for mint/melt</td></tr>
+            <tr><td>Lock</td><td>spent input proofs</td><td>quote id, then UTXOs / intents</td></tr>
+            <tr><td>Funding</td><td>none</td><td>federated BDK + FROST</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <p class="meta"><span>Replay is idempotent. A later window dies with TokenAlreadySpent. SIG_ALL is still the client-intent hole, not a missing swap step.</span></p>
+  </div>
+</section>
+
+<section class="slide" id="consensus-wire" data-part="III · Machine" data-title="Consensus on the wire">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">26</span> Consensus messages</p>
+    <h2>Named facts, not HTTP bodies.</h2>
+    <p class="lede">AlephBFT orders <code>FederationConsensusItem</code>s. Wallet fan-out, DKG, FROST rounds, and catch-up ride the private REST/Iroh plane. They are not journal operations.</p>
+    <div class="row row-2 grow">
+      <div class="count-stack">
+        <div class="count-row"><span>Swap</span><div class="bar"><i style="--w:12%"></i></div><b>1</b></div>
+        <div class="count-row"><span>Mint fakewallet</span><div class="bar"><i style="--w:28%"></i></div><b>3</b></div>
+        <div class="count-row"><span>Mint BDK 3-of-5</span><div class="bar"><i style="--w:92%"></i></div><b>~11</b></div>
+        <div class="count-row"><span>Melt BDK</span><div class="bar"><i style="--w:70%"></i></div><b>5+B+Q</b></div>
+      </div>
+      <div class="eq">C = n − floor((n−1)/3)     5 members → C = 4
+T = signature_threshold ≤ C
+Q ≥ C in production
+
+ordering        C members finalize the unit
+observations    Q distinct observer envelopes
+BLS shares      any T after accept, off-log
+FROST shares    any T after TransactionProposal
+
+not in the log: POST bodies, BLS shares,
+DKG packets, FROST rounds, catch-up certs</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="roster" data-part="III · Machine" data-title="Roster and config">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">27</span> Roster and federation config</p>
+    <h2>If you put a hostname in the constitution, changing it founds a new country.</h2>
+    <p class="lede"><code>FederationId</code> is SHA-256 over setup authorization, thresholds, and every member’s id, public URL, private URL, and identity key. There is no “change member 3’s DNS” operation.</p>
+    <div class="plate table-wrap grow">
+      <table class="data">
+        <thead><tr><th>Field</th><th>In ID?</th><th>In digest?</th><th>Live mutation?</th></tr></thead>
+        <tbody>
+          <tr><td>thresholds, member IDs, both URLs, identity keys</td><td>yes</td><td>yes</td><td>no — new setup</td></tr>
+          <tr><td>wallet protocol, observation / checkpoint / FROST policy</td><td>no</td><td>yes</td><td>no — new setup</td></tr>
+          <tr><td>BLS keysets</td><td>no</td><td>yes</td><td>yes: KeysetRotation</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="meta"><span>TLS renew on the <b>same</b> name is fine. Iroh helps only because the locator is an endpoint id, not a rented domain. A new endpoint id is still a new roster row. Open: locator vs identity — hash only the key, rotate URLs later. That does not exist yet.</span></p>
+  </div>
+</section>
+
+<section class="slide" id="crash" data-part="III · Machine" data-title="Crash and catch-up">
+  <div class="slide-inner">
+    <p class="eyebrow"><span class="num">28</span> Crash resistance</p>
+    <h2>Peers can give you the book. Only your backup is the pen.</h2>
+    <p class="lede">There is no BIP39 seed that regenerates a federation member. A seat owns unique secrets. Lose them and you replace the federation.</p>
+    <div class="bookpen grow">
+      <article class="plate side book">
+        <p class="stamp">The book</p>
+        <h3>Peer-recoverable</h3>
+        <p>Journal from genesis, finalized bodies, materialized Cashu state, checkpoints, catch-up certificates, order digest + state digest. Empty DB + old secrets can genesis-replay in v1.</p>
+      </article>
+      <article class="plate side pen">
+        <p class="stamp cu">The pen</p>
+        <h3>Not reconstructible</h3>
+        <p>Identity secret, BLS shares for every keyset including rotated ones, sealed FROST root share + sealing key, Bark receive secrets. Wrong seat fails activation / PoP.</p>
+      </article>
+    </div>
+    <div class="eq">process crash, DB intact     → ordinary restart
+lag / partition               → catch-up, fail closed
+DB lost, secrets + snapshot   → restore + audit + tail catch-up
+secrets lost                  → that seat is dead. new setup.
+readiness: no public submit, no FROST, no broadcast until caught up</div>
+  </div>
+</section>
+
+</main>
+<script src="js/figures.js"></script>
+<script src="js/deck.js"></script>
+</body>
+</html>

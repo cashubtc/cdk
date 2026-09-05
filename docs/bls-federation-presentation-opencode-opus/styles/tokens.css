@@ -1,0 +1,96 @@
+/* ===========================================================================
+   tokens.css — the plate
+   Palette is semantic: every hue names a protocol type, not a brand accent.
+   =========================================================================== */
+
+:root {
+  /* --- ground: engraved steel plate ------------------------------------- */
+  --ink: #090c11;
+  --ink-raise: #0e131b;
+  --panel: #121924;
+  --panel-2: #17202c;
+  --line: #223040;
+  --line-soft: #1a2431;
+  --line-hair: #141d28;
+
+  /* --- ink on the plate -------------------------------------------------- */
+  --text: #e7e3d8;
+  --text-dim: #98a4b2;
+  --text-faint: #5c6877;
+  --text-ghost: #38424f;
+
+  /* --- protocol types (these carry meaning, do not restyle for looks) ---- */
+  --secp: #e0a94b; /* secp256k1 — v1 / v2 / P2PK / FROST                    */
+  --g1: #57d9e8; /* BLS12-381 G1 — blinded messages, signatures, shares     */
+  --g2: #a98bf5; /* BLS12-381 G2 — mint public keys, commitments            */
+  --wallet: #ede6d6; /* wallet, public plane, the bearer object             */
+  --peer: #6c8cff; /* private member plane, consensus, journal              */
+  --bad: #ff6250; /* attack, panic, conflict, rejected                      */
+  --good: #5bd68f; /* accepted, verified, quorum reached                    */
+
+  --secp-dim: color-mix(in oklab, var(--secp) 22%, var(--ink));
+  --g1-dim: color-mix(in oklab, var(--g1) 20%, var(--ink));
+  --g2-dim: color-mix(in oklab, var(--g2) 20%, var(--ink));
+  --peer-dim: color-mix(in oklab, var(--peer) 20%, var(--ink));
+  --bad-dim: color-mix(in oklab, var(--bad) 20%, var(--ink));
+  --good-dim: color-mix(in oklab, var(--good) 20%, var(--ink));
+
+  /* --- type ------------------------------------------------------------- */
+  --display: "Fraunces", "Hoefler Text", ui-serif, Georgia, serif;
+  --body: "Newsreader", "Iowan Old Style", ui-serif, Georgia, serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --t-eyebrow: 0.6875rem;
+  --t-micro: 0.6875rem;
+  --t-small: 0.8125rem;
+  --t-mono: 0.8125rem;
+  --t-body: clamp(0.92rem, 0.74rem + 0.3vw, 1.03rem);
+  --t-lede: clamp(1rem, 0.84rem + 0.4vw, 1.14rem);
+  --t-h3: clamp(1rem, 0.9rem + 0.3vw, 1.14rem);
+  --t-h2: clamp(1.8rem, 1.05rem + 2.1vw, 3rem);
+  --t-h1: clamp(2.4rem, 1rem + 4.6vw, 5.2rem);
+  --t-figure: clamp(1.3rem, 0.9rem + 1.4vw, 2.1rem);
+
+  /* --- rhythm ----------------------------------------------------------- */
+  --gutter: clamp(1.25rem, 0.5rem + 3vw, 5rem);
+  --rail: 13.5rem;
+  --stack-1: 0.35rem;
+  --stack-2: 0.75rem;
+  --stack-3: 0.9rem;
+  --stack-4: 1.35rem;
+  --stack-5: 2rem;
+  --radius: 3px;
+  --radius-lg: 6px;
+
+  /* --- motion: from the animation tables, never approximated ------------ */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  --d-press: 140ms;
+  --d-tip: 160ms;
+  --d-control: 200ms;
+  --d-reveal: 460ms;
+  --d-figure: 620ms;
+
+  --stagger: 55ms;
+
+  /* --- plate marks ------------------------------------------------------ */
+  --plate-rotate: 0deg;
+  --scan: color-mix(in oklab, var(--g1) 8%, transparent);
+}
+
+/* Fraunces is variable; lock the engraved cut once, here. */
+.f-display {
+  font-family: var(--display);
+  font-variation-settings: "SOFT" 0, "WONK" 1, "opsz" 120;
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --d-reveal: 220ms;
+    --d-figure: 240ms;
+    --stagger: 0ms;
+  }
+}

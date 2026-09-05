@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0a111b" />
+    <title>BLS federation · CDK field notes</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      (() => {
+        const isFile = window.location.protocol === 'file:'
+        const root = document.getElementById('root')
+
+        if (!isFile) {
+          const devScript = document.createElement('script')
+          devScript.type = 'module'
+          devScript.src = './src/main.tsx'
+          document.body.appendChild(devScript)
+          return
+        }
+
+        document.querySelector('[data-vite-source]')?.remove()
+
+        const script = document.createElement('script')
+        script.type = 'text/javascript'
+        script.src = './dist/assets/app.js'
+        script.onerror = () => {
+          root.innerHTML = '<div style="max-width: 42rem; margin: 18vh auto; padding: 2rem; color: #e9f2f3; font: 16px/1.6 system-ui, sans-serif; background: #0d1723; border: 1px solid #2a4a55; border-radius: 16px"><strong style="display:block; margin-bottom: .75rem; font-size: 1.35rem">Build the presentation once to open this file directly.</strong><span>Run <code style="color:#88f3db">npm install</code>, then <code style="color:#88f3db">npm run build</code> in this folder and reload.</span></div>'
+        }
+        document.body.appendChild(script)
+      })()
+    </script>
+  </body>
+</html>

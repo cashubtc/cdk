@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Federated Cashu in CDK — BLS threshold issuance</title>
+<meta name="description" content="A page-by-page technical walkthrough of the BLS → federation path in CDK, for Cashu developers.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="progress" aria-hidden="true"><div class="progress-bar" id="progressBar"></div></div>
+
+<aside class="rail" aria-label="Sections">
+  <div class="rail-head">
+    <p class="rail-kicker">CDK · bls-federation</p>
+    <p class="rail-title">Federated Cashu</p>
+  </div>
+  <nav class="rail-nav" id="railNav" aria-label="Table of contents"></nav>
+  <div class="rail-foot">
+    <p class="rail-keys"><kbd>↑</kbd><kbd>↓</kbd> pages · <kbd>←</kbd><kbd>→</kbd> figure steps · <kbd>R</kbd> replay</p>
+  </div>
+</aside>
+
+<main class="deck" id="deck">
+
+<!-- ═══════════════ 00 · TITLE ═══════════════ -->
+<section class="page page--title" id="title" data-title="Opening">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">00</span> Federated Cashu in CDK</p>
+    <h1 class="title-xl" data-reveal>One mint key,<br>split across <em>many</em> hands.</h1>
+    <p class="lede" data-reveal>How CDK moves from single-signer BLS keysets to a threshold federation
+      that agrees before it signs — and still emits an ordinary Cashu proof.</p>
+    <div class="title-meta" data-reveal>
+      <span><b>Source</b> docs/FEDERATION_NOTES.md</span>
+      <span><b>Audience</b> Cashu / CDK developers</span>
+      <span><b>Status</b> not production-safe yet</span>
+    </div>
+    <div class="grid-3" data-reveal>
+      <article class="card">
+        <p class="card-tag tag-amber">Part I</p>
+        <h3>BLS, single signer</h3>
+        <p>Pairing-based DHKE and the keyset v3 protocol switch on the original <code>bls</code> branch.</p>
+      </article>
+      <article class="card">
+        <p class="card-tag tag-amber">Part II</p>
+        <h3>Threshold issuance</h3>
+        <p>Shamir shares, the sliding-window attack, consensus-before-signing, fan-out and DKG.</p>
+      </article>
+      <article class="card">
+        <p class="card-tag tag-red">Part III</p>
+        <h3>The open hole</h3>
+        <p>Bearer proofs don't bind client intent. One Byzantine member can still steal a spend. SIG_ALL is the fix shape.</p>
+      </article>
+    </div>
+    <p class="scroll-hint" data-reveal>Scroll, or press <kbd>↓</kbd></p>
+  </div>
+</section>
+
+<!-- ═══════════════ 01 · BRANCH MAP ═══════════════ -->
+<section class="page" id="branch-map" data-title="Branch map">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">01</span> Branch map</p>
+    <h2 class="title-lg" data-reveal>Two stories. Don't mix them.</h2>
+    <p class="lede" data-reveal><code>main</code> is standalone CDK. <code>bls</code> is a 10-commit pairing precursor —
+      ~47 files, +2463/−272. <code>bls-federation</code> is the later 1000+ commit layer built on its tip.</p>
+    <div class="cols-2" data-reveal>
+      <div>
+        <div class="branch-fig" aria-label="Branch topology">
+          <div class="branch-row"><span class="branch-dot dot-main"></span><code>main</code><span class="branch-note">standalone CDK baseline</span></div>
+          <div class="branch-edge"></div>
+          <div class="branch-row"><span class="branch-dot dot-bls"></span><code>bls</code><span class="branch-note">original BLS integration · 10 commits · merge-base <code>eb34616e</code></span></div>
+          <div class="branch-edge"></div>
+          <div class="branch-row"><span class="branch-dot dot-fed"></span><code>bls-federation</code><span class="branch-note">current checkout · federated Cashu</span></div>
+          <div class="branch-row branch-row--side"><span class="branch-dot dot-frost"></span><code>bls-federation-bdk-frost</code><span class="branch-note">FROST / BDK worktree</span></div>
+        </div>
+        <table class="data">
+          <thead><tr><th>Marker</th><th>Commit</th></tr></thead>
+          <tbody>
+            <tr><td>merge-base of all three</td><td><code>e2c0d0a4</code></td></tr>
+            <tr><td><code>bls</code> ↔ <code>bls-federation</code></td><td><code>eb34616e</code> (<code>origin/bls</code>)</td></tr>
+            <tr><td>review trail</td><td><a href="https://github.com/cashubtc/cdk/pull/2048">PR #2048</a> · <code>origin/pr/2194</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="stack">
+        <div class="callout">
+          <p class="callout-k">Presentation rule</p>
+          <p>The original <code>bls</code> branch is still <b>single-signer</b>. Threshold shares, Lagrange interpolation,
+          DKG, federation keyset gates, member rosters and consensus start only on <code>bls-federation</code>.</p>
+        </div>
+        <div class="callout callout--quiet">
+          <p class="callout-k">Tree reading tip</p>
+          <p>On the current checkout, <code>nut01/bls.rs</code> already contains federation types
+          (<code>BlsSecretKeyShare</code>, <code>BlsThresholdKeySet</code>, …). For the original precursor, read
+          <code>git show bls:&lt;path&gt;</code> — there it's only ~326 lines.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 02 · NAMING TRAP ═══════════════ -->
+<section class="page" id="naming" data-title="Naming trap">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">02</span> Naming trap</p>
+    <h2 class="title-lg" data-reveal>"v3" means <code>Version02</code>.</h2>
+    <p class="lede" data-reveal>Three names for the same thing — and one collision. Say this first or lose the room.</p>
+    <div class="cols-2" data-reveal>
+      <table class="data data--strong">
+        <thead><tr><th>We say</th><th>Rust enum</th><th>ID prefix</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>v1</td><td><code>KeySetVersion::Version00</code></td><td><code>00</code> + 7 bytes</td><td>original secp256k1 IDs</td></tr>
+          <tr><td>v2</td><td><code>KeySetVersion::Version01</code></td><td><code>01</code> + 32 bytes</td><td>secp IDs committing to unit / fee / expiry</td></tr>
+          <tr class="row-hl"><td><b>v3</b></td><td><code>KeySetVersion::Version02</code></td><td><code>02</code> + 32 bytes</td><td><b>BLS12-381 keysets</b></td></tr>
+        </tbody>
+      </table>
+      <div class="stack">
+        <div class="callout callout--warn">
+          <p class="callout-k">Second collision</p>
+          <p>Cashu already has <code>TokenV3</code> / <code>ProofV3</code>. Those are <b>token encoding</b> versions —
+          nothing to do with BLS keyset v3.</p>
+        </div>
+        <div class="callout callout--quiet">
+          <p class="callout-k">Proto off-by-one</p>
+          <p>The signatory proto maps <code>1→v1</code>, <code>2→v2</code>, <code>3→v3</code> — off by one from the
+          on-wire version byte. On original <code>bls</code> the proto still only <i>named</i> V1/V2 while the Rust
+          enum already understood <code>3</code>.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 03 · WHY BLS ═══════════════ -->
+<section class="page" id="why-bls" data-title="Why BLS first">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">03</span> Why BLS before federation</p>
+    <h2 class="title-lg" data-reveal>You can't split a secp key and keep one public key.</h2>
+    <p class="lede" data-reveal>Standalone Cashu is secp256k1 <b>additive</b> DHKE. Fine for one operator — but a wallet
+      can't verify an ordinary proof against one mint key while <code>k</code> is shared. BLS12-381 swaps the algebra
+      for a <b>multiplicative pairing</b> scheme.</p>
+    <div class="cols-2" data-reveal>
+      <div class="eq-panel">
+        <p class="eq-head"><span class="dot dot-secp"></span>secp256k1 · v1/v2 · additive</p>
+        <div class="eq">
+          <div><span class="eq-c">Y  = </span>hash_to_curve(secret)</div>
+          <div><span class="eq-c">B_ = </span>Y + r·G</div>
+          <div><span class="eq-c">C_ = </span>k · B_</div>
+          <div><span class="eq-c">C  = </span>C_ − r·K</div>
+          <div class="eq-dim">prove k via DLEQ</div>
+        </div>
+        <p class="eq-note">No threshold issuance: splitting <code>k</code> across members breaks verification against a single public key.</p>
+      </div>
+      <div class="eq-panel eq-panel--hl">
+        <p class="eq-head"><span class="dot dot-bls"></span>BLS12-381 · v3 · pairing</p>
+        <div class="eq">
+          <div><span class="eq-c">B  = </span>r · H(secret) <span class="eq-dim">∈ G1</span></div>
+          <div><span class="eq-c">C_ = </span>k · B</div>
+          <div><span class="eq-c">C  = </span>r⁻¹ · C_</div>
+          <div class="eq-hl">e(C, G2) == e(H(secret), K)</div>
+          <div class="eq-hl">e(C_, G2) == e(B, K)</div>
+        </div>
+        <p class="eq-note">Mint keys live in <b>G2</b> (96 B), messages &amp; signatures in <b>G1</b> (48 B). The pairing is
+        what later lets <code>t</code> shares reconstruct one signature under one aggregate key — no DLEQ needed.</p>
+      </div>
+    </div>
+    <div class="callout" data-reveal>
+      <p class="callout-k">Scope limit</p>
+      <p>Original <code>bls</code> is single-signer. It does <b>not</b> implement threshold shares, Lagrange
+      interpolation, DKG, federation keyset gates, member rosters, or consensus. Hash-to-curve DST:
+      <code>CASHU_BLS12_381_G1_XMD:SHA-256_SSWU_RO_</code>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 04 · KEYSET V3 ═══════════════ -->
+<section class="page" id="keyset-v3" data-title="Keyset v3">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">04</span> Keyset v3 transition</p>
+    <h2 class="title-lg" data-reveal>The protocol switch is a keyset version, not a token format.</h2>
+    <p class="lede" data-reveal><code>Id::v3_from_data()</code> is the v2 commitment recipe with the version byte
+      rewritten — over compressed G2 keys instead of secp keys. Same 33-byte width.</p>
+    <div class="cols-2" data-reveal>
+      <div>
+        <figure class="figure" data-figure="keyset-id">
+          <figcaption class="figure-head"><span class="figure-label">fig · v3 keyset ID construction</span></figcaption>
+          <div class="figure-body" id="figKeysetId"></div>
+        </figure>
+        <div class="mini">
+          <p class="mini-k">Test vectors (nut02)</p>
+          <p class="mono-sm">no fee / no expiry → <code>02ce4c47…4c743c5d</code><br>
+          fee 100, expiry 2·10⁹ → <code>02b53239…0cf40588</code></p>
+        </div>
+      </div>
+      <div class="stack">
+        <table class="data">
+          <thead><tr><th></th><th>v1 / v2</th><th>v3</th></tr></thead>
+          <tbody>
+            <tr><td>Curve</td><td>secp256k1</td><td>BLS12-381</td></tr>
+            <tr><td>Blind</td><td><code>Y + rG</code></td><td><code>r · H(secret)</code></td></tr>
+            <tr><td>Unblind</td><td><code>C_ − rK</code></td><td><code>r⁻¹ · C_</code></td></tr>
+            <tr><td>Verify</td><td>secp multiply / DLEQ</td><td>pairing</td></tr>
+            <tr><td>DLEQ</td><td>optional</td><td class="cell-red">forbidden</td></tr>
+          </tbody>
+        </table>
+        <div class="callout">
+          <p class="callout-k">Default mint policy</p>
+          <p><code>use_keyset_v2</code>: <code>Some(false)</code>→v1, <code>Some(true)</code>→v2,
+          <code>None</code>→<b>new keysets are v3</b>. Live secp keysets stay active until explicitly rotated —
+          upgrading the binary never rotates a live keyset. Rotation takes an explicit version:
+          <code>rotate-next-keyset --keyset-version v3</code>.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 05 · CRYPTO BUILDING BLOCKS ═══════════════ -->
+<section class="page" id="crypto" data-title="Crypto blocks">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">05</span> Crypto building blocks</p>
+    <h2 class="title-lg" data-reveal>One <code>PublicKey</code>, three curves. Parse by length.</h2>
+    <div class="cols-2" data-reveal>
+      <div class="stack">
+        <div class="mini">
+          <p class="mini-k">PublicKey — length-dispatched enum</p>
+          <div class="eq eq--tight">
+            <div><span class="eq-c">Secp256k1</span> — 33 B compressed</div>
+            <div><span class="eq-c">BlsG1</span> — 48 B · blinded messages &amp; signatures</div>
+            <div><span class="eq-c">BlsG2</span> — 96 B · mint public keys</div>
+          </div>
+          <p class="prose-sm">Identity / infinity rejected on parse. BLS scalars are big-endian on the wire, reversed
+          into <code>bls12_381::Scalar</code>. <code>SecretKey::public_key()</code> for BLS returns <code>k · G2</code>.</p>
+        </div>
+        <div class="mini">
+          <p class="mini-k">Hash-to-curve</p>
+          <p class="prose-sm">secp keeps the old <code>Secp256k1_HashToCurve_Cashu_</code> try-and-increment loop.
+          v3 uses standard hash-to-curve: <code>BlsG1PublicKey::hash_to_curve</code> with
+          <code>ExpandMsgXmd&lt;Sha256&gt;</code>. <code>hash_to_curve_for_version()</code> is the switch inside
+          <code>Proof::y()</code>.</p>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="mini">
+          <p class="mini-k">DHKE entry points — everything branches on version</p>
+          <p class="mono-sm"><code>blind_message_for_version</code> · <code>construct_proofs</code> ·
+          <code>sign_message</code> · <code>verify_bls_message</code> · <code>verify_bls_blind_signature</code> ·
+          <code>verify_bls_message_keyed</code> · <code>batch_verify_bls_messages</code></p>
+          <p class="prose-sm">NUT-12 DLEQ returns <code>None</code> for <code>Version02</code>; a v3 proof carrying
+          DLEQ data fails construction. DLEQ stays secp-only.</p>
+        </div>
+        <div class="mini">
+          <p class="mini-k">Batch verification — NUT-00 transcript</p>
+          <div class="eq eq--tight">
+            <div>prefix <span class="eq-hl2">Cashu_BLS_Batch_v1</span></div>
+            <div>item: C ‖ K ‖ u32BE(len) ‖ msg</div>
+            <div>challenge = SHA256(transcript)</div>
+            <div>hᵢ = SHA256(challenge ‖ u32BE(i) ‖ u32BE(ctr))</div>
+            <div class="eq-dim">rejection-sample canonical non-zero Fr*</div>
+          </div>
+          <p class="prose-sm">The first cut reduced bytes with a one-byte counter and failed the published NUT-00
+          vector — fixed in <code>5d4d0d7ac</code>. (A later federation-era <code>Cashu_BLS_Blind_Batch_v1</code> is
+          not part of original <code>bls</code>.)</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 06 · DERIVATION ═══════════════ -->
+<section class="page" id="derivation" data-title="Deterministic derivation">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">06</span> Deterministic derivation</p>
+    <h2 class="title-lg" data-reveal>Rejection sampling everywhere. Never reduce raw bytes.</h2>
+    <div class="cols-2" data-reveal>
+      <div class="mini">
+        <p class="mini-k">Wallet side — NUT-13</p>
+        <div class="eq eq--tight">
+          <div><span class="eq-c">secret</span> v2/v3: HMAC-SHA256 KDF</div>
+          <div class="eq-dim">"Cashu_KDF_HMAC_SHA256" ‖ keyset_id ‖ u64BE(counter) ‖ 0x00</div>
+          <div><span class="eq-c">r (v3)</span> same KDF, suffix 0x01, then attempt loop:</div>
+        </div>
+        <div class="codeblock">
+<pre>for attempt in 0..=u32::MAX:
+    h = HMAC-SHA256(seed, msg ‖ u32BE(attempt))
+    reject all-zero
+    accept if h is a canonical BLS scalar</pre>
+        </div>
+        <p class="prose-sm"><code>PreMintSecrets::from_seed</code> and blank change call
+        <code>blind_message_for_version()</code> — restore automatically follows the keyset's curve.</p>
+      </div>
+      <div class="mini">
+        <p class="mini-k">Mint side — NUT-02 MintKeySet::generate</p>
+        <p class="prose-sm">v3 amount-key derivation evolved in three commits:</p>
+        <ol class="steps-list">
+          <li><code>feat: bls</code> — BIP32 child bytes → SHA-256 → reduce into Fr</li>
+          <li><code>1d71add6e</code> — drop the extra hash; reduce child bytes directly</li>
+          <li><code>59a7a80e5</code> — rejection-sample a second hardened index until the 32 child bytes are a canonical non-zero scalar</li>
+        </ol>
+        <div class="codeblock">
+<pre>for amount index i:
+    attempt = 0
+    loop:
+        child = BIP32(i' / attempt')
+        reject all-zero
+        accept SecretKey::bls_from_slice(child)</pre>
+        </div>
+        <p class="prose-sm">A unit test proves the live key is the rejection-sampled two-level child. Ephemeral
+        blinding uses <code>SecretKey::generate_bls()</code> — the same Fr* sampler over <code>OsRng</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 07 · LIFECYCLE ═══════════════ -->
+<section class="page" id="lifecycle" data-title="v3 proof lifecycle">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">07</span> End-to-end v3 proof life cycle</p>
+    <h2 class="title-lg" data-reveal>The walk that makes federation obvious.</h2>
+    <p class="lede" data-reveal>The public wire protocol doesn't change. What changes is the algebra at each station —
+      and a two-stage verification on the wallet.</p>
+    <figure class="figure figure--wide" data-reveal>
+      <figcaption class="figure-head">
+        <span class="figure-label">fig · blind → sign → verify → unblind → verify</span>
+        <span class="figure-ui"><span class="step-pills" data-steps-for="lifecycle"></span><button class="replay" data-replay="lifecycle" title="Replay figure">↻</button></span>
+      </figcaption>
+      <div class="figure-body" id="figLifecycle"></div>
+    </figure>
+    <div class="cols-2" data-reveal>
+      <div class="callout callout--warn">
+        <p class="callout-k">No DLEQ on v3</p>
+        <p>If a v3 blind signature or proof carries DLEQ data, reject it. DLEQ is not defined for this curve in NUT-12 —
+        pairings replaced it.</p>
+      </div>
+      <div class="callout">
+        <p class="callout-k">The fix that made it real — <code>289fe9e44</code></p>
+        <p>Early wallets could construct a v3 proof and skip the blind pairing check.
+        <code>verify_bls_blind_signature()</code> is now wired into mint-response validation, restore, auth-wallet
+        mint, and <code>verify_token_signatures</code>. A regression test asserts v3 tokens never encode
+        <code>"d": null</code> DLEQ.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 08 · MIXED-CURVE SAFETY ═══════════════ -->
+<section class="page" id="mixed-curve" data-title="Mixed-curve safety">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">08</span> Mixed-curve safety</p>
+    <h2 class="title-lg" data-reveal>Making the old SDK safe for new points.</h2>
+    <p class="lede" data-reveal>Once a public key can be secp, G1 or G2, old assumptions break. A compressed G1 point
+      is valid hex and parses fine — so an attacker can smuggle BLS points into NUT-10 spending conditions.</p>
+    <div class="cols-2" data-reveal>
+      <div class="stack">
+        <div class="mini">
+          <p class="mini-k">The panic surface (original-branch leftover)</p>
+          <p class="mono-sm"><code>to_uncompressed_bytes</code> · <code>x_only_public_key</code> · <code>negate</code> ·
+          <code>to_scalar</code> / <code>as_scalar</code></p>
+          <p class="prose-sm">P2PK / HTLC stay secp-only. Before <code>2dedc3ca7</code>, a BLS point in
+          <code>nut10</code> data panicked inside <code>x_only_public_key()</code>; after, it returns
+          <code>NonSecp256k1Pubkey</code>.</p>
+        </div>
+        <div class="mini">
+          <p class="mini-k">Rejections that matter</p>
+          <p class="prose-sm">identity points on G1/G2 parse · zero scalars for blinding factors, mint keys, batch
+          weights · non-canonical scalars in every sampler · NUT-00 batch vector pinned as a unit test in
+          <code>nut01/bls.rs</code></p>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="mini">
+          <p class="mini-k">fuzz_bls_pubkey_in_conditions</p>
+          <p class="prose-sm">Random hex almost never decodes to a subgroup-correct BLS point, so the fuzzer injects
+          <i>valid</i> compressed G1/G2 points into P2PK/HTLC <code>data</code>, <code>pubkeys</code>,
+          <code>refund_keys</code> — and asserts an error, never a panic.</p>
+        </div>
+        <div class="mini">
+          <p class="mini-k">fuzz_bls_dhke</p>
+          <p class="prose-sm">Panic-safety across G1/G2/scalar parsing, blind / sign / unblind / verify and batch-weight
+          sampling — plus soundness: honest v3 proofs verify, tampered ones fail.</p>
+        </div>
+        <div class="callout callout--quiet">
+          <p class="callout-k">Why this chapter exists</p>
+          <p>Federation multiplies every one of these paths by <code>n</code> members. The mixed-curve hardening is
+          what the threshold code stands on.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 09 · DESIGN FORK ═══════════════ -->
+<section class="page" id="design-fork" data-title="Design fork">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">09</span> Design fork</p>
+    <h2 class="title-lg" data-reveal>"Why not t-of-n secp signatures, like bare multisig?"</h2>
+    <p class="lede" data-reveal>It would have prototyped. It would have been a worse Cashu federation — because the
+      coin <i>is</i> the signature. BLS is the interpolated-secret design on a pairing curve, not multisig with nicer
+      bytes.</p>
+    <div class="cols-2" data-reveal>
+      <table class="data data--strong">
+        <thead><tr><th></th><th>Bare secp multisig</th><th>BLS threshold shares</th></tr></thead>
+        <tbody>
+          <tr><td>Wallet stores</td><td>t signatures + roster</td><td>one <code>C</code> under one <code>K</code></td></tr>
+          <tr><td>Who can receive</td><td>federation-aware wallets</td><td>any v3 Cashu wallet</td></tr>
+          <tr><td>Verify</td><td>t secp checks + policy</td><td>one pairing, or a batch</td></tr>
+          <tr><td>Offline proof of key</td><td>per-signer DLEQ</td><td>pairing against advertised <code>K</code></td></tr>
+          <tr><td>Keyset</td><td>set of keys, roster history</td><td>ordinary v3 keyset</td></tr>
+          <tr><td>Still need consensus?</td><td class="cell-red">yes</td><td class="cell-red">yes</td></tr>
+        </tbody>
+      </table>
+      <div class="stack">
+        <div class="callout">
+          <p class="callout-k">The honest summary</p>
+          <p>Naive secp multisig federates the <b>token</b>. BLS threshold federates the <b>issuer</b>, then emits a
+          normal token. Cashu cares about the second thing — the bearer object should stay boring.</p>
+        </div>
+        <div class="callout callout--quiet">
+          <p class="callout-k">What multisig got right</p>
+          <p>Blindness works, t-of-n availability works, and the expensive parts — consensus, replay, catch-up,
+          payment observation — don't disappear either way. (And "why not FROST-sign the secret?" is a third design:
+          a threshold Schnorr scheme that is no longer Cashu.)</p>
+        </div>
+      </div>
+    </div>
+    <p class="oneline" data-reveal>Bitcoin can afford bare multisig because the coin lives in a UTXO that names its
+      script. Cashu can't — the coin is the signature.</p>
+  </div>
+</section>
+
+<!-- ═══════════════ 10 · THRESHOLD SCHEME ═══════════════ -->
+<section class="page" id="threshold" data-title="BLS threshold scheme">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">10</span> The threshold scheme we actually use</p>
+    <h2 class="title-lg" data-reveal>Classic Shamir, applied to a blinded G1 point.</h2>
+    <p class="lede" data-reveal>One secret <code>k</code> per denomination, shared as <code>k_i = f(i)</code> under a
+      degree-(t−1) polynomial. Any <code>t</code> shares interpolate <code>C = k·B</code>. Fewer learn nothing.
+      Signer IDs are non-zero — interpolation happens at <code>x = 0</code>.</p>
+    <figure class="figure figure--wide" data-reveal>
+      <figcaption class="figure-head">
+        <span class="figure-label">fig · 2-of-3 interpolation — pick a signer subset</span>
+        <span class="figure-ui"><span class="step-pills" data-steps-for="shamir"></span><button class="replay" data-replay="shamir" title="Replay figure">↻</button></span>
+      </figcaption>
+      <div class="figure-body" id="figShamir"></div>
+    </figure>
+    <div class="cols-3" data-reveal>
+      <div class="mini"><p class="mini-k">Share check</p><p class="eq eq--tight">e(C_i, G2) == e(B, K_i)</p></div>
+      <div class="mini"><p class="mini-k">Aggregate (any t of n)</p><p class="eq eq--tight">C = Σ λᵢ(0)·C_i = f(0)·B = k·B</p></div>
+      <div class="mini"><p class="mini-k">Then it's standalone v3</p><p class="eq eq--tight">e(C, G2) == e(H(secret), K) · proof = r⁻¹·C</p></div>
+    </div>
+    <p class="prose-sm" data-reveal>Not bare multisig (shares never reach the token), not FROST (that's the secp
+      treasury scheme), not IETF aggregate-BLS (every share is of the <i>same</i> <code>k·B</code>). The in-tree
+      3-of-5 test shows subsets <code>{1,3,5}</code> and <code>{2,3,4}</code> reconstructing the same point with real
+      scalars. A 1-of-1 keyset <i>is</i> a normal single-signer BLS key. Code: <code>nut01/bls.rs</code> —
+      <code>blind_sign_share()</code> / <code>aggregate_blind_signature_shares()</code>.</p>
+  </div>
+</section>
+
+<!-- ═══════════════ 11 · MIX-AND-MATCH ═══════════════ -->
+<section class="page" id="mix-and-match" data-title="Mix-and-match attack">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">11</span> Threshold-signing mix-and-match</p>
+    <h2 class="title-lg" data-reveal>The sliding-window attack.</h2>
+    <p class="lede" data-reveal>Every BLS share is independently valid — even if nobody else signed the same
+      <code>B</code>. If members sign whatever they're shown, a wallet pays for 2 tokens and walks out with 3.</p>
+    <figure class="figure figure--wide" data-reveal>
+      <figcaption class="figure-head">
+        <span class="figure-label">fig · 3-of-5, paid quote = 2 tokens</span>
+        <span class="figure-ui"><span class="step-pills" data-steps-for="window"></span><button class="replay" data-replay="window" title="Replay figure">↻</button></span>
+      </figcaption>
+      <div class="figure-body" id="figWindow"></div>
+    </figure>
+    <div class="cols-2" data-reveal>
+      <div class="callout callout--warn">
+        <p class="callout-k">Not a BLS-math bug</p>
+        <p>This is what happens when a threshold issuer signs <i>before</i> it agrees on the exact message. The same
+        trick works on swap: keep the inputs fixed, slide the output set. The milestone-12 suite uses four overlapping
+        3-output windows — ABC / BCD / CDA / DAB — against one 3-token quote.</p>
+      </div>
+      <div class="callout">
+        <p class="callout-k">What stops it</p>
+        <p>Hash the exact envelope into an <code>operation_id</code>. Same bytes, same ID; different output set,
+        different ID. Members sign only the operation that consensus accepted. Shares carry the accepted
+        <code>operation_id</code>. Signing threshold below consensus threshold is safe <i>only</i> because of this
+        ordering.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 12 · CONSENSUS BEFORE SIGNING ═══════════════ -->
+<section class="page" id="consensus" data-title="Consensus before signing">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">12</span> Consensus before signing</p>
+    <h2 class="title-lg" data-reveal>Agree on the transaction before any signature exists.</h2>
+    <p class="lede" data-reveal>Treat AlephBFT as a black box: envelopes in, one total order out. A member doesn't sign
+      because it received an HTTP request — it signs because that exact envelope came out of the box as accepted.</p>
+    <figure class="figure figure--wide" data-reveal>
+      <figcaption class="figure-head">
+        <span class="figure-label">fig · two conflicting envelopes, one winner</span>
+        <span class="figure-ui"><span class="step-pills" data-steps-for="consensus"></span><button class="replay" data-replay="consensus" title="Replay figure">↻</button></span>
+      </figcaption>
+      <div class="figure-body" id="figConsensus"></div>
+    </figure>
+    <div class="cols-3" data-reveal>
+      <div class="mini"><p class="mini-k">An envelope is a name</p>
+        <p class="mono-sm">envelope = { federation, kind: Swap, inputs: [P1,P2], outputs: [A,B] }<br>operation_id = hash(envelope)</p></div>
+      <div class="mini"><p class="mini-k">Apply does the Cashu part</p>
+        <p class="prose-sm">Verify proofs, mark inputs spent, sign accepted outputs. Replay is idempotent; a different
+        output set for spent inputs → <code>TokenAlreadySpent</code>, no shares.</p></div>
+      <div class="mini"><p class="mini-k">Mint vs swap lock</p>
+        <p class="prose-sm">Mint/melt conflict on the quote ID. Swap locks via the inputs themselves: the first
+        accepted swap spends them, the second window can't collect shares.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 13 · TRANSPORT ═══════════════ -->
+<section class="page" id="transport" data-title="Data flow & transport">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">13</span> Data flow and transport</p>
+    <h2 class="title-lg" data-reveal>Two networks, same members.</h2>
+    <p class="lede" data-reveal>The public plane is wallet→mint fan-out. The private plane is member↔member agreement.
+      HTTP and Iroh are just two pipes for the same two planes — <code>iroh://…</code> is not a new protocol.</p>
+    <figure class="figure figure--wide" data-reveal>
+      <figcaption class="figure-head">
+        <span class="figure-label">fig · public star vs private mesh</span>
+        <span class="figure-ui"><span class="step-pills" data-steps-for="transport"></span><button class="replay" data-replay="transport" title="Replay figure">↻</button></span>
+      </figcaption>
+      <div class="figure-body" id="figTransport"></div>
+    </figure>
+    <div class="cols-3" data-reveal>
+      <div class="mini"><p class="mini-k tag-sky">Public — fan-out</p>
+        <p class="prose-sm">Same ordinary Cashu request to every member's <code>public_mint_url</code>. Liveness is the
+        signature threshold: slow or offline members are ignored, bad shares dropped. The wallet is the aggregator —
+        members never send shares to each other.</p></div>
+      <div class="mini"><p class="mini-k tag-amber">Private — /federation/v1</p>
+        <p class="prose-sm">Member-authenticated. Carries consensus (envelopes, AlephBFT messages, journal catch-up)
+        and later DKG. Wallets are not on this plane.</p></div>
+      <div class="mini"><p class="mini-k">Quote creation is the exception</p>
+        <p class="prose-sm">First healthy member creates it; the wallet then waits until a <i>threshold</i> can see it.
+        Status polls fan out — never trust one member's "paid" or "issued". Code:
+        <code>crates/cdk/src/wallet/federation.rs</code>.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 14 · BLS DKG ═══════════════ -->
+<section class="page" id="dkg" data-title="BLS DKG">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">14</span> BLS DKG — dealer-free key generation</p>
+    <h2 class="title-lg" data-reveal>Nobody ever holds <code>k</code>.</h2>
+    <p class="lede" data-reveal>Dealer-free Pedersen DKG on the private member plane. Every member contributes a secret
+      polynomial; the joint mint key is the sum of the constant terms. Once per denomination. Trusted-dealer setup is
+      the same end state — used in tests.</p>
+    <figure class="figure figure--wide" data-reveal>
+      <figcaption class="figure-head">
+        <span class="figure-label">fig · commit → reveal → deliver → sum</span>
+        <span class="figure-ui"><span class="step-pills" data-steps-for="dkg"></span><button class="replay" data-replay="dkg" title="Replay figure">↻</button></span>
+      </figcaption>
+      <div class="figure-body" id="figDkg"></div>
+    </figure>
+    <div class="cols-3" data-reveal>
+      <div class="mini"><p class="mini-k">Joint secret</p>
+        <p class="mono-sm">f(x) = Σ fⱼ(x) · k = f(0)<br>k_i = Σ fⱼ(i) — never sees another polynomial</p></div>
+      <div class="mini"><p class="mini-k">Verifiable delivery</p>
+        <p class="mono-sm">fⱼ(i)·G2 == eval of j's public commitments at i — a lie is visible</p></div>
+      <div class="mini"><p class="mini-k">Aggregate key</p>
+        <p class="mono-sm">K = Σ Cⱼ[0] = k·G2<br>hash-commit first, so the last member can't adapt</p></div>
+    </div>
+    <p class="prose-sm" data-reveal>Then transcript + member signatures, and only then activation — nobody signs eCash
+      with the keyset before that. Wallets never see the dance: they see one ordinary v3 keyset. Code:
+      <code>crates/cdk-common/src/federation/dkg.rs</code>.</p>
+  </div>
+</section>
+
+<!-- ═══════════════ 15 · SIG_ALL HOLE ═══════════════ -->
+<section class="page" id="sigall" data-title="The SIG_ALL hole">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">15</span> Open challenge — client spend intent</p>
+    <h2 class="title-lg" data-reveal>Consensus can't stop the member who saw your proofs.</h2>
+    <p class="lede" data-reveal>Audit <code>SEC-2026-07-17-01</code>. A proof is a bearer instrument: whoever presents
+      <code>(secret, C)</code> can spend it. Today the envelope is authorized as "a member said so", not "the owner
+      wanted these outputs".</p>
+    <figure class="figure figure--wide" data-reveal>
+      <figcaption class="figure-head">
+        <span class="figure-label">fig · one Byzantine member races a rewritten swap</span>
+        <span class="figure-ui"><span class="step-pills" data-steps-for="sigall"></span><button class="replay" data-replay="sigall" title="Replay figure">↻</button></span>
+      </figcaption>
+      <div class="figure-body" id="figSigall"></div>
+    </figure>
+    <div class="cols-2" data-reveal>
+      <div class="callout callout--warn">
+        <p class="callout-k">What this is not</p>
+        <p>Not a BLS bug (the shares are valid — for the wrong outputs). Not mix-and-match (only one operation wins;
+        it's the attacker's). Not solved by fan-out (fan-out is how the member learns the proofs). Not solved by DKG
+        (DKG protects <code>k</code>, not bearer secrets).</p>
+      </div>
+      <div class="callout">
+        <p class="callout-k">The Cashu-shaped fix</p>
+        <p>NUT-11 <b>SIG_ALL</b>: lock the proof to P2PK and sign all outputs. Mutating <code>A,B</code> into
+        <code>X,Y</code> invalidates the witness and changes the operation ID. Code can bind SIG_ALL today but doesn't
+        <i>require</i> it — until it does, one receiving member stays trusted not to steal.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 16 · FUNDING BACKENDS ═══════════════ -->
+<section class="page" id="funding" data-title="Funding backends">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">16</span> Funding backends — the other half of the mint</p>
+    <h2 class="title-lg" data-reveal>Don't build a committee that prints IOUs against one person's piggy bank.</h2>
+    <p class="lede" data-reveal>A mint is two machines: the eCash issuer (BLS federation) and the funding backend where
+      real money sits. Federating only the first leaves a king.</p>
+    <div class="cols-2" data-reveal>
+      <div class="stack">
+        <div class="mini">
+          <p class="mini-k tag-violet">Federated BDK — on-chain treasury</p>
+          <p class="prose-sm">No member loads a mnemonic. Members watch the chain, agree on addresses and unsigned
+          transactions through the same consensus box, then jointly sign. One member can propose — it cannot move
+          coins.</p>
+        </div>
+        <div class="mini">
+          <p class="mini-k tag-violet">Federated Bark — Lightning treasury</p>
+          <p class="prose-sm">Mint invoices and melt payments are consensus operations first. Claiming an HTLC or
+          sending a payment is a threshold custody action, not "member 3's CLN paid it".</p>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="callout callout--warn">
+          <p class="callout-k">One classical node = one king</p>
+          <p>Point every member at a single CLN/LND/BDK and that operator can mark unpaid quotes paid, refuse or
+          redirect melts, or sweep the funds while the eCash ledger looks honest. Voting can't stop a key they don't
+          share.</p>
+        </div>
+        <div class="callout">
+          <p class="callout-k">The blunt rule</p>
+          <p>Same roster, same consensus history, and a treasury signing threshold no weaker than the eCash threshold.
+          The quorum that issues must be the quorum that moves the reserves. Both backends use <b>FROST on
+          secp256k1</b> — a different key on a different curve for a different job.
+          <code>development_single_observation</code> and fakewallet exist for tests; they are not a funding model.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 17 · FROST DKG ═══════════════ -->
+<section class="page" id="frost" data-title="FROST DKG">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">17</span> FROST DKG</p>
+    <h2 class="title-lg" data-reveal>Two ceremonies, one roster.</h2>
+    <p class="lede" data-reveal>Startup runs two dealer-free ceremonies under the same roster, ceremony ID and
+      signature threshold. Both must finish; a partial result never makes the mint ready. The secrets never mix.</p>
+    <figure class="figure figure--wide" data-reveal>
+      <figcaption class="figure-head">
+        <span class="figure-label">fig · BLS for eCash, FROST for the treasury</span>
+        <span class="figure-ui"><span class="step-pills" data-steps-for="frost"></span><button class="replay" data-replay="frost" title="Replay figure">↻</button></span>
+      </figcaption>
+      <div class="figure-body" id="figFrost"></div>
+    </figure>
+    <div class="cols-2" data-reveal>
+      <div class="mini">
+        <p class="mini-k tag-violet">The FROST ceremony</p>
+        <p class="prose-sm"><code>frost-secp256k1-tr</code> 3.0.0 in <code>cdk-frost</code>, ciphersuite
+        <code>secp256k1_sha256_tr_v1</code>. Three rounds on the private plane: broadcast commitments → confidential
+        per-recipient packages → root confirmation where every member publishes the same public package. Every message
+        binds federation ID, ceremony, epoch, protocol, ciphersuite, threshold, roster, sender, receiver.
+        Persist-before-send; a second different payload is equivocation.</p>
+      </div>
+      <div class="mini">
+        <p class="mini-k tag-violet">What comes out</p>
+        <p class="prose-sm">One untweaked, application-neutral root <code>P</code>; each member holds a sealed share
+        <code>s_i</code> (AES-256-GCM at rest). Apps derive later, in exact order: root → domain tweak → chain code →
+        non-hardened BIP32 → BIP340 even-Y → BIP341 key-path tweak. Bark and BDK are consumers — no second DKG. Any
+        <code>t</code> members later emit an ordinary Schnorr signature; the private key is never reconstructed.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 18 · BDK MINT/MELT ═══════════════ -->
+<section class="page" id="bdk-flow" data-title="BDK mint & melt">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">18</span> BDK mint and melt, step by step</p>
+    <h2 class="title-lg" data-reveal>Two public calls. Everything safe happens on the private plane.</h2>
+    <figure class="figure figure--wide" data-reveal>
+      <figcaption class="figure-head">
+        <span class="figure-label">fig · consensus objects behind one mint</span>
+        <span class="figure-ui"><span class="step-pills" data-steps-for="bdk"></span><button class="replay" data-replay="bdk" title="Replay figure">↻</button></span>
+      </figcaption>
+      <div class="figure-body" id="figBdk"></div>
+    </figure>
+    <div class="cols-2" data-reveal>
+      <div class="mini">
+        <p class="mini-k tag-amber">Mint — checks that matter</p>
+        <p class="prose-sm">Address allocation is consensus-owned (quote + epoch + keychain + index; replay reveals
+        that exact index). Mempool is not payment — deposits need the observation quorum <i>and</i> confirmation
+        depth. A reorg before issuance unsays the UTXO; after issuance it raises an alarm and does not unmint.
+        Issuance still requires the paid quote and the exact output set.</p>
+      </div>
+      <div class="mini">
+        <p class="mini-k tag-violet">Melt — checks that matter</p>
+        <p class="prose-sm"><code>make_payment</code> creates an intent, not a payment. <code>TransactionProposal</code>
+        carries the exact unsigned tx — every member recomputes ownership, value conservation, fee caps, destinations
+        and sighashes. FROST authorizations bind operation + tx + input index + sighash; nonces burn on failure, never
+        reuse. Signed bytes persist (<code>TransactionSigned</code>) before any <code>BroadcastIntent</code>. One
+        member can't redirect the payout, sign a different tx, or broadcast alternate bytes.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 19 · SWAP FLOW ═══════════════ -->
+<section class="page" id="swap-flow" data-title="Swap, step by step">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">19</span> Swap, step by step</p>
+    <h2 class="title-lg" data-reveal>The purest federated operation. No Bitcoin involved.</h2>
+    <p class="lede" data-reveal>Ordinary <code>POST /swap</code> on the outside; consensus-before-signing on the
+      inside. One envelope, one winner, shares only after accept.</p>
+    <figure class="figure figure--wide" data-reveal>
+      <figcaption class="figure-head">
+        <span class="figure-label">fig · anatomy of a federated swap</span>
+        <span class="figure-ui"><span class="step-pills" data-steps-for="swap"></span><button class="replay" data-replay="swap" title="Replay figure">↻</button></span>
+      </figcaption>
+      <div class="figure-body" id="figSwap"></div>
+    </figure>
+    <div class="cols-2" data-reveal>
+      <div class="mini">
+        <p class="mini-k">What honest consensus gives</p>
+        <p class="prose-sm">Only one exact input/output set gets signed. Inputs spend once across the roster. Shares
+        exist only after accept, bound to <code>operation_id</code>, member, keyset, amount, output index. Replay is
+        idempotent; restore returns those same shares, never new ones. Offline members catch up and serve the accepted
+        shares — they cannot invent another window.</p>
+      </div>
+      <div class="mini">
+        <p class="mini-k">Admission rejects, before consensus</p>
+        <p class="prose-sm">Empty inputs · duplicate inputs/outputs · non-v3 outputs · oversized proofs/witnesses ·
+        unbalanced amounts. Lagging members fail closed and return no shares. Unless proofs carry SIG_ALL, a Byzantine
+        member who saw the bearer proofs can still rewrite and race — that's section 15, not a missing swap step.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 20 · WIRE / OPERATION CATALOG ═══════════════ -->
+<section class="page" id="wire" data-title="Consensus messages">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">20</span> Consensus messages on the wire</p>
+    <h2 class="title-lg" data-reveal>Named facts, ordered once.</h2>
+    <p class="lede" data-reveal>AlephBFT orders <code>FederationConsensusItem</code>s, not raw HTTP. An envelope's hash
+      is its <code>operation_id</code>: same bytes, same ID; exact retries join; a different payload is a different
+      operation.</p>
+    <figure class="figure figure--wide" data-reveal>
+      <figcaption class="figure-head">
+        <span class="figure-label">fig · happy-path accepted-operation counts</span>
+        <span class="figure-ui"><span class="step-pills" data-steps-for="counts"></span><button class="replay" data-replay="counts" title="Replay figure">↻</button></span>
+      </figcaption>
+      <div class="figure-body" id="figCounts"></div>
+    </figure>
+    <div class="cols-3" data-reveal>
+      <div class="mini"><p class="mini-k">Value operations</p>
+        <p class="mono-sm">MintQuote · Mint · MeltQuote · Melt · Swap — one exact Cashu request, one envelope, one
+        winner.</p></div>
+      <div class="mini"><p class="mini-k">Observations &amp; custody</p>
+        <p class="mono-sm">MintQuotePayment · MeltQuotePayment · ChainObservation::{Deposit,Reorg} · TxBroadcast —
+        one envelope per observer. AddressAllocation · TransactionProposal · TransactionSigned · BroadcastIntent.</p></div>
+      <div class="mini"><p class="mini-k">Off-log by design</p>
+        <p class="mono-sm">Wallet HTTP bodies · BLS shares · FROST packages · DKG messages · peer status / catch-up.
+        For n members: C = n − ⌊(n−1)/3⌋, T ≤ C, observation Q ≥ C in production.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 21 · ROSTER / CONFIG ═══════════════ -->
+<section class="page" id="roster" data-title="Roster & config">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">21</span> Roster and federation config</p>
+    <h2 class="title-lg" data-reveal>The roster is the constitution.</h2>
+    <p class="lede" data-reveal><code>FederationId</code> is SHA-256 over a domain-separated transcript: setup
+      authorization, thresholds, and every member's ID, both URLs, and identity key. Change any byte and you haven't
+      updated a federation — you've founded a new one. Try it:</p>
+    <figure class="figure figure--wide" data-reveal>
+      <figcaption class="figure-head">
+        <span class="figure-label">fig · federation_id, recomputed live (real SHA-256)</span>
+      </figcaption>
+      <div class="figure-body" id="figRoster"></div>
+    </figure>
+    <div class="cols-2" data-reveal>
+      <div class="mini">
+        <p class="mini-k">Frozen — imply a new federation</p>
+        <p class="prose-sm">add/remove/replace a member · rotate an identity key · change T or C · change
+        payment-observation policy · change Bitcoin network / FROST epoch · change wallet protocol version · swap
+        HTTPS↔Iroh or merge the two URLs · edit a DNS name that's in the roster. The only consensus mutation of the
+        public signing surface is <code>KeysetRotation</code>.</p>
+      </div>
+      <div class="mini">
+        <p class="mini-k">Still open before "done"</p>
+        <p class="prose-sm">locator vs identity (the real DNS fix) · what belongs in genesis vs policy amendments ·
+        member repair vs replacement · user-visible migration story · partial transport failure · whether
+        <code>config_digest</code> includes keysets (the ID is immutable; the digest rotates with keysets — burn that
+        distinction in).</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 22 · CRASH / BACKUP ═══════════════ -->
+<section class="page" id="crash" data-title="Crash & backup">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">22</span> Crash resistance, backup, catch-up</p>
+    <h2 class="title-lg" data-reveal>Peers can give you the book. Only your backup gives you the pen.</h2>
+    <p class="lede" data-reveal>The <b>book</b> is the journal, checkpoints, certificates, catch-up. The <b>pen</b> is
+      identity, BLS shares, the sealed FROST root. There is no BIP39 that regenerates a member seat.</p>
+    <div class="cols-2" data-reveal>
+      <table class="data">
+        <thead><tr><th>Lost</th><th>Recoverable?</th><th>How</th></tr></thead>
+        <tbody>
+          <tr><td>Process crash, DB intact</td><td class="cell-ok">yes</td><td>ordinary restart, suffix verify</td></tr>
+          <tr><td>Journal/DB after good snapshot</td><td class="cell-ok">yes</td><td>snapshot + manifest + secrets, catch up the tail</td></tr>
+          <tr><td>Entire DB, secrets intact</td><td class="cell-ok">yes, slow</td><td>genesis catch-up pages from peers (history retained from 0)</td></tr>
+          <tr><td>Network partition / lag</td><td class="cell-ok">yes</td><td>peer catch-up, fail closed until ready</td></tr>
+          <tr><td>FROST nonce mid-round</td><td class="cell-ok">yes</td><td>ambiguous nonces burn; never reuse</td></tr>
+          <tr><td>One member offline</td><td class="cell-ok">yes, for the federation</td><td>remaining C / T keep going</td></tr>
+          <tr><td>Identity key or BLS shares</td><td class="cell-red">no</td><td>not reconstructible → new federation</td></tr>
+          <tr><td>FROST sealed share / sealing key</td><td class="cell-red">no, for treasury</td><td>that seat can no longer sign</td></tr>
+        </tbody>
+      </table>
+      <div class="stack">
+        <div class="mini">
+          <p class="mini-k">Mechanisms that make it safe</p>
+          <p class="prose-sm">Deterministic journal replay (same <code>operation_id</code> → same state and shares) ·
+          order digest + materialized-state digest bound by catch-up certificates · scheduled checkpoints as restart
+          trust roots · checkpoint-bound DB restore with a manifest and no bypass flag · readiness gates —
+          a half-restored node does not sign · persist-before-send / persist-before-broadcast · nonce lifecycle
+          <code>vacant→reserved→published→consumed</code> · materialized-state audit latch with no force-clear.</p>
+        </div>
+        <div class="callout callout--warn">
+          <p class="callout-k">Secrets lost?</p>
+          <p>Stop. Do not copy another member's private config — wrong seat, activation fails. The remaining members
+          keep serving until you run a new setup with a new roster. Store snapshot + manifest + secret files together,
+          as one generation.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 23 · CLOSE ═══════════════ -->
+<section class="page page--title" id="close" data-title="Closing">
+  <div class="page-inner">
+    <p class="kicker" data-reveal><span class="kicker-num">23</span> Closing</p>
+    <h2 class="title-xl" data-reveal>The threshold lives in issuance.<br>The token stays boring.</h2>
+    <div class="cols-2" data-reveal>
+      <div class="stack">
+        <div class="mini">
+          <p class="mini-k">The story in five lines</p>
+          <ol class="steps-list">
+            <li>BLS v3 swaps secp DHKE for pairings — one public key, verifiable without <code>k</code>.</li>
+            <li>Shamir splits <code>k</code>; any t shares interpolate one ordinary signature.</li>
+            <li>Consensus orders the exact envelope <i>before</i> anyone signs — killing mix-and-match.</li>
+            <li>Dual DKG: BLS for eCash, FROST for the treasury. Same roster, same threshold.</li>
+            <li>The roster is frozen law. SIG_ALL is the remaining hole.</li>
+          </ol>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="mini">
+          <p class="mini-k">Open questions for the room</p>
+          <ul class="steps-list steps-list--ul">
+            <li>Published NUT text for v3 / BLS DHKE, or implementation ahead of spec?</li>
+            <li>Which NUT-00 / nutshell vectors belong on the slides?</li>
+            <li>Live demo of a standalone v3 mint, or equations + code pointers?</li>
+            <li>FROST/Bark as appendix, keeping the first talk on Cashu issuance?</li>
+          </ul>
+        </div>
+        <p class="prose-sm">Working notes: <code>docs/FEDERATION_NOTES.md</code> · review trail:
+        <a href="https://github.com/cashubtc/cdk/pull/2048">cashubtc/cdk#2048</a></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<script src="figures.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

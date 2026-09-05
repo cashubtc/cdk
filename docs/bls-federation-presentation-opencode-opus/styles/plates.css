@@ -1,0 +1,1013 @@
+/* ===========================================================================
+   plates.css — per-figure specifics
+   =========================================================================== */
+
+/* --- wide-slide head: statement left, lede right ------------------------- */
+
+.head-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: clamp(1.2rem, 3vw, 3.5rem);
+  align-items: end;
+}
+
+.head-row h2 em {
+  font-style: italic;
+  color: var(--g1);
+}
+
+.head-row .lede {
+  margin: 0;
+  max-width: 48ch;
+}
+
+@media (max-width: 62rem) {
+  .head-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+}
+
+.two-up {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+  gap: clamp(0.85rem, 1.6vw, 1.5rem);
+  align-items: start;
+}
+
+.two-up--wide {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+}
+
+@media (max-width: 66rem) {
+  .two-up--wide {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* --- inline highlights --------------------------------------------------- */
+
+.hl-g1 {
+  color: var(--g1);
+  font-weight: 500;
+}
+.hl-g2 {
+  color: var(--g2);
+  font-weight: 500;
+}
+.hl-secp {
+  color: var(--secp);
+  font-weight: 500;
+}
+.hl-bad {
+  color: var(--bad);
+  font-weight: 500;
+}
+.hl-good {
+  color: var(--good);
+  font-weight: 500;
+}
+.hl-peer {
+  color: var(--peer);
+  font-weight: 500;
+}
+
+/* --- travelling packet on a straight rail -------------------------------- */
+
+.run {
+  animation: run var(--dur, 2.8s) var(--ease-in-out) infinite;
+  animation-delay: var(--delay, 0s);
+}
+
+@keyframes run {
+  0% {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  7% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(var(--dx, 100px));
+    opacity: 0;
+  }
+}
+
+.slide:not([data-active]) .run {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+
+/* --- pairing gate inside an SVG ----------------------------------------- */
+
+.gate-box {
+  fill: var(--g1-dim);
+  stroke: color-mix(in oklab, var(--g1) 55%, transparent);
+  stroke-width: 1.25;
+}
+
+.gate-box--g2 {
+  fill: var(--g2-dim);
+  stroke: color-mix(in oklab, var(--g2) 55%, transparent);
+}
+
+.svg .t-gate {
+  fill: var(--g1);
+  font-size: 11.5px;
+  letter-spacing: -0.01em;
+}
+
+.svg .t-gate--g2 {
+  fill: var(--g2);
+}
+
+/* --- commit list --------------------------------------------------------- */
+
+.commits {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+  font-family: var(--mono);
+  font-size: clamp(0.64rem, 0.55rem + 0.26vw, 0.76rem);
+}
+
+.commit {
+  display: grid;
+  grid-template-columns: 5.4rem minmax(0, 1fr) 2.8rem;
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.3rem 0.4rem;
+  border-left: 2px solid var(--c, var(--line));
+  background: color-mix(in oklab, var(--panel) 34%, transparent);
+  color: var(--text-faint);
+  line-height: 1.45;
+}
+
+.commit code {
+  color: var(--c, var(--text-dim));
+  font-family: inherit;
+}
+
+.commit span {
+  color: var(--text-dim);
+}
+
+.commit span b {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.commit em {
+  font-style: normal;
+  text-align: right;
+  color: var(--text-ghost);
+}
+
+.commit--feat {
+  --c: var(--g1);
+  background: var(--g1-dim);
+}
+.commit--fix {
+  --c: color-mix(in oklab, var(--secp) 70%, transparent);
+}
+.commit--test {
+  --c: var(--peer);
+}
+.commit--crit {
+  --c: var(--bad);
+  background: color-mix(in oklab, var(--bad) 9%, transparent);
+}
+.commit--merge {
+  --c: var(--line);
+  opacity: 0.62;
+}
+
+@media (max-width: 40rem) {
+  .commit {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .commit em {
+    text-align: left;
+  }
+}
+
+/* --- pipeline (keyset id construction, derivation ladders) ---------------- */
+
+.pipe {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: p;
+  display: grid;
+  gap: 2px;
+  font-family: var(--mono);
+  font-size: clamp(0.66rem, 0.56rem + 0.28vw, 0.78rem);
+}
+
+.pipe__step {
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1fr);
+  gap: 0.55rem;
+  align-items: baseline;
+  padding: 0.36rem 0.5rem;
+  background: color-mix(in oklab, var(--panel) 40%, transparent);
+  border-left: 2px solid var(--line);
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+.pipe__step::before {
+  counter-increment: p;
+  content: counter(p);
+  color: var(--text-ghost);
+  font-size: 0.62rem;
+}
+
+.pipe__step--hash {
+  border-left-color: color-mix(in oklab, var(--peer) 70%, transparent);
+  color: var(--peer);
+  letter-spacing: 0.1em;
+}
+
+.pipe__step--out {
+  border-left-color: var(--g2);
+  background: var(--g2-dim);
+  color: var(--text);
+}
+
+/* --- evolution strikethrough list --------------------------------------- */
+
+.evo {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: e;
+  display: grid;
+  gap: 2px;
+  font-family: var(--mono);
+  font-size: clamp(0.64rem, 0.55rem + 0.26vw, 0.76rem);
+}
+
+.evo li {
+  display: grid;
+  grid-template-columns: 1.3rem minmax(0, 1fr) 6rem;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.28rem 0.4rem;
+  background: color-mix(in oklab, var(--panel) 34%, transparent);
+}
+
+.evo li::before {
+  counter-increment: e;
+  content: counter(e);
+  color: var(--text-ghost);
+  font-size: 0.62rem;
+}
+
+.evo s {
+  color: var(--text-ghost);
+  text-decoration-color: color-mix(in oklab, var(--bad) 60%, transparent);
+}
+
+.evo b {
+  color: var(--good);
+  font-weight: 500;
+}
+
+.evo em {
+  font-style: normal;
+  text-align: right;
+  color: var(--text-faint);
+}
+
+/* --- file map ------------------------------------------------------------ */
+
+.filemap {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 1rem 1.6rem;
+}
+
+.fm__k {
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding-bottom: 0.45rem;
+  margin: 0 0 0.5rem;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.fm__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 1px;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: -0.01em;
+}
+
+.fm__list li {
+  color: var(--text-dim);
+  padding: 0.16rem 0.34rem;
+  border-left: 2px solid var(--c, var(--line-soft));
+  background: color-mix(in oklab, var(--panel) 26%, transparent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fm__list li b {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.fm--proto .fm__list li {
+  --c: color-mix(in oklab, var(--g1) 55%, transparent);
+}
+.fm--mint .fm__list li {
+  --c: color-mix(in oklab, var(--g2) 55%, transparent);
+}
+.fm--wallet .fm__list li {
+  --c: color-mix(in oklab, var(--wallet) 40%, transparent);
+}
+.fm--fuzz .fm__list li {
+  --c: color-mix(in oklab, var(--bad) 55%, transparent);
+}
+
+/* --- chapter cards ------------------------------------------------------- */
+
+.chapters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 1rem;
+  counter-reset: ch;
+}
+
+.chapter {
+  display: grid;
+  gap: 0.6rem;
+  align-content: start;
+  padding: 1rem;
+  border: 1px solid var(--line-soft);
+  border-top: 2px solid var(--c, var(--g1));
+  border-radius: var(--radius);
+  background: color-mix(in oklab, var(--panel) 45%, transparent);
+}
+
+.chapter::before {
+  counter-increment: ch;
+  content: "ch " counter(ch, decimal-leading-zero);
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--c, var(--g1));
+}
+
+.chapter h3 {
+  font-size: 1.05rem;
+}
+
+.chapter p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+.chapter:nth-child(1) {
+  --c: var(--g1);
+}
+.chapter:nth-child(2) {
+  --c: var(--g2);
+}
+.chapter:nth-child(3) {
+  --c: var(--secp);
+}
+.chapter:nth-child(4) {
+  --c: var(--bad);
+}
+
+/* --- member toggles (threshold figure) ---------------------------------- */
+
+.members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.mbtn {
+  appearance: none;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.06em;
+  padding: 0.3rem 0.55rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--panel-2) 75%, transparent);
+  color: var(--text-faint);
+  transition:
+    transform var(--d-press) var(--ease-out),
+    color var(--d-press) var(--ease-out),
+    border-color var(--d-press) var(--ease-out),
+    background-color var(--d-press) var(--ease-out);
+}
+
+.mbtn:active {
+  transform: scale(0.97);
+}
+
+.mbtn[aria-pressed="true"] {
+  color: var(--ink);
+  background: var(--g1);
+  border-color: var(--g1);
+}
+
+.mbtn[data-dead] {
+  opacity: 0.4;
+}
+
+.verdict {
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.3rem 0.55rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  color: var(--text-faint);
+  transition:
+    color var(--d-control) var(--ease-out),
+    border-color var(--d-control) var(--ease-out),
+    background-color var(--d-control) var(--ease-out);
+  white-space: nowrap;
+}
+
+.verdict[data-ok] {
+  color: var(--good);
+  border-color: color-mix(in oklab, var(--good) 40%, transparent);
+  background: var(--good-dim);
+}
+
+.verdict[data-no] {
+  color: var(--bad);
+  border-color: color-mix(in oklab, var(--bad) 40%, transparent);
+  background: var(--bad-dim);
+}
+
+/* --- envelopes (consensus) ---------------------------------------------- */
+
+.envs {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.env {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.7rem;
+  align-items: center;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in oklab, var(--panel) 50%, transparent);
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  color: var(--text-dim);
+  transition:
+    border-color var(--d-control) var(--ease-out),
+    background-color var(--d-control) var(--ease-out),
+    opacity var(--d-control) var(--ease-out);
+}
+
+.env__id {
+  color: var(--text-faint);
+  font-size: 0.64rem;
+  letter-spacing: 0.02em;
+}
+
+.env__state {
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-size: 0.62rem;
+  color: var(--text-ghost);
+  white-space: nowrap;
+}
+
+.env[data-state="accepted"] {
+  border-color: color-mix(in oklab, var(--good) 45%, transparent);
+  background: var(--good-dim);
+}
+.env[data-state="accepted"] .env__state {
+  color: var(--good);
+}
+
+.env[data-state="conflict"],
+.env[data-state="spent"] {
+  border-color: color-mix(in oklab, var(--bad) 45%, transparent);
+  background: color-mix(in oklab, var(--bad) 8%, transparent);
+}
+.env[data-state="conflict"] .env__state,
+.env[data-state="spent"] .env__state {
+  color: var(--bad);
+}
+
+.env[data-state="pending"] {
+  border-color: color-mix(in oklab, var(--peer) 45%, transparent);
+}
+.env[data-state="pending"] .env__state {
+  color: var(--peer);
+}
+
+/* --- transport planes --------------------------------------------------- */
+
+.planes {
+  display: grid;
+  gap: 0.8rem;
+}
+
+/* --- race timeline (SIG_ALL) -------------------------------------------- */
+
+.race {
+  display: grid;
+  gap: 0.35rem;
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+}
+
+.race__row {
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr);
+  gap: 0.7rem;
+  align-items: center;
+  color: var(--text-faint);
+}
+
+.race__who {
+  letter-spacing: 0.08em;
+  text-align: right;
+}
+
+.race__bar {
+  position: relative;
+  height: 1.5rem;
+  border-radius: 2px;
+  border: 1px solid color-mix(in oklab, var(--c, var(--line)) 42%, transparent);
+  display: flex;
+  align-items: center;
+  padding: 0 0.5rem;
+  color: var(--c, var(--text-dim));
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.race__bar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in oklab, var(--c, var(--line)) 17%, transparent);
+  transform-origin: left;
+  transform: scaleX(var(--w, 1));
+  transition: transform var(--d-figure) var(--ease-out);
+  transition-delay: calc(var(--i, 0) * 100ms);
+}
+
+.js .slide:not([data-seen]) .race__bar::before {
+  transform: scaleX(0);
+}
+
+.race__bar > span {
+  position: relative;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.race__row--wallet {
+  --c: var(--wallet);
+}
+.race__row--evil {
+  --c: var(--bad);
+}
+.race__row--honest {
+  --c: var(--peer);
+}
+.race__row--dead {
+  --c: var(--bad);
+}
+.race__row--fixed {
+  --c: var(--good);
+}
+
+/* --- big statistic ------------------------------------------------------ */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
+  gap: 0.9rem 1rem;
+}
+
+.stat {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.stat b {
+  font-family: var(--display);
+  font-variation-settings: "SOFT" 0, "WONK" 1, "opsz" 120;
+  font-size: clamp(1.7rem, 1.1rem + 1.8vw, 2.8rem);
+  line-height: 1;
+  letter-spacing: -0.03em;
+  color: var(--c, var(--text));
+  font-weight: 500;
+}
+
+.stat span {
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  line-height: 1.4;
+}
+
+.stat--g1 {
+  --c: var(--g1);
+}
+.stat--g2 {
+  --c: var(--g2);
+}
+.stat--secp {
+  --c: var(--secp);
+}
+.stat--bad {
+  --c: var(--bad);
+}
+.stat--peer {
+  --c: var(--peer);
+}
+
+/* --- dkg phase strip ---------------------------------------------------- */
+
+.phases {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.phase {
+  appearance: none;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.3rem 0.5rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-ghost);
+  transition:
+    transform var(--d-press) var(--ease-out),
+    color var(--d-press) var(--ease-out),
+    border-color var(--d-press) var(--ease-out),
+    background-color var(--d-press) var(--ease-out);
+}
+
+.phase:active {
+  transform: scale(0.97);
+}
+
+.phase[data-done] {
+  color: var(--text-faint);
+  border-color: var(--line);
+}
+
+.phase[data-current] {
+  color: var(--ink);
+  background: var(--g2);
+  border-color: var(--g2);
+}
+
+/* --- two machines (funding backends) ------------------------------------ */
+
+.machines {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: 1rem;
+}
+
+.machine {
+  border: 1px solid var(--line-soft);
+  border-top: 2px solid var(--c, var(--g1));
+  border-radius: var(--radius);
+  padding: 0.9rem;
+  display: grid;
+  gap: 0.5rem;
+  background: color-mix(in oklab, var(--panel) 45%, transparent);
+}
+
+.machine--bls {
+  --c: var(--g1);
+}
+.machine--frost {
+  --c: var(--secp);
+}
+
+.machine__k {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--c);
+}
+
+.machine h3 {
+  font-size: 1rem;
+}
+
+.machine p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+/* --- seal (closing) ----------------------------------------------------- */
+
+.seal {
+  display: grid;
+  place-items: center;
+}
+
+.seal svg {
+  width: clamp(11rem, 22vw, 19rem);
+  height: auto;
+}
+
+/* --- keep long slides honest -------------------------------------------- */
+
+.slide--dense {
+  --t-body: clamp(0.9rem, 0.7rem + 0.34vw, 1.06rem);
+}
+
+.slide--dense .lede {
+  font-size: clamp(0.95rem, 0.82rem + 0.32vw, 1.06rem);
+}
+
+.slide--dense h2 {
+  font-size: clamp(1.6rem, 1.05rem + 1.55vw, 2.35rem);
+}
+
+.slide--dense .fig__cap {
+  font-size: 0.66rem;
+  line-height: 1.48;
+}
+
+.slide--dense .ladder__step {
+  padding: 0.24rem 0;
+}
+
+.slide--dense .note p,
+.slide--dense .list {
+  font-size: 0.9em;
+}
+
+/* --- normalising pad on count bars -------------------------------------- */
+
+.bar__pad {
+  flex: var(--n, 0);
+}
+
+/* --- svg layer toggling (transport planes) ------------------------------- */
+
+.svg [data-layer] {
+  transition: opacity var(--d-control) var(--ease-out);
+}
+
+.svg [data-layer][data-off] {
+  opacity: 0.07;
+}
+
+/* --- shamir plot -------------------------------------------------------- */
+
+.shamir .cand {
+  stroke: var(--line);
+  stroke-width: 1;
+  opacity: 0;
+  transition: opacity var(--d-control) var(--ease-out);
+}
+
+.shamir .cand-dot {
+  fill: none;
+  stroke: var(--text-faint);
+  stroke-width: 1;
+  opacity: 0;
+  transition: opacity var(--d-control) var(--ease-out);
+}
+
+.shamir[data-only="1"] .cand[data-id="1"],
+.shamir[data-only="2"] .cand[data-id="2"],
+.shamir[data-only="3"] .cand[data-id="3"] {
+  opacity: 0.6;
+}
+
+.shamir[data-only="1"] .cand-dot[data-id="1"],
+.shamir[data-only="2"] .cand-dot[data-id="2"],
+.shamir[data-only="3"] .cand-dot[data-id="3"] {
+  opacity: 0.85;
+}
+
+.shamir .truth {
+  fill: none;
+  stroke: var(--g1);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  opacity: 0;
+  transition:
+    stroke-dashoffset var(--d-figure) var(--ease-in-out),
+    opacity var(--d-control) var(--ease-out);
+}
+
+.shamir[data-mode="enough"] .truth {
+  opacity: 1;
+  stroke-dashoffset: 0;
+}
+
+.shamir .secret {
+  opacity: 0;
+  transition: opacity var(--d-control) var(--ease-out) 220ms;
+}
+
+.shamir[data-mode="enough"] .secret {
+  opacity: 1;
+}
+
+.shamir .secret-dot {
+  fill: var(--good);
+  stroke: var(--ink);
+  stroke-width: 1.5;
+}
+
+.shamir .secret-lbl {
+  fill: var(--good);
+}
+
+.shamir .share-dot {
+  fill: var(--panel-2);
+  stroke: var(--g2);
+  stroke-width: 1.5;
+  transition:
+    fill var(--d-control) var(--ease-out),
+    stroke var(--d-control) var(--ease-out);
+}
+
+.shamir .share-drop {
+  stroke: var(--line-soft);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  transition: stroke var(--d-control) var(--ease-out);
+}
+
+.shamir .share-lbl {
+  fill: var(--text-faint);
+  transition: fill var(--d-control) var(--ease-out);
+}
+
+.shamir .share[data-on] .share-dot {
+  fill: var(--g1);
+  stroke: var(--g1);
+}
+
+.shamir .share[data-on] .share-drop {
+  stroke: color-mix(in oklab, var(--g1) 40%, transparent);
+}
+
+.shamir .share[data-on] .share-lbl {
+  fill: var(--g1);
+}
+
+/* --- dkg phase layers --------------------------------------------------- */
+
+.dkg .layer {
+  opacity: 0;
+  transition: opacity 320ms var(--ease-out);
+}
+
+.dkg .layer[data-on] {
+  opacity: 1;
+}
+
+/* --- disabled control --------------------------------------------------- */
+
+.btn:disabled,
+.mbtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.btn:disabled:active,
+.mbtn:disabled:active {
+  transform: none;
+}
+
+/* --- dkg commit ring ----------------------------------------------------- */
+
+.dkg .ring {
+  fill: none;
+  stroke: color-mix(in oklab, var(--g2) 40%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+
+/* --- dense pages: one more notch of compression -------------------------- */
+
+.slide--dense .fig__stage {
+  padding: clamp(0.7rem, 1.1vw, 0.95rem);
+}
+
+.slide--dense .table {
+  font-size: clamp(0.64rem, 0.55rem + 0.26vw, 0.74rem);
+}
+
+.slide--dense .table th,
+.slide--dense .table td {
+  padding: 0.4rem 0.7rem 0.4rem 0;
+}
+
+.slide--dense .code {
+  line-height: 1.5;
+  padding: 0.7rem 0.85rem;
+}
+
+.slide--dense .rec {
+  padding: 0.28rem 0.5rem;
+}
+
+.slide--dense .chips {
+  gap: 0.3rem;
+}
+
+.dkg .enclosure {
+  fill: color-mix(in oklab, var(--peer) 4%, transparent);
+  stroke: color-mix(in oklab, var(--peer) 22%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 4 5;
+}
+
+/* --- act divider: a faint plate seal behind the statement ---------------- */
+
+.divider {
+  position: relative;
+}
+
+.divider__seal {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  opacity: 0.16;
+  z-index: 0;
+}
+
+.divider__seal svg {
+  width: min(52rem, 76vmin);
+  height: auto;
+}
+
+.divider .slide__inner {
+  position: relative;
+  z-index: 1;
+}
+
+.stat--good {
+  --c: var(--good);
+}
+
+/* --- open-questions grid ------------------------------------------------- */
+
+.qa {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+  gap: 1rem;
+  max-width: 62rem;
+}
