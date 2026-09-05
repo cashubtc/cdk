@@ -118,7 +118,7 @@ pub struct WalletPage<T> {
 impl CdkBdk {
     /// Creates and returns a fresh external address for operator deposits.
     pub async fn create_operator_deposit_address(&self) -> Result<String, Error> {
-        let mut wallet_with_db = self.wallet_with_db.lock().await;
+        let mut wallet_with_db = self.wallet_engine.wallet_with_db.lock().await;
         let address = wallet_with_db
             .wallet
             .reveal_next_address(KeychainKind::External)
@@ -135,7 +135,7 @@ impl CdkBdk {
 
     /// Returns the wallet balance split by confirmation status.
     pub async fn wallet_balance(&self) -> WalletBalance {
-        let wallet_with_db = self.wallet_with_db.lock().await;
+        let wallet_with_db = self.wallet_engine.wallet_with_db.lock().await;
         let balance = wallet_with_db.wallet.balance();
 
         WalletBalance {
@@ -157,7 +157,7 @@ impl CdkBdk {
         limit: usize,
     ) -> Result<WalletPage<WalletTransaction>, Error> {
         self.storage.ensure_send_outpoint_quote_id_index().await?;
-        let wallet_with_db = self.wallet_with_db.lock().await;
+        let wallet_with_db = self.wallet_engine.wallet_with_db.lock().await;
         let wallet = &wallet_with_db.wallet;
         let transactions = wallet.transactions_sort_by(|left, right| {
             right
@@ -285,7 +285,7 @@ impl CdkBdk {
         offset: usize,
         limit: usize,
     ) -> Result<WalletPage<WalletAddress>, Error> {
-        let wallet_with_db = self.wallet_with_db.lock().await;
+        let wallet_with_db = self.wallet_engine.wallet_with_db.lock().await;
         let wallet = &wallet_with_db.wallet;
         let mut balances = HashMap::<(KeychainKind, u32), (u64, u64)>::new();
 

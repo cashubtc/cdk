@@ -40,11 +40,17 @@ pub type HttpClient = http_client::HttpClient<transport::IrohTransport<transport
 /// Default HTTP client with async HTTP(S) transport (non-Tor).
 #[cfg(not(all(feature = "iroh", not(target_arch = "wasm32"))))]
 pub type HttpClient = http_client::HttpClient<transport::Async>;
-/// Rate-limited HTTP Client with async transport
-pub type RateLimitedHttpClient = http_client::HttpClient<RateLimitedTransport<transport::Async>>;
-/// Rate-limited Auth HTTP Client with async transport
+/// Default transport, including Iroh when enabled.
+#[cfg(all(feature = "iroh", not(target_arch = "wasm32")))]
+pub type DefaultTransport = transport::IrohTransport<transport::Async>;
+/// Default HTTP transport.
+#[cfg(not(all(feature = "iroh", not(target_arch = "wasm32"))))]
+pub type DefaultTransport = transport::Async;
+/// Rate-limited HTTP client with the default transport.
+pub type RateLimitedHttpClient = http_client::HttpClient<RateLimitedTransport<DefaultTransport>>;
+/// Rate-limited authentication client with the default transport.
 pub type RateLimitedAuthHttpClient =
-    http_client::AuthHttpClient<RateLimitedTransport<transport::Async>>;
+    http_client::AuthHttpClient<RateLimitedTransport<DefaultTransport>>;
 /// Tor Auth HTTP Client with async transport (only when `tor` feature is enabled and not on wasm32)
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub type TorAuthHttpClient = http_client::AuthHttpClient<transport::TorAsync>;

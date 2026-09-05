@@ -3,6 +3,8 @@ set -euo pipefail
 
 CDK_MINTD_BIN="${CDK_MINTD_BIN:-cdk-mintd}"
 PUBLIC_CONFIG=@@PUBLIC_CONFIG_PATH@@
+DATABASE_ENGINE=@@DATABASE_ENGINE@@
+POSTGRES_SECRET_DIR=@@POSTGRES_SECRET_DIR@@
 POSTGRES_SCHEMA_RESET_URL=@@POSTGRES_SCHEMA_RESET_URL@@
 RESET_POSTGRES_SCHEMAS="${RESET_POSTGRES_SCHEMAS:-0}"
 MEMBERS=(@@MEMBERS@@)
@@ -97,12 +99,24 @@ reset_state() {
   done
 }
 
+member_mintd() (
+  local member="$1"
+  shift
+  export CDK_MINTD_DATABASE="$DATABASE_ENGINE"
+  if [[ "$DATABASE_ENGINE" == "postgres" ]]; then
+    CDK_MINTD_POSTGRES_URL="$(cat "$POSTGRES_SECRET_DIR/member-$member-postgres-url")"
+    export CDK_MINTD_POSTGRES_URL
+  fi
+  exec "$CDK_MINTD_BIN" --work-dir "$(member_work_dir "$member")" "$@"
+)
+
 start_members() {
   local member
   for member in "${MEMBERS[@]}"; do
     local work_dir
     work_dir="$(member_work_dir "$member")"
-    "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$(member_config "$member")" >"$work_dir/mintd.log" 2>&1 &
+    member_mintd "$member" config init --new-mint --file "$(member_config "$member")"
+    member_mintd "$member" >"$work_dir/mintd.log" 2>&1 &
     PIDS[$member]=$!
   done
 }
@@ -123,10 +137,14 @@ wait_for_member() {
 reset_state
 start_members
 
+READY_PIDS=()
 for member in "${MEMBERS[@]}"; do
   wait_for_member "$member" &
+  READY_PIDS+=("$!")
 done
-wait
+for pid in "${READY_PIDS[@]}"; do
+  wait "$pid"
+done
 
 "$CDK_MINTD_BIN" federation smoke-operations \
   --public-config "$PUBLIC_CONFIG" \

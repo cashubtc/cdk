@@ -5,10 +5,12 @@ use cdk_common::federation::{FederationConfig, FederationDkgSetupMethod, MemberC
 use cdk_common::nuts::nut02::KeySetVersion;
 
 use crate::cli::{CLIArgs, FederationInspectArgs};
-use crate::config;
 
-pub(crate) fn run_inspect_command(cli_args: &CLIArgs, args: &FederationInspectArgs) -> Result<()> {
-    let (public_config_path, private_config_path) = inspect_config_paths(cli_args, args)?;
+pub(crate) async fn run_inspect_command(
+    cli_args: &CLIArgs,
+    args: &FederationInspectArgs,
+) -> Result<()> {
+    let (public_config_path, private_config_path) = inspect_config_paths(cli_args, args).await?;
     let public_config: FederationConfig =
         crate::read_federation_json(&public_config_path, "public federation config")?;
     public_config
@@ -34,7 +36,7 @@ pub(crate) fn run_inspect_command(cli_args: &CLIArgs, args: &FederationInspectAr
     Ok(())
 }
 
-fn inspect_config_paths(
+async fn inspect_config_paths(
     cli_args: &CLIArgs,
     args: &FederationInspectArgs,
 ) -> Result<(PathBuf, Option<PathBuf>)> {
@@ -42,13 +44,8 @@ fn inspect_config_paths(
         return Ok((public_config.clone(), args.private_config.clone()));
     }
 
-    let config_path = cli_args.config.as_deref().ok_or_else(|| {
-        anyhow!(
-            "federation inspect needs --public-config or a mintd --config with [federation] paths"
-        )
-    })?;
-    let settings = config::Settings::try_new(Some(config_path))
-        .with_context(|| format!("failed to load mint config {}", config_path.display()))?;
+    let work_dir = crate::get_work_directory(cli_args).await?;
+    let settings = crate::load_stored_settings(&work_dir, cli_args).await?;
     let federation = settings
         .federation
         .ok_or_else(|| anyhow!("mint config has no [federation] section"))?;

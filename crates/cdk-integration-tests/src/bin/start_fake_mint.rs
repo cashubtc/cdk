@@ -74,6 +74,7 @@ async fn start_fake_mint(
     };
 
     let fake_wallet_config = Some(cdk_mintd::config::FakeWallet {
+        shared_incoming_payment_dir: None,
         supported_units: vec![CurrencyUnit::Sat, CurrencyUnit::Usd],
         fee_percent: 0.0,
         reserve_fee_min: 1.into(),

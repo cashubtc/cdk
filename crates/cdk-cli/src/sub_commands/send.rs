@@ -278,10 +278,9 @@ pub async fn send(
                 println!("{token}");
             }
         }
-    }
-
-    if sub_command_args.animate {
-        display_animated_qr(&token).await?;
+        if sub_command_args.animate {
+            display_animated_qr(&token).await?;
+        }
     }
 
     Ok(())

@@ -140,7 +140,13 @@ fn local_postgres_configs_keep_member_storage_isolated() {
             .postgres
             .expect("generated PostgreSQL database config");
         assert_eq!(
-            postgres.url,
+            std::fs::read_to_string(
+                postgres
+                    .url
+                    .strip_prefix("file:")
+                    .expect("secret file reference")
+            )
+            .expect("read database URL"),
             format!("postgresql://example/member-{}", member_id.get())
         );
     }

@@ -630,6 +630,9 @@ fn member_config_toml(
             .map_err(|err| anyhow!("failed to generate member mnemonic: {err}"))?,
     }
     .to_string();
+    let secret_path = config_path.with_extension("mnemonic");
+    write_private_text_file(&secret_path, &mnemonic, true)?;
+    let mnemonic = format!("file:{}", path_to_string(&secret_path));
     let public_config_path = path_to_string(public_config_path);
     let private_config_path = path_to_string(private_config_path);
     let config_path = path_to_string(config_path);
@@ -648,7 +651,11 @@ fn member_config_toml(
         member_id.get(),
         federation_url
     ))?;
-    let prometheus_port = prometheus_port.to_string();
+    let prometheus_config = if cfg!(feature = "prometheus") {
+        format!("[prometheus]\nenabled = true\naddress = \"127.0.0.1\"\nport = {prometheus_port}\n")
+    } else {
+        String::new()
+    };
     let unit = toml_string(&unit)?;
     let public_config_path = toml_string(&public_config_path)?;
     let private_config_path = toml_string(&private_config_path)?;
@@ -663,7 +670,7 @@ fn member_config_toml(
             ("@@MNEMONIC@@", &mnemonic),
             ("@@NAME@@", &name),
             ("@@DESCRIPTION@@", &description),
-            ("@@PROMETHEUS_PORT@@", &prometheus_port),
+            ("# @@PROMETHEUS_CONFIG@@\n", &prometheus_config),
             ("# @@DATABASE_CONFIG@@\n", database_config),
             ("@@LN_UNIT@@", &unit),
             ("@@SUPPORTED_UNIT@@", &unit),
@@ -700,7 +707,11 @@ fn member_database_config(
                     );
                 }
             };
-            let url = toml_string(&url)?;
+            let secret_path = args
+                .output_dir
+                .join(format!("member-{member_id}-postgres-url"));
+            write_private_text_file(&secret_path, &url, args.force)?;
+            let url = toml_string(&format!("file:{}", path_to_string(&secret_path)))?;
             render_generated_template(POSTGRES_DATABASE_CONFIG_TEMPLATE, &[("@@URL@@", &url)])
         }
     }
@@ -744,6 +755,11 @@ fn local_smoke_script(
         .map(|url| shell_single_quote(&url))
         .unwrap_or_else(|| "''".to_string());
     let postgres_schema_reset_cases = postgres_schema_reset_cases(member_artifacts);
+    let database_engine = match args.database_engine {
+        FederationTrustedDealerDatabaseEngine::Sqlite => "sqlite",
+        FederationTrustedDealerDatabaseEngine::Postgres => "postgres",
+    };
+    let postgres_secret_dir = shell_single_quote(&path_to_string(&args.output_dir));
 
     let primary_member = primary_member.get().to_string();
     let unit = shell_single_quote(&args.unit.to_lowercase());
@@ -751,6 +767,8 @@ fn local_smoke_script(
         SMOKE_SCRIPT_TEMPLATE,
         &[
             ("@@PUBLIC_CONFIG_PATH@@", &public_config_path),
+            ("@@DATABASE_ENGINE@@", database_engine),
+            ("@@POSTGRES_SECRET_DIR@@", &postgres_secret_dir),
             ("@@POSTGRES_SCHEMA_RESET_URL@@", &postgres_schema_reset_url),
             ("@@MEMBERS@@", &members),
             ("@@PRIMARY_MEMBER@@", &primary_member),

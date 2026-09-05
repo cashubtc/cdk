@@ -1,7 +1,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use bdk_bitcoind_rpc::bitcoincore_rpc::{jsonrpc, Client, Error as BitcoinRpcError, RawTx, RpcApi};
+use bdk_bitcoind_rpc::bitcoincore_rpc::{
+    jsonrpc, Auth, Client, Error as BitcoinRpcError, RawTx, RpcApi,
+};
 use bdk_bitcoind_rpc::{BlockEvent, Emitter, NO_EXPECTED_MEMPOOL_TXS};
 use bdk_wallet::bitcoin::{Block, Transaction};
 use bdk_wallet::chain::BlockId;
@@ -45,8 +47,6 @@ pub(crate) fn initial_checkpoint(config: &BitcoinRpcConfig) -> Result<BlockId, E
     Ok(BlockId { height, hash })
 }
 
-const MIN_BITCOIN_RPC_BACKOFF: Duration = Duration::from_secs(5);
-const MAX_BITCOIN_RPC_BACKOFF: Duration = Duration::from_secs(300);
 const RPC_BLOCK_CHANNEL_CAPACITY: usize = 2;
 
 fn build_bitcoin_rpc_client(config: &BitcoinRpcConfig) -> Result<Client, BitcoinRpcError> {
@@ -385,6 +385,7 @@ mod tests {
             user: "user".to_string(),
             password: "password".to_string(),
             wallet_rescan_from_height,
+            request_timeout_secs: 15,
         }
     }
 
@@ -432,17 +433,12 @@ mod tests {
         ));
     }
 
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::thread;
 
     use bdk_wallet::bitcoin::bip32::{Xpriv, Xpub};
     use bdk_wallet::bitcoin::secp256k1::Secp256k1;
     use bdk_wallet::bitcoin::{absolute, transaction, Network};
-
-    use super::*;
 
     fn start_mock_rpc(
         response: &'static str,
@@ -472,6 +468,7 @@ mod tests {
                 user: "rpc-user".to_string(),
                 password: "rpc-password".to_string(),
                 request_timeout_secs: 5,
+                wallet_rescan_from_height: Some(0),
             },
             requests,
             server,

@@ -120,18 +120,18 @@ where
         cdk_http_client::ws::WsError,
     > {
         let parsed = Url::parse(url).map_err(|_| {
-            cdk_http_client::ws::WsError::Connection("invalid WebSocket URL".to_string())
+            cdk_http_client::ws::WsError::Terminal("invalid WebSocket URL".to_string())
         })?;
         match parsed.scheme() {
             "iroh" => {
                 self.iroh_client()
                     .await
-                    .map_err(|error| cdk_http_client::ws::WsError::Connection(error.to_string()))?
+                    .map_err(|error| cdk_http_client::ws::WsError::Terminal(error.to_string()))?
                     .ws_connect(&parsed, headers)
                     .await
             }
             "ws" | "wss" => self.inner.ws_connect(url, headers).await,
-            scheme => Err(cdk_http_client::ws::WsError::Connection(
+            scheme => Err(cdk_http_client::ws::WsError::Terminal(
                 Error::UnsupportedScheme {
                     scheme: scheme.to_owned(),
                 }

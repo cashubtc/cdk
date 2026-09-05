@@ -139,10 +139,9 @@ where
 {
     let (ws_stream, _) = tokio_tungstenite::client_async(request, stream)
         .await
-        .map_err(|e| WsError::Connection(e.to_string()))?;
+        .map_err(WsError::from_tungstenite)?;
 
     Ok(from_websocket_stream(ws_stream))
-
 }
 
 /// Connect to a WebSocket endpoint through an Arti Tor client.

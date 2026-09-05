@@ -269,6 +269,7 @@ impl Transport for TorAsync {
         ))
     }
 
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, HttpError> {
         let name = crate::dns::name_from_domain(domain)?;
         let (mut proof_builder, initial_query) = ProofBuilder::new(&name, TXT_TYPE);
@@ -284,6 +285,7 @@ impl Transport for TorAsync {
                     None,
                     Some((query.into_vec(), "application/dns-message")),
                     "application/dns-message",
+                    Some(65535),
                 )
                 .await?;
             if !response.is_success() {

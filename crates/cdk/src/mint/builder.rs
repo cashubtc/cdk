@@ -1118,6 +1118,14 @@ mod tests {
             ))
         }
 
+        async fn subscribe_keysets(
+            &self,
+        ) -> Result<tokio::sync::watch::Receiver<SignatoryKeysets>, cdk_common::error::Error>
+        {
+            let (_, receiver) = tokio::sync::watch::channel(self.keysets().await?);
+            Ok(receiver)
+        }
+
         async fn keysets(&self) -> Result<SignatoryKeysets, cdk_common::error::Error> {
             Ok(SignatoryKeysets {
                 pubkey: SecretKey::generate().public_key(),

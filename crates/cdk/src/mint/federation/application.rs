@@ -90,9 +90,8 @@ fn federation_bark_certificate_observation_id(
     operation_id: FederationOperationId,
     observer: MemberId,
 ) -> FederationOperationId {
-    let mut bytes = Vec::with_capacity(
-        FEDERATION_BARK_CERTIFICATE_OBSERVATION_ID_DOMAIN.len() + 32 + 2,
-    );
+    let mut bytes =
+        Vec::with_capacity(FEDERATION_BARK_CERTIFICATE_OBSERVATION_ID_DOMAIN.len() + 32 + 2);
     bytes.extend_from_slice(FEDERATION_BARK_CERTIFICATE_OBSERVATION_ID_DOMAIN);
     bytes.extend_from_slice(&operation_id.to_bytes());
     bytes.extend_from_slice(&observer.get().to_be_bytes());
@@ -327,7 +326,9 @@ impl Mint {
         if entry.status() != FederationOperationStatus::Applied
             || !matches!(
                 projection::bark_operation(&entry.envelope.operation),
-                Ok(cdk_federation_bark::FederationBarkOperation::ReceiveIntent(_))
+                Ok(cdk_federation_bark::FederationBarkOperation::ReceiveIntent(
+                    _
+                ))
             )
         {
             return Err(Error::Internal);
@@ -355,13 +356,13 @@ impl Mint {
             .iter()
             .any(|record| record.operation_id == entry.operation_id)
         {
-            projection.observations.push(
-                cdk_federation_bark::FederationBarkObservationRecord {
+            projection
+                .observations
+                .push(cdk_federation_bark::FederationBarkObservationRecord {
                     operation_id: entry.operation_id,
                     operation_index: entry.index,
                     operation: FederationBarkOperation::MemberObservation(observation.clone()),
-                },
-            );
+                });
         }
 
         let Some(action) = projection
@@ -472,16 +473,16 @@ impl Mint {
                 cdk_federation_bark::FederationBarkSemanticPhase::ReceiveClaimed,
                 cdk_federation_bark::FederationBarkObservationStatus::Succeeded,
             ) => {
-                let FederationBarkOperation::ActionTransition(transition) = &action.operation else {
+                let FederationBarkOperation::ActionTransition(transition) = &action.operation
+                else {
                     return Err(Error::Internal);
                 };
                 let intent = self
                     .federation_bark_receive_intent(action.origin_operation_id)
                     .await?
                     .ok_or(Error::Internal)?;
-                let quote_id = quote_id_from_federation(
-                    observation.quote.as_deref().ok_or(Error::Internal)?,
-                )?;
+                let quote_id =
+                    quote_id_from_federation(observation.quote.as_deref().ok_or(Error::Internal)?)?;
                 let quote = self
                     .localstore
                     .get_mint_quote(&quote_id)
@@ -522,7 +523,8 @@ impl Mint {
                 cdk_federation_bark::FederationBarkSemanticPhase::PaymentSucceeded,
                 cdk_federation_bark::FederationBarkObservationStatus::Succeeded,
             ) => {
-                let FederationBarkOperation::ActionTransition(transition) = &action.operation else {
+                let FederationBarkOperation::ActionTransition(transition) = &action.operation
+                else {
                     return Err(Error::Internal);
                 };
                 let plan_entry = self
@@ -530,7 +532,8 @@ impl Mint {
                     .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
                     .await?
                     .ok_or(Error::Internal)?;
-                let FederationBarkOperation::ActionPlan(plan) = projection::bark_operation(&plan_entry.envelope.operation)?
+                let FederationBarkOperation::ActionPlan(plan) =
+                    projection::bark_operation(&plan_entry.envelope.operation)?
                 else {
                     return Err(Error::Internal);
                 };
@@ -539,8 +542,7 @@ impl Mint {
                     .artifacts
                     .iter()
                     .find(|artifact| {
-                        artifact.kind
-                            == cdk_federation_bark::FederationBarkArtifactKind::Proof
+                        artifact.kind == cdk_federation_bark::FederationBarkArtifactKind::Proof
                     })
                     .ok_or(Error::Internal)?;
                 self.federation_bark_melt_payment_template(
@@ -564,7 +566,8 @@ impl Mint {
                     .get_federation_journal_entry_by_operation_id(completed.plan_operation_id)
                     .await?
                     .ok_or(Error::Internal)?;
-                let FederationBarkOperation::ActionPlan(revocation) = projection::bark_operation(&revocation_entry.envelope.operation)?
+                let FederationBarkOperation::ActionPlan(revocation) =
+                    projection::bark_operation(&revocation_entry.envelope.operation)?
                 else {
                     return Err(Error::Internal);
                 };
@@ -580,7 +583,8 @@ impl Mint {
                     )
                     .await?
                     .ok_or(Error::Internal)?;
-                let FederationBarkOperation::ActionTransition(failed) = projection::bark_operation(&failed_entry.envelope.operation)?
+                let FederationBarkOperation::ActionTransition(failed) =
+                    projection::bark_operation(&failed_entry.envelope.operation)?
                 else {
                     return Err(Error::Internal);
                 };
@@ -589,7 +593,8 @@ impl Mint {
                     .get_federation_journal_entry_by_operation_id(failed.plan_operation_id)
                     .await?
                     .ok_or(Error::Internal)?;
-                let FederationBarkOperation::ActionPlan(plan) = projection::bark_operation(&plan_entry.envelope.operation)?
+                let FederationBarkOperation::ActionPlan(plan) =
+                    projection::bark_operation(&plan_entry.envelope.operation)?
                 else {
                     return Err(Error::Internal);
                 };
@@ -618,9 +623,8 @@ impl Mint {
             return Err(Error::Internal);
         }
         let payment_hash = plan.payment_hash.ok_or(Error::Internal)?;
-        let quote_id = quote_id_from_federation(
-            observation.quote.as_deref().ok_or(Error::Internal)?,
-        )?;
+        let quote_id =
+            quote_id_from_federation(observation.quote.as_deref().ok_or(Error::Internal)?)?;
         let quote = self
             .localstore
             .get_melt_quote(&quote_id)
@@ -852,6 +856,8 @@ impl Mint {
             SagaStateEnum::Melt(
                 MeltSagaState::SetupComplete
                 | MeltSagaState::PaymentAttempted
+                | MeltSagaState::PaymentPending
+                | MeltSagaState::PaymentFailed
                 | MeltSagaState::Finalizing,
             ) => self.check_melt_payment_status(&quote).await?,
             SagaStateEnum::Swap(_) => return Err(Error::Internal),
@@ -1271,8 +1277,7 @@ impl Mint {
                 Ok(true)
             }
             #[cfg(feature = "federation-bark")]
-            FederationOperation::Application(_)
-            | FederationOperation::ExternalApplication(_) => {
+            FederationOperation::Application(_) | FederationOperation::ExternalApplication(_) => {
                 let operation = cdk_federation_bark::validate_federation_bark_operation(
                     &entry.envelope.operation,
                 )?;
@@ -1280,13 +1285,12 @@ impl Mint {
                 Ok(true)
             }
             #[cfg(not(feature = "federation-bark"))]
-            FederationOperation::Application(_)
-            | FederationOperation::ExternalApplication(_) => Err(
-                FederationError::ApplicationOperationInvalid {
+            FederationOperation::Application(_) | FederationOperation::ExternalApplication(_) => {
+                Err(FederationError::ApplicationOperationInvalid {
                     reason: "federation application support is disabled".to_owned(),
                 }
-                .into(),
-            ),
+                .into())
+            }
         }
     }
 
@@ -1333,13 +1337,10 @@ impl Mint {
             .find(|record| record.operation_id == entry.operation_id)
             .or_else(|| payment_records.last())
             .cloned();
-        let recovery_mutation = self
-            .federation_bark_recovery_mutation(operation)
-            .await?;
+        let recovery_mutation = self.federation_bark_recovery_mutation(operation).await?;
 
-        if let Some(FederationPaymentObservation::MeltQuote(observation)) = representative
-            .as_ref()
-            .map(|record| &record.observation)
+        if let Some(FederationPaymentObservation::MeltQuote(observation)) =
+            representative.as_ref().map(|record| &record.observation)
         {
             let mut transaction = self.localstore.begin_transaction().await?;
             let outcome: Result<(), Error> = async {
@@ -1373,12 +1374,8 @@ impl Mint {
                 .apply_federation_application_operation(entry, application)
                 .await?;
             if let Some(mutation) = recovery_mutation {
-                Self::apply_federation_bark_recovery_mutation(
-                    &mut transaction,
-                    entry,
-                    mutation,
-                )
-                .await?;
+                Self::apply_federation_bark_recovery_mutation(&mut transaction, entry, mutation)
+                    .await?;
             }
             for record in &payment_records {
                 transaction
@@ -1386,9 +1383,8 @@ impl Mint {
                     .await?;
             }
             let mut paid_notification = None;
-            if let Some(FederationPaymentObservation::MintQuote(observation)) = representative
-                .as_ref()
-                .map(|record| &record.observation)
+            if let Some(FederationPaymentObservation::MintQuote(observation)) =
+                representative.as_ref().map(|record| &record.observation)
             {
                 let quote_id = quote_id_from_federation(&observation.quote)?;
                 let mut quote = transaction
@@ -1436,7 +1432,9 @@ impl Mint {
                 let package_sets = transition
                     .artifacts
                     .iter()
-                    .filter_map(|artifact| FederationBarkCpfpPackageSet::from_artifact(artifact).ok())
+                    .filter_map(|artifact| {
+                        FederationBarkCpfpPackageSet::from_artifact(artifact).ok()
+                    })
                     .collect::<Vec<_>>();
                 let [package_set] = package_sets.as_slice() else {
                     return Err(Error::Internal);
@@ -1449,7 +1447,9 @@ impl Mint {
                 let publications = transition
                     .artifacts
                     .iter()
-                    .filter_map(|artifact| FederationBarkCpfpPublication::from_artifact(artifact).ok())
+                    .filter_map(|artifact| {
+                        FederationBarkCpfpPublication::from_artifact(artifact).ok()
+                    })
                     .collect::<Vec<_>>();
                 let [publication] = publications.as_slice() else {
                     return Err(Error::Internal);
@@ -1477,7 +1477,9 @@ impl Mint {
                 let package_sets = registered
                     .artifacts
                     .iter()
-                    .filter_map(|artifact| FederationBarkCpfpPackageSet::from_artifact(artifact).ok())
+                    .filter_map(|artifact| {
+                        FederationBarkCpfpPackageSet::from_artifact(artifact).ok()
+                    })
                     .collect::<Vec<_>>();
                 let [package_set] = package_sets.as_slice() else {
                     return Err(Error::Internal);
@@ -1541,8 +1543,7 @@ impl Mint {
                     chain_state.reserve_utxos(&outpoints)?;
                 } else if outpoints.iter().any(|outpoint| {
                     chain_state.utxo(*outpoint).is_none_or(|utxo| {
-                        utxo.state
-                            != cdk_common::federation::FederationWalletUtxoState::Reserved
+                        utxo.state != cdk_common::federation::FederationWalletUtxoState::Reserved
                     })
                 }) {
                     return Err(Error::Internal);
@@ -2548,7 +2549,7 @@ impl Mint {
                                 observation,
                                 onchain_receipt.as_ref(),
                             )?;
-                            super::saga_recovery::process_melt_saga_outcome(
+                            super::saga_recovery::process_federation_melt_saga_outcome(
                                 &saga,
                                 &mut quote,
                                 &payment_response,
@@ -2615,7 +2616,7 @@ impl Mint {
             })?;
         let payment_response =
             melt_quote_payment_response(operation_id, quote, observation, onchain_receipt)?;
-        super::saga_recovery::process_melt_saga_outcome(
+        super::saga_recovery::process_federation_melt_saga_outcome(
             &saga,
             quote,
             &payment_response,
@@ -2748,10 +2749,7 @@ impl Mint {
             .map_err(|_| Error::UnknownQuote)?;
         self.require_prior_applied_melt_quote(request.quote(), entry.index)
             .await?;
-        let melt_remains_pending = match self
-            .melt_federation(&request, operation_id)
-            .await
-        {
+        let melt_remains_pending = match self.melt_federation(&request, operation_id).await {
             Ok(response) => match response.state() {
                 cdk_common::MeltQuoteState::Pending => true,
                 cdk_common::MeltQuoteState::Paid => false,

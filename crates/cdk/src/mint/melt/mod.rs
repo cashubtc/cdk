@@ -69,14 +69,6 @@ fn pending_melt_notification_wait_interval() -> Duration {
     }
 }
 
-fn pending_melt_status_recheck_interval() -> Duration {
-    if cfg!(test) {
-        Duration::from_millis(20)
-    } else {
-        Duration::from_secs(5)
-    }
-}
-
 #[cfg(feature = "federation")]
 pub(super) fn ensure_melt_quote_matches_request(
     existing: &MeltQuote,

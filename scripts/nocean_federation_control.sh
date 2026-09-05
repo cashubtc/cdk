@@ -220,13 +220,17 @@ generate_member() {
     seed="$(openssl rand -hex 32)"
     bark_operational_seed="$(openssl rand -hex 64)"
     bark_receive_secret="$(openssl rand -hex 32)"
+    local secrets_dir="$(work_dir "$member")/secrets"
+    mkdir -p "$secrets_dir"
+    chmod 700 "$secrets_dir"
+    (umask 077; printf '%s' "$seed" >"$secrets_dir/mint-seed"; printf '%s' "$bark_operational_seed" >"$secrets_dir/bark-seed"; printf '%s' "$bark_receive_secret" >"$secrets_dir/bark-receive-key")
     cat >"$(runtime_config "$member")" <<EOF
 [info]
 url = "$public_url"
 http_enabled = $http_enabled
 listen_host = "127.0.0.1"
 listen_port = $listen_port
-seed = "$seed"
+seed = "file:$secrets_dir/mint-seed"
 enable_info_page = true
 
 [iroh]
@@ -250,8 +254,8 @@ port = $prometheus_port
 [database]
 engine = "sqlite"
 
-[ln]
-ln_backend = "federated-bark"
+[[payment_backend]]
+backend = "federated-bark"
 unit = "sat"
 min_mint = 1
 max_mint = 50000000
@@ -294,19 +298,20 @@ esplora_url = "$BARK_ESPLORA_URL"
 data_directory = "$(work_dir "$member")/federation-bark"
 receive_secret_database_path = "$(work_dir "$member")/federation-bark/receive-secrets.redb"
 frost_protocol_storage_root = "$(work_dir "$member")/frost-protocol"
-operational_seed_hex = "$bark_operational_seed"
-receive_secret_key_hex = "$bark_receive_secret"
+operational_seed_hex = "file:$secrets_dir/bark-seed"
+receive_secret_key_hex = "file:$secrets_dir/bark-receive-key"
 create_if_missing = true
 automatic_refresh = true
 automatic_emergency_exit = false
 EOF
     chmod 600 "$(runtime_config "$member")"
+    "$MINTD" --work-dir "$(work_dir "$member")" config init --new-mint --file "$(runtime_config "$member")"
 }
 
 mintd_member() {
     local member="$1"
     shift
-    "$MINTD" --work-dir "$(work_dir "$member")" --config "$(runtime_config "$member")" "$@"
+    "$MINTD" --work-dir "$(work_dir "$member")" "$@"
 }
 
 create_setup() {
@@ -348,7 +353,7 @@ deliver_invitations() {
 start_setup_service() {
     local member="$1"
     "$MINTD" --work-dir "$(work_dir "$member")" \
-        --config "$(runtime_config "$member")" federation setup serve \
+        federation setup serve \
         --config "$(setup_config "$member")" \
         --listen "127.0.0.1:$((PORT_START + member - 1))" \
         --dkg-max-ticks "$DKG_MAX_TICKS" \
@@ -517,8 +522,7 @@ activate_and_run() {
     exec env \
         CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=180 \
         RUST_LOG="${RUST_LOG:-info}" \
-        "$MINTD" --work-dir "$(work_dir "$member")" \
-            --config "$(runtime_config "$member")"
+        "$MINTD" --work-dir "$(work_dir "$member")"
 }
 
 orchestrate() {
@@ -586,8 +590,7 @@ run_runtime_member() {
     exec env \
         CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=180 \
         RUST_LOG="${RUST_LOG:-info}" \
-        "$MINTD" --work-dir "$(work_dir "$member")" \
-            --config "$(runtime_config "$member")"
+        "$MINTD" --work-dir "$(work_dir "$member")"
 }
 
 start_runtime() {

@@ -34,7 +34,6 @@ use crate::wallet::auth::{AuthMintConnector, AuthWallet};
 use crate::OidcClient;
 
 type Cache = (u64, HashSet<(nut19::Method, nut19::Path)>);
-const RETRIABLE_HTTP_REQUEST_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// Delay before the first replay of a failed request.
 const HTTP_RETRY_INITIAL_BACKOFF: Duration = Duration::from_millis(50);
@@ -1801,10 +1800,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn retriable_http_request_waits_between_nut19_retries() {
         let transport = MockTransport {
-            post_error: Arc::new(Mutex::new(Some((
-                500,
-                "transient server error".to_string(),
-            )))),
+            post_errors: Arc::new(Mutex::new(VecDeque::from([
+                HttpError::Connection("connection reset".to_owned()),
+                HttpError::Connection("connection reset".to_owned()),
+            ]))),
             ..Default::default()
         };
         let post_urls = transport.post_urls.clone();
@@ -1829,7 +1828,7 @@ mod tests {
         tokio::task::yield_now().await;
         assert_eq!(post_urls.lock().expect("lock").len(), 1);
 
-        tokio::time::advance(RETRIABLE_HTTP_REQUEST_RETRY_DELAY - Duration::from_millis(1)).await;
+        tokio::time::advance(HTTP_RETRY_INITIAL_BACKOFF - Duration::from_millis(1)).await;
         tokio::task::yield_now().await;
         assert_eq!(
             post_urls.lock().expect("lock").len(),

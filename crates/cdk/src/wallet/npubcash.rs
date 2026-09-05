@@ -1359,7 +1359,7 @@ mod tests {
                         pubkey: None,
                     },
                 );
-                mock_client.set_mint_quote_status_response(id, response.clone());
+                mock_client.set_quote_status_response(id, response.clone());
                 responses.push(response);
             }
             responses
@@ -1489,7 +1489,7 @@ mod tests {
                 .await
                 .expect("quote lookup")
                 .expect("quote exists");
-            mock_client.set_mint_quote_status_response(
+            mock_client.set_quote_status_response(
                 id,
                 cdk_common::MintQuoteResponse::Bolt11(cdk_common::nuts::MintQuoteBolt11Response {
                     quote: quote.id.clone(),

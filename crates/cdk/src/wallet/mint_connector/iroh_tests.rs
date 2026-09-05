@@ -71,13 +71,13 @@ impl FixtureHttpsTransport {
 
     fn rewrite_websocket(&self, url: &str) -> Result<Url, cdk_http_client::ws::WsError> {
         let original = Url::parse(url).map_err(|_| {
-            cdk_http_client::ws::WsError::Connection("fixture WebSocket URL is invalid".to_string())
+            cdk_http_client::ws::WsError::Terminal("fixture WebSocket URL is invalid".to_string())
         })?;
         let mut rewritten = self.target.clone().ok_or_else(|| {
-            cdk_http_client::ws::WsError::Connection("fixture target is not configured".to_string())
+            cdk_http_client::ws::WsError::Terminal("fixture target is not configured".to_string())
         })?;
         rewritten.set_scheme("ws").map_err(|_| {
-            cdk_http_client::ws::WsError::Connection(
+            cdk_http_client::ws::WsError::Terminal(
                 "fixture WebSocket scheme is invalid".to_string(),
             )
         })?;
@@ -533,10 +533,17 @@ where
     }
 
     client.get_mint_info().await.expect("get mint info");
+    assert!(matches!(
+        client
+            .post_swap(SwapRequest::new(Vec::new(), Vec::new()))
+            .await,
+        Err(crate::Error::HttpError(Some(503), _))
+    ));
+    assert_eq!(state.swap_attempts.load(Ordering::SeqCst), 1);
     client
         .post_swap(SwapRequest::new(Vec::new(), Vec::new()))
         .await
-        .expect("NUT-19 retried swap");
+        .expect("explicit retry after server rejection");
     assert_eq!(state.swap_attempts.load(Ordering::SeqCst), 2);
     client
         .post_check_state(CheckStateRequest { ys: Vec::new() })

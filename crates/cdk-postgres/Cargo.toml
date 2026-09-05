@@ -33,7 +33,6 @@ cdk-common = { workspace = true, features = ["test"] }
 # Needed at macro-expansion sites of cdk-common's `*_db_test!` macros
 paste.workspace = true
 
-[dev-dependencies]
 cdk-federation-bark = { workspace = true, features = ["test-util"] }
 
 [lints]

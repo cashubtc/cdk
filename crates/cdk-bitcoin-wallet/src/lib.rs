@@ -8,7 +8,7 @@ use bdk_wallet::PersistedWallet;
 
 pub use self::chain::{
     BitcoinRpcConfig, BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, ChainSource,
-    ChainSourceKind, EsploraConfig, DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS,
+    ChainSourceKind, ElectrumConfig, EsploraConfig, DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS,
     DEFAULT_ESPLORA_MAX_RETRIES, MAX_CHAIN_REQUEST_TIMEOUT_SECS, MAX_ESPLORA_MAX_RETRIES,
     MAX_ESPLORA_PARALLEL_REQUESTS,
 };

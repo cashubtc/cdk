@@ -392,8 +392,10 @@ impl<'a> PendingMelt<'a> {
                         return WaitStep::Continue(self);
                     }
 
-                    self.saga.handle_failure().await;
-                    WaitStep::Terminal(Err(Error::PaymentFailed))
+                    match self.saga.handle_failure().await {
+                        Ok(()) => WaitStep::Terminal(Err(Error::PaymentFailed)),
+                        Err(error) => WaitStep::Terminal(Err(error)),
+                    }
                 }
             },
             Err(err) => {
@@ -3634,9 +3636,7 @@ mod tests {
         )));
 
         assert!(matches!(
-            pending
-                .reconcile_non_paid_status(MeltQuoteState::Failed)
-                .await,
+            pending.reconcile_melt_status(MeltQuoteState::Failed).await,
             WaitStep::Terminal(Err(Error::PaymentFailed))
         ));
 
@@ -3663,9 +3663,7 @@ mod tests {
         )));
 
         assert!(matches!(
-            pending
-                .reconcile_non_paid_status(MeltQuoteState::Failed)
-                .await,
+            pending.reconcile_melt_status(MeltQuoteState::Failed).await,
             WaitStep::Terminal(Err(Error::PaymentFailed))
         ));
 

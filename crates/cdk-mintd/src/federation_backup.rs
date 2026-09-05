@@ -11,13 +11,14 @@ pub(crate) async fn run_backup_manifest_command(
     args: &FederationBackupManifestArgs,
 ) -> Result<()> {
     let work_dir = crate::get_work_directory(cli_args).await?;
-    let settings = crate::load_settings(&work_dir, cli_args.config.clone())?;
+    let settings = crate::load_stored_settings(&work_dir, cli_args).await?;
     let (public_config_path, private_config_path) = crate::federation_config_paths(
         cli_args,
         &args.public_config,
         &args.private_config,
         "federation backup-manifest",
-    )?;
+    )
+    .await?;
     crate::validate_private_federation_config_file(&private_config_path)?;
     let public_config: FederationConfig =
         crate::read_federation_json(&public_config_path, "public federation config")?;
@@ -25,10 +26,10 @@ pub(crate) async fn run_backup_manifest_command(
         crate::read_federation_json(&private_config_path, "private federation config")?;
 
     #[cfg(feature = "sqlcipher")]
-    let password = Some(cli_args.password.clone());
+    let password = cli_args.password.clone();
     #[cfg(not(feature = "sqlcipher"))]
     let password = None;
-    let (db, _, _) = crate::setup_database(&settings, &work_dir, password)
+    let (db, _, _, _) = crate::setup_database(&settings, &work_dir, password)
         .await
         .context("failed to open mint database for federation backup manifest")?;
     let manifest = build_manifest(&db, &public_config, &private_config).await?;

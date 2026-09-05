@@ -165,6 +165,7 @@ fn get_proofs_query(
             spending_condition,
             used_by_operation,
             created_by_operation,
+            derivation_index,
             p2pk_e
         FROM proof
         "#
@@ -588,13 +589,13 @@ where
             .fetch_all(&*conn)
             .await?;
 
-        Ok(rows
+        let proofs = rows
             .into_iter()
-            .filter_map(|row| {
-                let row = sql_row_to_proof_info(row).ok()?;
-                row.matches_conditions(&None, &None, &None, &spending_conditions)
-                    .then_some(row)
-            })
+            .map(sql_row_to_proof_info)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(proofs
+            .into_iter()
+            .filter(|proof| proof.matches_conditions(&None, &None, &None, &spending_conditions))
             .collect())
     }
 

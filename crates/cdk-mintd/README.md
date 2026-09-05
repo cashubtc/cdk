@@ -488,13 +488,27 @@ The long-lived `federation setup serve` process and the activated mint daemon
 own the protected endpoint identity. One-shot setup and operator CLI commands
 use ephemeral dialing identities with the configured discovery policy, so
 they can run while the service endpoint is online without competing for its
-identity or UDP bind address. Pass the runtime configuration and work directory
-as top-level options to those commands:
+identity or UDP bind address. Initialize the runtime configuration in the member's
+primary database, then pass its work directory to operator commands:
 
 ```bash
-cdk-mintd --work-dir /var/lib/cdk-mintd --config config.toml \
+cdk-mintd --work-dir /var/lib/cdk-mintd config init --new-mint --file config.toml
+cdk-mintd --work-dir /var/lib/cdk-mintd \
   federation setup status --config setup.json --json
 ```
+
+Federation deployments use the same database configuration lifecycle as standalone
+mints. Use `config apply --file config.toml` to stage a replacement and restart
+with `cdk-mintd --work-dir /var/lib/cdk-mintd`. The top-level `--config` startup
+flag is rejected; `federation setup ... --config setup.json` still selects the
+separate ceremony document. Federation work is undeployed and follows a
+cut-through policy: generated files and operator scripts use the current schema.
+
+Use `[[payment_backend]]` with `backend = "federated-bark"` for Bark and
+`[onchain]` with `onchain_backend = "federated-bdk"` for Bitcoin. Mint signing
+secrets, Bark operational and receive secrets, access tokens, and RPC passwords
+must use `file:` or `env:` references. Store secret files outside the database
+and include them in the member's protected backup procedure.
 
 With `discovery = "n0"`, endpoint IDs are enough and no ticket distribution is
 required. With `static` or `custom` discovery, each activated member must

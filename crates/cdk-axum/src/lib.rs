@@ -1796,6 +1796,7 @@ impl MintState {
                 source: match status.source {
                     cdk_bdk::ChainSourceKind::Esplora => "esplora",
                     cdk_bdk::ChainSourceKind::BitcoinRpc => "bitcoin_rpc",
+                    cdk_bdk::ChainSourceKind::Electrum => "electrum",
                 }
                 .to_string(),
                 source_scope: if correlated_source_warning {

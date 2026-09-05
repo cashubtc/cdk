@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use cdk_common::federation::{
     DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS, DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS,
 };
-use clap::{Args, Parser, Subcommand};
 #[cfg(feature = "federation")]
 use clap::ValueEnum;
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(about = "A cashu mint written in rust", author = env!("CARGO_PKG_AUTHORS"), version = env!("CARGO_PKG_VERSION"))]
@@ -29,7 +29,6 @@ pub struct CLIArgs {
     #[arg(
         short,
         long,
-        global = true,
         help = "Legacy startup flag; use `config init` or `config apply` instead",
         required = false
     )]
@@ -1119,7 +1118,7 @@ pub struct FederationBarkRetryArgs {
 }
 
 #[cfg(all(test, feature = "federation"))]
-mod tests {
+mod federation_tests {
     use super::*;
 
     #[test]
@@ -1149,7 +1148,7 @@ mod tests {
             "https://setup.example",
         ])
         .expect("setup create command parses");
-        let Some(CliCommand::Federation(create)) = create.command else {
+        let Some(Commands::Federation(create)) = create.command else {
             panic!("expected federation command");
         };
         assert!(matches!(
@@ -1182,7 +1181,7 @@ mod tests {
             "https://peer.example",
         ])
         .expect("setup join command parses");
-        let Some(CliCommand::Federation(join)) = join.command else {
+        let Some(Commands::Federation(join)) = join.command else {
             panic!("expected federation command");
         };
         assert!(matches!(
@@ -1229,7 +1228,7 @@ mod tests {
             "1200",
         ])
         .expect("setup-only serve command parses");
-        let Some(CliCommand::Federation(serve)) = serve.command else {
+        let Some(Commands::Federation(serve)) = serve.command else {
             panic!("expected federation command");
         };
         assert!(matches!(
@@ -1870,7 +1869,7 @@ mod tests {
         ])
         .expect("checkpoint audit command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::AuditCheckpoint(audit) = federation.command else {
@@ -1903,7 +1902,7 @@ mod tests {
         ])
         .expect("backup manifest command parses");
 
-        let Some(CliCommand::Federation(federation)) = args.command else {
+        let Some(Commands::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
         let FederationCommand::BackupManifest(backup) = federation.command else {
@@ -1938,7 +1937,7 @@ mod tests {
             "2",
         ])
         .expect("transaction status command parses");
-        let Some(CliCommand::Federation(transaction)) = transaction.command else {
+        let Some(Commands::Federation(transaction)) = transaction.command else {
             panic!("expected federation command");
         };
         assert!(matches!(
@@ -1958,7 +1957,7 @@ mod tests {
             "--acknowledge-exact-byte-retry",
         ])
         .expect("rebroadcast command parses");
-        let Some(CliCommand::Federation(rebroadcast)) = rebroadcast.command else {
+        let Some(Commands::Federation(rebroadcast)) = rebroadcast.command else {
             panic!("expected federation command");
         };
         assert!(matches!(
@@ -1976,7 +1975,7 @@ mod tests {
         let reconcile =
             CLIArgs::try_parse_from(["cdk-mintd", "federation", "bark-reconcile", "--member", "2"])
                 .expect("Bark reconcile command parses");
-        let Some(CliCommand::Federation(reconcile)) = reconcile.command else {
+        let Some(Commands::Federation(reconcile)) = reconcile.command else {
             panic!("expected federation command");
         };
         assert!(matches!(
@@ -1997,7 +1996,7 @@ mod tests {
             "3",
         ])
         .expect("Bark recovery address command parses");
-        let Some(CliCommand::Federation(recovery_address)) = recovery_address.command else {
+        let Some(Commands::Federation(recovery_address)) = recovery_address.command else {
             panic!("expected federation command");
         };
         assert!(matches!(
@@ -2018,7 +2017,7 @@ mod tests {
             "--acknowledge-bark-side-effects",
         ])
         .expect("Bark retry command parses");
-        let Some(CliCommand::Federation(retry)) = retry.command else {
+        let Some(Commands::Federation(retry)) = retry.command else {
             panic!("expected federation command");
         };
         assert!(matches!(
@@ -2040,7 +2039,7 @@ mod iroh_tests {
         let args =
             CLIArgs::try_parse_from(["cdk-mintd", "--work-dir", "mint-state", "iroh", "init"])
                 .expect("Iroh init command parses");
-        let Some(CliCommand::Iroh(iroh)) = args.command else {
+        let Some(Commands::Iroh(iroh)) = args.command else {
             panic!("expected Iroh command");
         };
         assert!(matches!(
@@ -2063,7 +2062,7 @@ mod iroh_tests {
             "127.0.0.1:8092",
         ])
         .expect("Iroh ticket command parses");
-        let Some(CliCommand::Iroh(iroh)) = args.command else {
+        let Some(Commands::Iroh(iroh)) = args.command else {
             panic!("expected Iroh command");
         };
         assert!(matches!(

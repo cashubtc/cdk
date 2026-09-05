@@ -28,7 +28,8 @@ pub(crate) async fn run_reconcile_command(
         &args.public_config,
         &args.private_config,
         "federation bark-reconcile",
-    )?;
+    )
+    .await?;
     let member = target_member(&public, &private, args.member)?;
     let request = FederationSignedRequest::new_signed(
         public.federation_id,
@@ -74,7 +75,8 @@ pub(crate) async fn run_retry_command(
         &args.public_config,
         &args.private_config,
         "federation bark-retry",
-    )?;
+    )
+    .await?;
     let member = target_member(&public, &private, args.member)?;
     let request = FederationSignedRequest::new_signed(
         public.federation_id,
@@ -117,7 +119,8 @@ pub(crate) async fn run_recovery_address_command(
         &args.public_config,
         &args.private_config,
         "federation bark-recovery-address",
-    )?;
+    )
+    .await?;
     let member = target_member(&public, &private, args.member)?;
     let request = FederationSignedRequest::new_signed(
         public.federation_id,
@@ -154,14 +157,14 @@ pub(crate) async fn run_recovery_address_command(
     Ok(())
 }
 
-fn load_configs(
+async fn load_configs(
     cli_args: &CLIArgs,
     public_config: &Option<std::path::PathBuf>,
     private_config: &Option<std::path::PathBuf>,
     action: &str,
 ) -> Result<(FederationConfig, MemberConfigPrivate)> {
     let (public_path, private_path) =
-        crate::federation_config_paths(cli_args, public_config, private_config, action)?;
+        crate::federation_config_paths(cli_args, public_config, private_config, action).await?;
     let public: FederationConfig =
         crate::read_federation_json(&public_path, "public federation config")?;
     let private: MemberConfigPrivate =

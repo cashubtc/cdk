@@ -50,6 +50,32 @@ pub(crate) async fn process_melt_saga_outcome(
     pubsub: &PubSubManager,
     mint: &Mint,
 ) -> Result<(), Error> {
+    process_melt_saga_outcome_inner(saga, quote, payment_response, db, pubsub, mint, false).await
+}
+
+/// Apply an authoritative observation already finalized by federation quorum.
+/// Non-actor members may still have SetupComplete because they never dispatch.
+#[cfg(feature = "federation")]
+pub(crate) async fn process_federation_melt_saga_outcome(
+    saga: &Saga,
+    quote: &mut MeltQuote,
+    payment_response: &MakePaymentResponse,
+    db: &cdk_common::database::DynMintDatabase,
+    pubsub: &PubSubManager,
+    mint: &Mint,
+) -> Result<(), Error> {
+    process_melt_saga_outcome_inner(saga, quote, payment_response, db, pubsub, mint, true).await
+}
+
+async fn process_melt_saga_outcome_inner(
+    saga: &Saga,
+    quote: &mut MeltQuote,
+    payment_response: &MakePaymentResponse,
+    db: &cdk_common::database::DynMintDatabase,
+    pubsub: &PubSubManager,
+    mint: &Mint,
+    finalized_federation_observation: bool,
+) -> Result<(), Error> {
     match payment_response.status {
         MeltQuoteState::Paid => {
             finalize_paid_melt_outcome(saga, quote, payment_response, db, pubsub, mint).await
@@ -79,7 +105,14 @@ pub(crate) async fn process_melt_saga_outcome(
                 }
             }
 
-            persist_permanent_payment_failure(saga, quote, db, payment_response).await?;
+            persist_permanent_payment_failure(
+                saga,
+                quote,
+                db,
+                payment_response,
+                finalized_federation_observation,
+            )
+            .await?;
 
             recover_recorded_payment_failure(saga, quote, db, pubsub).await
         }
@@ -134,6 +167,7 @@ async fn persist_permanent_payment_failure(
     quote: &mut MeltQuote,
     db: &cdk_common::database::DynMintDatabase,
     payment_response: &MakePaymentResponse,
+    finalized_federation_observation: bool,
 ) -> Result<(), Error> {
     let mut tx = db.begin_transaction().await?;
     let Some(mut current_saga) = tx.get_saga_for_update(&stale_saga.operation_id).await? else {
@@ -142,6 +176,9 @@ async fn persist_permanent_payment_failure(
     };
 
     match &current_saga.state {
+        SagaStateEnum::Melt(MeltSagaState::SetupComplete)
+            if finalized_federation_observation
+                && current_saga.federation_operation_id.is_some() => {}
         SagaStateEnum::Melt(MeltSagaState::PaymentAttempted | MeltSagaState::PaymentPending) => {}
         SagaStateEnum::Melt(MeltSagaState::PaymentFailed) => {
             tx.rollback().await?;
@@ -368,38 +405,40 @@ async fn finalize_paid_melt_outcome(
     tx.commit().await?;
 
     #[cfg(feature = "federation")]
-    if let Some(federation_operation_id) = saga.federation_operation_id.as_deref()
-        .map(str::parse::<FederationOperationId>).transpose()? {
-    // finalize_melt_quote handles the rest of the atomic cleanup:
-    // operation recording, saga deletion, and melt request cleanup.
-    super::melt::shared::finalize_federation_melt_quote(
-        mint,
-        db,
-        pubsub,
-        quote,
-        total_spent,
-        payment_response.payment_proof.clone(),
-        &payment_response.payment_lookup_id,
-        Some(saga.operation_id),
-        federation_operation_id,
-    )
-    .await?;
-
+    if let Some(federation_operation_id) = saga
+        .federation_operation_id
+        .as_deref()
+        .map(str::parse::<FederationOperationId>)
+        .transpose()?
+    {
+        // finalize_melt_quote handles the rest of the atomic cleanup:
+        // operation recording, saga deletion, and melt request cleanup.
+        super::melt::shared::finalize_federation_melt_quote(
+            mint,
+            db,
+            pubsub,
+            quote,
+            total_spent,
+            payment_response.payment_proof.clone(),
+            &payment_response.payment_lookup_id,
+            Some(saga.operation_id),
+            federation_operation_id,
+        )
+        .await?;
     } else {
-    // finalize_melt_quote handles the rest of the atomic cleanup:
-    // operation recording, saga deletion, and melt request cleanup.
-    super::melt::shared::finalize_melt_quote(
-        mint,
-        db,
-        pubsub,
-        quote,
-        total_spent,
-        payment_response.payment_proof.clone(),
-        &payment_response.payment_lookup_id,
-        Some(saga.operation_id),
-    )
-    .await?;
-
+        // finalize_melt_quote handles the rest of the atomic cleanup:
+        // operation recording, saga deletion, and melt request cleanup.
+        super::melt::shared::finalize_melt_quote(
+            mint,
+            db,
+            pubsub,
+            quote,
+            total_spent,
+            payment_response.payment_proof.clone(),
+            &payment_response.payment_lookup_id,
+            Some(saga.operation_id),
+        )
+        .await?;
     }
     #[cfg(not(feature = "federation"))]
     // finalize_melt_quote handles the rest of the atomic cleanup:

@@ -23,7 +23,8 @@ pub(crate) async fn run_transaction_status_command(
         &args.public_config,
         &args.private_config,
         "federation transaction-status",
-    )?;
+    )
+    .await?;
     let member = target_member(&public_config, &private_config, args.member)?;
     let proposal_id = parse_proposal_id(&args.proposal_id)?;
     let transport = crate::federation_operator_transport(cli_args).await?;
@@ -49,7 +50,8 @@ pub(crate) async fn run_rebroadcast_command(
         &args.public_config,
         &args.private_config,
         "federation rebroadcast",
-    )?;
+    )
+    .await?;
     let member = target_member(&public_config, &private_config, args.member)?;
     let proposal_id = parse_proposal_id(&args.proposal_id)?;
     let transport = crate::federation_operator_transport(cli_args).await?;
@@ -147,14 +149,14 @@ fn signed_transaction_request(
     )?)
 }
 
-fn load_configs(
+async fn load_configs(
     cli_args: &CLIArgs,
     public_config: &Option<std::path::PathBuf>,
     private_config: &Option<std::path::PathBuf>,
     action: &str,
 ) -> Result<(FederationConfig, MemberConfigPrivate)> {
     let (public_path, private_path) =
-        crate::federation_config_paths(cli_args, public_config, private_config, action)?;
+        crate::federation_config_paths(cli_args, public_config, private_config, action).await?;
     let public_config = crate::read_federation_json(&public_path, "public federation config")?;
     let private_config = crate::read_federation_json(&private_path, "private federation config")?;
     Ok((public_config, private_config))

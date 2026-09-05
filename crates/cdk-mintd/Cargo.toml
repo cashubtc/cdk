@@ -38,6 +38,7 @@ federation-bark = ["federation", "dep:cdk-bark", "dep:cdk-federation-bark", "cdk
 federation-test-utils = ["federation", "fakewallet", "cdk-bark?/federation-test-utils"]
 
 [dependencies]
+futures.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true

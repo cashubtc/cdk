@@ -20,6 +20,7 @@ fn env_or(name: &str, default: &str) -> String {
 
 fn rpc_config() -> BitcoinRpcConfig {
     BitcoinRpcConfig {
+        wallet_rescan_from_height: Some(0),
         host: env_or("CDK_BDK_REGTEST_RPC_HOST", "127.0.0.1"),
         port: env_or("CDK_BDK_REGTEST_RPC_PORT", "28443")
             .parse()

@@ -1817,6 +1817,7 @@ pub trait Transaction<Error>:
 
 #[cfg(feature = "federation")]
 /// Base database writer
+#[async_trait]
 pub trait Transaction<Error>:
     DbTransactionFinalizer<Err = Error>
     + QuotesTransaction<Err = Error>
@@ -1831,6 +1832,11 @@ pub trait Transaction<Error>:
     + FederationFrostWalletTransaction<Err = Error>
     + FederationSetupTransaction<Err = Error>
 {
+    /// Acquire quote advisory locks in stable order before acquiring row locks.
+    /// Returns false for backends without cross-process advisory locks.
+    async fn lock_quotes(&mut self, _quote_ids: &[QuoteId]) -> Result<bool, Error> {
+        Ok(false)
+    }
 }
 
 #[cfg(not(feature = "federation"))]

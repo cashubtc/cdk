@@ -13,6 +13,16 @@ fn main() -> Result<()> {
     let rt = Runtime::new()?;
 
     let args = CLIArgs::parse();
+    let is_migration = matches!(
+        &args.command,
+        Some(Commands::Config(config))
+            if matches!(&config.command, ConfigCommands::Migrate(_))
+    );
+    if args.config.is_some() || (args.seed_file.is_some() && !is_migration) {
+        bail!(
+                "--config and --seed-file are no longer startup inputs; migrate a legacy document with `cdk-mintd config migrate --file <old> --output <new>`, import one with `cdk-mintd config init --existing-mint --file <path>`, initialize a new mint with `cdk-mintd config init --new-mint --file <path>`, or replace it with `cdk-mintd config apply --file <path>`"
+            );
+    }
     match rt.block_on(async { cdk_mintd::run_cli_command(&args).await }) {
         Ok(true) => {
             rt.shutdown_background();
@@ -28,16 +38,6 @@ fn main() -> Result<()> {
     let rt = Arc::new(rt);
     let rt_clone = Arc::clone(&rt);
     rt.block_on(async {
-        let is_migration = matches!(
-            &args.command,
-            Some(Commands::Config(config))
-                if matches!(&config.command, ConfigCommands::Migrate(_))
-        );
-        if args.config.is_some() || (args.seed_file.is_some() && !is_migration) {
-            bail!(
-                "--config and --seed-file are no longer startup inputs; migrate a legacy document with `cdk-mintd config migrate --file <old> --output <new>`, import one with `cdk-mintd config init --existing-mint --file <path>`, initialize a new mint with `cdk-mintd config init --new-mint --file <path>`, or replace it with `cdk-mintd config apply --file <path>`"
-            );
-        }
         let work_dir = if matches!(
             &args.command,
             Some(Commands::Config(config))
@@ -154,8 +154,8 @@ fn main() -> Result<()> {
                     let work_dir = work_dir
                         .as_deref()
                         .expect("database commands have a work directory");
-                    let document = cdk_mintd::stored_configuration_document(work_dir, password)
-                        .await?;
+                    let document =
+                        cdk_mintd::stored_configuration_document(work_dir, password).await?;
                     print!("{document}");
                     Ok(())
                 }
@@ -163,13 +163,17 @@ fn main() -> Result<()> {
                     let work_dir = work_dir
                         .as_deref()
                         .expect("database commands have a work directory");
-                    let document = cdk_mintd::stored_configuration_document(work_dir, password)
-                        .await?;
+                    let document =
+                        cdk_mintd::stored_configuration_document(work_dir, password).await?;
                     export_document(&file.file, &document, file.force)?;
                     println!("Configuration exported to {}.", file.file.display());
                     Ok(())
                 }
             },
+            #[cfg(feature = "federation")]
+            Some(Commands::Federation(_)) => unreachable!("federation command already handled"),
+            #[cfg(feature = "iroh")]
+            Some(Commands::Iroh(_)) => unreachable!("Iroh command already handled"),
             None => {
                 let work_dir = work_dir
                     .as_deref()

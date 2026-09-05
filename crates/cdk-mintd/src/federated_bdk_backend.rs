@@ -239,6 +239,7 @@ mod tests {
             546,
             FederationOnchainTransactionPolicy::for_version(1).expect("policy"),
             cdk_bdk::ChainSource::BitcoinRpc(cdk_bdk::BitcoinRpcConfig {
+                wallet_rescan_from_height: Some(0),
                 host: "private-node.internal".to_string(),
                 port: 18_443,
                 user: "operator".to_string(),

@@ -415,7 +415,7 @@ mod tests {
                 .first()
                 .expect("active connections metric should exist")
                 .get_gauge()
-                .value();
+                .get_value();
         }
 
         panic!("active connections metric should be registered");

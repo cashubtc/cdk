@@ -569,7 +569,7 @@ impl MeltSaga<SetupComplete> {
             return Ok(None);
         }
 
-        let response = self.execute_payment_and_verify(ln).await?;
+        let (response, _acknowledged) = self.execute_payment_and_verify(ln).await?;
         // The durable recovery handle is the caller-supplied quote id recorded
         // in the claim transaction above. The response's backend-native lookup
         // id is observation evidence only; it must not replace the durable
@@ -1219,8 +1219,12 @@ impl MeltSaga<PaymentConfirmed> {
                 payment_lookup_id: payment_lookup_id.clone(),
                 payment_proof: payment_proof.clone(),
             };
-            tx.update_saga_with_finalization_data(
-                &self.operation_id,
+            let mut saga = tx
+                .get_saga_for_update(&self.operation_id)
+                .await?
+                .ok_or(Error::Internal)?;
+            tx.update_acquired_saga_with_finalization_data(
+                &mut saga,
                 SagaStateEnum::Melt(MeltSagaState::Finalizing),
                 Some(&finalization_data),
             )

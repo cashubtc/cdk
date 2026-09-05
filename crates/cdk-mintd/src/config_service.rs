@@ -580,6 +580,34 @@ pub(crate) fn prune_inactive_configuration(settings: &mut Settings) {
 }
 
 fn validate_secret_references(settings: &Settings) -> Result<(), ConfigurationServiceError> {
+    #[cfg(feature = "federation")]
+    if let Some(federation) = &settings.federation {
+        #[cfg(feature = "federation-bark")]
+        validate_optional_secret_reference(
+            federation.bark.operational_seed_hex.as_deref(),
+            "federation.bark.operational_seed_hex",
+        )?;
+        #[cfg(feature = "federation-bark")]
+        validate_optional_secret_reference(
+            federation.bark.receive_secret_key_hex.as_deref(),
+            "federation.bark.receive_secret_key_hex",
+        )?;
+        #[cfg(feature = "federation-bark")]
+        {
+            validate_optional_secret_reference(
+                federation.bark.server_access_token.as_deref(),
+                "federation.bark.server_access_token",
+            )?;
+            validate_optional_secret_reference(
+                federation.bark.bitcoind_password.as_deref(),
+                "federation.bark.bitcoind_password",
+            )?;
+        }
+        validate_optional_secret_reference(
+            federation.onchain_wallet.bitcoind_rpc_password.as_deref(),
+            "federation.onchain_wallet.bitcoind_rpc_password",
+        )?;
+    }
     validate_optional_secret_reference(settings.info.seed.as_deref(), "info.seed")?;
     validate_optional_secret_reference(settings.info.mnemonic.as_deref(), "info.mnemonic")?;
 
@@ -656,6 +684,34 @@ fn validate_secret_reference(
 }
 
 fn resolve_secrets(settings: &mut Settings) -> Result<(), ConfigurationServiceError> {
+    #[cfg(feature = "federation")]
+    if let Some(federation) = &mut settings.federation {
+        #[cfg(feature = "federation-bark")]
+        resolve_optional_trimmed_secret(
+            &mut federation.bark.operational_seed_hex,
+            "federation.bark.operational_seed_hex",
+        )?;
+        #[cfg(feature = "federation-bark")]
+        resolve_optional_trimmed_secret(
+            &mut federation.bark.receive_secret_key_hex,
+            "federation.bark.receive_secret_key_hex",
+        )?;
+        #[cfg(feature = "federation-bark")]
+        {
+            resolve_optional_secret(
+                &mut federation.bark.server_access_token,
+                "federation.bark.server_access_token",
+            )?;
+            resolve_optional_secret(
+                &mut federation.bark.bitcoind_password,
+                "federation.bark.bitcoind_password",
+            )?;
+        }
+        resolve_optional_secret(
+            &mut federation.onchain_wallet.bitcoind_rpc_password,
+            "federation.onchain_wallet.bitcoind_rpc_password",
+        )?;
+    }
     if settings.enabled_signatory().is_none() {
         resolve_optional_secret(&mut settings.info.seed, "info.seed")?;
         resolve_optional_trimmed_secret(&mut settings.info.mnemonic, "info.mnemonic")?;
@@ -780,6 +836,40 @@ mod tests {
     use cdk_sqlite::mint::memory;
 
     use super::*;
+
+    #[cfg(all(feature = "federation-bark", feature = "fakewallet"))]
+    #[test]
+    fn federation_secrets_resolve_without_entering_the_stored_document() {
+        let directory = crate::test_utils::unique_temp_path("federation_configuration_secrets");
+        std::fs::create_dir_all(&directory).expect("secret directory");
+        let seed = directory.join("seed");
+        std::fs::write(&seed, "ab".repeat(64)).expect("secret seed");
+        let key = directory.join("key");
+        std::fs::write(&key, "cd".repeat(32)).expect("secret key");
+        let reference = format!("file:{}", seed.display());
+        let source = format!(
+            "{}\n[federation]\nenabled = true\n[federation.bark]\noperational_seed_hex = \"{}\"\nreceive_secret_key_hex = \"file:{}\"\n",
+            document(&reference, "federation" ).replace("mnemonic =", "seed ="), reference, key.display()
+        );
+        let resolved =
+            ConfigurationService::validate_document(&source).expect("resolve configuration");
+        assert_eq!(resolved.document, source);
+        let federation = resolved.settings.federation.expect("federation settings");
+        assert_eq!(
+            federation.bark.operational_seed_hex.as_deref(),
+            Some("ab".repeat(64).as_str())
+        );
+        assert_eq!(
+            federation.bark.receive_secret_key_hex.as_deref(),
+            Some("cd".repeat(32).as_str())
+        );
+        let literal = source.replace(
+            &format!("operational_seed_hex = \"{reference}\""),
+            &format!("operational_seed_hex = \"{}\"", "ab".repeat(64)),
+        );
+        assert!(ConfigurationService::validate_document(&literal).is_err());
+        std::fs::remove_dir_all(directory).expect("remove secrets");
+    }
 
     const TEST_MNEMONIC_ONE: &str =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";

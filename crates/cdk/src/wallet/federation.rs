@@ -199,11 +199,21 @@ fn into_wallet_error(error: Error) -> Error {
     }
 }
 
+// A quorum can conclusively reject this request even when the error is not
+// safe for wallet proof rollback (for example, the inputs are already spent).
+fn is_terminal_member_rejection(error: &Error) -> bool {
+    error.is_definitive_failure()
+        || matches!(
+            error,
+            Error::TokenAlreadySpent | Error::BlindedMessageAlreadySigned
+        )
+}
+
 impl FederationMemberFailure {
     fn new(member_id: MemberId, error: Error) -> Self {
         if let Error::MintErrorResponse(rejection) = error {
             let error = Error::from(rejection.clone());
-            let rejection = error.is_definitive_failure().then_some(rejection);
+            let rejection = is_terminal_member_rejection(&error).then_some(rejection);
             return Self {
                 member_id,
                 error,
@@ -211,7 +221,7 @@ impl FederationMemberFailure {
             };
         }
 
-        if error.is_definitive_failure() {
+        if is_terminal_member_rejection(&error) {
             let rejection = ErrorResponse::from(error);
             return Self {
                 member_id,
@@ -2018,12 +2028,12 @@ impl MintConnector for FederatedMintConnector {
         cdk_common::ws_client::WsError,
     > {
         let member_id = self.websocket_member_id(url).ok_or_else(|| {
-            cdk_common::ws_client::WsError::Connection(
+            cdk_common::ws_client::WsError::Terminal(
                 "WebSocket URL is not an exact federation member route".to_string(),
             )
         })?;
         let connector = self.member_connectors.get(&member_id).ok_or_else(|| {
-            cdk_common::ws_client::WsError::Connection(
+            cdk_common::ws_client::WsError::Terminal(
                 "Federation member connector is unavailable".to_string(),
             )
         })?;

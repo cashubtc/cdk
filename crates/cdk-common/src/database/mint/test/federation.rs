@@ -1835,7 +1835,11 @@ where
         .await
         .expect("add second quote");
     second_quote
-        .increment_amount_paid(Amount::from(5).with_unit(CurrencyUnit::Sat))
+        .add_payment(
+            Amount::from(5).with_unit(CurrencyUnit::Sat),
+            "second-payment".to_owned(),
+            None,
+        )
         .expect("mark second quote paid");
     second_quote
         .add_issuance(Amount::from(2).with_unit(CurrencyUnit::Sat))

@@ -29,7 +29,6 @@ use cdk::types::FeeReserve;
     feature = "fakewallet",
     feature = "grpc-processor",
     feature = "ldk-node",
-    feature = "lnbits",
     feature = "lnd"
 ))]
 use crate::config;
@@ -675,12 +674,12 @@ impl crate::config::Bdk {
             .unwrap_or("bitcoinrpc")
             .to_lowercase();
 
-        match chain_source_type.as_str() {
+        let source = match chain_source_type.as_str() {
             "esplora" => {
                 let esplora_url = self.esplora_url.clone().ok_or_else(|| {
                     anyhow::anyhow!("BDK esplora_url must be set when chain_source_type is esplora")
                 })?;
-                Ok(cdk_bdk::ChainSource::Esplora(cdk_bdk::EsploraConfig {
+                cdk_bdk::ChainSource::Esplora(cdk_bdk::EsploraConfig {
                     url: esplora_url,
                     parallel_requests: self.esplora_parallel_requests.max(1),
                     request_timeout_secs: self.request_timeout_secs,
@@ -726,7 +725,9 @@ impl crate::config::Bdk {
                 })
             }
             _ => bail!("Unknown BDK chain_source_type: {chain_source_type}"),
-        }
+        };
+        source.validate()?;
+        Ok(source)
     }
 }
 

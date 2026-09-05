@@ -4,9 +4,9 @@ use std::collections::HashMap;
 #[cfg(feature = "federation")]
 use std::collections::HashSet;
 use std::pin::Pin;
-use std::sync::{Arc, Weak};
 #[cfg(all(test, feature = "federation"))]
 use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
@@ -68,7 +68,6 @@ const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
 const CDK_MINT_CONFIG_SECONDARY_NAMESPACE: &str = "config";
 const CDK_MINT_CONFIG_KV_KEY: &str = "mint_info";
 const CDK_MINT_QUOTE_TTL_KV_KEY: &str = "quote_ttl";
-const PAYMENT_EVENT_STREAM_RETRY_DELAY: Duration = Duration::from_secs(5);
 #[cfg(feature = "federation")]
 const FEDERATION_PAYMENT_EVENT_CHANNEL_CAPACITY: usize = 256;
 
@@ -228,6 +227,11 @@ impl SupervisedStream for PaymentWaiter {
     }
 
     async fn on_message(&mut self, event: Self::Item) {
+        #[cfg(feature = "federation")]
+        if self.mint.federation_config().is_some() {
+            let _ = self.mint.federation_payment_events.send(event);
+            return;
+        }
         match event {
             cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {
                 if let Err(e) = Mint::handle_payment_notification(
@@ -2642,6 +2646,7 @@ mod tests {
         let processor: DynMintPayment = processor_handle.clone();
         let shutdown = Arc::new(Notify::new());
         let task = tokio::spawn(Mint::wait_for_processor_payments(
+            "test-processor".to_owned(),
             Arc::clone(&mint),
             processor,
             mint.localstore(),
@@ -2652,7 +2657,7 @@ mod tests {
         tokio::task::yield_now().await;
         assert_eq!(processor_handle.wait_calls(), 1);
 
-        tokio::time::advance(PAYMENT_EVENT_STREAM_RETRY_DELAY - Duration::from_millis(1)).await;
+        tokio::time::advance(Duration::from_millis(249)).await;
         tokio::task::yield_now().await;
         assert_eq!(
             processor_handle.wait_calls(),

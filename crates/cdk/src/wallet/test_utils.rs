@@ -28,8 +28,8 @@ use tracing_subscriber::fmt::MakeWriter;
 
 use crate::nuts::{
     nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, BlindSignature, BlindedMessage,
-    MeltQuoteBolt11Response, MintQuoteBolt11Response, MeltQuoteState, NUT04Settings, NUT05Settings, PaymentMethod,
-    SecretKey, State,
+    MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response, NUT04Settings, NUT05Settings,
+    PaymentMethod, SecretKey, State,
 };
 use crate::secret::Secret;
 use crate::wallet::{MintConnector, Wallet};
@@ -942,11 +942,7 @@ impl MockMintConnector {
     }
 
     /// Stage the `get_mint_quote_status` response for a quote.
-    pub fn set_mint_quote_status_response(
-        &self,
-        quote_id: &str,
-        response: MintQuoteResponse<String>,
-    ) {
+    pub fn set_quote_status_response(&self, quote_id: &str, response: MintQuoteResponse<String>) {
         self.mint_quote_status_responses
             .lock()
             .unwrap()
@@ -1183,13 +1179,13 @@ impl MintConnector for MockMintConnector {
         self.post_mint_quote_requests.lock().unwrap().push(request);
         match self.post_mint_quote_responses.lock().unwrap().pop_front() {
             Some(response) => response,
-            None => self.post_mint_quote_response
-            .lock()
-            .unwrap()
-            .take()
-            .expect("MockMintConnector: post_mint_quote called without configured response")
+            None => self
+                .post_mint_quote_response
+                .lock()
+                .unwrap()
+                .take()
+                .expect("MockMintConnector: post_mint_quote called without configured response"),
         }
-
     }
 
     async fn get_mint_quote_status(
@@ -1202,21 +1198,30 @@ impl MintConnector for MockMintConnector {
             tokio::time::sleep(delay).await;
         }
 
-        let mut response = match self.queued_mint_quote_status_responses.lock().unwrap().pop_front() {
+        if let Some(response) = self
+            .mint_quote_status_responses
+            .lock()
+            .unwrap()
+            .get(quote_id)
+            .cloned()
+        {
+            return Ok(response);
+        }
+        let mut response = match self
+            .queued_mint_quote_status_responses
+            .lock()
+            .unwrap()
+            .pop_front()
+        {
             Some(response) => response,
-            None => match self.mint_quote_status_responses.lock().unwrap().get(quote_id).cloned() {
-                Some(response) => Ok(response),
-                None => self
+            None => self
                 .mint_quote_status_response
                 .lock()
                 .unwrap()
                 .take()
-                .expect(
-                    "MockMintConnector: get_mint_quote_status called without configured response",
-                ),
-            },
+                .unwrap_or(Err(Error::UnknownQuote)),
         }?;
-        response.quote = _quote_id.to_string();
+        response.quote = quote_id.to_owned();
         Ok(MintQuoteResponse::Bolt11(response))
     }
 
@@ -1271,13 +1276,13 @@ impl MintConnector for MockMintConnector {
         self.post_melt_quote_requests.lock().unwrap().push(request);
         match self.post_melt_quote_responses.lock().unwrap().pop_front() {
             Some(response) => response,
-            None => self.post_melt_quote_response
-            .lock()
-            .unwrap()
-            .take()
-            .expect("MockMintConnector: post_melt_quote called without configured response")
+            None => self
+                .post_melt_quote_response
+                .lock()
+                .unwrap()
+                .take()
+                .expect("MockMintConnector: post_melt_quote called without configured response"),
         }
-
     }
 
     async fn get_melt_quote_status(
@@ -1395,13 +1400,9 @@ impl MintConnector for MockMintConnector {
         _method: &PaymentMethod,
         _request: BatchCheckMintQuoteRequest<String>,
     ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
-        self.batch_mint_quote_status_response
-            .lock()
-            .unwrap()
-            .take()
-            .expect(
-                "MockMintConnector: post_batch_check_mint_quote_status called without configured response",
-            )
+        self.post_batch_check_mint_quote_status_responses.lock().unwrap().pop_front()
+            .or_else(|| self.batch_mint_quote_status_response.lock().unwrap().take())
+            .expect("MockMintConnector: post_batch_check_mint_quote_status called without configured response")
     }
 
     async fn post_batch_mint(
@@ -1423,7 +1424,11 @@ impl MintConnector for MockMintConnector {
                         signatures: signatures?,
                     });
                 }
-                panic!("MockMintConnector: post_batch_mint called without configured response")
+                self.post_batch_mint_response
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("MockMintConnector: post_batch_mint called without configured response")
             }
         }
     }

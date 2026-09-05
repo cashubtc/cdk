@@ -31,7 +31,9 @@ impl Wallet {
         self.retry_on_inactive_keyset(|| async {
             let transaction_id = TransactionId::from_proofs(proofs.clone())?;
             if let Some(transaction) = self.get_transaction(transaction_id).await? {
-                if transaction.direction == TransactionDirection::Incoming {
+                if transaction.direction == TransactionDirection::Incoming
+                    && transaction.status == cdk_common::wallet::TransactionStatus::Completed
+                {
                     return Ok(transaction.amount);
                 }
             }
@@ -151,12 +153,13 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn receive_proofs_returns_existing_incoming_transaction() {
+    async fn receive_proofs_returns_existing_legacy_incoming_transaction() {
         let db = create_test_db().await;
         let wallet = create_test_wallet(db.clone()).await;
         let proof = test_proof_info(test_keyset_id(), 100, test_mint_url());
         let expected = Amount::from(99);
         db.add_transaction(Transaction {
+            status: cdk_common::wallet::TransactionStatus::Completed,
             mint_url: test_mint_url(),
             direction: TransactionDirection::Incoming,
             amount: expected,
@@ -170,7 +173,7 @@ mod tests {
             payment_request: None,
             payment_proof: None,
             payment_method: None,
-            saga_id: Some(uuid::Uuid::new_v4()),
+            saga_id: None,
         })
         .await
         .expect("existing receive transaction");

@@ -10,7 +10,7 @@ Group=ubuntu
 WorkingDirectory=/home/ubuntu/cdk-federation-iroh/operator-%i
 Environment=RUST_LOG=info
 Environment=CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=180
-ExecStart=/home/ubuntu/cdk-federation-iroh/operator-%i/bin/cdk-mintd --work-dir /home/ubuntu/cdk-federation-iroh/operator-%i/work --config /home/ubuntu/cdk-federation-iroh/operator-%i/runtime-config.toml
+ExecStart=/home/ubuntu/cdk-federation-iroh/operator-%i/bin/cdk-mintd --work-dir /home/ubuntu/cdk-federation-iroh/operator-%i/work
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s

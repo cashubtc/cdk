@@ -175,6 +175,10 @@ generate_runtime_config() {
     seed="$(openssl rand -hex 32)"
     bark_operational_seed="$(openssl rand -hex 64)"
     bark_receive_secret="$(openssl rand -hex 32)"
+    local secrets_dir="$WORK_DIR/secrets"
+    mkdir -p "$secrets_dir"
+    chmod 700 "$secrets_dir"
+    (umask 077; printf '%s' "$seed" >"$secrets_dir/mint-seed"; printf '%s' "$bark_operational_seed" >"$secrets_dir/bark-seed"; printf '%s' "$bark_receive_secret" >"$secrets_dir/bark-receive-key")
     mkdir -p "$WORK_DIR/frost-protocol"
     cat >"$RUNTIME_CONFIG" <<EOF
 [info]
@@ -182,7 +186,7 @@ url = "$PUBLIC_MINT_URL"
 http_enabled = $HTTP_ENABLED
 listen_host = "127.0.0.1"
 listen_port = $LISTEN_PORT
-seed = "$seed"
+seed = "file:$secrets_dir/mint-seed"
 enable_info_page = true
 
 [iroh]
@@ -206,8 +210,8 @@ port = $PROMETHEUS_PORT
 [database]
 engine = "sqlite"
 
-[ln]
-ln_backend = "federated-bark"
+[[payment_backend]]
+backend = "federated-bark"
 unit = "sat"
 min_mint = 1
 max_mint = 50000000
@@ -253,17 +257,18 @@ esplora_url = "$BARK_ESPLORA_URL"
 data_directory = "$WORK_DIR/federation-bark"
 receive_secret_database_path = "$WORK_DIR/federation-bark/receive-secrets.redb"
 frost_protocol_storage_root = "$WORK_DIR/frost-protocol"
-operational_seed_hex = "$bark_operational_seed"
-receive_secret_key_hex = "$bark_receive_secret"
+operational_seed_hex = "file:$secrets_dir/bark-seed"
+receive_secret_key_hex = "file:$secrets_dir/bark-receive-key"
 create_if_missing = true
 automatic_refresh = true
 automatic_emergency_exit = false
 EOF
     chmod 600 "$RUNTIME_CONFIG"
+    "$MINTD" --work-dir "$WORK_DIR" config init --new-mint --file "$RUNTIME_CONFIG"
 }
 
 mintd_configured() {
-    "$MINTD" --work-dir "$WORK_DIR" --config "$RUNTIME_CONFIG" "$@"
+    "$MINTD" --work-dir "$WORK_DIR" "$@"
 }
 
 action_create() {
@@ -479,8 +484,8 @@ service_start() {
     case "$mode" in
         setup)
             printf -v command \
-                'cd %q && exec env RUST_LOG=info %q --work-dir %q --config %q federation setup serve --config %q --listen %q --dkg-max-ticks %q --dkg-retry-delay-ms %q --dkg-ceremony-timeout-seconds %q >>%q 2>&1' \
-                "$OPERATOR_ROOT" "$MINTD" "$WORK_DIR" "$RUNTIME_CONFIG" \
+                'cd %q && exec env RUST_LOG=info %q --work-dir %q federation setup serve --config %q --listen %q --dkg-max-ticks %q --dkg-retry-delay-ms %q --dkg-ceremony-timeout-seconds %q >>%q 2>&1' \
+                "$OPERATOR_ROOT" "$MINTD" "$WORK_DIR" \
                 "$(setup_config "$label")" "$LISTEN_ADDR" \
                 "$DKG_MAX_TICKS" "$DKG_RETRY_DELAY_MS" "$DKG_CEREMONY_TIMEOUT_SECONDS" \
                 "$(ceremony_dir "$label")/setup-service.log"
@@ -488,8 +493,8 @@ service_start() {
         runtime)
             [[ "$label" == "active" ]] || die "runtime requires the active ceremony"
             printf -v command \
-                'cd %q && exec env RUST_LOG=info CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=180 %q --work-dir %q --config %q' \
-                "$OPERATOR_ROOT" "$MINTD" "$WORK_DIR" "$RUNTIME_CONFIG"
+                'cd %q && exec env RUST_LOG=info CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=180 %q --work-dir %q' \
+                "$OPERATOR_ROOT" "$MINTD" "$WORK_DIR"
             ;;
         *) die "service mode must be setup or runtime" ;;
     esac

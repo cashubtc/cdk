@@ -2929,8 +2929,8 @@ target_block_time_secs = 300
     #[test]
     fn test_fakewallet_ln_with_federated_bdk_accepted_for_test_utils() {
         let settings = Settings {
-            ln: vec![Ln {
-                ln_backend: LnBackend::FakeWallet,
+            payment_backend: vec![PaymentBackend {
+                backend: PaymentBackendType::FakeWallet,
                 ..Default::default()
             }],
             onchain: Some(Onchain {

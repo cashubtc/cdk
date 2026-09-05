@@ -28,6 +28,8 @@ message RotateNextKeysetRequest {
     // Absolute expiry as seconds since the UNIX epoch. Omit for a keyset
     // that never expires.
     optional uint64 final_expiry = 5;
+    // Explicit keyset version: v1, v2, or v3 (the default).
+    optional string keyset_version = 6;
 }
 
 // Describes the keyset the mint activated. On failure a gRPC error status is

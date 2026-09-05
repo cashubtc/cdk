@@ -2,7 +2,6 @@
 #![cfg_attr(
     not(any(
         feature = "cln",
-        feature = "lnbits",
         feature = "lnd",
         feature = "ldk-node",
         feature = "fakewallet",
@@ -27,9 +26,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use axum::extract::DefaultBodyLimit;
 use axum::Router;
 use bip39::Mnemonic;
+use cdk::cdk_database::{self, KVStore, KVStoreCompareAndSwap, MintDatabase, MintKeysDatabase};
 #[cfg(feature = "federation")]
 use cdk::mint::FederationRuntimeConfig;
-use cdk::cdk_database::{self, KVStore, KVStoreCompareAndSwap, MintDatabase, MintKeysDatabase};
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::KnownMethod;
 #[cfg(any(
@@ -114,11 +113,11 @@ mod federation_setup_command;
 mod federation_smoke;
 #[cfg(feature = "federation")]
 mod federation_status;
-mod secret;
 #[cfg(feature = "federation-bdk")]
 mod federation_wallet_operator;
 #[cfg(feature = "iroh")]
 mod iroh_runtime;
+mod secret;
 pub mod setup;
 
 pub use config_migration::{migrate_legacy_configuration, MigrationOutcome};
@@ -205,7 +204,7 @@ async fn federation_setup_server_transport(
 #[cfg(all(feature = "federation", feature = "iroh"))]
 async fn federation_transport_settings(args: &CLIArgs) -> Result<(PathBuf, config::Settings)> {
     let work_dir = get_work_directory(args).await?;
-    let settings = load_settings(&work_dir, args.config.clone())?;
+    let settings = load_stored_settings(&work_dir, args).await?;
     Ok((work_dir, settings))
 }
 
@@ -230,6 +229,7 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
     #[cfg(any(feature = "federation", feature = "iroh"))]
     if let Some(command) = &args.command {
         match command {
+            cli::Commands::Config(_) => return Ok(false),
             #[cfg(feature = "federation")]
             cli::Commands::Federation(federation) => match &federation.command {
                 cli::FederationCommand::AuditCheckpoint(audit) => {
@@ -245,7 +245,7 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                     federation_dkg_status::run_dkg_status_command(args, status).await?;
                 }
                 cli::FederationCommand::Inspect(inspect) => {
-                    federation_inspect::run_inspect_command(args, inspect)?;
+                    federation_inspect::run_inspect_command(args, inspect).await?;
                 }
                 cli::FederationCommand::Setup(setup) => {
                     federation_setup_command::run_setup_command(args, setup).await?;
@@ -300,7 +300,7 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                 }
             },
             #[cfg(feature = "iroh")]
-            cli::CliCommand::Iroh(iroh) => match &iroh.command {
+            cli::Commands::Iroh(iroh) => match &iroh.command {
                 cli::IrohCommand::Init(init) => {
                     let work_dir = get_work_directory(args).await?;
                     let endpoint_id = iroh_runtime::initialize_endpoint_identity(
@@ -969,6 +969,16 @@ fn validate_payment_backend_config(settings: &config::Settings) -> Result<()> {
 
         match payment_backend.backend {
             PaymentBackendType::None => {}
+            #[cfg(feature = "federation-bark")]
+            PaymentBackendType::FederatedBark => {
+                if !settings
+                    .federation
+                    .as_ref()
+                    .is_some_and(|federation| federation.enabled && federation.bark.enabled)
+                {
+                    bail!("federated-bark requires federation.enabled and federation.bark.enabled");
+                }
+            }
             #[cfg(feature = "cln")]
             PaymentBackendType::Cln => {
                 let cln = settings.cln.as_ref().ok_or_else(|| {
@@ -1047,6 +1057,16 @@ fn validate_onchain_config(settings: &config::Settings) -> Result<()> {
 
     match onchain.onchain_backend {
         config::OnchainBackend::None => {}
+        #[cfg(feature = "federation-bdk")]
+        config::OnchainBackend::FederatedBdk => {
+            if !settings
+                .federation
+                .as_ref()
+                .is_some_and(|federation| federation.enabled && federation.onchain_wallet.enabled)
+            {
+                bail!("federated-bdk requires federation.enabled and federation.onchain_wallet.enabled");
+            }
+        }
         #[cfg(feature = "bdk")]
         config::OnchainBackend::Bdk => {
             let bdk = settings.bdk.as_ref().ok_or_else(|| {
@@ -1511,9 +1531,9 @@ fn validate_federated_bark_startup(
         .as_ref()
         .ok_or_else(|| anyhow!("federated Bark validation requires federation settings"))?;
     let selected = settings
-        .ln
+        .payment_backend
         .iter()
-        .filter(|entry| entry.ln_backend == LnBackend::FederatedBark)
+        .filter(|entry| entry.backend == PaymentBackendType::FederatedBark)
         .collect::<Vec<_>>();
     if !federation.bark.enabled {
         if !selected.is_empty() {
@@ -1898,9 +1918,9 @@ fn federation_bark_local_config(
     let application = cdk_federation_bark::federation_bark_application(runtime.public_config())?
         .ok_or_else(|| anyhow!("accepted Bark application is missing"))?;
     let selected = settings
-        .ln
+        .payment_backend
         .iter()
-        .find(|entry| entry.ln_backend == LnBackend::FederatedBark)
+        .find(|entry| entry.backend == PaymentBackendType::FederatedBark)
         .ok_or_else(|| anyhow!("federated Bark Lightning backend is missing"))?;
     let operational_seed = decode_fixed_hex::<64>(
         wallet
@@ -1978,6 +1998,7 @@ fn federation_bark_local_config(
             user,
             password,
             request_timeout_secs: 15,
+            wallet_rescan_from_height: Some(0),
         })
     };
     recovery_chain_source.validate()?;
@@ -2115,6 +2136,7 @@ fn federation_chain_source(
                 user: user.clone(),
                 password: password.clone(),
                 request_timeout_secs: wallet.request_timeout_secs,
+            wallet_rescan_from_height: Some(0),
             })
         }
         source => bail!(
@@ -2255,7 +2277,7 @@ where
 }
 
 #[cfg(feature = "federation")]
-pub(crate) fn federation_config_paths(
+pub(crate) async fn federation_config_paths(
     cli_args: &CLIArgs,
     public_config: &Option<PathBuf>,
     private_config: &Option<PathBuf>,
@@ -2266,13 +2288,8 @@ pub(crate) fn federation_config_paths(
             Ok((public_config.clone(), private_config.clone()))
         }
         (None, None) => {
-            let config_path = cli_args.config.as_deref().ok_or_else(|| {
-                anyhow!(
-                    "{command_name} needs --public-config and --private-config, or a mintd --config with [federation] paths"
-                )
-            })?;
-            let settings = config::Settings::try_new(Some(config_path))
-                .with_context(|| format!("failed to load mint config {}", config_path.display()))?;
+            let work_dir = get_work_directory(cli_args).await?;
+            let settings = load_stored_settings(&work_dir, cli_args).await?;
             let federation = settings
                 .federation
                 .ok_or_else(|| anyhow!("mint config has no [federation] section"))?;
@@ -3272,6 +3289,11 @@ struct PreparedMintd {
     mint_service: Router,
     listen_addr: String,
     listen_port: u16,
+    http_enabled: bool,
+    #[cfg(feature = "iroh")]
+    iroh_runtime: Option<iroh_runtime::MintdIrohRuntime>,
+    #[cfg(feature = "federation-bark")]
+    federation_bark_maintenance: Option<cdk_axum::FederatedBarkMaintenanceHandle>,
     activation: Option<ConfigurationActivation>,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
     /// Management RPC server and its TLS directory, when enabled.
@@ -3284,7 +3306,11 @@ struct PreparedMintd {
 struct RunningMintd {
     mint: Arc<cdk::mint::Mint>,
     mint_service: Router,
-    listener: tokio::net::TcpListener,
+    listener: Option<tokio::net::TcpListener>,
+    #[cfg(feature = "iroh")]
+    iroh_node: Option<cdk_iroh::IrohNode>,
+    #[cfg(feature = "federation-bark")]
+    federation_bark_maintenance_task: Option<tokio::task::JoinHandle<()>>,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
     #[cfg(feature = "prometheus")]
     prometheus_handle: Option<tokio::task::JoinHandle<()>>,
@@ -3293,19 +3319,47 @@ struct RunningMintd {
 }
 
 impl PreparedMintd {
-    /// Builds every resource and performs all database reconciliation
-    /// without starting tasks or binding listeners.
+    /// Builds resources and reconciles database configuration. The shared Iroh
+    /// endpoint is bound here; public request handling starts after activation.
     #[allow(clippy::too_many_arguments)]
     async fn prepare(
         mint: Arc<cdk::mint::Mint>,
         settings: &config::Settings,
-        _work_dir: &Path,
+        work_dir: &Path,
         _wallet_info_provider: ConfiguredWalletInfoProvider,
         mint_builder_info: cdk::nuts::MintInfo,
         routers: Vec<Router>,
         auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
         activation: Option<ConfigurationActivation>,
     ) -> Result<Self> {
+        #[cfg(feature = "iroh")]
+        let iroh_runtime = iroh_runtime::initialize(settings, work_dir).await?;
+        #[cfg(all(feature = "iroh", feature = "federation"))]
+        iroh_runtime::validate_federation_roster(settings, iroh_runtime.as_ref())?;
+        #[cfg(not(feature = "iroh"))]
+        {
+            if !settings.info.http_enabled || settings.info.url.starts_with("iroh:") {
+                bail!("Iroh listener configuration requires the iroh feature");
+            }
+            #[cfg(feature = "federation")]
+            validate_federation_transport_build(settings)?;
+        }
+        #[cfg(feature = "federation")]
+        let federation_transport = {
+            #[cfg(feature = "iroh")]
+            {
+                match iroh_runtime.as_ref() {
+                    Some(runtime) => {
+                        cdk_axum::federation_transport_with_iroh_node(runtime.node.clone())
+                    }
+                    None => cdk_axum::default_federation_transport(),
+                }
+            }
+            #[cfg(not(feature = "iroh"))]
+            {
+                cdk_axum::default_federation_transport()
+            }
+        };
         let listen_addr = settings.info.listen_host.clone();
         let listen_port = settings.info.listen_port;
         let cache: HttpCache = HttpCache::from_config(settings.info.http_cache.clone()).await?;
@@ -3339,7 +3393,7 @@ impl PreparedMintd {
                         mint_rpc = mint_rpc.with_wallet_info_provider(provider);
                     }
 
-                    let tls_dir = rpc_settings.tls_dir.unwrap_or(_work_dir.join("tls"));
+                    let tls_dir = rpc_settings.tls_dir.unwrap_or(work_dir.join("tls"));
 
                     let tls_dir = if tls_dir.exists() {
                         Some(tls_dir)
@@ -3575,7 +3629,7 @@ impl PreparedMintd {
             }
         }
 
-    #[cfg(all(feature = "federation", feature = "federation-bark"))]
+        #[cfg(all(feature = "federation", feature = "federation-bark"))]
     let (v1_service, federation_bark_maintenance) = cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg_and_wallets_with_transport_and_bark_lifecycle(
         Arc::clone(&mint),
         cache,
@@ -3594,7 +3648,7 @@ impl PreparedMintd {
         federation_transport,
     )
     .await?;
-    #[cfg(all(feature = "federation-bdk", not(feature = "federation-bark")))]
+        #[cfg(all(feature = "federation-bdk", not(feature = "federation-bark")))]
     let v1_service = cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg_and_wallet_with_transport(
         Arc::clone(&mint),
         cache,
@@ -3606,40 +3660,22 @@ impl PreparedMintd {
         federation_transport,
     )
     .await?;
-    #[cfg(all(
-        feature = "federation",
-        not(feature = "federation-bdk"),
-        not(feature = "federation-bark")
-    ))]
-    let v1_service =
-        cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg_with_transport(
-            Arc::clone(&mint),
-            cache,
-            custom_methods,
-            settings.info.enable_info_page.unwrap_or(true),
-            federation_peer_sync_config(settings),
-            federation_dkg_auto_start_config(settings)?,
-            federation_transport,
-        )
-        .await?;
-    #[cfg(not(feature = "federation"))]
-    let v1_service = cdk_axum::create_mint_router_with_custom_cache(
-        Arc::clone(&mint),
-        cache,
-        custom_methods,
-        settings.info.enable_info_page.unwrap_or(true),
-    )
-    .await?;
-
-    let mut mint_service = Router::new()
-        .merge(v1_service)
-        .layer(DefaultBodyLimit::max(REQUEST_BODY_LIMIT_BYTES))
-        .layer(
-            ServiceBuilder::new()
-                .layer(RequestDecompressionLayer::new())
-                .layer(CompressionLayer::new()),
-        )
-        .await?;
+        #[cfg(all(
+            feature = "federation",
+            not(feature = "federation-bdk"),
+            not(feature = "federation-bark")
+        ))]
+        let v1_service =
+            cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg_with_transport(
+                Arc::clone(&mint),
+                cache,
+                custom_methods,
+                settings.info.enable_info_page.unwrap_or(true),
+                federation_peer_sync_config(settings),
+                federation_dkg_auto_start_config(settings)?,
+                federation_transport,
+            )
+            .await?;
         #[cfg(not(feature = "federation"))]
         let v1_service = cdk_axum::create_mint_router_with_custom_cache(
             Arc::clone(&mint),
@@ -3673,6 +3709,11 @@ impl PreparedMintd {
             mint_service,
             listen_addr,
             listen_port,
+            http_enabled: settings.info.http_enabled,
+            #[cfg(feature = "iroh")]
+            iroh_runtime,
+            #[cfg(feature = "federation-bark")]
+            federation_bark_maintenance,
             activation,
             shutdown_tx,
             #[cfg(feature = "management-rpc")]
@@ -3732,12 +3773,19 @@ impl PreparedMintd {
 
         self.mint.start().await?;
 
-        let socket_addr =
-            SocketAddr::from_str(&format!("{}:{}", self.listen_addr, self.listen_port))?;
-
-        let listener = tokio::net::TcpListener::bind(socket_addr).await?;
-
-        tracing::info!("listening on {}", listener.local_addr()?);
+        let listener = if self.http_enabled {
+            let socket_addr =
+                SocketAddr::from_str(&format!("{}:{}", self.listen_addr, self.listen_port))?;
+            let listener = tokio::net::TcpListener::bind(socket_addr).await?;
+            tracing::info!("HTTP mint listener ready on {}", listener.local_addr()?);
+            Some(listener)
+        } else {
+            None
+        };
+        #[cfg(feature = "federation-bark")]
+        let federation_bark_maintenance_task = self
+            .federation_bark_maintenance
+            .and_then(|maintenance| maintenance.spawn_until(self.shutdown_tx.subscribe()));
 
         // All fallible startup steps have succeeded and the daemon is about to
         // serve with this configuration, so it can be recorded as applied.
@@ -3749,6 +3797,10 @@ impl PreparedMintd {
             mint: self.mint,
             mint_service: self.mint_service,
             listener,
+            #[cfg(feature = "iroh")]
+            iroh_node: self.iroh_runtime.map(|runtime| runtime.node),
+            #[cfg(feature = "federation-bark")]
+            federation_bark_maintenance_task,
             shutdown_tx: self.shutdown_tx,
             #[cfg(feature = "prometheus")]
             prometheus_handle,
@@ -3765,39 +3817,21 @@ impl RunningMintd {
         self,
         shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> Result<()> {
-        // Create a task to wait for the shutdown signal and broadcast it
-        let shutdown_broadcast_task = {
-            let shutdown_tx = self.shutdown_tx.clone();
-            tokio::spawn(async move {
-                shutdown_signal.await;
-                tracing::info!("Shutdown signal received, broadcasting to all services");
-                let _ = shutdown_tx.send(());
-            })
-        };
-
-        // Create shutdown future for axum server
-        let mut axum_shutdown_rx = self.shutdown_tx.subscribe();
-        let axum_shutdown = async move {
-            let _ = axum_shutdown_rx.recv().await;
-        };
-
-        // Wait for axum server to complete with custom shutdown signal
-        let axum_result =
-            axum::serve(self.listener, self.mint_service).with_graceful_shutdown(axum_shutdown);
-
-        match axum_result.await {
-            Ok(_) => {
-                tracing::info!("Axum server stopped with okay status");
-            }
-            Err(err) => {
-                tracing::warn!("Axum server stopped with error");
-                tracing::error!("{}", err);
-                bail!("Axum exited with error")
+        let listener_result = serve_public_listeners(
+            self.mint_service,
+            self.listener,
+            #[cfg(feature = "iroh")]
+            self.iroh_node,
+            self.shutdown_tx,
+            shutdown_signal,
+        )
+        .await;
+        #[cfg(feature = "federation-bark")]
+        if let Some(task) = self.federation_bark_maintenance_task {
+            if let Err(error) = task.await {
+                tracing::warn!("Federated Bark maintenance worker failed: {}", error);
             }
         }
-
-        // Wait for the shutdown broadcast task to complete
-        let _ = shutdown_broadcast_task.await;
 
         // Wait for prometheus server to shutdown if it was started
         #[cfg(feature = "prometheus")]
@@ -3816,7 +3850,7 @@ impl RunningMintd {
             }
         }
 
-        Ok(())
+        listener_result
     }
 }
 
@@ -3846,6 +3880,118 @@ async fn start_services_with_shutdown(
     .await?;
     let running = prepared.activate().await?;
     running.serve(shutdown_signal).await
+}
+
+enum PublicListenerExit {
+    Shutdown,
+    Http(std::result::Result<std::io::Result<()>, tokio::task::JoinError>),
+    #[cfg(feature = "iroh")]
+    Iroh,
+}
+
+async fn serve_public_listeners(
+    router: Router,
+    http_listener: Option<tokio::net::TcpListener>,
+    #[cfg(feature = "iroh")] iroh_node: Option<cdk_iroh::IrohNode>,
+    shutdown_tx: tokio::sync::broadcast::Sender<()>,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    let http_router = router.clone();
+    let mut http_task = http_listener.map(|listener| {
+        let mut shutdown_rx = shutdown_tx.subscribe();
+        let shutdown = async move {
+            let _ = shutdown_rx.recv().await;
+        };
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                http_router.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(shutdown)
+            .await
+        })
+    });
+
+    #[cfg(feature = "iroh")]
+    let iroh_server = iroh_node.map(|node| {
+        tracing::info!(endpoint = %node.endpoint_id(), "Iroh mint listener ready");
+        IrohServer::start(node, router)
+    });
+
+    tokio::pin!(shutdown_signal);
+    #[cfg(feature = "iroh")]
+    let exit = match (http_task.as_mut(), iroh_server.as_ref()) {
+        (Some(http), Some(iroh)) => {
+            tokio::select! {
+                () = &mut shutdown_signal => PublicListenerExit::Shutdown,
+                result = http => PublicListenerExit::Http(result),
+                () = iroh.finished() => PublicListenerExit::Iroh,
+            }
+        }
+        (Some(http), None) => {
+            tokio::select! {
+                () = &mut shutdown_signal => PublicListenerExit::Shutdown,
+                result = http => PublicListenerExit::Http(result),
+            }
+        }
+        (None, Some(iroh)) => {
+            tokio::select! {
+                () = &mut shutdown_signal => PublicListenerExit::Shutdown,
+                () = iroh.finished() => PublicListenerExit::Iroh,
+            }
+        }
+        (None, None) => bail!("no public mint listener was initialized"),
+    };
+    #[cfg(not(feature = "iroh"))]
+    let exit = match http_task.as_mut() {
+        Some(http) => {
+            tokio::select! {
+                () = &mut shutdown_signal => PublicListenerExit::Shutdown,
+                result = http => PublicListenerExit::Http(result),
+            }
+        }
+        None => bail!("no public mint listener was initialized"),
+    };
+
+    tracing::info!("stopping public mint listeners");
+    let _ = shutdown_tx.send(());
+
+    #[cfg(feature = "iroh")]
+    let iroh_exited = matches!(&exit, PublicListenerExit::Iroh);
+    let early_http_result = match exit {
+        PublicListenerExit::Http(result) => {
+            http_task = None;
+            Some(result)
+        }
+        _ => None,
+    };
+
+    #[cfg(feature = "iroh")]
+    if let Some(server) = iroh_server {
+        server
+            .shutdown()
+            .await
+            .context("Iroh mint listener did not shut down cleanly")?;
+    }
+
+    if let Some(task) = http_task {
+        task.await
+            .context("HTTP mint listener task failed")?
+            .context("HTTP mint listener failed while shutting down")?;
+    }
+
+    match early_http_result {
+        Some(Ok(Ok(()))) => bail!("HTTP mint listener exited unexpectedly"),
+        Some(Ok(Err(error))) => Err(error).context("HTTP mint listener failed"),
+        Some(Err(error)) => Err(error).context("HTTP mint listener task failed"),
+        None => {
+            #[cfg(feature = "iroh")]
+            if iroh_exited {
+                bail!("Iroh mint listener exited unexpectedly");
+            }
+            Ok(())
+        }
+    }
 }
 
 async fn shutdown_signal() {
@@ -4064,6 +4210,8 @@ pub async fn initialize_configuration(
     bdk_wallet_policy: BdkWalletPolicy,
     db_password: Option<String>,
 ) -> Result<()> {
+    #[cfg(feature = "federation-bark")]
+    cdk_federation_bark::register_federation_bark_wire_codec()?;
     let bootstrap = load_database_bootstrap_settings()?;
     let (localstore, keystore, _kv, configuration_store) =
         initial_setup(work_dir, &bootstrap, db_password).await?;
@@ -4095,6 +4243,8 @@ pub async fn apply_configuration(
     bdk_wallet_policy: BdkWalletPolicy,
     db_password: Option<String>,
 ) -> Result<ApplyOutcome> {
+    #[cfg(feature = "federation-bark")]
+    cdk_federation_bark::register_federation_bark_wire_codec()?;
     let bootstrap = load_database_bootstrap_settings()?;
     let (_localstore, _keystore, _kv, configuration_store) =
         initial_setup(work_dir, &bootstrap, db_password).await?;
@@ -4108,6 +4258,8 @@ pub async fn rollback_configuration(
     work_dir: &Path,
     db_password: Option<String>,
 ) -> Result<RollbackOutcome> {
+    #[cfg(feature = "federation-bark")]
+    cdk_federation_bark::register_federation_bark_wire_codec()?;
     let bootstrap = load_database_bootstrap_settings()?;
     let (_localstore, _keystore, _kv, configuration_store) =
         initial_setup(work_dir, &bootstrap, db_password).await?;
@@ -4121,12 +4273,34 @@ pub async fn stored_configuration_document(
     work_dir: &Path,
     db_password: Option<String>,
 ) -> Result<String> {
+    #[cfg(feature = "federation-bark")]
+    cdk_federation_bark::register_federation_bark_wire_codec()?;
     let bootstrap = load_database_bootstrap_settings()?;
     let (_localstore, _keystore, _kv, configuration_store) =
         initial_setup(work_dir, &bootstrap, db_password).await?;
     Ok(configuration_service(configuration_store, &bootstrap)
         .document()
         .await?)
+}
+
+#[cfg(feature = "federation")]
+async fn load_stored_settings(work_dir: &Path, args: &CLIArgs) -> Result<config::Settings> {
+    #[cfg(feature = "sqlcipher")]
+    let password = args.password.clone();
+    #[cfg(not(feature = "sqlcipher"))]
+    let password = {
+        let _ = args;
+        None
+    };
+    #[cfg(feature = "federation-bark")]
+    cdk_federation_bark::register_federation_bark_wire_codec()?;
+    let bootstrap = load_database_bootstrap_settings()?;
+    let (_, _, _, store) = initial_setup(work_dir, &bootstrap, password).await?;
+    Ok(configuration_service(store, &bootstrap)
+        .startup()
+        .await?
+        .resolved
+        .settings)
 }
 
 /// Runs mintd using only the configuration stored in its primary database.
@@ -4137,6 +4311,8 @@ pub async fn run_mintd_from_database(
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     routers: Vec<Router>,
 ) -> Result<()> {
+    #[cfg(feature = "federation-bark")]
+    cdk_federation_bark::register_federation_bark_wire_codec()?;
     let bootstrap = load_database_bootstrap_settings()?;
     let (localstore, keystore, kv, configuration_store) =
         initial_setup(work_dir, &bootstrap, db_password.clone()).await?;

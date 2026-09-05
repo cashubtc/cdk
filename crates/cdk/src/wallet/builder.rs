@@ -11,8 +11,10 @@ use crate::error::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::CurrencyUnit;
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
-use crate::wallet::mint_connector::transport::{Async, RateLimitedTransport};
-use crate::wallet::mint_connector::{RateLimitedAuthHttpClient, RateLimitedHttpClient};
+use crate::wallet::mint_connector::transport::RateLimitedTransport;
+use crate::wallet::mint_connector::{
+    DefaultTransport, RateLimitedAuthHttpClient, RateLimitedHttpClient,
+};
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::{
     AuthHttpClient, HttpClient, MintConnector, RateLimitConfig, RateLimiterManager,
@@ -300,7 +302,7 @@ impl WalletBuilder {
         };
         let shared_transport = rate_limiter.clone().map(|limiter| {
             Arc::new(RateLimitedTransport::with_manager(
-                Async::default(),
+                DefaultTransport::default(),
                 limiter,
             ))
         });

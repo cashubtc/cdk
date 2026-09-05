@@ -813,34 +813,6 @@ mod tests {
 
     // ===== Helpers =====
 
-    async fn recv_next<T: Transport>(
-        sub: &mut RemoteActiveConsumer<T>,
-        dur_ms: u64,
-    ) -> Option<<T::Spec as Spec>::Event> {
-        timeout(Duration::from_millis(dur_ms), sub.recv())
-            .await
-            .ok()
-            .flatten()
-    }
-
-    async fn expect_ctrl(
-        rx: &mut mpsc::Receiver<StreamCtrl<CustomPubSub>>,
-        dur_ms: u64,
-        pred: impl Fn(&StreamCtrl<CustomPubSub>) -> bool,
-    ) -> StreamCtrl<CustomPubSub> {
-        timeout(Duration::from_millis(dur_ms), async {
-            loop {
-                if let Some(msg) = rx.recv().await {
-                    if pred(&msg) {
-                        break msg;
-                    }
-                }
-            }
-        })
-        .await
-        .expect("timed out waiting for control message")
-    }
-
     async fn drive_until_stream_calls(calls: &AtomicUsize, expected: usize) {
         for _ in 0..20 {
             if calls.load(Ordering::SeqCst) >= expected {

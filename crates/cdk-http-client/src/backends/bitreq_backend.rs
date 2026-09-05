@@ -225,9 +225,9 @@ impl HttpClient {
         BitreqRequestBuilder::new(
             bitreq::put(url),
             url,
-            self.inner.clone(),
             self.proxy_config.clone(),
             self.no_redirects,
+            self.request_timeout_secs,
         )
     }
 }

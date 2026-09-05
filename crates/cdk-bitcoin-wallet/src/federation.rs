@@ -671,6 +671,7 @@ mod tests {
             user: "private-user".to_string(),
             password: "private-password".to_string(),
             request_timeout_secs: 1,
+            wallet_rescan_from_height: Some(0),
         })
     }
 

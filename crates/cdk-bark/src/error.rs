@@ -201,7 +201,7 @@ impl From<Error> for payment::Error {
     fn from(error: Error) -> Self {
         match error {
             Error::UnsupportedUnit => Self::UnsupportedUnit,
-            other => Self::Lightning(Box::new(other)),
+            other => Self::Backend(Box::new(other)),
         }
     }
 }

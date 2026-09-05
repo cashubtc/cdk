@@ -23,7 +23,8 @@ pub(crate) async fn run_status_command(
         &args.public_config,
         &args.private_config,
         "federation status",
-    )?;
+    )
+    .await?;
     let public_config: FederationConfig =
         crate::read_federation_json(&public_config_path, "public federation config")?;
     let private_config: MemberConfigPrivate =

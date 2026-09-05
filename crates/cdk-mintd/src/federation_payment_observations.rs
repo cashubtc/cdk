@@ -22,7 +22,8 @@ pub(crate) async fn run_payment_observations_command(
         &args.public_config,
         &args.private_config,
         "federation payment-observations",
-    )?;
+    )
+    .await?;
     let public_config: FederationConfig =
         crate::read_federation_json(&public_config_path, "public federation config")?;
     let private_config: MemberConfigPrivate =

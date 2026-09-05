@@ -19,7 +19,8 @@ pub(crate) async fn run_compare_digests_command(
         &args.public_config,
         &args.private_config,
         "federation compare-digests",
-    )?;
+    )
+    .await?;
     let public_config: FederationConfig =
         crate::read_federation_json(&public_config_path, "public federation config")?;
     let private_config: MemberConfigPrivate =

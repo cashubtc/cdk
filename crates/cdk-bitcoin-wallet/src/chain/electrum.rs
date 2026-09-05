@@ -1,20 +1,14 @@
-use std::sync::Arc;
-use std::time::Instant;
+use std::time::Duration;
 
 use bdk_electrum::electrum_client::{Client, ConfigBuilder, ElectrumApi};
 use bdk_electrum::BdkElectrumClient;
 use bdk_wallet::bitcoin::Transaction;
-use cdk_common::redact::url_for_logs;
-use tokio::time::{interval, Duration};
-use tokio_util::sync::CancellationToken;
 
 use crate::chain::{BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, ElectrumConfig};
 use crate::error::Error;
-use crate::CdkBdk;
+use crate::BdkWalletEngine;
 
 const ELECTRUM_TIMEOUT_SECS: u8 = 10;
-const MIN_ELECTRUM_BACKOFF: Duration = Duration::from_secs(5);
-const MAX_ELECTRUM_BACKOFF: Duration = Duration::from_secs(300);
 
 type ElectrumClient = BdkElectrumClient<Client>;
 
@@ -26,189 +20,31 @@ fn new_electrum_client(url: &str) -> Result<ElectrumClient, bdk_electrum::electr
     Ok(BdkElectrumClient::new(client))
 }
 
-fn next_electrum_backoff(backoff: &mut Duration) -> Duration {
-    let current = *backoff;
-    *backoff = (*backoff * 2).min(MAX_ELECTRUM_BACKOFF);
-    current
-}
-
-pub(crate) async fn sync_electrum(
-    cdk_bdk: &CdkBdk,
+pub(crate) async fn sync_electrum_once(
+    engine: &BdkWalletEngine,
     config: &ElectrumConfig,
-    cancel_token: CancellationToken,
 ) -> Result<(), Error> {
-    let configured_interval = Duration::from_secs(cdk_bdk.sync_interval_secs);
-    let initial_backoff = configured_interval.max(MIN_ELECTRUM_BACKOFF);
-    let mut sync_interval = interval(configured_interval);
-    let mut electrum_client: Option<Arc<ElectrumClient>> = None;
-    let mut consecutive_failures: u32 = 0;
-    let mut backoff = initial_backoff;
-    let warn_ms = cdk_bdk.sync_config.lock_hold_warn_ms;
-
-    tracing::info!(
-        url = %url_for_logs(&config.url),
-        batch_size = config.batch_size,
-        interval_secs = cdk_bdk.sync_interval_secs,
-        "Starting Electrum block sync"
-    );
-
-    loop {
-        tokio::select! {
-            _ = cancel_token.cancelled() => {
-                tracing::info!("Wallet sync cancelled via cancel token");
-                break;
-            }
-            _ = sync_interval.tick() => {
-                let client = match &electrum_client {
-                    Some(client) => Arc::clone(client),
-                    None => {
-                        let url = config.url.clone();
-                        match tokio::task::spawn_blocking(move || new_electrum_client(&url)).await {
-                        Ok(Ok(client)) => {
-                            let client = Arc::new(client);
-                            electrum_client = Some(Arc::clone(&client));
-                            client
-                        }
-                        Ok(Err(error)) => {
-                            consecutive_failures = consecutive_failures.saturating_add(1);
-                            let error = Error::Electrum(error.to_string());
-                            crate::sync::log_sync_failure(
-                                "Failed to construct Electrum client",
-                                &error,
-                                consecutive_failures,
-                            );
-                            let retry_delay = next_electrum_backoff(&mut backoff);
-                            tracing::warn!(
-                                retry_delay_secs = retry_delay.as_secs(),
-                                "Backing off Electrum sync retry"
-                            );
-                            sync_interval.reset_after(retry_delay);
-                            continue;
-                        }
-                        Err(error) => {
-                            consecutive_failures = consecutive_failures.saturating_add(1);
-                            let error = Error::Electrum(format!(
-                                "Electrum client task failed: {error}"
-                            ));
-                            crate::sync::log_sync_failure(
-                                "Electrum client task failed",
-                                &error,
-                                consecutive_failures,
-                            );
-                            let retry_delay = next_electrum_backoff(&mut backoff);
-                            sync_interval.reset_after(retry_delay);
-                            continue;
-                        }
-                    }
-                    }
-                };
-
-                let sync_request = {
-                    let wallet = cdk_bdk.wallet_with_db.lock().await;
-                    client.populate_tx_cache(
-                        wallet.wallet.tx_graph().full_txs().map(|tx_node| tx_node.tx),
-                    );
-                    wallet.wallet.start_sync_with_revealed_spks()
-                };
-
-                let sync_client = Arc::clone(&client);
-                let batch_size = config.batch_size;
-                let sync_update = match tokio::task::spawn_blocking(move || {
-                    sync_client.sync(sync_request, batch_size, false)
-                })
-                .await
-                {
-                    Ok(Ok(update)) => update,
-                    Ok(Err(error)) => {
-                        consecutive_failures = consecutive_failures.saturating_add(1);
-                        let error = Error::Electrum(error.to_string());
-                        crate::sync::log_sync_failure(
-                            "Electrum sync failed",
-                            &error,
-                            consecutive_failures,
-                        );
-                        electrum_client = None;
-                        let retry_delay = next_electrum_backoff(&mut backoff);
-                        tracing::warn!(
-                            retry_delay_secs = retry_delay.as_secs(),
-                            "Backing off Electrum sync retry"
-                        );
-                        sync_interval.reset_after(retry_delay);
-                        continue;
-                    }
-                    Err(error) => {
-                        consecutive_failures = consecutive_failures.saturating_add(1);
-                        let error = Error::Electrum(format!(
-                            "Electrum sync task failed: {error}"
-                        ));
-                        crate::sync::log_sync_failure(
-                            "Electrum sync task failed",
-                            &error,
-                            consecutive_failures,
-                        );
-                        electrum_client = None;
-                        let retry_delay = next_electrum_backoff(&mut backoff);
-                        sync_interval.reset_after(retry_delay);
-                        continue;
-                    }
-                };
-
-                let apply_result = {
-                    let apply_start = Instant::now();
-                    let mut wallet = cdk_bdk.wallet_with_db.lock().await;
-                    let result = wallet
-                        .wallet
-                        .apply_update_events(sync_update)
-                        .map_err(|error| Error::Wallet(error.to_string()))
-                        .and_then(|events| {
-                            wallet.persist()?;
-                            Ok(events)
-                        });
-                    let elapsed_ms = apply_start.elapsed().as_millis() as u64;
-                    if elapsed_ms > warn_ms {
-                        tracing::warn!(
-                            held_ms = elapsed_ms,
-                            warn_ms,
-                            "Wallet lock held longer than configured warning threshold during Electrum apply"
-                        );
-                    }
-                    result
-                };
-
-                if let Err(error) = apply_result {
-                    consecutive_failures = consecutive_failures.saturating_add(1);
-                    crate::sync::log_sync_failure(
-                        "Failed to apply Electrum update",
-                        &error,
-                        consecutive_failures,
-                    );
-                    continue;
-                }
-
-                let tip = {
-                    let wallet = cdk_bdk.wallet_with_db.lock().await;
-                    wallet.wallet.latest_checkpoint().block_id()
-                };
-                tracing::info!(
-                    "Electrum synced to block {} at height {}",
-                    tip.hash,
-                    tip.height
-                );
-
-                if consecutive_failures > 0 {
-                    tracing::info!(
-                        recovered_after = consecutive_failures,
-                        "Electrum sync recovered"
-                    );
-                    consecutive_failures = 0;
-                }
-                backoff = initial_backoff;
-
-                cdk_bdk.run_reconciliation().await;
-            }
-        }
-    }
-
+    let url = config.url.clone();
+    let client = tokio::task::spawn_blocking(move || new_electrum_client(&url))
+        .await
+        .map_err(|error| Error::Electrum(error.to_string()))?
+        .map_err(|error| Error::Electrum(error.to_string()))?;
+    let request = {
+        let wallet = engine.wallet_with_db.lock().await;
+        client.populate_tx_cache(wallet.wallet.tx_graph().full_txs().map(|node| node.tx));
+        wallet.wallet.start_sync_with_revealed_spks()
+    };
+    let batch_size = config.batch_size;
+    let update = tokio::task::spawn_blocking(move || client.sync(request, batch_size, false))
+        .await
+        .map_err(|error| Error::Electrum(error.to_string()))?
+        .map_err(|error| Error::Electrum(error.to_string()))?;
+    let mut wallet = engine.wallet_with_db.lock().await;
+    wallet
+        .wallet
+        .apply_update_events(update)
+        .map_err(|error| Error::Wallet(error.to_string()))?;
+    wallet.persist()?;
     Ok(())
 }
 

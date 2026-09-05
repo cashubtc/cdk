@@ -1,7 +1,6 @@
 #[cfg(feature = "federation-bdk")]
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -48,7 +47,8 @@ pub(crate) async fn run_dkg_status_command(
         &args.public_config,
         &args.private_config,
         "federation dkg-status",
-    )?;
+    )
+    .await?;
     let public_config: FederationConfig =
         crate::read_federation_json(&public_config_path, "public federation config")?;
     let private_config: MemberConfigPrivate =
@@ -608,12 +608,12 @@ fn print_written_config_status(paths: Option<&(PathBuf, PathBuf)>) {
 
 async fn read_database_records(cli_args: &CLIArgs) -> Result<DkgCompletionRecords> {
     let work_dir = crate::get_work_directory(cli_args).await?;
-    let settings = load_database_settings(&work_dir, cli_args)?;
+    let settings = crate::load_database_bootstrap_settings()?;
     #[cfg(feature = "sqlcipher")]
-    let password = Some(cli_args.password.clone());
+    let password = cli_args.password.clone();
     #[cfg(not(feature = "sqlcipher"))]
     let password = None;
-    let (db, _, _) = crate::setup_database(&settings, &work_dir, password)
+    let (db, _, _, _) = crate::setup_database(&settings, &work_dir, password)
         .await
         .context("failed to open mint database for federation DKG status")?;
 
@@ -661,41 +661,6 @@ pub(crate) async fn read_database_records_from_database(
             .await
             .context("failed to read persisted FROST root public configs")?,
     })
-}
-
-fn load_database_settings(work_dir: &Path, cli_args: &CLIArgs) -> Result<crate::config::Settings> {
-    let config_path = cli_args
-        .config
-        .clone()
-        .unwrap_or_else(|| work_dir.join("config.toml"));
-    let mut settings = if config_path.exists() {
-        crate::config::Settings::try_new(Some(config_path.clone()))
-            .with_context(|| format!("failed to load mint config {}", config_path.display()))?
-    } else {
-        crate::config::Settings::default()
-    };
-
-    apply_database_env_overrides(&mut settings)?;
-    Ok(settings)
-}
-
-fn apply_database_env_overrides(settings: &mut crate::config::Settings) -> Result<()> {
-    if let Ok(database) = env::var(crate::env_vars::DATABASE_ENV_VAR) {
-        settings.database.engine = database.parse().map_err(anyhow::Error::msg)?;
-    }
-
-    if settings.database.engine == crate::config::DatabaseEngine::Postgres {
-        settings.database.postgres = Some(
-            settings
-                .database
-                .postgres
-                .clone()
-                .unwrap_or_default()
-                .from_env(),
-        );
-    }
-
-    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

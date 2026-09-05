@@ -275,8 +275,8 @@ address = "127.0.0.1"
 [database]
 engine = "sqlite"
 
-[ln]
-ln_backend = "federated-bark"
+[[payment_backend]]
+backend = "federated-bark"
 
 [onchain]
 onchain_backend = "federated-bdk"
@@ -285,8 +285,13 @@ onchain_backend = "federated-bdk"
 enabled = true
 ```
 
-Generate all omitted secret values on the member with `openssl rand`. Never
-copy secret examples from this runbook.
+Generate all omitted secret values on the member with `openssl rand`. Store them
+in protected files and use `file:` references in the document. Initialize the
+member database with `cdk-mintd --work-dir "$WORK_DIR" config init --new-mint
+--file "$RUNTIME_CONFIG"`, then start with `cdk-mintd --work-dir "$WORK_DIR"`.
+Stage later changes using `config apply --file "$RUNTIME_CONFIG"` before restart.
+The runtime no longer accepts a top-level `--config`. Setup ceremony commands
+retain their separate `federation setup ... --config` argument.
 
 ## Run invitation setup and DKG
 

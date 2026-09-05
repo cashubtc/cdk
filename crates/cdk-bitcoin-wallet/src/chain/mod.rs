@@ -3,7 +3,6 @@ use core::fmt;
 use bdk_wallet::bitcoin::hashes::{sha256, Hash};
 use bdk_wallet::bitcoin::Transaction;
 use bdk_wallet::chain::BlockId;
-use cdk_common::redact::url_for_logs;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
@@ -23,6 +22,7 @@ pub const MAX_ESPLORA_PARALLEL_REQUESTS: usize = 16;
 /// Bitcoin Core RPC chain-source implementation.
 pub mod bitcoin_rpc;
 #[cfg(feature = "electrum")]
+/// Electrum chain access.
 pub mod electrum;
 #[cfg(feature = "esplora")]
 /// Esplora chain-source implementation.
@@ -76,7 +76,7 @@ pub struct EsploraConfig {
 impl fmt::Debug for EsploraConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EsploraConfig")
-            .field("url", &url_for_logs(&self.url))
+            .field("endpoint", &"<redacted>")
             .field("parallel_requests", &self.parallel_requests)
             .field("request_timeout_secs", &self.request_timeout_secs)
             .field("max_retries", &self.max_retries)
@@ -96,7 +96,7 @@ pub struct ElectrumConfig {
 impl fmt::Debug for ElectrumConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ElectrumConfig")
-            .field("url", &url_for_logs(&self.url))
+            .field("endpoint", &"<redacted>")
             .field("batch_size", &self.batch_size)
             .finish()
     }
@@ -154,6 +154,8 @@ pub enum ChainSourceKind {
     Esplora,
     /// Bitcoin Core JSON-RPC.
     BitcoinRpc,
+    /// Electrum protocol.
+    Electrum,
 }
 
 /// Source of blockchain data for the BDK wallet
@@ -240,8 +242,12 @@ impl ChainSource {
             #[cfg(feature = "electrum")]
             Self::Electrum(config) => {
                 if config.batch_size == 0 {
-                    Err(Error::InvalidConfig("Electrum batch_size must be greater than zero".to_string()))
-                } else { Ok(()) }
+                    Err(Error::InvalidConfig(
+                        "Electrum batch_size must be greater than zero".to_string(),
+                    ))
+                } else {
+                    Ok(())
+                }
             }
             #[allow(unreachable_patterns)]
             _ => unreachable!("ChainSource must have at least one feature enabled"),
@@ -254,6 +260,8 @@ impl ChainSource {
         match self {
             #[cfg(feature = "esplora")]
             Self::Esplora(_) => ChainSourceKind::Esplora,
+            #[cfg(feature = "electrum")]
+            Self::Electrum(_) => ChainSourceKind::Electrum,
             #[cfg(feature = "bitcoin-rpc")]
             Self::BitcoinRpc(_) => ChainSourceKind::BitcoinRpc,
             #[allow(unreachable_patterns)]
@@ -267,6 +275,8 @@ impl ChainSource {
         let identity = match self {
             #[cfg(feature = "esplora")]
             Self::Esplora(config) => format!("esplora:{}", config.url),
+            #[cfg(feature = "electrum")]
+            Self::Electrum(config) => format!("electrum:{}", config.url),
             #[cfg(feature = "bitcoin-rpc")]
             Self::BitcoinRpc(config) => {
                 format!("bitcoin-rpc:{}:{}", config.host, config.port)
@@ -284,6 +294,8 @@ impl ChainSource {
         match self {
             #[cfg(feature = "esplora")]
             ChainSource::Esplora(config) => esplora::sync_esplora_once(engine, config).await,
+            #[cfg(feature = "electrum")]
+            ChainSource::Electrum(config) => electrum::sync_electrum_once(engine, config).await,
             #[cfg(feature = "bitcoin-rpc")]
             ChainSource::BitcoinRpc(config) => {
                 bitcoin_rpc::sync_bitcoin_rpc_once(engine, config).await
@@ -343,13 +355,14 @@ mod tests {
             user: "rpc-user".to_string(),
             password: "rpc-password-secret".to_string(),
             wallet_rescan_from_height: Some(800_000),
+            request_timeout_secs: 15,
         };
 
         let debug = format!("{config:?}");
 
-        assert!(debug.contains("127.0.0.1"));
-        assert!(debug.contains("rpc-user"));
-        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("127.0.0.1"));
+        assert!(!debug.contains("rpc-user"));
+        assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("rpc-password-secret"));
     }
 
@@ -359,11 +372,13 @@ mod tests {
         let source = ChainSource::Esplora(EsploraConfig {
             url: "https://esplora-user:esplora-secret@example.com/api".to_string(),
             parallel_requests: 4,
+            request_timeout_secs: 15,
+            max_retries: 0,
         });
 
         let debug = format!("{source:?}");
 
-        assert!(debug.contains("https://example.com/api"));
+        assert!(!debug.contains("https://example.com/api"));
         assert!(!debug.contains("esplora-user"));
         assert!(!debug.contains("esplora-secret"));
     }
@@ -378,7 +393,7 @@ mod tests {
 
         let debug = format!("{source:?}");
 
-        assert!(debug.contains("ssl://example.com:50002"));
+        assert!(!debug.contains("ssl://example.com:50002"));
         assert!(!debug.contains("electrum-user"));
         assert!(!debug.contains("electrum-secret"));
     }
@@ -428,6 +443,7 @@ mod tests {
             user: "user".to_string(),
             password: "password".to_string(),
             request_timeout_secs: DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS,
+            wallet_rescan_from_height: Some(0),
         };
         assert!(config.validate().is_ok());
         config.request_timeout_secs = MAX_CHAIN_REQUEST_TIMEOUT_SECS + 1;

@@ -324,21 +324,21 @@ impl IrohClient {
         use cdk_http_client::ws::WsError;
 
         let target =
-            IrohTarget::parse(url).map_err(|error| WsError::Connection(error.to_string()))?;
+            IrohTarget::parse(url).map_err(|error| WsError::Terminal(error.to_string()))?;
         let stream = self
             .open_stream(target.endpoint_id)
             .await
-            .map_err(|error| WsError::Connection(error.to_string()))?;
+            .map_err(|error| WsError::Transient(error.to_string()))?;
         let ws_url = format!("ws://{}{}", target.authority, target.request_target);
         let mut request = ws_url
             .into_client_request()
-            .map_err(|_| WsError::Connection("invalid WebSocket request".to_string()))?;
+            .map_err(|_| WsError::Terminal("invalid WebSocket request".to_string()))?;
         for &(name, value) in headers {
             let Ok(name) = HeaderName::try_from(name) else {
-                return Err(WsError::Connection("invalid WebSocket header".to_string()));
+                return Err(WsError::Terminal("invalid WebSocket header".to_string()));
             };
             let Ok(value) = HeaderValue::try_from(value) else {
-                return Err(WsError::Connection("invalid WebSocket header".to_string()));
+                return Err(WsError::Terminal("invalid WebSocket header".to_string()));
             };
             request.headers_mut().insert(name, value);
         }
@@ -350,9 +350,8 @@ impl IrohClient {
                     .metrics_inner()
                     .timeouts
                     .fetch_add(1, Ordering::Relaxed);
-                WsError::Connection("Iroh WebSocket handshake timed out".to_string())
+                WsError::Transient("Iroh WebSocket handshake timed out".to_string())
             })?
-            .map_err(|_| WsError::Connection("Iroh WebSocket handshake failed".to_string()))
     }
 }
 

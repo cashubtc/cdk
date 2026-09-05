@@ -155,6 +155,7 @@ impl Transport for Async {
         Ok(())
     }
 
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, HttpError> {
         crate::dns::resolve_dns_txt(domain).await
     }

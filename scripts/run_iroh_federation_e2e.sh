@@ -78,7 +78,6 @@ member_command() {
     shift
     "$MINTD" \
         --work-dir "$(member_operator_work_dir "$member")" \
-        --config "$(member_operator_config "$member")" \
         "$@"
 }
 
@@ -107,11 +106,11 @@ trap 'exit 130' INT TERM
 write_base_config() {
     local member="$1" mode="$2" output seed tickets=() ticket peer
     output="$(member_runtime_config "$member")"
-    seed="$(openssl rand -hex 32)"
-    if [[ -f "$output" ]]; then
-        seed="$(sed -n 's/^seed = "\([0-9a-f]*\)"/\1/p' "$output")"
+    local secret_path="$(member_dir "$member")/mint-seed"
+    if [[ ! -f "$secret_path" ]]; then
+        (umask 077; openssl rand -hex 32 | tr -d '\n' >"$secret_path")
     fi
-    [[ "$seed" =~ ^[0-9a-f]{64}$ ]] || die "member $member seed is invalid"
+    seed="file:$secret_path"
 
     if [[ "$mode" != "bootstrap" ]]; then
         for peer in $(seq 1 "$MEMBERS"); do
@@ -145,10 +144,12 @@ write_base_config() {
         done
         printf ']\n\n'
         printf '[database]\nengine = "sqlite"\n\n'
-        printf '[[ln]]\nln_backend = "fakewallet"\nunit = "sat"\n'
+        printf '[[payment_backend]]\nbackend = "fakewallet"\nunit = "sat"\n'
         printf 'min_mint = 1\nmax_mint = 500000\nmin_melt = 1\nmax_melt = 500000\n\n'
+        if [[ "$mode" != "bootstrap" ]]; then
         printf '[onchain]\nonchain_backend = "federated-bdk"\n'
         printf 'min_mint = 1\nmax_mint = 500000\nmin_melt = 1\nmax_melt = 500000\n\n'
+        fi
         printf '[fake_wallet]\nsupported_units = ["sat"]\nfee_percent = 0.0\n'
         printf 'reserve_fee_min = 1\nmin_delay_time = 0\nmax_delay_time = 0\n'
         printf 'shared_incoming_payment_dir = "%s"\n' "$FED_DIR/fake-payment-network"
@@ -169,12 +170,19 @@ write_base_config() {
         fi
     } >"$output"
     chmod 600 "$output"
+    if [[ "$mode" == "bootstrap" ]]; then
+        "$MINTD" --work-dir "$(member_work_dir "$member")" config init --new-mint --file "$output"
+    else
+        "$MINTD" --work-dir "$(member_work_dir "$member")" config apply --file "$output"
+    fi
 }
 
 write_operator_config() {
     local member="$1" output seed ticket tickets=()
     output="$(member_operator_config "$member")"
-    seed="$(openssl rand -hex 32)"
+    local secret_path="$(member_dir "$member")/operator-seed"
+    (umask 077; openssl rand -hex 32 | tr -d '\n' >"$secret_path")
+    seed="file:$secret_path"
     for peer in $(seq 1 "$MEMBERS"); do
         ticket="$(member_ticket "$peer")"
         [[ -n "$ticket" ]] || die "member $peer endpoint ticket is missing"
@@ -190,12 +198,13 @@ write_operator_config() {
             printf '"%s",' "$ticket"
         done
         printf ']\n\n[database]\nengine = "sqlite"\n\n'
-        printf '[[ln]]\nln_backend = "fakewallet"\nunit = "sat"\n'
+        printf '[[payment_backend]]\nbackend = "fakewallet"\nunit = "sat"\n'
         printf 'min_mint = 1\nmax_mint = 500000\nmin_melt = 1\nmax_melt = 500000\n\n'
         printf '[fake_wallet]\nsupported_units = ["sat"]\nfee_percent = 0.0\n'
         printf 'reserve_fee_min = 1\nmin_delay_time = 0\nmax_delay_time = 0\n'
     } >"$output"
     chmod 600 "$output"
+    "$MINTD" --work-dir "$(member_operator_work_dir "$member")" config init --new-mint --file "$output"
 }
 
 start_setup_service() {
@@ -204,7 +213,6 @@ start_setup_service() {
     (
         exec "$MINTD" \
             --work-dir "$(member_work_dir "$member")" \
-            --config "$(member_runtime_config "$member")" \
             federation setup serve \
             --config "$(member_setup_config "$member")" \
             --listen "127.0.0.1:$((SETUP_HTTP_PORT_START + member - 1))" \
@@ -220,8 +228,7 @@ start_runtime_member() {
     log="$(member_dir "$member")/runtime.log"
     (
         exec "$MINTD" \
-            --work-dir "$(member_work_dir "$member")" \
-            --config "$(member_runtime_config "$member")"
+            --work-dir "$(member_work_dir "$member")"
     ) >"$log" 2>&1 &
     PIDS[$member]=$!
 }

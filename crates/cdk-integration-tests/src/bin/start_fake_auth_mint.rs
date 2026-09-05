@@ -56,6 +56,7 @@ async fn start_fake_auth_mint(
 
     // Create settings struct for fake mint with auth using shared function
     let fake_wallet_config = cdk_mintd::config::FakeWallet {
+        shared_incoming_payment_dir: None,
         supported_units: vec![cdk::nuts::CurrencyUnit::Sat, cdk::nuts::CurrencyUnit::Usd],
         fee_percent: 0.0,
         reserve_fee_min: cdk::Amount::from(1),

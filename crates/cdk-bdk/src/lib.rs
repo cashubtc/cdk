@@ -3,7 +3,7 @@
 #![doc = include_str!("../README.md")]
 
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,7 +18,7 @@ use bdk_wallet::keys::bip39::Mnemonic;
 use bdk_wallet::keys::{DerivableKey, ExtendedKey};
 use bdk_wallet::rusqlite::{Connection, OpenFlags};
 use bdk_wallet::template::Bip84;
-use bdk_wallet::{ChangeSet, KeychainKind, PersistedWallet, Update, Wallet};
+use bdk_wallet::{ChangeSet, KeychainKind, Wallet};
 use cdk_common::amount::MSAT_IN_SAT;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::KVStore;
@@ -738,7 +738,7 @@ impl MintPayment for CdkBdk {
         let quote_id = onchain_options.quote_id;
         let quote_id_string = quote_id.to_string();
 
-        let mut wallet_with_db = self.wallet_with_db.lock().await;
+        let mut wallet_with_db = self.wallet_engine.wallet_with_db.lock().await;
 
         // An address already tracked for another quote (derived by another
         // instance sharing this seed, or by a re-initialised local wallet)
@@ -1064,6 +1064,8 @@ mod tests {
         let chain_source = ChainSource::Esplora(EsploraConfig {
             url: "http://127.0.0.1:1".to_string(),
             parallel_requests: 1,
+            request_timeout_secs: 15,
+            max_retries: 0,
         });
         let fee_reserve = FeeReserve {
             min_fee_reserve: Amount::new(1, CurrencyUnit::Sat).into(),

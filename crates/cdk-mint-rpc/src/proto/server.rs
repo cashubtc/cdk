@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use cdk::mint::{Mint, MintKeySetInfo, MintQuote};
+use cdk::mint::{Mint, MintQuote};
 use cdk::nuts::nut04::MintMethodSettings;
 use cdk::nuts::nut05::MeltMethodSettings;
 use cdk::nuts::{CurrencyUnit, KeySetVersion, MintInfo, MintQuoteState, PaymentMethod};
@@ -364,31 +364,6 @@ impl MintRPCServer {
             .map_err(|err| Status::internal(err.to_string()))?;
 
         Ok(info)
-    }
-
-    /// Rotates to the next keyset for the given unit
-    ///
-    /// Shared by the legacy [`CdkMint`] service and [`KeysetService`] while
-    /// both are served.
-    async fn rotate_keyset(
-        &self,
-        unit: CurrencyUnit,
-        amounts: Vec<u64>,
-        input_fee_ppk: Option<u64>,
-        use_keyset_v2: Option<bool>,
-        final_expiry: Option<u64>,
-    ) -> Result<MintKeySetInfo, Status> {
-        self.ensure_mutation_allowed().await?;
-        self.mint
-            .rotate_keyset(
-                unit,
-                amounts,
-                input_fee_ppk.unwrap_or(0),
-                use_keyset_v2.unwrap_or(true),
-                final_expiry,
-            )
-            .await
-            .map_err(|_| Status::invalid_argument("Could not rotate keyset".to_string()))
     }
 
     /// Returns the mint's quote time-to-live settings
@@ -1347,15 +1322,35 @@ impl KeysetService for MintRPCServer {
         let unit = CurrencyUnit::from_str(&request.unit)
             .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
 
+        self.ensure_mutation_allowed().await?;
+        let amounts = request.amounts;
+        let keyset_version = match request.keyset_version.as_deref() {
+            Some("v1") | Some("00") => KeySetVersion::Version00,
+            Some("v2") | Some("01") => KeySetVersion::Version01,
+            Some("v3") | Some("02") => KeySetVersion::Version02,
+            Some(version) => {
+                return Err(Status::invalid_argument(format!(
+                    "Invalid keyset version: {version}"
+                )));
+            }
+            None => match request.use_keyset_v2 {
+                Some(true) => KeySetVersion::Version01,
+                Some(false) => KeySetVersion::Version00,
+                None => KeySetVersion::Version02,
+            },
+        };
+
         let keyset_info = self
-            .rotate_keyset(
+            .mint
+            .rotate_keyset_by_version(
                 unit,
-                request.amounts,
-                request.input_fee_ppk,
-                request.use_keyset_v2,
+                amounts,
+                request.input_fee_ppk.unwrap_or(0),
+                keyset_version,
                 request.final_expiry,
             )
-            .await?;
+            .await
+            .map_err(|_| Status::invalid_argument("Could not rotate keyset".to_string()))?;
 
         Ok(Response::new(crate::keyset::RotateNextKeysetResponse {
             id: keyset_info.id.to_string(),
@@ -1947,6 +1942,7 @@ mod tests {
         let response = KeysetService::rotate_next_keyset(
             &server,
             Request::new(crate::keyset::RotateNextKeysetRequest {
+                keyset_version: None,
                 unit: "sat".to_string(),
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: Some(1),
@@ -2516,6 +2512,7 @@ mod tests {
         let keyset_error = KeysetService::rotate_next_keyset(
             &server,
             Request::new(crate::keyset::RotateNextKeysetRequest {
+                keyset_version: None,
                 unit: "sat".to_owned(),
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: Some(1),
