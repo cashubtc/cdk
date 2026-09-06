@@ -1,7 +1,6 @@
 use std::fmt;
 use std::time::Duration;
 
-use native_tls::TlsConnector;
 use postgres_native_tls::MakeTlsConnector;
 
 mod connection_string;
@@ -80,6 +79,35 @@ impl PgConfig {
         }
     }
 
+    /// Validate connection parameters and TLS construction without opening a socket.
+    pub fn validate(&self) -> Result<(), cdk_common::database::Error> {
+        self.driver_config().map(|_| ())
+    }
+
+    /// Compare effective TLS policies, including certificate verification requirements.
+    ///
+    /// Resolves explicit modes, URL modes, and defaults using the connection policy.
+    /// Invalid settings return an error. Does not connect or construct TLS connectors.
+    pub fn has_same_tls_policy(&self, other: &Self) -> Result<bool, cdk_common::database::Error> {
+        Ok(self.tls_policy()? == other.tls_policy()?)
+    }
+
+    fn tls_mode(&self) -> &str {
+        self.tls_mode
+            .as_deref()
+            .or(self.inferred_tls_mode.as_deref())
+            .unwrap_or("disable")
+    }
+
+    fn tls_policy(&self) -> Result<crate::tls::TlsPolicy, cdk_common::database::Error> {
+        if self.invalid_connection_string {
+            return Err(super::backend::database_error(
+                ConfigError::ConnectionString,
+            ));
+        }
+        crate::tls::policy(self.tls_mode())
+    }
+
     pub(crate) fn driver_config(
         &self,
     ) -> Result<(tokio_postgres::Config, Option<MakeTlsConnector>), cdk_common::database::Error>
@@ -98,33 +126,13 @@ impl PgConfig {
         if self.invalid_connection_string {
             return Err(database_error(ConfigError::ConnectionString));
         }
-        let mode = self
-            .tls_mode
-            .as_deref()
-            .or(self.inferred_tls_mode.as_deref())
-            .unwrap_or("disable");
+        let mode = self.tls_mode();
         let mut driver: tokio_postgres::Config = self
             .url
             .parse()
             .map_err(|error| database_error(ConnectionStringError(error)))?;
-        let (ssl, invalid_certs, invalid_hostnames) = match mode {
-            "disable" => {
-                driver.ssl_mode(tokio_postgres::config::SslMode::Disable);
-                return Ok((driver, None));
-            }
-            "prefer" | "allow" => (tokio_postgres::config::SslMode::Prefer, true, true),
-            "require" => (tokio_postgres::config::SslMode::Require, true, true),
-            "verify-ca" => (tokio_postgres::config::SslMode::Require, false, true),
-            "verify-full" => (tokio_postgres::config::SslMode::Require, false, false),
-            _ => return Err(database_error(ConfigError::TlsMode)),
-        };
-        driver.ssl_mode(ssl);
-        let tls = TlsConnector::builder()
-            .danger_accept_invalid_certs(invalid_certs)
-            .danger_accept_invalid_hostnames(invalid_hostnames)
-            .build()
-            .map_err(database_error)?;
-        Ok((driver, Some(MakeTlsConnector::new(tls))))
+        let tls = crate::tls::configure(&mut driver, mode)?;
+        Ok((driver, tls))
     }
 }
 

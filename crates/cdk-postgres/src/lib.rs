@@ -4,6 +4,7 @@ mod backend;
 mod config;
 mod connection;
 mod db;
+mod tls;
 mod value;
 
 pub use self::backend::PostgresBackend;
