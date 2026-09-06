@@ -466,11 +466,12 @@ impl Mint {
                 .get_mint_quote_by_request_lookup_id(&wait_payment_response.payment_identifier)
                 .await
             {
+                let previous_state = mint_quote.state();
                 let notify = self
                     .pay_mint_quote(&mut tx, &mut mint_quote, wait_payment_response)
                     .await?;
                 if notify {
-                    Some((mint_quote.clone(), mint_quote.amount_paid()))
+                    Some((mint_quote.clone(), mint_quote.amount_paid(), previous_state))
                 } else {
                     None
                 }
@@ -485,7 +486,19 @@ impl Mint {
             tx.commit().await?;
 
             // Publish notification AFTER transaction commits
-            if let Some((quote, amount_paid)) = should_notify {
+            if let Some((quote, amount_paid, previous_state)) = should_notify {
+                tracing::info!(
+                    quote_id = %quote.id,
+                    method = %quote.payment_method,
+                    unit = %quote.unit,
+                    request_lookup_id = %quote.request_lookup_id,
+                    previous_state = %previous_state,
+                    new_state = %quote.state(),
+                    amount_paid = %amount_paid,
+                    amount_issued = %quote.amount_issued(),
+                    amount_mintable = %quote.amount_mintable(),
+                    "mint quote payment notification committed",
+                );
                 self.pubsub_manager.mint_quote_payment(&quote, amount_paid);
             }
 
@@ -924,6 +937,7 @@ impl Mint {
             // locks. The database returns the quotes in request order, while locking
             // them by ID, so reversed batch requests cannot deadlock each other.
             let locked_quotes = tx.get_mint_quotes_by_ids(&quote_ids).await?;
+            let mut issuance_events = Vec::with_capacity(quote_ids.len());
 
             // For batch minting, outputs are shared across all quotes and should be persisted once.
             if input.is_batch() {
@@ -983,6 +997,7 @@ impl Mint {
 
                 mint_quote.add_issuance(amount_issued)?;
                 tx.update_mint_quote(&mut mint_quote).await?;
+                issuance_events.push(mint_quote.clone());
 
                 // Mint operations have no input fees
                 // Only persist operation for non-batch mints (batch operations are persisted above)
@@ -994,6 +1009,20 @@ impl Mint {
             }
 
             tx.commit().await?;
+
+            for mint_quote in &issuance_events {
+                tracing::info!(
+                    quote_id = %mint_quote.id,
+                    method = %mint_quote.payment_method,
+                    unit = %mint_quote.unit,
+                    request_lookup_id = %mint_quote.request_lookup_id,
+                    new_state = %mint_quote.state(),
+                    amount_paid = %mint_quote.amount_paid(),
+                    amount_issued = %mint_quote.amount_issued(),
+                    amount_mintable = %mint_quote.amount_mintable(),
+                    "mint quote issuance committed",
+                );
+            }
 
             let localstore = Arc::clone(&self.localstore);
             let pubsub_manager = Arc::clone(&self.pubsub_manager);
