@@ -80,6 +80,8 @@ impl fmt::Debug for Prepared {
 /// The received amount can be retrieved from this state.
 #[derive(Debug)]
 pub struct Finalized {
+    /// Unique operation identifier recorded on the receive transaction.
+    pub operation_id: Uuid,
     /// Total amount received (after fees)
     pub amount: Amount,
 }

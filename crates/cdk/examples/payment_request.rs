@@ -1,294 +1,108 @@
-//! # Payment Request Example (NUT-18)
+//! Create and pay NUT-18 payment requests with the application wallet API.
 //!
-//! This example demonstrates how to create and receive payments using NUT-18
-//! payment requests with the WalletRepository. It shows both HTTP and Nostr
-//! transport options.
-//!
-//! ## Payment Request Flow
-//!
-//! 1. Receiver creates a payment request with desired parameters
-//! 2. Receiver shares the encoded payment request string with the payer
-//! 3. Payer decodes the request and sends tokens via the specified transport
-//! 4. Receiver waits for and receives the payment
-//!
-//! ## Transport Options
-//!
-//! - **Nostr**: Privacy-preserving delivery via Nostr relays (gift-wrapped events)
-//! - **HTTP**: Direct delivery to a specified callback URL
-//! - **None**: Out-of-band delivery (receiver must receive tokens manually)
-//!
-//! ## Usage
+//! Run with:
 //!
 //! ```bash
 //! cargo run --example payment_request --features="wallet nostr"
 //! ```
 
-#![allow(clippy::use_debug)]
-
 use std::sync::Arc;
 use std::time::Duration;
 
-use cdk::amount::SplitTarget;
-use cdk::nuts::nut00::KnownMethod;
-use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::payment_request::CreateRequestParams;
-use cdk::wallet::WalletRepositoryBuilder;
+use cdk::nuts::{CurrencyUnit, PaymentRequest, SecretKey};
+use cdk::wallet::mint::MintRequest;
+use cdk::wallet::payment_request::{
+    CreatePaymentRequest, PaymentRequestLock, PaymentRequestTransport, RequestPayment,
+};
+use cdk::wallet::{WalletIdentity, WalletManagerBuilder};
+use cdk::{Amount, Error};
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    println!("NUT-18 Payment Request Example");
-    println!("===============================\n");
-
-    // Generate a random seed for the wallet
-    let seed: [u8; 64] = random();
-
-    // Mint URL and currency unit
-    let mint_url = "https://testnut.cashudevkit.org";
-    let unit = CurrencyUnit::Sat;
-    let initial_amount = cdk::Amount::from(100);
-
-    // Initialize the memory store
-    let localstore = Arc::new(memory::empty().await?);
-
-    // Create a new WalletRepository
-    let wallet = WalletRepositoryBuilder::new()
-        .localstore(localstore)
-        .seed(seed)
+    let manager = WalletManagerBuilder::new()
+        .with_store(Arc::new(memory::empty().await?))
+        .with_seed(random::<[u8; 64]>())
         .build()
         .await?;
-
-    // Add the mint to our wallet
-    wallet.add_wallet(mint_url.parse()?).await?;
-
-    println!("Using mint: {}", mint_url);
-
-    // ============================================================================
-    // Step 1: Create a payment request (as the receiver)
-    // ============================================================================
-    println!("\nStep 1: Creating payment request...");
-
-    // We need to get the wallet for the specific mint to create a request
-    let mint_wallet = wallet
-        .create_wallet(mint_url.parse()?, unit.clone(), None)
-        .await?;
-    let mint_quote = mint_wallet
-        .mint_quote(
-            PaymentMethod::Known(KnownMethod::Bolt11),
-            Some(initial_amount),
-            None,
-            None,
-        )
+    let wallet = manager
+        .open_wallet(WalletIdentity::new(
+            "https://testnut.cashudevkit.org".parse()?,
+            CurrencyUnit::Sat,
+        ))
         .await?;
 
+    let mint = wallet
+        .request_mint(MintRequest::bolt11(Amount::from(100)))
+        .await?;
     println!(
-        "Pay this invoice to fund the wallet:\n{}",
-        mint_quote.request
+        "Fund the example with: {}",
+        mint.initial_state().payment_request
     );
-    println!("\nQuote ID: {}", mint_quote.id);
+    mint.wait(Duration::from_secs(300)).await?;
 
-    // Wait for payment and mint tokens
-    println!("\nWaiting for payment...");
-    let _proofs = mint_wallet
-        .wait_and_mint_quote(
-            mint_quote,
-            SplitTarget::default(),
-            None,
-            Duration::from_secs(300),
-        )
-        .await?;
-
-    let balances = wallet.total_balance().await?;
-    let balance = balances
-        .get(&CurrencyUnit::Sat)
-        .copied()
-        .unwrap_or(cdk::Amount::ZERO);
-    println!("Wallet funded with {} sats\n", balance);
-
-    // ============================================================================
-    // Example 1: Create a Payment Request with Nostr Transport
-    // ============================================================================
-
-    println!("\n╔════════════════════════════════════════════════════════════════╗");
-    println!("║ Example 1: Payment Request with Nostr Transport               ║");
-    println!("╚════════════════════════════════════════════════════════════════╝\n");
-
-    println!("Creating a payment request for 10 sats via Nostr...\n");
-
-    let nostr_params = CreateRequestParams {
-        amount: Some(10),
-        unit: "sat".to_string(),
-        description: Some("Coffee payment".to_string()),
-        pubkeys: None,
-        num_sigs: 1,
-        hash: None,
-        preimage: None,
-        transport: "nostr".to_string(),
-        http_url: None,
-        nostr_relays: Some(vec![
-            "wss://relay.damus.io".to_string(),
-            "wss://nos.lol".to_string(),
-        ]),
-        mints: None,
-        mint_preferred: None,
-        supported_methods: vec![],
-    };
-
-    let (payment_request, nostr_wait_info) = wallet.create_request(nostr_params).await?;
-
-    println!("Payment Request Created!");
-    println!("------------------------");
-    println!("Encoded: {}\n", payment_request);
-
-    println!("Request Details:");
-    println!("  Amount: {:?}", payment_request.amount);
-    println!("  Unit: {:?}", payment_request.unit);
-    println!("  Description: {:?}", payment_request.description);
-    println!("  Mints: {:?}", payment_request.mints);
-    println!("  Transports: {:?}", payment_request.transports);
-
-    if let Some(ref info) = nostr_wait_info {
-        println!("\nNostr Wait Info:");
-        println!("  Relays: {:?}", info.relays);
-        println!("  Pubkey: {}", info.pubkey);
-
-        println!("\nTo receive payment, call:");
-        println!("  let amount = wallet.wait_for_nostr_payment(nostr_wait_info).await?;");
-        println!("\nThis will:");
-        println!("  1. Connect to the specified Nostr relays");
-        println!("  2. Subscribe for gift-wrapped payment events");
-        println!("  3. Receive and process the first valid payment");
-        println!("  4. Return the received amount");
-
-        // Uncomment to actually wait for a payment:
-        // println!("\nWaiting for Nostr payment...");
-        // let received = wallet.wait_for_nostr_payment(info.clone()).await?;
-        // println!("Received {} sats via Nostr!", received);
+    let mut nostr_request = CreatePaymentRequest::new(CurrencyUnit::Sat);
+    nostr_request.amount = Some(Amount::from(10));
+    nostr_request.description = Some("Coffee payment".to_owned());
+    nostr_request.transport = PaymentRequestTransport::Nostr(vec![
+        "wss://relay.damus.io".to_owned(),
+        "wss://nos.lol".to_owned(),
+    ]);
+    let created = manager.create_payment_request(nostr_request).await?;
+    println!("Nostr request: {}", created.payment_request);
+    if let Some(receiver) = created.receiver {
+        let state = receiver.state();
+        println!(
+            "Listen on {} as {}",
+            state.relays.join(", "),
+            state.public_key_hex
+        );
+        // Persist `state` if listening must survive a process restart. To wait now:
+        // let received = receiver.receive().await?;
     }
 
-    // ============================================================================
-    // Example 2: Create a Payment Request with HTTP Transport
-    // ============================================================================
+    let mut http_request = CreatePaymentRequest::new(CurrencyUnit::Sat);
+    http_request.amount = Some(Amount::from(21));
+    http_request.description = Some("Tip jar".to_owned());
+    http_request.transport =
+        PaymentRequestTransport::Http("https://example.com/cashu/callback".parse()?);
+    let created = manager.create_payment_request(http_request).await?;
+    println!("HTTP request: {}", created.payment_request);
 
-    println!("\n\n╔════════════════════════════════════════════════════════════════╗");
-    println!("║ Example 2: Payment Request with HTTP Transport                ║");
-    println!("╚════════════════════════════════════════════════════════════════╝\n");
+    let secret = SecretKey::generate();
+    let mut locked_request = CreatePaymentRequest::new(CurrencyUnit::Sat);
+    locked_request.amount = Some(Amount::from(50));
+    locked_request.lock = Some(PaymentRequestLock::P2pk {
+        public_keys: vec![secret.public_key()],
+        signatures_required: 1,
+    });
+    let created = manager.create_payment_request(locked_request).await?;
+    println!("P2PK request: {}", created.payment_request);
 
-    println!("Creating a payment request for 21 sats via HTTP...\n");
-
-    let http_params = CreateRequestParams {
-        amount: Some(21),
-        unit: "sat".to_string(),
-        description: Some("Tip jar".to_string()),
-        pubkeys: None,
-        num_sigs: 1,
-        hash: None,
-        preimage: None,
-        transport: "http".to_string(),
-        http_url: Some("https://example.com/cashu/callback".to_string()),
-        nostr_relays: None,
-        mints: None,
-        mint_preferred: None,
-        supported_methods: vec![],
-    };
-
-    let (http_request, _) = wallet.create_request(http_params).await?;
-
-    println!("Payment Request Created!");
-    println!("------------------------");
-    println!("Encoded: {}\n", http_request);
-
-    println!("Request Details:");
-    println!("  Amount: {:?}", http_request.amount);
-    println!("  Unit: {:?}", http_request.unit);
-    println!("  Description: {:?}", http_request.description);
-    println!("  Transports: {:?}", http_request.transports);
-
-    println!("\nWith HTTP transport:");
-    println!("  - Payer will POST tokens to: https://example.com/cashu/callback");
-    println!("  - Your server receives the token and calls wallet.receive()");
-
-    // ============================================================================
-    // Example 3: Create a Payment Request with P2PK Spending Conditions
-    // ============================================================================
-
-    println!("\n\n╔════════════════════════════════════════════════════════════════╗");
-    println!("║ Example 3: Payment Request with P2PK Lock                     ║");
-    println!("╚════════════════════════════════════════════════════════════════╝\n");
-
-    println!("Creating a P2PK-locked payment request...\n");
-
-    // Generate a secret key for the spending condition
-    let secret = cdk::nuts::SecretKey::generate();
-    let pubkey_hex = secret.public_key().to_string();
-
-    let p2pk_params = CreateRequestParams {
-        amount: Some(50),
-        unit: "sat".to_string(),
-        description: Some("Locked payment".to_string()),
-        pubkeys: Some(vec![pubkey_hex.clone()]),
-        num_sigs: 1,
-        hash: None,
-        preimage: None,
-        transport: "nostr".to_string(),
-        http_url: None,
-        nostr_relays: Some(vec!["wss://relay.damus.io".to_string()]),
-        mints: None,
-        mint_preferred: None,
-        supported_methods: vec![],
-    };
-
-    let (p2pk_request, _) = wallet.create_request(p2pk_params).await?;
-
-    println!("P2PK Payment Request Created!");
-    println!("-----------------------------");
-    println!("Encoded: {}\n", p2pk_request);
-
-    println!("Security:");
-    println!("  - Tokens sent to this request will be locked to pubkey:");
-    println!("    {}", pubkey_hex);
-    println!("  - Only the holder of the corresponding secret key can spend");
-
-    // ============================================================================
-    // Example 4: Paying a Payment Request
-    // ============================================================================
-
-    println!("\n\n╔════════════════════════════════════════════════════════════════╗");
-    println!("║ Example 4: Paying a Payment Request                           ║");
-    println!("╚════════════════════════════════════════════════════════════════╝\n");
-
-    println!("To pay a payment request from another wallet:\n");
-
-    println!("```rust");
-    println!("// Decode the payment request");
-    println!("let request = PaymentRequest::from_str(\"creqA...\")?;");
-    println!();
-    println!("// Prepare the request and inspect its exact fees");
-    println!("let prepared = wallet.prepare_pay_request(request, None).await?;");
-    println!("println!(\"Method fee: {{}}\", prepared.method_fee());");
-    println!("println!(\"Input fee: {{}}\", prepared.input_fee());");
-    println!("println!(\"Total debit: {{}}\", prepared.total_amount());");
-    println!();
-    println!("// Explicitly approve and deliver the payment");
-    println!("match prepared.confirm().await {{");
-    println!("    Ok(()) => {{}}");
-    println!("    Err(Error::PaymentRequestDeliveryFailed {{ operation_id, source }}) => {{");
-    println!("        eprintln!(\"Delivery failed: {{source}}\");");
-    println!("        // Do not pay again: reclaim the pending token if it is unclaimed.");
-    println!("        wallet.revoke_send(operation_id).await?;");
-    println!("    }}");
-    println!("    Err(error) => return Err(error.into()),");
-    println!("}}");
-    println!("```\n");
-
-    println!("The prepare/confirm flow will:");
-    println!("  1. Select proofs matching the requested amount and unit");
-    println!("  2. Apply any spending conditions from the request");
-    println!("  3. Expose method, input, and total fees before payment");
-    println!("  4. Deliver the token via the request's transport only after confirm");
-
-    println!("\n✓ Example complete!");
+    // A payer decodes the request, reviews the exact debit, then confirms or cancels it.
+    let encoded = created.payment_request.to_string();
+    let decoded: PaymentRequest = encoded.parse()?;
+    let plan = manager
+        .plan_request_payment(RequestPayment::new(decoded))
+        .await?;
+    println!(
+        "Pay {} with {} in fees ({} total)",
+        plan.requested_amount(),
+        plan.input_fee(),
+        plan.total_amount()
+    );
+    match plan.execute().await {
+        Ok(receipt) => println!("Delivered operation {}", receipt.operation_id),
+        Err(Error::PaymentRequestDeliveryFailed {
+            operation_id,
+            source,
+        }) => {
+            eprintln!("Token creation succeeded but delivery failed: {source}");
+            wallet.reclaim_send(operation_id.into()).await?;
+        }
+        Err(error) => return Err(error.into()),
+    }
 
     Ok(())
 }

@@ -10,64 +10,84 @@ use nostr_sdk::prelude::*;
 use nostr_sdk::{Client as NostrClient, Filter, Keys};
 use tracing::instrument;
 
-use super::wallet_repository::WalletRepository;
 use crate::error::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut27::{
     self, backup_filter_params, create_backup_event, decrypt_backup_event, MintBackup,
 };
 
-/// Options for backup operations
-#[derive(Debug, Clone, Default)]
-pub struct BackupOptions {
-    /// Client name to include in the event tags
+/// Request to publish an encrypted NUT-27 mint backup.
+#[derive(Debug, Clone)]
+pub struct MintBackupRequest {
+    /// Relay URLs that receive the backup event.
+    pub relays: Vec<String>,
+    /// Client name included in the event tags.
     pub client: Option<String>,
 }
 
-impl BackupOptions {
-    /// Create new backup options
-    pub fn new() -> Self {
-        Self::default()
+impl MintBackupRequest {
+    /// Create a request for the provided relay URLs.
+    pub fn new(relays: Vec<String>) -> Self {
+        Self {
+            relays,
+            client: None,
+        }
     }
 
-    /// Set the client name
-    pub fn client(mut self, client: impl Into<String>) -> Self {
+    /// Include a client name in the published event.
+    pub fn with_client(mut self, client: impl Into<String>) -> Self {
         self.client = Some(client.into());
         self
     }
 }
 
-/// Options for restore operations
+/// Whether restoring a mint backup changes manager configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum MintRestorePolicy {
+    /// Return the decrypted backup without registering its mints.
+    #[default]
+    Preview,
+    /// Register every mint not already known to the manager.
+    Register,
+}
+
+/// Request to fetch and decrypt a NUT-27 mint backup.
 #[derive(Debug, Clone)]
-pub struct RestoreOptions {
-    /// Timeout for waiting for relay responses
+pub struct MintRestoreRequest {
+    /// Relay URLs queried for the backup event.
+    pub relays: Vec<String>,
+    /// Whether discovered mints should be registered.
+    pub policy: MintRestorePolicy,
+    /// Timeout for waiting for relay responses.
     pub timeout: Duration,
 }
 
-impl Default for RestoreOptions {
-    fn default() -> Self {
+impl MintRestoreRequest {
+    /// Create a preview request with a ten-second timeout.
+    pub fn new(relays: Vec<String>) -> Self {
         Self {
+            relays,
+            policy: MintRestorePolicy::Preview,
             timeout: Duration::from_secs(10),
         }
     }
-}
 
-impl RestoreOptions {
-    /// Create new restore options
-    pub fn new() -> Self {
-        Self::default()
+    /// Select whether the restored mints are registered.
+    pub fn with_policy(mut self, policy: MintRestorePolicy) -> Self {
+        self.policy = policy;
+        self
     }
 
-    /// Set the timeout for relay responses
-    pub fn timeout(mut self, timeout: Duration) -> Self {
+    /// Change the relay response timeout.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 }
 
-/// Result of a backup operation
+/// Receipt for a published mint backup.
 #[derive(Debug, Clone)]
-pub struct BackupResult {
+pub struct MintBackupReceipt {
     /// The event ID of the published backup
     pub event_id: EventId,
     /// The public key used for the backup
@@ -76,9 +96,9 @@ pub struct BackupResult {
     pub mint_count: usize,
 }
 
-/// Result of a restore operation
+/// Receipt for a fetched and decrypted mint backup.
 #[derive(Debug, Clone)]
-pub struct RestoreResult {
+pub struct MintRestoreReceipt {
     /// The restored mint backup data
     pub backup: MintBackup,
     /// Number of mints found in the backup
@@ -87,46 +107,24 @@ pub struct RestoreResult {
     pub mints_added: usize,
 }
 
-impl WalletRepository {
+impl super::advanced::AdvancedWalletManager<'_> {
     /// Derive the Nostr keys used for mint backup from the wallet seed
     ///
     /// These keys can be used to identify and decrypt backup events.
     pub fn backup_keys(&self) -> Result<Keys, Error> {
-        nut27::derive_nostr_keys(self.seed()).map_err(|e| Error::Custom(e.to_string()))
+        nut27::derive_nostr_keys(self.core_manager().seed())
+            .map_err(|e| Error::Custom(e.to_string()))
     }
 
-    /// Backup the current mint list to Nostr relays
-    ///
-    /// This creates an encrypted NIP-78 addressable event containing all mint URLs
-    /// and publishes it to the specified relays.
-    ///
-    /// # Arguments
-    ///
-    /// * `relays` - List of relay URLs to publish the backup to
-    /// * `options` - Optional backup configuration
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let relays = vec!["wss://relay.damus.io", "wss://nos.lol"];
-    /// let result = wallet.backup_mints(
-    ///     relays,
-    ///     BackupOptions::new().client("my-wallet"),
-    /// ).await?;
-    /// println!("Backup published with event ID: {}", result.event_id);
-    /// ```
-    #[instrument(skip(self, relays))]
-    pub async fn backup_mints<S>(
+    /// Publish the current mint list as an encrypted NIP-78 event.
+    #[instrument(skip(self, request))]
+    pub async fn backup_mints(
         &self,
-        relays: Vec<S>,
-        options: BackupOptions,
-    ) -> Result<BackupResult, Error>
-    where
-        S: AsRef<str>,
-    {
+        request: MintBackupRequest,
+    ) -> Result<MintBackupReceipt, Error> {
         let keys = self.backup_keys()?;
 
-        let wallets = self.get_wallets().await;
+        let wallets = self.core_manager().get_wallets().await;
         let mint_urls: Vec<MintUrl> = wallets
             .iter()
             .map(|w| w.mint_url.clone())
@@ -136,16 +134,16 @@ impl WalletRepository {
 
         let backup = MintBackup::new(mint_urls.clone());
 
-        let event = create_backup_event(&keys, &backup, options.client.as_deref())
+        let event = create_backup_event(&keys, &backup, request.client.as_deref())
             .map_err(|e| Error::Custom(format!("Failed to create backup event: {e}")))?;
 
         let event_id = event.id;
 
         let client = NostrClient::new(keys.clone());
 
-        for relay in relays.iter() {
+        for relay in &request.relays {
             client
-                .add_write_relay(relay.as_ref())
+                .add_write_relay(relay)
                 .await
                 .map_err(|e| Error::Custom(format!("Failed to add relay: {e}")))?;
         }
@@ -159,45 +157,19 @@ impl WalletRepository {
 
         client.disconnect().await;
 
-        Ok(BackupResult {
+        Ok(MintBackupReceipt {
             event_id,
             public_key: keys.public_key(),
             mint_count: mint_urls.len(),
         })
     }
 
-    /// Restore mint list from Nostr relays
-    ///
-    /// This fetches the most recent backup event from the specified relays,
-    /// decrypts it, and optionally adds the discovered mints to the wallet.
-    ///
-    /// # Arguments
-    ///
-    /// * `relays` - List of relay URLs to fetch the backup from
-    /// * `add_mints` - If true, automatically add discovered mints to the wallet
-    /// * `options` - Optional restore configuration
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let relays = vec!["wss://relay.damus.io", "wss://nos.lol"];
-    /// let result = wallet.restore_mints(
-    ///     relays,
-    ///     true, // automatically add mints
-    ///     RestoreOptions::default(),
-    /// ).await?;
-    /// println!("Restored {} mints, {} newly added", result.mint_count, result.mints_added);
-    /// ```
-    #[instrument(skip(self, relays))]
-    pub async fn restore_mints<S>(
+    /// Fetch and decrypt the newest mint backup, optionally registering its mints.
+    #[instrument(skip(self, request))]
+    pub async fn restore_mints(
         &self,
-        relays: Vec<S>,
-        add_mints: bool,
-        options: RestoreOptions,
-    ) -> Result<RestoreResult, Error>
-    where
-        S: AsRef<str>,
-    {
+        request: MintRestoreRequest,
+    ) -> Result<MintRestoreReceipt, Error> {
         let keys = self.backup_keys()?;
 
         let (kind, pubkey, d_tag) = backup_filter_params(&keys);
@@ -210,9 +182,9 @@ impl WalletRepository {
 
         let client = NostrClient::new(keys.clone());
 
-        for relay in relays.iter() {
+        for relay in &request.relays {
             client
-                .add_read_relay(relay.as_ref())
+                .add_read_relay(relay)
                 .await
                 .map_err(|e| Error::Custom(format!("Failed to add relay: {e}")))?;
         }
@@ -220,7 +192,7 @@ impl WalletRepository {
         client.connect().await;
 
         let events = client
-            .fetch_events(filter, options.timeout)
+            .fetch_events(filter, request.timeout)
             .await
             .map_err(|e| Error::Custom(format!("Failed to fetch backup events: {e}")))?;
 
@@ -238,44 +210,27 @@ impl WalletRepository {
         let mint_count = backup.mints.len();
         let mut mints_added = 0;
 
-        if add_mints {
+        if request.policy == MintRestorePolicy::Register {
             for mint_url in &backup.mints {
-                if !self.has_mint(mint_url).await {
+                if !self.core_manager().has_mint(mint_url).await {
                     // Ignore errors for individual mints to continue restoring others
                     // add_wallet fetches mint info and creates wallets for all supported units
-                    if self.add_wallet(mint_url.clone()).await.is_ok() {
+                    if self
+                        .core_manager()
+                        .add_wallet(mint_url.clone())
+                        .await
+                        .is_ok()
+                    {
                         mints_added += 1;
                     }
                 }
             }
         }
 
-        Ok(RestoreResult {
+        Ok(MintRestoreReceipt {
             backup,
             mint_count,
             mints_added,
         })
-    }
-
-    /// Fetch the backup without adding mints to the wallet
-    ///
-    /// This is useful for previewing what mints are in the backup before
-    /// deciding to add them.
-    ///
-    /// # Arguments
-    ///
-    /// * `relays` - List of relay URLs to fetch the backup from
-    /// * `options` - Optional restore configuration
-    #[instrument(skip(self, relays))]
-    pub async fn fetch_backup<S>(
-        &self,
-        relays: Vec<S>,
-        options: RestoreOptions,
-    ) -> Result<MintBackup, Error>
-    where
-        S: AsRef<str>,
-    {
-        let result = self.restore_mints(relays, false, options).await?;
-        Ok(result.backup)
     }
 }

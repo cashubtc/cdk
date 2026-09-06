@@ -4,11 +4,12 @@
 //! Nostr or HTTP transports when available. If no transport is present in the request, an error
 //! is returned so callers can handle alternative delivery mechanisms explicitly.
 
+mod api;
+
 use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::Result;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use cdk_common::{
     Amount, HttpClient, PaymentRequest, PaymentRequestPayload, SupportedMethod, TransportType,
@@ -21,6 +22,13 @@ use nostr_sdk::prelude::*;
 use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys, ToBech32};
 use tracing::instrument;
 
+#[cfg(feature = "nostr")]
+pub use self::api::PaymentRequestReceiverState;
+pub use self::api::{
+    CreatePaymentRequest, CreatedPaymentRequest, PaymentRequestLock, PaymentRequestMintPolicy,
+    PaymentRequestReceiver, PaymentRequestTransport, RequestPayment, RequestPaymentLimits,
+    RequestPaymentPlan, RequestPaymentReceipt,
+};
 use crate::error::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut05::MeltMethodSettings;
@@ -29,14 +37,14 @@ use crate::nuts::nut11::SigFlag;
 use crate::nuts::nut18::Nut10SecretRequest;
 use crate::nuts::{CurrencyUnit, Nut10Secret, PaymentMethod, Transport};
 #[cfg(feature = "nostr")]
-use crate::wallet::ReceiveOptions;
-use crate::wallet::{SendOptions, WalletRepository};
+use crate::wallet::receive::ReceiveRequest;
+use crate::wallet::{SendOptions, WalletManager};
 use crate::Wallet;
 
 /// Optional limits that callers can check before confirming a prepared NUT-18
 /// payment request.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PayRequestOptions {
+pub(crate) struct PayRequestOptions {
     /// Maximum receiver-selected method fee (`mf`) that may be paid.
     ///
     /// `None` accepts any method fee.
@@ -50,7 +58,8 @@ pub struct PayRequestOptions {
 /// Call [`Self::confirm`] to send and deliver the payment, or [`Self::cancel`]
 /// to release the proofs reserved during preparation.
 #[must_use = "must be confirmed or canceled to release reserved proofs"]
-pub struct PreparedPaymentRequest {
+#[derive(Clone)]
+pub(crate) struct PreparedPaymentRequest {
     wallet: Wallet,
     payment_request: PaymentRequest,
     transport: Transport,
@@ -59,13 +68,8 @@ pub struct PreparedPaymentRequest {
     method: Option<String>,
     method_fee: Amount,
     payment_amount: Amount,
-    swap_fee: Amount,
-    send_fee: Amount,
     input_fee: Amount,
     total_amount: Amount,
-    send_options: SendOptions,
-    proofs_to_swap: crate::nuts::Proofs,
-    proofs_to_send: crate::nuts::Proofs,
 }
 
 impl std::fmt::Debug for PreparedPaymentRequest {
@@ -76,8 +80,6 @@ impl std::fmt::Debug for PreparedPaymentRequest {
             .field("requested_amount", &self.requested_amount)
             .field("method", &self.method)
             .field("method_fee", &self.method_fee)
-            .field("swap_fee", &self.swap_fee)
-            .field("send_fee", &self.send_fee)
             .field("input_fee", &self.input_fee)
             .field("total_amount", &self.total_amount)
             .finish_non_exhaustive()
@@ -85,6 +87,10 @@ impl std::fmt::Debug for PreparedPaymentRequest {
 }
 
 impl PreparedPaymentRequest {
+    pub(crate) const fn wallet(&self) -> &Wallet {
+        &self.wallet
+    }
+
     /// Operation ID of the reserved send.
     pub fn operation_id(&self) -> uuid::Uuid {
         self.operation_id
@@ -120,16 +126,6 @@ impl PreparedPaymentRequest {
         self.payment_amount
     }
 
-    /// Mint input fee paid while swapping proofs into the required denominations.
-    pub fn swap_fee(&self) -> Amount {
-        self.swap_fee
-    }
-
-    /// Mint input fee added so the receiver obtains the full payment amount.
-    pub fn send_fee(&self) -> Amount {
-        self.send_fee
-    }
-
     /// Total mint input fee for the payment.
     pub fn input_fee(&self) -> Amount {
         self.input_fee
@@ -150,24 +146,12 @@ impl PreparedPaymentRequest {
     /// If token creation succeeds but transport delivery fails, this returns
     /// [`Error::PaymentRequestDeliveryFailed`]. The token remains a pending
     /// send: do not prepare the payment again. Use the error's operation ID
-    /// with [`Wallet::revoke_send`] to reclaim the token if it has not already
+    /// with [`Wallet::reclaim_send`] to reclaim the token if it has not already
     /// been claimed by the receiver.
     #[instrument(skip_all)]
-    pub async fn confirm(self) -> Result<(), Error> {
+    pub(crate) async fn confirm(&self) -> Result<(), Error> {
         let operation_id = self.operation_id;
-        let token = self
-            .wallet
-            .confirm_send(
-                operation_id,
-                self.payment_amount,
-                self.send_options,
-                self.proofs_to_swap,
-                self.proofs_to_send,
-                self.swap_fee,
-                self.send_fee,
-                None,
-            )
-            .await?;
+        let token = self.wallet.confirm_send(operation_id, None).await?;
 
         let delivery_result = self
             .wallet
@@ -179,10 +163,8 @@ impl PreparedPaymentRequest {
 
     /// Cancel the prepared payment and release its reserved proofs.
     #[instrument(skip_all)]
-    pub async fn cancel(self) -> Result<(), Error> {
-        self.wallet
-            .cancel_send(self.operation_id, self.proofs_to_swap, self.proofs_to_send)
-            .await
+    pub(crate) async fn cancel(&self) -> Result<(), Error> {
+        self.wallet.cancel_send(self.operation_id).await
     }
 }
 
@@ -246,7 +228,7 @@ impl Wallet {
     /// [`PreparedPaymentRequest::confirm`] or released with
     /// [`PreparedPaymentRequest::cancel`].
     #[instrument(skip_all)]
-    pub async fn prepare_pay_request(
+    pub(crate) async fn prepare_pay_request(
         &self,
         payment_request: PaymentRequest,
         custom_amount: Option<Amount>,
@@ -345,13 +327,8 @@ impl Wallet {
             method: selected_method.method,
             method_fee,
             payment_amount,
-            swap_fee: prepared_send.swap_fee(),
-            send_fee: prepared_send.send_fee(),
             input_fee,
             total_amount,
-            send_options: prepared_send.options().clone(),
-            proofs_to_swap: prepared_send.proofs_to_swap().clone(),
-            proofs_to_send: prepared_send.proofs_to_send().clone(),
         })
     }
 
@@ -466,7 +443,7 @@ mod tests {
 
     use super::*;
 
-    async fn test_repository() -> WalletRepository {
+    async fn test_manager() -> WalletManager {
         use cdk_common::database::{Error as DatabaseError, WalletDatabase};
 
         let localstore: Arc<dyn WalletDatabase<DatabaseError> + Send + Sync> = Arc::new(
@@ -475,12 +452,12 @@ mod tests {
                 .expect("in-memory database"),
         );
 
-        crate::wallet::WalletRepositoryBuilder::new()
-            .localstore(localstore)
-            .seed([0u8; 64])
+        crate::wallet::WalletManagerBuilder::new()
+            .with_store(localstore)
+            .with_seed([0u8; 64])
             .build()
             .await
-            .expect("repository")
+            .expect("manager")
     }
 
     /// A request advertising the same key twice would build a lock the payer
@@ -494,7 +471,7 @@ mod tests {
             ..Default::default()
         };
 
-        let conditions = test_repository()
+        let conditions = test_manager()
             .await
             .get_pr_spending_conditions(&params)
             .expect("params should parse")
@@ -562,7 +539,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (request, wait_info) = test_repository()
+        let (request, wait_info) = test_manager()
             .await
             .create_request(params)
             .await
@@ -584,7 +561,7 @@ mod tests {
             ..Default::default()
         };
 
-        let request = test_repository()
+        let request = test_manager()
             .await
             .create_request(params)
             .await
@@ -1200,7 +1177,7 @@ fn payment_request_method_fee_from_melt_methods(
 /// NUT-18 PaymentRequest. When `transport` is set to `nostr`, the function
 /// also returns a `NostrWaitInfo` that can be passed to `wait_for_nostr_payment`.
 #[derive(Clone)]
-pub struct CreateRequestParams {
+pub(crate) struct CreateRequestParams {
     /// Optional amount to request (in the smallest unit for the chosen currency unit)
     pub amount: Option<u64>,
     /// Currency unit string (e.g., "sat")
@@ -1276,7 +1253,7 @@ impl Default for CreateRequestParams {
 /// payment on the specified relays.
 #[cfg(feature = "nostr")]
 #[derive(Debug, Clone)]
-pub struct NostrWaitInfo {
+pub(crate) struct NostrWaitInfo {
     /// Ephemeral keys used to connect to relays and unwrap the gift-wrapped event
     pub keys: Keys,
     /// Nostr relays to read from while waiting for the payment
@@ -1289,7 +1266,7 @@ pub struct NostrWaitInfo {
     pub mint_preferred: Option<bool>,
 }
 
-impl WalletRepository {
+impl WalletManager {
     /// Select a wallet and prepare a NUT-18 payment request for review.
     ///
     /// This method selects an appropriate mint:
@@ -1317,7 +1294,7 @@ impl WalletRepository {
     /// [`PreparedPaymentRequest::confirm`] or released with
     /// [`PreparedPaymentRequest::cancel`].
     #[instrument(skip_all)]
-    pub async fn prepare_pay_request(
+    pub(crate) async fn prepare_pay_request(
         &self,
         payment_request: PaymentRequest,
         mint_url: Option<MintUrl>,
@@ -1352,7 +1329,7 @@ impl WalletRepository {
             self.get_wallet(specified_mint, &unit).await?
         } else {
             // No mint specified - find the best matching mint with highest balance
-            let balances = self.get_balances().await?;
+            let balances = self.available_balances().await?;
             let mut best_preferred_wallet: Option<Arc<Wallet>> = None;
             let mut best_preferred_balance = Amount::ZERO;
             let mut best_fallback_wallet: Option<Arc<Wallet>> = None;
@@ -1562,7 +1539,7 @@ impl WalletRepository {
     /// - Sets `single_use = true` to discourage replays.
     /// - Ephemeral Nostr keys are intentional; keep `NostrWaitInfo` only as long as needed for reception.
     #[cfg(feature = "nostr")]
-    pub async fn create_request(
+    pub(crate) async fn create_request(
         &self,
         params: CreateRequestParams,
     ) -> Result<(PaymentRequest, Option<NostrWaitInfo>), Error> {
@@ -1670,7 +1647,7 @@ impl WalletRepository {
     ///
     /// Returns the constructed PaymentRequest and sets `single_use = true` to discourage replay.
     #[cfg(not(feature = "nostr"))]
-    pub async fn create_request(
+    pub(crate) async fn create_request(
         &self,
         params: CreateRequestParams,
     ) -> Result<PaymentRequest, Error> {
@@ -1731,7 +1708,10 @@ impl WalletRepository {
 
     /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
     #[cfg(all(feature = "nostr", not(target_arch = "wasm32")))]
-    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
+    pub(crate) async fn wait_for_nostr_payment(
+        &self,
+        info: NostrWaitInfo,
+    ) -> Result<Amount, Error> {
         use futures::StreamExt;
 
         use crate::wallet::streams::nostr::NostrPaymentEventStream;
@@ -1777,9 +1757,7 @@ impl WalletRepository {
 
                     // Receive using the individual wallet
                     let token_str = token.to_string();
-                    let received = wallet
-                        .receive(&token_str, ReceiveOptions::default())
-                        .await?;
+                    let received = wallet.receive(ReceiveRequest::new(token_str)).await?.amount;
 
                     // Stop after first successful receipt
                     cancel.cancel();
@@ -1792,15 +1770,19 @@ impl WalletRepository {
             }
         }
 
-        // If stream ended without receiving a payment, return zero.
-        Ok(Amount::ZERO)
+        Err(crate::Error::SubscriptionError(
+            "Nostr payment-request receiver closed before a payment arrived".to_string(),
+        ))
     }
 
     /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
     ///
     /// wasm32 fallback: Streams are not available; we await the first matching notification and process it.
     #[cfg(all(feature = "nostr", target_arch = "wasm32"))]
-    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
+    pub(crate) async fn wait_for_nostr_payment(
+        &self,
+        info: NostrWaitInfo,
+    ) -> Result<Amount, Error> {
         use nostr_sdk::prelude::*;
 
         let NostrWaitInfo {
@@ -1864,9 +1846,8 @@ impl WalletRepository {
 
                                 // Receive using the individual wallet
                                 let token_str = token.to_string();
-                                let received = wallet
-                                    .receive(&token_str, ReceiveOptions::default())
-                                    .await?;
+                                let received =
+                                    wallet.receive(ReceiveRequest::new(token_str)).await?.amount;
 
                                 return Ok(received);
                             }
@@ -1884,6 +1865,8 @@ impl WalletRepository {
             }
         }
 
-        Ok(Amount::ZERO)
+        Err(crate::Error::SubscriptionError(
+            "Nostr payment-request receiver closed before a payment arrived".to_string(),
+        ))
     }
 }

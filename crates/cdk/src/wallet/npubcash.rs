@@ -8,13 +8,13 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::Network;
+use cdk_common::wallet::{MintQuote, TransactionDirection, TransactionStatus};
 use cdk_common::{database, SECP256K1};
 use cdk_nostr::npubcash::{JwtAuthProvider, NpubCashClient, Quote};
 use tracing::instrument;
 
 use crate::error::Error;
 use crate::nuts::SecretKey;
-use crate::wallet::types::{MintQuote, TransactionDirection, TransactionStatus};
 use crate::wallet::{MintQuoteState, Wallet};
 use crate::Amount;
 
@@ -116,7 +116,7 @@ impl Wallet {
     /// quote locking cannot be enabled and confirmed — for example when the
     /// configured mint does not support NUT-20.
     #[instrument(skip(self))]
-    pub async fn enable_npubcash(&self, npubcash_url: String) -> Result<(), Error> {
+    pub(crate) async fn enable_npubcash(&self, npubcash_url: String) -> Result<(), Error> {
         let keys = self.derive_npubcash_keys()?;
         let auth_provider = Arc::new(JwtAuthProvider::new(npubcash_url.clone(), keys));
         let client = Arc::new(NpubCashClient::new(npubcash_url.clone(), auth_provider));
@@ -215,7 +215,7 @@ impl Wallet {
     /// # Errors
     ///
     /// Returns an error if the key derivation fails
-    pub fn get_npubcash_keys(&self) -> Result<nostr_sdk::Keys, Error> {
+    pub(crate) fn get_npubcash_keys(&self) -> Result<nostr_sdk::Keys, Error> {
         self.derive_npubcash_keys()
     }
 
@@ -266,7 +266,7 @@ impl Wallet {
     ///
     /// Returns an error if NpubCash is not enabled or the sync fails
     #[instrument(skip(self))]
-    pub async fn sync_npubcash_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+    pub(crate) async fn sync_npubcash_quotes(&self) -> Result<Vec<MintQuote>, Error> {
         let client = self.get_npubcash_client().await?;
 
         // Get the last fetch timestamp from KV store
@@ -295,7 +295,10 @@ impl Wallet {
     ///
     /// Returns an error if NpubCash is not enabled or the sync fails
     #[instrument(skip(self))]
-    pub async fn sync_npubcash_quotes_since(&self, since: u64) -> Result<Vec<MintQuote>, Error> {
+    pub(crate) async fn sync_npubcash_quotes_since(
+        &self,
+        since: u64,
+    ) -> Result<Vec<MintQuote>, Error> {
         let client = self.get_npubcash_client().await?;
         let quotes = client
             .get_quotes(Some(since))
@@ -325,7 +328,7 @@ impl Wallet {
     ///
     /// Returns an error if NpubCash is not enabled or the sync fails
     #[instrument(skip(self))]
-    pub async fn sync_missing_npubcash_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+    pub(crate) async fn sync_missing_npubcash_quotes(&self) -> Result<Vec<MintQuote>, Error> {
         self.sync_missing_npubcash_quotes_with_ids()
             .await
             .map(|(quotes, _)| quotes)
@@ -418,7 +421,7 @@ impl Wallet {
     ///
     /// Returns an error if NpubCash is not enabled or the sync fails
     #[instrument(skip(self))]
-    pub async fn claim_npubcash_quotes(&self) -> Result<Amount, Error> {
+    pub(crate) async fn claim_npubcash_quotes(&self) -> Result<Amount, Error> {
         let npubcash_quote_ids = self.collect_npubcash_quote_ids().await?;
         let unissued_quotes = self.get_unissued_mint_quotes().await?;
         let npubcash_quotes = unissued_quotes
@@ -462,7 +465,7 @@ impl Wallet {
     /// * `split_target` - How to split the minted proofs
     /// * `spending_conditions` - Optional spending conditions for the minted proofs
     /// * `poll_interval` - How often to check for new quotes
-    pub fn npubcash_proof_stream(
+    pub(crate) fn npubcash_proof_stream(
         &self,
         split_target: cdk_common::amount::SplitTarget,
         spending_conditions: Option<crate::nuts::SpendingConditions>,
@@ -486,7 +489,7 @@ impl Wallet {
     ///
     /// Returns an error if NpubCash is not enabled or the update fails
     #[instrument(skip(self, mint_url))]
-    pub async fn set_npubcash_mint_url(
+    pub(crate) async fn set_npubcash_mint_url(
         &self,
         mint_url: impl Into<String>,
     ) -> Result<cdk_nostr::npubcash::UserResponse, Error> {
@@ -505,7 +508,9 @@ impl Wallet {
     ///
     /// Returns an error if NpubCash is not enabled or the request fails
     #[instrument(skip(self))]
-    pub async fn get_npubcash_user_info(&self) -> Result<cdk_nostr::npubcash::UserResponse, Error> {
+    pub(crate) async fn get_npubcash_user_info(
+        &self,
+    ) -> Result<cdk_nostr::npubcash::UserResponse, Error> {
         let client = self.get_npubcash_client().await?;
         client
             .get_user_info()
@@ -528,7 +533,7 @@ impl Wallet {
     ///
     /// Returns an error if the conversion fails or the database operation fails
     #[instrument(skip(self))]
-    pub async fn add_npubcash_mint_quote(
+    pub(crate) async fn add_npubcash_mint_quote(
         &self,
         npubcash_quote: cdk_nostr::npubcash::Quote,
     ) -> Result<Option<MintQuote>, Error> {
@@ -709,12 +714,12 @@ impl Wallet {
     }
 
     /// Get reference to the NpubCash client if enabled
-    pub async fn npubcash_client(&self) -> Option<Arc<NpubCashClient>> {
+    pub(crate) async fn npubcash_client(&self) -> Option<Arc<NpubCashClient>> {
         self.npubcash_client.read().await.clone()
     }
 
     /// Check if NpubCash is enabled for this wallet
-    pub async fn is_npubcash_enabled(&self) -> bool {
+    pub(crate) async fn is_npubcash_enabled(&self) -> bool {
         self.npubcash_client.read().await.is_some()
     }
 
@@ -758,6 +763,83 @@ impl Wallet {
     }
 }
 
+impl super::advanced::AdvancedWallet<'_> {
+    /// Enable npub.cash and require newly created quotes to be locked to this wallet.
+    pub async fn enable_npubcash(&self, service_url: String) -> Result<(), Error> {
+        self.core_wallet().enable_npubcash(service_url).await
+    }
+
+    /// Return the Nostr keys used for npub.cash authentication.
+    pub fn npubcash_keys(&self) -> Result<nostr_sdk::Keys, Error> {
+        self.core_wallet().get_npubcash_keys()
+    }
+
+    /// Synchronize incrementally from the last successful npub.cash fetch.
+    pub async fn synchronize_npubcash_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+        self.core_wallet().sync_npubcash_quotes().await
+    }
+
+    /// Synchronize npub.cash quotes created at or after a Unix timestamp.
+    pub async fn synchronize_npubcash_quotes_since(
+        &self,
+        since: u64,
+    ) -> Result<Vec<MintQuote>, Error> {
+        self.core_wallet().sync_npubcash_quotes_since(since).await
+    }
+
+    /// Reconcile quotes missing from the local npub.cash state.
+    pub async fn reconcile_npubcash_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+        self.core_wallet().sync_missing_npubcash_quotes().await
+    }
+
+    /// Claim every paid quote attributable to this wallet's npub.cash identities.
+    pub async fn claim_npubcash_quotes(&self) -> Result<Amount, Error> {
+        self.core_wallet().claim_npubcash_quotes().await
+    }
+
+    /// Poll npub.cash and yield newly issued proofs.
+    pub fn npubcash_proof_stream(
+        &self,
+        split_target: cdk_common::amount::SplitTarget,
+        spending_conditions: Option<crate::nuts::SpendingConditions>,
+        poll_interval: std::time::Duration,
+    ) -> crate::wallet::streams::npubcash::WalletNpubCashProofStream {
+        self.core_wallet()
+            .npubcash_proof_stream(split_target, spending_conditions, poll_interval)
+    }
+
+    /// Change the mint selected in the npub.cash account settings.
+    pub async fn set_npubcash_mint(
+        &self,
+        mint_url: impl Into<String>,
+    ) -> Result<cdk_nostr::npubcash::UserResponse, Error> {
+        self.core_wallet().set_npubcash_mint_url(mint_url).await
+    }
+
+    /// Fetch the current npub.cash account settings.
+    pub async fn npubcash_user(&self) -> Result<cdk_nostr::npubcash::UserResponse, Error> {
+        self.core_wallet().get_npubcash_user_info().await
+    }
+
+    /// Import one raw npub.cash quote into wallet storage.
+    pub async fn import_npubcash_quote(
+        &self,
+        quote: cdk_nostr::npubcash::Quote,
+    ) -> Result<Option<MintQuote>, Error> {
+        self.core_wallet().add_npubcash_mint_quote(quote).await
+    }
+
+    /// Return the configured npub.cash client, when enabled.
+    pub async fn npubcash_client(&self) -> Option<Arc<NpubCashClient>> {
+        self.core_wallet().npubcash_client().await
+    }
+
+    /// Whether npub.cash is enabled for this wallet.
+    pub async fn npubcash_enabled(&self) -> bool {
+        self.core_wallet().is_npubcash_enabled().await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -778,10 +860,10 @@ mod tests {
         );
 
         WalletBuilder::new()
-            .mint_url(MintUrl::from_str("https://mint.example.com").expect("valid mint url"))
-            .unit(CurrencyUnit::Sat)
-            .localstore(localstore)
-            .seed(seed)
+            .with_mint_url(MintUrl::from_str("https://mint.example.com").expect("valid mint url"))
+            .with_unit(CurrencyUnit::Sat)
+            .with_store(localstore)
+            .with_seed(seed)
             .build()
             .expect("wallet builds")
     }

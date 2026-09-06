@@ -1,14 +1,16 @@
-//! Send module providing [`Wallet::prepare_send`] for creating [`PreparedSend`] transactions.
-//!
-//! Use [`PreparedSend::confirm`] to complete the send or [`PreparedSend::cancel`] to release reserved proofs.
+//! Ecash send requests, durable plans, and receipts.
+
+mod api;
 
 use std::collections::HashMap;
 use std::fmt::Debug;
 
+use cdk_common::wallet::{OperationData, PreparedSendOperationData};
 use cdk_common::Id;
 use tracing::instrument;
 use uuid::Uuid;
 
+pub use self::api::{SendMode, SendPlan, SendReceipt, SendRequest, SendStatus};
 use crate::fees::calculate_fee;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{Proofs, Token};
@@ -18,24 +20,17 @@ pub(crate) mod saga;
 
 use saga::SendSaga;
 
-/// Prepared send transaction
-///
-/// Created by [`Wallet::prepare_send`]. Call [`confirm`](Self::confirm) to complete the send
-/// and create a token, or [`cancel`](Self::cancel) to release reserved proofs.
+/// Internal summary of a durably prepared send transaction.
 #[must_use = "must be confirmed or canceled to release reserved proofs"]
-pub struct PreparedSend<'a> {
-    wallet: &'a Wallet,
+pub(crate) struct PreparedSend {
+    wallet: Wallet,
     operation_id: Uuid,
-    // Cached display and confirmation data
     amount: Amount,
-    options: SendOptions,
-    proofs_to_swap: Proofs,
-    proofs_to_send: Proofs,
     swap_fee: Amount,
     send_fee: Amount,
 }
 
-impl PreparedSend<'_> {
+impl PreparedSend {
     /// Operation ID for this prepared send
     pub fn operation_id(&self) -> Uuid {
         self.operation_id
@@ -46,24 +41,9 @@ impl PreparedSend<'_> {
         self.amount
     }
 
-    /// Send options
-    pub fn options(&self) -> &SendOptions {
-        &self.options
-    }
-
-    /// Proofs that need to be swapped before sending
-    pub fn proofs_to_swap(&self) -> &Proofs {
-        &self.proofs_to_swap
-    }
-
     /// Fee for the swap operation
     pub fn swap_fee(&self) -> Amount {
         self.swap_fee
-    }
-
-    /// Proofs that will be sent directly
-    pub fn proofs_to_send(&self) -> &Proofs {
-        &self.proofs_to_send
     }
 
     /// Fee the recipient will pay to redeem the token
@@ -71,96 +51,73 @@ impl PreparedSend<'_> {
         self.send_fee
     }
 
-    /// All proofs (both to swap and to send)
-    pub fn proofs(&self) -> Proofs {
-        let mut proofs = self.proofs_to_swap.clone();
-        proofs.extend(self.proofs_to_send.clone());
-        proofs
-    }
-
-    /// Total fee (swap + send)
-    pub fn fee(&self) -> Amount {
-        self.swap_fee + self.send_fee
-    }
-
-    /// Confirm the prepared send and create a token
-    pub async fn confirm(self, memo: Option<SendMemo>) -> Result<Token, Error> {
-        self.wallet
-            .confirm_send(
-                self.operation_id,
-                self.amount,
-                self.options,
-                self.proofs_to_swap,
-                self.proofs_to_send,
-                self.swap_fee,
-                self.send_fee,
-                memo,
-            )
-            .await
+    /// Total fee (swap + send).
+    pub fn fee(&self) -> Result<Amount, Error> {
+        self.swap_fee
+            .checked_add(self.send_fee)
+            .ok_or(Error::AmountOverflow)
     }
 
     /// Cancel the prepared send and release reserved proofs
     pub async fn cancel(self) -> Result<(), Error> {
-        self.wallet
-            .cancel_send(self.operation_id, self.proofs_to_swap, self.proofs_to_send)
-            .await
+        self.wallet.cancel_send(self.operation_id).await
     }
 }
 
-impl Debug for PreparedSend<'_> {
+impl Debug for PreparedSend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PreparedSend")
             .field("operation_id", &self.operation_id)
             .field("amount", &self.amount)
-            .field("options", &self.options)
-            .field(
-                "proofs_to_swap",
-                &self
-                    .proofs_to_swap
-                    .iter()
-                    .map(|p| p.amount)
-                    .collect::<Vec<_>>(),
-            )
             .field("swap_fee", &self.swap_fee)
-            .field(
-                "proofs_to_send",
-                &self
-                    .proofs_to_send
-                    .iter()
-                    .map(|p| p.amount)
-                    .collect::<Vec<_>>(),
-            )
             .field("send_fee", &self.send_fee)
             .finish()
     }
 }
 
 impl Wallet {
+    /// Reconstruct a prepared send from its durable operation ID.
+    #[instrument(skip(self))]
+    pub(crate) async fn prepared_send(&self, operation_id: Uuid) -> Result<PreparedSend, Error> {
+        let saga = self
+            .localstore
+            .get_saga(&operation_id)
+            .await?
+            .ok_or(Error::OperationNotFound)?;
+        let OperationData::PreparedSend(plan) = saga.data else {
+            return Err(Error::InvalidOperationState);
+        };
+
+        if saga.mint_url != self.mint_url
+            || saga.unit != self.unit
+            || saga.state
+                != cdk_common::wallet::WalletSagaState::Send(
+                    cdk_common::wallet::SendSagaState::Prepared,
+                )
+        {
+            return Err(Error::InvalidOperationState);
+        }
+
+        Ok(PreparedSend {
+            wallet: self.clone(),
+            operation_id,
+            amount: plan.amount,
+            swap_fee: plan.swap_fee,
+            send_fee: plan.send_fee,
+        })
+    }
+
     /// Prepare a send transaction
     ///
     /// This function prepares a send transaction by selecting proofs to send and proofs to swap.
     /// By doing so, it ensures that the wallet user is able to view the fees associated with the
     /// send transaction before confirming.
-    ///
-    /// # Example
-    /// ```no_run
-    /// # use cdk::wallet::{Wallet, SendOptions};
-    /// # use cdk::Amount;
-    /// # async fn example(wallet: &Wallet) -> Result<(), Box<dyn std::error::Error>> {
-    /// let prepared = wallet
-    ///     .prepare_send(Amount::from(10), SendOptions::default())
-    ///     .await?;
-    /// println!("Fee: {}", prepared.fee());
-    /// let token = prepared.confirm(None).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
     #[instrument(skip(self), err)]
-    pub async fn prepare_send(
+    pub(crate) async fn prepare_send(
         &self,
         amount: Amount,
         opts: SendOptions,
-    ) -> Result<PreparedSend<'_>, Error> {
+    ) -> Result<PreparedSend, Error> {
         let saga = if opts.send_kind.is_offline() {
             SendSaga::new(self).with_keyset_policy(cdk_common::wallet::KeysetLoadPolicy::CacheOnly)
         } else {
@@ -170,12 +127,9 @@ impl Wallet {
 
         // Extract data from the saga into PreparedSend
         let prepared = PreparedSend {
-            wallet: self,
+            wallet: self.clone(),
             operation_id: prepared_saga.operation_id(),
             amount: prepared_saga.amount(),
-            options: prepared_saga.options().clone(),
-            proofs_to_swap: prepared_saga.proofs_to_swap().clone(),
-            proofs_to_send: prepared_saga.proofs_to_send().clone(),
             swap_fee: prepared_saga.swap_fee(),
             send_fee: prepared_saga.send_fee(),
         };
@@ -183,28 +137,50 @@ impl Wallet {
         Ok(prepared)
     }
 
-    /// Internal method called by `PreparedSend::confirm` with cached data.
-    ///
-    /// Not intended for direct use - use [`PreparedSend::confirm`] instead.
-    #[doc(hidden)]
-    #[instrument(skip(self, options, proofs_to_swap, proofs_to_send))]
-    #[allow(clippy::too_many_arguments)]
-    pub async fn confirm_send(
+    /// Confirm a prepared send identified by its durable operation ID.
+    #[instrument(skip(self))]
+    pub(crate) async fn confirm_send(
         &self,
         operation_id: Uuid,
-        amount: Amount,
-        options: SendOptions,
-        proofs_to_swap: Proofs,
-        proofs_to_send: Proofs,
-        swap_fee: Amount,
-        send_fee: Amount,
         memo: Option<SendMemo>,
     ) -> Result<Token, Error> {
+        let _operation_guard = self.lock_operation(operation_id).await;
         let db_saga = self
             .localstore
             .get_saga(&operation_id)
             .await?
-            .ok_or(Error::Custom("Saga not found".to_string()))?;
+            .ok_or(Error::OperationNotFound)?;
+
+        if db_saga.mint_url != self.mint_url || db_saga.unit != self.unit {
+            return Err(Error::InvalidOperationState);
+        }
+
+        if db_saga.state
+            == cdk_common::wallet::WalletSagaState::Send(
+                cdk_common::wallet::SendSagaState::TokenCreated,
+            )
+        {
+            let OperationData::Send(data) = db_saga.data else {
+                return Err(Error::InvalidOperationState);
+            };
+            return data
+                .token
+                .ok_or(Error::InvalidOperationState)?
+                .parse()
+                .map_err(Into::into);
+        }
+
+        let OperationData::PreparedSend(PreparedSendOperationData {
+            amount,
+            options,
+            proofs_to_swap,
+            proofs_to_send,
+            swap_fee,
+            send_fee,
+        }) = db_saga.data.clone()
+        else {
+            return Err(Error::InvalidOperationState);
+        };
 
         let saga = SendSaga::from_prepared(
             self,
@@ -217,36 +193,48 @@ impl Wallet {
             send_fee,
             db_saga,
         )?;
-        let (token, _saga) = saga.confirm(memo).await?;
-        Ok(token)
+        match saga.confirm(memo).await {
+            Ok((token, _saga)) => Ok(token),
+            Err(error) if error.is_definitive_failure() => {
+                // Reconstructed portable plans do not carry the in-memory
+                // compensation stack from preparation. Use the persisted saga
+                // to release their reservations immediately on a definitive
+                // local or mint rejection.
+                if let Some(saga) = self.localstore.get_saga(&operation_id).await? {
+                    let _ = self.resume_send_saga(&saga).await?;
+                }
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
     }
 
-    /// Internal method called by `PreparedSend::cancel` with cached data.
+    /// Cancel a prepared send identified by its durable operation ID.
     ///
     /// Not intended for direct use - use [`PreparedSend::cancel`] instead.
     #[doc(hidden)]
-    #[instrument(skip(self, proofs_to_swap, proofs_to_send))]
-    pub async fn cancel_send(
-        &self,
-        operation_id: Uuid,
-        proofs_to_swap: Proofs,
-        proofs_to_send: Proofs,
-    ) -> Result<(), Error> {
+    #[instrument(skip(self))]
+    pub(crate) async fn cancel_send(&self, operation_id: Uuid) -> Result<(), Error> {
+        let _operation_guard = self.lock_operation(operation_id).await;
         let db_saga = self
             .localstore
             .get_saga(&operation_id)
             .await?
-            .ok_or(Error::Custom("Saga not found".to_string()))?;
+            .ok_or(Error::OperationNotFound)?;
+
+        let OperationData::PreparedSend(data) = db_saga.data.clone() else {
+            return Err(Error::InvalidOperationState);
+        };
 
         let saga = SendSaga::from_prepared(
             self,
             operation_id,
-            Amount::ZERO,           // Dummy
-            SendOptions::default(), // Dummy
-            proofs_to_swap,
-            proofs_to_send,
-            Amount::ZERO, // Dummy
-            Amount::ZERO, // Dummy
+            data.amount,
+            data.options,
+            data.proofs_to_swap,
+            data.proofs_to_send,
+            data.swap_fee,
+            data.send_fee,
             db_saga,
         )?;
         saga.cancel().await
@@ -254,12 +242,12 @@ impl Wallet {
 
     /// Returns operation IDs for pending sends (tokens created but not claimed).
     #[instrument(skip(self))]
-    pub async fn get_pending_sends(&self) -> Result<Vec<Uuid>, Error> {
+    pub(crate) async fn get_pending_sends(&self) -> Result<Vec<Uuid>, Error> {
         let incomplete = self.localstore.get_incomplete_sagas().await?;
         Ok(incomplete
             .into_iter()
             .filter_map(|s| {
-                if s.mint_url != self.mint_url {
+                if s.mint_url != self.mint_url || s.unit != self.unit {
                     return None;
                 }
                 if let cdk_common::wallet::WalletSagaState::Send(
@@ -276,12 +264,17 @@ impl Wallet {
 
     /// Reclaims funds by swapping proofs back to the wallet.
     #[instrument(skip(self))]
-    pub async fn revoke_send(&self, operation_id: Uuid) -> Result<Amount, Error> {
+    pub(crate) async fn revoke_send(&self, operation_id: Uuid) -> Result<Amount, Error> {
+        let _operation_guard = self.lock_operation(operation_id).await;
         let saga_record = self
             .localstore
             .get_saga(&operation_id)
             .await?
-            .ok_or(Error::Custom("Saga not found".to_string()))?;
+            .ok_or(Error::OperationNotFound)?;
+
+        if saga_record.mint_url != self.mint_url || saga_record.unit != self.unit {
+            return Err(Error::InvalidOperationState);
+        }
 
         if let cdk_common::wallet::WalletSagaState::Send(
             cdk_common::wallet::SendSagaState::TokenCreated,
@@ -306,17 +299,40 @@ impl Wallet {
             }
         }
 
-        Err(Error::Custom("Operation is not a pending send".to_string()))
+        Err(Error::InvalidOperationState)
     }
 
     /// Returns true if the token has been claimed by the recipient.
     #[instrument(skip(self))]
-    pub async fn check_send_status(&self, operation_id: Uuid) -> Result<bool, Error> {
-        let saga_record = self
-            .localstore
-            .get_saga(&operation_id)
-            .await?
-            .ok_or(Error::Custom("Saga not found".to_string()))?;
+    pub(crate) async fn check_send_status(&self, operation_id: Uuid) -> Result<bool, Error> {
+        let _operation_guard = self.lock_operation(operation_id).await;
+        let saga_record = match self.localstore.get_saga(&operation_id).await? {
+            Some(saga) => saga,
+            None => {
+                use cdk_common::wallet::{TransactionDirection, TransactionStatus};
+
+                // Successful status checks remove the saga. Keep the answer
+                // available from wallet-scoped history on subsequent calls.
+                let transaction = self
+                    .transactions_for_operation(operation_id)
+                    .await?
+                    .into_iter()
+                    .find(|transaction| {
+                        transaction.direction == TransactionDirection::Outgoing
+                            && transaction.quote_id.is_none()
+                            && transaction.payment_method.is_none()
+                    });
+                return match transaction.map(|transaction| transaction.status) {
+                    Some(TransactionStatus::Completed) => Ok(true),
+                    Some(_) => Err(Error::InvalidOperationState),
+                    None => Err(Error::OperationNotFound),
+                };
+            }
+        };
+
+        if saga_record.mint_url != self.mint_url || saga_record.unit != self.unit {
+            return Err(Error::InvalidOperationState);
+        }
 
         // Report as pending during rollback to prevent race condition where swap
         // makes proofs appear spent before revocation completes.
@@ -354,15 +370,15 @@ impl Wallet {
             }
         }
 
-        Err(Error::Custom("Operation is not a pending send".to_string()))
+        Err(Error::InvalidOperationState)
     }
 }
 
-pub use cdk_common::wallet::{SendMemo, SendOptions};
+pub(crate) use cdk_common::wallet::{SendMemo, SendOptions};
 
 /// Result of splitting proofs for a send operation
 #[derive(Debug, Clone)]
-pub struct ProofSplitResult {
+pub(crate) struct ProofSplitResult {
     /// Proofs that can be sent directly (matching desired denominations)
     pub proofs_to_send: Proofs,
     /// Proofs that need to be swapped first
@@ -404,7 +420,8 @@ pub(crate) fn split_proofs_for_send(
 
         // Check if swap is actually needed
         if !proofs_to_swap.is_empty() {
-            let swap_output_needed = (amount + send_fee)
+            let required_amount = amount.checked_add(send_fee).ok_or(Error::AmountOverflow)?;
+            let swap_output_needed = required_amount
                 .checked_sub(proofs_to_send.total_amount()?)
                 .unwrap_or(Amount::ZERO);
 
@@ -451,10 +468,151 @@ pub(crate) fn split_proofs_for_send(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use cdk_common::secret::Secret;
+    use cdk_common::wallet::{SendOperationData, SendSagaState, WalletSaga, WalletSagaState};
     use cdk_common::{Amount, Id, Proof, PublicKey};
 
     use super::*;
+    use crate::nuts::CurrencyUnit;
+    use crate::wallet::test_utils::{create_test_db, create_test_wallet};
+
+    #[tokio::test]
+    async fn pending_send_access_is_scoped_to_mint_and_unit() {
+        let store = create_test_db().await;
+        let wallet = create_test_wallet(Arc::clone(&store)).await;
+        let identity = wallet.identity();
+        let mut own_id = None;
+
+        for (mint_url, unit, is_owner) in [
+            (identity.mint_url.clone(), identity.unit.clone(), true),
+            (identity.mint_url.clone(), CurrencyUnit::Msat, false),
+            (
+                "https://other-mint.example.com".parse().expect("mint URL"),
+                identity.unit,
+                false,
+            ),
+        ] {
+            let operation_id = Uuid::now_v7();
+            let saga = WalletSaga::new(
+                operation_id,
+                WalletSagaState::Send(SendSagaState::TokenCreated),
+                Amount::from(1),
+                mint_url,
+                unit,
+                OperationData::Send(SendOperationData {
+                    amount: Amount::from(1),
+                    memo: None,
+                    counter_start: None,
+                    counter_end: None,
+                    token: None,
+                    proofs: None,
+                }),
+            );
+            store.add_saga(saga.clone()).await.expect("persist saga");
+            if is_owner {
+                own_id = Some(operation_id.into());
+                continue;
+            }
+
+            assert!(matches!(
+                wallet.send_status(operation_id.into()).await,
+                Err(Error::InvalidOperationState)
+            ));
+            assert!(matches!(
+                wallet.reclaim_send(operation_id.into()).await,
+                Err(Error::InvalidOperationState)
+            ));
+            assert_eq!(
+                store.get_saga(&operation_id).await.expect("load saga"),
+                Some(saga)
+            );
+        }
+
+        assert_eq!(
+            wallet.pending_send_ids().await.expect("list pending sends"),
+            vec![own_id.expect("owner operation")]
+        );
+    }
+
+    #[tokio::test]
+    async fn resumed_send_receipt_reports_actual_token_value() {
+        use cdk_common::wallet::{Transaction, TransactionDirection, TransactionStatus};
+
+        let store = create_test_db().await;
+        let wallet = create_test_wallet(Arc::clone(&store)).await;
+        let operation_id = Uuid::now_v7();
+        let token_proofs = proofs(&[4]);
+        let token = Token::new(
+            wallet.mint_url.clone(),
+            token_proofs.clone(),
+            None,
+            wallet.unit.clone(),
+        );
+        store
+            .add_saga(WalletSaga::new(
+                operation_id,
+                WalletSagaState::Send(SendSagaState::TokenCreated),
+                Amount::from(3),
+                wallet.mint_url.clone(),
+                wallet.unit.clone(),
+                OperationData::Send(SendOperationData {
+                    amount: Amount::from(3),
+                    memo: None,
+                    counter_start: None,
+                    counter_end: None,
+                    token: Some(token.to_string()),
+                    proofs: Some(token_proofs),
+                }),
+            ))
+            .await
+            .expect("persist tolerated send");
+
+        let plan = wallet
+            .resume_send(operation_id.into())
+            .await
+            .expect("resume send");
+        assert_eq!(plan.amount(), Amount::from(3));
+        let receipt = plan.execute().await.expect("recover token");
+        assert_eq!(receipt.amount, receipt.token.value().expect("token value"));
+        assert_eq!(receipt.amount, Amount::from(4));
+        assert_eq!(receipt.token.to_string(), token.to_string());
+
+        store
+            .add_transaction(Transaction {
+                mint_url: wallet.mint_url.clone(),
+                direction: TransactionDirection::Outgoing,
+                amount: Amount::from(3),
+                fee: Amount::ZERO,
+                unit: wallet.unit.clone(),
+                ys: vec![],
+                timestamp: 1,
+                memo: None,
+                metadata: HashMap::new(),
+                quote_id: None,
+                payment_request: None,
+                payment_proof: None,
+                payment_method: None,
+                saga_id: Some(operation_id),
+                status: TransactionStatus::Completed,
+            })
+            .await
+            .expect("persist recipient claim");
+        store
+            .delete_saga(&operation_id)
+            .await
+            .expect("remove completed saga");
+        for _ in 0..2 {
+            assert_eq!(
+                wallet
+                    .send_status(operation_id.into())
+                    .await
+                    .expect("completed send status"),
+                SendStatus::Claimed,
+            );
+        }
+    }
 
     fn id() -> Id {
         Id::from_bytes(&[0; 8]).unwrap()

@@ -3,7 +3,7 @@ use std::str::FromStr;
 use anyhow::{anyhow, Result};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{resolve_bip353_payment_instruction, WalletRepository};
+use cdk::wallet::{resolve_bip353_payment_instruction, WalletManager};
 use clap::Args;
 
 use crate::sub_commands::melt::BitcoinNetwork;
@@ -30,23 +30,23 @@ fn print_list<T: std::fmt::Display>(label: &str, values: &[T]) {
 }
 
 pub async fn resolve(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     sub_command_args: &ResolveSubCommand,
     unit: &CurrencyUnit,
 ) -> Result<()> {
     let wallet = if let Some(mint_url) = &sub_command_args.mint_url {
         let mint_url = MintUrl::from_str(mint_url)?;
-        get_or_create_wallet(wallet_repository, &mint_url, unit).await?
+        get_or_create_wallet(wallet_manager, &mint_url, unit).await?
     } else {
-        wallet_repository
-            .get_wallets()
+        wallet_manager
+            .wallets()
             .await
             .into_iter()
-            .find(|wallet| wallet.unit == *unit)
+            .find(|wallet| wallet.identity().unit == *unit)
             .ok_or_else(|| anyhow!("No wallet available for unit {}", unit))?
     };
 
-    let client = wallet.mint_connector();
+    let client = wallet.advanced().connector();
     let parsed = resolve_bip353_payment_instruction(
         &client,
         &sub_command_args.address,

@@ -320,6 +320,11 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             }),
         );
 
+        // Active operations start versioned so concurrent recovery observes
+        // their short lease. Version-zero records remain immediately
+        // recoverable when no owner has claimed them.
+        saga.update_state(WalletSagaState::Receive(ReceiveSagaState::ProofsPending));
+
         self.wallet.localstore.add_saga(saga.clone()).await?;
 
         add_compensation(
@@ -499,6 +504,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             wallet: self.wallet,
             compensations: self.compensations,
             state_data: Finalized {
+                operation_id,
                 amount: total_amount,
             },
         })
@@ -530,9 +536,9 @@ impl<'a> ReceiveSaga<'a, Prepared> {
 }
 
 impl<'a> ReceiveSaga<'a, Finalized> {
-    /// Consume the saga and return the received amount
-    pub fn into_amount(self) -> Amount {
-        self.state_data.amount
+    /// Consume the saga and return its operation identifier and received amount.
+    pub fn into_parts(self) -> (uuid::Uuid, Amount) {
+        (self.state_data.operation_id, self.state_data.amount)
     }
 }
 

@@ -12,7 +12,7 @@ use crate::error::Error;
 impl Wallet {
     /// Mint blind auth tokens
     #[instrument(skip_all)]
-    pub async fn mint_blind_auth(&self, amount: Amount) -> Result<Proofs, Error> {
+    pub(crate) async fn mint_blind_auth(&self, amount: Amount) -> Result<Proofs, Error> {
         self.auth_wallet
             .read()
             .await
@@ -24,7 +24,7 @@ impl Wallet {
 
     /// Get unspent auth proofs
     #[instrument(skip_all)]
-    pub async fn get_unspent_auth_proofs(&self) -> Result<Vec<AuthProof>, Error> {
+    pub(crate) async fn get_unspent_auth_proofs(&self) -> Result<Vec<AuthProof>, Error> {
         self.auth_wallet
             .read()
             .await
@@ -36,7 +36,7 @@ impl Wallet {
 
     /// Set Clear Auth Token (CAT) for authentication
     #[instrument(skip_all)]
-    pub async fn set_cat(&self, cat: String) -> Result<(), Error> {
+    pub(crate) async fn set_cat(&self, cat: String) -> Result<(), Error> {
         let auth_wallet = self.auth_wallet.read().await;
         if let Some(auth_wallet) = auth_wallet.as_ref() {
             auth_wallet
@@ -48,7 +48,7 @@ impl Wallet {
 
     /// Set refresh for authentication
     #[instrument(skip_all)]
-    pub async fn set_refresh_token(&self, refresh_token: String) -> Result<(), Error> {
+    pub(crate) async fn set_refresh_token(&self, refresh_token: String) -> Result<(), Error> {
         let auth_wallet = self.auth_wallet.read().await;
         if let Some(auth_wallet) = auth_wallet.as_ref() {
             auth_wallet.set_refresh_token(Some(refresh_token)).await;
@@ -58,7 +58,7 @@ impl Wallet {
 
     /// Refresh CAT token
     #[instrument(skip(self))]
-    pub async fn refresh_access_token(&self) -> Result<(), Error> {
+    pub(crate) async fn refresh_access_token(&self) -> Result<(), Error> {
         let auth_wallet = self.auth_wallet.read().await;
         if let Some(auth_wallet) = auth_wallet.as_ref() {
             auth_wallet.refresh_access_token().await?;
@@ -71,7 +71,7 @@ impl Wallet {
     /// This allows updating the auth wallet without recreating the wallet.
     /// Also updates the client's auth wallet to keep them in sync.
     #[instrument(skip_all)]
-    pub async fn set_auth_client(&self, auth_wallet: Option<AuthWallet>) {
+    pub(crate) async fn set_auth_client(&self, auth_wallet: Option<AuthWallet>) {
         let mut auth_wallet_guard = self.auth_wallet.write().await;
         *auth_wallet_guard = auth_wallet.clone();
 

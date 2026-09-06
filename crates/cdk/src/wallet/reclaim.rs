@@ -9,7 +9,7 @@ use crate::{Error, Wallet};
 impl Wallet {
     /// Synchronizes the states with the mint
     #[instrument(skip(self, proofs))]
-    pub async fn sync_proofs_state(&self, proofs: Proofs) -> Result<(), Error> {
+    pub(crate) async fn sync_proofs_state(&self, proofs: Proofs) -> Result<(), Error> {
         let proof_ys = proofs.ys()?;
 
         let statuses = self

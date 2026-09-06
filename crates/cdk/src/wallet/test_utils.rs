@@ -441,7 +441,7 @@ pub async fn create_test_wallet(
     let mint_url = "https://test-mint.example.com";
     let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
 
-    Wallet::new(mint_url, CurrencyUnit::Sat, db, seed, None).unwrap()
+    Wallet::new_for_test(mint_url, CurrencyUnit::Sat, db, seed, None).unwrap()
 }
 
 /// Create a test wallet with a mock client
@@ -462,11 +462,11 @@ pub async fn create_test_wallet_with_mock_seed(
     seed: [u8; 64],
 ) -> Wallet {
     crate::wallet::WalletBuilder::new()
-        .mint_url(test_mint_url())
-        .unit(CurrencyUnit::Sat)
-        .localstore(db)
-        .seed(seed)
-        .shared_client(mock_client)
+        .with_mint_url(test_mint_url())
+        .with_unit(CurrencyUnit::Sat)
+        .with_store(db)
+        .with_seed(seed)
+        .with_shared_connector(mock_client)
         .build()
         .unwrap()
 }
@@ -484,12 +484,12 @@ pub async fn create_test_wallet_with_mock_http_subscription(
     let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
 
     crate::wallet::WalletBuilder::new()
-        .mint_url(test_mint_url())
-        .unit(CurrencyUnit::Sat)
-        .localstore(db)
-        .seed(seed)
-        .shared_client(mock_client)
-        .use_http_subscription()
+        .with_mint_url(test_mint_url())
+        .with_unit(CurrencyUnit::Sat)
+        .with_store(db)
+        .with_seed(seed)
+        .with_shared_connector(mock_client)
+        .with_http_subscription()
         .build()
         .unwrap()
 }

@@ -17,16 +17,38 @@ package main
 
 import (
 	"fmt"
+	"log"
 
 	cdk "github.com/cashubtc/cdk-go/bindings/cdkffi"
 )
 
 func main() {
-	// Create a new wallet
-	seed := cdk.GenerateMnemonic()
-	fmt.Println("Mnemonic:", seed)
+	mnemonic, err := cdk.GenerateMnemonic()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	wallet, err := cdk.WalletOpen(cdk.WalletOpenRequest{
+		MintUrl:  "https://mint.example.com",
+		Unit:     cdk.CurrencyUnitSat{},
+		Mnemonic: mnemonic,
+		Store:    cdk.WalletStoreSqlite{Path: "wallet.sqlite"},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer wallet.Destroy()
+
+	balance, err := wallet.Balance()
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("available sats:", balance.Available.Value)
 }
 ```
+
+`WalletOpen` is local-only. Call `wallet.Synchronize(cdk.SyncPolicyOnline)`
+when the application chooses to reconcile with the mint.
 
 > **Note:** Requires `CGO_ENABLED=1` (the default on most systems).
 

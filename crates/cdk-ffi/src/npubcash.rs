@@ -232,7 +232,7 @@ pub fn npubcash_quote_to_mint_quote(quote: NpubCashQuote) -> MintQuote {
         locked: quote.locked,
     };
 
-    let mint_quote: cdk::wallet::MintQuote = cdk_quote.into();
+    let mint_quote: cdk_common::wallet::MintQuote = cdk_quote.into();
     mint_quote.into()
 }
 

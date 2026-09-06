@@ -245,8 +245,8 @@ impl fmt::Display for MyType { ... }
 ### FFI Sync Requirement
 
 When adding, removing, or modifying methods on the `cdk` Wallet API, you **must** keep the `cdk-ffi` crate in sync:
-1. Update the exported FFI wallet implementation (`crates/cdk-ffi/src/wallet.rs`) using `#[uniffi::export]`.
-2. Update the `Wallet` trait implementation (`crates/cdk-ffi/src/wallet_trait.rs`).
+1. Update the exported workflow bridge (`crates/cdk-ffi/src/wallet_api.rs`) using `#[uniffi::export]`.
+2. Keep protocol-level operations isolated in the explicit advanced bridge (`crates/cdk-ffi/src/wallet_advanced.rs`).
 3. Add or update any necessary FFI-compatible type conversions in `crates/cdk-ffi/src/types/`.
 
 ### Dependency Flow

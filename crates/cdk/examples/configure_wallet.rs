@@ -1,81 +1,46 @@
-//! Example of configuring the wallet with custom settings, including metadata cache TTL.
-//!
-//! This example demonstrates:
-//! 1. Creating a Wallet with a custom metadata cache TTL
-//! 2. Creating a MultiMintWallet and adding a mint with a custom configuration
-//! 3. Updating the configuration of an active wallet
+//! Configure per-mint wallet behavior through `WalletManager`.
 
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{WalletBuilder, WalletConfig, WalletRepositoryBuilder};
+use cdk::wallet::advanced::MintAdvancedOptions;
+use cdk::wallet::{
+    MintRegistrationRequest, WalletConfigurationRequest, WalletIdentity, WalletManagerBuilder,
+};
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Generate a random seed
-    let seed = random::<[u8; 64]>();
-    let unit = CurrencyUnit::Sat;
-    let localstore = Arc::new(memory::empty().await?);
-
-    // ==========================================
-    // 1. Configure a single Wallet
-    // ==========================================
-    println!("\n=== Single Wallet Configuration ===");
-    let mint_url = MintUrl::from_str("https://testnut.cashudevkit.org")?;
-
-    // Create a wallet with a custom 10-minute TTL (default is 1 hour)
-    let wallet = WalletBuilder::new()
-        .mint_url(mint_url.clone())
-        .unit(unit.clone())
-        .localstore(localstore.clone())
-        .seed(seed)
-        .set_metadata_cache_ttl(Some(Duration::from_secs(600))) // 10 minutes
-        .build()?;
-
-    println!("Created wallet with 10 minute metadata cache TTL");
-
-    // You can also update the TTL on an existing wallet
-    wallet.set_metadata_cache_ttl(Some(Duration::from_secs(300))); // Change to 5 minutes
-    println!("Updated wallet TTL to 5 minutes");
-
-    // ==========================================
-    // 2. Configure WalletRepository
-    // ==========================================
-    println!("\n=== WalletRepository Configuration ===");
-
-    // Create the WalletRepository
-    let multi_wallet = WalletRepositoryBuilder::new()
-        .localstore(localstore.clone())
-        .seed(seed)
+    let manager = WalletManagerBuilder::new()
+        .with_store(Arc::new(memory::empty().await?))
+        .with_seed(random::<[u8; 64]>())
         .build()
         .await?;
 
-    // Define configuration for a new mint
-    // This config uses a very short 1-minute TTL
-    let config = WalletConfig::new().with_metadata_cache_ttl(Some(Duration::from_secs(60)));
-
-    let mint_url_2 = MintUrl::from_str("https://testnut.cashu.space")?;
-
-    // Add the mint with the custom configuration
-    multi_wallet
-        .add_wallet_with_config(mint_url_2.clone(), Some(config.clone()))
+    let primary = "https://testnut.cashudevkit.org".parse()?;
+    let primary_config =
+        MintAdvancedOptions::new().with_metadata_cache_ttl(Duration::from_secs(600));
+    let wallet = manager
+        .configure_wallet(
+            WalletConfigurationRequest::new(WalletIdentity::new(primary, CurrencyUnit::Sat))
+                .with_advanced(primary_config),
+        )
         .await?;
-    println!("Added mint {} with 1 minute TTL", mint_url_2);
+    println!(
+        "Configured {} with a 10-minute metadata cache",
+        wallet.identity().mint_url
+    );
 
-    // Update configuration for an existing mint
-    // Let's disable auto-refresh (set to None) for the first mint
-    let no_refresh_config = WalletConfig::new().with_metadata_cache_ttl(None); // Never expire
-
-    multi_wallet.add_wallet(mint_url.clone()).await?; // Add first mint with default settings
-    multi_wallet
-        .set_mint_config(mint_url.clone(), unit.clone(), no_refresh_config)
+    let secondary: cdk::mint_url::MintUrl = "https://testnut.cashu.space".parse()?;
+    manager
+        .register_mint(
+            MintRegistrationRequest::new(secondary.clone())
+                .with_advanced(MintAdvancedOptions::new().without_metadata_cache_expiry()),
+        )
         .await?;
-    println!("Updated mint {} to never expire metadata cache", mint_url);
+    println!("Configured {secondary} with explicit-refresh metadata");
 
     Ok(())
 }

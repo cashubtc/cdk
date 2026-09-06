@@ -7,53 +7,41 @@ use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{Wallet, WalletRepository};
+use cdk::wallet::{Wallet, WalletIdentity, WalletManager};
 use cdk::StreamExt;
 use clap::Subcommand;
 use nostr_sdk::ToBech32;
 
 /// Helper function to get wallet for a specific mint URL
 async fn get_wallet_for_mint(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     mint_url_str: &str,
 ) -> Result<Arc<Wallet>> {
     let mint_url = MintUrl::from_str(mint_url_str)?;
 
     // Check if wallet exists for this mint
-    if !wallet_repository.has_mint(&mint_url).await {
+    if !wallet_manager.contains_mint(&mint_url).await {
         // Add the mint to the wallet
-        wallet_repository.add_wallet(mint_url.clone()).await?;
+        wallet_manager.register_mint(mint_url.clone()).await?;
     }
 
-    match wallet_repository
-        .get_wallet(&mint_url, &CurrencyUnit::Sat)
-        .await
-    {
-        Ok(wallet) => Ok(Arc::new(wallet)),
-        Err(_) => Ok(Arc::new(
-            wallet_repository
-                .create_wallet(mint_url, CurrencyUnit::Sat, None)
-                .await?,
-        )),
-    }
+    Ok(Arc::new(
+        wallet_manager
+            .open_wallet(WalletIdentity::new(mint_url, CurrencyUnit::Sat))
+            .await?,
+    ))
 }
 
 /// Helper function to get or create a Sat wallet without probing the mint.
 async fn get_wallet_for_mint_without_probe(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     mint_url: MintUrl,
 ) -> Result<Arc<Wallet>> {
-    match wallet_repository
-        .get_wallet(&mint_url, &CurrencyUnit::Sat)
-        .await
-    {
-        Ok(wallet) => Ok(Arc::new(wallet)),
-        Err(_) => Ok(Arc::new(
-            wallet_repository
-                .create_wallet(mint_url, CurrencyUnit::Sat, None)
-                .await?,
-        )),
-    }
+    Ok(Arc::new(
+        wallet_manager
+            .open_wallet(WalletIdentity::new(mint_url, CurrencyUnit::Sat))
+            .await?,
+    ))
 }
 
 #[derive(Subcommand)]
@@ -83,7 +71,7 @@ pub enum NpubCashSubCommand {
 }
 
 pub async fn npubcash(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     mint_url: &str,
     sub_command: &NpubCashSubCommand,
     npubcash_url: Option<String>,
@@ -92,24 +80,24 @@ pub async fn npubcash(
     let base_url = npubcash_url.unwrap_or_else(|| "https://npubx.cash".to_string());
 
     match sub_command {
-        NpubCashSubCommand::Sync => sync(wallet_repository, mint_url, &base_url).await,
-        NpubCashSubCommand::Claim => claim(wallet_repository, mint_url, &base_url).await,
+        NpubCashSubCommand::Sync => sync(wallet_manager, mint_url, &base_url).await,
+        NpubCashSubCommand::Claim => claim(wallet_manager, mint_url, &base_url).await,
         NpubCashSubCommand::List { since, format } => {
-            list(wallet_repository, mint_url, &base_url, *since, format).await
+            list(wallet_manager, mint_url, &base_url, *since, format).await
         }
-        NpubCashSubCommand::Subscribe => subscribe(wallet_repository, mint_url, &base_url).await,
+        NpubCashSubCommand::Subscribe => subscribe(wallet_manager, mint_url, &base_url).await,
         NpubCashSubCommand::SetMint { url } => {
-            set_mint(wallet_repository, mint_url, &base_url, url).await
+            set_mint(wallet_manager, mint_url, &base_url, url).await
         }
-        NpubCashSubCommand::ShowKeys => show_keys(wallet_repository, mint_url).await,
+        NpubCashSubCommand::ShowKeys => show_keys(wallet_manager, mint_url).await,
     }
 }
 
 /// Helper function to ensure active mint consistency
-async fn ensure_active_mint(wallet_repository: &WalletRepository, mint_url: &str) -> Result<()> {
+async fn ensure_active_mint(wallet_manager: &WalletManager, mint_url: &str) -> Result<()> {
     let mint_url_struct = MintUrl::from_str(mint_url)?;
 
-    match wallet_repository.get_active_npubcash_mint().await? {
+    match wallet_manager.advanced().active_npubcash_mint().await? {
         Some(active_mint) => {
             if active_mint != mint_url_struct {
                 bail!(
@@ -125,7 +113,8 @@ async fn ensure_active_mint(wallet_repository: &WalletRepository, mint_url: &str
         }
         None => {
             // No active mint set, set this one as active
-            wallet_repository
+            wallet_manager
+                .advanced()
                 .set_active_npubcash_mint(mint_url_struct)
                 .await?;
             println!("✓ Set {} as active NpubCash mint", mint_url);
@@ -134,59 +123,72 @@ async fn ensure_active_mint(wallet_repository: &WalletRepository, mint_url: &str
     Ok(())
 }
 
-async fn sync(wallet_repository: &WalletRepository, mint_url: &str, base_url: &str) -> Result<()> {
-    ensure_active_mint(wallet_repository, mint_url).await?;
+async fn sync(wallet_manager: &WalletManager, mint_url: &str, base_url: &str) -> Result<()> {
+    ensure_active_mint(wallet_manager, mint_url).await?;
 
     println!("Syncing quotes from NpubCash...");
 
-    let wallet = get_wallet_for_mint(wallet_repository, mint_url).await?;
+    let wallet = get_wallet_for_mint(wallet_manager, mint_url).await?;
 
     // Enable NpubCash if not already enabled
-    wallet.enable_npubcash(base_url.to_string()).await?;
+    wallet
+        .advanced()
+        .enable_npubcash(base_url.to_string())
+        .await?;
 
-    let quotes = wallet.sync_npubcash_quotes().await?;
+    let quotes = wallet.advanced().synchronize_npubcash_quotes().await?;
 
     println!("✓ Synced {} quotes successfully", quotes.len());
     Ok(())
 }
 
-async fn claim(wallet_repository: &WalletRepository, mint_url: &str, base_url: &str) -> Result<()> {
-    ensure_active_mint(wallet_repository, mint_url).await?;
+async fn claim(wallet_manager: &WalletManager, mint_url: &str, base_url: &str) -> Result<()> {
+    ensure_active_mint(wallet_manager, mint_url).await?;
 
     println!("Claiming pending NpubCash quotes...");
 
-    let wallet = get_wallet_for_mint(wallet_repository, mint_url).await?;
+    let wallet = get_wallet_for_mint(wallet_manager, mint_url).await?;
 
     // Enable NpubCash if not already enabled
-    wallet.enable_npubcash(base_url.to_string()).await?;
+    wallet
+        .advanced()
+        .enable_npubcash(base_url.to_string())
+        .await?;
 
-    let minted = wallet.claim_npubcash_quotes().await?;
+    let minted = wallet.advanced().claim_npubcash_quotes().await?;
 
-    println!("✓ Minted {} {}", minted, wallet.unit);
-    if let Ok(balance) = wallet.total_balance().await {
-        println!("  Wallet balance: {} {}", balance, wallet.unit);
+    let identity = wallet.identity();
+    println!("✓ Minted {} {}", minted, identity.unit);
+    if let Ok(balance) = wallet.balance().await {
+        println!("  Wallet balance: {} {}", balance.available, identity.unit);
     }
     Ok(())
 }
 
 async fn list(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     mint_url: &str,
     base_url: &str,
     since: Option<u64>,
     format: &str,
 ) -> Result<()> {
-    ensure_active_mint(wallet_repository, mint_url).await?;
+    ensure_active_mint(wallet_manager, mint_url).await?;
 
-    let wallet = get_wallet_for_mint(wallet_repository, mint_url).await?;
+    let wallet = get_wallet_for_mint(wallet_manager, mint_url).await?;
 
     // Enable NpubCash if not already enabled
-    wallet.enable_npubcash(base_url.to_string()).await?;
+    wallet
+        .advanced()
+        .enable_npubcash(base_url.to_string())
+        .await?;
 
     let quotes = if let Some(since_ts) = since {
-        wallet.sync_npubcash_quotes_since(since_ts).await?
+        wallet
+            .advanced()
+            .synchronize_npubcash_quotes_since(since_ts)
+            .await?
     } else {
-        wallet.sync_npubcash_quotes().await?
+        wallet.advanced().synchronize_npubcash_quotes().await?
     };
 
     match format {
@@ -217,23 +219,22 @@ async fn list(
     Ok(())
 }
 
-async fn subscribe(
-    wallet_repository: &WalletRepository,
-    mint_url: &str,
-    base_url: &str,
-) -> Result<()> {
-    ensure_active_mint(wallet_repository, mint_url).await?;
+async fn subscribe(wallet_manager: &WalletManager, mint_url: &str, base_url: &str) -> Result<()> {
+    ensure_active_mint(wallet_manager, mint_url).await?;
 
     println!("=== NpubCash Quote Subscription ===\n");
 
-    let wallet = get_wallet_for_mint(wallet_repository, mint_url).await?;
+    let wallet = get_wallet_for_mint(wallet_manager, mint_url).await?;
 
     // Enable NpubCash if not already enabled
-    wallet.enable_npubcash(base_url.to_string()).await?;
+    wallet
+        .advanced()
+        .enable_npubcash(base_url.to_string())
+        .await?;
     println!("✓ NpubCash integration enabled\n");
 
     // Display the npub.cash address
-    let keys = wallet.get_npubcash_keys()?;
+    let keys = wallet.advanced().npubcash_keys()?;
     let display_url = base_url
         .trim_start_matches("https://")
         .trim_start_matches("http://");
@@ -247,8 +248,11 @@ async fn subscribe(
     println!("Press Ctrl+C to stop.\n");
 
     // Run polling and wait for Ctrl+C
-    let mut stream =
-        wallet.npubcash_proof_stream(SplitTarget::default(), None, Duration::from_secs(5));
+    let mut stream = wallet.advanced().npubcash_proof_stream(
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(5),
+    );
 
     tokio::select! {
         _ = async {
@@ -262,8 +266,8 @@ async fn subscribe(
                         match proofs.total_amount() {
                             Ok(amount) => {
                                 println!("  └─ Successfully minted {} sats!", amount);
-                                if let Ok(balance) = wallet.total_balance().await {
-                                    println!("     Wallet balance: {} sats", balance);
+                                if let Ok(balance) = wallet.balance().await {
+                                    println!("     Wallet balance: {} sats", balance.available);
                                 }
                             }
                             Err(e) => println!("  └─ Failed to calculate amount: {}", e),
@@ -282,14 +286,14 @@ async fn subscribe(
     }
 
     // Show final wallet balance
-    let balance = wallet.total_balance().await?;
-    println!("Final wallet balance: {} sats\n", balance);
+    let balance = wallet.balance().await?;
+    println!("Final wallet balance: {} sats\n", balance.available);
 
     Ok(())
 }
 
 async fn set_mint(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     _mint_url: &str,
     base_url: &str,
     url: &str,
@@ -297,16 +301,19 @@ async fn set_mint(
     println!("Setting NpubCash mint URL to: {}", url);
 
     let mint_url_struct = MintUrl::from_str(url)?;
-    let wallet =
-        get_wallet_for_mint_without_probe(wallet_repository, mint_url_struct.clone()).await?;
+    let wallet = get_wallet_for_mint_without_probe(wallet_manager, mint_url_struct.clone()).await?;
 
     // Enable NpubCash if not already enabled
-    wallet.enable_npubcash(base_url.to_string()).await?;
+    wallet
+        .advanced()
+        .enable_npubcash(base_url.to_string())
+        .await?;
 
     // Try to set the mint URL on the NpubCash server
-    match wallet.set_npubcash_mint_url(url).await {
+    match wallet.advanced().set_npubcash_mint(url).await {
         Ok(_) => {
-            wallet_repository
+            wallet_manager
+                .advanced()
                 .set_active_npubcash_mint(mint_url_struct)
                 .await?;
             println!("✓ Mint URL updated successfully on NpubCash server");
@@ -337,10 +344,10 @@ async fn set_mint(
     Ok(())
 }
 
-async fn show_keys(wallet_repository: &WalletRepository, mint_url: &str) -> Result<()> {
-    let wallet = get_wallet_for_mint(wallet_repository, mint_url).await?;
+async fn show_keys(wallet_manager: &WalletManager, mint_url: &str) -> Result<()> {
+    let wallet = get_wallet_for_mint(wallet_manager, mint_url).await?;
 
-    let keys = wallet.get_npubcash_keys()?;
+    let keys = wallet.advanced().npubcash_keys()?;
     let npub = keys.public_key().to_bech32()?;
     let nsec = keys.secret_key().to_bech32()?;
 
@@ -384,7 +391,7 @@ mod tests {
     use std::time::Duration;
 
     use cdk::mint_url::MintUrl;
-    use cdk::wallet::WalletRepositoryBuilder;
+    use cdk::wallet::WalletManagerBuilder;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
@@ -398,12 +405,12 @@ mod tests {
                 .await
                 .expect("memory db"),
         );
-        let wallet_repository = WalletRepositoryBuilder::new()
-            .localstore(localstore)
-            .seed([0u8; 64])
+        let wallet_manager = WalletManagerBuilder::new()
+            .with_store(localstore)
+            .with_seed([0u8; 64])
             .build()
             .await
-            .expect("wallet repository builds");
+            .expect("wallet manager builds");
 
         let global_mint = "https://global-mint.invalid";
         let requested_mint = "https://requested-mint.invalid";
@@ -417,19 +424,15 @@ mod tests {
 
         tokio::time::timeout(
             Duration::from_secs(10),
-            set_mint(
-                &wallet_repository,
-                global_mint,
-                &npubcash_url,
-                requested_mint,
-            ),
+            set_mint(&wallet_manager, global_mint, &npubcash_url, requested_mint),
         )
         .await
         .expect("set-mint does not hang on the requested mint")
         .expect("set-mint succeeds");
 
-        let active = wallet_repository
-            .get_active_npubcash_mint()
+        let active = wallet_manager
+            .advanced()
+            .active_npubcash_mint()
             .await
             .expect("active npubcash mint is readable");
 
@@ -453,16 +456,17 @@ mod tests {
                 .await
                 .expect("memory db"),
         );
-        let wallet_repository = WalletRepositoryBuilder::new()
-            .localstore(localstore)
-            .seed([0u8; 64])
+        let wallet_manager = WalletManagerBuilder::new()
+            .with_store(localstore)
+            .with_seed([0u8; 64])
             .build()
             .await
-            .expect("wallet repository builds");
+            .expect("wallet manager builds");
 
         let previous_mint =
             MintUrl::from_str("https://previous-mint.invalid").expect("previous mint URL is valid");
-        wallet_repository
+        wallet_manager
+            .advanced()
             .set_active_npubcash_mint(previous_mint.clone())
             .await
             .expect("active mint can be set");
@@ -478,7 +482,7 @@ mod tests {
         let result = tokio::time::timeout(
             Duration::from_secs(10),
             set_mint(
-                &wallet_repository,
+                &wallet_manager,
                 "https://global-mint.invalid",
                 &npubcash_url,
                 "https://requested-mint.invalid",
@@ -489,8 +493,9 @@ mod tests {
 
         assert!(result.is_err());
 
-        let active = wallet_repository
-            .get_active_npubcash_mint()
+        let active = wallet_manager
+            .advanced()
+            .active_npubcash_mint()
             .await
             .expect("active npubcash mint is readable");
 

@@ -584,6 +584,45 @@ where
     assert_ne!(retrieved.amount, Amount::from(999));
 }
 
+/// A stale quote update must not clear or resurrect a reservation.
+pub async fn melt_quote_updates_check_reservation_owner<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let quote = test_melt_quote();
+    db.add_melt_quote(quote.clone()).await.unwrap();
+    let operation = uuid::Uuid::new_v4();
+    db.reserve_melt_quote(&quote.id, &operation).await.unwrap();
+
+    let mut stale = quote.clone();
+    stale.fee_reserve = Amount::from(999);
+    assert!(matches!(
+        db.add_melt_quote(stale).await,
+        Err(crate::database::Error::ConcurrentUpdate)
+    ));
+    let mut reserved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(reserved.used_by_operation, Some(operation.to_string()));
+    assert_eq!(reserved.fee_reserve, quote.fee_reserve);
+
+    reserved.state = MeltQuoteState::Pending;
+    db.add_melt_quote(reserved).await.unwrap();
+    let reserved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(reserved.state, MeltQuoteState::Pending);
+
+    db.release_melt_quote(&operation).await.unwrap();
+    assert!(matches!(
+        db.add_melt_quote(reserved).await,
+        Err(crate::database::Error::ConcurrentUpdate)
+    ));
+    assert!(db
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .used_by_operation
+        .is_none());
+}
+
 // =============================================================================
 // Proof Management Tests
 // =============================================================================
@@ -1766,6 +1805,7 @@ macro_rules! wallet_db_test {
             remove_melt_quote,
             add_mint_quote_optimistic_locking,
             add_melt_quote_optimistic_locking,
+            melt_quote_updates_check_reservation_owner,
             add_and_get_proofs,
             get_proofs_in_transaction,
             update_proofs,

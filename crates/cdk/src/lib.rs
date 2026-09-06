@@ -65,13 +65,10 @@ pub use bitcoin::secp256k1;
 pub use mint::Mint;
 #[cfg(feature = "wallet")]
 #[doc(hidden)]
-pub use wallet::{Wallet, WalletSubscription};
+pub use wallet::Wallet;
 
 #[doc(hidden)]
 pub use self::util::SECP256K1;
-#[cfg(feature = "wallet")]
-#[doc(hidden)]
-pub use self::wallet::HttpClient;
 
 /// Result
 #[doc(hidden)]

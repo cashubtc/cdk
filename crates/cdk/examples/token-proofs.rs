@@ -1,9 +1,9 @@
-//! Example: Decoding a token and getting proofs using WalletRepository
+//! Example: Decoding a token and getting proofs using WalletManager
 //!
 //! This example demonstrates how to:
-//! 1. Create a WalletRepository
+//! 1. Create a WalletManager
 //! 2. Decode a cashu token
-//! 3. Use `get_token_data` to extract mint URL and proofs in one call
+//! 3. Use the advanced token inspector to extract mint URL and proofs in one call
 //! 4. Alternatively, get keysets manually and extract proofs
 
 use std::str::FromStr;
@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::Token;
-use cdk::wallet::WalletRepositoryBuilder;
+use cdk::wallet::advanced::MintMetadataRequest;
+use cdk::wallet::{WalletIdentity, WalletManagerBuilder};
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
@@ -23,10 +24,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize the memory store
     let localstore = Arc::new(memory::empty().await?);
 
-    // Create a new WalletRepository
-    let wallet = WalletRepositoryBuilder::new()
-        .localstore(localstore)
-        .seed(seed)
+    // Create a new WalletManager
+    let wallet = WalletManagerBuilder::new()
+        .with_store(localstore)
+        .with_seed(seed)
         .build()
         .await?;
 
@@ -47,14 +48,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Add the mint to our wallet so we can fetch keysets
-    wallet.add_wallet(mint_url.clone()).await?;
+    wallet.register_mint(mint_url.clone()).await?;
 
     // =========================================================================
-    // Method 1: Use get_token_data() for a simple one-call approach
+    // Method 1: Use the advanced token inspector for a one-call approach
     // =========================================================================
-    println!("\n--- Using get_token_data() ---");
+    println!("\n--- Using inspect_token() ---");
 
-    let token_data = wallet.get_token_data(&token).await?;
+    let token_data = wallet.advanced().inspect_token(&token).await?;
     println!("Mint URL: {}", token_data.mint_url);
     println!("Number of proofs: {}", token_data.proofs.len());
 
@@ -74,12 +75,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get the keysets for this mint using a wallet
     let mint_wallet = wallet
-        .get_wallets_for_mint(&mint_url)
-        .await
-        .into_iter()
-        .next()
-        .ok_or("No wallet found for mint")?;
-    let keysets: Vec<cdk::nuts::KeySet> = mint_wallet.keysets(Default::default()).await?;
+        .wallet(WalletIdentity {
+            mint_url: mint_url.clone(),
+            unit: token_data.unit.clone(),
+        })
+        .await?;
+    let keysets = mint_wallet
+        .advanced()
+        .mint_metadata(MintMetadataRequest::default())
+        .await?
+        .keysets;
 
     for keyset in &keysets {
         println!(

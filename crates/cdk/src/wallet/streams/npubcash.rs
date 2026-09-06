@@ -7,6 +7,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use cdk_common::amount::SplitTarget;
+use cdk_common::wallet::MintQuote;
 use cdk_common::MintQuoteState;
 use futures::Stream;
 use tokio::sync::mpsc;
@@ -14,9 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
 use crate::nuts::{Proofs, SpendingConditions};
-use crate::wallet::types::MintQuote;
-use crate::wallet::wallet_repository::WalletRepository;
-use crate::wallet::Wallet;
+use crate::wallet::{Wallet, WalletManager};
 
 /// Stream that continuously polls NpubCash and yields proofs as payments arrive
 #[allow(missing_debug_implementations)]
@@ -28,7 +27,7 @@ pub struct NpubCashProofStream {
 impl NpubCashProofStream {
     /// Create a new NpubCash proof stream
     pub fn new(
-        wallet: WalletRepository,
+        wallet: WalletManager,
         poll_interval: Duration,
         split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
@@ -46,7 +45,7 @@ impl NpubCashProofStream {
                         break;
                     }
                     _ = interval.tick() => {
-                        match wallet.sync_npubcash_quotes().await {
+                        match wallet.advanced().synchronize_npubcash_quotes().await {
                             Ok(quotes) => {
                                 for quote in quotes {
                                     if matches!(quote.state, MintQuoteState::Paid) {
@@ -132,7 +131,7 @@ impl WalletNpubCashProofStream {
                         break;
                     }
                     _ = interval.tick() => {
-                        match wallet.sync_npubcash_quotes().await {
+                        match wallet.advanced().synchronize_npubcash_quotes().await {
                             Ok(quotes) => {
                                 for quote in quotes {
                                     if matches!(quote.state, MintQuoteState::Paid) {

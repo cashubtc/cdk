@@ -1,13 +1,13 @@
 use anyhow::Result;
-use cdk::wallet::WalletRepository;
+use cdk::wallet::WalletManager;
 use cdk::Amount;
 
-pub async fn mint_pending(wallet_repository: &WalletRepository) -> Result<()> {
-    let wallets = wallet_repository.get_wallets().await;
+pub async fn mint_pending(wallet_manager: &WalletManager) -> Result<()> {
+    let wallets = wallet_manager.wallets().await;
     let mut total_amount = Amount::ZERO;
 
     for wallet in wallets {
-        let amount = wallet.check_all_pending_proofs().await?;
+        let amount = wallet.advanced().reconcile_proofs().await?;
         total_amount += amount;
     }
 

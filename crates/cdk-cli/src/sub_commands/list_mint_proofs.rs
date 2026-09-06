@@ -1,7 +1,8 @@
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, Proof};
-use cdk::wallet::WalletRepository;
+use cdk::nuts::{CurrencyUnit, Proof, State};
+use cdk::wallet::advanced::ProofQuery;
+use cdk::wallet::WalletManager;
 use clap::Args;
 
 use crate::terminal::escape_control;
@@ -16,34 +17,44 @@ pub struct ListMintProofsSubCommand {
 }
 
 pub async fn proofs(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     sub_command_args: &ListMintProofsSubCommand,
 ) -> Result<()> {
-    list_proofs(wallet_repository, sub_command_args.show_secrets).await?;
+    list_proofs(wallet_manager, sub_command_args.show_secrets).await?;
     Ok(())
 }
 
 async fn list_proofs(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     show_secrets: bool,
 ) -> Result<Vec<(MintUrl, (Vec<Proof>, CurrencyUnit))>> {
     let mut proofs_vec = Vec::new();
 
-    let wallets = wallet_repository.get_wallets().await;
+    let wallets = wallet_manager.wallets().await;
 
     for (i, wallet) in wallets.iter().enumerate() {
-        let mint_url = wallet.mint_url.clone();
+        let identity = wallet.identity();
+        let mint_url = identity.mint_url;
         println!("{i}: {}", escape_control(&mint_url.to_string()));
         println!("|   Amount | Unit | State    | Secret                                                           | DLEQ proof included");
         println!("|----------|------|----------|------------------------------------------------------------------|--------------------");
 
         // Unspent proofs
-        let unspent_proofs = wallet.get_unspent_proofs().await?;
+        let unspent_proofs = wallet
+            .advanced()
+            .proofs(ProofQuery {
+                states: vec![State::Unspent],
+                conditions: None,
+            })
+            .await?
+            .into_iter()
+            .map(|proof| proof.proof)
+            .collect::<Vec<_>>();
         for proof in unspent_proofs.iter() {
             println!(
                 "| {:8} | {:4} | {:8} | {:64} | {}",
                 proof.amount,
-                escape_control(&wallet.unit.to_string()),
+                escape_control(&identity.unit.to_string()),
                 "unspent",
                 render_secret(&proof.secret.to_string(), show_secrets),
                 proof.dleq.is_some()
@@ -51,12 +62,19 @@ async fn list_proofs(
         }
 
         // Pending proofs
-        let pending_proofs = wallet.get_pending_proofs().await?;
+        let pending_proofs = wallet
+            .advanced()
+            .proofs(ProofQuery {
+                states: vec![State::Pending],
+                conditions: None,
+            })
+            .await?;
         for proof in pending_proofs {
+            let proof = proof.proof;
             println!(
                 "| {:8} | {:4} | {:8} | {:64} | {}",
                 proof.amount,
-                escape_control(&wallet.unit.to_string()),
+                escape_control(&identity.unit.to_string()),
                 "pending",
                 render_secret(&proof.secret.to_string(), show_secrets),
                 proof.dleq.is_some()
@@ -64,12 +82,19 @@ async fn list_proofs(
         }
 
         // Reserved proofs
-        let reserved_proofs = wallet.get_reserved_proofs().await?;
+        let reserved_proofs = wallet
+            .advanced()
+            .proofs(ProofQuery {
+                states: vec![State::Reserved],
+                conditions: None,
+            })
+            .await?;
         for proof in reserved_proofs {
+            let proof = proof.proof;
             println!(
                 "| {:8} | {:4} | {:8} | {:64} | {}",
                 proof.amount,
-                escape_control(&wallet.unit.to_string()),
+                escape_control(&identity.unit.to_string()),
                 "reserved",
                 render_secret(&proof.secret.to_string(), show_secrets),
                 proof.dleq.is_some()
@@ -77,7 +102,7 @@ async fn list_proofs(
         }
 
         println!();
-        proofs_vec.push((mint_url, (unspent_proofs, wallet.unit.clone())));
+        proofs_vec.push((mint_url, (unspent_proofs, identity.unit)));
     }
     Ok(proofs_vec)
 }

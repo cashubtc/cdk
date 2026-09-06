@@ -199,7 +199,10 @@ pub trait WalletDatabase: Send + Sync {
     /// Remove mint quote from storage
     async fn remove_mint_quote(&self, quote_id: String) -> Result<(), FfiError>;
 
-    /// Add melt quote to storage
+    /// Insert a melt quote or update it with optimistic locking.
+    /// Updates must atomically match both `version` and `used_by_operation`;
+    /// a stale update must never change quote ownership. Use the reservation
+    /// and release methods to change ownership.
     async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), FfiError>;
 
     /// Remove melt quote from storage
@@ -413,7 +416,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     async fn get_mint_quote(
         &self,
         quote_id: &str,
-    ) -> Result<Option<cdk::wallet::MintQuote>, cdk::cdk_database::Error> {
+    ) -> Result<Option<cdk_common::wallet::MintQuote>, cdk::cdk_database::Error> {
         let result = self
             .ffi_db
             .get_mint_quote(quote_id.to_string())
@@ -429,7 +432,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
 
     async fn get_mint_quotes(
         &self,
-    ) -> Result<Vec<cdk::wallet::MintQuote>, cdk::cdk_database::Error> {
+    ) -> Result<Vec<cdk_common::wallet::MintQuote>, cdk::cdk_database::Error> {
         let result = self
             .ffi_db
             .get_mint_quotes()
@@ -446,7 +449,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
 
     async fn get_unissued_mint_quotes(
         &self,
-    ) -> Result<Vec<cdk::wallet::MintQuote>, cdk::cdk_database::Error> {
+    ) -> Result<Vec<cdk_common::wallet::MintQuote>, cdk::cdk_database::Error> {
         let result = self
             .ffi_db
             .get_unissued_mint_quotes()
@@ -465,7 +468,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     async fn get_melt_quote(
         &self,
         quote_id: &str,
-    ) -> Result<Option<cdk::wallet::MeltQuote>, cdk::cdk_database::Error> {
+    ) -> Result<Option<cdk_common::wallet::MeltQuote>, cdk::cdk_database::Error> {
         let result = self
             .ffi_db
             .get_melt_quote(quote_id.to_string())
@@ -481,7 +484,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
 
     async fn get_melt_quotes(
         &self,
-    ) -> Result<Vec<cdk::wallet::MeltQuote>, cdk::cdk_database::Error> {
+    ) -> Result<Vec<cdk_common::wallet::MeltQuote>, cdk::cdk_database::Error> {
         let result = self
             .ffi_db
             .get_melt_quotes()
@@ -651,8 +654,8 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     // Transaction Management
     async fn get_transaction(
         &self,
-        transaction_id: cdk::wallet::types::TransactionId,
-    ) -> Result<Option<cdk::wallet::types::Transaction>, cdk::cdk_database::Error> {
+        transaction_id: cdk_common::wallet::TransactionId,
+    ) -> Result<Option<cdk_common::wallet::Transaction>, cdk::cdk_database::Error> {
         let ffi_id = transaction_id.into();
         let result = self
             .ffi_db
@@ -669,9 +672,9 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     async fn list_transactions(
         &self,
         mint_url: Option<cdk::mint_url::MintUrl>,
-        direction: Option<cdk::wallet::types::TransactionDirection>,
+        direction: Option<cdk_common::wallet::TransactionDirection>,
         unit: Option<cdk::nuts::CurrencyUnit>,
-    ) -> Result<Vec<cdk::wallet::types::Transaction>, cdk::cdk_database::Error> {
+    ) -> Result<Vec<cdk_common::wallet::Transaction>, cdk::cdk_database::Error> {
         let ffi_mint_url = mint_url.map(Into::into);
         let ffi_direction = direction.map(Into::into);
         let ffi_unit = unit.map(Into::into);
@@ -789,7 +792,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
 
     async fn add_transaction(
         &self,
-        transaction: cdk::wallet::types::Transaction,
+        transaction: cdk_common::wallet::Transaction,
     ) -> Result<(), cdk::cdk_database::Error> {
         let ffi_transaction = transaction.into();
         self.ffi_db
@@ -873,7 +876,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
 
     async fn add_mint_quote(
         &self,
-        quote: cdk::wallet::MintQuote,
+        quote: cdk_common::wallet::MintQuote,
     ) -> Result<(), cdk::cdk_database::Error> {
         let ffi_quote = quote.into();
         self.ffi_db
@@ -891,7 +894,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
 
     async fn add_melt_quote(
         &self,
-        quote: cdk::wallet::MeltQuote,
+        quote: cdk_common::wallet::MeltQuote,
     ) -> Result<(), cdk::cdk_database::Error> {
         let ffi_quote = quote.into();
         self.ffi_db
@@ -925,7 +928,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
 
     async fn remove_transaction(
         &self,
-        transaction_id: cdk::wallet::types::TransactionId,
+        transaction_id: cdk_common::wallet::TransactionId,
     ) -> Result<(), cdk::cdk_database::Error> {
         let ffi_id = transaction_id.into();
         self.ffi_db
@@ -1561,7 +1564,7 @@ where
     }
 
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), FfiError> {
-        let cdk_transaction: cdk::wallet::types::Transaction = transaction.try_into()?;
+        let cdk_transaction: cdk_common::wallet::Transaction = transaction.try_into()?;
         self.inner
             .add_transaction(cdk_transaction)
             .await
@@ -2203,7 +2206,7 @@ pub enum WalletDbBackend {
 /// This is an enum rather than accepting `WalletDatabase` directly because UniFFI
 /// does not support trait objects as constructor parameters — only callback interfaces
 /// wrapped in `Arc<dyn Trait>` inside an enum variant work across the FFI boundary.
-#[derive(uniffi::Enum)]
+#[derive(uniffi::Enum, Clone)]
 pub enum WalletStore {
     Sqlite {
         path: String,

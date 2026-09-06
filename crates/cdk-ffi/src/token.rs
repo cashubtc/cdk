@@ -1,6 +1,7 @@
 //! FFI token bindings
 
 use std::collections::BTreeSet;
+use std::fmt;
 use std::str::FromStr;
 
 use crate::error::FfiError;
@@ -8,9 +9,17 @@ use crate::types::TokenUrEncoder;
 use crate::{Amount, CurrencyUnit, KeySetInfo, MintUrl, Proofs};
 
 /// FFI-compatible Token
-#[derive(Debug, uniffi::Object)]
+#[derive(uniffi::Object)]
 pub struct Token {
     pub(crate) inner: cdk::nuts::Token,
+}
+
+impl fmt::Debug for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Token")
+            .field("encoded", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl std::fmt::Display for Token {
@@ -186,5 +195,33 @@ impl Token {
             .unwrap_or(cdk::nuts::nut16::DEFAULT_MAX_FRAGMENT_LENGTH);
         let encoder = cdk::nuts::nut16::TokenUrEncoder::new(&self.inner, max_fragment_length)?;
         Ok(std::sync::Arc::new(TokenUrEncoder::from_inner(encoder)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    const TOKEN: &str = "cashuBpGF0gaJhaUgArSaMTR9YJmFwgaNhYQFhc3hAOWE2ZGJiODQ3YmQyMzJiYTc2ZGIwZGYxOTcyMTZiMjlkM2I4Y2MxNDU1M2NkMjc4MjdmYzFjYzk0MmZlZGI0ZWFjWCEDhhhUP_trhpXfStS6vN6So0qWvc2X3O4NfM-Y1HISZ5JhZGlUaGFuayB5b3VhbXVodHRwOi8vbG9jYWxob3N0OjMzMzhhdWNzYXQ=";
+
+    #[allow(clippy::use_debug)]
+    #[test]
+    fn token_debug_redacts_bearer_data() {
+        let token = Token::from_str(TOKEN).expect("public test vector should parse");
+        let secret = token
+            .inner
+            .proofs(&[])
+            .expect("test token should expose its proof")
+            .into_iter()
+            .next()
+            .expect("test token should contain a proof")
+            .secret
+            .to_string();
+        let output = format!("{token:?}");
+        assert!(!output.contains(&secret));
+        assert!(!output.contains(TOKEN));
+        assert!(output.contains("[REDACTED]"));
     }
 }

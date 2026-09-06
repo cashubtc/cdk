@@ -73,8 +73,8 @@ impl fmt::Debug for MintQuote {
     }
 }
 
-impl From<cdk::wallet::MintQuote> for MintQuote {
-    fn from(quote: cdk::wallet::MintQuote) -> Self {
+impl From<cdk_common::wallet::MintQuote> for MintQuote {
+    fn from(quote: cdk_common::wallet::MintQuote) -> Self {
         Self {
             id: quote.id.clone(),
             amount: quote.amount.map(Into::into),
@@ -95,7 +95,7 @@ impl From<cdk::wallet::MintQuote> for MintQuote {
     }
 }
 
-impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
+impl TryFrom<MintQuote> for cdk_common::wallet::MintQuote {
     type Error = FfiError;
 
     fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
@@ -136,8 +136,8 @@ pub struct CrossMintTransferQuote {
     pub input_fee: Amount,
 }
 
-impl From<cdk::wallet::CrossMintTransferQuote> for CrossMintTransferQuote {
-    fn from(quote: cdk::wallet::CrossMintTransferQuote) -> Self {
+impl From<cdk_common::wallet::CrossMintTransferQuote> for CrossMintTransferQuote {
+    fn from(quote: cdk_common::wallet::CrossMintTransferQuote) -> Self {
         Self {
             mint_quote: quote.mint_quote.into(),
             melt_quote: quote.melt_quote.into(),
@@ -149,28 +149,28 @@ impl From<cdk::wallet::CrossMintTransferQuote> for CrossMintTransferQuote {
 /// Get total amount for a mint quote (amount paid)
 #[uniffi::export]
 pub fn mint_quote_total_amount(quote: &MintQuote) -> Result<Amount, FfiError> {
-    let cdk_quote: cdk::wallet::MintQuote = quote.clone().try_into()?;
+    let cdk_quote: cdk_common::wallet::MintQuote = quote.clone().try_into()?;
     Ok(cdk_quote.total_amount().into())
 }
 
 /// Check if mint quote is expired
 #[uniffi::export]
 pub fn mint_quote_is_expired(quote: &MintQuote, current_time: u64) -> Result<bool, FfiError> {
-    let cdk_quote: cdk::wallet::MintQuote = quote.clone().try_into()?;
+    let cdk_quote: cdk_common::wallet::MintQuote = quote.clone().try_into()?;
     Ok(cdk_quote.is_expired(current_time))
 }
 
 /// Get amount that can be minted from a mint quote
 #[uniffi::export]
 pub fn mint_quote_amount_mintable(quote: &MintQuote) -> Result<Amount, FfiError> {
-    let cdk_quote: cdk::wallet::MintQuote = quote.clone().try_into()?;
+    let cdk_quote: cdk_common::wallet::MintQuote = quote.clone().try_into()?;
     Ok(cdk_quote.amount_mintable().into())
 }
 
 /// Decode MintQuote from JSON string
 #[uniffi::export]
 pub fn decode_mint_quote(json: String) -> Result<MintQuote, FfiError> {
-    let quote: cdk::wallet::MintQuote = serde_json::from_str(&json)?;
+    let quote: cdk_common::wallet::MintQuote = serde_json::from_str(&json)?;
     Ok(quote.into())
 }
 
@@ -225,8 +225,8 @@ impl From<cdk::nuts::MintQuoteBolt11Response<String>> for MintQuoteBolt11Respons
     }
 }
 
-impl From<cdk::wallet::MintQuote> for MintQuoteBolt11Response {
-    fn from(quote: cdk::wallet::MintQuote) -> Self {
+impl From<cdk_common::wallet::MintQuote> for MintQuoteBolt11Response {
+    fn from(quote: cdk_common::wallet::MintQuote) -> Self {
         Self {
             quote: quote.id,
             request: quote.request,
@@ -598,8 +598,8 @@ impl fmt::Debug for MeltQuote {
     }
 }
 
-impl From<cdk::wallet::MeltQuote> for MeltQuote {
-    fn from(quote: cdk::wallet::MeltQuote) -> Self {
+impl From<cdk_common::wallet::MeltQuote> for MeltQuote {
+    fn from(quote: cdk_common::wallet::MeltQuote) -> Self {
         Self {
             id: quote.id.clone(),
             mint_url: quote.mint_url.map(Into::into),
@@ -619,7 +619,7 @@ impl From<cdk::wallet::MeltQuote> for MeltQuote {
     }
 }
 
-impl TryFrom<MeltQuote> for cdk::wallet::MeltQuote {
+impl TryFrom<MeltQuote> for cdk_common::wallet::MeltQuote {
     type Error = FfiError;
 
     fn try_from(quote: MeltQuote) -> Result<Self, Self::Error> {
@@ -652,7 +652,7 @@ impl MeltQuote {
 /// Decode MeltQuote from JSON string
 #[uniffi::export]
 pub fn decode_melt_quote(json: String) -> Result<MeltQuote, FfiError> {
-    let quote: cdk::wallet::MeltQuote = serde_json::from_str(&json)?;
+    let quote: cdk_common::wallet::MeltQuote = serde_json::from_str(&json)?;
     Ok(quote.into())
 }
 

@@ -23,8 +23,12 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use cashu::{Bolt11Invoice, PaymentMethod};
 use cdk::amount::{Amount, SplitTarget};
-use cdk::nuts::{MeltRequest, MintRequest, MintResponse, PreMintSecrets, Proofs};
-use cdk::wallet::{HttpClient, MintConnector, MintQuote};
+use cdk::nuts::{CurrencyUnit, MeltRequest, MintRequest, MintResponse, PreMintSecrets, Proofs};
+use cdk::wallet::advanced::{
+    HttpClient, MintConnector, MintMetadataRequest, WalletOpenAdvancedOptions,
+};
+use cdk::wallet::mint::{MintRequest as WalletMintRequest, MintSession};
+use cdk::wallet::{WalletIdentity, WalletOpenRequest};
 use cdk::{MeltQuoteResponse, StreamExt, Wallet};
 use cdk_fake_wallet::create_fake_invoice;
 use init_regtest::{get_lnd_dir, LND_RPC_ADDR};
@@ -39,6 +43,23 @@ pub mod init_regtest;
 pub mod ln_regtest;
 pub mod shared;
 
+/// Open a standalone wallet for integration tests that need isolated storage.
+pub fn open_test_wallet(
+    mint_url: &str,
+    unit: CurrencyUnit,
+    store: Arc<dyn cdk_common::database::WalletDatabase<cdk_common::database::Error> + Send + Sync>,
+    seed: [u8; 64],
+    target_proof_count: Option<usize>,
+) -> Result<Wallet> {
+    let request = WalletOpenRequest::new(WalletIdentity::new(mint_url.parse()?, unit), store, seed);
+    let request = match target_proof_count {
+        Some(count) => request
+            .with_advanced(WalletOpenAdvancedOptions::default().with_target_proof_count(count)),
+        None => request,
+    };
+    Ok(Wallet::open(request)?)
+}
+
 /// Generate standard keyset amounts as powers of 2
 ///
 /// Returns a vector of amounts: [1, 2, 4, 8, 16, 32, ..., 2^(n-1)]
@@ -51,17 +72,17 @@ pub fn standard_keyset_amounts(max_order: u32) -> Vec<u64> {
 }
 
 pub async fn fund_wallet(wallet: Arc<Wallet>, amount: Amount) {
-    let quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
+    let session = wallet
+        .request_mint(WalletMintRequest::bolt11(amount))
         .await
         .expect("Could not get mint quote");
 
-    let _proofs = wallet
-        .proof_stream(quote, SplitTarget::default(), None)
+    let _receipt = session
+        .receipts(Default::default())
         .next()
         .await
-        .expect("proofs")
-        .expect("proofs with no error");
+        .expect("mint receipt")
+        .expect("mint receipt with no error");
 }
 
 pub fn get_mint_url_from_env() -> String {
@@ -227,11 +248,21 @@ async fn create_cln_client_with_retry() -> ClnClient {
 pub async fn attempt_manual_mint(
     wallet: &Wallet,
     mint_url: &str,
-    mint_quote: &MintQuote,
+    store: &Arc<
+        dyn cdk_common::database::WalletDatabase<cdk_common::database::Error> + Send + Sync,
+    >,
+    mint_session: &MintSession,
     mint_amount: Amount,
     payment_method: PaymentMethod,
 ) -> Result<MintResponse, cdk::Error> {
-    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
+    let active_keyset_id = wallet
+        .advanced()
+        .mint_metadata(MintMetadataRequest::default())
+        .await
+        .unwrap()
+        .active_keyset()
+        .expect("active keyset")
+        .id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
     let http_client = HttpClient::new(mint_url.parse().unwrap(), None);
 
@@ -244,13 +275,17 @@ pub async fn attempt_manual_mint(
     .unwrap();
 
     let mut request = MintRequest {
-        quote: mint_quote.id.clone(),
+        quote: mint_session.id().to_string(),
         outputs: premint_secrets.blinded_messages(),
         signature: None,
     };
 
+    let quote = store
+        .get_mint_quote(mint_session.id().as_str())
+        .await?
+        .ok_or(cdk::Error::UnknownQuote)?;
     request
-        .sign(mint_quote.secret_key.as_ref().expect("Secret key on quote"))
+        .sign(quote.secret_key.as_ref().expect("Secret key on quote"))
         .unwrap();
 
     http_client.post_mint(&payment_method, request).await

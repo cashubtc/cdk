@@ -5,14 +5,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cdk::error::Error;
-use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{BaseHttpClient, HttpTransport, SendOptions, WalletBuilder};
+use cdk::wallet::advanced::{BaseHttpClient, HttpTransport, WalletBuilder};
+use cdk::wallet::mint::MintRequest;
+use cdk::wallet::send::SendRequest;
 use cdk::{Amount, StreamExt};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::{AuthToken, PaymentMethod};
 use cdk_http_client::{HttpError, RawResponse};
 use cdk_sqlite::wallet::memory;
+use futures::stream::FuturesUnordered;
 use rand::random;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -174,49 +176,50 @@ async fn main() -> Result<(), Error> {
 
     // Create a new wallet
     let wallet = WalletBuilder::new()
-        .mint_url(mint_url)
-        .unit(unit)
-        .localstore(localstore)
-        .seed(seed)
-        .target_proof_count(3)
-        .client(http_client)
+        .with_mint_url(mint_url)
+        .with_unit(unit)
+        .with_store(localstore)
+        .with_seed(seed)
+        .with_target_proof_count(3)
+        .with_connector(http_client)
         .build()?;
 
-    let quotes = vec![
+    let sessions = vec![
         wallet
-            .mint_quote(PaymentMethod::BOLT12, None, None, None)
+            .request_mint(MintRequest::new(PaymentMethod::BOLT12, None))
             .await?,
         wallet
-            .mint_quote(PaymentMethod::BOLT12, None, None, None)
+            .request_mint(MintRequest::new(PaymentMethod::BOLT12, None))
             .await?,
         wallet
-            .mint_quote(PaymentMethod::BOLT12, None, None, None)
+            .request_mint(MintRequest::new(PaymentMethod::BOLT12, None))
             .await?,
     ];
 
-    let mut stream = wallet.mints_proof_stream(quotes, Default::default(), None);
-
-    let stop = stream.get_cancel_token();
+    let mut stream = FuturesUnordered::new();
+    for session in sessions {
+        stream.push(async move {
+            let quote_id = session.id().clone();
+            session
+                .wait(Duration::from_secs(3_600))
+                .await
+                .map(|receipt| (quote_id, receipt))
+        });
+    }
 
     let mut processed = 0;
 
-    while let Some(proofs) = stream.next().await {
-        let (mint_quote, proofs) = proofs?;
+    while let Some(result) = stream.next().await {
+        let (quote_id, receipt) = result?;
 
-        // Mint the received amount
-        let receive_amount = proofs.total_amount()?;
-        tracing::info!("Received {} from mint {}", receive_amount, mint_quote.id);
+        tracing::info!("Received {} from mint {}", receipt.amount, quote_id);
 
         // Send a token with the specified amount
-        let prepared_send = wallet.prepare_send(amount, SendOptions::default()).await?;
-        let token = prepared_send.confirm(None).await?;
+        let send_plan = wallet.plan_send(SendRequest::new(amount)).await?;
+        let token = send_plan.execute().await?.token;
         tracing::info!("Token: {}", token);
 
         processed += 1;
-
-        if processed == 3 {
-            stop.cancel()
-        }
     }
 
     tracing::info!("Stopped the loop after {} quotes being minted", processed);

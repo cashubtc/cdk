@@ -5,11 +5,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bip39::Mnemonic;
-use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
-use cdk::nuts::nut00::KnownMethod;
-use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::{ReceiveOptions, SendOptions, WalletRepositoryBuilder};
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::mint::MintRequest;
+use cdk::wallet::receive::ReceiveRequest;
+use cdk::wallet::send::{SendRequest, SendStatus};
+use cdk::wallet::{WalletIdentity, WalletManagerBuilder};
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 
@@ -32,23 +33,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seed = mnemonic.to_seed_normalized("");
     println!("Generated mnemonic: {}", mnemonic);
 
-    // Create the WalletRepository
+    // Create the WalletManager
     let localstore = Arc::new(memory::empty().await?);
-    let wallet = WalletRepositoryBuilder::new()
-        .localstore(localstore)
-        .seed(seed)
+    let manager = WalletManagerBuilder::new()
+        .with_store(localstore)
+        .with_seed(seed)
         .build()
         .await?;
-    println!("Created WalletRepository");
+    println!("Created WalletManager");
 
-    // Add a mint to the wallet
-    wallet.add_wallet(mint_url.clone()).await?;
+    let identity = WalletIdentity {
+        mint_url: mint_url.clone(),
+        unit: unit.clone(),
+    };
+    let mint_wallet = manager.wallet(identity.clone()).await?;
     println!("Added mint: {}", mint_url);
-
-    // Get the wallet for this mint
-    let mint_wallet = wallet
-        .create_wallet(mint_url.clone(), unit.clone(), None)
-        .await?;
 
     // ========================================
     // 1. FUND: Mint some tokens to start
@@ -57,30 +56,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- 1. FUNDING WALLET ---");
     println!("Minting {} sats...", mint_amount);
 
-    let mint_quote = mint_wallet
-        .mint_quote(
-            PaymentMethod::Known(KnownMethod::Bolt11),
-            Some(mint_amount),
-            None,
-            None,
-        )
+    let mint_session = mint_wallet
+        .request_mint(MintRequest::bolt11(mint_amount))
         .await?;
 
     // Wait for quote to be paid (automatic with test mint)
-    let _proofs = mint_wallet
-        .wait_and_mint_quote(
-            mint_quote.clone(),
-            SplitTarget::default(),
-            None,
-            Duration::from_secs(60),
-        )
-        .await?;
+    mint_session.wait(Duration::from_secs(60)).await?;
 
-    let balances = wallet.total_balance().await?;
-    let balance = balances
-        .get(&CurrencyUnit::Sat)
-        .copied()
-        .unwrap_or(Amount::ZERO);
+    let balance = mint_wallet.balance().await?.available;
     println!("Wallet funded. Balance: {} sats", balance);
 
     // ========================================
@@ -90,22 +73,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- 2. CREATING SEND ---");
     println!("Preparing to send {} sats...", send_amount);
 
-    // Prepare and confirm the send
-    let prepared_send = mint_wallet
-        .prepare_send(send_amount, SendOptions::default())
-        .await?;
-
-    let operation_id = prepared_send.operation_id();
-    let token = prepared_send.confirm(None).await?;
+    let send_plan = mint_wallet.plan_send(SendRequest::new(send_amount)).await?;
+    let operation_id = send_plan.operation_id();
+    let receipt = send_plan.execute().await?;
 
     println!("Token created (Send Operation ID: {})", operation_id);
-    println!("Token: {}", token);
+    println!("Token: {}", receipt.token);
 
-    let balances_after_send = wallet.total_balance().await?;
-    let balance_after_send = balances_after_send
-        .get(&CurrencyUnit::Sat)
-        .copied()
-        .unwrap_or(Amount::ZERO);
+    let balance_after_send = mint_wallet.balance().await?.available;
     println!("Balance after send: {} sats", balance_after_send);
 
     // ========================================
@@ -114,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- 3. INSPECTING STATUS ---");
 
     // Get all pending sends
-    let pending_sends = mint_wallet.get_pending_sends().await?;
+    let pending_sends = mint_wallet.pending_send_ids().await?;
     println!("Pending sends count: {}", pending_sends.len());
 
     for id in &pending_sends {
@@ -122,10 +97,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Check specific status
-    let claimed = mint_wallet.check_send_status(operation_id).await?;
-    println!("Is token claimed? {}", claimed);
+    let status = mint_wallet.send_status(operation_id).await?;
+    println!("Send status: {}", status);
 
-    if !claimed {
+    if status == SendStatus::Unclaimed {
         println!("Token is unclaimed. Revocation possible.");
     } else {
         println!("Token already claimed. Cannot revoke.");
@@ -138,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- 4. REVOKING SEND ---");
     println!("Revoking operation {}...", operation_id);
 
-    let reclaimed_amount = mint_wallet.revoke_send(operation_id).await?;
+    let reclaimed_amount = mint_wallet.reclaim_send(operation_id).await?;
     println!("Reclaimed {} sats", reclaimed_amount);
 
     // ========================================
@@ -147,15 +122,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- 5. VERIFYING STATE ---");
 
     // Check pending sends again
-    let pending_after = mint_wallet.get_pending_sends().await?;
+    let pending_after = mint_wallet.pending_send_ids().await?;
     println!("Pending sends after revocation: {}", pending_after.len());
 
     // Check final balance
-    let final_balances = wallet.total_balance().await?;
-    let final_balance = final_balances
-        .get(&CurrencyUnit::Sat)
-        .copied()
-        .unwrap_or(Amount::ZERO);
+    let final_balance = mint_wallet.balance().await?.available;
     println!("Final balance: {} sats", final_balance);
 
     if final_balance > balance_after_send {
@@ -177,47 +148,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Sending {} sats to be claimed...", send_amount_2);
 
     // Create a new send
-    let prepared_send_2 = mint_wallet
-        .prepare_send(send_amount_2, SendOptions::default())
+    let send_plan_2 = mint_wallet
+        .plan_send(SendRequest::new(send_amount_2))
         .await?;
-    let operation_id_2 = prepared_send_2.operation_id();
-    let token_2 = prepared_send_2.confirm(None).await?;
-    println!("Token created: {}", token_2);
+    let operation_id_2 = send_plan_2.operation_id();
+    let receipt_2 = send_plan_2.execute().await?;
+    println!("Token created: {}", receipt_2.token);
 
     // Create a receiver wallet
     println!("Creating receiver wallet...");
     let receiver_seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let receiver_store = Arc::new(memory::empty().await?);
-    let receiver_wallet = WalletRepositoryBuilder::new()
-        .localstore(receiver_store)
-        .seed(receiver_seed)
+    let receiver_manager = WalletManagerBuilder::new()
+        .with_store(receiver_store)
+        .with_seed(receiver_seed)
         .build()
         .await?;
-    receiver_wallet.add_wallet(mint_url.clone()).await?;
-    let receiver_mint_wallet = receiver_wallet
-        .create_wallet(mint_url.clone(), unit, None)
-        .await?;
+    let receiver_mint_wallet = receiver_manager.wallet(identity).await?;
 
     // Receiver claims the token
     println!("Receiver claiming token...");
     let received_amount = receiver_mint_wallet
-        .receive(&token_2.to_string(), ReceiveOptions::default())
-        .await?;
+        .receive(ReceiveRequest::new(receipt_2.token.to_string()))
+        .await?
+        .amount;
     println!("Receiver got {} sats", received_amount);
 
     // Check status from sender side
     println!("Checking status from sender...");
-    let claimed_2 = mint_wallet.check_send_status(operation_id_2).await?;
-    println!("Is token claimed? {}", claimed_2);
+    let status_2 = mint_wallet.send_status(operation_id_2).await?;
+    println!("Send status: {}", status_2);
 
-    if claimed_2 {
+    if status_2 == SendStatus::Claimed {
         println!("Token confirmed as claimed.");
     } else {
         println!("WARNING: Token should be claimed but status says false.");
     }
 
     // Verify pending sends is empty
-    let pending_final = mint_wallet.get_pending_sends().await?;
+    let pending_final = mint_wallet.pending_send_ids().await?;
     println!("Pending sends count: {}", pending_final.len());
 
     if pending_final.is_empty() {

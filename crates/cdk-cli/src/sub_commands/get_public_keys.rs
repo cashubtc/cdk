@@ -3,7 +3,7 @@ use std::str::FromStr;
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::WalletRepository;
+use cdk::wallet::WalletManager;
 use clap::Args;
 
 use crate::utils::get_or_create_wallet;
@@ -19,28 +19,29 @@ pub struct GetPublicKeysSubCommand {
 }
 
 pub async fn get_public_keys(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     sub_command_args: &GetPublicKeysSubCommand,
     unit: &CurrencyUnit,
 ) -> Result<()> {
     let mint_url = match &sub_command_args.mint_url {
         Some(url) => MintUrl::from_str(url)?,
         None => {
-            let wallets = wallet_repository.get_wallets().await;
+            let wallets = wallet_manager.wallets().await;
             wallets
                 .iter()
-                .find(|wallet| &wallet.unit == unit)
-                .map(|wallet| wallet.mint_url.clone())
+                .map(|wallet| wallet.identity())
+                .find(|identity| &identity.unit == unit)
+                .map(|identity| identity.mint_url)
                 .ok_or_else(|| {
                     anyhow::anyhow!("No wallet found for unit {}. Use --mint-url.", unit)
                 })?
         }
     };
 
-    let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
+    let wallet = get_or_create_wallet(wallet_manager, &mint_url, unit).await?;
 
     if sub_command_args.latest {
-        let latest_public_key = wallet.get_latest_public_key().await?;
+        let latest_public_key = wallet.advanced().latest_signing_key().await?;
 
         match latest_public_key {
             Some(key) => {
@@ -57,7 +58,7 @@ pub async fn get_public_keys(
         return Ok(());
     }
 
-    let list_public_keys = wallet.get_public_keys().await?;
+    let list_public_keys = wallet.advanced().signing_keys().await?;
     if list_public_keys.is_empty() {
         println!("\n public not found! \n");
         return Ok(());

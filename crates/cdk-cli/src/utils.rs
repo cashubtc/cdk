@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::{bail, Result};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::WalletRepository;
+use cdk::wallet::{WalletIdentity, WalletManager};
 
 static NON_INTERACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -41,15 +41,12 @@ where
 
 /// Helper function to get an existing wallet or create one if it doesn't exist
 pub async fn get_or_create_wallet(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     mint_url: &MintUrl,
     unit: &CurrencyUnit,
 ) -> Result<cdk::wallet::Wallet> {
-    match wallet_repository.get_wallet(mint_url, unit).await {
-        Ok(wallet) => Ok(wallet),
-        Err(_) => wallet_repository
-            .create_wallet(mint_url.clone(), unit.clone(), None)
-            .await
-            .map_err(Into::into),
-    }
+    wallet_manager
+        .open_wallet(WalletIdentity::new(mint_url.clone(), unit.clone()))
+        .await
+        .map_err(Into::into)
 }

@@ -4,8 +4,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cdk::error::Error;
-use cdk::nuts::{CurrencyUnit, PaymentMethod, SecretKey, SpendingConditions};
-use cdk::wallet::{ReceiveOptions, SendOptions, Wallet};
+use cdk::nuts::{CurrencyUnit, SecretKey, SpendingConditions};
+use cdk::wallet::advanced::{ProofQuery, ReceiveAdvancedOptions, SendAdvancedOptions};
+use cdk::wallet::mint::MintRequest;
+use cdk::wallet::receive::ReceiveRequest;
+use cdk::wallet::send::SendRequest;
+use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 use rand::random;
@@ -34,22 +38,23 @@ async fn main() -> Result<(), Error> {
     let amount = Amount::from(100);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, localstore, seed, None)?;
+    let wallet = Wallet::open(cdk::wallet::WalletOpenRequest::new(
+        cdk::wallet::WalletIdentity::new(mint_url.parse()?, unit),
+        localstore,
+        seed,
+    ))?;
 
-    let quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
-        .await?;
-    let proofs = wallet
-        .wait_and_mint_quote(
-            quote,
-            Default::default(),
-            Default::default(),
-            Duration::from_secs(10),
-        )
-        .await?;
+    let session = wallet.request_mint(MintRequest::bolt11(amount)).await?;
+    session.wait(Duration::from_secs(10)).await?;
 
     // Mint the received amount
-    let proof_amounts: Vec<String> = proofs.iter().map(|p| p.amount.to_string()).collect();
+    let proof_amounts: Vec<String> = wallet
+        .advanced()
+        .proofs(ProofQuery::default())
+        .await?
+        .iter()
+        .map(|proof| proof.proof.amount.to_string())
+        .collect();
     println!("Minted nuts: [{}]", proof_amounts.join(", "));
 
     // Generate a secret key for spending conditions
@@ -59,28 +64,26 @@ async fn main() -> Result<(), Error> {
     let spending_conditions = SpendingConditions::new_p2pk(secret.public_key(), None);
 
     // Get the total balance of the wallet
-    let bal = wallet.total_balance().await?;
+    let bal = wallet.balance().await?.available;
     println!("Total balance: {}", bal);
 
     let token_amount_to_send = Amount::from(10);
 
     // Send a token with the specified amount and spending conditions
-    let prepared_send = wallet
-        .prepare_send(
-            token_amount_to_send,
-            SendOptions {
+    let plan = wallet
+        .plan_send(
+            SendRequest::new(token_amount_to_send).with_advanced(SendAdvancedOptions {
                 conditions: Some(spending_conditions),
-                include_fee: true,
                 ..Default::default()
-            },
+            }),
         )
         .await?;
 
-    let swap_fee = prepared_send.swap_fee();
+    let fee = plan.fee();
 
-    println!("Fee: {}", swap_fee);
+    println!("Fee: {}", fee);
 
-    let token = prepared_send.confirm(None).await?;
+    let token = plan.execute().await?.token;
 
     println!("Created token locked to pubkey: {}", secret.public_key());
     println!("{}", token);
@@ -88,13 +91,13 @@ async fn main() -> Result<(), Error> {
     // Receive the token using the secret key
     let amount = wallet
         .receive(
-            &token.to_string(),
-            ReceiveOptions {
+            ReceiveRequest::new(token.to_string()).with_advanced(ReceiveAdvancedOptions {
                 p2pk_signing_keys: vec![secret],
                 ..Default::default()
-            },
+            }),
         )
-        .await?;
+        .await?
+        .amount;
 
     assert!(amount == token_amount_to_send);
 

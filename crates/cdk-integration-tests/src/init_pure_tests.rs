@@ -13,7 +13,6 @@ use cashu::quote_id::QuoteId;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
-use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse,
     CurrencyUnit, Id, KeySet, KeysetResponse, MeltRequest, MintInfo, MintRequest, MintResponse,
@@ -21,7 +20,9 @@ use cdk::nuts::{
 };
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
-use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
+use cdk::wallet::advanced::{AuthWallet, MintClaimOptions, MintConnector, WalletBuilder};
+use cdk::wallet::mint::MintRequest as WalletMintRequest;
+use cdk::wallet::Wallet;
 use cdk::{Amount, Error, MeltQuoteCreateResponse, Mint, StreamExt};
 use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest, MintQuoteResponse};
 use cdk_fake_wallet::FakeWallet;
@@ -62,14 +63,14 @@ impl MintConnector for DirectMintConnection {
     async fn fetch_lnurl_pay_request(
         &self,
         _url: &str,
-    ) -> Result<cdk::wallet::LnurlPayResponse, Error> {
+    ) -> Result<cdk::wallet::advanced::LnurlPayResponse, Error> {
         unimplemented!("Lightning address not supported in DirectMintConnection")
     }
 
     async fn fetch_lnurl_invoice(
         &self,
         _url: &str,
-    ) -> Result<cdk::wallet::LnurlPayInvoiceResponse, Error> {
+    ) -> Result<cdk::wallet::advanced::LnurlPayInvoiceResponse, Error> {
         unimplemented!("Lightning address not supported in DirectMintConnection")
     }
 
@@ -578,10 +579,31 @@ pub async fn create_test_wallet_for_mint(mint: Mint) -> Result<Wallet> {
     create_test_wallet_for_mint_with_seed(mint, seed).await
 }
 
+pub type TestWalletDatabase = Arc<dyn WalletDatabase<cdk_database::Error> + Send + Sync>;
+
+/// Create a test wallet and retain its database handle for tests that need to
+/// inject protocol-level fixtures directly into storage.
+pub async fn create_test_wallet_and_store_for_mint(
+    mint: Mint,
+) -> Result<(Wallet, TestWalletDatabase)> {
+    let seed = Mnemonic::generate(12)?.to_seed_normalized("");
+    create_test_wallet_and_store_for_mint_with_seed(mint, seed).await
+}
+
 /// Create a test wallet connected directly to a mint with a specific seed
 ///
 /// Useful for restore tests where two wallets must share the same seed.
 pub async fn create_test_wallet_for_mint_with_seed(mint: Mint, seed: [u8; 64]) -> Result<Wallet> {
+    Ok(create_test_wallet_and_store_for_mint_with_seed(mint, seed)
+        .await?
+        .0)
+}
+
+/// Create a test wallet with a fixed seed and retain its database handle.
+pub async fn create_test_wallet_and_store_for_mint_with_seed(
+    mint: Mint,
+    seed: [u8; 64],
+) -> Result<(Wallet, TestWalletDatabase)> {
     let connector = DirectMintConnection::new(mint.clone());
 
     let mint_info = mint.mint_info().await?;
@@ -597,43 +619,42 @@ pub async fn create_test_wallet_for_mint_with_seed(mint: Mint, seed: [u8; 64]) -
     // Read environment variable to determine database type
     let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
 
-    let localstore: Arc<dyn WalletDatabase<cdk_database::Error> + Send + Sync> =
-        match db_type.to_lowercase().as_str() {
-            "sqlite" => {
-                // Create a temporary directory for SQLite database
-                let temp_dir = create_temp_dir("cdk-test-sqlite-wallet")?;
-                let path = temp_dir.join("wallet.db").to_str().unwrap().to_string();
-                let database = cdk_sqlite::WalletSqliteDatabase::new(path.as_str())
-                    .await
-                    .expect("Could not create sqlite db");
-                Arc::new(database)
-            }
-            "redb" => {
-                // Create a temporary directory for ReDB database
-                let temp_dir = create_temp_dir("cdk-test-redb-wallet")?;
-                let path = temp_dir.join("wallet.redb");
-                let database = cdk_redb::WalletRedbDatabase::new(&path)
-                    .expect("Could not create redb mint database");
-                Arc::new(database)
-            }
-            "memory" => {
-                let database = cdk_sqlite::wallet::memory::empty().await?;
-                Arc::new(database)
-            }
-            _ => {
-                bail!("Db type not set")
-            }
-        };
+    let localstore: TestWalletDatabase = match db_type.to_lowercase().as_str() {
+        "sqlite" => {
+            // Create a temporary directory for SQLite database
+            let temp_dir = create_temp_dir("cdk-test-sqlite-wallet")?;
+            let path = temp_dir.join("wallet.db").to_str().unwrap().to_string();
+            let database = cdk_sqlite::WalletSqliteDatabase::new(path.as_str())
+                .await
+                .expect("Could not create sqlite db");
+            Arc::new(database)
+        }
+        "redb" => {
+            // Create a temporary directory for ReDB database
+            let temp_dir = create_temp_dir("cdk-test-redb-wallet")?;
+            let path = temp_dir.join("wallet.redb");
+            let database = cdk_redb::WalletRedbDatabase::new(&path)
+                .expect("Could not create redb mint database");
+            Arc::new(database)
+        }
+        "memory" => {
+            let database = cdk_sqlite::wallet::memory::empty().await?;
+            Arc::new(database)
+        }
+        _ => {
+            bail!("Db type not set")
+        }
+    };
 
     let wallet = WalletBuilder::new()
-        .mint_url(mint_url.parse().unwrap())
-        .unit(unit)
-        .localstore(localstore)
-        .seed(seed)
-        .client(connector)
+        .with_mint_url(mint_url.parse().unwrap())
+        .with_unit(unit)
+        .with_store(localstore.clone())
+        .with_seed(seed)
+        .with_connector(connector)
         .build()?;
 
-    Ok(wallet)
+    Ok((wallet, localstore))
 }
 
 /// Creates a mint quote for the given amount and checks its state in a loop. Returns when
@@ -652,14 +673,18 @@ pub async fn fund_wallet(
     split_target: Option<SplitTarget>,
 ) -> Result<Amount> {
     let desired_amount = Amount::from(amount);
-    let quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(desired_amount), None, None)
+    let session = wallet
+        .request_mint(WalletMintRequest::bolt11(desired_amount))
         .await?;
 
-    Ok(wallet
-        .proof_stream(quote, split_target.unwrap_or_default(), None)
+    let receipt = session
+        .receipts(MintClaimOptions {
+            amount_split_target: split_target.unwrap_or_default(),
+            conditions: None,
+        })
         .next()
         .await
-        .expect("proofs")?
-        .total_amount()?)
+        .expect("mint receipt")?
+        .amount;
+    Ok(receipt)
 }

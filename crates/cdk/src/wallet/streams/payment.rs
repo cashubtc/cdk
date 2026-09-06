@@ -18,8 +18,8 @@ use super::RecvFuture;
 use crate::event::MintEvent;
 use crate::wallet::issue::{apply_accounting_mint_quote_update, apply_mint_quote_response};
 use crate::wallet::subscription::ActiveSubscription;
-use crate::wallet::MintQuote;
-use crate::{Wallet, WalletSubscription};
+use crate::wallet::{MintQuote, WalletSubscription};
+use crate::Wallet;
 
 type PaymentValue = (String, Option<Amount>);
 
@@ -131,7 +131,7 @@ pub struct PaymentStream<'a> {
 
 impl<'a> PaymentStream<'a> {
     /// Creates a new instance of the
-    pub fn new(wallet: &'a Wallet, filters: Vec<WalletSubscription>) -> Self {
+    pub(crate) fn new(wallet: &'a Wallet, filters: Vec<WalletSubscription>) -> Self {
         Self {
             wallet,
             filters: Some(filters),

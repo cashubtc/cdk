@@ -9,8 +9,10 @@ use bitcoin::hashes::{sha256, Hash};
 use bitcoin::hex::prelude::FromHex;
 use bitcoin::secp256k1::Secp256k1;
 use cdk::error::Error;
-use cdk::nuts::{CurrencyUnit, PaymentMethod, SecretKey};
-use cdk::wallet::{MeltOutcome, Wallet};
+use cdk::nuts::{CurrencyUnit, SecretKey};
+use cdk::wallet::mint::MintRequest;
+use cdk::wallet::payment::{PaymentConfirmation, PaymentQuoteRequest, PaymentTarget};
+use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
@@ -30,22 +32,17 @@ async fn main() -> Result<(), Error> {
     let amount = Amount::from(20);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None)?;
+    let wallet = Wallet::open(cdk::wallet::WalletOpenRequest::new(
+        cdk::wallet::WalletIdentity::new(mint_url.parse()?, unit),
+        Arc::new(localstore),
+        seed,
+    ))?;
 
     // Mint enough tokens for both examples
-    let quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
-        .await?;
-    let _proofs = wallet
-        .wait_and_mint_quote(
-            quote,
-            Default::default(),
-            Default::default(),
-            Duration::from_secs(10),
-        )
-        .await?;
+    let mint_session = wallet.request_mint(MintRequest::bolt11(amount)).await?;
+    mint_session.wait(Duration::from_secs(10)).await?;
 
-    let balance = wallet.total_balance().await?;
+    let balance = wallet.balance().await?.available;
     println!("Minted {} sats from {}", balance, mint_url);
 
     // Helper to create a test invoice
@@ -78,30 +75,27 @@ async fn main() -> Result<(), Error> {
 
     // Create first melt quote
     let invoice1 = create_test_invoice(5 * 1000, "Sync melt example");
-    let melt_quote1 = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice1, None, None)
-        .await?;
+    let payment_session1 = wallet
+        .quote_payment(PaymentQuoteRequest::new(PaymentTarget::bolt11(invoice1)))
+        .await?
+        .into_single()?;
+    let payment_quote1 = payment_session1.quote();
     println!(
-        "Melt quote 1: {} sats, fee reserve: {:?}",
-        melt_quote1.amount, melt_quote1.fee_reserve
+        "Payment quote 1: {} sats, fee reserve: {}",
+        payment_quote1.amount, payment_quote1.fee_reserve
     );
 
-    // Prepare and confirm synchronously
-    let prepared1 = wallet
-        .prepare_melt(&melt_quote1.id, std::collections::HashMap::new())
-        .await?;
+    let payment_plan1 = payment_session1.prepare().await?;
     println!(
-        "Prepared melt - Amount: {}, Total Fee: {}",
-        prepared1.amount(),
-        prepared1.total_fee()
+        "Prepared payment - Amount: {}, Maximum Fee: {}",
+        payment_plan1.amount(),
+        payment_plan1.maximum_fee()
     );
 
-    let confirmed1 = prepared1.confirm().await?;
+    let receipt1 = payment_plan1.execute().await?;
     println!(
-        "Sync melt completed: state={:?}, amount={}, fee_paid={}",
-        confirmed1.state(),
-        confirmed1.amount(),
-        confirmed1.fee_paid()
+        "Sync payment completed: amount={}, fee_paid={}",
+        receipt1.amount, receipt1.fee_paid
     );
 
     println!("\n=== Example 2: Async Confirm ===");
@@ -115,57 +109,49 @@ async fn main() -> Result<(), Error> {
 
     // Create second melt quote
     let invoice2 = create_test_invoice(5 * 1000, "Async melt example");
-    let melt_quote2 = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice2, None, None)
-        .await?;
+    let payment_session2 = wallet
+        .quote_payment(PaymentQuoteRequest::new(PaymentTarget::bolt11(invoice2)))
+        .await?
+        .into_single()?;
+    let payment_quote2 = payment_session2.quote();
     println!(
-        "Melt quote 2: {} sats, fee reserve: {:?}",
-        melt_quote2.amount, melt_quote2.fee_reserve
+        "Payment quote 2: {} sats, fee reserve: {}",
+        payment_quote2.amount, payment_quote2.fee_reserve
     );
 
-    // Prepare and confirm asynchronously
-    let prepared2 = wallet
-        .prepare_melt(&melt_quote2.id, std::collections::HashMap::new())
-        .await?;
+    let payment_plan2 = payment_session2.prepare().await?;
     println!(
-        "Prepared melt - Amount: {}, Total Fee: {}",
-        prepared2.amount(),
-        prepared2.total_fee()
+        "Prepared payment - Amount: {}, Maximum Fee: {}",
+        payment_plan2.amount(),
+        payment_plan2.maximum_fee()
     );
 
-    // confirm_prefer_async waits for the mint's response, which may be quick if async is supported
-    let result = prepared2.confirm_prefer_async().await?;
+    let result = payment_plan2.submit().await?;
 
     match result {
-        MeltOutcome::Paid(finalized) => {
+        PaymentConfirmation::Completed(receipt) => {
             println!(
-                "Async melt completed immediately: state={:?}, amount={}, fee_paid={}",
-                finalized.state(),
-                finalized.amount(),
-                finalized.fee_paid()
+                "Async payment completed immediately: amount={}, fee_paid={}",
+                receipt.amount, receipt.fee_paid
             );
         }
-        MeltOutcome::Pending(pending) => {
-            println!("Melt is pending, waiting for completion via WebSocket...");
-            // You can either await the pending melt directly:
-
-            let finalized = pending.await?;
+        PaymentConfirmation::Pending(pending) => {
+            println!("Payment is pending, waiting for completion via WebSocket...");
+            let receipt = pending.wait().await?;
             println!(
-                "Async melt completed after waiting: state={:?}, amount={}, fee_paid={}",
-                finalized.state(),
-                finalized.amount(),
-                finalized.fee_paid()
+                "Async payment completed after waiting: amount={}, fee_paid={}",
+                receipt.amount, receipt.fee_paid
             );
 
             // Alternative: Instead of awaiting, you could:
-            // 1. Store the quote ID and check status later with:
-            //    wallet.check_melt_quote_status(&melt_quote2.id).await?
-            // 2. Let the wallet's background task handle it via:
-            //    wallet.finalize_pending_melts().await?
+            // 1. Persist `pending.operation_id()` and resume it with
+            //    `wallet.resume_pending_payment(operation_id)` after a restart.
+            // 2. Call `wallet.synchronize(SyncPolicy::Online)` to reconcile every
+            //    interrupted operation.
         }
     }
 
-    let final_balance = wallet.total_balance().await?;
+    let final_balance = wallet.balance().await?.available;
     println!("\nFinal balance: {} sats", final_balance);
 
     Ok(())

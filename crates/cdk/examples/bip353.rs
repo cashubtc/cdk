@@ -26,9 +26,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use cdk::amount::SplitTarget;
-use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
+use cdk::wallet::mint::MintRequest;
+use cdk::wallet::payment::{AddressPaymentRequest, AddressPaymentRoute};
 use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
@@ -58,16 +58,23 @@ async fn main() -> anyhow::Result<()> {
     let localstore = Arc::new(memory::empty().await?);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, localstore, seed, None)?;
+    let wallet = Wallet::open(cdk::wallet::WalletOpenRequest::new(
+        cdk::wallet::WalletIdentity::new(mint_url.parse()?, unit),
+        localstore,
+        seed,
+    ))?;
 
     // First, we need to fund the wallet
     println!("Requesting mint quote for {} sats...", initial_amount);
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT12, Some(initial_amount), None, None)
+    let mint_session = wallet
+        .request_mint(MintRequest::new(
+            PaymentMethod::BOLT12,
+            Some(initial_amount),
+        ))
         .await?;
     println!(
         "Pay this invoice to fund the wallet: {}",
-        mint_quote.request
+        mint_session.initial_state().payment_request
     );
 
     // In a real application, you would wait for the payment
@@ -79,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
     let start = std::time::Instant::now();
 
     while start.elapsed() < timeout {
-        let status = wallet.check_mint_quote_status(&mint_quote.id).await?;
+        let status = mint_session.refresh().await?;
 
         if status.amount_paid >= initial_amount {
             break;
@@ -90,11 +97,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Mint the tokens
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
-    let received_amount = proofs.total_amount()?;
-    println!("Successfully minted {} sats", received_amount);
+    let receipt = mint_session.claim().await?;
+    println!("Successfully minted {} sats", receipt.amount);
 
     // Now prepare to pay using the BIP353 address
     let payment_amount_sats = 100; // Example: paying 100 sats
@@ -105,40 +109,38 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Use the new wallet method to resolve BIP353 address and get melt quote
-    match wallet
-        .melt_bip353_quote(
-            bip353_address,
-            payment_amount_sats * 1_000,
-            bitcoin::Network::Bitcoin,
-        )
-        .await
-    {
-        Ok(melt_quote) => {
-            println!("BIP-353 melt quote received:");
-            println!("  Quote ID: {}", melt_quote.id);
-            println!("  Amount: {} sats", melt_quote.amount);
-            println!("  Fee Reserve: {} sats", melt_quote.fee_reserve);
-            println!("  State: {}", melt_quote.state);
+    let request = AddressPaymentRequest {
+        address: bip353_address.to_owned(),
+        amount_msat: Amount::from(payment_amount_sats * 1_000),
+        route: AddressPaymentRoute::Bip353 {
+            network: bitcoin::Network::Bitcoin,
+        },
+        metadata: Default::default(),
+    };
+    match wallet.quote_address_payment(request).await {
+        Ok(session) => {
+            let quote = session.quote();
+            println!("BIP-353 payment quote received:");
+            println!("  Quote ID: {}", quote.id);
+            println!("  Amount: {} sats", quote.amount);
+            println!("  Fee Reserve: {} sats", quote.fee_reserve);
+            println!("  State: {}", quote.state);
 
             // Prepare the payment - shows fees before confirming
-            match wallet
-                .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-                .await
-            {
-                Ok(prepared) => {
-                    println!("Prepared melt:");
-                    println!("  Amount: {} sats", prepared.amount());
-                    println!("  Total Fee: {} sats", prepared.total_fee());
+            match session.prepare().await {
+                Ok(plan) => {
+                    println!("Prepared payment:");
+                    println!("  Amount: {} sats", plan.amount());
+                    println!("  Maximum Fee: {} sats", plan.maximum_fee());
 
                     // Execute the payment
-                    match prepared.confirm().await {
-                        Ok(confirmed) => {
+                    match plan.execute().await {
+                        Ok(receipt) => {
                             println!("BIP-353 payment successful!");
-                            println!("  State: {}", confirmed.state());
-                            println!("  Amount paid: {} sats", confirmed.amount());
-                            println!("  Fee paid: {} sats", confirmed.fee_paid());
+                            println!("  Amount paid: {} sats", receipt.amount);
+                            println!("  Fee paid: {} sats", receipt.fee_paid);
 
-                            if let Some(preimage) = confirmed.payment_proof() {
+                            if let Some(preimage) = receipt.payment_proof {
                                 println!("  Payment preimage: {}", preimage);
                             }
                         }

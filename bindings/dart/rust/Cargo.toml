@@ -26,5 +26,8 @@ camino = "1.2"
 uniffi = { workspace = true, features = ["build"] }
 uniffi-dart = { git = "https://github.com/Uniffi-Dart/uniffi-dart", features = ["build"], rev = "e3ed67f780257a5a7fae23231e13d84f931208e0" }
 
+[features]
+advanced-wallet = ["cdk-ffi/advanced-wallet"]
+
 [lints]
 workspace = true

@@ -1,24 +1,25 @@
 #![allow(missing_docs)]
 
-use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bip39::Mnemonic;
-use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
-use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
-use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::{ReceiveOptions, SendOptions, WalletRepositoryBuilder};
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::mint::MintRequest;
+use cdk::wallet::payment::{PaymentQuoteRequest, PaymentTarget};
+use cdk::wallet::receive::ReceiveRequest;
+use cdk::wallet::send::SendRequest;
+use cdk::wallet::{WalletIdentity, WalletManagerBuilder};
 use cdk::Amount;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_sqlite::wallet::memory;
 
-/// This example demonstrates the WalletRepository API for managing multiple mints.
+/// This example demonstrates the WalletManager API for managing multiple mints.
 ///
 /// It shows:
-/// - Creating a WalletRepository
+/// - Creating a WalletManager
 /// - Adding a mint
 /// - Minting proofs
 /// - Sending tokens
@@ -36,23 +37,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seed = mnemonic.to_seed_normalized("");
     println!("Generated mnemonic (save this!): {}", mnemonic);
 
-    // Create the WalletRepository
+    // Create the WalletManager
     let localstore = Arc::new(memory::empty().await?);
-    let wallet = WalletRepositoryBuilder::new()
-        .localstore(localstore)
-        .seed(seed)
+    let wallet = WalletManagerBuilder::new()
+        .with_store(localstore)
+        .with_seed(seed)
         .build()
         .await?;
-    println!("\nCreated WalletRepository");
+    println!("\nCreated WalletManager");
 
-    // Add a mint to the wallet
-    wallet.add_wallet(mint_url.clone()).await?;
+    let identity = WalletIdentity {
+        mint_url: mint_url.clone(),
+        unit: unit.clone(),
+    };
+    let mint_wallet = wallet.wallet(identity.clone()).await?;
     println!("Added mint: {}", mint_url);
-
-    // Get the wallet for this mint
-    let mint_wallet = wallet
-        .create_wallet(mint_url.clone(), unit.clone(), None)
-        .await?;
 
     // ========================================
     // MINT: Create proofs from Lightning invoice
@@ -61,36 +60,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- MINT ---");
     println!("Creating mint quote for {} sats...", mint_amount);
 
-    let mint_quote = mint_wallet
-        .mint_quote(
-            PaymentMethod::Known(KnownMethod::Bolt11),
-            Some(mint_amount),
-            None,
-            None,
-        )
+    let mint_session = mint_wallet
+        .request_mint(MintRequest::bolt11(mint_amount))
         .await?;
-    println!("Invoice to pay: {}", mint_quote.request);
+    println!(
+        "Invoice to pay: {}",
+        mint_session.initial_state().payment_request
+    );
 
     // Wait for quote to be paid and mint proofs
     // With the test mint, this happens automatically
-    let proofs = mint_wallet
-        .wait_and_mint_quote(
-            mint_quote.clone(),
-            SplitTarget::default(),
-            None,
-            Duration::from_secs(30),
-        )
-        .await?;
-
-    let minted_amount = proofs.total_amount()?;
-    println!("Minted {} sats", minted_amount);
+    let mint_receipt = mint_session.wait(Duration::from_secs(30)).await?;
+    println!("Minted {} sats", mint_receipt.amount);
 
     // Check balance
-    let balances = wallet.total_balance().await?;
-    let balance = balances
-        .get(&CurrencyUnit::Sat)
-        .copied()
-        .unwrap_or(Amount::ZERO);
+    let balance = mint_wallet.balance().await?.available;
     println!("Total balance: {} sats", balance);
 
     // ========================================
@@ -100,18 +84,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- SEND ---");
     println!("Preparing to send {} sats...", send_amount);
 
-    let prepared_send = mint_wallet
-        .prepare_send(send_amount, SendOptions::default())
-        .await?;
-    let token = prepared_send.confirm(None).await?;
+    let send_plan = mint_wallet.plan_send(SendRequest::new(send_amount)).await?;
+    let token = send_plan.execute().await?.token;
     println!("Token created:\n{}", token);
 
     // Check balance after send
-    let balances = wallet.total_balance().await?;
-    let balance = balances
-        .get(&CurrencyUnit::Sat)
-        .copied()
-        .unwrap_or(Amount::ZERO);
+    let balance = mint_wallet.balance().await?.available;
     println!("Balance after send: {} sats", balance);
 
     // ========================================
@@ -122,30 +100,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a second wallet to receive the token
     let receiver_seed = Mnemonic::generate(12)?.to_seed_normalized("");
     let receiver_store = Arc::new(memory::empty().await?);
-    let receiver_wallet = WalletRepositoryBuilder::new()
-        .localstore(receiver_store)
-        .seed(receiver_seed)
+    let receiver_wallet = WalletManagerBuilder::new()
+        .with_store(receiver_store)
+        .with_seed(receiver_seed)
         .build()
         .await?;
 
-    // Add the mint (or use allow_untrusted)
-    receiver_wallet.add_wallet(mint_url.clone()).await?;
     let receiver_mint_wallet = receiver_wallet
-        .create_wallet(mint_url.clone(), unit, None)
+        .wallet(WalletIdentity {
+            mint_url: mint_url.clone(),
+            unit,
+        })
         .await?;
 
     // Receive the token
     let received = receiver_mint_wallet
-        .receive(&token.to_string(), ReceiveOptions::default())
-        .await?;
+        .receive(ReceiveRequest::new(token.to_string()))
+        .await?
+        .amount;
     println!("Receiver got {} sats", received);
 
     // Check receiver balance
-    let receiver_balances = receiver_wallet.total_balance().await?;
-    let receiver_balance = receiver_balances
-        .get(&CurrencyUnit::Sat)
-        .copied()
-        .unwrap_or(Amount::ZERO);
+    let receiver_balance = receiver_mint_wallet.balance().await?.available;
     println!("Receiver balance: {} sats", receiver_balance);
 
     // ========================================
@@ -159,47 +135,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let invoice = create_fake_invoice(melt_amount_sats * 1000, "test melt".to_string());
     println!("Invoice: {}", invoice);
 
-    // Create melt quote
-    let melt_quote = mint_wallet
-        .melt_quote(
-            PaymentMethod::Known(KnownMethod::Bolt11),
+    let payment_session = mint_wallet
+        .quote_payment(PaymentQuoteRequest::new(PaymentTarget::bolt11(
             invoice.to_string(),
-            None,
-            None,
-        )
-        .await?;
+        )))
+        .await?
+        .into_single()?;
+    let melt_quote = payment_session.quote();
     println!(
         "Melt quote: {} sats + {} fee reserve",
         melt_quote.amount, melt_quote.fee_reserve
     );
 
     // Prepare and execute melt
-    let prepared_melt = mint_wallet
-        .prepare_melt(&melt_quote.id, HashMap::new())
-        .await?;
-    let melt_result = prepared_melt.confirm().await?;
-    println!("Melt completed! State: {}", melt_result.state());
+    let payment_plan = payment_session.prepare().await?;
+    let payment_receipt = payment_plan.execute().await?;
+    println!("Melt completed! Fee paid: {}", payment_receipt.fee_paid);
 
     // ========================================
     // BALANCE: Query balances
     // ========================================
     println!("\n--- BALANCES ---");
 
-    let total_balances = wallet.total_balance().await?;
-    for (unit, amount) in &total_balances {
-        println!("  {}: {} sats", unit, amount);
-    }
-
-    let per_mint = wallet.get_balances().await?;
-    for (key, amount) in per_mint {
-        println!("  {} ({}): {} sats", key.mint_url, key.unit, amount);
+    for (identity, balance) in wallet.balances().await? {
+        println!(
+            "  {} ({}): {} sats",
+            identity.mint_url, identity.unit, balance.available
+        );
     }
 
     // List all mints
     println!("\nMints in wallet:");
-    let wallets = wallet.get_wallets().await;
+    let wallets = wallet.wallets().await;
     for w in wallets {
-        println!("  - {} ({})", w.mint_url, w.unit);
+        let identity = w.identity();
+        println!("  - {} ({})", identity.mint_url, identity.unit);
     }
 
     Ok(())

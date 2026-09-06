@@ -18,6 +18,36 @@ use crate::util::hex;
 use crate::wallet::WalletKey;
 use crate::Amount;
 
+/// Stable application-level category for errors returned by wallet workflows.
+///
+/// This classification intentionally lives beside [`Error`] so every frontend
+/// (Rust, UniFFI, command-line tools, and future bindings) applies the same
+/// operational policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WalletErrorKind {
+    /// A request or identifier is invalid.
+    InvalidInput,
+    /// The requested wallet, quote, transaction, or operation does not exist.
+    NotFound,
+    /// The wallet does not have enough spendable value.
+    InsufficientFunds,
+    /// A payment failed or remains indeterminate.
+    Payment,
+    /// The operation conflicts with current persisted state.
+    Conflict,
+    /// Authentication or authorization is required or failed.
+    Authentication,
+    /// The mint or selected payment rail does not support the request.
+    Unsupported,
+    /// Network transport or remote availability failure.
+    Network,
+    /// Durable wallet storage failed.
+    Storage,
+    /// An error that does not fit a more specific stable category.
+    Internal,
+}
+
 /// CDK Error
 #[derive(Debug, Error)]
 pub enum Error {
@@ -45,11 +75,11 @@ pub enum Error {
     /// A payment-request token was created but transport delivery failed.
     ///
     /// The token remains a pending send. Callers can pass `operation_id` to
-    /// `Wallet::revoke_send` to reclaim it if the receiver has not claimed it.
+    /// `Wallet::reclaim_send` to reclaim it if the receiver has not claimed it.
     #[cfg(feature = "wallet")]
     #[error("Payment token created but delivery failed for operation {operation_id}: {source}")]
     PaymentRequestDeliveryFailed {
-        /// Pending send operation that can be passed to `Wallet::revoke_send`.
+        /// Pending send operation that can be passed to `Wallet::reclaim_send`.
         operation_id: uuid::Uuid,
         /// Transport error returned while delivering the created token.
         #[source]
@@ -607,6 +637,7 @@ mod tests {
     fn test_is_definitive_failure() {
         // Test definitive failures
         assert!(Error::AmountOverflow.is_definitive_failure());
+        assert!(Error::InsufficientFunds.is_definitive_failure());
         assert!(Error::MintingDisabled.is_definitive_failure());
         assert!(Error::MaxInputsExceeded { actual: 2, max: 1 }.is_definitive_failure());
         assert!(Error::MaxOutputsExceeded { actual: 2, max: 1 }.is_definitive_failure());
@@ -655,6 +686,44 @@ mod tests {
     }
 
     #[test]
+    fn wallet_error_policy_is_stable_and_shared() {
+        assert_eq!(
+            Error::InsufficientFunds.wallet_kind(),
+            WalletErrorKind::InsufficientFunds
+        );
+        assert!(Error::InsufficientFunds.is_retryable());
+
+        assert_eq!(Error::UnknownQuote.wallet_kind(), WalletErrorKind::NotFound);
+        assert!(!Error::UnknownQuote.is_retryable());
+
+        assert_eq!(Error::Timeout.wallet_kind(), WalletErrorKind::Network);
+        assert!(Error::Timeout.is_retryable());
+
+        let bad_request = Error::HttpError(Some(400), "bad request".to_owned());
+        assert_eq!(bad_request.wallet_kind(), WalletErrorKind::Network);
+        assert!(!bad_request.is_retryable());
+
+        let unavailable = Error::HttpError(Some(503), "unavailable".to_owned());
+        assert!(unavailable.is_retryable());
+
+        let publish_failure = Error::NostrPublishFailed {
+            event_id: "event-id".to_string(),
+            failed_relays: vec!["wss://relay.example.com".to_string()],
+        };
+        assert_eq!(publish_failure.wallet_kind(), WalletErrorKind::Network);
+        assert!(publish_failure.is_retryable());
+
+        assert_eq!(
+            Error::CatNotSet.wallet_kind(),
+            WalletErrorKind::Authentication
+        );
+        assert_eq!(
+            Error::OidcNotSet.wallet_kind(),
+            WalletErrorKind::Authentication
+        );
+    }
+
+    #[test]
     fn test_max_outputs_and_inputs_error_responses_decode() {
         let max_inputs = Error::from(ErrorResponse {
             code: ErrorCode::MaxInputsExceeded,
@@ -692,6 +761,157 @@ mod tests {
 }
 
 impl Error {
+    /// Return the stable application-facing category for this error.
+    pub fn wallet_kind(&self) -> WalletErrorKind {
+        match self {
+            Self::InsufficientFunds => WalletErrorKind::InsufficientFunds,
+            Self::UnknownQuote
+            | Self::UnknownMint { .. }
+            | Self::TransactionNotFound
+            | Self::OperationNotFound
+            | Self::Database(
+                crate::database::Error::UnknownQuote
+                | crate::database::Error::QuoteNotFound
+                | crate::database::Error::ProofNotFound,
+            ) => WalletErrorKind::NotFound,
+            #[cfg(feature = "wallet")]
+            Self::UnknownWallet(_) => WalletErrorKind::NotFound,
+            Self::PaymentFailed
+            | Self::PaymentPending
+            | Self::PendingMeltTimeout { .. }
+            | Self::UnpaidQuote
+            | Self::PendingQuote
+            | Self::UnknownPaymentState
+            | Self::TransferTimeout { .. } => WalletErrorKind::Payment,
+            #[cfg(feature = "wallet")]
+            Self::PaymentRequestDeliveryFailed { .. } => WalletErrorKind::Payment,
+            Self::RequestAlreadyPaid
+            | Self::IssuedQuote
+            | Self::PaidQuote
+            | Self::TokenAlreadySpent
+            | Self::TokenPending
+            | Self::ConcurrentUpdate
+            | Self::InvalidOperationState
+            | Self::ExpiredQuote(_, _)
+            | Self::DuplicatePaymentId
+            | Self::Database(
+                crate::database::Error::QuoteAlreadyInUse
+                | crate::database::Error::Locked
+                | crate::database::Error::ProofNotUnspent,
+            ) => WalletErrorKind::Conflict,
+            Self::ClearAuthRequired
+            | Self::BlindAuthRequired
+            | Self::ClearAuthFailed
+            | Self::BlindAuthFailed
+            | Self::AuthSettingsUndefined
+            | Self::InsufficientBlindAuthTokens
+            | Self::AuthLocalstoreUndefined
+            | Self::CatNotSet
+            | Self::OidcNotSet => WalletErrorKind::Authentication,
+            Self::UnsupportedUnit
+            | Self::UnsupportedPaymentMethod
+            | Self::AmountlessInvoiceNotSupported(_, _)
+            | Self::MppUnitMethodNotSupported(_, _)
+            | Self::InvoiceDescriptionUnsupported
+            | Self::MintingDisabled
+            | Self::MeltingDisabled => WalletErrorKind::Unsupported,
+            Self::HttpError(_, _)
+            | Self::Timeout
+            | Self::SubscriptionError(_)
+            | Self::CouldNotGetMintInfo
+            | Self::LightningAddressRequest(_)
+            | Self::Bip353Resolve(_)
+            | Self::NostrPublishFailed { .. } => WalletErrorKind::Network,
+            Self::Database(_) => WalletErrorKind::Storage,
+            Self::InvalidPaymentRequest
+            | Self::InvoiceAmountUndefined
+            | Self::AmountUndefined
+            | Self::AmountOverflow
+            | Self::AmountLessNotAllowed
+            | Self::SplitValuesGreater
+            | Self::InvalidPaymentMethod
+            | Self::PaymentMethodRequired
+            | Self::InvalidInvoice
+            | Self::Bolt12parse
+            | Self::AmountOutofLimitRange(_, _, _)
+            | Self::DuplicateInputs
+            | Self::DuplicateOutputs
+            | Self::DuplicateQuoteIds
+            | Self::BatchSizeExceeded { .. }
+            | Self::MaxInputsExceeded { .. }
+            | Self::MaxOutputsExceeded { .. }
+            | Self::ProofContentTooLarge { .. }
+            | Self::RequestFieldTooLarge { .. }
+            | Self::MultipleUnits
+            | Self::UnitMismatch
+            | Self::IncorrectMint
+            | Self::IncorrectWallet(_)
+            | Self::MultiMintTokenNotSupported
+            | Self::MaxFeeExceeded
+            | Self::Bip353Parse(_)
+            | Self::Bip353NoBolt12Offer
+            | Self::Bip321Parse(_)
+            | Self::Bip321Encode(_)
+            | Self::LightningAddressParse(_)
+            | Self::InvalidTransactionDirection
+            | Self::InvalidTransactionStatus
+            | Self::InvalidTransactionId
+            | Self::InvalidOperationKind
+            | Self::KVStoreInvalidKey(_)
+            | Self::InvalidNut13Options { .. }
+            | Self::Invoice(_)
+            | Self::CashuUrl(_)
+            | Self::AmountError(_)
+            | Self::NUT00(_) => WalletErrorKind::InvalidInput,
+            _ => WalletErrorKind::Internal,
+        }
+    }
+
+    /// Whether retrying after an external-state change can be useful.
+    ///
+    /// This is deliberately distinct from [`Self::is_definitive_failure`]. A
+    /// definitive error such as insufficient funds may still become retryable
+    /// after the wallet receives value.
+    pub fn is_retryable(&self) -> bool {
+        if let Self::HttpError(status, _) = self {
+            return status
+                .is_none_or(|status| status >= 500 || matches!(status, 408 | 409 | 425 | 429));
+        }
+
+        matches!(
+            self,
+            Self::InsufficientFunds
+                | Self::PaymentPending
+                | Self::PendingMeltTimeout { .. }
+                | Self::UnknownPaymentState
+                | Self::TransferTimeout { .. }
+                | Self::TokenPending
+                | Self::ConcurrentUpdate
+                | Self::ClearAuthRequired
+                | Self::BlindAuthRequired
+                | Self::InsufficientBlindAuthTokens
+                | Self::Timeout
+                | Self::SubscriptionError(_)
+                | Self::CouldNotGetMintInfo
+                | Self::LightningAddressRequest(_)
+                | Self::Bip353Resolve(_)
+                | Self::NostrPublishFailed { .. }
+                | Self::Database(
+                    crate::database::Error::QuoteAlreadyInUse | crate::database::Error::Locked
+                )
+        ) || cfg!(feature = "wallet") && self.is_retryable_wallet_error()
+    }
+
+    #[cfg(feature = "wallet")]
+    fn is_retryable_wallet_error(&self) -> bool {
+        matches!(self, Self::PaymentRequestDeliveryFailed { .. })
+    }
+
+    #[cfg(not(feature = "wallet"))]
+    const fn is_retryable_wallet_error(&self) -> bool {
+        false
+    }
+
     /// Check if the error is a definitive failure
     ///
     /// A definitive failure means the mint definitely rejected the request
@@ -704,6 +924,7 @@ impl Error {
         match self {
             // Logic/Validation Errors (Safe to revert)
             Self::AmountKey
+            | Self::InsufficientFunds
             | Self::KeysetUnknown(_)
             | Self::UnsupportedUnit
             | Self::InvoiceAmountUndefined

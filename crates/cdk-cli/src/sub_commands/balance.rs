@@ -3,18 +3,14 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::WalletRepository;
+use cdk::wallet::{WalletIdentity, WalletManager};
 use cdk::Amount;
-use cdk_common::wallet::WalletKey;
 
 use crate::terminal::escape_control;
 
-pub async fn balance(
-    wallet_repository: &WalletRepository,
-    unit: Option<&CurrencyUnit>,
-) -> Result<()> {
+pub async fn balance(wallet_manager: &WalletManager, unit: Option<&CurrencyUnit>) -> Result<()> {
     // Show individual mint balances
-    let mint_balances = mint_balances(wallet_repository, unit).await?;
+    let mint_balances = mint_balances(wallet_manager, unit).await?;
 
     if !mint_balances.is_empty() {
         // Aggregate totals per currency unit
@@ -44,10 +40,10 @@ pub async fn balance(
 }
 
 pub async fn mint_balances(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     target_unit: Option<&CurrencyUnit>,
 ) -> Result<Vec<(MintUrl, CurrencyUnit, Amount)>> {
-    let wallets = wallet_repository.get_balances().await?;
+    let wallets = wallet_manager.available_balances().await?;
 
     let mut wallets_vec = Vec::with_capacity(wallets.len());
 
@@ -56,7 +52,7 @@ pub async fn mint_balances(
         .filter(|(k, a)| a > &&Amount::ZERO && target_unit.is_none_or(|u| &k.unit == u))
         .enumerate()
     {
-        let WalletKey { mint_url, unit } = wallet_key.clone();
+        let WalletIdentity { mint_url, unit } = wallet_key.clone();
         println!(
             "{i}: {} {amount} {}",
             escape_control(&mint_url.to_string()),

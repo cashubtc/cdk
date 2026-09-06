@@ -77,6 +77,12 @@ fn main() {
 ///
 /// 6. **NUT13Options casing** – same issue as above. The generated Record class is `Nut13Options`
 ///    while some references use `NUT13Options`. All occurrences are normalized to `Nut13Options`.
+///
+/// 7. **Rust-owned WalletDatabase lowering** – return a cloned Rust pointer instead of inserting
+///    the proxy into Dart's callback handle map.
+///
+/// 8. **WalletErrorKind in FfiError** – error rendering rewrites the nested field type to the
+///    nonexistent `WalletExceptionKind`. Normalize it back to the generated enum name.
 fn patch_generated(path: &camino::Utf8Path) {
     let content =
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("Failed to read {}: {}", path, e));
@@ -158,6 +164,9 @@ class _RustOwnedWalletDatabase implements WalletDatabase {
         "  static Pointer<Void> lower(WalletDatabase value) {\n    _ensureVTableInitialized();\n    final handle = _handleMap.insert(value);\n    return Pointer<Void>.fromAddress(handle);\n  }",
         "  static Pointer<Void> lower(WalletDatabase value) {\n    if (value is _RustOwnedWalletDatabase) {\n      return value.clonePointer();\n    }\n    _ensureVTableInitialized();\n    final handle = _handleMap.insert(value);\n    return Pointer<Void>.fromAddress(handle);\n  }",
     );
+
+    // 8. Keep the nested structured-error category's generated enum name.
+    content = content.replace("WalletExceptionKind", "WalletErrorKind");
 
     std::fs::write(path, content).unwrap_or_else(|e| panic!("Failed to write {}: {}", path, e));
 

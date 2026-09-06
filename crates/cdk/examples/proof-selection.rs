@@ -4,8 +4,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, PaymentMethod};
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::advanced::{
+    select_proofs, MintMetadataRequest, ProofQuery, ProofSelectionFeePolicy, ProofSelectionRequest,
+};
+use cdk::wallet::mint::MintRequest;
 use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
@@ -24,43 +27,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let localstore = Arc::new(memory::empty().await?);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, localstore, seed, None)?;
+    let wallet = Wallet::open(cdk::wallet::WalletOpenRequest::new(
+        cdk::wallet::WalletIdentity::new(mint_url.parse()?, unit),
+        localstore,
+        seed,
+    ))?;
 
     // Amount to mint
     for amount in [64] {
         let amount = Amount::from(amount);
 
-        let quote = wallet
-            .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
-            .await?;
-        let proofs = wallet
-            .wait_and_mint_quote(
-                quote,
-                Default::default(),
-                Default::default(),
-                Duration::from_secs(10),
-            )
-            .await?;
+        let session = wallet.request_mint(MintRequest::bolt11(amount)).await?;
+        let receipt = session.wait(Duration::from_secs(10)).await?;
 
-        // Mint the received amount
-        let receive_amount = proofs.total_amount()?;
-        println!("Minted {}", receive_amount);
+        println!("Minted {}", receipt.amount);
     }
 
     // Get unspent proofs
-    let proofs = wallet.get_unspent_proofs().await?;
+    let proofs = wallet
+        .advanced()
+        .proofs(ProofQuery::default())
+        .await?
+        .into_iter()
+        .map(|proof| proof.proof)
+        .collect();
 
     // Select proofs to send
     let amount = Amount::from(64);
     let active_keyset_ids = wallet
-        .keysets(Default::default())
+        .advanced()
+        .mint_metadata(MintMetadataRequest::default())
         .await?
+        .keysets
         .into_iter()
         .filter(|k| k.active.unwrap_or(false))
         .map(|keyset| keyset.id)
         .collect();
-    let selected =
-        Wallet::select_proofs(amount, proofs, &active_keyset_ids, &HashMap::new(), false)?;
+    let selected = select_proofs(ProofSelectionRequest {
+        amount,
+        proofs,
+        active_keyset_ids,
+        keyset_fees: HashMap::new(),
+        fee_policy: ProofSelectionFeePolicy::Exclude,
+    })?;
     for (i, proof) in selected.iter().enumerate() {
         println!("{}: {}", i, proof.amount);
     }

@@ -13,7 +13,7 @@ impl Wallet {
     }
 
     /// List transactions
-    pub async fn list_transactions(
+    pub(crate) async fn list_transactions(
         &self,
         direction: Option<TransactionDirection>,
     ) -> Result<Vec<Transaction>, Error> {
@@ -32,7 +32,10 @@ impl Wallet {
     }
 
     /// Get transaction by ID
-    pub async fn get_transaction(&self, id: TransactionId) -> Result<Option<Transaction>, Error> {
+    pub(crate) async fn get_transaction(
+        &self,
+        id: TransactionId,
+    ) -> Result<Option<Transaction>, Error> {
         let transaction = self.localstore.get_transaction(id).await?;
 
         Ok(transaction.filter(|transaction| self.transaction_matches_wallet(transaction)))
@@ -62,23 +65,7 @@ impl Wallet {
         saga_id: uuid::Uuid,
         status: TransactionStatus,
     ) -> Result<bool, Error> {
-        let transaction_id = TransactionId::from_saga_id(saga_id);
-        let transaction = self
-            .localstore
-            .get_transaction(transaction_id)
-            .await?
-            .filter(|transaction| self.transaction_matches_wallet(transaction));
-
-        let transactions = match transaction {
-            Some(transaction) => vec![transaction],
-            None => self
-                .localstore
-                .list_transactions(Some(self.mint_url.clone()), None, Some(self.unit.clone()))
-                .await?
-                .into_iter()
-                .filter(|transaction| transaction.saga_id == Some(saga_id))
-                .collect(),
-        };
+        let transactions = self.transactions_for_operation(saga_id).await?;
 
         if transactions.is_empty() {
             return Ok(false);
@@ -108,6 +95,27 @@ impl Wallet {
         Ok(applied)
     }
 
+    /// Load a workflow's transactions, including legacy proof-derived IDs.
+    pub(crate) async fn transactions_for_operation(
+        &self,
+        operation_id: uuid::Uuid,
+    ) -> Result<Vec<Transaction>, Error> {
+        if let Some(transaction) = self
+            .get_transaction(TransactionId::from_saga_id(operation_id))
+            .await?
+            .filter(|transaction| transaction.saga_id == Some(operation_id))
+        {
+            return Ok(vec![transaction]);
+        }
+
+        Ok(self
+            .list_transactions(None)
+            .await?
+            .into_iter()
+            .filter(|transaction| transaction.saga_id == Some(operation_id))
+            .collect())
+    }
+
     /// Mark a saga transaction as failed before compensating it.
     ///
     /// Persistence errors are propagated so compensation cannot delete the
@@ -122,7 +130,10 @@ impl Wallet {
     ///
     /// This retrieves all proofs associated with a transaction by looking up
     /// the transaction's Y values and fetching the corresponding proofs.
-    pub async fn get_proofs_for_transaction(&self, id: TransactionId) -> Result<Proofs, Error> {
+    pub(crate) async fn get_proofs_for_transaction(
+        &self,
+        id: TransactionId,
+    ) -> Result<Proofs, Error> {
         let transaction = self
             .get_transaction(id)
             .await?
@@ -143,60 +154,43 @@ impl Wallet {
         Ok(proofs)
     }
 
-    /// Revert a transaction by reclaiming unspent proofs.
+    /// Reconcile an outgoing transaction and return reclaimed saga value.
     ///
-    /// For transactions created by the saga pattern (with `saga_id` set), this
-    /// function loads the associated send saga and calls `revoke()` on it, which
-    /// properly handles the saga lifecycle including state transitions and cleanup.
-    ///
-    /// For legacy transactions (without `saga_id`), this function checks the proofs
-    /// with the mint and marks any spent proofs accordingly. Unspent proofs are
-    /// left in their current state for manual recovery.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The transaction is not found
-    /// - The transaction is not outgoing
-    /// - The saga is not in a revocable state (e.g., already completed)
-    /// - The token has already been claimed by the recipient
-    pub async fn revert_transaction(&self, id: TransactionId) -> Result<(), Error> {
-        let tx = self
+    /// Saga-backed sends are reclaimed through their durable operation. Legacy
+    /// transactions only have their pending proofs checked with the mint; this
+    /// intentionally preserves the historical non-swapping behavior.
+    pub(crate) async fn recover_outgoing_transaction(
+        &self,
+        id: TransactionId,
+    ) -> Result<Option<crate::Amount>, Error> {
+        let transaction = self
             .get_transaction(id)
             .await?
             .ok_or(Error::TransactionNotFound)?;
 
-        if tx.direction != TransactionDirection::Outgoing {
+        if transaction.direction != TransactionDirection::Outgoing {
             return Err(Error::InvalidTransactionDirection);
         }
 
-        // Check if this is a saga-managed transaction
-        if let Some(saga_id) = &tx.saga_id {
-            // Use the existing revoke_send method which properly handles the saga
-            // Discard the returned amount - we just care about success/failure
-            let _ = self.revoke_send(*saga_id).await?;
-            Ok(())
-        } else {
-            // Legacy transaction without saga - check proofs and mark spent ones
-            // We don't attempt to swap for legacy transactions to avoid
-            // interfering with any potential in-flight operations
-            let pending_spent_proofs: Proofs = self
-                .get_pending_spent_proofs()
-                .await?
-                .into_iter()
-                .filter(|p| match p.y() {
-                    Ok(y) => tx.ys.contains(&y),
-                    Err(_) => false,
-                })
-                .collect();
-
-            if pending_spent_proofs.is_empty() {
-                return Ok(());
+        match transaction.saga_id {
+            Some(saga_id) => self.revoke_send(saga_id).await.map(Some),
+            None => {
+                let pending = self
+                    .get_proofs_with(Some(vec![crate::nuts::State::PendingSpent]), None)
+                    .await?
+                    .into_iter()
+                    .filter(|proof| {
+                        proof
+                            .y()
+                            .map(|y| transaction.ys.contains(&y))
+                            .unwrap_or(false)
+                    })
+                    .collect::<Proofs>();
+                if !pending.is_empty() {
+                    self.check_proofs_spent(pending).await?;
+                }
+                Ok(None)
             }
-
-            // Just check and mark spent - don't attempt swap for legacy transactions
-            self.check_proofs_spent(pending_spent_proofs).await?;
-            Ok(())
         }
     }
 }

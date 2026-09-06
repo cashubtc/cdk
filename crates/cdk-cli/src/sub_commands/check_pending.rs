@@ -1,6 +1,6 @@
 use anyhow::Result;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::WalletRepository;
+use cdk::wallet::WalletManager;
 use cdk::Amount;
 
 use crate::terminal::escape_control;
@@ -13,21 +13,22 @@ fn pending_proofs_status(pending_amount: Amount, unit: &CurrencyUnit) -> String 
     )
 }
 
-pub async fn check_pending(wallet_repository: &WalletRepository) -> Result<()> {
-    let wallets = wallet_repository.get_wallets().await;
+pub async fn check_pending(wallet_manager: &WalletManager) -> Result<()> {
+    let wallets = wallet_manager.wallets().await;
 
     for (i, wallet) in wallets.iter().enumerate() {
-        let mint_url = wallet.mint_url.clone();
+        let identity = wallet.identity();
+        let mint_url = identity.mint_url;
         println!("{i}: {}", escape_control(&mint_url.to_string()));
 
         // Check all orphaned pending proofs (not managed by active sagas)
         // This function queries the mint and marks spent proofs accordingly
-        match wallet.check_all_pending_proofs().await {
+        match wallet.advanced().reconcile_proofs().await {
             Ok(pending_amount) => {
                 if pending_amount == Amount::ZERO {
                     println!("No orphaned pending proofs found");
                 } else {
-                    println!("{}", pending_proofs_status(pending_amount, &wallet.unit));
+                    println!("{}", pending_proofs_status(pending_amount, &identity.unit));
                 }
             }
             Err(e) => println!(
