@@ -517,6 +517,10 @@ impl MintPayment for Lnd {
                             None => {
                                 // Invoice carries no amount; a local parse
                                 // failure before any dispatch.
+                                tracing::warn!(
+                                    payment_lookup_id = %payment_lookup_id,
+                                    "LND MPP payment rejected before dispatch: invoice has no amount",
+                                );
                                 return Ok(outgoing_payment_failure_response(
                                     unit,
                                     payment_lookup_id,
@@ -558,6 +562,15 @@ impl MintPayment for Lnd {
                                     .lightning()
                                     .query_routes(route_req)
                                     .await
+                                    .inspect_err(|err| {
+                                        tracing::warn!(
+                                            payment_lookup_id = %payment_lookup_id,
+                                            attempt = attempt + 1,
+                                            rpc_code = %err.code(),
+                                            error = %err.message(),
+                                            "LND MPP route query failed",
+                                        );
+                                    })
                                     .map_err(Error::LndError)?
                                     .into_inner();
 
@@ -567,6 +580,11 @@ impl MintPayment for Lnd {
                                 let route = match routes_response.routes.first_mut() {
                                     Some(route) => route,
                                     None => {
+                                        tracing::warn!(
+                                            payment_lookup_id = %payment_lookup_id,
+                                            attempt = attempt + 1,
+                                            "LND MPP route query returned no routes",
+                                        );
                                         return Ok(outgoing_payment_failure_response(
                                             unit,
                                             payment_lookup_id,
@@ -578,6 +596,11 @@ impl MintPayment for Lnd {
                                 let last_hop: &mut Hop = match route.hops.last_mut() {
                                     Some(last_hop) => last_hop,
                                     None => {
+                                        tracing::warn!(
+                                            payment_lookup_id = %payment_lookup_id,
+                                            attempt = attempt + 1,
+                                            "LND MPP route has no hops",
+                                        );
                                         return Ok(outgoing_payment_failure_response(
                                             unit,
                                             payment_lookup_id,
@@ -598,17 +621,38 @@ impl MintPayment for Lnd {
                                         ..Default::default()
                                     })
                                     .await
+                                    .inspect_err(|err| {
+                                        tracing::warn!(
+                                            payment_lookup_id = %payment_lookup_id,
+                                            attempt = attempt + 1,
+                                            rpc_code = %err.code(),
+                                            error = %err.message(),
+                                            "LND MPP dispatch RPC failed; payment outcome requires verification",
+                                        );
+                                    })
                                     .map_err(Error::LndError)?
                                     .into_inner();
 
                                 if let Some(failure) = payment_response.failure {
                                     if failure.code == 15 {
                                         tracing::debug!(
-                                            "Attempt number {}: route has failed. Re-querying...",
-                                            attempt + 1
+                                            payment_lookup_id = %payment_lookup_id,
+                                            attempt = attempt + 1,
+                                            failure_code = failure.code,
+                                            failure_reason = failure.code().as_str_name(),
+                                            failure_source_index = failure.failure_source_index,
+                                            "LND MPP route failed; querying another route",
                                         );
                                         continue;
                                     }
+                                    tracing::warn!(
+                                        payment_lookup_id = %payment_lookup_id,
+                                        attempt = attempt + 1,
+                                        failure_code = failure.code,
+                                        failure_reason = failure.code().as_str_name(),
+                                        failure_source_index = failure.failure_source_index,
+                                        "LND MPP attempt returned a failure",
+                                    );
                                 }
 
                                 // Get status and maybe the preimage
@@ -638,9 +682,12 @@ impl MintPayment for Lnd {
                             }
 
                             // "We have exhausted all tactical options" -- STEM, Upgrade (2018)
-                            // Every route query ended in a no-route result, so
-                            // no payment was ever dispatched.
-                            tracing::error!("Limit of retries reached, payment couldn't succeed.");
+                            // All route attempts returned retryable failures.
+                            tracing::warn!(
+                                payment_lookup_id = %payment_lookup_id,
+                                attempts = Self::MAX_ROUTE_RETRIES,
+                                "LND MPP payment exhausted route retries",
+                            );
                             Ok(outgoing_payment_failure_response(unit, payment_lookup_id))
                         }
                     }
@@ -658,6 +705,12 @@ impl MintPayment for Lnd {
                                         // Invoice/request amount disagreement is
                                         // a local validation failure, before any
                                         // dispatch to LND.
+                                        tracing::warn!(
+                                            payment_lookup_id = %payment_lookup_id,
+                                            invoice_amount_msat = invoice_amount,
+                                            requested_amount_msat = u64::from(amount_msat),
+                                            "LND payment rejected before dispatch: invoice and requested amounts differ",
+                                        );
                                         return Ok(outgoing_payment_failure_response(
                                             unit,
                                             payment_lookup_id,
@@ -688,7 +741,12 @@ impl MintPayment for Lnd {
                             .send_payment_v2(pay_req)
                             .await
                             .map_err(|err| {
-                                tracing::warn!("Lightning payment dispatch error: {}", err);
+                                tracing::warn!(
+                                    payment_lookup_id = %payment_lookup_id,
+                                    rpc_code = %err.code(),
+                                    error = %err.message(),
+                                    "LND payment dispatch RPC failed; payment outcome requires verification",
+                                );
                                 // A gRPC error here may arrive after LND accepted
                                 // the payment; the dispatch outcome is unknown.
                                 Error::AmbiguousDispatch
@@ -696,7 +754,12 @@ impl MintPayment for Lnd {
                             .into_inner();
 
                         while let Some(update) = payment_stream.message().await.map_err(|err| {
-                            tracing::warn!("Lightning payment stream error: {}", err);
+                            tracing::warn!(
+                                payment_lookup_id = %payment_lookup_id,
+                                rpc_code = %err.code(),
+                                error = %err.message(),
+                                "LND payment stream failed after dispatch; payment may still settle",
+                            );
                             // The stream dropped after dispatch began; the payment
                             // may still settle.
                             Error::AmbiguousDispatch
@@ -708,7 +771,15 @@ impl MintPayment for Lnd {
                                     continue;
                                 }
                                 PaymentStatus::Succeeded => MeltQuoteState::Paid,
-                                PaymentStatus::Failed => MeltQuoteState::Failed,
+                                PaymentStatus::Failed => {
+                                    tracing::warn!(
+                                        payment_lookup_id = %payment_lookup_id,
+                                        failure_code = update.failure_reason,
+                                        failure_reason = update.failure_reason().as_str_name(),
+                                        "LND outgoing payment failed",
+                                    );
+                                    MeltQuoteState::Failed
+                                }
                                 #[allow(deprecated)]
                                 PaymentStatus::Unknown => MeltQuoteState::Unknown,
                             };
@@ -735,6 +806,10 @@ impl MintPayment for Lnd {
                             });
                         }
 
+                        tracing::warn!(
+                            payment_lookup_id = %payment_lookup_id,
+                            "LND payment stream ended without a terminal result; payment outcome remains unknown",
+                        );
                         Err(Error::UnknownPaymentStatus.into())
                     }
                 }
@@ -857,6 +932,10 @@ impl MintPayment for Lnd {
             Err(err) => {
                 let err_code = err.code();
                 if err_code == tonic::Code::NotFound {
+                    tracing::debug!(
+                        payment_lookup_id = %payment_identifier,
+                        "LND does not know this outgoing payment; reporting Unknown because absence is not authoritative proof of permanent failure",
+                    );
                     return Ok(MakePaymentResponse {
                         payment_lookup_id: payment_identifier.clone(),
                         payment_proof: None,
@@ -864,6 +943,12 @@ impl MintPayment for Lnd {
                         total_spent: Amount::new(0, self.unit.clone()),
                     });
                 } else {
+                    tracing::warn!(
+                        payment_lookup_id = %payment_identifier,
+                        rpc_code = %err_code,
+                        error = %err.message(),
+                        "LND outgoing payment status RPC failed; payment outcome remains unknown",
+                    );
                     return Err(payment::Error::UnknownPaymentState);
                 }
             }
@@ -896,24 +981,44 @@ impl MintPayment for Lnd {
                                 total_spent,
                             }
                         }
-                        PaymentStatus::Failed => MakePaymentResponse {
-                            payment_lookup_id: payment_identifier.clone(),
-                            payment_proof: Some(update.payment_preimage),
-                            status: MeltQuoteState::Failed,
-                            total_spent: Amount::new(0, self.unit.clone()),
-                        },
+                        PaymentStatus::Failed => {
+                            // Status checks also run before dispatch and may
+                            // repeatedly observe the same recorded failure.
+                            tracing::debug!(
+                                payment_lookup_id = %payment_identifier,
+                                failure_code = update.failure_reason,
+                                failure_reason = update.failure_reason().as_str_name(),
+                                "LND outgoing payment status is failed",
+                            );
+                            MakePaymentResponse {
+                                payment_lookup_id: payment_identifier.clone(),
+                                payment_proof: Some(update.payment_preimage),
+                                status: MeltQuoteState::Failed,
+                                total_spent: Amount::new(0, self.unit.clone()),
+                            }
+                        }
                     };
 
                     return Ok(response);
                 }
-                Err(_) => {
+                Err(err) => {
                     // Handle the case where the update itself is an error (e.g., stream failure)
+                    tracing::warn!(
+                        payment_lookup_id = %payment_identifier,
+                        rpc_code = %err.code(),
+                        error = %err.message(),
+                        "LND outgoing payment status stream failed; payment outcome remains unknown",
+                    );
                     return Err(Error::UnknownPaymentStatus.into());
                 }
             }
         }
 
         // If the stream is exhausted without a final status
+        tracing::warn!(
+            payment_lookup_id = %payment_identifier,
+            "LND outgoing payment status stream ended without a terminal result; payment outcome remains unknown",
+        );
         Err(Error::UnknownPaymentStatus.into())
     }
 }

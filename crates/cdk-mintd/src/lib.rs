@@ -408,7 +408,27 @@ pub fn setup_tracing(
     work_dir: &Path,
     logging_config: &config::LoggingConfig,
 ) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
-    let default_filter = "debug";
+    use config::LoggingOutput;
+
+    let console_level = logging_config
+        .console_level
+        .as_deref()
+        .unwrap_or("info")
+        .parse::<tracing::Level>()
+        .unwrap_or(tracing::Level::INFO);
+    let file_level = logging_config
+        .file_level
+        .as_deref()
+        .unwrap_or("debug")
+        .parse::<tracing::Level>()
+        .unwrap_or(tracing::Level::DEBUG);
+    // Enable spans and events up to the most verbose active output. Writer
+    // filters below still enforce each output's individual level.
+    let default_filter = match logging_config.output {
+        LoggingOutput::Stderr => console_level,
+        LoggingOutput::File => file_level,
+        LoggingOutput::Both => console_level.max(file_level),
+    };
     let hyper_filter = "hyper=warn,rustls=warn,reqwest=warn";
     let h2_filter = "h2=warn";
     let tower_filter = "tower=warn";
@@ -421,17 +441,9 @@ pub fn setup_tracing(
         "{default_filter},{hyper_filter},{h2_filter},{tower_filter},{tower_http},{rustls},{tungstenite},{tokio_postgres}"
     ));
 
-    use config::LoggingOutput;
     match logging_config.output {
         LoggingOutput::Stderr => {
             // Console output only (stderr)
-            let console_level = logging_config
-                .console_level
-                .as_deref()
-                .unwrap_or("info")
-                .parse::<tracing::Level>()
-                .unwrap_or(tracing::Level::INFO);
-
             let stderr = std::io::stderr.with_max_level(console_level);
 
             tracing_subscriber::fmt()
@@ -445,13 +457,6 @@ pub fn setup_tracing(
         }
         LoggingOutput::File => {
             // File output only
-            let file_level = logging_config
-                .file_level
-                .as_deref()
-                .unwrap_or("debug")
-                .parse::<tracing::Level>()
-                .unwrap_or(tracing::Level::DEBUG);
-
             // Create logs directory in work_dir if it doesn't exist
             let logs_dir = work_dir.join("logs");
             std::fs::create_dir_all(&logs_dir)?;
@@ -477,19 +482,6 @@ pub fn setup_tracing(
         }
         LoggingOutput::Both => {
             // Both console and file output (stderr + file)
-            let console_level = logging_config
-                .console_level
-                .as_deref()
-                .unwrap_or("info")
-                .parse::<tracing::Level>()
-                .unwrap_or(tracing::Level::INFO);
-            let file_level = logging_config
-                .file_level
-                .as_deref()
-                .unwrap_or("debug")
-                .parse::<tracing::Level>()
-                .unwrap_or(tracing::Level::DEBUG);
-
             // Create logs directory in work_dir if it doesn't exist
             let logs_dir = work_dir.join("logs");
             std::fs::create_dir_all(&logs_dir)?;
