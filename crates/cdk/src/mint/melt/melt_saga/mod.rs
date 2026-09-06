@@ -1234,7 +1234,7 @@ impl MeltSaga<PaymentConfirmed> {
                 saga_id = %self.operation_id,
                 payment_lookup_id = %payment_lookup_id,
                 error = %err,
-                "paid melt finalization failed; proofs remain reserved and recovery will retry",
+                "paid melt finalization failed; recovery will retry remaining finalization work",
             );
             err
         })?;
