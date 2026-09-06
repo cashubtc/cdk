@@ -46,9 +46,7 @@ impl Token {
     /// Create a new Token from string
     #[uniffi::constructor]
     pub fn from_string(encoded_token: String) -> Result<Token, FfiError> {
-        let token = cdk::nuts::Token::from_str(&encoded_token)
-            .map_err(|e| FfiError::internal(format!("Invalid token: {}", e)))?;
-        Ok(Token { inner: token })
+        Self::from_str(&encoded_token)
     }
 
     /// Get the total value of the token
@@ -74,9 +72,7 @@ impl Token {
     /// Get proofs from the token (simplified - no keyset filtering for now)
     pub fn proofs_simple(&self) -> Result<Proofs, FfiError> {
         // For now, return empty keysets to get all proofs
-        let empty_keysets = vec![];
-        let proofs = self.inner.proofs(&empty_keysets)?;
-        Ok(proofs.into_iter().map(|p| p.into()).collect())
+        self.proofs(vec![])
     }
 
     /// Get proofs from the token
