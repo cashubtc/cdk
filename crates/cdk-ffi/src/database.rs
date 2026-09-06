@@ -1710,6 +1710,10 @@ where
 #[macro_export]
 macro_rules! impl_ffi_wallet_database {
     ($wrapper_type:ty) => {
+        // UniFFI's runtime annotation wraps concrete object exports only. Calls
+        // through Arc<dyn WalletDatabase> bypass those exports, so apply the
+        // same adapter inside each delegation as well. Compat enters Tokio for
+        // each poll without spawning detached work or changing cancellation.
         #[uniffi::export(async_runtime = "tokio")]
         #[async_trait::async_trait]
         impl WalletDatabase for $wrapper_type {
@@ -1719,61 +1723,62 @@ macro_rules! impl_ffi_wallet_database {
                 &self,
                 ys: Vec<PublicKey>,
             ) -> Result<Vec<ProofInfo>, FfiError> {
-                self.inner.get_proofs_by_ys(ys).await
+                uniffi::deps::async_compat::Compat::new(self.inner.get_proofs_by_ys(ys)).await
             }
 
             async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, FfiError> {
-                self.inner.get_mint(mint_url).await
+                uniffi::deps::async_compat::Compat::new(self.inner.get_mint(mint_url)).await
             }
 
             async fn get_mints(
                 &self,
             ) -> Result<std::collections::HashMap<MintUrl, Option<MintInfo>>, FfiError> {
-                self.inner.get_mints().await
+                uniffi::deps::async_compat::Compat::new(self.inner.get_mints()).await
             }
 
             async fn get_mint_keysets(
                 &self,
                 mint_url: MintUrl,
             ) -> Result<Option<Vec<KeySetInfo>>, FfiError> {
-                self.inner.get_mint_keysets(mint_url).await
+                uniffi::deps::async_compat::Compat::new(self.inner.get_mint_keysets(mint_url)).await
             }
 
             async fn get_keyset_by_id(
                 &self,
                 keyset_id: Id,
             ) -> Result<Option<KeySetInfo>, FfiError> {
-                self.inner.get_keyset_by_id(keyset_id).await
+                uniffi::deps::async_compat::Compat::new(self.inner.get_keyset_by_id(keyset_id))
+                    .await
             }
 
             async fn get_mint_quote(
                 &self,
                 quote_id: String,
             ) -> Result<Option<MintQuote>, FfiError> {
-                self.inner.get_mint_quote(quote_id).await
+                uniffi::deps::async_compat::Compat::new(self.inner.get_mint_quote(quote_id)).await
             }
 
             async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
-                self.inner.get_mint_quotes().await
+                uniffi::deps::async_compat::Compat::new(self.inner.get_mint_quotes()).await
             }
 
             async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
-                self.inner.get_unissued_mint_quotes().await
+                uniffi::deps::async_compat::Compat::new(self.inner.get_unissued_mint_quotes()).await
             }
 
             async fn get_melt_quote(
                 &self,
                 quote_id: String,
             ) -> Result<Option<MeltQuote>, FfiError> {
-                self.inner.get_melt_quote(quote_id).await
+                uniffi::deps::async_compat::Compat::new(self.inner.get_melt_quote(quote_id)).await
             }
 
             async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, FfiError> {
-                self.inner.get_melt_quotes().await
+                uniffi::deps::async_compat::Compat::new(self.inner.get_melt_quotes()).await
             }
 
             async fn get_keys(&self, id: Id) -> Result<Option<Keys>, FfiError> {
-                self.inner.get_keys(id).await
+                uniffi::deps::async_compat::Compat::new(self.inner.get_keys(id)).await
             }
 
             async fn get_proofs(
@@ -1783,9 +1788,13 @@ macro_rules! impl_ffi_wallet_database {
                 state: Option<Vec<ProofState>>,
                 spending_conditions: Option<Vec<SpendingConditions>>,
             ) -> Result<Vec<ProofInfo>, FfiError> {
-                self.inner
-                    .get_proofs(mint_url, unit, state, spending_conditions)
-                    .await
+                uniffi::deps::async_compat::Compat::new(self.inner.get_proofs(
+                    mint_url,
+                    unit,
+                    state,
+                    spending_conditions,
+                ))
+                .await
             }
 
             async fn get_balance(
@@ -1794,14 +1803,18 @@ macro_rules! impl_ffi_wallet_database {
                 unit: Option<CurrencyUnit>,
                 state: Option<Vec<ProofState>>,
             ) -> Result<u64, FfiError> {
-                self.inner.get_balance(mint_url, unit, state).await
+                uniffi::deps::async_compat::Compat::new(
+                    self.inner.get_balance(mint_url, unit, state),
+                )
+                .await
             }
 
             async fn get_transaction(
                 &self,
                 transaction_id: TransactionId,
             ) -> Result<Option<Transaction>, FfiError> {
-                self.inner.get_transaction(transaction_id).await
+                uniffi::deps::async_compat::Compat::new(self.inner.get_transaction(transaction_id))
+                    .await
             }
 
             async fn list_transactions(
@@ -1810,9 +1823,10 @@ macro_rules! impl_ffi_wallet_database {
                 direction: Option<TransactionDirection>,
                 unit: Option<CurrencyUnit>,
             ) -> Result<Vec<Transaction>, FfiError> {
-                self.inner
-                    .list_transactions(mint_url, direction, unit)
-                    .await
+                uniffi::deps::async_compat::Compat::new(
+                    self.inner.list_transactions(mint_url, direction, unit),
+                )
+                .await
             }
 
             async fn kv_read(
@@ -1821,9 +1835,12 @@ macro_rules! impl_ffi_wallet_database {
                 secondary_namespace: String,
                 key: String,
             ) -> Result<Option<Vec<u8>>, FfiError> {
-                self.inner
-                    .kv_read(primary_namespace, secondary_namespace, key)
-                    .await
+                uniffi::deps::async_compat::Compat::new(self.inner.kv_read(
+                    primary_namespace,
+                    secondary_namespace,
+                    key,
+                ))
+                .await
             }
 
             async fn kv_list(
@@ -1831,9 +1848,10 @@ macro_rules! impl_ffi_wallet_database {
                 primary_namespace: String,
                 secondary_namespace: String,
             ) -> Result<Vec<String>, FfiError> {
-                self.inner
-                    .kv_list(primary_namespace, secondary_namespace)
-                    .await
+                uniffi::deps::async_compat::Compat::new(
+                    self.inner.kv_list(primary_namespace, secondary_namespace),
+                )
+                .await
             }
 
             async fn kv_write(
@@ -1843,9 +1861,13 @@ macro_rules! impl_ffi_wallet_database {
                 key: String,
                 value: Vec<u8>,
             ) -> Result<(), FfiError> {
-                self.inner
-                    .kv_write(primary_namespace, secondary_namespace, key, value)
-                    .await
+                uniffi::deps::async_compat::Compat::new(self.inner.kv_write(
+                    primary_namespace,
+                    secondary_namespace,
+                    key,
+                    value,
+                ))
+                .await
             }
 
             async fn kv_remove(
@@ -1854,9 +1876,12 @@ macro_rules! impl_ffi_wallet_database {
                 secondary_namespace: String,
                 key: String,
             ) -> Result<(), FfiError> {
-                self.inner
-                    .kv_remove(primary_namespace, secondary_namespace, key)
-                    .await
+                uniffi::deps::async_compat::Compat::new(self.inner.kv_remove(
+                    primary_namespace,
+                    secondary_namespace,
+                    key,
+                ))
+                .await
             }
 
             // ========== Write methods ==========
@@ -1866,7 +1891,8 @@ macro_rules! impl_ffi_wallet_database {
                 added: Vec<ProofInfo>,
                 removed_ys: Vec<PublicKey>,
             ) -> Result<(), FfiError> {
-                self.inner.update_proofs(added, removed_ys).await
+                uniffi::deps::async_compat::Compat::new(self.inner.update_proofs(added, removed_ys))
+                    .await
             }
 
             async fn update_proofs_state(
@@ -1874,18 +1900,23 @@ macro_rules! impl_ffi_wallet_database {
                 ys: Vec<PublicKey>,
                 state: ProofState,
             ) -> Result<(), FfiError> {
-                self.inner.update_proofs_state(ys, state).await
+                uniffi::deps::async_compat::Compat::new(self.inner.update_proofs_state(ys, state))
+                    .await
             }
 
             async fn add_transaction(&self, transaction: Transaction) -> Result<(), FfiError> {
-                self.inner.add_transaction(transaction).await
+                uniffi::deps::async_compat::Compat::new(self.inner.add_transaction(transaction))
+                    .await
             }
 
             async fn remove_transaction(
                 &self,
                 transaction_id: TransactionId,
             ) -> Result<(), FfiError> {
-                self.inner.remove_transaction(transaction_id).await
+                uniffi::deps::async_compat::Compat::new(
+                    self.inner.remove_transaction(transaction_id),
+                )
+                .await
             }
 
             async fn update_mint_url(
@@ -1893,7 +1924,10 @@ macro_rules! impl_ffi_wallet_database {
                 old_mint_url: MintUrl,
                 new_mint_url: MintUrl,
             ) -> Result<(), FfiError> {
-                self.inner.update_mint_url(old_mint_url, new_mint_url).await
+                uniffi::deps::async_compat::Compat::new(
+                    self.inner.update_mint_url(old_mint_url, new_mint_url),
+                )
+                .await
             }
 
             async fn increment_keyset_counter(
@@ -1901,7 +1935,10 @@ macro_rules! impl_ffi_wallet_database {
                 keyset_id: Id,
                 count: u32,
             ) -> Result<u32, FfiError> {
-                self.inner.increment_keyset_counter(keyset_id, count).await
+                uniffi::deps::async_compat::Compat::new(
+                    self.inner.increment_keyset_counter(keyset_id, count),
+                )
+                .await
             }
 
             async fn increment_derivation_counter(
@@ -1909,9 +1946,10 @@ macro_rules! impl_ffi_wallet_database {
                 namespace: String,
                 count: u32,
             ) -> Result<u32, FfiError> {
-                self.inner
-                    .increment_derivation_counter(namespace, count)
-                    .await
+                uniffi::deps::async_compat::Compat::new(
+                    self.inner.increment_derivation_counter(namespace, count),
+                )
+                .await
             }
 
             async fn reserve_derivation_index(
@@ -1919,9 +1957,11 @@ macro_rules! impl_ffi_wallet_database {
                 namespace: String,
                 minimum_index: u32,
             ) -> Result<u32, FfiError> {
-                self.inner
-                    .reserve_derivation_index(namespace, minimum_index)
-                    .await
+                uniffi::deps::async_compat::Compat::new(
+                    self.inner
+                        .reserve_derivation_index(namespace, minimum_index),
+                )
+                .await
             }
 
             async fn add_mint(
@@ -1929,11 +1969,12 @@ macro_rules! impl_ffi_wallet_database {
                 mint_url: MintUrl,
                 mint_info: Option<MintInfo>,
             ) -> Result<(), FfiError> {
-                self.inner.add_mint(mint_url, mint_info).await
+                uniffi::deps::async_compat::Compat::new(self.inner.add_mint(mint_url, mint_info))
+                    .await
             }
 
             async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), FfiError> {
-                self.inner.remove_mint(mint_url).await
+                uniffi::deps::async_compat::Compat::new(self.inner.remove_mint(mint_url)).await
             }
 
             async fn add_mint_keysets(
@@ -1941,31 +1982,36 @@ macro_rules! impl_ffi_wallet_database {
                 mint_url: MintUrl,
                 keysets: Vec<KeySetInfo>,
             ) -> Result<(), FfiError> {
-                self.inner.add_mint_keysets(mint_url, keysets).await
+                uniffi::deps::async_compat::Compat::new(
+                    self.inner.add_mint_keysets(mint_url, keysets),
+                )
+                .await
             }
 
             async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), FfiError> {
-                self.inner.add_mint_quote(quote).await
+                uniffi::deps::async_compat::Compat::new(self.inner.add_mint_quote(quote)).await
             }
 
             async fn remove_mint_quote(&self, quote_id: String) -> Result<(), FfiError> {
-                self.inner.remove_mint_quote(quote_id).await
+                uniffi::deps::async_compat::Compat::new(self.inner.remove_mint_quote(quote_id))
+                    .await
             }
 
             async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), FfiError> {
-                self.inner.add_melt_quote(quote).await
+                uniffi::deps::async_compat::Compat::new(self.inner.add_melt_quote(quote)).await
             }
 
             async fn remove_melt_quote(&self, quote_id: String) -> Result<(), FfiError> {
-                self.inner.remove_melt_quote(quote_id).await
+                uniffi::deps::async_compat::Compat::new(self.inner.remove_melt_quote(quote_id))
+                    .await
             }
 
             async fn add_keys(&self, keyset: KeySet) -> Result<(), FfiError> {
-                self.inner.add_keys(keyset).await
+                uniffi::deps::async_compat::Compat::new(self.inner.add_keys(keyset)).await
             }
 
             async fn remove_keys(&self, id: Id) -> Result<(), FfiError> {
-                self.inner.remove_keys(id).await
+                uniffi::deps::async_compat::Compat::new(self.inner.remove_keys(id)).await
             }
 
             // P2PK methods
@@ -1976,46 +2022,49 @@ macro_rules! impl_ffi_wallet_database {
                 derivation_path: String,
                 derivation_index: u32,
             ) -> Result<(), FfiError> {
-                self.inner
-                    .add_p2pk_key(pubkey, derivation_path, derivation_index)
-                    .await
+                uniffi::deps::async_compat::Compat::new(self.inner.add_p2pk_key(
+                    pubkey,
+                    derivation_path,
+                    derivation_index,
+                ))
+                .await
             }
 
             async fn get_p2pk_key(
                 &self,
                 pubkey: PublicKey,
             ) -> Result<Option<P2PKSigningKey>, FfiError> {
-                self.inner.get_p2pk_key(pubkey).await
+                uniffi::deps::async_compat::Compat::new(self.inner.get_p2pk_key(pubkey)).await
             }
 
             async fn list_p2pk_keys(&self) -> Result<Vec<P2PKSigningKey>, FfiError> {
-                self.inner.list_p2pk_keys().await
+                uniffi::deps::async_compat::Compat::new(self.inner.list_p2pk_keys()).await
             }
 
             async fn latest_p2pk(&self) -> Result<Option<P2PKSigningKey>, FfiError> {
-                self.inner.latest_p2pk().await
+                uniffi::deps::async_compat::Compat::new(self.inner.latest_p2pk()).await
             }
 
             // ========== Saga management methods ==========
 
             async fn add_saga(&self, saga_json: String) -> Result<(), FfiError> {
-                self.inner.add_saga(saga_json).await
+                uniffi::deps::async_compat::Compat::new(self.inner.add_saga(saga_json)).await
             }
 
             async fn get_saga(&self, id: String) -> Result<Option<String>, FfiError> {
-                self.inner.get_saga(id).await
+                uniffi::deps::async_compat::Compat::new(self.inner.get_saga(id)).await
             }
 
             async fn update_saga(&self, saga_json: String) -> Result<bool, FfiError> {
-                self.inner.update_saga(saga_json).await
+                uniffi::deps::async_compat::Compat::new(self.inner.update_saga(saga_json)).await
             }
 
             async fn delete_saga(&self, id: String) -> Result<(), FfiError> {
-                self.inner.delete_saga(id).await
+                uniffi::deps::async_compat::Compat::new(self.inner.delete_saga(id)).await
             }
 
             async fn get_incomplete_sagas(&self) -> Result<Vec<String>, FfiError> {
-                self.inner.get_incomplete_sagas().await
+                uniffi::deps::async_compat::Compat::new(self.inner.get_incomplete_sagas()).await
             }
 
             // ========== Proof reservation methods ==========
@@ -2025,18 +2074,23 @@ macro_rules! impl_ffi_wallet_database {
                 ys: Vec<PublicKey>,
                 operation_id: String,
             ) -> Result<(), FfiError> {
-                self.inner.reserve_proofs(ys, operation_id).await
+                uniffi::deps::async_compat::Compat::new(self.inner.reserve_proofs(ys, operation_id))
+                    .await
             }
 
             async fn release_proofs(&self, operation_id: String) -> Result<(), FfiError> {
-                self.inner.release_proofs(operation_id).await
+                uniffi::deps::async_compat::Compat::new(self.inner.release_proofs(operation_id))
+                    .await
             }
 
             async fn get_reserved_proofs(
                 &self,
                 operation_id: String,
             ) -> Result<Vec<ProofInfo>, FfiError> {
-                self.inner.get_reserved_proofs(operation_id).await
+                uniffi::deps::async_compat::Compat::new(
+                    self.inner.get_reserved_proofs(operation_id),
+                )
+                .await
             }
 
             // ========== Quote reservation methods ==========
@@ -2046,11 +2100,15 @@ macro_rules! impl_ffi_wallet_database {
                 quote_id: String,
                 operation_id: String,
             ) -> Result<(), FfiError> {
-                self.inner.reserve_melt_quote(quote_id, operation_id).await
+                uniffi::deps::async_compat::Compat::new(
+                    self.inner.reserve_melt_quote(quote_id, operation_id),
+                )
+                .await
             }
 
             async fn release_melt_quote(&self, operation_id: String) -> Result<(), FfiError> {
-                self.inner.release_melt_quote(operation_id).await
+                uniffi::deps::async_compat::Compat::new(self.inner.release_melt_quote(operation_id))
+                    .await
             }
 
             async fn reserve_mint_quote(
@@ -2058,11 +2116,15 @@ macro_rules! impl_ffi_wallet_database {
                 quote_id: String,
                 operation_id: String,
             ) -> Result<(), FfiError> {
-                self.inner.reserve_mint_quote(quote_id, operation_id).await
+                uniffi::deps::async_compat::Compat::new(
+                    self.inner.reserve_mint_quote(quote_id, operation_id),
+                )
+                .await
             }
 
             async fn release_mint_quote(&self, operation_id: String) -> Result<(), FfiError> {
-                self.inner.release_mint_quote(operation_id).await
+                uniffi::deps::async_compat::Compat::new(self.inner.release_mint_quote(operation_id))
+                    .await
             }
         }
     };
