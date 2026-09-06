@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::MintInfo;
-use cdk::wallet::WalletRepository;
+use cdk::wallet::WalletManager;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
@@ -20,21 +20,21 @@ pub struct CatDeviceLoginSubCommand {
 }
 
 pub async fn cat_device_login(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     sub_command_args: &CatDeviceLoginSubCommand,
     work_dir: &Path,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
 
     // Ensure the mint exists
-    if !wallet_repository.has_mint(&mint_url).await {
-        wallet_repository.add_wallet(mint_url.clone()).await?;
+    if !wallet_manager.contains_mint(&mint_url).await {
+        wallet_manager.register_mint(mint_url.clone()).await?;
     }
 
-    let mint_info = wallet_repository.fetch_mint_info(&mint_url).await?;
+    let mint_info = wallet_manager.mint_info(&mint_url).await?;
 
     let (access_token, refresh_token) =
-        get_device_code_token(wallet_repository, &mint_url, &mint_info).await?;
+        get_device_code_token(wallet_manager, &mint_url, &mint_info).await?;
 
     // Save tokens to file in work directory
     if let Err(e) =
@@ -55,7 +55,7 @@ pub async fn cat_device_login(
 }
 
 async fn get_device_code_token(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     mint_url: &MintUrl,
     mint_info: &MintInfo,
 ) -> Result<(String, String)> {
@@ -73,8 +73,9 @@ async fn get_device_code_token(
         .ok_or_else(|| anyhow::anyhow!("NUT-21 OIDC settings are not defined"))?
         .client_id;
 
-    let oidc_client = wallet_repository
-        .oidc_client_for_mint(mint_url, openid_discovery, None)
+    let oidc_client = wallet_manager
+        .advanced()
+        .authentication_client(mint_url, openid_discovery, None)
         .await;
 
     // Get the OIDC configuration

@@ -233,39 +233,46 @@ async fn main() -> Result<()> {
     };
     let default_unit = currency_unit.clone().unwrap_or(CurrencyUnit::Sat);
 
-    // Create WalletRepository using builder pattern
-    let wallet_repository = {
-        let mut builder = cdk::wallet::WalletRepositoryBuilder::new()
-            .localstore(localstore.clone())
-            .seed(seed);
+    // Create WalletManager using builder pattern
+    let wallet_manager = {
+        let mut builder = cdk::wallet::WalletManagerBuilder::new()
+            .with_store(localstore.clone())
+            .with_seed(seed);
 
         if let Some(proxy_url) = &args.proxy {
-            builder = builder.proxy_url(proxy_url.clone());
+            builder = builder.with_proxy(proxy_url.clone());
             if args.danger_accept_invalid_certs {
                 tracing::warn!(
                     "--danger-accept-invalid-certs disables TLS certificate verification"
                 );
-                builder = builder.danger_accept_invalid_certs(true);
+                builder = builder.with_danger_accept_invalid_certs(true);
             }
         }
 
         #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
         if matches!(args.transport, TorToggle::On) {
-            builder = builder.tor();
+            builder = builder.with_tor();
         }
 
         builder.build().await?
     };
 
-    let wallets = wallet_repository.get_wallets().await;
+    let wallets = wallet_manager.wallets().await;
 
     for wallet in wallets {
-        // Recover from incomplete operations (required after wallet creation)
-        let recovery = wallet.recover_incomplete_sagas().await?;
-        if !recovery.is_empty() {
+        let report = wallet
+            .synchronize(cdk::wallet::operation::SyncPolicy::Online)
+            .await?;
+        if report.recovered_operations != 0
+            || report.compensated_operations != 0
+            || report.failed_operations != 0
+        {
             println!(
-                "Recovered {} operations, {} compensated, {} skipped, {} failed",
-                recovery.recovered, recovery.compensated, recovery.skipped, recovery.failed
+                "Recovered {} operations, {} compensated, {} still pending, {} failed",
+                report.recovered_operations,
+                report.compensated_operations,
+                report.pending_operations,
+                report.failed_operations
             );
         }
     }
@@ -275,14 +282,14 @@ async fn main() -> Result<()> {
             sub_commands::decode_token::decode_token(sub_command_args)
         }
         Commands::Balance => {
-            sub_commands::balance::balance(&wallet_repository, currency_unit.as_ref()).await
+            sub_commands::balance::balance(&wallet_manager, currency_unit.as_ref()).await
         }
         Commands::Melt(sub_command_args) => {
-            sub_commands::melt::pay(&wallet_repository, sub_command_args, &default_unit).await
+            sub_commands::melt::pay(&wallet_manager, sub_command_args, &default_unit).await
         }
         Commands::Receive(sub_command_args) => {
             sub_commands::receive::receive(
-                &wallet_repository,
+                &wallet_manager,
                 sub_command_args,
                 &work_dir,
                 &default_unit,
@@ -290,66 +297,56 @@ async fn main() -> Result<()> {
             .await
         }
         Commands::Send(sub_command_args) => {
-            sub_commands::send::send(&wallet_repository, sub_command_args, &default_unit).await
+            sub_commands::send::send(&wallet_manager, sub_command_args, &default_unit).await
         }
         Commands::Transfer(sub_command_args) => {
-            sub_commands::transfer::transfer(&wallet_repository, sub_command_args, &default_unit)
-                .await
+            sub_commands::transfer::transfer(&wallet_manager, sub_command_args, &default_unit).await
         }
-        Commands::CheckPending => {
-            sub_commands::check_pending::check_pending(&wallet_repository).await
-        }
+        Commands::CheckPending => sub_commands::check_pending::check_pending(&wallet_manager).await,
         Commands::CheckRequests => {
-            sub_commands::check_requests::check_requests(&wallet_repository).await
+            sub_commands::check_requests::check_requests(&wallet_manager, &localstore).await
         }
         Commands::MintInfo(sub_command_args) => {
-            sub_commands::mint_info::mint_info(&wallet_repository, sub_command_args).await
+            sub_commands::mint_info::mint_info(&wallet_manager, sub_command_args).await
         }
         Commands::Mint(sub_command_args) => {
-            sub_commands::mint::mint(&wallet_repository, sub_command_args, &default_unit).await
+            sub_commands::mint::mint(&wallet_manager, sub_command_args, &default_unit).await
         }
         Commands::MintBatch(sub_command_args) => {
-            sub_commands::mint_batch::mint_batch(
-                &wallet_repository,
-                sub_command_args,
-                &default_unit,
-            )
-            .await
+            sub_commands::mint_batch::mint_batch(&wallet_manager, sub_command_args, &default_unit)
+                .await
         }
-        Commands::MintPending => {
-            sub_commands::pending_mints::mint_pending(&wallet_repository).await
-        }
+        Commands::MintPending => sub_commands::pending_mints::mint_pending(&wallet_manager).await,
         Commands::Burn(sub_command_args) => {
-            sub_commands::burn::burn(&wallet_repository, sub_command_args).await
+            sub_commands::burn::burn(&wallet_manager, sub_command_args).await
         }
         Commands::Restore(sub_command_args) => {
-            sub_commands::restore::restore(&wallet_repository, sub_command_args, &default_unit)
-                .await
+            sub_commands::restore::restore(&wallet_manager, sub_command_args, &default_unit).await
         }
         Commands::UpdateMintUrl(sub_command_args) => {
             sub_commands::update_mint_url::update_mint_url(
-                &wallet_repository,
+                &wallet_manager,
                 sub_command_args,
                 &default_unit,
             )
             .await
         }
         Commands::ListMintProofs(sub_command_args) => {
-            sub_commands::list_mint_proofs::proofs(&wallet_repository, sub_command_args).await
+            sub_commands::list_mint_proofs::proofs(&wallet_manager, sub_command_args).await
         }
         Commands::DecodeRequest(sub_command_args) => {
             sub_commands::decode_request::decode_payment_request(sub_command_args)
         }
         Commands::PayRequest(sub_command_args) => {
-            sub_commands::pay_request::pay_request(&wallet_repository, sub_command_args).await
+            sub_commands::pay_request::pay_request(&wallet_manager, sub_command_args).await
         }
         Commands::Resolve(sub_command_args) => {
-            sub_commands::resolve::resolve(&wallet_repository, sub_command_args, &default_unit)
-                .await
+            sub_commands::resolve::resolve(&wallet_manager, sub_command_args, &default_unit).await
         }
         Commands::CreateRequest(sub_command_args) => {
             sub_commands::create_request::create_request(
-                &wallet_repository,
+                &wallet_manager,
+                &localstore,
                 sub_command_args,
                 &default_unit,
             )
@@ -357,7 +354,7 @@ async fn main() -> Result<()> {
         }
         Commands::MintBlindAuth(sub_command_args) => {
             sub_commands::mint_blind_auth::mint_blind_auth(
-                &wallet_repository,
+                &wallet_manager,
                 sub_command_args,
                 &work_dir,
                 &default_unit,
@@ -365,12 +362,11 @@ async fn main() -> Result<()> {
             .await
         }
         Commands::CatLogin(sub_command_args) => {
-            sub_commands::cat_login::cat_login(&wallet_repository, sub_command_args, &work_dir)
-                .await
+            sub_commands::cat_login::cat_login(&wallet_manager, sub_command_args, &work_dir).await
         }
         Commands::CatDeviceLogin(sub_command_args) => {
             sub_commands::cat_device_login::cat_device_login(
-                &wallet_repository,
+                &wallet_manager,
                 sub_command_args,
                 &work_dir,
             )
@@ -379,7 +375,7 @@ async fn main() -> Result<()> {
         #[cfg(feature = "npubcash")]
         Commands::NpubCash { mint_url, command } => {
             sub_commands::npubcash::npubcash(
-                &wallet_repository,
+                &wallet_manager,
                 mint_url,
                 command,
                 Some(args.npubcash_url.clone()),
@@ -388,7 +384,7 @@ async fn main() -> Result<()> {
         }
         Commands::GeneratePublicKey(sub_command_args) => {
             sub_commands::generate_public_key::generate_public_key(
-                &wallet_repository,
+                &wallet_manager,
                 sub_command_args,
                 &default_unit,
             )
@@ -396,7 +392,7 @@ async fn main() -> Result<()> {
         }
         Commands::GetPublicKeys(sub_command_args) => {
             sub_commands::get_public_keys::get_public_keys(
-                &wallet_repository,
+                &wallet_manager,
                 sub_command_args,
                 &default_unit,
             )

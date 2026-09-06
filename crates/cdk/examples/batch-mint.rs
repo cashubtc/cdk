@@ -1,12 +1,14 @@
 #![allow(missing_docs)]
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cdk::amount::SplitTarget;
 use cdk::error::Error;
-use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::advanced::{MintBatchClaimRequest, MintBatchRefreshRequest};
+use cdk::wallet::mint::{MintRequest, MintState};
 use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
@@ -32,43 +34,59 @@ async fn main() -> Result<(), Error> {
     // let mint_url = "http://127.0.0.1:8085";
     let unit = CurrencyUnit::Sat;
 
-    let wallet = Wallet::new(mint_url, unit, localstore.clone(), seed, None)?;
+    let wallet = Wallet::open(cdk::wallet::WalletOpenRequest::new(
+        cdk::wallet::WalletIdentity::new(mint_url.parse()?, unit),
+        localstore.clone(),
+        seed,
+    ))?;
 
     let amount1 = Amount::from(10);
     let amount2 = Amount::from(20);
     let amount3 = Amount::from(30);
 
     println!("Creating 3 mint quotes...");
-    let quote1 = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(amount1), None, None)
-        .await?;
-    println!("Quote 1: {} - {}", quote1.id, quote1.request);
+    let session1 = wallet.request_mint(MintRequest::bolt11(amount1)).await?;
+    println!(
+        "Quote 1: {} - {}",
+        session1.id(),
+        session1.initial_state().payment_request
+    );
 
-    let quote2 = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(amount2), None, None)
-        .await?;
-    println!("Quote 2: {} - {}", quote2.id, quote2.request);
+    let session2 = wallet.request_mint(MintRequest::bolt11(amount2)).await?;
+    println!(
+        "Quote 2: {} - {}",
+        session2.id(),
+        session2.initial_state().payment_request
+    );
 
-    let quote3 = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(amount3), None, None)
-        .await?;
-    println!("Quote 3: {} - {}", quote3.id, quote3.request);
+    let session3 = wallet.request_mint(MintRequest::bolt11(amount3)).await?;
+    println!(
+        "Quote 3: {} - {}",
+        session3.id(),
+        session3.initial_state().payment_request
+    );
 
-    let quote_ids = [quote1.id.as_str(), quote2.id.as_str(), quote3.id.as_str()];
+    let quote_ids = vec![
+        session1.id().clone(),
+        session2.id().clone(),
+        session3.id().clone(),
+    ];
 
     println!("\nWaiting for all batch quotes to be PAID...");
     let deadline = Instant::now() + Duration::from_secs(15);
 
     loop {
-        let statuses = wallet.batch_check_mint_quote_status(&quote_ids).await?;
-        for q in &statuses {
-            println!("  Quote {}: {}", q.id, q.state);
+        let statuses = wallet
+            .advanced()
+            .refresh_mint_batch(MintBatchRefreshRequest {
+                quote_ids: quote_ids.clone(),
+            })
+            .await?;
+        for state in &statuses {
+            println!("  Quote {}: {}", state.id, state.state);
         }
 
-        if statuses
-            .iter()
-            .all(|q| matches!(q.state, MintQuoteState::Paid))
-        {
+        if statuses.iter().all(|state| state.state == MintState::Paid) {
             break;
         }
 
@@ -79,14 +97,20 @@ async fn main() -> Result<(), Error> {
         sleep(Duration::from_millis(500)).await;
     }
 
-    let proofs = wallet
-        .batch_mint(&quote_ids, SplitTarget::default(), None, None)
+    let receipt = wallet
+        .advanced()
+        .claim_mint_batch(MintBatchClaimRequest {
+            quote_ids,
+            amount_split_target: SplitTarget::default(),
+            conditions: None,
+            external_keys: HashMap::new(),
+        })
         .await?;
 
     println!(
         "\nBatch mint complete: minted {} sats in {} proofs",
-        proofs.total_amount()?,
-        proofs.len()
+        receipt.amount,
+        receipt.proofs.len()
     );
 
     Ok(())

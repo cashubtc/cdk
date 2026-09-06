@@ -9,7 +9,7 @@ use cdk::cdk_database::{self, MintAuthDatabase, MintDatabase, MintKeysDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::types::FeeReserve;
-use cdk::wallet::AuthWallet;
+use cdk::wallet::advanced::AuthWallet;
 use cdk_fake_wallet::FakeWallet;
 
 pub async fn start_fake_mint_with_auth<D, A, K>(

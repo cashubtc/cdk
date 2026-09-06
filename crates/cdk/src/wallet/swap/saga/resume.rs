@@ -575,10 +575,10 @@ mod tests {
         db.add_saga(saga).await.unwrap();
 
         let wallet = crate::wallet::WalletBuilder::new()
-            .mint_url(mint_url)
-            .unit(CurrencyUnit::Sat)
-            .localstore(db.clone())
-            .seed(seed)
+            .with_mint_url(mint_url)
+            .with_unit(CurrencyUnit::Sat)
+            .with_store(db.clone())
+            .with_seed(seed)
             .build()
             .unwrap();
 

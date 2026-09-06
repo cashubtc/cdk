@@ -137,7 +137,13 @@ where
     /// Remove mint quote from storage
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Err>;
 
-    /// Add melt quote to storage
+    /// Insert a melt quote or update an existing quote using optimistic locking.
+    ///
+    /// Updates must atomically match both `version` and `used_by_operation`.
+    /// Quote reservation and release change the owner without changing the
+    /// version, so checking the version alone can overwrite a reservation.
+    /// Return [`Error::ConcurrentUpdate`] when either field differs. Ownership
+    /// changes must use `reserve_melt_quote` and `release_melt_quote` instead.
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Err>;
 
     /// Remove melt quote from storage

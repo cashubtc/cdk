@@ -6,7 +6,9 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use cdk::nuts::{CurrencyUnit, SecretKey, Token};
 use cdk::util::unix_time;
-use cdk::wallet::{ReceiveOptions, WalletRepository};
+use cdk::wallet::advanced::ReceiveAdvancedOptions;
+use cdk::wallet::receive::ReceiveRequest;
+use cdk::wallet::WalletManager;
 use cdk::Amount;
 use clap::Args;
 use nostr_sdk::nips::nip04;
@@ -41,7 +43,7 @@ pub struct ReceiveSubCommand {
 }
 
 pub async fn receive(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     sub_command_args: &ReceiveSubCommand,
     work_dir: &Path,
     unit: &CurrencyUnit,
@@ -68,7 +70,7 @@ pub async fn receive(
     let amount = match &sub_command_args.token {
         Some(token_str) => {
             receive_token(
-                wallet_repository,
+                wallet_manager,
                 token_str,
                 &signing_keys,
                 &sub_command_args.preimage,
@@ -110,7 +112,7 @@ pub async fn receive(
             let mut total_amount = Amount::ZERO;
             for token_str in &tokens {
                 match receive_token(
-                    wallet_repository,
+                    wallet_manager,
                     token_str,
                     &signing_keys,
                     &sub_command_args.preimage,
@@ -140,7 +142,7 @@ pub async fn receive(
 }
 
 async fn receive_token(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     token_str: &str,
     signing_keys: &[SecretKey],
     preimage: &[String],
@@ -152,7 +154,7 @@ async fn receive_token(
     let mint_url = token.mint_url()?;
 
     // Check if the mint is already trusted
-    let is_trusted = wallet_repository.has_mint(&mint_url).await;
+    let is_trusted = wallet_manager.contains_mint(&mint_url).await;
 
     // If mint is not trusted and we don't allow untrusted, error out
     if !is_trusted && !allow_untrusted {
@@ -165,17 +167,19 @@ async fn receive_token(
     }
 
     // Get or create wallet for the token's mint
-    let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
+    let wallet = get_or_create_wallet(wallet_manager, &mint_url, unit).await?;
 
     // Create receive options
-    let receive_options = ReceiveOptions {
+    let receive_options = ReceiveAdvancedOptions {
         p2pk_signing_keys: signing_keys.to_vec(),
         preimages: preimage.to_vec(),
         ..Default::default()
     };
 
-    let received = wallet.receive(token_str, receive_options).await?;
-    Ok(received)
+    let received = wallet
+        .receive(ReceiveRequest::new(token_str.to_string()).with_advanced(receive_options))
+        .await?;
+    Ok(received.amount)
 }
 
 /// Receive tokens sent to nostr pubkey via dm

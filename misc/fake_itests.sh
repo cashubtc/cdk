@@ -197,13 +197,13 @@ if [ $status3 -ne 0 ]; then
 fi
 
 # Run fourth test (multi_mint_wallet) only if previous tests succeeded
-echo "Running wallet_repository test"
-run_test wallet_repository -- --nocapture
+echo "Running wallet_manager test"
+run_test wallet_manager -- --nocapture
 status4=$?
 
 # Exit with the status of the fourth test
 if [ $status4 -ne 0 ]; then
-    echo "Fourth test (wallet_repository) failed with status $status4, exiting"
+    echo "Fourth test (wallet_manager) failed with status $status4, exiting"
     exit $status4
 fi
 

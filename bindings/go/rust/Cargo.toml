@@ -15,5 +15,8 @@ name = "cdk_ffi_go"
 [dependencies]
 cdk-ffi = { workspace = true, features = ["npubcash", "nwc", "bip353"] }
 
+[features]
+advanced-wallet = ["cdk-ffi/advanced-wallet"]
+
 [lints]
 workspace = true

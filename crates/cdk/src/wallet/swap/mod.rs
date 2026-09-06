@@ -36,7 +36,7 @@ impl Wallet {
     /// This method reserves the input proofs before performing the swap,
     /// ensuring they cannot be used by concurrent operations.
     #[instrument(skip(self, input_proofs))]
-    pub async fn swap(
+    pub(crate) async fn swap(
         &self,
         amount: Option<Amount>,
         amount_split_target: SplitTarget,

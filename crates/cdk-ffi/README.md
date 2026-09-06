@@ -1,70 +1,80 @@
-# CDK FFI Bindings
+# CDK language bindings
 
-UniFFI bindings for the CDK (Cashu Development Kit), providing foreign function interface access to wallet functionality for multiple programming languages.
+`cdk-ffi` is a thin UniFFI exposure of the workflow API implemented by
+`cdk::wallet`. Generated Swift, Kotlin, Python, Dart, and Go bindings use the
+same object lifecycle as Rust:
 
-## Supported Languages
+- `Wallet` for one mint and currency unit;
+- `WalletManager` for a multi-mint application;
+- request records and typed payment targets;
+- resumable mint sessions;
+- durable send, payment, request-payment, and cross-mint plans;
+- durable operation discovery and high-level application events;
+- explicit synchronization, receipts, history, and structured errors.
 
-- **🐍 Python** - With REPL integration for development
-- **🍎 Swift** - iOS and macOS development
-- **🎯 Kotlin** - Android and JVM development
+Wallet selection, proof reservation, payment execution, recovery, and other
+business rules remain in `cdk`. This crate only converts binding-safe values
+and bridges object lifetimes.
 
-## Development Tasks
+## Python example
 
-### Build & Check
-```bash
-just ffi-build        # Build FFI library (release)
-just ffi-build --debug # Build debug version
-just ffi-check         # Check compilation
-just ffi-clean         # Clean build artifacts
+```python
+import cdk_ffi
+
+wallet = cdk_ffi.Wallet.open(
+    cdk_ffi.WalletOpenRequest(
+        mint_url="https://mint.example.com",
+        unit=cdk_ffi.CurrencyUnit.SAT(),
+        mnemonic=cdk_ffi.generate_mnemonic(),
+        store=cdk_ffi.WalletStore.SQLITE(path="wallet.sqlite"),
+        config=None,
+    )
+)
+
+local_balance = await wallet.balance()
+await wallet.synchronize(cdk_ffi.SyncPolicy.ONLINE)
+
+session = await wallet.request_mint(
+    cdk_ffi.MintRequest(
+        method=cdk_ffi.PaymentMethod.BOLT11(),
+        amount=cdk_ffi.Amount(value=1_000),
+        description="Coffee",
+        extra=None,
+    )
+)
+print(session.initial_state().payment_request)
 ```
 
-### Generate Bindings
+Persist session quote IDs and plan operation IDs before any external side
+effect. Rebuild state with `operations()`, then follow each typed resume
+instruction; do not infer success from a dropped binding object.
+
+## Advanced bindings
+
+The default generated API intentionally omits proof, keyset, authentication,
+raw import, explicit funding, and low-level subscription controls. Build with
+`--features advanced-wallet` to add `advanced_wallet`, `advanced_manager`, and
+the related expert records. This changes only the exported surface: the
+advanced objects still delegate to the same core wallet workflows.
+
+## Development
+
 ```bash
-# Generate for specific languages
+just ffi-check
 just ffi-generate python
-just ffi-generate swift
-just ffi-generate kotlin
-
-# Generate all languages
 just ffi-generate-all
-
-# Use --debug for faster development builds
-just ffi-generate python --debug
+just ffi-test
+just ffi-test-live-python
 ```
 
-### Development & Testing
-```bash
-# Python development with REPL
-just ffi-dev-python    # Generates bindings and opens Python REPL with cdk_ffi loaded
+`cargo check -p cdk-ffi --all-targets` validates the normal Rust/UniFFI
+surface. `cargo check -p cdk-ffi --all-targets --features advanced-wallet`
+validates the opt-in expert surface. Binding smoke tests should exercise the
+same request → session/plan → receipt flow as Rust integration tests.
 
-# Test bindings
-just ffi-test-python   # Test Python bindings import
-just ffi-test-live-python # Run live Python test against testnut.cashudevkit.org
-```
+The complete architecture, durability contract, and previous-to-current API
+mapping are in [the wallet API guide](../../docs/wallet-api.md).
 
-## Quick Start
-
-```bash
-# Start development
-just ffi-dev-python
-
-# In the Python REPL:
->>> dir(cdk_ffi)  # Explore available functions
->>> help(cdk_ffi.generate_mnemonic)  # Get help
-```
-
-## Live Tests
-
-The live Python test in `tests/test_live_async_onchain_melt.py` covers
-`PreparedMelt.confirm_prefer_async()`, immediate and pending melt outcomes,
-`PendingMelt.wait()`, and `Wallet.finalize_pending_melts()` against
-`https://testnut.cashudevkit.org`.
-
-## Language Packages
-
-For production use, see language-specific repositories:
-
-- [cdk-swift](https://github.com/cashubtc/cdk-swift) - iOS/macOS packages
-- [cdk-kotlin](https://github.com/cashubtc/cdk-kotlin) - Android/JVM packages  
-- [cdk-go](https://github.com/cashubtc/cdk-go) - Golang packages
-- [cdk-python](https://github.com/cashubtc/cdk-python) - PyPI packages
+Production packages are published in the `cashubtc/cdk-swift`,
+`cashubtc/cdk-kotlin`, `cashubtc/cdk-go`, `cashubtc/cdk-dart`, and
+`cashubtc/cdk-python` repositories.

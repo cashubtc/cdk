@@ -61,6 +61,8 @@ type PaymentStateEntry = (MeltQuoteState, Amount<CurrencyUnit>);
 
 /// Cache duration for exchange rate (5 minutes)
 const RATE_CACHE_DURATION: Duration = Duration::from_secs(300);
+/// Maximum time to wait for the optional live exchange-rate source.
+const RATE_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Mempool.space prices API response structure
 #[derive(Debug, Deserialize)]
@@ -96,14 +98,23 @@ impl ExchangeRateCache {
             }
         }
 
-        // Try to fetch fresh rates, fallback on error
-        match self.fetch_fresh_rate(currency).await {
-            Ok(rate) => Ok(rate),
-            Err(e) => {
+        // Try to fetch fresh rates, falling back when the optional external
+        // source is unavailable. Fake payment backends must remain usable in
+        // offline and hermetic test environments.
+        match time::timeout(RATE_FETCH_TIMEOUT, self.fetch_fresh_rate(currency)).await {
+            Ok(Ok(rate)) => Ok(rate),
+            Ok(Err(error)) => {
                 tracing::warn!(
                     "Failed to fetch exchange rates, using fallback for {:?}: {}",
                     currency,
-                    e
+                    error
+                );
+                Self::fallback_rate(currency)
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Timed out fetching exchange rates, using fallback for {:?}",
+                    currency
                 );
                 Self::fallback_rate(currency)
             }

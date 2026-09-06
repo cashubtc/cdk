@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::database::{self, WalletDatabase};
+use cdk_common::wallet::OperationData;
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -73,13 +74,40 @@ impl CompensatingAction for MintCompensation {
             self.quote_id
         );
 
-        if let Err(e) = self.localstore.delete_saga(&self.saga_id).await {
-            tracing::warn!(
-                "Compensation: Failed to delete saga {}: {}. Will be cleaned up on recovery.",
-                self.saga_id,
-                e
-            );
+        let Some(saga) = self
+            .localstore
+            .get_saga(&self.saga_id)
+            .await
+            .map_err(Error::Database)?
+        else {
+            return Ok(());
+        };
+        let OperationData::Mint(data) = saga.data else {
+            return Err(Error::InvalidOperationState);
+        };
+
+        let owner = self.saga_id.to_string();
+        for quote_id in data.quote_ids() {
+            let quote = self
+                .localstore
+                .get_mint_quote(&quote_id)
+                .await
+                .map_err(Error::Database)?;
+            if quote
+                .as_ref()
+                .and_then(|quote| quote.used_by_operation.as_deref())
+                == Some(owner.as_str())
+            {
+                return Err(Error::Custom(
+                    "Mint quote reservation cleanup is incomplete".to_string(),
+                ));
+            }
         }
+
+        self.localstore
+            .delete_saga(&self.saga_id)
+            .await
+            .map_err(Error::Database)?;
 
         Ok(())
     }
@@ -94,7 +122,7 @@ mod tests {
     use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::CurrencyUnit;
     use cdk_common::wallet::{
-        MintQuote, OperationData, SwapOperationData, SwapSagaState, WalletSaga, WalletSagaState,
+        IssueSagaState, MintOperationData, MintQuote, OperationData, WalletSaga, WalletSagaState,
     };
     use cdk_common::{Amount, PaymentMethod};
 
@@ -106,17 +134,17 @@ mod tests {
     fn test_issue_saga(mint_url: cdk_common::mint_url::MintUrl) -> WalletSaga {
         WalletSaga::new(
             uuid::Uuid::new_v4(),
-            WalletSagaState::Swap(SwapSagaState::ProofsReserved),
+            WalletSagaState::Issue(IssueSagaState::Preparing),
             Amount::from(1000),
             mint_url,
             CurrencyUnit::Sat,
-            OperationData::Swap(SwapOperationData {
-                input_amount: Amount::from(1000),
-                output_amount: Amount::from(990),
-                counter_start: Some(0),
-                counter_end: Some(10),
-                blinded_messages: None,
-            }),
+            OperationData::Mint(MintOperationData::new_single(
+                "test_quote".to_string(),
+                Amount::from(1000),
+                None,
+                None,
+                None,
+            )),
         )
     }
 
@@ -217,5 +245,29 @@ mod tests {
         // Should succeed even without saga
         let result = compensation.execute().await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_mint_compensation_keeps_saga_while_quote_is_reserved() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga = test_issue_saga(mint_url.clone());
+        let saga_id = saga.id;
+        db.add_saga(saga).await.unwrap();
+
+        let mut quote = test_mint_quote(mint_url);
+        quote.id = "test_quote".to_string();
+        quote.used_by_operation = Some(saga_id.to_string());
+        db.add_mint_quote(quote).await.unwrap();
+
+        let compensation = MintCompensation {
+            localstore: db.clone(),
+            quote_id: "test_quote".to_string(),
+            saga_id,
+        };
+
+        let result = compensation.execute().await;
+        assert!(result.is_err());
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
     }
 }

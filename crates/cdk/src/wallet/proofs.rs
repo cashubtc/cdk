@@ -32,38 +32,12 @@ impl Wallet {
 
     /// Get unspent proofs for mint
     #[instrument(skip(self))]
-    pub async fn get_unspent_proofs(&self) -> Result<Proofs, Error> {
+    pub(crate) async fn get_unspent_proofs(&self) -> Result<Proofs, Error> {
         self.get_proofs_with(Some(vec![State::Unspent]), None).await
     }
 
-    /// Get pending [`Proofs`]
-    #[instrument(skip(self))]
-    pub async fn get_pending_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::Pending]), None).await
-    }
-
-    /// Get reserved [`Proofs`]
-    #[instrument(skip(self))]
-    pub async fn get_reserved_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::Reserved]), None)
-            .await
-    }
-
-    /// Get pending spent [`Proofs`]
-    #[instrument(skip(self))]
-    pub async fn get_pending_spent_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::PendingSpent]), None)
-            .await
-    }
-
-    /// Get proofs filtered by states
-    #[instrument(skip(self))]
-    pub async fn get_proofs_by_states(&self, states: Vec<State>) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(states), None).await
-    }
-
     /// Get this wallet's [Proofs] that match the args
-    pub async fn get_proofs_with(
+    pub(crate) async fn get_proofs_with(
         &self,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
@@ -84,7 +58,7 @@ impl Wallet {
 
     /// Return proofs to unspent allowing them to be selected and spent
     #[instrument(skip(self))]
-    pub async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
+    pub(crate) async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
         self.localstore
             .update_proofs_state(ys, State::Unspent)
             .await?;
@@ -93,7 +67,10 @@ impl Wallet {
 
     /// NUT-07 Check the state of a [`Proof`] with the mint
     #[instrument(skip(self, proofs))]
-    pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Error> {
+    pub(crate) async fn check_proofs_spent(
+        &self,
+        proofs: Proofs,
+    ) -> Result<Vec<ProofState>, Error> {
         let spendable = self
             .client
             .post_check_state(CheckStateRequest { ys: proofs.ys()? })
@@ -135,7 +112,7 @@ impl Wallet {
     /// The total amount of orphaned proofs that remain pending (not spent by the mint)
     /// after checking.
     #[instrument(skip(self))]
-    pub async fn check_all_pending_proofs(&self) -> Result<Amount, Error> {
+    pub(crate) async fn check_all_pending_proofs(&self) -> Result<Amount, Error> {
         let mut balance = Amount::ZERO;
 
         let proofs = self
@@ -205,7 +182,8 @@ impl Wallet {
     ///
     /// The intent is to perform a swap with info, or include the Proof as part of the return if the
     /// swap is not needed or if the swap failed.
-    pub fn select_exact_proofs(
+    #[cfg(test)]
+    pub(crate) fn select_exact_proofs(
         amount: Amount,
         proofs: Proofs,
         active_keyset_ids: &Vec<Id>,
@@ -263,7 +241,7 @@ impl Wallet {
 
     /// Select proofs
     #[instrument(skip_all)]
-    pub fn select_proofs(
+    pub(crate) fn select_proofs(
         amount: Amount,
         proofs: Proofs,
         active_keyset_ids: &Vec<Id>,

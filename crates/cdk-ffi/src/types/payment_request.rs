@@ -1,6 +1,5 @@
 //! Payment Request FFI types (NUT-18)
 
-use std::fmt;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -105,7 +104,7 @@ pub struct PaymentRequest {
 }
 
 impl PaymentRequest {
-    /// Get inner reference
+    /// Borrow the core protocol request for wallet workflow conversion.
     pub(crate) fn inner(&self) -> &cdk::nuts::PaymentRequest {
         &self.inner
     }
@@ -218,311 +217,10 @@ impl PaymentRequest {
     }
 }
 
-/// FFI-compatible prepared NUT-18 payment request.
-#[derive(uniffi::Object)]
-pub struct PreparedPaymentRequest {
-    inner: std::sync::Mutex<Option<cdk::wallet::PreparedPaymentRequest>>,
-    operation_id: String,
-    mint_url: String,
-    unit: CurrencyUnit,
-    requested_amount: Amount,
-    method: Option<String>,
-    method_fee: Amount,
-    payment_amount: Amount,
-    input_fee: Amount,
-    total_amount: Amount,
-}
-
-impl fmt::Debug for PreparedPaymentRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PreparedPaymentRequest")
-            .field("operation_id", &self.operation_id)
-            .field("mint_url", &self.mint_url)
-            .field("total_amount", &self.total_amount)
-            .finish_non_exhaustive()
-    }
-}
-
-impl PreparedPaymentRequest {
-    /// Wrap a prepared CDK payment request for FFI callers.
-    pub(crate) fn new(inner: cdk::wallet::PreparedPaymentRequest) -> Self {
-        Self {
-            operation_id: inner.operation_id().to_string(),
-            mint_url: inner.mint_url().to_string(),
-            unit: inner.unit().clone().into(),
-            requested_amount: inner.requested_amount().into(),
-            method: inner.method().map(str::to_owned),
-            method_fee: inner.method_fee().into(),
-            payment_amount: inner.payment_amount().into(),
-            input_fee: inner.input_fee().into(),
-            total_amount: inner.total_amount().into(),
-            inner: std::sync::Mutex::new(Some(inner)),
-        }
-    }
-
-    fn take(&self) -> Result<cdk::wallet::PreparedPaymentRequest, FfiError> {
-        self.inner
-            .lock()
-            .map_err(|_| FfiError::internal("Prepared payment lock poisoned"))?
-            .take()
-            .ok_or_else(|| FfiError::internal("Prepared payment already completed or canceled"))
-    }
-}
-
-#[uniffi::export(async_runtime = "tokio")]
-impl PreparedPaymentRequest {
-    /// Operation ID of the reserved send.
-    pub fn operation_id(&self) -> String {
-        self.operation_id.clone()
-    }
-
-    /// Mint selected for the payment.
-    pub fn mint_url(&self) -> String {
-        self.mint_url.clone()
-    }
-
-    /// Currency unit of the payment.
-    pub fn unit(&self) -> CurrencyUnit {
-        self.unit.clone()
-    }
-
-    /// Amount requested before the receiver-selected method fee.
-    pub fn requested_amount(&self) -> Amount {
-        self.requested_amount
-    }
-
-    /// Selected payment method, when restricted by the request.
-    pub fn method(&self) -> Option<String> {
-        self.method.clone()
-    }
-
-    /// Applicable receiver-selected method fee (`mf`).
-    pub fn method_fee(&self) -> Amount {
-        self.method_fee
-    }
-
-    /// Requested amount plus the applicable method fee.
-    pub fn payment_amount(&self) -> Amount {
-        self.payment_amount
-    }
-
-    /// Total mint input fee.
-    pub fn input_fee(&self) -> Amount {
-        self.input_fee
-    }
-
-    /// Total wallet debit.
-    pub fn total_amount(&self) -> Amount {
-        self.total_amount
-    }
-
-    /// Confirm and deliver the prepared payment.
-    ///
-    /// If delivery fails after token creation, this returns
-    /// `FfiError::PaymentRequestDeliveryFailed` with the pending operation ID.
-    /// Do not prepare the payment again. Call `Wallet.revoke_send(operation_id)`
-    /// to reclaim it if it remains unclaimed.
-    pub async fn confirm(&self) -> Result<(), FfiError> {
-        self.take()?.confirm().await?;
-        Ok(())
-    }
-
-    /// Cancel the prepared payment and release reserved proofs.
-    pub async fn cancel(&self) -> Result<(), FfiError> {
-        self.take()?.cancel().await?;
-        Ok(())
-    }
-}
-
-/// Parameters for creating a NUT-18 payment request
-#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
-pub struct CreateRequestParams {
-    /// Optional amount to request (in smallest unit for the currency)
-    pub amount: Option<u64>,
-    /// Currency unit (e.g., "sat", "msat", "usd")
-    pub unit: String,
-    /// Optional description for the request
-    pub description: Option<String>,
-    /// Optional public keys for P2PK spending conditions (hex-encoded)
-    pub pubkeys: Option<Vec<String>>,
-    /// Required number of signatures for multisig (defaults to 1)
-    pub num_sigs: u64,
-    /// Optional HTLC hash (hex-encoded SHA-256)
-    pub hash: Option<String>,
-    /// Optional HTLC preimage (alternative to hash)
-    pub preimage: Option<String>,
-    /// Transport type: "nostr", "http", or "none"
-    pub transport: String,
-    /// HTTP URL for HTTP transport (required if transport is "http")
-    pub http_url: Option<String>,
-    /// Nostr relay URLs (required if transport is "nostr")
-    pub nostr_relays: Option<Vec<String>>,
-    /// Optional list of mint URLs the receiver accepts or prefers; `None` emits no mint list
-    pub mints: Option<Vec<String>>,
-    /// Whether the mint list is preferred rather than required
-    pub mint_preferred: Option<bool>,
-    /// Payment methods the payer's mint must support, with optional per-method fees
-    #[serde(default)]
-    pub supported_methods: Vec<SupportedMethod>,
-}
-
-impl fmt::Debug for CreateRequestParams {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CreateRequestParams")
-            .field("amount", &self.amount)
-            .field("unit", &self.unit)
-            .field("description", &self.description)
-            .field("pubkeys", &self.pubkeys)
-            .field("num_sigs", &self.num_sigs)
-            .field("hash", &self.hash)
-            .field("preimage", &self.preimage.as_ref().map(|_| "[REDACTED]"))
-            .field("transport", &self.transport)
-            .field("http_url", &self.http_url)
-            .field("nostr_relays", &self.nostr_relays)
-            .field("mints", &self.mints)
-            .field("mint_preferred", &self.mint_preferred)
-            .field("supported_methods", &self.supported_methods)
-            .finish()
-    }
-}
-
-impl Default for CreateRequestParams {
-    fn default() -> Self {
-        Self {
-            amount: None,
-            unit: "sat".to_string(),
-            description: None,
-            pubkeys: None,
-            num_sigs: 1,
-            hash: None,
-            preimage: None,
-            transport: "none".to_string(),
-            http_url: None,
-            nostr_relays: None,
-            mints: None,
-            mint_preferred: None,
-            supported_methods: vec![],
-        }
-    }
-}
-
-impl From<CreateRequestParams> for cdk::wallet::payment_request::CreateRequestParams {
-    fn from(params: CreateRequestParams) -> Self {
-        Self {
-            amount: params.amount,
-            unit: params.unit,
-            description: params.description,
-            pubkeys: params.pubkeys,
-            num_sigs: params.num_sigs,
-            hash: params.hash,
-            preimage: params.preimage,
-            transport: params.transport,
-            http_url: params.http_url,
-            nostr_relays: params.nostr_relays,
-            mints: params.mints,
-            mint_preferred: params.mint_preferred,
-            supported_methods: params
-                .supported_methods
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-        }
-    }
-}
-
-impl From<cdk::wallet::payment_request::CreateRequestParams> for CreateRequestParams {
-    fn from(params: cdk::wallet::payment_request::CreateRequestParams) -> Self {
-        Self {
-            amount: params.amount,
-            unit: params.unit,
-            description: params.description,
-            pubkeys: params.pubkeys,
-            num_sigs: params.num_sigs,
-            hash: params.hash,
-            preimage: params.preimage,
-            transport: params.transport,
-            http_url: params.http_url,
-            nostr_relays: params.nostr_relays,
-            mints: params.mints,
-            mint_preferred: params.mint_preferred,
-            supported_methods: params
-                .supported_methods
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-        }
-    }
-}
-
 /// Decode a payment request from its encoded string representation
 #[uniffi::export]
 pub fn decode_payment_request(encoded: String) -> Result<Arc<PaymentRequest>, FfiError> {
     PaymentRequest::from_string(encoded)
-}
-
-/// Encode CreateRequestParams to JSON string
-#[uniffi::export]
-pub fn encode_create_request_params(params: CreateRequestParams) -> Result<String, FfiError> {
-    Ok(serde_json::to_string(&params)?)
-}
-
-/// Decode CreateRequestParams from JSON string
-#[uniffi::export]
-pub fn decode_create_request_params(json: String) -> Result<CreateRequestParams, FfiError> {
-    Ok(serde_json::from_str(&json)?)
-}
-
-/// Information needed to wait for an incoming Nostr payment
-///
-/// Returned by `create_request` when the transport is `nostr`. Pass this to
-/// `wait_for_nostr_payment` to connect, subscribe, and receive the incoming
-/// payment on the specified relays.
-#[derive(uniffi::Object)]
-pub struct NostrWaitInfo {
-    inner: cdk::wallet::payment_request::NostrWaitInfo,
-}
-
-impl NostrWaitInfo {
-    /// Get inner reference
-    #[allow(dead_code)]
-    pub(crate) fn inner(&self) -> &cdk::wallet::payment_request::NostrWaitInfo {
-        &self.inner
-    }
-}
-
-#[uniffi::export]
-impl NostrWaitInfo {
-    /// Get the Nostr relays to connect to
-    pub fn relays(&self) -> Vec<String> {
-        self.inner.relays.clone()
-    }
-
-    /// Get the recipient public key as a hex string
-    pub fn pubkey(&self) -> String {
-        self.inner.pubkey.to_hex()
-    }
-
-    /// Get the mint URLs accepted or preferred by the original payment request
-    pub fn mints(&self) -> Vec<String> {
-        self.inner.mints.iter().map(|m| m.to_string()).collect()
-    }
-
-    /// Get whether the original request's mint list is preferred instead of strict
-    pub fn mint_preferred(&self) -> Option<bool> {
-        self.inner.mint_preferred
-    }
-}
-
-/// Result of creating a payment request
-///
-/// Contains the payment request and optionally the Nostr wait info
-/// if the transport was set to "nostr".
-#[derive(uniffi::Record)]
-pub struct CreateRequestResult {
-    /// The payment request to share with the payer
-    pub payment_request: Arc<PaymentRequest>,
-    /// Nostr wait info (present when transport is "nostr")
-    pub nostr_wait_info: Option<Arc<NostrWaitInfo>>,
 }
 
 /// Payment Request Payload
@@ -581,22 +279,6 @@ impl core::fmt::Display for PaymentRequestPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn create_request_params_debug_redacts_preimage() {
-        let secret = "htlc-preimage";
-        let params = CreateRequestParams {
-            preimage: Some(secret.to_string()),
-            hash: Some("public-hash".to_string()),
-            ..Default::default()
-        };
-
-        let debug = format!("{params:?}");
-
-        assert!(debug.contains("public-hash"));
-        assert!(!debug.contains(secret));
-        assert!(debug.contains("preimage: Some(\"[REDACTED]\")"));
-    }
 
     #[test]
     fn test_payment_request_payload() {
@@ -704,21 +386,28 @@ mod tests {
     }
 
     #[test]
-    fn payment_request_delivery_failure_exposes_revoke_operation_id() {
+    fn payment_request_delivery_failure_exposes_reclaim_operation_id() {
         let operation_id = uuid::Uuid::new_v4();
         let error = FfiError::from(cdk::Error::PaymentRequestDeliveryFailed {
             operation_id,
             source: Box::new(cdk::Error::Custom("transport failed".to_string())),
         });
 
-        assert_eq!(
-            error.to_string(),
-            FfiError::PaymentRequestDeliveryFailed {
-                operation_id: operation_id.to_string(),
-                error_message: "`transport failed`".to_string(),
-            }
-            .to_string()
-        );
+        let FfiError::Cdk {
+            kind,
+            error_message,
+            operation_id: reported_operation_id,
+            retryable,
+            ..
+        } = error
+        else {
+            panic!("expected a structured wallet error");
+        };
+        assert_eq!(kind, crate::error::WalletErrorKind::Payment);
+        assert_eq!(reported_operation_id, Some(operation_id.to_string()));
+        assert!(error_message.contains(&operation_id.to_string()));
+        assert!(error_message.contains("transport failed"));
+        assert!(retryable);
     }
 
     #[test]
@@ -735,49 +424,5 @@ mod tests {
         assert_eq!(ffi_transport.transport_type, back.transport_type);
         assert_eq!(ffi_transport.target, back.target);
         assert_eq!(ffi_transport.tags, back.tags);
-    }
-
-    #[test]
-    fn test_create_request_params_default() {
-        let params = CreateRequestParams::default();
-
-        assert_eq!(params.unit, "sat");
-        assert_eq!(params.num_sigs, 1);
-        assert_eq!(params.transport, "none");
-        assert!(params.amount.is_none());
-        assert!(params.mint_preferred.is_none());
-        assert!(params.supported_methods.is_empty());
-    }
-
-    #[test]
-    fn test_create_request_params_serialization() {
-        let params = CreateRequestParams {
-            amount: Some(100),
-            unit: "sat".to_string(),
-            description: Some("Test payment".to_string()),
-            transport: "http".to_string(),
-            http_url: Some("https://example.com/callback".to_string()),
-            mint_preferred: Some(true),
-            supported_methods: vec![SupportedMethod {
-                method: "bolt11".to_string(),
-                fee: Some(Amount::new(5)),
-            }],
-            ..Default::default()
-        };
-
-        let json = encode_create_request_params(params.clone()).unwrap();
-        let decoded = decode_create_request_params(json).unwrap();
-
-        assert_eq!(params.amount, decoded.amount);
-        assert_eq!(params.unit, decoded.unit);
-        assert_eq!(params.description, decoded.description);
-        assert_eq!(params.mint_preferred, decoded.mint_preferred);
-        assert_eq!(params.supported_methods.len(), 1);
-        assert_eq!(params.supported_methods[0].fee, Some(Amount::new(5)));
-
-        let cdk_params: cdk::wallet::payment_request::CreateRequestParams = decoded.into();
-        let ffi_params: CreateRequestParams = cdk_params.into();
-        assert_eq!(ffi_params.mint_preferred, Some(true));
-        assert_eq!(ffi_params.supported_methods, params.supported_methods);
     }
 }

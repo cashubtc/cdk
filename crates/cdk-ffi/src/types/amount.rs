@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::FfiError;
 
 /// FFI-compatible Amount type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, uniffi::Record)]
 #[serde(transparent)]
 pub struct Amount {
     pub value: u64,
@@ -130,7 +130,9 @@ impl From<CdkCurrencyUnit> for CurrencyUnit {
             CdkCurrencyUnit::Custom(s) => CurrencyUnit::Custom {
                 unit: CdkCurrencyUnit::custom(s).to_string(),
             },
-            _ => CurrencyUnit::Sat, // Default for unknown units
+            _ => CurrencyUnit::Custom {
+                unit: unit.to_string(),
+            },
         }
     }
 }

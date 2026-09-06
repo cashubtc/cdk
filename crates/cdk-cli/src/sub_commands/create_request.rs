@@ -1,7 +1,14 @@
-use anyhow::Result;
+use std::sync::Arc;
+
+use anyhow::{anyhow, Result};
+use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, SupportedMethod};
-use cdk::wallet::{payment_request as pr, NostrWaitInfo, WalletRepository};
+use cdk::nuts::{CurrencyUnit, PublicKey, SupportedMethod};
+use cdk::wallet::payment_request::{
+    CreatePaymentRequest, PaymentRequestLock, PaymentRequestMintPolicy,
+    PaymentRequestReceiverState, PaymentRequestTransport,
+};
+use cdk::wallet::WalletManager;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
@@ -17,17 +24,28 @@ pub(super) struct StoredNostrWaitInfo {
 }
 
 impl StoredNostrWaitInfo {
+    #[cfg(test)]
     pub(super) fn accepts_mint(&self, mint_url: &MintUrl) -> bool {
         self.mints.is_empty() || self.mint_preferred == Some(true) || self.mints.contains(mint_url)
     }
+
+    pub(super) fn into_receiver_state(self) -> PaymentRequestReceiverState {
+        PaymentRequestReceiverState {
+            secret_key_hex: self.secret_key_hex,
+            relays: self.relays,
+            public_key_hex: self.pubkey_hex,
+            mints: self.mints,
+            mint_preferred: self.mint_preferred,
+        }
+    }
 }
 
-impl From<NostrWaitInfo> for StoredNostrWaitInfo {
-    fn from(info: NostrWaitInfo) -> Self {
+impl From<PaymentRequestReceiverState> for StoredNostrWaitInfo {
+    fn from(info: PaymentRequestReceiverState) -> Self {
         Self {
-            secret_key_hex: info.keys.secret_key().to_secret_hex(),
+            secret_key_hex: info.secret_key_hex,
             relays: info.relays,
-            pubkey_hex: info.pubkey.to_hex(),
+            pubkey_hex: info.public_key_hex,
             mints: info.mints,
             mint_preferred: info.mint_preferred,
         }
@@ -87,28 +105,83 @@ pub struct CreateRequestSubCommand {
 }
 
 pub async fn create_request(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
+    localstore: &Arc<dyn WalletDatabase<cdk_database::Error> + Send + Sync>,
     sub_command_args: &CreateRequestSubCommand,
     unit: &CurrencyUnit,
 ) -> Result<()> {
-    // Gather parameters for library call
-    let params = pr::CreateRequestParams {
-        amount: sub_command_args.amount,
-        unit: unit.to_string(),
+    let public_keys = sub_command_args
+        .pubkey
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|key| key.parse::<PublicKey>().map_err(|error| anyhow!(error)))
+        .collect::<Result<Vec<_>>>()?;
+    let lock = match (&sub_command_args.hash, &sub_command_args.preimage) {
+        (Some(hash), None) => Some(PaymentRequestLock::HtlcHash {
+            hash: hash.clone(),
+            public_keys,
+            signatures_required: sub_command_args.num_sigs,
+        }),
+        (None, Some(preimage)) => Some(PaymentRequestLock::HtlcPreimage {
+            preimage: preimage.clone(),
+            public_keys,
+            signatures_required: sub_command_args.num_sigs,
+        }),
+        (None, None) if !public_keys.is_empty() => Some(PaymentRequestLock::P2pk {
+            public_keys,
+            signatures_required: sub_command_args.num_sigs,
+        }),
+        (None, None) => None,
+        (Some(_), Some(_)) => return Err(anyhow!("hash and preimage are mutually exclusive")),
+    };
+    let transport = match sub_command_args.transport.to_ascii_lowercase().as_str() {
+        "nostr" => PaymentRequestTransport::Nostr(
+            sub_command_args
+                .nostr_relay
+                .clone()
+                .ok_or_else(|| anyhow!("Nostr transport requires at least one relay"))?,
+        ),
+        "http" => PaymentRequestTransport::Http(
+            sub_command_args
+                .http_url
+                .as_deref()
+                .ok_or_else(|| anyhow!("HTTP transport requires --http-url"))?
+                .parse()?,
+        ),
+        "none" => PaymentRequestTransport::OutOfBand,
+        transport => {
+            return Err(anyhow!(
+                "unsupported payment request transport `{transport}`"
+            ))
+        }
+    };
+    let mints = sub_command_args
+        .mints
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|mint| mint.parse::<MintUrl>().map_err(|error| anyhow!(error)))
+        .collect::<Result<Vec<_>>>()?;
+    let mint_policy = if mints.is_empty() {
+        PaymentRequestMintPolicy::Any
+    } else if sub_command_args.mint_preferred {
+        PaymentRequestMintPolicy::Preferred(mints)
+    } else {
+        PaymentRequestMintPolicy::Strict(mints)
+    };
+    let request = CreatePaymentRequest {
+        amount: sub_command_args.amount.map(Into::into),
+        unit: unit.clone(),
         description: sub_command_args.description.clone(),
-        pubkeys: sub_command_args.pubkey.clone(),
-        num_sigs: sub_command_args.num_sigs,
-        hash: sub_command_args.hash.clone(),
-        preimage: sub_command_args.preimage.clone(),
-        transport: sub_command_args.transport.to_lowercase(),
-        http_url: sub_command_args.http_url.clone(),
-        nostr_relays: sub_command_args.nostr_relay.clone(),
-        mints: sub_command_args.mints.clone(),
-        mint_preferred: sub_command_args.mint_preferred.then_some(true),
+        lock,
+        transport,
+        mint_policy,
         supported_methods: sub_command_args.supported_methods.clone(),
     };
 
-    let (req, nostr_wait) = wallet_repository.create_request(params).await?;
+    let created = wallet_manager.create_payment_request(request).await?;
+    let req = created.payment_request;
 
     // Print the request to stdout
     if sub_command_args.bech32 {
@@ -118,20 +191,21 @@ pub async fn create_request(
     }
 
     // If we set up Nostr transport, optionally wait for payment and receive it
-    if let Some(info) = nostr_wait {
-        let key = info.pubkey.to_string();
+    if let Some(receiver) = created.receiver {
+        let state = receiver.state();
+        let key = state.public_key_hex.clone();
 
-        if let Some(wallet) = wallet_repository.get_wallets().await.first() {
-            let serializable_info = StoredNostrWaitInfo::from(info.clone());
-            let val = serde_json::to_vec(&serializable_info)?;
-            wallet
-                .localstore
-                .kv_write("cdk_cli", "pending_nostr_requests", &key, &val)
-                .await?;
-        }
+        let serializable_info = StoredNostrWaitInfo::from(state);
+        let val = serde_json::to_vec(&serializable_info)?;
+        localstore
+            .kv_write("cdk_cli", "pending_nostr_requests", &key, &val)
+            .await?;
 
         println!("Listening for payment via Nostr...");
-        let amount = wallet_repository.wait_for_nostr_payment(info).await?;
+        let amount = receiver.receive().await?;
+        localstore
+            .kv_remove("cdk_cli", "pending_nostr_requests", &key)
+            .await?;
         println!("Received {}", amount);
     }
 

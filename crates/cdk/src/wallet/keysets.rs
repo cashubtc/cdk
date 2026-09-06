@@ -14,7 +14,7 @@ impl Wallet {
     /// cached/persisted data. Only hard-fails when the cache is empty
     /// (first-ever fetch).
     #[instrument(skip(self))]
-    pub async fn keysets(&self, policy: KeysetLoadPolicy) -> Result<Vec<KeySet>, Error> {
+    pub(crate) async fn keysets(&self, policy: KeysetLoadPolicy) -> Result<Vec<KeySet>, Error> {
         let metadata = match policy {
             KeysetLoadPolicy::CacheOnly => {
                 self.metadata_cache.load_cached(&self.localstore).await?
@@ -74,7 +74,7 @@ impl Wallet {
     /// Filters the output of [`keysets()`](Self::keysets) for active keysets
     /// and returns the one with the minimum `input_fee_ppk`.
     #[instrument(skip(self))]
-    pub async fn active_keyset(&self) -> Result<KeySet, Error> {
+    pub(crate) async fn active_keyset(&self) -> Result<KeySet, Error> {
         self.active_keyset_with_policy(Default::default()).await
     }
 
@@ -83,7 +83,7 @@ impl Wallet {
     /// Same as [`active_keyset()`](Self::active_keyset) but lets callers
     /// control whether the network may be contacted.
     #[instrument(skip(self))]
-    pub async fn active_keyset_with_policy(
+    pub(crate) async fn active_keyset_with_policy(
         &self,
         policy: KeysetLoadPolicy,
     ) -> Result<KeySet, Error> {
@@ -152,13 +152,13 @@ impl Wallet {
 
     /// Get a single keyset by ID.
     #[instrument(skip(self))]
-    pub async fn keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
+    pub(crate) async fn keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
         self.keyset_with_policy(keyset_id, Default::default()).await
     }
 
     /// Get a single keyset by ID using a specific [`KeysetLoadPolicy`].
     #[instrument(skip(self))]
-    pub async fn keyset_with_policy(
+    pub(crate) async fn keyset_with_policy(
         &self,
         keyset_id: Id,
         policy: KeysetLoadPolicy,
@@ -197,15 +197,8 @@ impl Wallet {
         Ok(token.proofs(&keysets)?)
     }
 
-    /// Get keyset fees and amounts for all keysets
-    pub async fn get_keyset_fees_and_amounts(&self) -> Result<KeysetFeeAndAmounts, Error> {
-        self.get_keyset_fees_and_amounts_with_policy(Default::default())
-            .await
-    }
-
-    /// Same as [`get_keyset_fees_and_amounts()`](Self::get_keyset_fees_and_amounts)
-    /// but lets callers control the [`KeysetLoadPolicy`].
-    pub async fn get_keyset_fees_and_amounts_with_policy(
+    /// Get keyset fees and amounts with an explicit loading policy.
+    pub(crate) async fn get_keyset_fees_and_amounts_with_policy(
         &self,
         policy: KeysetLoadPolicy,
     ) -> Result<KeysetFeeAndAmounts, Error> {
@@ -227,16 +220,8 @@ impl Wallet {
         Ok(fees)
     }
 
-    /// Get the input fee rate for a specific keyset ID
-    pub async fn get_keyset_fees_by_id(&self, keyset_id: Id) -> Result<u64, Error> {
-        Ok(self
-            .get_keyset_fees_and_amounts_by_id(keyset_id)
-            .await?
-            .fee())
-    }
-
     /// Get keyset fees and amounts for a specific keyset ID
-    pub async fn get_keyset_fees_and_amounts_by_id(
+    pub(crate) async fn get_keyset_fees_and_amounts_by_id(
         &self,
         keyset_id: Id,
     ) -> Result<FeeAndAmounts, Error> {
@@ -246,7 +231,7 @@ impl Wallet {
 
     /// Get keyset fees and amounts for a specific keyset ID using a specific
     /// [`KeysetLoadPolicy`].
-    pub async fn get_keyset_fees_and_amounts_by_id_with_policy(
+    pub(crate) async fn get_keyset_fees_and_amounts_by_id_with_policy(
         &self,
         keyset_id: Id,
         policy: KeysetLoadPolicy,

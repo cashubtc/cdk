@@ -4,11 +4,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cdk::error::Error;
-use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::{SendOptions, Wallet};
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::advanced::{MetadataSource, MintMetadataRequest};
+use cdk::wallet::mint::MintRequest;
+use cdk::wallet::send::SendRequest;
+use cdk::wallet::Wallet;
 use cdk::{Amount, OidcClient};
-use cdk_common::amount::SplitTarget;
-use cdk_common::{MintInfo, ProofsMethods};
+use cdk_common::MintInfo;
 use cdk_sqlite::wallet::memory;
 use rand::Rng;
 use tracing_subscriber::EnvFilter;
@@ -36,53 +38,52 @@ async fn main() -> Result<(), Error> {
     let amount = Amount::from(50);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None)?;
+    let wallet = Wallet::open(cdk::wallet::WalletOpenRequest::new(
+        cdk::wallet::WalletIdentity::new(mint_url.parse()?, unit),
+        Arc::new(localstore),
+        seed,
+    ))?;
 
-    let mint_info = wallet
-        .fetch_mint_info()
+    let metadata = wallet
+        .advanced()
+        .mint_metadata(MintMetadataRequest {
+            source: MetadataSource::Refresh,
+        })
         .await
-        .expect("mint info")
-        .expect("could not get mint info");
+        .expect("mint metadata");
 
     // Request a mint quote from the wallet
-    let quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
-        .await?;
+    let session = wallet.request_mint(MintRequest::bolt11(amount)).await?;
 
-    println!("Minting nuts ... Quote ID: {}", quote.id);
+    println!("Minting nuts ... Quote ID: {}", session.id());
 
     // Getting the CAT token is not inscope of cdk and expected to be handled by the implemntor
     // We just use this helper fn with password auth for testing
-    let access_token = get_access_token(&mint_info).await;
+    let access_token = get_access_token(&metadata.info).await;
 
-    wallet.set_cat(access_token).await?;
+    wallet.advanced().set_clear_auth_token(access_token).await?;
 
     wallet
+        .advanced()
         .mint_blind_auth(10.into())
         .await
         .expect("Could not mint blind auth");
 
-    let quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
-        .await?;
-    let proofs = wallet
-        .wait_and_mint_quote(quote, SplitTarget::default(), None, Duration::from_secs(10))
-        .await?;
+    let session = wallet.request_mint(MintRequest::bolt11(amount)).await?;
+    let receipt = session.wait(Duration::from_secs(10)).await?;
 
-    println!("Received: {}", proofs.total_amount()?);
+    println!("Received: {}", receipt.amount);
 
     // Get the total balance of the wallet
-    let balance = wallet.total_balance().await?;
+    let balance = wallet.balance().await?.available;
     println!("Wallet balance: {}", balance);
 
-    let prepared_send = wallet
-        .prepare_send(10.into(), SendOptions::default())
-        .await?;
-    let token = prepared_send.confirm(None).await?;
+    let send_plan = wallet.plan_send(SendRequest::new(10.into())).await?;
+    let token = send_plan.execute().await?.token;
 
     println!("Created token: {}", token);
 
-    let remaining_blind_auth = wallet.get_unspent_auth_proofs().await?.len();
+    let remaining_blind_auth = wallet.advanced().blind_auth_proofs().await?.len();
 
     // We started with 10 blind tokens we expect 8 ath this point
     // 1 is used for the mint quote + 1 used for the mint

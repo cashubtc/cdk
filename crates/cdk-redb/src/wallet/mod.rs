@@ -951,7 +951,9 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                 let existing_quote: wallet::MeltQuote =
                     serde_json::from_str(&json).map_err(Error::from)?;
 
-                if existing_quote.version != quote.version {
+                if existing_quote.version != quote.version
+                    || existing_quote.used_by_operation != quote.used_by_operation
+                {
                     return Err(database::Error::ConcurrentUpdate);
                 }
 

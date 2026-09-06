@@ -3,8 +3,9 @@ use std::str::FromStr;
 use anyhow::{anyhow, Result};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{Conditions, CurrencyUnit, PublicKey, SpendingConditions};
-use cdk::wallet::types::SendKind;
-use cdk::wallet::{SendMemo, SendOptions, WalletRepository};
+use cdk::wallet::advanced::SendAdvancedOptions;
+use cdk::wallet::send::{SendMode, SendRequest};
+use cdk::wallet::WalletManager;
 use cdk::Amount;
 use clap::Args;
 
@@ -63,7 +64,7 @@ pub struct SendSubCommand {
 }
 
 pub async fn send(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     sub_command_args: &SendSubCommand,
     unit: &CurrencyUnit,
 ) -> Result<()> {
@@ -72,7 +73,7 @@ pub async fn send(
         MintUrl::from_str(mint_url)?
     } else {
         // Get all mints with their balances
-        let balances_map = wallet_repository.get_balances().await?;
+        let balances_map = wallet_manager.available_balances().await?;
         if balances_map.is_empty() {
             return Err(anyhow!("No mints available in the wallet"));
         }
@@ -113,10 +114,10 @@ pub async fn send(
     };
 
     // Get or create wallet for the selected mint
-    let wallet = get_or_create_wallet(wallet_repository, &selected_mint, unit).await?;
+    let wallet = get_or_create_wallet(wallet_manager, &selected_mint, unit).await?;
 
     // Check wallet balance
-    let balance = wallet.total_balance().await?;
+    let balance = wallet.balance().await?.available;
     if balance < token_amount {
         return Err(anyhow!(
             "Insufficient funds. Wallet balance: {}, Required: {}",
@@ -240,30 +241,28 @@ pub async fn send(
     };
 
     let send_kind = match (sub_command_args.offline, sub_command_args.tolerance) {
-        (true, Some(amount)) => SendKind::OfflineTolerance(Amount::from(amount)),
-        (true, None) => SendKind::OfflineExact,
-        (false, Some(amount)) => SendKind::OnlineTolerance(Amount::from(amount)),
-        (false, None) => SendKind::OnlineExact,
+        (true, Some(amount)) => SendMode::OfflineTolerant {
+            tolerance: Amount::from(amount),
+        },
+        (true, None) => SendMode::OfflineExact,
+        (false, Some(amount)) => SendMode::OnlineTolerant {
+            tolerance: Amount::from(amount),
+        },
+        (false, None) => SendMode::OnlineExact,
     };
 
-    let send_options = SendOptions {
-        memo: sub_command_args.memo.clone().map(|memo| SendMemo {
-            memo,
-            include_memo: true,
-        }),
-        send_kind,
-        include_fee: sub_command_args.include_fee,
+    let mut request = SendRequest::new(token_amount);
+    request.memo = sub_command_args.memo.clone();
+    request.mode = send_kind;
+    request.include_fee = sub_command_args.include_fee;
+    request = request.with_advanced(SendAdvancedOptions {
         conditions,
         use_p2bk: sub_command_args.use_p2bk,
         ..Default::default()
-    };
+    });
 
-    // Prepare and confirm the send using the individual wallet
-    let prepared = wallet
-        .prepare_send(token_amount, send_options.clone())
-        .await?;
-    let memo = send_options.memo;
-    let token = prepared.confirm(memo).await?;
+    let plan = wallet.plan_send(request).await?;
+    let token = plan.execute().await?.token;
 
     match sub_command_args.v3 {
         true => {

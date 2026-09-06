@@ -142,7 +142,7 @@ mod tests {
         db.add_p2pk_key(&SecretKey::generate().public_key(), existing_path, 5)
             .await
             .expect("existing key should be stored");
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             db.clone(),

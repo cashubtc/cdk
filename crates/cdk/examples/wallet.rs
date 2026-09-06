@@ -3,9 +3,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::{RecoveryReport, SendOptions, Wallet};
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::mint::MintRequest;
+use cdk::wallet::operation::SyncPolicy;
+use cdk::wallet::send::SendRequest;
+use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 use rand::random;
@@ -24,42 +26,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let localstore = Arc::new(memory::empty().await?);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, localstore, seed, None)?;
+    let wallet = Wallet::open(cdk::wallet::WalletOpenRequest::new(
+        cdk::wallet::WalletIdentity::new(mint_url.parse()?, unit),
+        localstore,
+        seed,
+    ))?;
 
-    // Recover from incomplete operations (required after wallet creation)
-    let recovery: RecoveryReport = wallet.recover_incomplete_sagas().await?;
-    if !recovery.is_empty() {
+    // Reconcile durable operations, quotes, and proofs after opening.
+    let sync = wallet.synchronize(SyncPolicy::Online).await?;
+    if sync.recovered_operations + sync.compensated_operations + sync.failed_operations > 0 {
         println!(
-            "Recovered {} operations, {} compensated, {} skipped, {} failed",
-            recovery.recovered, recovery.compensated, recovery.skipped, recovery.failed
+            "Recovered {} operations, {} compensated, {} pending, {} failed",
+            sync.recovered_operations,
+            sync.compensated_operations,
+            sync.pending_operations,
+            sync.failed_operations
         );
     }
 
-    // Check and mint pending mint quotes (optional, requires network)
-    let minted = wallet.mint_unissued_quotes().await?;
-    if minted > Amount::ZERO {
-        println!("Minted {} from pending quotes", minted);
-    }
-
-    let quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
-        .await?;
-    let proofs = wallet
-        .wait_and_mint_quote(
-            quote,
-            Default::default(),
-            Default::default(),
-            Duration::from_secs(10),
-        )
-        .await?;
+    let session = wallet.request_mint(MintRequest::bolt11(amount)).await?;
+    let receipt = session.wait(Duration::from_secs(10)).await?;
 
     // Mint the received amount
-    let receive_amount = proofs.total_amount()?;
-    println!("Minted {}", receive_amount);
+    println!("Minted {}", receipt.amount);
 
     // Send the token
-    let prepared_send = wallet.prepare_send(amount, SendOptions::default()).await?;
-    let token = prepared_send.confirm(None).await?;
+    let plan = wallet.plan_send(SendRequest::new(amount)).await?;
+    let token = plan.execute().await?.token;
 
     println!("{}", token);
 

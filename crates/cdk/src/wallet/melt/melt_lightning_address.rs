@@ -37,17 +37,22 @@ impl Wallet {
     /// # Example
     ///
     /// ```rust,no_run
+    /// use cdk::wallet::payment::AddressPaymentRequest;
     /// use cdk::Amount;
     /// # use cdk::Wallet;
     /// # async fn example(wallet: Wallet) -> Result<(), cdk::Error> {
-    /// let quote = wallet
-    ///     .melt_lightning_address_quote("alice@example.com", Amount::from(100_000)) // 100 sats in msat
+    /// let session = wallet
+    ///     .quote_address_payment(AddressPaymentRequest::lightning_address(
+    ///         "alice@example.com",
+    ///         Amount::from(100_000), // 100 sats in msat
+    ///     ))
     ///     .await?;
+    /// let quote = session.quote();
     /// # Ok(())
     /// # }
     /// ```
     #[instrument(skip(self, amount_msat, lightning_address))]
-    pub async fn melt_lightning_address_quote(
+    pub(crate) async fn melt_lightning_address_quote(
         &self,
         lightning_address: &str,
         amount_msat: impl Into<Amount>,
@@ -103,11 +108,11 @@ mod tests {
         let seed = [1; 64];
 
         WalletBuilder::new()
-            .mint_url(MintUrl::from_str("https://mint.example.com").expect("valid mint url"))
-            .unit(CurrencyUnit::Sat)
-            .localstore(db)
-            .seed(seed)
-            .shared_client(connector)
+            .with_mint_url(MintUrl::from_str("https://mint.example.com").expect("valid mint url"))
+            .with_unit(CurrencyUnit::Sat)
+            .with_store(db)
+            .with_seed(seed)
+            .with_shared_connector(connector)
             .build()
             .expect("wallet builds")
     }

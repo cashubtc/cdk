@@ -1,7 +1,7 @@
 //! # Nostr Mint Backup Example (NUT-27)
 //!
 //! This example demonstrates how to backup and restore your mint list
-//! to/from Nostr relays using the WalletRepository.
+//! to/from Nostr relays using the WalletManager.
 //!
 //! ## Features
 //!
@@ -24,7 +24,8 @@
 
 use std::sync::Arc;
 
-use cdk::wallet::{BackupOptions, RestoreOptions, WalletRepositoryBuilder};
+use cdk::wallet::advanced::{MintBackupRequest, MintRestorePolicy, MintRestoreRequest};
+use cdk::wallet::WalletManagerBuilder;
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
@@ -45,10 +46,10 @@ async fn main() -> anyhow::Result<()> {
     // Initialize the memory store for the first wallet
     let localstore = Arc::new(memory::empty().await?);
 
-    // Create a new WalletRepository
-    let wallet = WalletRepositoryBuilder::new()
-        .localstore(localstore.clone())
-        .seed(seed)
+    // Create a new WalletManager
+    let wallet = WalletManagerBuilder::new()
+        .with_store(localstore.clone())
+        .with_seed(seed)
         .build()
         .await?;
 
@@ -66,17 +67,20 @@ async fn main() -> anyhow::Result<()> {
 
     for mint_url in &mints {
         println!("  Adding mint: {}", mint_url);
-        match wallet.add_wallet(mint_url.parse()?).await {
+        match wallet
+            .register_mint(mint_url.parse::<cdk::mint_url::MintUrl>()?)
+            .await
+        {
             Ok(_) => println!("    + Added successfully"),
             Err(e) => println!("    x Failed to add: {}", e),
         }
     }
 
     // Verify mints were added
-    let wallets: Vec<cdk::Wallet> = wallet.get_wallets().await;
+    let wallets: Vec<cdk::Wallet> = wallet.wallets().await;
     println!("\n  Wallet now contains {} mint(s):", wallets.len());
     for w in &wallets {
-        println!("    - {}", w.mint_url);
+        println!("    - {}", w.identity().mint_url);
     }
 
     println!();
@@ -88,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Step 2: Deriving backup keys from seed");
     println!("---------------------------------------");
 
-    let backup_keys = wallet.backup_keys()?;
+    let backup_keys = wallet.advanced().backup_keys()?;
     println!("  Public key: {}", backup_keys.public_key().to_hex());
     println!("  This key is deterministically derived from your wallet seed.");
     println!("  Anyone with the same seed will derive the same keys.\n");
@@ -100,16 +104,17 @@ async fn main() -> anyhow::Result<()> {
     println!("Step 3: Backing up mint list to Nostr relays");
     println!("---------------------------------------------");
 
-    let relays = vec!["wss://relay.damus.io", "wss://nos.lol"];
+    let relays = vec![
+        "wss://relay.damus.io".to_string(),
+        "wss://nos.lol".to_string(),
+    ];
 
     println!("  Relays: [{}]", relays.join(", "));
     println!("  Publishing backup event...");
 
     let backup_result = wallet
-        .backup_mints(
-            relays.clone(),
-            BackupOptions::new().client("nostr-backup-example"),
-        )
+        .advanced()
+        .backup_mints(MintBackupRequest::new(relays.clone()).with_client("nostr-backup-example"))
         .await?;
 
     println!("  + Backup published!");
@@ -128,18 +133,18 @@ async fn main() -> anyhow::Result<()> {
 
     // Create a fresh wallet with the same seed (simulating a new device)
     let new_localstore = Arc::new(memory::empty().await?);
-    let new_wallet = WalletRepositoryBuilder::new()
-        .localstore(new_localstore)
-        .seed(seed)
+    let new_wallet = WalletManagerBuilder::new()
+        .with_store(new_localstore)
+        .with_seed(seed)
         .build()
         .await?;
 
     // Verify the new wallet is empty
-    let new_wallets: Vec<cdk::Wallet> = new_wallet.get_wallets().await;
+    let new_wallets: Vec<cdk::Wallet> = new_wallet.wallets().await;
     println!("  New wallet starts with {} mint(s)", new_wallets.len());
 
     // Derive keys on the new wallet - should be the same!
-    let new_backup_keys = new_wallet.backup_keys()?;
+    let new_backup_keys = new_wallet.advanced().backup_keys()?;
     println!(
         "  New wallet public key: {}",
         new_backup_keys.public_key().to_hex()
@@ -161,7 +166,8 @@ async fn main() -> anyhow::Result<()> {
     println!("  Fetching backup from relays...");
 
     let restore_result = new_wallet
-        .restore_mints(relays.clone(), true, RestoreOptions::default())
+        .advanced()
+        .restore_mints(MintRestoreRequest::new(relays).with_policy(MintRestorePolicy::Register))
         .await?;
 
     println!("  + Restore complete!");
@@ -175,13 +181,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Verify the mints were restored
-    let restored_wallets: Vec<cdk::Wallet> = new_wallet.get_wallets().await;
+    let restored_wallets: Vec<cdk::Wallet> = new_wallet.wallets().await;
     println!(
         "\n  New wallet now contains {} mint(s):",
         restored_wallets.len()
     );
     for w in &restored_wallets {
-        println!("    - {}", w.mint_url);
+        println!("    - {}", w.identity().mint_url);
     }
 
     println!();

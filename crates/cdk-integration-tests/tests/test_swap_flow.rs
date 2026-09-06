@@ -14,15 +14,25 @@ use std::sync::Arc;
 
 use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
-use cashu::{
-    CurrencyUnit, Id, PaymentMethod, PreMintSecrets, SecretKey, SpendingConditions, State,
-    SwapRequest,
-};
+use cashu::{CurrencyUnit, Id, PreMintSecrets, SecretKey, SpendingConditions, State, SwapRequest};
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::Amount;
+use cdk::wallet::advanced::{MetadataSource, MintMetadataRequest, ProofQuery};
+use cdk::wallet::payment::{PaymentQuoteRequest, PaymentTarget};
+use cdk::wallet::Wallet;
+use cdk::{Amount, Error};
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
+
+async fn unspent_proofs(wallet: &Wallet) -> Result<cashu::Proofs, Error> {
+    Ok(wallet
+        .advanced()
+        .proofs(ProofQuery::default())
+        .await?
+        .into_iter()
+        .map(|record| record.proof)
+        .collect())
+}
 
 /// Helper to get the active keyset ID from a mint
 async fn get_keyset_id(mint: &Mint) -> Id {
@@ -56,10 +66,7 @@ async fn test_swap_happy_path() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = unspent_proofs(&wallet).await.expect("Could not get proofs");
 
     let keyset_id = get_keyset_id(&mint).await;
 
@@ -188,10 +195,7 @@ async fn test_swap_duplicate_blinded_messages() {
         .await
         .expect("Failed to fund wallet");
 
-    let all_proofs = wallet
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let all_proofs = unspent_proofs(&wallet).await.expect("Could not get proofs");
 
     // Split proofs into two sets
     let mid = all_proofs.len() / 2;
@@ -247,10 +251,7 @@ async fn test_swap_double_spend_detection() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = unspent_proofs(&wallet).await.expect("Could not get proofs");
 
     let keyset_id = get_keyset_id(&mint).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
@@ -309,10 +310,7 @@ async fn test_swap_unbalanced_transaction_detection() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = unspent_proofs(&wallet).await.expect("Could not get proofs");
 
     let keyset_id = get_keyset_id(&mint).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
@@ -376,10 +374,7 @@ async fn test_swap_empty_inputs_or_outputs() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = unspent_proofs(&wallet).await.expect("Could not get proofs");
 
     // Case 1: Swap request with inputs but empty outputs
     // This represents trying to destroy tokens (inputs with no outputs)
@@ -437,10 +432,7 @@ async fn test_swap_p2pk_signature_validation() {
         .await
         .expect("Failed to fund wallet");
 
-    let input_proofs = wallet
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let input_proofs = unspent_proofs(&wallet).await.expect("Could not get proofs");
 
     let keyset_id = get_keyset_id(&mint).await;
     let secret_key = SecretKey::generate();
@@ -540,10 +532,7 @@ async fn test_swap_rollback_on_duplicate_blinded_message() {
         .await
         .expect("Failed to fund wallet");
 
-    let all_proofs = wallet
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let all_proofs = unspent_proofs(&wallet).await.expect("Could not get proofs");
 
     let mid = all_proofs.len() / 2;
     let proofs1: Vec<_> = all_proofs.iter().take(mid).cloned().collect();
@@ -617,10 +606,7 @@ async fn test_swap_concurrent_double_spend_prevention() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = unspent_proofs(&wallet).await.expect("Could not get proofs");
 
     let keyset_id = get_keyset_id(&mint).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
@@ -740,10 +726,7 @@ async fn test_swap_with_fees() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = unspent_proofs(&wallet).await.expect("Could not get proofs");
 
     // Take 100 proofs (100 sats total, will need to pay fee)
     let hundred_proofs: Vec<_> = proofs.iter().take(100).cloned().collect();
@@ -842,10 +825,10 @@ async fn test_melt_with_fees_swap_before_melt() {
         .await
         .expect("Failed to fund wallet");
 
-    let initial_balance: u64 = wallet.total_balance().await.unwrap().into();
+    let initial_balance: u64 = wallet.balance().await.unwrap().available.into();
     assert_eq!(initial_balance, initial_amount);
 
-    let proofs = wallet.get_unspent_proofs().await.unwrap();
+    let proofs = unspent_proofs(&wallet).await.unwrap();
     let proof_amounts: Vec<u64> = proofs.iter().map(|p| u64::from(p.amount)).collect();
     tracing::info!("Proofs after funding: {:?}", proof_amounts);
 
@@ -858,10 +841,15 @@ async fn test_melt_with_fees_swap_before_melt() {
     // Create melt quote for 1000 sats (1_000_000 msats)
     // Fake wallet: fee_reserve = max(1, amount * 2%) = 20 sats
     let invoice = create_fake_invoice(1_000_000, "".to_string()); // 1000 sats in msats
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+    let payment = wallet
+        .quote_payment(PaymentQuoteRequest::new(PaymentTarget::bolt11(
+            invoice.to_string(),
+        )))
         .await
+        .unwrap()
+        .into_single()
         .unwrap();
+    let melt_quote = payment.quote();
 
     let quote_amount: u64 = melt_quote.amount.into();
     let fee_reserve: u64 = melt_quote.fee_reserve.into();
@@ -881,14 +869,10 @@ async fn test_melt_with_fees_swap_before_melt() {
     );
 
     // Perform melt
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-        .await
-        .unwrap();
-    let melted = prepared.confirm().await.unwrap();
+    let melted = payment.prepare().await.unwrap().execute().await.unwrap();
 
-    let melt_amount: u64 = melted.amount().into();
-    let ln_fee_paid: u64 = melted.fee_paid().into();
+    let melt_amount: u64 = melted.amount.into();
+    let ln_fee_paid: u64 = melted.fee_paid.into();
 
     tracing::info!(
         "Melt completed: amount={}, ln_fee_paid={}",
@@ -899,7 +883,7 @@ async fn test_melt_with_fees_swap_before_melt() {
     assert_eq!(melt_amount, quote_amount, "Melt amount should match quote");
 
     // Get final balance and calculate fees
-    let final_balance: u64 = wallet.total_balance().await.unwrap().into();
+    let final_balance: u64 = wallet.balance().await.unwrap().available.into();
     let total_spent = initial_amount - final_balance;
     let total_fees = total_spent - melt_amount;
 
@@ -977,10 +961,10 @@ async fn test_melt_exact_match_no_swap() {
         .await
         .expect("Failed to fund wallet");
 
-    let initial_balance: u64 = wallet.total_balance().await.unwrap().into();
+    let initial_balance: u64 = wallet.balance().await.unwrap().available.into();
     assert_eq!(initial_balance, initial_amount);
 
-    let proofs_before = wallet.get_unspent_proofs().await.unwrap();
+    let proofs_before = unspent_proofs(&wallet).await.unwrap();
     tracing::info!(
         "Proofs before melt: {:?}",
         proofs_before
@@ -993,10 +977,15 @@ async fn test_melt_exact_match_no_swap() {
     // fee_reserve = max(1, 1000 * 2%) = 20 sats
     // inputs_needed = 1000 + 20 = 1020 sats = our exact balance
     let invoice = create_fake_invoice(1_000_000, "".to_string());
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+    let payment = wallet
+        .quote_payment(PaymentQuoteRequest::new(PaymentTarget::bolt11(
+            invoice.to_string(),
+        )))
         .await
+        .unwrap()
+        .into_single()
         .unwrap();
+    let melt_quote = payment.quote();
 
     let quote_amount: u64 = melt_quote.amount.into();
     let fee_reserve: u64 = melt_quote.fee_reserve.into();
@@ -1010,14 +999,10 @@ async fn test_melt_exact_match_no_swap() {
     );
 
     // Perform melt
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-        .await
-        .unwrap();
-    let melted = prepared.confirm().await.unwrap();
+    let melted = payment.prepare().await.unwrap().execute().await.unwrap();
 
-    let melt_amount: u64 = melted.amount().into();
-    let ln_fee_paid: u64 = melted.fee_paid().into();
+    let melt_amount: u64 = melted.amount.into();
+    let ln_fee_paid: u64 = melted.fee_paid.into();
 
     tracing::info!(
         "Melt completed: amount={}, ln_fee_paid={}",
@@ -1028,7 +1013,7 @@ async fn test_melt_exact_match_no_swap() {
     assert_eq!(melt_amount, quote_amount, "Melt amount should match quote");
 
     // Get final balance
-    let final_balance: u64 = wallet.total_balance().await.unwrap().into();
+    let final_balance: u64 = wallet.balance().await.unwrap().available.into();
     let total_spent = initial_amount - final_balance;
     let total_fees = total_spent - melt_amount;
 
@@ -1091,10 +1076,10 @@ async fn test_melt_small_amount_tight_margin() {
         .await
         .expect("Failed to fund wallet");
 
-    let initial_balance: u64 = wallet.total_balance().await.unwrap().into();
+    let initial_balance: u64 = wallet.balance().await.unwrap().available.into();
     assert_eq!(initial_balance, initial_amount);
 
-    let proofs = wallet.get_unspent_proofs().await.unwrap();
+    let proofs = unspent_proofs(&wallet).await.unwrap();
     tracing::info!(
         "Proofs after funding: {:?}",
         proofs
@@ -1107,10 +1092,15 @@ async fn test_melt_small_amount_tight_margin() {
     // fee_reserve = max(1, 5 * 2%) = 1 sat
     // inputs_needed = 5 + 1 = 6 sats
     let invoice = create_fake_invoice(5_000, "".to_string()); // 5 sats in msats
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+    let payment = wallet
+        .quote_payment(PaymentQuoteRequest::new(PaymentTarget::bolt11(
+            invoice.to_string(),
+        )))
         .await
+        .unwrap()
+        .into_single()
         .unwrap();
+    let melt_quote = payment.quote();
 
     let quote_amount: u64 = melt_quote.amount.into();
     let fee_reserve: u64 = melt_quote.fee_reserve.into();
@@ -1123,23 +1113,22 @@ async fn test_melt_small_amount_tight_margin() {
     );
 
     // This should succeed even with tight margins
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+    let melted = payment
+        .prepare()
         .await
-        .expect("Prepare melt should succeed");
-    let melted = prepared
-        .confirm()
+        .expect("Prepare payment should succeed")
+        .execute()
         .await
         .expect("Melt should succeed even with tight swap margin");
 
-    let melt_amount: u64 = melted.amount().into();
+    let melt_amount: u64 = melted.amount.into();
     assert_eq!(melt_amount, quote_amount, "Melt amount should match quote");
 
-    let final_balance: u64 = wallet.total_balance().await.unwrap().into();
+    let final_balance: u64 = wallet.balance().await.unwrap().available.into();
     tracing::info!(
         "Melt completed: amount={}, fee_paid={}, final_balance={}",
-        melted.amount(),
-        melted.fee_paid(),
+        melted.amount,
+        melted.fee_paid,
         final_balance
     );
 
@@ -1199,10 +1188,10 @@ async fn test_melt_swap_tight_margin_regression() {
         .await
         .expect("Failed to fund wallet");
 
-    let initial_balance: u64 = wallet.total_balance().await.unwrap().into();
+    let initial_balance: u64 = wallet.balance().await.unwrap().available.into();
     assert_eq!(initial_balance, initial_amount);
 
-    let proofs = wallet.get_unspent_proofs().await.unwrap();
+    let proofs = unspent_proofs(&wallet).await.unwrap();
     let proof_amounts: Vec<u64> = proofs.iter().map(|p| u64::from(p.amount)).collect();
     tracing::info!("Proofs after funding: {:?}", proof_amounts);
 
@@ -1217,10 +1206,15 @@ async fn test_melt_swap_tight_margin_regression() {
     // The swap path is what triggered the original bug when proofs_to_swap
     // had tight margins and include_fees=true was incorrectly used.
     let invoice = create_fake_invoice(5_000, "".to_string());
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+    let payment = wallet
+        .quote_payment(PaymentQuoteRequest::new(PaymentTarget::bolt11(
+            invoice.to_string(),
+        )))
         .await
+        .unwrap()
+        .into_single()
         .unwrap();
+    let melt_quote = payment.quote();
 
     let quote_amount: u64 = melt_quote.amount.into();
     let fee_reserve: u64 = melt_quote.fee_reserve.into();
@@ -1235,23 +1229,22 @@ async fn test_melt_swap_tight_margin_regression() {
     // This is the key test: melt should succeed even when swap is needed
     // Before the fix, include_fees=true in swap caused InsufficientFunds
     // After the fix, include_fees=false allows the swap to succeed
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+    let melted = payment
+        .prepare()
         .await
-        .expect("Prepare melt should succeed");
-    let melted = prepared
-        .confirm()
+        .expect("Prepare payment should succeed")
+        .execute()
         .await
         .expect("Melt should succeed with swap-before-melt (regression test)");
 
-    let melt_amount: u64 = melted.amount().into();
+    let melt_amount: u64 = melted.amount.into();
     assert_eq!(melt_amount, quote_amount, "Melt amount should match quote");
 
-    let final_balance: u64 = wallet.total_balance().await.unwrap().into();
+    let final_balance: u64 = wallet.balance().await.unwrap().available.into();
     tracing::info!(
         "Melt completed: amount={}, fee_paid={}, final_balance={}",
-        melted.amount(),
-        melted.fee_paid(),
+        melted.amount,
+        melted.fee_paid,
         final_balance
     );
 
@@ -1281,10 +1274,7 @@ async fn test_swap_amount_overflow_protection() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = unspent_proofs(&wallet).await.expect("Could not get proofs");
 
     let keyset_id = get_keyset_id(&mint).await;
 
@@ -1351,10 +1341,7 @@ async fn test_swap_state_transition_notifications() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = unspent_proofs(&wallet).await.expect("Could not get proofs");
 
     let keyset_id = get_keyset_id(&mint).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
@@ -1436,10 +1423,7 @@ async fn test_swap_proof_state_consistency() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = unspent_proofs(&wallet).await.expect("Could not get proofs");
 
     let keyset_id = get_keyset_id(&mint).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
@@ -1524,7 +1508,10 @@ async fn test_wallet_multi_keyset_counter_updates() {
 
     // Refresh wallet keysets to know about the new keyset
     wallet
-        .keysets(Default::default())
+        .advanced()
+        .mint_metadata(MintMetadataRequest {
+            source: MetadataSource::Refresh,
+        })
         .await
         .expect("Failed to refresh wallet keysets");
 
@@ -1542,10 +1529,7 @@ async fn test_wallet_multi_keyset_counter_updates() {
         .id;
 
     // Verify we now have proofs from two different keysets
-    let all_proofs = wallet
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let all_proofs = unspent_proofs(&wallet).await.expect("Could not get proofs");
 
     let keysets_in_use: std::collections::HashSet<_> =
         all_proofs.iter().map(|p| p.keyset_id).collect();

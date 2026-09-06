@@ -1,12 +1,13 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
-use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, MintQuoteState};
-use cdk::wallet::WalletRepository;
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::advanced::{MintBatchClaimRequest, MintBatchRefreshRequest};
+use cdk::wallet::mint::{MintQuoteId, MintState};
+use cdk::wallet::WalletManager;
 use clap::Args;
 use tokio::time::sleep;
 
@@ -25,7 +26,7 @@ pub struct MintBatchSubCommand {
 }
 
 pub async fn mint_batch(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     sub_command_args: &MintBatchSubCommand,
     unit: &CurrencyUnit,
 ) -> Result<()> {
@@ -42,38 +43,41 @@ pub async fn mint_batch(
         }
     }
 
-    let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
+    let wallet = get_or_create_wallet(wallet_manager, &mint_url, unit).await?;
 
-    let quote_ids: Vec<&str> = sub_command_args
+    let quote_ids: Vec<MintQuoteId> = sub_command_args
         .quote_id
         .iter()
-        .map(String::as_str)
+        .cloned()
+        .map(MintQuoteId::new)
         .collect();
 
     println!("Waiting for all batch quotes to be PAID...");
     let deadline = Instant::now() + Duration::from_secs(sub_command_args.wait_duration);
 
     loop {
-        let statuses = wallet.batch_check_mint_quote_status(&quote_ids).await?;
+        let statuses = wallet
+            .advanced()
+            .refresh_mint_batch(MintBatchRefreshRequest {
+                quote_ids: quote_ids.clone(),
+            })
+            .await?;
 
         if statuses
             .iter()
-            .any(|quote| matches!(quote.state, MintQuoteState::Issued))
+            .any(|quote| quote.state == MintState::Issued)
         {
             bail!("One or more quotes are already ISSUED and cannot be batch minted");
         }
 
-        if statuses
-            .iter()
-            .all(|quote| matches!(quote.state, MintQuoteState::Paid))
-        {
+        if statuses.iter().all(|quote| quote.state == MintState::Paid) {
             break;
         }
 
         if Instant::now() >= deadline {
             let pending_quotes = statuses
                 .iter()
-                .filter(|quote| !matches!(quote.state, MintQuoteState::Paid))
+                .filter(|quote| quote.state != MintState::Paid)
                 .map(|quote| format!("{}:{}", quote.id, quote.state))
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -87,15 +91,21 @@ pub async fn mint_batch(
         sleep(Duration::from_millis(500)).await;
     }
 
-    let proofs = wallet
-        .batch_mint(&quote_ids, SplitTarget::default(), None, None)
+    let receipt = wallet
+        .advanced()
+        .claim_mint_batch(MintBatchClaimRequest {
+            quote_ids,
+            amount_split_target: SplitTarget::default(),
+            conditions: None,
+            external_keys: HashMap::new(),
+        })
         .await?;
 
     println!(
         "Batch mint complete: received {} from mint {} in {} proofs",
-        proofs.total_amount()?,
+        receipt.amount,
         mint_url,
-        proofs.len()
+        receipt.proofs.len()
     );
 
     Ok(())

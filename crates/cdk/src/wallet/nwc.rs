@@ -7,11 +7,11 @@
 //! | NIP-47 command      | Wallet operation                                   |
 //! |---------------------|----------------------------------------------------|
 //! | `get_info`          | static capability advertisement                    |
-//! | `get_balance`       | [`Wallet::total_balance`]                           |
-//! | `make_invoice`      | [`Wallet::mint_quote`] (bolt11)                     |
-//! | `pay_invoice`       | [`Wallet::melt_quote`] + [`Wallet::prepare_melt`]   |
-//! | `lookup_invoice`    | transaction history + active mint/melt quotes      |
-//! | `list_transactions` | [`Wallet::list_transactions`]                       |
+//! | `get_balance`       | [`Wallet::balance`]                                  |
+//! | `make_invoice`      | [`Wallet::request_mint`]                             |
+//! | `pay_invoice`       | [`Wallet::quote_payment`] and a payment plan         |
+//! | `lookup_invoice`    | [`Wallet::history`] plus active payment sessions     |
+//! | `list_transactions` | [`Wallet::history`]                                  |
 //!
 //! ## Units
 //!
@@ -44,6 +44,7 @@ use tracing::instrument;
 
 use crate::error::Error;
 use crate::nuts::{CurrencyUnit, SecretKey};
+use crate::wallet::payment::{PaymentQuoteRequest, PaymentTarget};
 use crate::{amount, Amount, Wallet};
 
 /// Derive the NWC wallet-service secret key from a wallet seed.
@@ -74,7 +75,7 @@ pub fn derive_nwc_secret_key_from_seed(seed: &[u8; 64]) -> Result<SecretKey, Err
     ))
 }
 
-impl Wallet {
+impl super::advanced::AdvancedWallet<'_> {
     /// Derive the NWC wallet-service secret key from this wallet's seed.
     ///
     /// See [`derive_nwc_secret_key_from_seed`] for the derivation path.
@@ -83,7 +84,7 @@ impl Wallet {
     ///
     /// Returns an error if the key derivation fails.
     pub fn derive_nwc_secret_key(&self) -> Result<SecretKey, Error> {
-        derive_nwc_secret_key_from_seed(&self.seed)
+        derive_nwc_secret_key_from_seed(&self.core_wallet().seed)
     }
 
     /// Build a [`WalletNwcHandler`] for this wallet.
@@ -91,7 +92,7 @@ impl Wallet {
     /// `max_payment_msat` optionally caps the amount of any single `pay_invoice`
     /// request (in millisatoshis); pass `None` for no cap.
     pub fn nwc_handler(&self, max_payment_msat: Option<u64>) -> WalletNwcHandler {
-        WalletNwcHandler::new(Arc::new(self.clone()), max_payment_msat)
+        WalletNwcHandler::new(Arc::new(self.core_wallet().clone()), max_payment_msat)
     }
 }
 
@@ -512,27 +513,22 @@ impl cdk_nostr::nwc::NwcRequestHandler for WalletNwcHandler {
             }
         }
 
-        let quote = self
+        let session = self
             .wallet
-            .melt_quote(
-                PaymentMethod::Known(KnownMethod::Bolt11),
+            .quote_payment(PaymentQuoteRequest::new(PaymentTarget::bolt11(
                 request.invoice.clone(),
-                None,
-                None,
-            )
+            )))
             .await
+            .map_err(|e| melt_error(&e))?
+            .into_single()
             .map_err(|e| melt_error(&e))?;
 
-        let prepared = self
-            .wallet
-            .prepare_melt(&quote.id, HashMap::new())
-            .await
-            .map_err(|e| melt_error(&e))?;
+        let plan = session.prepare().await.map_err(|e| melt_error(&e))?;
 
-        let finalized = prepared.confirm().await.map_err(|e| melt_error(&e))?;
+        let receipt = plan.execute().await.map_err(|e| melt_error(&e))?;
 
-        let preimage = finalized.payment_proof().unwrap_or_default().to_string();
-        let fees_paid = amount_to_msat(finalized.fee_paid(), &self.wallet.unit)?;
+        let preimage = receipt.payment_proof.unwrap_or_default();
+        let fees_paid = amount_to_msat(receipt.fee_paid, &self.wallet.unit)?;
 
         Ok(PayInvoiceResponse {
             preimage,
@@ -782,7 +778,7 @@ mod tests {
         const LIST_LIMIT: u64 = 7_654_321;
 
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore,
@@ -1047,7 +1043,7 @@ mod tests {
     #[tokio::test]
     async fn list_transactions_keeps_newest_first_before_pagination() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore.clone(),
@@ -1083,7 +1079,7 @@ mod tests {
     #[tokio::test]
     async fn list_transactions_filters_unpaid_stored_transactions_by_default() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore.clone(),
@@ -1136,7 +1132,7 @@ mod tests {
     async fn list_transactions_omits_active_quotes_unless_unpaid_requested() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore.clone(),
@@ -1172,7 +1168,7 @@ mod tests {
     async fn list_transactions_includes_paid_mint_quote_without_unpaid_flag() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore.clone(),
@@ -1215,7 +1211,7 @@ mod tests {
     async fn failed_mint_saga_does_not_duplicate_paid_quote() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore.clone(),
@@ -1281,7 +1277,7 @@ mod tests {
     async fn list_transactions_includes_active_mint_quotes_when_unpaid_requested() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore.clone(),
@@ -1339,7 +1335,7 @@ mod tests {
     async fn list_transactions_includes_active_melt_quotes_without_unpaid_flag() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore.clone(),
@@ -1403,7 +1399,7 @@ mod tests {
     async fn lookup_pending_invoice_uses_bolt11_created_at_and_quote_expiry() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore.clone(),
@@ -1452,7 +1448,7 @@ mod tests {
     async fn lookup_active_melt_quote_returns_pending_outgoing_invoice() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore.clone(),
@@ -1515,7 +1511,7 @@ mod tests {
     #[tokio::test]
     async fn make_invoice_rejects_description_hash() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore,
@@ -1544,7 +1540,7 @@ mod tests {
     #[tokio::test]
     async fn make_invoice_rejects_expiry() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore,
@@ -1591,11 +1587,11 @@ mod tests {
         ))));
 
         let wallet = crate::wallet::WalletBuilder::new()
-            .mint_url(MintUrl::from_str("https://mint.example.com").expect("mint url"))
-            .unit(CurrencyUnit::Sat)
-            .localstore(localstore)
-            .seed([0x42; 64])
-            .shared_client(mock_client)
+            .with_mint_url(MintUrl::from_str("https://mint.example.com").expect("mint url"))
+            .with_unit(CurrencyUnit::Sat)
+            .with_store(localstore)
+            .with_seed([0x42; 64])
+            .with_shared_connector(mock_client)
             .build()
             .expect("wallet");
 
@@ -1619,7 +1615,7 @@ mod tests {
     #[tokio::test]
     async fn get_info_advertises_supported_methods() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore,
@@ -1641,7 +1637,7 @@ mod tests {
     #[tokio::test]
     async fn get_balance_reports_zero_for_empty_wallet() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore,
@@ -1661,7 +1657,7 @@ mod tests {
     #[tokio::test]
     async fn pay_invoice_rejects_amountless_invoice() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore,
@@ -1688,7 +1684,7 @@ mod tests {
     #[tokio::test]
     async fn pay_invoice_rejects_amount_mismatch() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore,
@@ -1716,7 +1712,7 @@ mod tests {
     #[tokio::test]
     async fn pay_invoice_rejects_over_max_payment_msat() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore,
@@ -1743,7 +1739,7 @@ mod tests {
     #[tokio::test]
     async fn lookup_invoice_returns_not_found_for_unknown_hash() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore,
@@ -1769,7 +1765,7 @@ mod tests {
     #[tokio::test]
     async fn lookup_invoice_requires_payment_hash_or_invoice() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             localstore,

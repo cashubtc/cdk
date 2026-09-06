@@ -3,11 +3,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
-use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
-use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::{Wallet, WalletRepository, WalletSubscription};
+use cdk::wallet::advanced::{MintClaimOptions, SubscriptionRequest};
+use cdk::wallet::mint::{MintQuoteId, MintRequest};
+use cdk::wallet::{Wallet, WalletManager};
 use cdk::{Amount, StreamExt};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::NotificationPayload;
@@ -47,117 +47,65 @@ pub struct MintSubCommand {
 }
 
 pub async fn mint(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     sub_command_args: &MintSubCommand,
     unit: &CurrencyUnit,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
     let description: Option<String> = sub_command_args.description.clone();
 
-    let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
+    let wallet = get_or_create_wallet(wallet_manager, &mint_url, unit).await?;
 
     let payment_method = PaymentMethod::from_str(&sub_command_args.method)?;
 
-    let quote = match &sub_command_args.quote_id {
-        None => match payment_method {
-            PaymentMethod::Known(KnownMethod::Bolt11) => {
-                let amount = sub_command_args
-                    .amount
-                    .ok_or(anyhow!("Amount must be defined"))?;
-                let quote = wallet
-                    .mint_quote(
-                        PaymentMethod::BOLT11,
-                        Some(Amount::from(amount)),
-                        description,
-                        None,
-                    )
-                    .await?;
-
-                println!(
-                    "Quote: id={}, state={}, amount={}, expiry={}",
-                    escape_control(&quote.id),
-                    quote.state,
-                    quote.amount.map_or("none".to_string(), |a| a.to_string()),
-                    quote.expiry
-                );
-
-                println!("Please pay: {}", escape_control(&quote.request));
-
-                quote
+    let session = match &sub_command_args.quote_id {
+        None => {
+            if matches!(&payment_method, PaymentMethod::Known(KnownMethod::Bolt11))
+                && sub_command_args.amount.is_none()
+            {
+                return Err(anyhow!("Amount must be defined"));
             }
-            PaymentMethod::Known(KnownMethod::Bolt12) => {
-                let amount = sub_command_args.amount;
+            if !matches!(&payment_method, PaymentMethod::Known(KnownMethod::Bolt11)) {
                 println!(
                     "Single use: {}",
                     sub_command_args
                         .single_use
-                        .map_or("none".to_string(), |b| b.to_string())
+                        .map_or("none".to_string(), |single_use| single_use.to_string())
                 );
-                let quote = wallet
-                    .mint_quote(
-                        payment_method.clone(),
-                        amount.map(|a| a.into()),
-                        description,
-                        None,
-                    )
-                    .await?;
-
-                println!(
-                    "Quote: id={}, amount={}, expiry={}",
-                    escape_control(&quote.id),
-                    quote.amount.map_or("none".to_string(), |a| a.to_string()),
-                    quote.expiry
-                );
-
-                println!("Please pay: {}", escape_control(&quote.request));
-
-                quote
             }
-            PaymentMethod::Known(KnownMethod::Onchain) => {
-                let amount = sub_command_args.amount;
-                let quote = wallet
-                    .mint_quote(payment_method.clone(), amount.map(|a| a.into()), None, None)
-                    .await?;
-
-                println!(
-                    "Quote: id={}, expiry={}",
-                    escape_control(&quote.id),
-                    quote.expiry
-                );
-                println!("Send sats to: {}", escape_control(&quote.request));
-
-                quote
-            }
-            _ => {
-                let amount = sub_command_args.amount;
-                println!(
-                    "Single use: {}",
-                    sub_command_args
-                        .single_use
-                        .map_or("none".to_string(), |b| b.to_string())
-                );
-                let quote = wallet
-                    .mint_quote(payment_method.clone(), amount.map(|a| a.into()), None, None)
-                    .await?;
-
-                println!(
-                    "Quote: id={}, amount={}, expiry={}",
-                    escape_control(&quote.id),
-                    quote.amount.map_or("none".to_string(), |a| a.to_string()),
-                    quote.expiry
-                );
-
-                println!("Please pay: {}", escape_control(&quote.request));
-
-                quote
-            }
-        },
-        Some(quote_id) => wallet
-            .localstore
-            .get_mint_quote(quote_id)
-            .await?
-            .ok_or(anyhow!("Unknown quote"))?,
+            let mut request = MintRequest::new(
+                payment_method.clone(),
+                sub_command_args.amount.map(Amount::from),
+            );
+            request.description = description;
+            wallet.request_mint(request).await?
+        }
+        Some(quote_id) => {
+            wallet
+                .resume_mint(MintQuoteId::new(quote_id.clone()))
+                .await?
+        }
     };
+
+    let initial_state = session.initial_state();
+    println!(
+        "Quote: id={}, state={}, amount={}, expiry={}",
+        escape_control(&initial_state.id.to_string()),
+        initial_state.state,
+        initial_state
+            .amount
+            .map_or("none".to_string(), |amount| amount.to_string()),
+        initial_state.expires_at
+    );
+    let payment_label = if matches!(&payment_method, PaymentMethod::Known(KnownMethod::Onchain)) {
+        "Send sats to"
+    } else {
+        "Please pay"
+    };
+    println!(
+        "{payment_label}: {}",
+        escape_control(&initial_state.payment_request)
+    );
 
     tracing::debug!("Attempting mint for: {}", payment_method);
 
@@ -169,15 +117,15 @@ pub async fn mint(
     let stop_progress = Arc::new(Notify::new());
     let progress_handle = spawn_progress_task(
         wallet.clone(),
-        quote.id.clone(),
-        payment_method.clone(),
+        session.id().to_string(),
+        session.initial_state().method.clone(),
         stop_progress.clone(),
     )
     .await;
 
     let mut amount_minted = Amount::ZERO;
 
-    let mut proof_streams = wallet.proof_stream(quote, SplitTarget::default(), None);
+    let mut receipts = Box::pin(session.receipts(MintClaimOptions::default()));
 
     // `wait_duration` is an *idle* timeout: it bounds how long we wait without
     // any new proofs being issued, and resets each time a batch arrives. A
@@ -188,7 +136,7 @@ pub async fn mint(
     let mut timed_out = false;
 
     loop {
-        let next = proof_streams.next();
+        let next = receipts.next();
         let event = if wait_duration == 0 {
             Ok(next.await)
         } else {
@@ -197,8 +145,8 @@ pub async fn mint(
 
         match event {
             // A batch of proofs was issued.
-            Ok(Some(Ok(proofs))) => {
-                let batch = proofs.total_amount()?;
+            Ok(Some(Ok(receipt))) => {
+                let batch = receipt.amount;
                 amount_minted += batch;
                 println!("Minted {batch} {unit} (total: {amount_minted} {unit})");
             }
@@ -252,18 +200,18 @@ async fn spawn_progress_task(
 ) -> Option<tokio::task::JoinHandle<()>> {
     let subscription_filter = match payment_method {
         PaymentMethod::Known(KnownMethod::Bolt11) => {
-            WalletSubscription::Bolt11MintQuoteState(vec![quote_id.clone()])
+            SubscriptionRequest::Bolt11MintQuotes(vec![quote_id.clone()])
         }
         PaymentMethod::Known(KnownMethod::Bolt12) => {
-            WalletSubscription::Bolt12MintQuoteState(vec![quote_id.clone()])
+            SubscriptionRequest::Bolt12MintQuotes(vec![quote_id.clone()])
         }
         PaymentMethod::Known(KnownMethod::Onchain) => {
-            WalletSubscription::MintQuoteOnchainState(vec![quote_id.clone()])
+            SubscriptionRequest::OnchainMintQuotes(vec![quote_id.clone()])
         }
         _ => return None,
     };
 
-    let mut subscription = match wallet.subscribe(subscription_filter).await {
+    let mut subscription = match wallet.advanced().subscribe(subscription_filter).await {
         Ok(sub) => sub,
         Err(err) => {
             tracing::warn!(

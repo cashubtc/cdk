@@ -3,9 +3,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::Wallet;
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::mint::MintRequest;
+use cdk::wallet::{RestoreRequest, Wallet};
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 use rand::random;
@@ -39,26 +39,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- ORIGINAL WALLET ---");
 
     let original_store = Arc::new(memory::empty().await?);
-    let original_wallet = Wallet::new(mint_url, unit.clone(), original_store, seed, None)?;
+    let original_wallet = Wallet::open(cdk::wallet::WalletOpenRequest::new(
+        cdk::wallet::WalletIdentity::new(mint_url.parse()?, unit.clone()),
+        original_store,
+        seed,
+    ))?;
 
     // Mint some proofs
     println!("Minting {} sats...", amount);
-    let quote = original_wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
+    let session = original_wallet
+        .request_mint(MintRequest::bolt11(amount))
         .await?;
+    let receipt = session.wait(Duration::from_secs(30)).await?;
 
-    let proofs = original_wallet
-        .wait_and_mint_quote(
-            quote,
-            Default::default(),
-            Default::default(),
-            Duration::from_secs(30),
-        )
-        .await?;
-
-    let original_amount = proofs.total_amount()?;
-    let original_balance = original_wallet.total_balance().await?;
-    println!("Minted {} sats", original_amount);
+    let original_balance = original_wallet.balance().await?.available;
+    println!("Minted {} sats", receipt.amount);
     println!("Original wallet balance: {} sats", original_balance);
 
     // ========================================
@@ -71,10 +66,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let restored_store = Arc::new(memory::empty().await?);
 
     // Create wallet with the SAME seed but EMPTY storage
-    let restored_wallet = Wallet::new(mint_url, unit, restored_store, seed, None)?;
+    let restored_wallet = Wallet::open(cdk::wallet::WalletOpenRequest::new(
+        cdk::wallet::WalletIdentity::new(mint_url.parse()?, unit),
+        restored_store,
+        seed,
+    ))?;
 
     // Check balance before restore - should be 0
-    let balance_before = restored_wallet.total_balance().await?;
+    let balance_before = restored_wallet.balance().await?.available;
     println!("Balance before restore: {} sats", balance_before);
 
     // ========================================
@@ -86,7 +85,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Generates the same blinded messages from the seed
     // 2. Queries the mint for signatures on those messages
     // 3. Reconstructs and stores unspent proofs
-    let restored_amount = restored_wallet.restore().await?;
+    let restored_amount = restored_wallet
+        .restore_from_seed(RestoreRequest::default())
+        .await?;
     println!("Restored {} sats from mint", restored_amount.unspent);
     println!(
         "Restored {} pending sats from mint",
@@ -95,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Restored {} spent sats from mint", restored_amount.spent);
 
     // Verify final balance
-    let final_balance = restored_wallet.total_balance().await?;
+    let final_balance = restored_wallet.balance().await?.available;
     println!("\nFinal restored balance: {} sats", final_balance);
     println!("Original balance was:   {} sats", original_balance);
 

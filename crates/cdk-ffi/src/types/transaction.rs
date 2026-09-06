@@ -78,8 +78,8 @@ impl fmt::Debug for Transaction {
     }
 }
 
-impl From<cdk::wallet::types::Transaction> for Transaction {
-    fn from(tx: cdk::wallet::types::Transaction) -> Self {
+impl From<cdk_common::wallet::Transaction> for Transaction {
+    fn from(tx: cdk_common::wallet::Transaction) -> Self {
         Self {
             id: tx.id().into(),
             mint_url: tx.mint_url.into(),
@@ -102,7 +102,7 @@ impl From<cdk::wallet::types::Transaction> for Transaction {
 }
 
 /// Convert FFI Transaction to CDK Transaction
-impl TryFrom<Transaction> for cdk::wallet::types::Transaction {
+impl TryFrom<Transaction> for cdk_common::wallet::Transaction {
     type Error = FfiError;
 
     fn try_from(tx: Transaction) -> Result<Self, Self::Error> {
@@ -161,7 +161,7 @@ pub fn transaction_matches_conditions(
     direction: Option<TransactionDirection>,
     unit: Option<CurrencyUnit>,
 ) -> Result<bool, FfiError> {
-    let cdk_transaction: cdk::wallet::types::Transaction = transaction.clone().try_into()?;
+    let cdk_transaction: cdk_common::wallet::Transaction = transaction.clone().try_into()?;
     let cdk_mint_url = mint_url.map(|url| url.try_into()).transpose()?;
     let cdk_direction = direction.map(Into::into);
     let cdk_unit = unit.map(Into::into);
@@ -177,20 +177,20 @@ pub enum TransactionDirection {
     Outgoing,
 }
 
-impl From<cdk::wallet::types::TransactionDirection> for TransactionDirection {
-    fn from(direction: cdk::wallet::types::TransactionDirection) -> Self {
+impl From<cdk_common::wallet::TransactionDirection> for TransactionDirection {
+    fn from(direction: cdk_common::wallet::TransactionDirection) -> Self {
         match direction {
-            cdk::wallet::types::TransactionDirection::Incoming => TransactionDirection::Incoming,
-            cdk::wallet::types::TransactionDirection::Outgoing => TransactionDirection::Outgoing,
+            cdk_common::wallet::TransactionDirection::Incoming => TransactionDirection::Incoming,
+            cdk_common::wallet::TransactionDirection::Outgoing => TransactionDirection::Outgoing,
         }
     }
 }
 
-impl From<TransactionDirection> for cdk::wallet::types::TransactionDirection {
+impl From<TransactionDirection> for cdk_common::wallet::TransactionDirection {
     fn from(direction: TransactionDirection) -> Self {
         match direction {
-            TransactionDirection::Incoming => cdk::wallet::types::TransactionDirection::Incoming,
-            TransactionDirection::Outgoing => cdk::wallet::types::TransactionDirection::Outgoing,
+            TransactionDirection::Incoming => cdk_common::wallet::TransactionDirection::Incoming,
+            TransactionDirection::Outgoing => cdk_common::wallet::TransactionDirection::Outgoing,
         }
     }
 }
@@ -207,17 +207,17 @@ pub enum TransactionStatus {
     Failed,
 }
 
-impl From<cdk::wallet::types::TransactionStatus> for TransactionStatus {
-    fn from(status: cdk::wallet::types::TransactionStatus) -> Self {
+impl From<cdk_common::wallet::TransactionStatus> for TransactionStatus {
+    fn from(status: cdk_common::wallet::TransactionStatus) -> Self {
         match status {
-            cdk::wallet::types::TransactionStatus::Pending => Self::Pending,
-            cdk::wallet::types::TransactionStatus::Completed => Self::Completed,
-            cdk::wallet::types::TransactionStatus::Failed => Self::Failed,
+            cdk_common::wallet::TransactionStatus::Pending => Self::Pending,
+            cdk_common::wallet::TransactionStatus::Completed => Self::Completed,
+            cdk_common::wallet::TransactionStatus::Failed => Self::Failed,
         }
     }
 }
 
-impl From<TransactionStatus> for cdk::wallet::types::TransactionStatus {
+impl From<TransactionStatus> for cdk_common::wallet::TransactionStatus {
     fn from(status: TransactionStatus) -> Self {
         match status {
             TransactionStatus::Pending => Self::Pending,
@@ -260,7 +260,7 @@ impl TransactionId {
         let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
             proofs.iter().map(|p| p.clone().try_into()).collect();
         let cdk_proofs = cdk_proofs?;
-        let id = cdk::wallet::types::TransactionId::from_proofs(cdk_proofs)?;
+        let id = cdk_common::wallet::TransactionId::from_proofs(cdk_proofs)?;
         Ok(Self {
             hex: id.to_string(),
         })
@@ -271,24 +271,24 @@ impl TransactionId {
         let saga_id = Uuid::parse_str(&saga_id)
             .map_err(|error| FfiError::internal(format!("Invalid saga ID: {error}")))?;
         Ok(Self {
-            hex: cdk::wallet::types::TransactionId::from_saga_id(saga_id).to_string(),
+            hex: cdk_common::wallet::TransactionId::from_saga_id(saga_id).to_string(),
         })
     }
 }
 
-impl From<cdk::wallet::types::TransactionId> for TransactionId {
-    fn from(id: cdk::wallet::types::TransactionId) -> Self {
+impl From<cdk_common::wallet::TransactionId> for TransactionId {
+    fn from(id: cdk_common::wallet::TransactionId) -> Self {
         Self {
             hex: id.to_string(),
         }
     }
 }
 
-impl TryFrom<TransactionId> for cdk::wallet::types::TransactionId {
+impl TryFrom<TransactionId> for cdk_common::wallet::TransactionId {
     type Error = FfiError;
 
     fn try_from(id: TransactionId) -> Result<Self, Self::Error> {
-        cdk::wallet::types::TransactionId::from_hex(&id.hex)
+        cdk_common::wallet::TransactionId::from_hex(&id.hex)
             .map_err(|e| FfiError::internal(format!("Invalid transaction ID: {}", e)))
     }
 }

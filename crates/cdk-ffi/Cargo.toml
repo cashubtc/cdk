@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "FFI bindings for cdk wallet"
+description = "UniFFI bindings for the CDK wallet workflow API"
 homepage = "https://github.com/cashubtc/cdk"
 
 [lib]
@@ -41,6 +41,10 @@ log = "0.4"
 
 [features]
 default = ["npubcash", "nwc", "bip353"]
+# Expose protocol-level proof, keyset, authentication, subscription, and
+# explicit-funding controls. Ordinary application bindings intentionally omit
+# this surface unless the embedding crate opts in.
+advanced-wallet = []
 bip353 = ["cdk/bip353"]
 # Enable Postgres-backed wallet database support in FFI
 postgres = ["cdk-postgres"]

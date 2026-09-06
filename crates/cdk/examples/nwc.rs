@@ -25,15 +25,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mint_url =
         std::env::var("CDK_TEST_MINT_URL").unwrap_or_else(|_| DEFAULT_MINT_URL.to_string());
 
-    let wallet = Arc::new(Wallet::new(
-        &mint_url,
-        CurrencyUnit::Sat,
+    let wallet = Arc::new(Wallet::open(cdk::wallet::WalletOpenRequest::new(
+        cdk::wallet::WalletIdentity::new(mint_url.parse()?, CurrencyUnit::Sat),
         Arc::new(memory::empty().await?),
         random::<[u8; 64]>(),
-        None,
-    )?);
+    ))?);
 
-    let service_secret_key = wallet.derive_nwc_secret_key()?.to_secret_hex();
+    let service_secret_key = wallet.advanced().derive_nwc_secret_key()?.to_secret_hex();
     let service_keys = Keys::parse(&service_secret_key)?;
     let client_secret = SecretKey::generate();
     let relay_url = RelayUrl::parse(&relay)?;

@@ -20,7 +20,7 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cashu::{Amount, CurrencyUnit, PaymentMethod};
-use cdk::wallet::Wallet;
+use cdk::wallet::mint::MintRequest;
 use cdk_integration_tests::cli::CommonArgs;
 use cdk_integration_tests::init_regtest::{get_cln_dir, start_regtest_end};
 use cdk_integration_tests::ln_regtest::ln_client::{ClnClient, LightningClient};
@@ -338,7 +338,7 @@ async fn wait_for_ldk_bolt12_ready(
 
     println!("Waiting for LDK mint BOLT12 readiness on port {ldk_port}...");
 
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         &mint_url,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
@@ -383,11 +383,14 @@ async fn wait_for_ldk_bolt12_ready(
             }
         }
 
-        let mint_quote = match wallet
-            .mint_quote(PaymentMethod::BOLT12, Some(readiness_amount), None, None)
+        let mint_session = match wallet
+            .request_mint(MintRequest::new(
+                PaymentMethod::BOLT12,
+                Some(readiness_amount),
+            ))
             .await
         {
-            Ok(quote) => quote,
+            Ok(session) => session,
             Err(err) => {
                 last_error = Some(format!("quote creation failed: {err}"));
                 tracing::warn!(
@@ -400,7 +403,7 @@ async fn wait_for_ldk_bolt12_ready(
         };
 
         match cln_client
-            .pay_bolt12_offer(None, mint_quote.request.clone())
+            .pay_bolt12_offer(None, mint_session.initial_state().payment_request.clone())
             .await
         {
             Ok(_) => (),
@@ -420,7 +423,7 @@ async fn wait_for_ldk_bolt12_ready(
                 bail!("Canceled waiting for LDK mint BOLT12 readiness");
             }
 
-            match wallet.check_mint_quote_status(&mint_quote.id).await {
+            match mint_session.refresh().await {
                 Ok(quote_state) => {
                     if quote_state.amount_paid >= readiness_amount {
                         println!("LDK mint BOLT12 readiness confirmed on port {ldk_port}");
@@ -440,16 +443,16 @@ async fn wait_for_ldk_bolt12_ready(
 
         tracing::warn!(
             "LDK BOLT12 readiness attempt {attempt}: payment was sent but quote {} was not observed as paid",
-            mint_quote.id
+            mint_session.id()
         );
         last_error = Some(match last_status_error {
             Some(err) => format!(
                 "payment was sent but quote {} was not observed as paid; last status check failed: {err}",
-                mint_quote.id
+                mint_session.id()
             ),
             None => format!(
                 "payment was sent but quote {} was not observed as paid",
-                mint_quote.id
+                mint_session.id()
             ),
         });
         attempt += 1;

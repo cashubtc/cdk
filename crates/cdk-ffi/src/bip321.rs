@@ -53,7 +53,7 @@ pub fn create_bip321_uri(
 }
 
 /// Parse a BIP 321 `bitcoin:` URI or standalone payment instruction string,
-/// validating on-chain addresses against the given [`bitcoin::Network`].
+/// validating on-chain addresses against the given `bitcoin::Network`.
 ///
 /// Returns a [`ParsedPaymentInstruction`] from a BIP 321 URI or standalone
 /// payment string (Cashu, BOLT11, BOLT12, or on-chain address).
@@ -92,7 +92,7 @@ pub async fn resolve_bip353_payment_instruction(
     address: String,
     network: BitcoinNetwork,
 ) -> Result<ParsedPaymentInstruction, FfiError> {
-    let client = wallet.inner().mint_connector();
+    let client = wallet.inner().advanced().connector();
     let parsed =
         cdk::wallet::resolve_bip353_payment_instruction(&client, &address, network.into()).await?;
     Ok(parsed.into())

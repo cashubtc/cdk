@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use cdk::nuts::PaymentRequest;
-use cdk::wallet::{PayRequestOptions, WalletRepository};
+use cdk::wallet::payment_request::{RequestPayment, RequestPaymentLimits};
+use cdk::wallet::WalletManager;
 use cdk::{Amount, Error};
 use clap::Args;
 
@@ -28,7 +29,7 @@ pub struct PayRequestSubCommand {
 }
 
 pub async fn pay_request(
-    wallet_repository: &WalletRepository,
+    wallet_manager: &WalletManager,
     sub_command_args: &PayRequestSubCommand,
 ) -> Result<()> {
     let payment_request = &sub_command_args.payment_request;
@@ -44,8 +45,15 @@ pub async fn pay_request(
         },
     };
 
-    let prepared = wallet_repository
-        .prepare_pay_request(payment_request.clone(), None, Some(amount))
+    let plan = wallet_manager
+        .plan_request_payment(
+            RequestPayment::new(payment_request.clone())
+                .with_amount(amount)
+                .with_limits(RequestPaymentLimits {
+                    maximum_method_fee: sub_command_args.max_method_fee.map(Amount::from),
+                    maximum_total_amount: sub_command_args.max_total_amount.map(Amount::from),
+                }),
+        )
         .await
         .map_err(|e| anyhow!(e.to_string()))?;
 
@@ -56,53 +64,40 @@ pub async fn pay_request(
     if let Some(payment_id) = &payment_request.payment_id {
         println!("  Payment ID: {}", escape_control(payment_id));
     }
-    println!("  Mint: {}", prepared.mint_url());
+    println!("  Mint: {}", plan.wallet().mint_url);
     println!(
         "  Requested amount: {} {}",
-        prepared.requested_amount(),
-        prepared.unit()
+        plan.requested_amount(),
+        plan.wallet().unit
     );
-    match prepared.method() {
+    match plan.method() {
         Some(method) => println!("  Selected method: {method}"),
         None => println!("  Selected method: unrestricted"),
     }
     println!(
         "  Method fee (mf): {} {}",
-        prepared.method_fee(),
-        prepared.unit()
+        plan.method_fee(),
+        plan.wallet().unit
     );
     println!(
         "  Mint input fee: {} {}",
-        prepared.input_fee(),
-        prepared.unit()
+        plan.input_fee(),
+        plan.wallet().unit
     );
     println!(
         "  Total wallet debit: {} {}",
-        prepared.total_amount(),
-        prepared.unit()
+        plan.total_amount(),
+        plan.wallet().unit
     );
     if payment_request.nut10.is_some() {
         println!("  NUT-10 spending condition: required");
-    }
-
-    let limits = PayRequestOptions {
-        max_method_fee: sub_command_args.max_method_fee.map(Amount::from),
-        max_total_amount: sub_command_args.max_total_amount.map(Amount::from),
-    };
-    if let Err(err) = prepared.check_limits(limits) {
-        prepared
-            .cancel()
-            .await
-            .map_err(|cancel_err| anyhow!(cancel_err.to_string()))?;
-        return Err(anyhow!(err.to_string()));
     }
 
     if !sub_command_args.yes {
         let response = match get_user_input("Confirm payment? [y/N]") {
             Ok(response) => response,
             Err(err) => {
-                prepared
-                    .cancel()
+                plan.cancel()
                     .await
                     .map_err(|cancel_err| anyhow!(cancel_err.to_string()))?;
                 return Err(err);
@@ -110,24 +105,21 @@ pub async fn pay_request(
         };
 
         if !matches!(response.to_ascii_lowercase().as_str(), "y" | "yes") {
-            prepared
-                .cancel()
-                .await
-                .map_err(|e| anyhow!(e.to_string()))?;
+            plan.cancel().await.map_err(|e| anyhow!(e.to_string()))?;
             println!("Payment canceled");
             return Ok(());
         }
     }
 
-    match prepared.confirm().await {
-        Ok(()) => Ok(()),
+    match plan.execute().await {
+        Ok(_) => Ok(()),
         Err(Error::PaymentRequestDeliveryFailed {
             operation_id,
             source,
         }) => Err(anyhow!(
             "Payment token was created but delivery failed: {source}. \
              Pending send operation: {operation_id}. Do not pay the request again; \
-             reclaim it with Wallet::revoke_send if the receiver has not claimed it."
+             reclaim it with Wallet::reclaim_send if the receiver has not claimed it."
         )),
         Err(error) => Err(anyhow!(error.to_string())),
     }
@@ -137,7 +129,7 @@ pub async fn pay_request(
 mod tests {
     use std::sync::Arc;
 
-    use cdk::wallet::WalletRepositoryBuilder;
+    use cdk::wallet::WalletManagerBuilder;
     use cdk_sqlite::wallet::memory;
 
     use super::*;
@@ -146,12 +138,12 @@ mod tests {
     async fn unitless_fixed_amount_request_is_invalid() {
         let seed = [0u8; 64];
         let localstore = Arc::new(memory::empty().await.expect("memory store"));
-        let wallet_repository = WalletRepositoryBuilder::new()
-            .localstore(localstore)
-            .seed(seed)
+        let wallet_manager = WalletManagerBuilder::new()
+            .with_store(localstore)
+            .with_seed(seed)
             .build()
             .await
-            .expect("wallet repository");
+            .expect("wallet manager");
 
         let payment_request = PaymentRequest {
             payment_id: None,
@@ -173,7 +165,7 @@ mod tests {
             yes: false,
         };
 
-        let result = pay_request(&wallet_repository, &sub_command_args)
+        let result = pay_request(&wallet_manager, &sub_command_args)
             .await
             .expect_err("unitless fixed-amount request must be rejected");
 

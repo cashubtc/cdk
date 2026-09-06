@@ -37,9 +37,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use cdk::amount::SplitTarget;
-use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
+use cdk::wallet::mint::MintRequest;
+use cdk::wallet::payment::{AddressPaymentRequest, AddressPaymentRoute};
 use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
@@ -67,35 +67,34 @@ async fn main() -> anyhow::Result<()> {
     let localstore = Arc::new(memory::empty().await?);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, localstore, seed, None)?;
+    let wallet = Wallet::open(cdk::wallet::WalletOpenRequest::new(
+        cdk::wallet::WalletIdentity::new(mint_url.parse()?, unit),
+        localstore,
+        seed,
+    ))?;
 
     println!("Step 1: Funding the wallet");
     println!("---------------------------");
 
     // First, we need to fund the wallet
     println!("Requesting mint quote for {} sats...", initial_amount);
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT12, Some(initial_amount), None, None)
+    let mint_session = wallet
+        .request_mint(MintRequest::new(
+            PaymentMethod::BOLT12,
+            Some(initial_amount),
+        ))
         .await?;
     println!(
         "Pay this invoice to fund the wallet:\n{}",
-        mint_quote.request
+        mint_session.initial_state().payment_request
     );
-    println!("\nQuote ID: {}", mint_quote.id);
+    println!("\nQuote ID: {}", mint_session.id());
 
     // Wait for payment and mint tokens automatically
     println!("\nWaiting for payment... (in real use, pay the above invoice)");
-    let proofs = wallet
-        .wait_and_mint_quote(
-            mint_quote,
-            SplitTarget::default(),
-            None,
-            Duration::from_secs(300), // 5 minutes timeout
-        )
-        .await?;
+    let receipt = mint_session.wait(Duration::from_secs(300)).await?;
 
-    let received_amount = proofs.total_amount()?;
-    println!("✓ Successfully minted {} sats\n", received_amount);
+    println!("✓ Successfully minted {} sats\n", receipt.amount);
 
     // ============================================================================
     // Part 1: BIP-353 Payment
@@ -116,43 +115,41 @@ async fn main() -> anyhow::Result<()> {
 
     // Use the specific BIP353 method
     println!("Attempting BIP-353 payment...");
-    match wallet
-        .melt_bip353_quote(
-            bip353_address,
-            bip353_amount_sats * 1_000,
-            bitcoin::Network::Bitcoin,
-        )
-        .await
-    {
-        Ok(melt_quote) => {
-            println!("✓ BIP-353 melt quote received:");
-            println!("  Quote ID: {}", melt_quote.id);
-            println!("  Amount: {} sats", melt_quote.amount);
-            println!("  Fee Reserve: {} sats", melt_quote.fee_reserve);
-            println!("  State: {}", melt_quote.state);
-            println!("  Payment Method: {}", melt_quote.payment_method);
+    let bip353_request = AddressPaymentRequest {
+        address: bip353_address.to_owned(),
+        amount_msat: Amount::from(bip353_amount_sats * 1_000),
+        route: AddressPaymentRoute::Bip353 {
+            network: bitcoin::Network::Bitcoin,
+        },
+        metadata: Default::default(),
+    };
+    match wallet.quote_address_payment(bip353_request).await {
+        Ok(session) => {
+            let quote = session.quote();
+            println!("✓ BIP-353 payment quote received:");
+            println!("  Quote ID: {}", quote.id);
+            println!("  Amount: {} sats", quote.amount);
+            println!("  Fee Reserve: {} sats", quote.fee_reserve);
+            println!("  State: {}", quote.state);
+            println!("  Payment Method: {}", quote.method);
 
             // Prepare the payment - shows fees before confirming
             println!("\nPreparing payment...");
-            match wallet
-                .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-                .await
-            {
-                Ok(prepared) => {
-                    println!("✓ Prepared melt:");
-                    println!("  Amount: {} sats", prepared.amount());
-                    println!("  Total Fee: {} sats", prepared.total_fee());
+            match session.prepare().await {
+                Ok(plan) => {
+                    println!("✓ Prepared payment:");
+                    println!("  Amount: {} sats", plan.amount());
+                    println!("  Maximum Fee: {} sats", plan.maximum_fee());
 
                     // Execute the payment
                     println!("\nExecuting payment...");
-                    match prepared.confirm().await {
-                        Ok(confirmed) => {
+                    match plan.execute().await {
+                        Ok(receipt) => {
                             println!("✓ BIP-353 payment successful!");
-                            println!("  State: {}", confirmed.state());
-                            println!("  Amount paid: {} sats", confirmed.amount());
-                            println!("  Fee paid: {} sats", confirmed.fee_paid());
+                            println!("  Amount paid: {} sats", receipt.amount);
+                            println!("  Fee paid: {} sats", receipt.fee_paid);
 
-                            if let Some(preimage) = confirmed.payment_proof() {
+                            if let Some(preimage) = receipt.payment_proof {
                                 println!("  Payment preimage: {}", preimage);
                             }
                         }
@@ -197,39 +194,37 @@ async fn main() -> anyhow::Result<()> {
 
     // Use the specific Lightning Address method
     println!("Attempting Lightning Address payment...");
-    match wallet
-        .melt_lightning_address_quote(lnurl_address, lnurl_amount_sats * 1_000)
-        .await
-    {
-        Ok(melt_quote) => {
-            println!("✓ Lightning Address melt quote received:");
-            println!("  Quote ID: {}", melt_quote.id);
-            println!("  Amount: {} sats", melt_quote.amount);
-            println!("  Fee Reserve: {} sats", melt_quote.fee_reserve);
-            println!("  State: {}", melt_quote.state);
-            println!("  Payment Method: {}", melt_quote.payment_method);
+    let lnurl_request = AddressPaymentRequest::lightning_address(
+        lnurl_address,
+        Amount::from(lnurl_amount_sats * 1_000),
+    );
+    match wallet.quote_address_payment(lnurl_request).await {
+        Ok(session) => {
+            let quote = session.quote();
+            println!("✓ Lightning Address payment quote received:");
+            println!("  Quote ID: {}", quote.id);
+            println!("  Amount: {} sats", quote.amount);
+            println!("  Fee Reserve: {} sats", quote.fee_reserve);
+            println!("  State: {}", quote.state);
+            println!("  Payment Method: {}", quote.method);
 
             // Prepare the payment - shows fees before confirming
             println!("\nPreparing payment...");
-            match wallet
-                .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-                .await
-            {
-                Ok(prepared) => {
-                    println!("✓ Prepared melt:");
-                    println!("  Amount: {} sats", prepared.amount());
-                    println!("  Total Fee: {} sats", prepared.total_fee());
+            match session.prepare().await {
+                Ok(plan) => {
+                    println!("✓ Prepared payment:");
+                    println!("  Amount: {} sats", plan.amount());
+                    println!("  Maximum Fee: {} sats", plan.maximum_fee());
 
                     // Execute the payment
                     println!("\nExecuting payment...");
-                    match prepared.confirm().await {
-                        Ok(confirmed) => {
+                    match plan.execute().await {
+                        Ok(receipt) => {
                             println!("✓ Lightning Address payment successful!");
-                            println!("  State: {}", confirmed.state());
-                            println!("  Amount paid: {} sats", confirmed.amount());
-                            println!("  Fee paid: {} sats", confirmed.fee_paid());
+                            println!("  Amount paid: {} sats", receipt.amount);
+                            println!("  Fee paid: {} sats", receipt.fee_paid);
 
-                            if let Some(preimage) = confirmed.payment_proof() {
+                            if let Some(preimage) = receipt.payment_proof {
                                 println!("  Payment preimage: {}", preimage);
                             }
                         }
@@ -274,22 +269,24 @@ async fn main() -> anyhow::Result<()> {
     println!("Expected: BIP-353 (BOLT12) via DNS resolution\n");
 
     println!("Attempting unified payment...");
-    match wallet
-        .melt_human_readable_quote(
-            bip353_address,
-            unified_amount_sats * 1_000,
-            bitcoin::Network::Bitcoin,
-        )
-        .await
-    {
-        Ok(melt_quote) => {
-            println!("✓ Unified melt quote received:");
-            println!("  Quote ID: {}", melt_quote.id);
-            println!("  Amount: {} sats", melt_quote.amount);
-            println!("  Fee Reserve: {} sats", melt_quote.fee_reserve);
-            println!("  Payment Method: {}", melt_quote.payment_method);
+    let unified_request = AddressPaymentRequest {
+        address: bip353_address.to_owned(),
+        amount_msat: Amount::from(unified_amount_sats * 1_000),
+        route: AddressPaymentRoute::Automatic {
+            network: bitcoin::Network::Bitcoin,
+        },
+        metadata: Default::default(),
+    };
+    match wallet.quote_address_payment(unified_request).await {
+        Ok(session) => {
+            let quote = session.quote();
+            println!("✓ Unified payment quote received:");
+            println!("  Quote ID: {}", quote.id);
+            println!("  Amount: {} sats", quote.amount);
+            println!("  Fee Reserve: {} sats", quote.fee_reserve);
+            println!("  Payment Method: {}", quote.method);
 
-            let method_str = melt_quote.payment_method.to_string().to_lowercase();
+            let method_str = quote.method.to_string().to_lowercase();
             let used_method = if method_str.contains("bolt12") {
                 "BIP-353 (BOLT12)"
             } else if method_str.contains("bolt11") {
@@ -312,22 +309,24 @@ async fn main() -> anyhow::Result<()> {
     println!("Expected: Lightning Address (LNURL-pay) fallback\n");
 
     println!("Attempting unified payment...");
-    match wallet
-        .melt_human_readable_quote(
-            lnurl_address,
-            unified_amount_sats * 1_000,
-            bitcoin::Network::Bitcoin,
-        )
-        .await
-    {
-        Ok(melt_quote) => {
-            println!("✓ Unified melt quote received:");
-            println!("  Quote ID: {}", melt_quote.id);
-            println!("  Amount: {} sats", melt_quote.amount);
-            println!("  Fee Reserve: {} sats", melt_quote.fee_reserve);
-            println!("  Payment Method: {}", melt_quote.payment_method);
+    let fallback_request = AddressPaymentRequest {
+        address: lnurl_address.to_owned(),
+        amount_msat: Amount::from(unified_amount_sats * 1_000),
+        route: AddressPaymentRoute::Automatic {
+            network: bitcoin::Network::Bitcoin,
+        },
+        metadata: Default::default(),
+    };
+    match wallet.quote_address_payment(fallback_request).await {
+        Ok(session) => {
+            let quote = session.quote();
+            println!("✓ Unified payment quote received:");
+            println!("  Quote ID: {}", quote.id);
+            println!("  Amount: {} sats", quote.amount);
+            println!("  Fee Reserve: {} sats", quote.fee_reserve);
+            println!("  Payment Method: {}", quote.method);
 
-            let method_str = melt_quote.payment_method.to_string().to_lowercase();
+            let method_str = quote.method.to_string().to_lowercase();
             let used_method = if method_str.contains("bolt12") {
                 "BIP-353 (BOLT12)"
             } else if method_str.contains("bolt11") {

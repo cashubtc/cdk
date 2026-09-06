@@ -25,5 +25,8 @@ uniffi = { workspace = true, features = ["cli"] }
 [build-dependencies]
 uniffi = { workspace = true, features = ["build"] }
 
+[features]
+advanced-wallet = ["cdk-ffi/advanced-wallet"]
+
 [lints]
 workspace = true

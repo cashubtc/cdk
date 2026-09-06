@@ -1,675 +1,363 @@
-//! Wallet Saga Integration Tests
-//!
-//! These tests verify saga-specific behavior that isn't covered by other integration tests:
-//! - Proof reservation and isolation
-//! - Cancellation/compensation flows
-//! - Concurrent saga isolation
-//!
-//! Basic happy-path flows are covered by other integration tests (fake_wallet.rs,
-//! integration_tests_pure.rs, etc.)
+//! Application-facing durability and concurrency tests for wallet workflows.
+
+use std::collections::HashSet;
 
 use anyhow::Result;
-use cashu::{MeltQuoteState, PaymentMethod};
-use cdk::nuts::nut00::ProofsMethods;
-use cdk::wallet::SendOptions;
+use cdk::amount::SplitTarget;
+use cdk::nuts::{CurrencyUnit, State};
+use cdk::wallet::advanced::{
+    ProofQuery, ReissueFeePolicy, ReissueProtection, ReissueRequest, TransactionRecovery,
+};
+use cdk::wallet::history::HistoryQuery;
+use cdk::wallet::operation::SyncPolicy;
+use cdk::wallet::payment::{PaymentQuoteRequest, PaymentTarget};
+use cdk::wallet::receive::ReceiveRequest;
+use cdk::wallet::send::SendRequest;
+use cdk::wallet::Wallet;
 use cdk::Amount;
+use cdk_common::wallet::TransactionDirection;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
 
-// =============================================================================
-// Saga-Specific Tests
-// =============================================================================
+async fn reserved_proof_ys(wallet: &Wallet) -> Result<HashSet<cdk::nuts::PublicKey>> {
+    Ok(wallet
+        .advanced()
+        .proofs(ProofQuery {
+            states: vec![State::Reserved],
+            conditions: None,
+        })
+        .await?
+        .into_iter()
+        .map(|record| record.y)
+        .collect())
+}
 
-/// Tests that cancelling a prepared send releases proofs back to Unspent
+async fn operation_proof_ys(
+    wallet: &Wallet,
+    operation_id: cdk::wallet::operation::OperationId,
+) -> Result<HashSet<cdk::nuts::PublicKey>> {
+    Ok(wallet
+        .advanced()
+        .proofs(ProofQuery::all())
+        .await?
+        .into_iter()
+        .filter(|record| record.used_by_operation == Some(operation_id.as_uuid()))
+        .map(|record| record.y)
+        .collect())
+}
+
+async fn payment_plan(
+    wallet: &Wallet,
+    amount_msat: u64,
+    description: &str,
+) -> Result<cdk::wallet::payment::PaymentPlan> {
+    let invoice = create_fake_invoice(amount_msat, description.to_string());
+    Ok(wallet
+        .quote_payment(PaymentQuoteRequest::new(PaymentTarget::bolt11(
+            invoice.to_string(),
+        )))
+        .await?
+        .into_single()?
+        .prepare()
+        .await?)
+}
+
 #[tokio::test]
-async fn test_send_cancel_releases_proofs() -> Result<()> {
+async fn cancelling_send_releases_reserved_funds() -> Result<()> {
     setup_tracing();
     let mint = create_and_start_test_mint().await?;
-    let wallet = create_test_wallet_for_mint(mint.clone()).await?;
+    let wallet = create_test_wallet_for_mint(mint).await?;
+    let initial = Amount::from(1_000);
+    fund_wallet(wallet.clone(), initial.into(), None).await?;
 
-    // Fund wallet
-    let initial_amount = Amount::from(1000);
-    fund_wallet(wallet.clone(), initial_amount.into(), None).await?;
+    let plan = wallet.plan_send(SendRequest::new(400.into())).await?;
+    assert!(!reserved_proof_ys(&wallet).await?.is_empty());
+    assert!(wallet.balance().await?.reserved > Amount::ZERO);
 
-    let send_amount = Amount::from(400);
+    plan.cancel().await?;
 
-    // Prepare send
-    let prepared = wallet
-        .prepare_send(send_amount, SendOptions::default())
-        .await?;
-
-    // Verify proofs are reserved
-    let reserved_before = wallet.get_reserved_proofs().await?;
-    assert!(!reserved_before.is_empty());
-
-    // Cancel the prepared send
-    prepared.cancel().await?;
-
-    // Verify proofs are released (no longer reserved)
-    let reserved_after = wallet.get_reserved_proofs().await?;
-    assert!(reserved_after.is_empty());
-
-    // Verify full balance is restored
-    let balance = wallet.total_balance().await?;
-    assert_eq!(balance, initial_amount);
-
+    assert!(reserved_proof_ys(&wallet).await?.is_empty());
+    let balance = wallet.balance().await?;
+    assert_eq!(balance.available, initial);
+    assert_eq!(balance.reserved, Amount::ZERO);
     Ok(())
 }
 
-/// Tests that proofs reserved by prepare_send cannot be used by another send
 #[tokio::test]
-async fn test_reserved_proofs_excluded_from_selection() -> Result<()> {
+async fn prepared_sends_own_disjoint_proofs() -> Result<()> {
     setup_tracing();
     let mint = create_and_start_test_mint().await?;
-    let wallet = create_test_wallet_for_mint(mint.clone()).await?;
-
-    // Fund wallet with exact amount for two sends
+    let wallet = create_test_wallet_for_mint(mint).await?;
     fund_wallet(wallet.clone(), 600, None).await?;
 
-    // First prepare reserves some proofs
-    let prepared1 = wallet
-        .prepare_send(Amount::from(300), SendOptions::default())
-        .await?;
+    let first = wallet.plan_send(SendRequest::new(300.into())).await?;
+    let second = wallet.plan_send(SendRequest::new(300.into())).await?;
+    let first_ys = operation_proof_ys(&wallet, first.operation_id()).await?;
+    let second_ys = operation_proof_ys(&wallet, second.operation_id()).await?;
+    assert!(!first_ys.is_empty());
+    assert!(!second_ys.is_empty());
+    assert!(first_ys.is_disjoint(&second_ys));
+    assert!(wallet
+        .plan_send(SendRequest::new(100.into()))
+        .await
+        .is_err());
 
-    // Second prepare should still work (different proofs)
-    let prepared2 = wallet
-        .prepare_send(Amount::from(300), SendOptions::default())
-        .await?;
-
-    // Both should have disjoint proofs
-    let ys1: std::collections::HashSet<_> = prepared1.proofs().ys()?.into_iter().collect();
-    let ys2: std::collections::HashSet<_> = prepared2.proofs().ys()?.into_iter().collect();
-    assert!(ys1.is_disjoint(&ys2));
-
-    // Third prepare should fail (all proofs reserved)
-    let result = wallet
-        .prepare_send(Amount::from(100), SendOptions::default())
-        .await;
-    assert!(result.is_err());
-
-    // Cancel first, now we should be able to prepare again
-    prepared1.cancel().await?;
-
-    let prepared3 = wallet
-        .prepare_send(Amount::from(100), SendOptions::default())
-        .await;
-    assert!(prepared3.is_ok());
-
+    first.cancel().await?;
+    let third = wallet.plan_send(SendRequest::new(100.into())).await?;
+    second.cancel().await?;
+    third.cancel().await?;
     Ok(())
 }
 
-/// Tests that multiple concurrent send sagas don't interfere with each other
 #[tokio::test]
-async fn test_concurrent_sends_isolated() -> Result<()> {
+async fn concurrent_sends_reserve_and_confirm_independently() -> Result<()> {
     setup_tracing();
     let mint = create_and_start_test_mint().await?;
-    let wallet = create_test_wallet_for_mint(mint.clone()).await?;
+    let wallet = create_test_wallet_for_mint(mint).await?;
+    let initial = Amount::from(2_000);
+    fund_wallet(wallet.clone(), initial.into(), None).await?;
 
-    // Fund wallet
-    let initial_amount = Amount::from(2000);
-    fund_wallet(wallet.clone(), initial_amount.into(), None).await?;
-
-    // Prepare two sends concurrently
-    let wallet1 = wallet.clone();
-    let wallet2 = wallet.clone();
-
-    let (prepared1, prepared2) = tokio::join!(
-        wallet1.prepare_send(Amount::from(300), SendOptions::default()),
-        wallet2.prepare_send(Amount::from(400), SendOptions::default())
+    let (first, second) = tokio::join!(
+        wallet.plan_send(SendRequest::new(300.into())),
+        wallet.plan_send(SendRequest::new(400.into()))
     );
-
-    let prepared1 = prepared1?;
-    let prepared2 = prepared2?;
-
-    // Verify both have reserved proofs (should be different proofs)
-    let reserved1 = prepared1.proofs();
-    let reserved2 = prepared2.proofs();
-
-    // The proofs should not overlap
-    let ys1: std::collections::HashSet<_> = reserved1.ys()?.into_iter().collect();
-    let ys2: std::collections::HashSet<_> = reserved2.ys()?.into_iter().collect();
-    assert!(ys1.is_disjoint(&ys2));
-
-    // Confirm both
-    let (token1, token2) = tokio::join!(prepared1.confirm(None), prepared2.confirm(None));
-
-    let _token1 = token1?;
-    let _token2 = token2?;
-
-    // Verify final balance is correct
-    let final_balance = wallet.total_balance().await?;
-    assert_eq!(final_balance, initial_amount - Amount::from(700));
-
-    Ok(())
-}
-
-/// Tests concurrent melt operations are isolated
-#[tokio::test]
-async fn test_concurrent_melts_isolated() -> Result<()> {
-    setup_tracing();
-    let mint = create_and_start_test_mint().await?;
-    let wallet = create_test_wallet_for_mint(mint.clone()).await?;
-
-    // Fund wallet with enough for multiple melts
-    fund_wallet(wallet.clone(), 2000, None).await?;
-
-    // Create two invoices
-    let invoice1 = create_fake_invoice(200_000, "melt 1".to_string());
-    let invoice2 = create_fake_invoice(300_000, "melt 2".to_string());
-
-    // Get quotes
-    let quote1 = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice1.to_string(), None, None)
-        .await?;
-    let quote2 = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice2.to_string(), None, None)
-        .await?;
-
-    // Execute both melts concurrently
-    let wallet1 = wallet.clone();
-    let wallet2 = wallet.clone();
-    let quote_id1 = quote1.id.clone();
-    let quote_id2 = quote2.id.clone();
-
-    // Prepare both melts
-    let prepared1 = wallet1
-        .prepare_melt(&quote_id1, std::collections::HashMap::new())
-        .await?;
-    let prepared2 = wallet2
-        .prepare_melt(&quote_id2, std::collections::HashMap::new())
-        .await?;
-
-    // Confirm both in parallel
-    let (result1, result2) = tokio::join!(prepared1.confirm(), prepared2.confirm());
-
-    // Both should succeed
-    let confirmed1 = result1?;
-    let confirmed2 = result2?;
-
-    assert_eq!(confirmed1.state(), MeltQuoteState::Paid);
-    assert_eq!(confirmed2.state(), MeltQuoteState::Paid);
-
-    // Verify total amount melted
-    let final_balance = wallet.total_balance().await?;
-    assert!(final_balance < Amount::from(1500)); // At least 500 melted
-
-    Ok(())
-}
-
-// =============================================================================
-// Melt Saga Input Fee Tests
-// =============================================================================
-
-/// Tests that melt saga correctly includes input fees when calculating total needed.
-///
-/// This is a regression test for a bug where confirm_melt calculated:
-///   inputs_needed_amount = quote.amount + fee_reserve
-/// but should calculate:
-///   inputs_needed_amount = quote.amount + fee_reserve + input_fee
-///
-/// The bug manifested as: "not enough inputs provided for melt. Provided: X, needed: X+1"
-///
-/// Scenario:
-/// - Mint with 1000 ppk (1 sat per proof input fee)
-/// - Melt for 26 sats
-/// - fee_reserve = 2 sats
-/// - If wallet has proofs that don't exactly match, it swaps first
-/// - The swap produces proofs totaling (amount + fee_reserve) = 28 sats
-/// - But mint actually needs (amount + fee_reserve + input_fee) = 29 sats
-///
-/// Before fix: Melt fails with "not enough inputs provided for melt"
-/// After fix: Melt succeeds
-#[tokio::test]
-async fn test_melt_saga_includes_input_fees() -> Result<()> {
-    use cdk::nuts::CurrencyUnit;
-
-    setup_tracing();
-    let mint = create_and_start_test_mint().await?;
-    let wallet = create_test_wallet_for_mint(mint.clone()).await?;
-
-    // Rotate to keyset with 1000 ppk = 1 sat per proof fee
-    // This is required to trigger the bug - without input fees, the calculation is correct
-    mint.rotate_keyset(
-        CurrencyUnit::Sat,
-        cdk_integration_tests::standard_keyset_amounts(32),
-        1000, // 1 sat per proof input fee
-        true,
-        None,
-    )
-    .await
-    .expect("Failed to rotate keyset");
-
-    // Brief pause to ensure keyset rotation is complete
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    // Fund wallet with enough to cover melt amount + fee_reserve + input fees
-    // Use larger amounts to ensure there are enough proofs of the right denominations
-    let initial_amount = 500u64;
-    fund_wallet(wallet.clone(), initial_amount, None).await?;
-
-    let initial_balance = wallet.total_balance().await?;
-    assert_eq!(initial_balance, Amount::from(initial_amount));
-
-    // Create melt quote for an amount that requires a swap
-    // 100 sats = 100000 msats
-    // fee_reserve should be ~2 sats (2% of 100)
-    // inputs_needed without input_fee = 102 sats
-    // With input_fee (depends on proof count), mint needs more
-    let invoice = create_fake_invoice(100_000, "test melt with fees".to_string());
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await?;
-
-    tracing::info!(
-        "Melt quote: amount={}, fee_reserve={}",
-        melt_quote.amount,
-        melt_quote.fee_reserve
-    );
-
-    // Perform the melt - this should succeed even with input fees
-    // Before the fix, this would fail with:
-    // "not enough inputs provided for melt. Provided: X, needed: X+1"
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-        .await?;
-    let confirmed = prepared.confirm().await?;
-
-    assert_eq!(confirmed.state(), MeltQuoteState::Paid);
-    tracing::info!(
-        "Melt succeeded: amount={}, fee_paid={}",
-        confirmed.amount(),
-        confirmed.fee_paid()
-    );
-
-    // Verify final balance makes sense
-    let final_balance = wallet.total_balance().await?;
-    assert!(
-        final_balance < initial_balance,
-        "Balance should decrease after melt"
-    );
-
-    Ok(())
-}
-
-/// Regression test: Melt with swap should account for actual output proof count.
-///
-/// This test reproduces a bug where:
-/// 1. Wallet has many small proofs (non-optimal denominations)
-/// 2. User tries to melt an amount that requires a swap
-/// 3. The swap produces more proofs than the "optimal" estimate
-/// 4. The actual input_fee is higher than estimated
-/// 5. Result: "Insufficient funds" even though wallet has enough balance
-///
-/// The issue was that `estimated_melt_fee` was based on `inputs_needed_amount.split()`
-/// but after swap with `amount=None`, the actual proof count could be higher,
-/// leading to a higher `actual_input_fee`.
-///
-/// Example from real failure:
-/// - inputs_needed_amount = 6700 (optimal split = 7 proofs, fee = 1)
-/// - selection_amount = 6701
-/// - Selected 12 proofs totaling 6703, swap_fee = 2
-/// - After swap: 6701 worth but 13 proofs (not optimal 7!)
-/// - actual_input_fee = 2 (not 1!)
-/// - Need: 6633 + 67 + 2 = 6702, Have: 6701 → Insufficient funds!
-#[tokio::test]
-async fn test_melt_with_swap_non_optimal_proofs() -> Result<()> {
-    use cdk::amount::SplitTarget;
-    use cdk::nuts::CurrencyUnit;
-
-    setup_tracing();
-    let mint = create_and_start_test_mint().await?;
-    let wallet = create_test_wallet_for_mint(mint.clone()).await?;
-
-    // Use a keyset with 100 ppk (0.1 sat per proof, so ~10 proofs = 1 sat fee)
-    // This makes the fee difference noticeable when proof count differs
-    mint.rotate_keyset(
-        CurrencyUnit::Sat,
-        cdk_integration_tests::standard_keyset_amounts(32),
-        100, // 0.1 sat per proof input fee
-        true,
-        None,
-    )
-    .await
-    .expect("Failed to rotate keyset");
-
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    // Fund wallet with many 1-sat proofs (very non-optimal)
-    // This forces a swap when trying to melt, and the swap output
-    // may have more proofs than the "optimal" estimate
-    let initial_amount = 200u64;
-    fund_wallet(
-        wallet.clone(),
-        initial_amount,
-        Some(SplitTarget::Value(Amount::ONE)),
-    )
-    .await?;
-
-    let initial_balance = wallet.total_balance().await?;
-    assert_eq!(initial_balance, Amount::from(initial_amount));
-
-    // Verify we have many small proofs
-    let proofs = wallet.get_unspent_proofs().await?;
-    tracing::info!("Funded with {} proofs", proofs.len());
-    assert!(
-        proofs.len() > 50,
-        "Should have many small proofs to force non-optimal swap"
-    );
-
-    // Create melt quote - amount chosen to require a swap
-    // With 200 sats in 1-sat proofs, melting 100 sats should require swapping
-    let invoice = create_fake_invoice(100_000, "test melt with non-optimal proofs".to_string());
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await?;
-
-    tracing::info!(
-        "Melt quote: amount={}, fee_reserve={}",
-        melt_quote.amount,
-        melt_quote.fee_reserve
-    );
-
-    // This melt should succeed even with non-optimal proofs
-    // Before fix: fails with "Insufficient funds" because actual_input_fee > estimated
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-        .await?;
-    let confirmed = prepared.confirm().await?;
-
-    assert_eq!(confirmed.state(), MeltQuoteState::Paid);
-    tracing::info!(
-        "Melt succeeded: amount={}, fee_paid={}",
-        confirmed.amount(),
-        confirmed.fee_paid()
-    );
-
-    // Verify balance decreased appropriately
-    let final_balance = wallet.total_balance().await?;
-    assert!(
-        final_balance < initial_balance,
-        "Balance should decrease after melt"
-    );
-
-    Ok(())
-}
-
-/// Tests recovery when a crash occurs after the swap but before the melt request is persisted.
-///
-/// This simulates the "Swap Gap":
-/// 1. MeltSaga prepares (ProofsReserved).
-/// 2. Swap executes (Old proofs spent, New proofs created).
-/// 3. CRASH (MeltSaga not updated to MeltRequested).
-/// 4. Recovery runs.
-///
-/// Expected behavior:
-/// - The recovery should see ProofsReserved.
-/// - It attempts to revert reservation.
-/// - Since old proofs are spent (deleted from DB), revert does nothing.
-/// - Saga is deleted.
-/// - Wallet contains NEW proofs from the swap.
-/// - No double counting (Old + New).
-#[tokio::test]
-async fn test_melt_swap_gap_recovery() -> Result<()> {
-    use cdk::amount::SplitTarget;
-    use cdk::nuts::CurrencyUnit;
-
-    setup_tracing();
-
-    let mint = create_and_start_test_mint().await?;
-    let wallet = create_test_wallet_for_mint(mint.clone()).await?;
-
-    // 1. Configure Mint with Input Fees to force a swap
-    // 1000 ppk = 1 sat per proof
-    mint.rotate_keyset(
-        CurrencyUnit::Sat,
-        cdk_integration_tests::standard_keyset_amounts(32),
-        1000,
-        true,
-        None,
-    )
-    .await
-    .expect("Failed to rotate keyset");
-
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    // 2. Fund Wallet with small proofs
-    // 500 sats total in 50-sat proofs.
-    let initial_amount = 500u64;
-    fund_wallet(
-        wallet.clone(),
-        initial_amount,
-        Some(SplitTarget::Value(Amount::from(50))),
-    )
-    .await?;
-
-    let initial_balance = wallet.total_balance().await?;
-    assert_eq!(initial_balance, Amount::from(initial_amount));
-
-    // 3. Create Melt Quote
-    let invoice = create_fake_invoice(100_000, "test gap".to_string());
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await?;
-
-    // 4. Prepare Melt
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-        .await?;
-
-    // Verify we have proofs to swap
-    let proofs_to_swap = prepared.proofs_to_swap();
-    assert!(!proofs_to_swap.is_empty(), "Should have proofs to swap");
-
-    // 5. Simulate the Gap (Manual Swap)
-    // Calculate target amount (what MeltSaga would do)
-    // We only need to swap for the amount + reserve, change will handle the rest.
-    // Including input_fee in target request causes us to request more than we have available
-    // (since input_fee is deducted from inputs).
-    let target_swap_amount = melt_quote.amount + melt_quote.fee_reserve;
-
-    tracing::info!("Simulating swap for amount: {}", target_swap_amount);
-
-    // Perform the swap
-    // Note: this consumes the old proofs from the DB and adds new ones.
-    // The `prepared` saga state in memory still points to old proofs,
-    // and the DB saga state is still 'ProofsReserved' with old proofs.
-    //
-    // First unreserve the proofs so the public swap() can re-reserve them.
-    // In the real melt flow, swap_no_reserve() is used internally, but
-    // that is not accessible from outside the crate.
-    let swap_ys = proofs_to_swap.ys()?;
-    wallet
-        .localstore
-        .update_proofs_state(swap_ys, cdk::nuts::State::Unspent)
-        .await?;
-
-    let swapped_proofs = wallet
-        .swap(
-            Some(target_swap_amount),
-            SplitTarget::None,
-            proofs_to_swap.clone(),
-            None,
-            false,
-            false,
-        )
-        .await?;
-
-    assert!(swapped_proofs.is_some(), "Swap should succeed");
-    let swapped_proofs = swapped_proofs.unwrap();
-
-    // The swap places the requested amount in 'Reserved' state.
-    // Since we are simulating a crash where these were not consumed,
-    // we need to set them to Unspent to verify the wallet balance is conserved.
-    // In a real scenario, a "stuck reserved proofs" cleanup mechanism would handle this.
-    let ys = swapped_proofs.ys()?;
-    wallet
-        .localstore
-        .update_proofs_state(ys, cdk::nuts::State::Unspent)
-        .await?;
-
-    // 6. Recover
-    // At this point, the MeltSaga in DB is stale (points to spent proofs).
-    // Recovery should clean it up.
-    let report = wallet.recover_incomplete_sagas().await?;
-
-    tracing::info!("Recovery report: {:?}", report);
-
-    // 7. Verify
-    // The saga should be gone/handled.
-    // We check the DB directly to ensure saga is gone.
-    let saga = wallet.localstore.get_saga(&prepared.operation_id()).await?;
-    assert!(saga.is_none(), "Saga should be deleted after recovery");
-
-    // Check Balance
-    // We expect: Initial - Swap Fees.
-    // The melt didn't happen (cancelled).
-    // The swap happened.
-    let current_balance = wallet.total_balance().await?;
-
-    assert!(
-        current_balance < Amount::from(initial_amount),
-        "Balance should have decreased by fee"
-    );
-    assert!(
-        current_balance > Amount::from(initial_amount) - Amount::from(50),
-        "Fee shouldn't be huge. Initial: {}, Current: {}",
-        initial_amount,
-        current_balance
-    );
-
-    Ok(())
-}
-
-// =============================================================================
-// Send with Swap Tests (nested swap regression tests)
-// =============================================================================
-
-/// Regression test: Send that requires a swap during confirm should succeed.
-///
-/// This test reproduces the `ProofNotUnspent` error that occurred when:
-/// 1. `prepare_send` reserves proofs (Unspent → Reserved)
-/// 2. `confirm` calls `swap()` on a subset of those proofs
-/// 3. The swap saga's `create_swap()` tried to `reserve_proofs()` again
-/// 4. Failed because proofs are already Reserved, not Unspent
-///
-/// The fix passes `ProofReservation::Skip` to the nested swap, since the
-/// parent send saga already owns the reservation.
-#[tokio::test]
-async fn test_send_with_swap_succeeds() -> Result<()> {
-    use cdk::amount::SplitTarget;
-
-    setup_tracing();
-    let mint = create_and_start_test_mint().await?;
-    let wallet = create_test_wallet_for_mint(mint.clone()).await?;
-
-    // Fund wallet with uniform 64-sat proofs (non-standard denomination).
-    // When we try to send 100 sats, the wallet can't construct it from
-    // exact 64-sat proofs, so it must swap some proofs for proper
-    // denominations during confirm.
-    let initial_amount = 1000u64;
-    fund_wallet(
-        wallet.clone(),
-        initial_amount,
-        Some(SplitTarget::Value(Amount::from(64))),
-    )
-    .await?;
-
-    let initial_balance = wallet.total_balance().await?;
-    assert_eq!(initial_balance, Amount::from(initial_amount));
-
-    // Send an amount that can't be constructed from 64-sat proofs alone
-    let send_amount = Amount::from(100);
-    let prepared = wallet
-        .prepare_send(send_amount, SendOptions::default())
-        .await?;
-
-    // Verify there are proofs to swap (the core of this regression test)
-    let has_proofs_to_swap = !prepared.proofs_to_swap().is_empty();
-    tracing::info!(
-        "Proofs to send: {}, Proofs to swap: {}",
-        prepared.proofs_to_send().len(),
-        prepared.proofs_to_swap().len()
-    );
-
-    // Confirm the send — this is where the ProofNotUnspent error occurred
-    let token = prepared.confirm(None).await?;
-
-    tracing::info!("Send confirmed. Token created successfully.");
-
-    // Verify balance decreased
-    let final_balance = wallet.total_balance().await?;
-    assert!(
-        final_balance < initial_balance,
-        "Balance should decrease after send"
-    );
-
-    // If a swap was needed, verify the swap + send worked correctly
-    if has_proofs_to_swap {
-        tracing::info!(
-            "Swap was required during send (regression scenario). Initial: {}, Final: {}",
-            initial_balance,
-            final_balance
-        );
-    }
-
-    // Verify token is valid by checking it's non-empty
-    let token_str = token.to_string();
-    assert!(!token_str.is_empty(), "Token string should not be empty");
-
-    Ok(())
-}
-
-/// Full round-trip test: Send with swap, then receive on a second wallet.
-///
-/// This verifies that the token produced by a send that required an
-/// internal swap is valid and can be received by another wallet.
-#[tokio::test]
-async fn test_send_with_swap_then_receive() -> Result<()> {
-    use cdk::amount::SplitTarget;
-    use cdk::wallet::ReceiveOptions;
-
-    setup_tracing();
-    let mint = create_and_start_test_mint().await?;
-    let wallet1 = create_test_wallet_for_mint(mint.clone()).await?;
-    let wallet2 = create_test_wallet_for_mint(mint.clone()).await?;
-
-    // Fund wallet1 with uniform 64-sat proofs so sending 100 sats
-    // forces a swap during confirm.
-    let initial_amount = 1000u64;
-    fund_wallet(
-        wallet1.clone(),
-        initial_amount,
-        Some(SplitTarget::Value(Amount::from(64))),
-    )
-    .await?;
-
-    // Send from wallet1 (will require swap due to non-matching denominations)
-    let send_amount = Amount::from(100);
-    let prepared = wallet1
-        .prepare_send(send_amount, SendOptions::default())
-        .await?;
-
-    let token = prepared.confirm(None).await?;
-    let token_str = token.to_string();
-
-    tracing::info!("Token created, attempting receive on wallet2");
-
-    // Receive on wallet2
-    let received_amount = wallet2
-        .receive(&token_str, ReceiveOptions::default())
-        .await?;
-
-    tracing::info!("Received {} on wallet2", received_amount);
-
-    // The received amount should match the send amount
+    let first = first?;
+    let second = second?;
+    let first_ys = operation_proof_ys(&wallet, first.operation_id()).await?;
+    let second_ys = operation_proof_ys(&wallet, second.operation_id()).await?;
+    assert!(first_ys.is_disjoint(&second_ys));
+
+    let (first_receipt, second_receipt) = tokio::join!(first.execute(), second.execute());
+    assert_eq!(first_receipt?.amount, 300.into());
+    assert_eq!(second_receipt?.amount, 400.into());
     assert_eq!(
-        received_amount, send_amount,
-        "Received amount should match sent amount"
+        wallet.balance().await?.available,
+        initial - Amount::from(700)
     );
+    Ok(())
+}
 
-    // wallet2 balance should be exactly the send amount
-    let wallet2_balance = wallet2.total_balance().await?;
-    assert_eq!(wallet2_balance, send_amount);
+#[tokio::test]
+async fn concurrent_payments_are_isolated() -> Result<()> {
+    setup_tracing();
+    let mint = create_and_start_test_mint().await?;
+    let wallet = create_test_wallet_for_mint(mint).await?;
+    fund_wallet(wallet.clone(), 2_000, None).await?;
 
+    let first = payment_plan(&wallet, 200_000, "payment 1").await?;
+    let second = payment_plan(&wallet, 300_000, "payment 2").await?;
+    let first_ys = operation_proof_ys(&wallet, first.operation_id()).await?;
+    let second_ys = operation_proof_ys(&wallet, second.operation_id()).await?;
+    assert!(first_ys.is_disjoint(&second_ys));
+
+    let (first_receipt, second_receipt) = tokio::join!(first.execute(), second.execute());
+    assert_eq!(first_receipt?.amount, 200.into());
+    assert_eq!(second_receipt?.amount, 300.into());
+    assert!(wallet.balance().await?.available < 1_500.into());
+    Ok(())
+}
+
+#[tokio::test]
+async fn payment_plan_accounts_for_input_fees() -> Result<()> {
+    setup_tracing();
+    let mint = create_and_start_test_mint().await?;
+    let wallet = create_test_wallet_for_mint(mint.clone()).await?;
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        1_000,
+        true,
+        None,
+    )
+    .await?;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    fund_wallet(wallet.clone(), 500, None).await?;
+
+    let initial = wallet.balance().await?.available;
+    let receipt = payment_plan(&wallet, 100_000, "input fee regression")
+        .await?
+        .execute()
+        .await?;
+
+    assert_eq!(receipt.amount, 100.into());
+    assert!(wallet.balance().await?.available < initial);
+    Ok(())
+}
+
+#[tokio::test]
+async fn payment_plan_handles_many_non_optimal_proofs() -> Result<()> {
+    setup_tracing();
+    let mint = create_and_start_test_mint().await?;
+    let wallet = create_test_wallet_for_mint(mint.clone()).await?;
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        100,
+        true,
+        None,
+    )
+    .await?;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    fund_wallet(wallet.clone(), 200, Some(SplitTarget::Value(Amount::ONE))).await?;
+    assert!(wallet.advanced().proofs(ProofQuery::default()).await?.len() > 50);
+
+    let receipt = payment_plan(&wallet, 100_000, "non-optimal proofs")
+        .await?
+        .execute()
+        .await?;
+
+    assert_eq!(receipt.amount, 100.into());
+    assert!(wallet.balance().await?.available < 100.into());
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_payment_survives_sync_until_explicit_cancel() -> Result<()> {
+    setup_tracing();
+    let mint = create_and_start_test_mint().await?;
+    let wallet = create_test_wallet_for_mint(mint).await?;
+    let initial = Amount::from(500);
+    fund_wallet(wallet.clone(), initial.into(), None).await?;
+
+    let plan = payment_plan(&wallet, 100_000, "durable plan").await?;
+    let operation_id = plan.operation_id();
+    assert!(wallet.balance().await?.reserved > Amount::ZERO);
+
+    let report = wallet.synchronize(SyncPolicy::Online).await?;
+    assert!(report.pending_operations >= 1);
+    let resumed = wallet.resume_payment(operation_id).await?;
+    assert_eq!(resumed.operation_id(), operation_id);
+
+    resumed.cancel().await?;
+    assert!(wallet.resume_payment(operation_id).await.is_err());
+    let balance = wallet.balance().await?;
+    assert_eq!(balance.available, initial);
+    assert_eq!(balance.reserved, Amount::ZERO);
+    Ok(())
+}
+
+#[tokio::test]
+async fn send_with_internal_reissue_succeeds() -> Result<()> {
+    setup_tracing();
+    let mint = create_and_start_test_mint().await?;
+    let wallet = create_test_wallet_for_mint(mint).await?;
+    let initial = Amount::from(1_000);
+    fund_wallet(
+        wallet.clone(),
+        initial.into(),
+        Some(SplitTarget::Value(Amount::from(64))),
+    )
+    .await?;
+
+    let receipt = wallet
+        .plan_send(SendRequest::new(100.into()))
+        .await?
+        .execute()
+        .await?;
+
+    assert_eq!(receipt.amount, 100.into());
+    assert!(!receipt.token.to_string().is_empty());
+    assert!(wallet.balance().await?.available < initial);
+    Ok(())
+}
+
+#[tokio::test]
+async fn send_with_internal_reissue_can_be_received() -> Result<()> {
+    setup_tracing();
+    let mint = create_and_start_test_mint().await?;
+    let sender = create_test_wallet_for_mint(mint.clone()).await?;
+    let receiver = create_test_wallet_for_mint(mint).await?;
+    fund_wallet(
+        sender.clone(),
+        1_000,
+        Some(SplitTarget::Value(Amount::from(64))),
+    )
+    .await?;
+
+    let token = sender
+        .plan_send(SendRequest::new(100.into()))
+        .await?
+        .execute()
+        .await?
+        .token;
+    let receipt = receiver
+        .receive(ReceiveRequest::new(token.to_string()))
+        .await?;
+
+    assert_eq!(receipt.amount, 100.into());
+    assert_eq!(receiver.balance().await?.available, 100.into());
+    Ok(())
+}
+
+#[tokio::test]
+async fn unclaimed_send_can_be_inspected_and_recovered_by_transaction() -> Result<()> {
+    setup_tracing();
+    let mint = create_and_start_test_mint().await?;
+    let wallet = create_test_wallet_for_mint(mint).await?;
+    let initial = Amount::from(500);
+    fund_wallet(wallet.clone(), initial.into(), None).await?;
+
+    let send = wallet
+        .plan_send(SendRequest::new(100.into()))
+        .await?
+        .execute()
+        .await?;
+    let history = wallet
+        .history(HistoryQuery {
+            direction: Some(TransactionDirection::Outgoing),
+            limit: Some(1),
+        })
+        .await?;
+    let transaction = history.first().expect("confirmed send has history");
+    assert_eq!(transaction.operation_id, Some(send.operation_id));
+
+    let details = wallet
+        .advanced()
+        .transaction_details(transaction.id)
+        .await?
+        .expect("transaction details remain inspectable");
+    assert_eq!(details.transaction.amount, send.amount);
+    assert!(!details.proofs.is_empty());
+
+    let recovery = wallet
+        .advanced()
+        .recover_transaction(transaction.id)
+        .await?;
+    assert!(matches!(
+        recovery,
+        TransactionRecovery::SendReclaimed { amount } if amount >= send.amount
+    ));
+    assert_eq!(wallet.balance().await?.available, initial);
+    Ok(())
+}
+
+#[tokio::test]
+async fn expert_reissue_remains_available_without_exposing_swap_sagas() -> Result<()> {
+    setup_tracing();
+    let mint = create_and_start_test_mint().await?;
+    let wallet = create_test_wallet_for_mint(mint).await?;
+    fund_wallet(wallet.clone(), 100, None).await?;
+    let proofs = wallet
+        .advanced()
+        .proofs(ProofQuery::default())
+        .await?
+        .into_iter()
+        .map(|record| record.proof)
+        .collect::<Vec<_>>();
+
+    let receipt = wallet
+        .advanced()
+        .reissue(ReissueRequest {
+            proofs,
+            amount: None,
+            amount_split_target: SplitTarget::default(),
+            conditions: None,
+            fee_policy: ReissueFeePolicy::Deduct,
+            protection: ReissueProtection::Plain,
+        })
+        .await?;
+
+    assert!(receipt.proofs.is_none());
+    assert_eq!(wallet.balance().await?.available, 100.into());
     Ok(())
 }

@@ -14,8 +14,9 @@ use tracing::instrument;
 
 use crate::amount::SplitTarget;
 use crate::nuts::{BatchCheckMintQuoteRequest, Proofs, SecretKey, SpendingConditions};
+#[cfg(feature = "nwc")]
 use crate::util::unix_time;
-use crate::wallet::recovery::RecoveryAction;
+use crate::wallet::recovery::{recovery_is_deferred, RecoveryAction};
 use crate::wallet::{DerivationCounterNamespace, MintQuote, MintQuoteState};
 use crate::{Amount, Error, Wallet};
 
@@ -208,7 +209,7 @@ impl Wallet {
 
     /// Create a mint quote for the given payment method and amount
     #[instrument(skip(self, method, extra))]
-    pub async fn mint_quote(
+    pub(crate) async fn mint_quote(
         &self,
         method: PaymentMethod,
         amount: Option<Amount>,
@@ -345,6 +346,13 @@ impl Wallet {
         &self,
         mut mint_quote: MintQuote,
     ) -> Result<MintQuote, Error> {
+        if mint_quote.mint_url != self.mint_url {
+            return Err(Error::IncorrectMint);
+        }
+        if mint_quote.unit != self.unit {
+            return Err(Error::UnsupportedUnit);
+        }
+
         let quote_id = mint_quote.id.clone();
         // First, check/update the state from the mint
         self.check_state(&mut mint_quote).await?;
@@ -352,8 +360,22 @@ impl Wallet {
         // Check if there's an in-progress saga for this quote
         if let Some(ref operation_id_str) = mint_quote.used_by_operation {
             if let Ok(operation_id) = uuid::Uuid::parse_str(operation_id_str) {
+                let _operation_guard = self.lock_operation(operation_id).await;
                 match self.localstore.get_saga(&operation_id).await {
                     Ok(Some(saga)) => {
+                        if recovery_is_deferred(&saga) {
+                            tracing::info!(
+                                "Mint quote {} has active saga {}; deferring refresh recovery",
+                                quote_id,
+                                operation_id
+                            );
+                            return self
+                                .localstore
+                                .get_mint_quote(&quote_id)
+                                .await?
+                                .ok_or(Error::UnknownQuote);
+                        }
+
                         // Saga exists - try to complete it (like recovery does)
                         tracing::info!(
                             "Mint quote {} has in-progress saga {}, attempting to complete",
@@ -363,24 +385,40 @@ impl Wallet {
 
                         let recovery_action = self.resume_issue_saga(&saga).await?;
 
-                        // If compensated, the saga was rolled back - attempt to mint again
                         if recovery_action == RecoveryAction::Compensated {
                             tracing::info!(
                                 "Saga {} was compensated, attempting fresh mint for quote {}",
                                 operation_id,
                                 quote_id
                             );
-                        } else {
-                            // If the saga completed we need to get the updated state of the mint quote fn the db
-                            mint_quote = self
-                                .localstore
-                                .get_mint_quote(&quote_id)
-                                .await?
-                                .ok_or(Error::UnknownQuote)?;
                         }
-                        // If Recovered or Skipped, just continue with the updated quote
+
+                        // Recovery may release the reservation or finalize the
+                        // quote, incrementing its optimistic-lock version. The
+                        // network snapshot above predates that write; persisting
+                        // it would either conflict or restore stale ownership.
+                        return self
+                            .localstore
+                            .get_mint_quote(&quote_id)
+                            .await?
+                            .ok_or(Error::UnknownQuote);
                     }
                     Ok(None) => {
+                        // The owner may have completed while this process was
+                        // waiting for its local operation lock. Do not
+                        // overwrite that newer quote with the status snapshot
+                        // fetched before the wait.
+                        let current_quote = self
+                            .localstore
+                            .get_mint_quote(&quote_id)
+                            .await?
+                            .ok_or(Error::UnknownQuote)?;
+                        if current_quote.used_by_operation.as_deref()
+                            != Some(operation_id_str.as_str())
+                        {
+                            return Ok(current_quote);
+                        }
+
                         // Orphaned reservation - release it
                         tracing::warn!(
                             "Mint quote {} has orphaned reservation for operation {}, releasing",
@@ -390,6 +428,11 @@ impl Wallet {
                         if let Err(e) = self.localstore.release_mint_quote(&operation_id).await {
                             tracing::warn!("Failed to release orphaned mint quote: {}", e);
                         }
+                        return self
+                            .localstore
+                            .get_mint_quote(&quote_id)
+                            .await?
+                            .ok_or(Error::UnknownQuote);
                     }
                     Err(e) => {
                         tracing::warn!("Failed to check saga for mint quote {}: {}", quote_id, e);
@@ -414,7 +457,7 @@ impl Wallet {
     /// function to work. If the quote is not stored locally, use `fetch_mint_quote`
     /// instead.
     #[instrument(skip(self, quote_id))]
-    pub async fn check_mint_quote_status(&self, quote_id: &str) -> Result<MintQuote, Error> {
+    pub(crate) async fn check_mint_quote_status(&self, quote_id: &str) -> Result<MintQuote, Error> {
         let mint_quote = self
             .localstore
             .get_mint_quote(quote_id)
@@ -424,39 +467,6 @@ impl Wallet {
         let mint_quote = self.inner_check_mint_quote_status(mint_quote).await?;
 
         Ok(mint_quote)
-    }
-
-    /// Check a mint quote status (alias for `check_mint_quote_status`)
-    #[instrument(skip(self, quote_id))]
-    pub async fn check_mint_quote(&self, quote_id: &str) -> Result<MintQuote, Error> {
-        self.check_mint_quote_status(quote_id).await
-    }
-
-    /// Check all unissued mint quote states from the mint.
-    ///
-    /// Calls `GET /v1/mint/quote/{method}/{quote_id}` per NUT-04 for each quote.
-    /// Updates local store with current state from mint for each quote.
-    /// If there was a crashed mid-mint (pending saga), attempts to complete it.
-    /// Does NOT mint tokens directly - use mint() or mint_unissued_quotes() for that.
-    #[instrument(skip(self))]
-    pub async fn check_all_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
-        let mint_quotes = self.localstore.get_unissued_mint_quotes().await?;
-        let mut updated_quotes = Vec::new();
-
-        for mint_quote in mint_quotes {
-            if mint_quote.mint_url != self.mint_url || mint_quote.unit != self.unit {
-                continue;
-            }
-
-            match self.inner_check_mint_quote_status(mint_quote).await {
-                Ok(q) => updated_quotes.push(q),
-                Err(err) => {
-                    tracing::warn!("Could not check quote state: {}", err);
-                    continue;
-                }
-            }
-        }
-        Ok(updated_quotes)
     }
 
     /// Refresh states and mint all unissued quotes that have mintable amounts.
@@ -470,7 +480,7 @@ impl Wallet {
     /// checks their state with the mint. This has a negative privacy effect of
     /// linking all these quotes to a single wallet session.
     #[instrument(skip(self))]
-    pub async fn mint_unissued_quotes(&self) -> Result<Amount, Error> {
+    pub(crate) async fn mint_unissued_quotes(&self) -> Result<Amount, Error> {
         let mint_quotes = self.get_unissued_mint_quotes().await?;
         self.mint_given_unissued_quotes(mint_quotes).await
     }
@@ -669,8 +679,9 @@ impl Wallet {
 
     /// Get active mint quotes
     /// Returns mint quotes that are not expired and not yet issued.
+    #[cfg(feature = "nwc")]
     #[instrument(skip(self))]
-    pub async fn get_active_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+    pub(crate) async fn get_active_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
         let mut mint_quotes = self.localstore.get_mint_quotes().await?;
         let unix_time = unix_time();
         mint_quotes.retain(|quote| {
@@ -688,15 +699,26 @@ impl Wallet {
     /// Filters out quotes from other mints and units. Does not filter by expiry time to allow
     /// checking with the mint if expired quotes can still be minted.
     #[instrument(skip(self))]
-    pub async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+    pub(crate) async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
         let mut pending_quotes = self.localstore.get_unissued_mint_quotes().await?;
         pending_quotes.retain(|quote| quote.mint_url == self.mint_url && quote.unit == self.unit);
         Ok(pending_quotes)
     }
 
+    async fn cleanup_failed_issue_preparation(
+        &self,
+        operation_id: uuid::Uuid,
+    ) -> Result<(), Error> {
+        // Never delete the durable operation unless its quote reservation was
+        // released. Keeping the saga makes a partial cleanup retryable.
+        self.localstore.release_mint_quote(&operation_id).await?;
+        self.localstore.delete_saga(&operation_id).await?;
+        Ok(())
+    }
+
     /// Mint
     #[instrument(skip(self))]
-    pub async fn mint(
+    pub(crate) async fn mint(
         &self,
         quote_id: &str,
         amount_split_target: SplitTarget,
@@ -704,29 +726,35 @@ impl Wallet {
     ) -> Result<Proofs, Error> {
         self.retry_on_inactive_keyset(|| async {
             let saga = MintSaga::new(self);
-            let saga = saga
+            let operation_id = saga.operation_id();
+            let saga = match saga
                 .prepare(
                     quote_id,
                     amount_split_target.clone(),
                     spending_conditions.clone(),
                 )
-                .await?;
+                .await
+            {
+                Ok(saga) => saga,
+                Err(error) => {
+                    if let Err(cleanup_error) =
+                        self.cleanup_failed_issue_preparation(operation_id).await
+                    {
+                        tracing::error!(
+                            "Issue preparation {} failed ({}), and cleanup also failed: {}",
+                            operation_id,
+                            error,
+                            cleanup_error
+                        );
+                        return Err(cleanup_error);
+                    }
+                    return Err(error);
+                }
+            };
             let saga = saga.execute().await?;
             Ok(saga.into_proofs())
         })
         .await
-    }
-
-    /// Mint tokens for a quote (alias for `mint`)
-    #[instrument(skip(self))]
-    pub async fn mint_unified(
-        &self,
-        quote_id: &str,
-        amount_split_target: SplitTarget,
-        spending_conditions: Option<SpendingConditions>,
-    ) -> Result<Proofs, Error> {
-        self.mint(quote_id, amount_split_target, spending_conditions)
-            .await
     }
 
     /// Fetch a mint quote from the mint and store it locally
@@ -746,7 +774,7 @@ impl Wallet {
     /// Returns `Error::PaymentMethodRequired` if the quote is not found locally
     /// and no payment method is provided.
     #[instrument(skip(self, quote_id))]
-    pub async fn fetch_mint_quote(
+    pub(crate) async fn fetch_mint_quote(
         &self,
         quote_id: &str,
         payment_method: Option<PaymentMethod>,
@@ -808,7 +836,7 @@ impl Wallet {
     /// All quotes must share the same payment method.
     /// Updates local store with current state from mint for each quote.
     #[instrument(skip(self, quote_ids))]
-    pub async fn batch_check_mint_quote_status(
+    pub(crate) async fn batch_check_mint_quote_status(
         &self,
         quote_ids: &[&str],
     ) -> Result<Vec<MintQuote>, Error> {
@@ -866,7 +894,7 @@ impl Wallet {
     /// * `spending_conditions` - Optional conditions to attach to the proofs
     /// * `external_keys` - Optional signing keys for quotes not in local store
     #[instrument(skip(self, quote_ids, spending_conditions, external_keys))]
-    pub async fn batch_mint(
+    pub(crate) async fn batch_mint(
         &self,
         quote_ids: &[&str],
         amount_split_target: SplitTarget,
@@ -875,15 +903,33 @@ impl Wallet {
     ) -> Result<Proofs, Error> {
         // Create saga and prepare batch
         let saga = MintSaga::new(self);
+        let operation_id = saga.operation_id();
 
-        let prepared = saga
+        let prepared = match saga
             .prepare_batch(
                 quote_ids,
                 amount_split_target,
                 spending_conditions,
                 external_keys.as_ref(),
             )
-            .await?;
+            .await
+        {
+            Ok(saga) => saga,
+            Err(error) => {
+                if let Err(cleanup_error) =
+                    self.cleanup_failed_issue_preparation(operation_id).await
+                {
+                    tracing::error!(
+                        "Batch issue preparation {} failed ({}), and cleanup also failed: {}",
+                        operation_id,
+                        error,
+                        cleanup_error
+                    );
+                    return Err(cleanup_error);
+                }
+                return Err(error);
+            }
+        };
 
         // Execute the mint
         let finalized = prepared.execute().await?;
@@ -900,8 +946,144 @@ mod tests {
     use bip39::Mnemonic;
     use cdk_common::mint_url::MintUrl;
     use cdk_common::nuts::CurrencyUnit;
+    use cdk_common::wallet::{
+        IssueSagaState, MintOperationData, OperationData, WalletSaga, WalletSagaState,
+    };
 
     use super::*;
+
+    #[tokio::test]
+    async fn mint_quote_refresh_does_not_recover_an_active_issue_saga() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_mint_quote, test_mint_url,
+            MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mut quote = test_mint_quote(test_mint_url());
+        quote.state = MintQuoteState::Paid;
+        quote.amount_paid = quote.amount.unwrap_or_default();
+        let quote_id = quote.id.clone();
+        db.add_mint_quote(quote.clone()).await.unwrap();
+
+        let operation_id = uuid::Uuid::now_v7();
+        db.reserve_mint_quote(&quote_id, &operation_id)
+            .await
+            .unwrap();
+        let mut saga = WalletSaga::new(
+            operation_id,
+            WalletSagaState::Issue(IssueSagaState::SecretsPrepared),
+            quote.amount.unwrap_or_default(),
+            quote.mint_url.clone(),
+            quote.unit.clone(),
+            OperationData::Mint(MintOperationData::new_single(
+                quote_id.clone(),
+                quote.amount.unwrap_or_default(),
+                None,
+                None,
+                None,
+            )),
+        );
+        saga.update_state(WalletSagaState::Issue(IssueSagaState::SecretsPrepared));
+        db.add_saga(saga).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        mock_client.set_mint_quote_status_response(&quote_id, paid_bolt11_quote_response(&quote));
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let refreshed = wallet.check_mint_quote_status(&quote_id).await.unwrap();
+        let operation_id_string = operation_id.to_string();
+
+        assert_eq!(
+            refreshed.used_by_operation.as_deref(),
+            Some(operation_id_string.as_str())
+        );
+        assert!(
+            db.get_saga(&operation_id).await.unwrap().is_some(),
+            "refresh must not compensate an issue saga whose operation lease is active"
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_quote_refresh_returns_the_post_recovery_quote_version() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_mint_quote, test_mint_url,
+            MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mut quote = test_mint_quote(test_mint_url());
+        quote.state = MintQuoteState::Paid;
+        quote.amount_paid = quote.amount.unwrap_or_default();
+        let quote_id = quote.id.clone();
+        db.add_mint_quote(quote.clone()).await.unwrap();
+
+        let operation_id = uuid::Uuid::now_v7();
+        db.reserve_mint_quote(&quote_id, &operation_id)
+            .await
+            .unwrap();
+        let saga = WalletSaga::new(
+            operation_id,
+            WalletSagaState::Issue(IssueSagaState::SecretsPrepared),
+            quote.amount.unwrap_or_default(),
+            quote.mint_url.clone(),
+            quote.unit.clone(),
+            OperationData::Mint(MintOperationData::new_single(
+                quote_id.clone(),
+                quote.amount.unwrap_or_default(),
+                None,
+                None,
+                None,
+            )),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        mock_client.set_mint_quote_status_response(&quote_id, paid_bolt11_quote_response(&quote));
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let refreshed = wallet.check_mint_quote_status(&quote_id).await.unwrap();
+
+        assert_eq!(refreshed.used_by_operation, None);
+        assert!(db.get_saga(&operation_id).await.unwrap().is_none());
+        assert_eq!(
+            refreshed,
+            db.get_mint_quote(&quote_id).await.unwrap().unwrap(),
+            "refresh must return the quote version written by recovery"
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_rejects_a_quote_owned_by_another_wallet() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_mint_quote, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let other_mint = MintUrl::from_str("https://other-mint.example.com").unwrap();
+        let mut quote = test_mint_quote(other_mint);
+        quote.state = MintQuoteState::Paid;
+        quote.amount_paid = quote.amount.unwrap_or_default();
+        let quote_id = quote.id.clone();
+        db.add_mint_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let result = wallet.mint(&quote_id, SplitTarget::None, None).await;
+        assert!(matches!(result, Err(Error::IncorrectMint)));
+        assert_eq!(
+            db.get_mint_quote(&quote_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .used_by_operation,
+            None
+        );
+    }
 
     #[tokio::test]
     async fn mint_quote_signing_keys_follow_nut20_counter_across_wallet_instances() {
@@ -911,7 +1093,7 @@ mod tests {
         .expect("valid mnemonic");
         let seed = mnemonic.to_seed_normalized("");
         let db = crate::wallet::test_utils::create_test_db().await;
-        let wallet = Wallet::new(
+        let wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             db.clone(),
@@ -929,7 +1111,7 @@ mod tests {
             .await
             .expect("second key should derive");
 
-        let restarted_wallet = Wallet::new(
+        let restarted_wallet = Wallet::new_for_test(
             "https://mint.example.com",
             CurrencyUnit::Sat,
             db,
@@ -1217,6 +1399,45 @@ mod tests {
             mock_client.post_mint_requests().len(),
             0,
             "ambiguous writes must not be retried as individual mints"
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_batch_reservation_failure_releases_quotes_claimed_by_the_batch() {
+        let (wallet, _mock_client, quotes) = batch_claim_wallet(2).await;
+        let competing_operation = uuid::Uuid::now_v7();
+        wallet
+            .localstore
+            .reserve_mint_quote(&quotes[1].id, &competing_operation)
+            .await
+            .unwrap();
+
+        let quote_ids = quotes
+            .iter()
+            .map(|quote| quote.id.as_str())
+            .collect::<Vec<_>>();
+        let result = wallet
+            .batch_mint(&quote_ids, SplitTarget::default(), None, None)
+            .await;
+        assert!(result.is_err());
+
+        let first = wallet
+            .localstore
+            .get_mint_quote(&quotes[0].id)
+            .await
+            .unwrap()
+            .expect("first quote should remain");
+        let second = wallet
+            .localstore
+            .get_mint_quote(&quotes[1].id)
+            .await
+            .unwrap()
+            .expect("second quote should remain");
+        assert_eq!(first.used_by_operation, None);
+        let competing_operation = competing_operation.to_string();
+        assert_eq!(
+            second.used_by_operation.as_deref(),
+            Some(competing_operation.as_str())
         );
     }
 }

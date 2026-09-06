@@ -7,8 +7,11 @@
 //!
 //! The recovery logic examines the state of each incomplete saga:
 //!
-//! - **Safe to Rollback:** If no external calls were made (e.g. ProofsReserved),
-//!   the saga is compensated by releasing resources (proofs, quotes).
+//! - **Awaiting Decision:** Durable prepared plans remain reserved until the
+//!   application explicitly confirms or cancels them.
+//! - **Safe to Rollback:** If preparation was abandoned, or confirmation
+//!   started but no external request was persisted (e.g. Preparing or
+//!   ProofsReserved), the saga is compensated by releasing resources.
 //! - **Check External State:** If external calls were possible (e.g. SwapRequested),
 //!   the wallet queries the mint to determine if the operation succeeded.
 //!   - If successful: The wallet completes the local state update (e.g. marking proofs spent).
@@ -17,7 +20,8 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use cdk_common::wallet::{ProofInfo, WalletSagaState};
+use cdk_common::util::unix_time;
+use cdk_common::wallet::{ProofInfo, WalletSaga, WalletSagaState};
 use cdk_common::BlindedMessage;
 use tracing::instrument;
 
@@ -28,6 +32,35 @@ use crate::wallet::blind_signature::{
 };
 use crate::wallet::util::escape_log_value;
 use crate::{Error, Wallet};
+
+/// Newly advanced sagas may still be owned by another wallet process.
+///
+/// State transitions are persisted before external requests so a crash can be
+/// recovered safely. That also means a concurrent recovery worker can observe
+/// the new state before the request finishes. Deferring recently created or
+/// advanced active sagas gives the owner a lease while preserving eventual
+/// crash recovery after the lease expires. States that recovery only observes,
+/// or that prove the mint request returned, do not need this protection.
+const ACTIVE_OPERATION_RECOVERY_GRACE_SECONDS: u64 = 5 * 60;
+const RECOVERY_CLOCK_SKEW_TOLERANCE_SECONDS: u64 = 60;
+
+pub(crate) fn recovery_is_deferred(saga: &WalletSaga) -> bool {
+    use cdk_common::wallet::{MeltSagaState, SendSagaState};
+
+    if saga.version == 0
+        || matches!(
+            saga.state,
+            WalletSagaState::Send(SendSagaState::Prepared | SendSagaState::TokenCreated)
+                | WalletSagaState::Melt(MeltSagaState::Prepared | MeltSagaState::PaymentPending)
+        )
+    {
+        return false;
+    }
+
+    let now = unix_time();
+    saga.updated_at <= now.saturating_add(RECOVERY_CLOCK_SKEW_TOLERANCE_SECONDS)
+        && now.saturating_sub(saga.updated_at) < ACTIVE_OPERATION_RECOVERY_GRACE_SECONDS
+}
 
 /// Parameters for recovering outputs using stored blinded messages.
 ///
@@ -43,7 +76,7 @@ struct OutputRecoveryParams<'a> {
 }
 
 /// Report of recovery operations performed by [`Wallet::recover_incomplete_sagas`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RecoveryReport {
     /// Operations successfully completed after crash
     pub recovered: usize,
@@ -53,13 +86,25 @@ pub struct RecoveryReport {
     pub skipped: usize,
     /// Operations that could not be recovered
     pub failed: usize,
+    /// Outcome for every durable operation examined by this pass.
+    pub operations: Vec<RecoveryOperation>,
 }
 
-impl RecoveryReport {
-    /// Returns true if no operations were recovered, compensated, skipped, or failed.
-    pub fn is_empty(&self) -> bool {
-        self.recovered == 0 && self.compensated == 0 && self.skipped == 0 && self.failed == 0
-    }
+/// Detailed internal recovery result used by the application workflow layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecoveryOperation {
+    /// Durable operation identifier.
+    pub operation_id: uuid::Uuid,
+    /// State observed before recovery.
+    pub previous_state: WalletSagaState,
+    /// Successful recovery action, or `None` when recovery failed.
+    pub action: Option<RecoveryAction>,
+    /// Stable failure category.
+    pub error_kind: Option<cdk_common::error::WalletErrorKind>,
+    /// Human-readable failure detail.
+    pub error_message: Option<String>,
+    /// Whether a later retry may be useful.
+    pub retryable: bool,
 }
 
 /// Result of a saga recovery operation.
@@ -338,10 +383,10 @@ impl Wallet {
 
     /// Recover from incomplete operations after a crash. Call on startup.
     ///
-    /// Handles interrupted swap, send, receive, and melt operations to prevent
+    /// Handles interrupted issue, swap, send, receive, and melt operations to prevent
     /// proofs from being stuck in reserved states. Requires network connection.
     #[instrument(skip(self))]
-    pub async fn recover_incomplete_sagas(&self) -> Result<RecoveryReport, Error> {
+    pub(crate) async fn recover_incomplete_sagas(&self) -> Result<RecoveryReport, Error> {
         self.cleanup_orphaned_quote_reservations().await?;
 
         let sagas = self.localstore.get_incomplete_sagas().await?;
@@ -361,7 +406,27 @@ impl Wallet {
 
         let mut report = RecoveryReport::default();
 
-        for saga in sagas {
+        for discovered_saga in sagas {
+            let _operation_guard = self.lock_operation(discovered_saga.id).await;
+            let Some(saga) = self.localstore.get_saga(&discovered_saga.id).await? else {
+                continue;
+            };
+            if recovery_is_deferred(&saga) {
+                tracing::info!(
+                    "Saga {} was updated recently; deferring recovery while its operation lease is active",
+                    saga.id
+                );
+                report.skipped += 1;
+                report.operations.push(RecoveryOperation {
+                    operation_id: saga.id,
+                    previous_state: saga.state,
+                    action: Some(RecoveryAction::Skipped),
+                    error_kind: None,
+                    error_message: None,
+                    retryable: true,
+                });
+                continue;
+            }
             tracing::info!(
                 "Recovering saga {} (kind: {:?}, state: {})",
                 saga.id,
@@ -394,14 +459,38 @@ impl Wallet {
                 Ok(RecoveryAction::Recovered) => {
                     tracing::info!("Saga {} recovered successfully", saga.id);
                     report.recovered += 1;
+                    report.operations.push(RecoveryOperation {
+                        operation_id: saga.id,
+                        previous_state: saga.state,
+                        action: Some(RecoveryAction::Recovered),
+                        error_kind: None,
+                        error_message: None,
+                        retryable: false,
+                    });
                 }
                 Ok(RecoveryAction::Compensated) => {
                     tracing::info!("Saga {} compensated (rolled back)", saga.id);
                     report.compensated += 1;
+                    report.operations.push(RecoveryOperation {
+                        operation_id: saga.id,
+                        previous_state: saga.state,
+                        action: Some(RecoveryAction::Compensated),
+                        error_kind: None,
+                        error_message: None,
+                        retryable: false,
+                    });
                 }
                 Ok(RecoveryAction::Skipped) => {
                     tracing::info!("Saga {} skipped", saga.id);
                     report.skipped += 1;
+                    report.operations.push(RecoveryOperation {
+                        operation_id: saga.id,
+                        previous_state: saga.state,
+                        action: Some(RecoveryAction::Skipped),
+                        error_kind: None,
+                        error_message: None,
+                        retryable: true,
+                    });
                 }
                 Err(e) => {
                     tracing::error!(
@@ -410,6 +499,14 @@ impl Wallet {
                         escape_log_value(&e)
                     );
                     report.failed += 1;
+                    report.operations.push(RecoveryOperation {
+                        operation_id: saga.id,
+                        previous_state: saga.state,
+                        action: None,
+                        error_kind: Some(e.wallet_kind()),
+                        error_message: Some(e.to_string()),
+                        retryable: e.is_retryable(),
+                    });
                 }
             }
         }
@@ -651,6 +748,7 @@ impl Wallet {
 
             if let Some(ref operation_id_str) = quote.used_by_operation {
                 if let Ok(operation_id) = uuid::Uuid::parse_str(operation_id_str) {
+                    let _operation_guard = self.lock_operation(operation_id).await;
                     // Check if saga exists
                     match self.localstore.get_saga(&operation_id).await {
                         Ok(Some(_)) => {
@@ -694,6 +792,7 @@ impl Wallet {
 
             if let Some(ref operation_id_str) = quote.used_by_operation {
                 if let Ok(operation_id) = uuid::Uuid::parse_str(operation_id_str) {
+                    let _operation_guard = self.lock_operation(operation_id).await;
                     // Check if saga exists
                     match self.localstore.get_saga(&operation_id).await {
                         Ok(Some(_)) => {
@@ -741,11 +840,78 @@ mod tests {
     use cdk_common::nuts::{MeltQuoteBolt11Response, MeltQuoteState, PaymentMethod, State};
     use cdk_common::wallet::{
         IssueSagaState, MeltOperationData, MeltSagaState, MintOperationData, OperationData,
-        ReceiveOperationData, ReceiveSagaState, TransactionDirection, WalletSaga, WalletSagaState,
+        PreparedMeltOperationData, PreparedMeltPurpose, PreparedSendOperationData,
+        ReceiveOperationData, ReceiveSagaState, SendOptions, SendSagaState, TransactionDirection,
+        WalletSaga, WalletSagaState,
     };
     use cdk_common::Amount;
 
     use crate::wallet::test_utils::*;
+
+    #[test]
+    fn recovery_defers_only_recent_active_sagas() {
+        let operation_id = uuid::Uuid::new_v4();
+        let mut saga = WalletSaga::new(
+            operation_id,
+            WalletSagaState::Receive(ReceiveSagaState::ProofsPending),
+            Amount::from(1),
+            test_mint_url(),
+            cdk_common::nuts::CurrencyUnit::Sat,
+            OperationData::Receive(ReceiveOperationData {
+                token: None,
+                counter_start: None,
+                counter_end: None,
+                amount: Some(Amount::from(1)),
+                blinded_messages: None,
+            }),
+        );
+
+        assert!(!super::recovery_is_deferred(&saga));
+
+        saga.update_state(WalletSagaState::Receive(ReceiveSagaState::ProofsPending));
+        assert!(super::recovery_is_deferred(&saga));
+
+        saga.update_state(WalletSagaState::Send(SendSagaState::Preparing));
+        assert!(super::recovery_is_deferred(&saga));
+
+        saga.update_state(WalletSagaState::Melt(MeltSagaState::Preparing));
+        assert!(super::recovery_is_deferred(&saga));
+
+        saga.update_state(WalletSagaState::Issue(IssueSagaState::Preparing));
+        assert!(super::recovery_is_deferred(&saga));
+
+        saga.updated_at = cdk_common::util::unix_time()
+            .saturating_sub(super::ACTIVE_OPERATION_RECOVERY_GRACE_SECONDS);
+        assert!(!super::recovery_is_deferred(&saga));
+
+        saga.update_state(WalletSagaState::Melt(MeltSagaState::PaymentPending));
+        assert!(!super::recovery_is_deferred(&saga));
+
+        saga.update_state(WalletSagaState::Send(SendSagaState::Prepared));
+        assert!(!super::recovery_is_deferred(&saga));
+
+        saga.update_state(WalletSagaState::Receive(ReceiveSagaState::ProofsPending));
+        saga.updated_at = cdk_common::util::unix_time()
+            .saturating_add(super::RECOVERY_CLOCK_SKEW_TOLERANCE_SECONDS)
+            .saturating_add(1);
+        assert!(!super::recovery_is_deferred(&saga));
+    }
+
+    fn prepared_melt_data(
+        quote: cdk_common::wallet::MeltQuote,
+        proofs: Vec<crate::nuts::Proof>,
+    ) -> PreparedMeltOperationData {
+        PreparedMeltOperationData {
+            quote,
+            proofs,
+            proofs_to_swap: Vec::new(),
+            swap_fee: Amount::ZERO,
+            input_fee: Amount::ZERO,
+            input_fee_without_swap: Amount::ZERO,
+            metadata: HashMap::new(),
+            purpose: PreparedMeltPurpose::Payment,
+        }
+    }
 
     #[tokio::test]
     async fn test_recover_receive_proofs_pending() {
@@ -782,6 +948,59 @@ mod tests {
 
         // Verify saga is deleted
         assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn recovery_does_not_compensate_an_active_confirmation_lease() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+        let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+
+        let mut saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Send(SendSagaState::Prepared),
+            Amount::from(100),
+            mint_url,
+            cdk_common::nuts::CurrencyUnit::Sat,
+            OperationData::PreparedSend(PreparedSendOperationData {
+                amount: Amount::from(100),
+                options: SendOptions::default(),
+                proofs_to_swap: Vec::new(),
+                proofs_to_send: vec![proof],
+                swap_fee: Amount::ZERO,
+                send_fee: Amount::ZERO,
+            }),
+        );
+        db.add_saga(saga.clone()).await.unwrap();
+        saga.update_state(WalletSagaState::Send(SendSagaState::ProofsReserved));
+        assert!(db.update_saga(saga).await.unwrap());
+
+        let wallet = create_test_wallet(db.clone()).await;
+        let active_report = wallet.recover_incomplete_sagas().await.unwrap();
+        assert_eq!(active_report.skipped, 1);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+        assert_eq!(
+            db.get_proofs_by_ys(vec![proof_y]).await.unwrap()[0].state,
+            State::Reserved
+        );
+
+        let mut expired = db.get_saga(&saga_id).await.unwrap().unwrap();
+        expired.updated_at = 0;
+        expired.version += 1;
+        assert!(db.update_saga(expired).await.unwrap());
+
+        let expired_report = wallet.recover_incomplete_sagas().await.unwrap();
+        assert_eq!(expired_report.compensated, 1);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored[0].state, State::Unspent);
+        assert_eq!(stored[0].used_by_operation, None);
     }
 
     #[tokio::test]
@@ -844,6 +1063,7 @@ mod tests {
         // Create and store proofs, then reserve them
         let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
         let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
         db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
 
@@ -859,17 +1079,7 @@ mod tests {
             Amount::from(100),
             mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Sat,
-            OperationData::Melt(MeltOperationData {
-                quote_id: quote.id.clone(),
-                amount: Amount::from(100),
-                fee_reserve: Amount::from(10),
-                counter_start: None,
-                counter_end: None,
-                change_amount: None,
-                metadata: HashMap::new(),
-                final_proof_ys: None,
-                change_blinded_messages: None,
-            }),
+            OperationData::PreparedMelt(prepared_melt_data(quote.clone(), vec![proof])),
         );
         db.add_saga(saga).await.unwrap();
 
@@ -922,6 +1132,7 @@ mod tests {
 
             let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
             let proof_y = proof_info.y;
+            let proof = proof_info.proof.clone();
             db.update_proofs(vec![proof_info], vec![]).await.unwrap();
             db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
 
@@ -936,17 +1147,7 @@ mod tests {
                 Amount::from(100),
                 mint_url.clone(),
                 cdk_common::nuts::CurrencyUnit::Sat,
-                OperationData::Melt(MeltOperationData {
-                    quote_id: quote.id.clone(),
-                    amount: Amount::from(100),
-                    fee_reserve: Amount::from(10),
-                    counter_start: None,
-                    counter_end: None,
-                    change_amount: None,
-                    metadata: HashMap::new(),
-                    final_proof_ys: None,
-                    change_blinded_messages: None,
-                }),
+                OperationData::PreparedMelt(prepared_melt_data(quote, vec![proof])),
             );
             db.add_saga(saga).await.unwrap();
         }
@@ -1051,9 +1252,9 @@ mod tests {
         );
         db.add_saga(saga).await.unwrap();
 
-        // Mock: quote is Failed
+        // Mock: quote is stably Failed across the safety re-check.
         let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+        let failed_status = MeltQuoteBolt11Response {
             quote: quote_id.clone(),
             amount: Amount::from(100),
             fee_reserve: Amount::from(10),
@@ -1064,7 +1265,9 @@ mod tests {
             request: None,
             unit: None,
             method: PaymentMethod::BOLT11,
-        }));
+        };
+        mock_client.push_melt_quote_status_response(Ok(failed_status.clone()));
+        mock_client.push_melt_quote_status_response(Ok(failed_status));
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let report = wallet.recover_incomplete_sagas().await.unwrap();
@@ -1201,9 +1404,9 @@ mod tests {
         );
         db.add_saga(saga).await.unwrap();
 
-        // Mock: quote is Unpaid (payment was never initiated or was rolled back)
+        // Mock: quote is stably Unpaid across the safety re-check.
         let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+        let unpaid_status = MeltQuoteBolt11Response {
             quote: quote_id.clone(),
             amount: Amount::from(100),
             fee_reserve: Amount::from(10),
@@ -1214,7 +1417,9 @@ mod tests {
             request: None,
             unit: None,
             method: PaymentMethod::BOLT11,
-        }));
+        };
+        mock_client.push_melt_quote_status_response(Ok(unpaid_status.clone()));
+        mock_client.push_melt_quote_status_response(Ok(unpaid_status));
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let report = wallet.recover_incomplete_sagas().await.unwrap();

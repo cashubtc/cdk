@@ -151,12 +151,12 @@ impl Wallet {
     /// Because the cache is shared, this affects all wallets using the same mint.
     ///
     /// `None` means cached data never expires. Default: 1 hour.
-    pub fn set_metadata_cache_ttl(&self, ttl: Option<Duration>) {
+    pub(crate) fn set_metadata_cache_ttl(&self, ttl: Option<Duration>) {
         self.metadata_cache.set_ttl(ttl);
     }
 
     /// Get information about metadata cache info
-    pub fn get_metadata_cache_info(&self) -> FreshnessStatus {
+    pub(crate) fn get_metadata_cache_info(&self) -> FreshnessStatus {
         self.metadata_cache.metadata.load().status.clone()
     }
 }

@@ -62,22 +62,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut full_seed = [0u8; 64];
     full_seed[..32].copy_from_slice(&seed);
 
-    let wallet = Arc::new(Wallet::new(
-        &mint_url,
-        CurrencyUnit::Sat,
+    let wallet = Arc::new(Wallet::open(cdk::wallet::WalletOpenRequest::new(
+        cdk::wallet::WalletIdentity::new(mint_url.parse()?, CurrencyUnit::Sat),
         Arc::new(localstore),
         full_seed,
-        None,
-    )?);
+    ))?);
 
     // Enable NpubCash integration
     let npubcash_url = NPUBCASH_URL.to_string();
 
     println!("NpubCash URL: {}", npubcash_url);
-    wallet.enable_npubcash(npubcash_url.clone()).await?;
+    wallet
+        .advanced()
+        .enable_npubcash(npubcash_url.clone())
+        .await?;
     println!("✓ NpubCash integration enabled\n");
 
-    let npubcash_keys = wallet.get_npubcash_keys()?;
+    let npubcash_keys = wallet.advanced().npubcash_keys()?;
     let npubcash_npub = npubcash_keys.public_key().to_bech32()?;
 
     // Display the npub.cash address
@@ -99,8 +100,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Waiting for the invoice to be paid and processed...\n");
 
     // Subscribe to quote updates and wait for the single payment
-    let mut stream =
-        wallet.npubcash_proof_stream(SplitTarget::default(), None, Duration::from_secs(5));
+    let mut stream = wallet.advanced().npubcash_proof_stream(
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(5),
+    );
 
     if let Some(result) = stream.next().await {
         match result {
@@ -114,8 +118,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match proofs.total_amount() {
                     Ok(amount) => {
                         println!("  └─ Successfully minted {} sats!", amount);
-                        if let Ok(balance) = wallet.total_balance().await {
-                            println!("     New wallet balance: {} sats", balance);
+                        if let Ok(balance) = wallet.balance().await {
+                            println!("     New wallet balance: {} sats", balance.available);
                         }
                     }
                     Err(e) => println!("  └─ Failed to calculate amount: {}", e),
@@ -131,8 +135,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Show final wallet balance
-    let balance = wallet.total_balance().await?;
-    println!("Final wallet balance: {} sats\n", balance);
+    let balance = wallet.balance().await?;
+    println!("Final wallet balance: {} sats\n", balance.available);
 
     Ok(())
 }

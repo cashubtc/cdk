@@ -28,7 +28,7 @@ use crate::wallet::{
 /// each pace separately. Two wallets built independently do not share a live
 /// in-memory budget, only the persisted per-host budget in the KV store. To
 /// share one live budget, build them through a
-/// [`WalletRepository`](crate::wallet::WalletRepository), which injects one
+/// [`WalletManager`](crate::wallet::WalletManager), which injects one
 /// manager into every wallet it creates.
 pub struct WalletBuilder {
     mint_url: Option<MintUrl>,
@@ -93,7 +93,7 @@ impl WalletBuilder {
     }
 
     /// Use HTTP for wallet subscriptions to mint events
-    pub fn use_http_subscription(mut self) -> Self {
+    pub fn with_http_subscription(mut self) -> Self {
         self.use_http_subscription = true;
         self
     }
@@ -106,32 +106,32 @@ impl WalletBuilder {
     /// (unless manually refreshed).
     ///
     /// The default value is 1 hour (3600 seconds).
-    pub fn set_metadata_cache_ttl(mut self, metadata_cache_ttl: Option<Duration>) -> Self {
+    pub fn with_metadata_cache_ttl(mut self, metadata_cache_ttl: Option<Duration>) -> Self {
         self.metadata_cache_ttl = metadata_cache_ttl;
         self
     }
 
     /// If WS is preferred (with fallback to HTTP is it is not supported by the mint) for the wallet
     /// subscriptions to mint events
-    pub fn prefer_ws_subscription(mut self) -> Self {
+    pub fn with_websocket_subscription(mut self) -> Self {
         self.use_http_subscription = false;
         self
     }
 
     /// Set the mint URL
-    pub fn mint_url(mut self, mint_url: MintUrl) -> Self {
+    pub fn with_mint_url(mut self, mint_url: MintUrl) -> Self {
         self.mint_url = Some(mint_url);
         self
     }
 
     /// Set the currency unit
-    pub fn unit(mut self, unit: CurrencyUnit) -> Self {
+    pub fn with_unit(mut self, unit: CurrencyUnit) -> Self {
         self.unit = Some(unit);
         self
     }
 
     /// Set the local storage backend
-    pub fn localstore(
+    pub fn with_store(
         mut self,
         localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
     ) -> Self {
@@ -140,19 +140,19 @@ impl WalletBuilder {
     }
 
     /// Set the target proof count
-    pub fn target_proof_count(mut self, count: usize) -> Self {
+    pub fn with_target_proof_count(mut self, count: usize) -> Self {
         self.target_proof_count = Some(count);
         self
     }
 
     /// Set the auth wallet
-    pub fn auth_wallet(mut self, auth_wallet: AuthWallet) -> Self {
+    pub fn with_authentication_wallet(mut self, auth_wallet: AuthWallet) -> Self {
         self.auth_wallet = Some(auth_wallet);
         self
     }
 
     /// Set the auth connector used when an auth wallet is created from mint info
-    pub fn auth_connector(
+    pub fn with_authentication_connector(
         mut self,
         auth_connector: Arc<dyn AuthMintConnector + Send + Sync>,
     ) -> Self {
@@ -161,20 +161,20 @@ impl WalletBuilder {
     }
 
     /// Set the seed bytes
-    pub fn seed(mut self, seed: [u8; 64]) -> Self {
+    pub fn with_seed(mut self, seed: [u8; 64]) -> Self {
         self.seed.zeroize();
         self.seed = Some(seed);
         self
     }
 
     /// Set a custom client connector
-    pub fn client<C: MintConnector + 'static + Send + Sync>(mut self, client: C) -> Self {
+    pub fn with_connector<C: MintConnector + 'static + Send + Sync>(mut self, client: C) -> Self {
         self.client = Some(Arc::new(client));
         self
     }
 
     /// Set a custom client connector from Arc
-    pub fn shared_client(mut self, client: Arc<dyn MintConnector + Send + Sync>) -> Self {
+    pub fn with_shared_connector(mut self, client: Arc<dyn MintConnector + Send + Sync>) -> Self {
         self.client = Some(client);
         self
     }
@@ -184,7 +184,7 @@ impl WalletBuilder {
     /// This allows multiple wallets to share the same metadata cache instance for
     /// optimal performance and memory usage. If not provided, a new cache
     /// will be created for each wallet.
-    pub fn metadata_cache(mut self, metadata_cache: Arc<MintMetadataCache>) -> Self {
+    pub fn with_metadata_cache(mut self, metadata_cache: Arc<MintMetadataCache>) -> Self {
         self.metadata_cache = Some(metadata_cache);
         self
     }
@@ -193,7 +193,7 @@ impl WalletBuilder {
     ///
     /// This allows the builder to reuse existing cache instances or create new ones.
     /// Useful when creating multiple wallets that share metadata caches.
-    pub fn metadata_caches(
+    pub fn with_metadata_caches(
         mut self,
         metadata_caches: HashMap<MintUrl, Arc<MintMetadataCache>>,
     ) -> Self {
@@ -217,7 +217,7 @@ impl WalletBuilder {
     /// An injected limiter takes precedence over
     /// [`Self::with_rate_limiting_config`]: `build()` uses it verbatim instead of
     /// constructing a per-wallet one, so several wallets can share one live set
-    /// of per-host budgets. [`Self::without_rate_limiting`] still clears it.
+    /// of per-host budgets. [`Self::with_rate_limiting_disabled`] still clears it.
     pub fn with_rate_limiter(mut self, limiter: RateLimiterManager) -> Self {
         self.rate_limiter = Some(limiter);
         self
@@ -229,7 +229,7 @@ impl WalletBuilder {
     /// runtime setters become permanent no-ops and [`Wallet::is_rate_limited`]
     /// stays false. A caller who wants a reversible off switch builds with a
     /// config and calls [`Wallet::disable_rate_limiting`] instead.
-    pub fn without_rate_limiting(mut self) -> Self {
+    pub fn with_rate_limiting_disabled(mut self) -> Self {
         self.rate_limit = None;
         self.rate_limiter = None;
         self
@@ -243,7 +243,7 @@ impl WalletBuilder {
     /// # Errors
     ///
     /// Returns an error if `mint_url` or `localstore` have not been set on the builder.
-    pub fn set_auth_cat(mut self, cat: String) -> Result<Self, Error> {
+    pub fn with_clear_auth_token(mut self, cat: String) -> Result<Self, Error> {
         if self.mint_url.is_none() {
             return Err(Error::Custom("Mint URL required".to_string()));
         }
@@ -289,7 +289,7 @@ impl WalletBuilder {
         // A single rate-limited transport, shared by the main client and the
         // blind-auth client so both draw down one persisted budget per host and
         // reuse one connection pool. An injected limiter (e.g. the one
-        // WalletRepository shares across all its wallets) wins over building a
+        // WalletManager shares across all its wallets) wins over building a
         // per-wallet one.
         let rate_limiter = match self.rate_limiter.take() {
             Some(limiter) => Some(limiter),
@@ -355,6 +355,8 @@ impl WalletBuilder {
             },
         };
 
+        let (events, _) = tokio::sync::broadcast::channel(256);
+
         Ok(Wallet {
             mint_url,
             unit,
@@ -369,6 +371,8 @@ impl WalletBuilder {
             client: client.clone(),
             subscription: SubscriptionManager::new(client, self.use_http_subscription),
             rate_limiter: if limiter_is_wired { rate_limiter } else { None },
+            operation_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            events,
         })
     }
 }
@@ -393,7 +397,7 @@ mod tests {
 
     #[test]
     fn without_rate_limiting_clears_it() {
-        let builder = WalletBuilder::default().without_rate_limiting();
+        let builder = WalletBuilder::default().with_rate_limiting_disabled();
         assert!(builder.rate_limit.is_none());
     }
 
@@ -402,9 +406,9 @@ mod tests {
         let mint_url = MintUrl::from_str("https://mint.example.com").unwrap();
         let store = Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap());
         let builder = WalletBuilder::default()
-            .mint_url(mint_url)
-            .localstore(store)
-            .set_auth_cat("cat".to_string())
+            .with_mint_url(mint_url)
+            .with_store(store)
+            .with_clear_auth_token("cat".to_string())
             .unwrap();
         // Construction is deferred to build(): only the raw CAT is stored.
         assert_eq!(builder.auth_cat.as_deref(), Some("cat"));
@@ -413,17 +417,17 @@ mod tests {
 
     #[test]
     fn set_auth_cat_requires_mint_and_store() {
-        let err = WalletBuilder::default().set_auth_cat("cat".to_string());
+        let err = WalletBuilder::default().with_clear_auth_token("cat".to_string());
         assert!(err.is_err());
     }
 
     async fn base_builder() -> WalletBuilder {
         let store = Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap());
         WalletBuilder::default()
-            .mint_url(MintUrl::from_str("https://mint.example.com").unwrap())
-            .unit(crate::nuts::CurrencyUnit::Sat)
-            .localstore(store)
-            .seed([0u8; 64])
+            .with_mint_url(MintUrl::from_str("https://mint.example.com").unwrap())
+            .with_unit(crate::nuts::CurrencyUnit::Sat)
+            .with_store(store)
+            .with_seed([0u8; 64])
     }
 
     #[tokio::test]
@@ -432,7 +436,7 @@ mod tests {
         // rate-limited main client, both built in build().
         let wallet = base_builder()
             .await
-            .set_auth_cat("cat".to_string())
+            .with_clear_auth_token("cat".to_string())
             .unwrap()
             .build()
             .unwrap();
@@ -444,8 +448,8 @@ mod tests {
         // Exercises the plain path: a plain auth client plus a plain main client.
         let wallet = base_builder()
             .await
-            .without_rate_limiting()
-            .set_auth_cat("cat".to_string())
+            .with_rate_limiting_disabled()
+            .with_clear_auth_token("cat".to_string())
             .unwrap()
             .build()
             .unwrap();
@@ -478,7 +482,7 @@ mod tests {
         // on and the wallet stays unpaced forever.
         let wallet = base_builder()
             .await
-            .without_rate_limiting()
+            .with_rate_limiting_disabled()
             .build()
             .unwrap();
         assert!(!wallet.is_rate_limited());
@@ -497,7 +501,7 @@ mod tests {
 
         let wallet = base_builder()
             .await
-            .shared_client(Arc::new(MockMintConnector::new()))
+            .with_shared_connector(Arc::new(MockMintConnector::new()))
             .build()
             .unwrap();
         assert!(wallet.rate_limiter.is_none());
@@ -513,8 +517,8 @@ mod tests {
 
         let wallet = base_builder()
             .await
-            .shared_client(Arc::new(MockMintConnector::new()))
-            .set_auth_cat("cat".to_string())
+            .with_shared_connector(Arc::new(MockMintConnector::new()))
+            .with_clear_auth_token("cat".to_string())
             .unwrap()
             .build()
             .unwrap();

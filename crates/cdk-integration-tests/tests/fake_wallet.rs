@@ -22,21 +22,136 @@ use cashu::Amount;
 use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{
-    CurrencyUnit, MeltQuoteState, MeltRequest, MintQuoteState, MintRequest, PaymentMethod,
-    PreMintSecrets, Proofs, SecretKey, State, SwapRequest,
+    CurrencyUnit, MeltQuoteState, MeltRequest, MintRequest, PaymentMethod, PreMintSecrets, Proofs,
+    SecretKey, State, SwapRequest,
 };
-use cdk::wallet::types::TransactionDirection;
-use cdk::wallet::{HttpClient, MeltOutcome, MintConnector, Wallet};
-use cdk::StreamExt;
+use cdk::wallet::advanced::{
+    HttpClient, MetadataSource, MintClaimOptions, MintConnector, MintMetadataRequest,
+    MintSessionFilter, PaymentFunding, PaymentPrepareOptions, ProofQuery, ReissueFeePolicy,
+    ReissueProtection, ReissueRequest,
+};
+use cdk::wallet::history::HistoryQuery;
+use cdk::wallet::mint::{MintRequest as WalletMintRequest, MintSession, MintState};
+use cdk::wallet::operation::SyncPolicy;
+use cdk::wallet::payment::{
+    PaymentConfirmation, PaymentQuoteRequest, PaymentSession, PaymentTarget,
+};
+use cdk::wallet::Wallet;
+use cdk_common::database::WalletDatabase;
+use cdk_common::wallet::TransactionDirection;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_sqlite::wallet::memory;
 
 const MINT_URL: &str = "http://127.0.0.1:8086";
 
+async fn fund_wallet(wallet: &Wallet, amount: Amount, split: SplitTarget) -> Proofs {
+    let before = wallet
+        .advanced()
+        .proofs(ProofQuery::default())
+        .await
+        .expect("proof records")
+        .into_iter()
+        .map(|record| record.y)
+        .collect::<std::collections::HashSet<_>>();
+    let session = wallet
+        .request_mint(WalletMintRequest::bolt11(amount))
+        .await
+        .expect("mint session");
+    session
+        .wait_with(
+            MintClaimOptions {
+                amount_split_target: split,
+                conditions: None,
+            },
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("mint receipt");
+    wallet
+        .advanced()
+        .proofs(ProofQuery::default())
+        .await
+        .expect("proof records")
+        .into_iter()
+        .filter(|record| !before.contains(&record.y))
+        .map(|record| record.proof)
+        .collect()
+}
+
+async fn paid_mint_session(
+    wallet: &Wallet,
+    method: PaymentMethod,
+    amount: Option<Amount>,
+) -> MintSession {
+    let session = wallet
+        .request_mint(WalletMintRequest::new(method, amount))
+        .await
+        .expect("mint session");
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let state = session.refresh().await.expect("mint state");
+            if matches!(state.state, MintState::Paid | MintState::Issued) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("paid mint quote");
+    session
+}
+
+async fn quote_payment(wallet: &Wallet, invoice: impl ToString) -> PaymentSession {
+    wallet
+        .quote_payment(PaymentQuoteRequest::new(PaymentTarget::bolt11(
+            invoice.to_string(),
+        )))
+        .await
+        .expect("payment quote")
+        .into_single()
+        .expect("single payment quote")
+}
+
+async fn proof_count(wallet: &Wallet, state: State) -> usize {
+    wallet
+        .advanced()
+        .proofs(ProofQuery {
+            states: vec![state],
+            conditions: None,
+        })
+        .await
+        .expect("proof records")
+        .len()
+}
+
+async fn unspent_proofs(wallet: &Wallet) -> Proofs {
+    wallet
+        .advanced()
+        .proofs(ProofQuery::default())
+        .await
+        .expect("proof records")
+        .into_iter()
+        .map(|record| record.proof)
+        .collect()
+}
+
+async fn active_keyset_id(wallet: &Wallet) -> cdk::nuts::Id {
+    wallet
+        .advanced()
+        .mint_metadata(MintMetadataRequest {
+            source: MetadataSource::Refresh,
+        })
+        .await
+        .expect("mint metadata")
+        .active_keyset()
+        .expect("active keyset")
+        .id
+}
+
 /// Tests that when both pay and check return pending status, input proofs should remain pending
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_tokens_pending() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -45,18 +160,7 @@ async fn test_fake_tokens_pending() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let _proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Pending,
@@ -67,33 +171,19 @@ async fn test_fake_tokens_pending() {
 
     let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
-
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-        .await
-        .unwrap();
-    let _res = prepared.confirm_prefer_async().await.unwrap();
-
-    // matches!(_res, MeltOutcome::Pending);
+    let payment = quote_payment(&wallet, invoice).await;
+    let confirmation = payment.prepare().await.unwrap().submit().await.unwrap();
+    assert!(matches!(confirmation, PaymentConfirmation::Pending(_)));
 
     // melt failed, but there is new code to reclaim unspent proofs
-    assert!(!wallet
-        .localstore
-        .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(proof_count(&wallet, State::Pending).await > 0);
 }
 
 /// Tests that an unknown follow-up keeps proofs pending while a confirmed
 /// failure returns only that payment's proofs to the wallet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_fail() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -102,18 +192,7 @@ async fn test_fake_melt_payment_fail() {
     )
     .expect("Failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let _proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Unknown,
@@ -124,24 +203,11 @@ async fn test_fake_melt_payment_fail() {
 
     let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
+    let payment = quote_payment(&wallet, invoice).await;
+    let outcome = payment.prepare().await.unwrap().submit().await.unwrap();
+    assert!(matches!(outcome, PaymentConfirmation::Pending(_)));
 
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-        .await
-        .unwrap();
-    let outcome = prepared.confirm_prefer_async().await.unwrap();
-    assert!(matches!(outcome, MeltOutcome::Pending(_)));
-
-    let pending_before_failed = wallet
-        .localstore
-        .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await
-        .unwrap()
-        .len();
+    let pending_before_failed = proof_count(&wallet, State::Pending).await;
     assert!(pending_before_failed > 0);
 
     // Model an authoritative backend failure response. A dispatch error remains
@@ -155,28 +221,17 @@ async fn test_fake_melt_payment_fail() {
 
     let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
+    let payment = quote_payment(&wallet, invoice).await;
 
     // A confirmed failure should return an error and release its proofs.
     let melt = tokio::time::timeout(Duration::from_secs(15), async {
-        let prepared = wallet
-            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-            .await?;
-        prepared.confirm().await
+        payment.prepare().await?.execute().await
     })
     .await
     .expect("authoritative failure should not remain pending");
     assert!(melt.is_err());
 
-    let pending_after_failed = wallet
-        .localstore
-        .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await
-        .unwrap()
-        .len();
+    let pending_after_failed = proof_count(&wallet, State::Pending).await;
     assert_eq!(pending_after_failed, pending_before_failed);
 }
 
@@ -184,7 +239,7 @@ async fn test_fake_melt_payment_fail() {
 /// the proofs should remain in pending state
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_fail_and_check() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -193,18 +248,7 @@ async fn test_fake_melt_payment_fail_and_check() {
     )
     .expect("Failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let _proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Unknown,
@@ -215,31 +259,19 @@ async fn test_fake_melt_payment_fail_and_check() {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
+    let payment = quote_payment(&wallet, invoice).await;
 
     // The melt should error at the payment invoice command
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-        .await
-        .unwrap();
-    prepared.confirm_prefer_async().await.unwrap();
+    payment.prepare().await.unwrap().submit().await.unwrap();
 
-    assert!(!wallet
-        .localstore
-        .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(proof_count(&wallet, State::Pending).await > 0);
 }
 
 /// Tests that a failed backend status releases proofs while an unknown status
 /// keeps them pending.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_return_fail_status() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -248,18 +280,7 @@ async fn test_fake_melt_payment_return_fail_status() {
     )
     .expect("Failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let _proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Failed,
@@ -270,30 +291,14 @@ async fn test_fake_melt_payment_return_fail_status() {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
+    let payment = quote_payment(&wallet, invoice).await;
 
     // A confirmed failure should return an error and release its proofs.
-    let melt = async {
-        let prepared = wallet
-            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-            .await?;
-        prepared.confirm().await
-    }
-    .await;
+    let melt = async { payment.prepare().await?.execute().await }.await;
     assert!(melt.is_err());
 
-    wallet.check_all_pending_proofs().await.unwrap();
-
-    let pending = wallet
-        .localstore
-        .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await
-        .unwrap();
-
-    assert!(pending.is_empty());
+    wallet.synchronize(SyncPolicy::Online).await.unwrap();
+    assert_eq!(proof_count(&wallet, State::Pending).await, 0);
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Unknown,
@@ -304,33 +309,21 @@ async fn test_fake_melt_payment_return_fail_status() {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
+    let payment = quote_payment(&wallet, invoice).await;
 
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-        .await
-        .unwrap();
-    let outcome = prepared.confirm_prefer_async().await.unwrap();
-    assert!(matches!(outcome, MeltOutcome::Pending(_)));
+    let outcome = payment.prepare().await.unwrap().submit().await.unwrap();
+    assert!(matches!(outcome, PaymentConfirmation::Pending(_)));
 
-    wallet.check_all_pending_proofs().await.unwrap();
+    wallet.synchronize(SyncPolicy::Online).await.unwrap();
 
-    assert!(!wallet
-        .localstore
-        .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(proof_count(&wallet, State::Pending).await > 0);
 }
 
 /// Tests that when the payment backend returns an error with unknown status,
 /// the mint should do a second check and keep proofs pending.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_error_unknown() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -339,18 +332,7 @@ async fn test_fake_melt_payment_error_unknown() {
     )
     .unwrap();
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let _proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Failed,
@@ -361,17 +343,10 @@ async fn test_fake_melt_payment_error_unknown() {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
+    let payment = quote_payment(&wallet, invoice).await;
 
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-        .await
-        .unwrap();
-    let outcome = prepared.confirm_prefer_async().await.unwrap();
-    assert!(matches!(outcome, MeltOutcome::Pending(_)));
+    let outcome = payment.prepare().await.unwrap().submit().await.unwrap();
+    assert!(matches!(outcome, PaymentConfirmation::Pending(_)));
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Unknown,
@@ -382,31 +357,19 @@ async fn test_fake_melt_payment_error_unknown() {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
+    let payment = quote_payment(&wallet, invoice).await;
 
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-        .await
-        .unwrap();
-    let outcome = prepared.confirm_prefer_async().await.unwrap();
-    assert!(matches!(outcome, MeltOutcome::Pending(_)));
+    let outcome = payment.prepare().await.unwrap().submit().await.unwrap();
+    assert!(matches!(outcome, PaymentConfirmation::Pending(_)));
 
-    assert!(!wallet
-        .localstore
-        .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(proof_count(&wallet, State::Pending).await > 0);
 }
 
 /// Tests that when the payment backend returns an error but the second check returns paid,
 /// proofs should remain in pending state
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_err_paid() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -415,20 +378,9 @@ async fn test_fake_melt_payment_err_paid() {
     )
     .expect("Failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
+    fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let _proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let old_balance = wallet.total_balance().await.expect("balance");
+    let old_balance = wallet.balance().await.expect("balance").available;
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Failed,
@@ -439,39 +391,27 @@ async fn test_fake_melt_payment_err_paid() {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
+    let payment = quote_payment(&wallet, invoice).await;
 
     // The melt should complete successfully
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-        .await
-        .unwrap();
-    let melt = prepared.confirm().await.unwrap();
+    let melt = payment.prepare().await.unwrap().execute().await.unwrap();
 
-    assert!(melt.fee_paid() == Amount::ZERO);
-    assert!(melt.amount() == Amount::from(7));
+    assert_eq!(melt.fee_paid, Amount::ZERO);
+    assert_eq!(melt.amount, Amount::from(7));
 
     // melt failed, but there is new code to reclaim unspent proofs
     assert_eq!(
-        old_balance - melt.amount(),
-        wallet.total_balance().await.expect("new balance")
+        old_balance - melt.amount,
+        wallet.balance().await.expect("new balance").available
     );
 
-    assert!(wallet
-        .localstore
-        .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await
-        .unwrap()
-        .is_empty());
+    assert_eq!(proof_count(&wallet, State::Pending).await, 0);
 }
 
 /// Tests that change outputs in a melt quote are correctly handled
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_change_in_quote() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -480,47 +420,37 @@ async fn test_fake_melt_change_in_quote() {
     )
     .expect("Failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let _proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
     let transaction = wallet
-        .list_transactions(Some(TransactionDirection::Incoming))
+        .history(HistoryQuery {
+            direction: Some(TransactionDirection::Incoming),
+            limit: None,
+        })
         .await
         .unwrap()
         .pop()
         .expect("No transaction found");
-    assert_eq!(wallet.mint_url, transaction.mint_url);
+    assert_eq!(wallet.identity(), transaction.wallet);
     assert_eq!(TransactionDirection::Incoming, transaction.direction);
     assert_eq!(Amount::from(100), transaction.amount);
     assert_eq!(Amount::from(0), transaction.fee);
-    assert_eq!(CurrencyUnit::Sat, transaction.unit);
+    assert_eq!(CurrencyUnit::Sat, transaction.wallet.unit);
 
     let fake_description = FakeInvoiceDescription::default();
 
     let invoice = create_fake_invoice(9000, serde_json::to_string(&fake_description).unwrap());
 
-    let proofs = wallet.get_unspent_proofs().await.unwrap();
+    let proofs = unspent_proofs(&wallet).await;
 
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
+    let payment = quote_payment(&wallet, invoice).await;
+    let melt_quote = payment.quote();
 
-    let keyset = wallet.active_keyset().await.unwrap();
+    let keyset_id = active_keyset_id(&wallet).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let premint_secrets = PreMintSecrets::random(
-        keyset.id,
+        keyset_id,
         100.into(),
         &SplitTarget::default(),
         &fee_and_amounts,
@@ -530,7 +460,7 @@ async fn test_fake_melt_change_in_quote() {
     let client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
     let melt_request = MeltRequest::new(
-        melt_quote.id.clone(),
+        melt_quote.id.to_string(),
         proofs.clone(),
         Some(premint_secrets.blinded_messages()),
     );
@@ -543,7 +473,7 @@ async fn test_fake_melt_change_in_quote() {
     assert!(melt_response.change().is_some());
 
     let check = client
-        .get_melt_quote_status(PaymentMethod::BOLT11, &melt_quote.id)
+        .get_melt_quote_status(PaymentMethod::BOLT11, melt_quote.id.as_str())
         .await
         .unwrap();
     let mut melt_change = melt_response.change().unwrap().clone();
@@ -561,7 +491,7 @@ async fn test_fake_melt_change_in_quote() {
 /// Tests minting tokens with a valid witness signature
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_with_witness() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -569,18 +499,7 @@ async fn test_fake_mint_with_witness() {
         None,
     )
     .expect("failed to create new wallet");
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    let proofs = fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
     let mint_amount = proofs.total_amount().unwrap();
 
@@ -590,7 +509,7 @@ async fn test_fake_mint_with_witness() {
 /// Tests that minting without a witness signature fails with the correct error
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_without_witness() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -599,26 +518,15 @@ async fn test_fake_mint_without_witness() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-
-    let mut payment_streams = wallet.payment_stream(&mint_quote);
-
-    payment_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    let session = paid_mint_session(&wallet, PaymentMethod::BOLT11, Some(100.into())).await;
 
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
-    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
+    let sat_keyset_id = active_keyset_id(&wallet).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let premint_secrets = PreMintSecrets::random(
-        active_keyset_id,
+        sat_keyset_id,
         100.into(),
         &SplitTarget::default(),
         &fee_and_amounts,
@@ -626,7 +534,7 @@ async fn test_fake_mint_without_witness() {
     .unwrap();
 
     let request = MintRequest {
-        quote: mint_quote.id,
+        quote: session.id().to_string(),
         outputs: premint_secrets.blinded_messages(),
         signature: None,
     };
@@ -645,7 +553,7 @@ async fn test_fake_mint_without_witness() {
 /// Tests that minting with an incorrect witness signature fails with the correct error
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_with_wrong_witness() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -654,26 +562,15 @@ async fn test_fake_mint_with_wrong_witness() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-
-    let mut payment_streams = wallet.payment_stream(&mint_quote);
-
-    payment_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    let session = paid_mint_session(&wallet, PaymentMethod::BOLT11, Some(100.into())).await;
 
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
-    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
+    let sat_keyset_id = active_keyset_id(&wallet).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let premint_secrets = PreMintSecrets::random(
-        active_keyset_id,
+        sat_keyset_id,
         100.into(),
         &SplitTarget::default(),
         &fee_and_amounts,
@@ -681,7 +578,7 @@ async fn test_fake_mint_with_wrong_witness() {
     .unwrap();
 
     let mut request = MintRequest {
-        quote: mint_quote.id,
+        quote: session.id().to_string(),
         outputs: premint_secrets.blinded_messages(),
         signature: None,
     };
@@ -706,48 +603,37 @@ async fn test_fake_mint_with_wrong_witness() {
 /// Tests that attempting to mint more tokens than allowed by the quote fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_inflated() {
-    let wallet = Wallet::new(
+    let store = Arc::new(memory::empty().await.unwrap());
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await.unwrap()),
+        store.clone(),
         Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
+    let session = paid_mint_session(&wallet, PaymentMethod::BOLT11, Some(100.into())).await;
 
-    let mut payment_streams = wallet.payment_stream(&mint_quote);
-
-    payment_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
+    let sat_keyset_id = active_keyset_id(&wallet).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let pre_mint = PreMintSecrets::random(
-        active_keyset_id,
+        sat_keyset_id,
         500.into(),
         &SplitTarget::None,
         &fee_and_amounts,
     )
     .unwrap();
 
-    let quote_info = wallet
-        .localstore
-        .get_mint_quote(&mint_quote.id)
+    let quote_info = store
+        .get_mint_quote(session.id().as_str())
         .await
         .unwrap()
         .expect("there is a quote");
 
     let mut mint_request = MintRequest {
-        quote: mint_quote.id,
+        quote: session.id().to_string(),
         outputs: pre_mint.blinded_messages(),
         signature: None,
     };
@@ -782,39 +668,29 @@ async fn test_fake_mint_inflated() {
 /// Tests that a failed inflated mint attempt does not consume the quote
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_inflated_does_not_consume_quote() {
-    let wallet = Wallet::new(
+    let store = Arc::new(memory::empty().await.unwrap());
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await.unwrap()),
+        store.clone(),
         Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
+    let session = paid_mint_session(&wallet, PaymentMethod::BOLT11, Some(100.into())).await;
 
-    let mut payment_streams = wallet.payment_stream(&mint_quote);
-    payment_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
+    let sat_keyset_id = active_keyset_id(&wallet).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
-    let quote_info = wallet
-        .localstore
-        .get_mint_quote(&mint_quote.id)
+    let quote_info = store
+        .get_mint_quote(session.id().as_str())
         .await
         .unwrap()
         .expect("there is a quote");
     let secret_key = quote_info.secret_key.expect("Secret key on quote");
 
     let inflated_pre_mint = PreMintSecrets::random(
-        active_keyset_id,
+        sat_keyset_id,
         500.into(),
         &SplitTarget::None,
         &fee_and_amounts,
@@ -822,7 +698,7 @@ async fn test_fake_mint_inflated_does_not_consume_quote() {
     .unwrap();
 
     let mut inflated_request = MintRequest {
-        quote: mint_quote.id.clone(),
+        quote: session.id().to_string(),
         outputs: inflated_pre_mint.blinded_messages(),
         signature: None,
     };
@@ -844,14 +720,14 @@ async fn test_fake_mint_inflated_does_not_consume_quote() {
     ));
 
     let valid_pre_mint = PreMintSecrets::random(
-        active_keyset_id,
+        sat_keyset_id,
         100.into(),
         &SplitTarget::None,
         &fee_and_amounts,
     )
     .unwrap();
     let mut valid_request = MintRequest {
-        quote: mint_quote.id.clone(),
+        quote: session.id().to_string(),
         outputs: valid_pre_mint.blinded_messages(),
         signature: None,
     };
@@ -874,14 +750,14 @@ async fn test_fake_mint_inflated_does_not_consume_quote() {
     assert_eq!(total_issued, 100);
 
     let second_valid_pre_mint = PreMintSecrets::random(
-        active_keyset_id,
+        sat_keyset_id,
         100.into(),
         &SplitTarget::None,
         &fee_and_amounts,
     )
     .unwrap();
     let mut second_valid_request = MintRequest {
-        quote: mint_quote.id,
+        quote: session.id().to_string(),
         outputs: second_valid_pre_mint.blinded_messages(),
         signature: None,
     };
@@ -905,32 +781,22 @@ async fn test_fake_mint_inflated_does_not_consume_quote() {
 /// Tests concurrent mint attempts with different outputs for the same quote
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_fake_mint_concurrent_same_quote_different_outputs() {
-    let wallet = Wallet::new(
+    let store = Arc::new(memory::empty().await.unwrap());
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await.unwrap()),
+        store.clone(),
         Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
+    let session = paid_mint_session(&wallet, PaymentMethod::BOLT11, Some(100.into())).await;
 
-    let mut payment_streams = wallet.payment_stream(&mint_quote);
-    payment_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
+    let active_keyset_id = active_keyset_id(&wallet).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
-    let quote_info = wallet
-        .localstore
-        .get_mint_quote(&mint_quote.id)
+    let quote_info = store
+        .get_mint_quote(session.id().as_str())
         .await
         .unwrap()
         .expect("there is a quote");
@@ -952,7 +818,7 @@ async fn test_fake_mint_concurrent_same_quote_different_outputs() {
     .unwrap();
 
     let mut request_one = MintRequest {
-        quote: mint_quote.id.clone(),
+        quote: session.id().to_string(),
         outputs: pre_mint_one.blinded_messages(),
         signature: None,
     };
@@ -961,7 +827,7 @@ async fn test_fake_mint_concurrent_same_quote_different_outputs() {
         .expect("failed to sign first request");
 
     let mut request_two = MintRequest {
-        quote: mint_quote.id,
+        quote: session.id().to_string(),
         outputs: pre_mint_two.blinded_messages(),
         signature: None,
     };
@@ -1002,40 +868,30 @@ async fn test_fake_mint_concurrent_same_quote_different_outputs() {
 /// Tests that attempting to mint with multiple currency units in the same request fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_multiple_units() {
-    let wallet = Wallet::new(
+    let store = Arc::new(memory::empty().await.unwrap());
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await.unwrap()),
+        store.clone(),
         Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
+    let session = paid_mint_session(&wallet, PaymentMethod::BOLT11, Some(100.into())).await;
 
-    let mut payment_streams = wallet.payment_stream(&mint_quote);
-
-    payment_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
+    let sat_keyset_id = active_keyset_id(&wallet).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let pre_mint = PreMintSecrets::random(
-        active_keyset_id,
+        sat_keyset_id,
         50.into(),
         &SplitTarget::None,
         &fee_and_amounts,
     )
     .unwrap();
 
-    let wallet_usd = Wallet::new(
+    let wallet_usd = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Usd,
         Arc::new(memory::empty().await.unwrap()),
@@ -1044,19 +900,18 @@ async fn test_fake_mint_multiple_units() {
     )
     .expect("failed to create new wallet");
 
-    let active_keyset_id = wallet_usd.active_keyset().await.unwrap().id;
+    let usd_keyset_id = active_keyset_id(&wallet_usd).await;
 
     let usd_pre_mint = PreMintSecrets::random(
-        active_keyset_id,
+        usd_keyset_id,
         50.into(),
         &SplitTarget::None,
         &fee_and_amounts,
     )
     .unwrap();
 
-    let quote_info = wallet
-        .localstore
-        .get_mint_quote(&mint_quote.id)
+    let quote_info = store
+        .get_mint_quote(session.id().as_str())
         .await
         .unwrap()
         .expect("there is a quote");
@@ -1068,7 +923,7 @@ async fn test_fake_mint_multiple_units() {
     sat_outputs.append(&mut usd_outputs);
 
     let mut mint_request = MintRequest {
-        quote: mint_quote.id,
+        quote: session.id().to_string(),
         outputs: sat_outputs,
         signature: None,
     };
@@ -1103,7 +958,7 @@ async fn test_fake_mint_multiple_units() {
 /// Tests that attempting to swap tokens with multiple currency units fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_multiple_unit_swap() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -1112,22 +967,14 @@ async fn test_fake_mint_multiple_unit_swap() {
     )
     .expect("failed to create new wallet");
 
-    wallet.keysets(Default::default()).await.unwrap();
-
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+    wallet
+        .advanced()
+        .mint_metadata(MintMetadataRequest::default())
         .await
         .unwrap();
+    let proofs = fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let wallet_usd = Wallet::new(
+    let wallet_usd = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Usd,
         Arc::new(memory::empty().await.unwrap()),
@@ -1135,24 +982,14 @@ async fn test_fake_mint_multiple_unit_swap() {
         None,
     )
     .expect("failed to create usd wallet");
-    wallet_usd.keysets(Default::default()).await.unwrap();
-
-    let mint_quote = wallet_usd
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+    wallet_usd
+        .advanced()
+        .mint_metadata(MintMetadataRequest::default())
         .await
         .unwrap();
+    let usd_proofs = fund_wallet(&wallet_usd, 100.into(), SplitTarget::default()).await;
 
-    let usd_proofs = wallet_usd
-        .wait_and_mint_quote(
-            mint_quote,
-            SplitTarget::default(),
-            None,
-            Duration::from_secs(30),
-        )
-        .await
-        .unwrap();
-
-    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
+    let sat_keyset_id = active_keyset_id(&wallet).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     {
@@ -1162,7 +999,7 @@ async fn test_fake_mint_multiple_unit_swap() {
         ];
 
         let pre_mint = PreMintSecrets::random(
-            active_keyset_id,
+            sat_keyset_id,
             inputs.total_amount().unwrap(),
             &SplitTarget::None,
             &fee_and_amounts,
@@ -1188,7 +1025,7 @@ async fn test_fake_mint_multiple_unit_swap() {
     }
 
     {
-        let usd_active_keyset_id = wallet_usd.active_keyset().await.unwrap().id;
+        let usd_active_keyset_id = active_keyset_id(&wallet_usd).await;
         let inputs: Proofs = proofs.into_iter().take(2).collect();
 
         let total_inputs = inputs.total_amount().unwrap();
@@ -1203,7 +1040,7 @@ async fn test_fake_mint_multiple_unit_swap() {
         )
         .unwrap();
         let pre_mint = PreMintSecrets::random(
-            active_keyset_id,
+            sat_keyset_id,
             total_inputs - half,
             &SplitTarget::None,
             &fee_and_amounts,
@@ -1237,7 +1074,7 @@ async fn test_fake_mint_multiple_unit_swap() {
 /// Tests that attempting to melt tokens with multiple currency units fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_multiple_unit_melt() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -1246,22 +1083,11 @@ async fn test_fake_mint_multiple_unit_melt() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let mut proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    let mut proofs = fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
     println!("Minted sat");
 
-    let wallet_usd = Wallet::new(
+    let wallet_usd = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Usd,
         Arc::new(memory::empty().await.unwrap()),
@@ -1270,20 +1096,8 @@ async fn test_fake_mint_multiple_unit_melt() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet_usd
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
     println!("Minted quote usd");
-
-    let mut proof_streams =
-        wallet_usd.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let mut usd_proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    let mut usd_proofs = fund_wallet(&wallet_usd, 100.into(), SplitTarget::default()).await;
 
     usd_proofs.reverse();
     proofs.reverse();
@@ -1296,12 +1110,8 @@ async fn test_fake_mint_multiple_unit_melt() {
 
         let input_amount: u64 = inputs.total_amount().unwrap().into();
         let invoice = create_fake_invoice((input_amount - 1) * 1000, "".to_string());
-        let melt_quote = wallet
-            .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-            .await
-            .unwrap();
-
-        let melt_request = MeltRequest::new(melt_quote.id, inputs, None);
+        let payment = quote_payment(&wallet, invoice).await;
+        let melt_request = MeltRequest::new(payment.id().to_string(), inputs, None);
 
         let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
         let response = http_client
@@ -1331,8 +1141,8 @@ async fn test_fake_mint_multiple_unit_melt() {
         let input_amount: u64 = inputs.total_amount().unwrap().into();
 
         let invoice = create_fake_invoice((input_amount - 1) * 1000, "".to_string());
-        let active_keyset_id = wallet.active_keyset().await.unwrap().id;
-        let usd_active_keyset_id = wallet_usd.active_keyset().await.unwrap().id;
+        let sat_keyset_id = active_keyset_id(&wallet).await;
+        let usd_active_keyset_id = active_keyset_id(&wallet_usd).await;
 
         let usd_pre_mint = PreMintSecrets::random(
             usd_active_keyset_id,
@@ -1342,7 +1152,7 @@ async fn test_fake_mint_multiple_unit_melt() {
         )
         .unwrap();
         let pre_mint = PreMintSecrets::random(
-            active_keyset_id,
+            sat_keyset_id,
             100.into(),
             &SplitTarget::None,
             &fee_and_amounts,
@@ -1353,12 +1163,8 @@ async fn test_fake_mint_multiple_unit_melt() {
         let mut sat_outputs = pre_mint.blinded_messages();
 
         usd_outputs.append(&mut sat_outputs);
-        let quote = wallet
-            .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-            .await
-            .unwrap();
-
-        let melt_request = MeltRequest::new(quote.id, inputs, Some(usd_outputs));
+        let payment = quote_payment(&wallet, invoice).await;
+        let melt_request = MeltRequest::new(payment.id().to_string(), inputs, Some(usd_outputs));
 
         let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
@@ -1386,7 +1192,7 @@ async fn test_fake_mint_multiple_unit_melt() {
 /// Tests that swapping tokens where input unit doesn't match output unit fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_input_output_mismatch() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -1395,20 +1201,9 @@ async fn test_fake_mint_input_output_mismatch() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
+    let proofs = fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let wallet_usd = Wallet::new(
+    let wallet_usd = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Usd,
         Arc::new(memory::empty().await.unwrap()),
@@ -1416,7 +1211,7 @@ async fn test_fake_mint_input_output_mismatch() {
         None,
     )
     .expect("failed to create new  usd wallet");
-    let usd_active_keyset_id = wallet_usd.active_keyset().await.unwrap().id;
+    let usd_active_keyset_id = active_keyset_id(&wallet_usd).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let inputs = proofs;
@@ -1448,7 +1243,7 @@ async fn test_fake_mint_input_output_mismatch() {
 /// Tests that swapping tokens where output amount is greater than input amount fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_swap_inflated() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -1457,21 +1252,10 @@ async fn test_fake_mint_swap_inflated() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+    let proofs = fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
-    let proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
+    let active_keyset_id = active_keyset_id(&wallet).await;
     let pre_mint = PreMintSecrets::random(
         active_keyset_id,
         101.into(),
@@ -1501,7 +1285,7 @@ async fn test_fake_mint_swap_inflated() {
 /// Tests that tokens cannot be spent again after a failed swap attempt
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_swap_spend_after_fail() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -1510,20 +1294,9 @@ async fn test_fake_mint_swap_spend_after_fail() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
+    let proofs = fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
+    let active_keyset_id = active_keyset_id(&wallet).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let pre_mint = PreMintSecrets::random(
@@ -1591,7 +1364,7 @@ async fn test_fake_mint_swap_spend_after_fail() {
 /// Tests that tokens cannot be melted after a failed swap attempt
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_melt_spend_after_fail() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -1600,20 +1373,9 @@ async fn test_fake_mint_melt_spend_after_fail() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
+    let proofs = fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
+    let active_keyset_id = active_keyset_id(&wallet).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let pre_mint = PreMintSecrets::random(
@@ -1654,12 +1416,8 @@ async fn test_fake_mint_melt_spend_after_fail() {
 
     let input_amount: u64 = proofs.total_amount().unwrap().into();
     let invoice = create_fake_invoice((input_amount - 1) * 1000, "".to_string());
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
-
-    let melt_request = MeltRequest::new(melt_quote.id, proofs, None);
+    let payment = quote_payment(&wallet, invoice).await;
+    let melt_request = MeltRequest::new(payment.id().to_string(), proofs, None);
 
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
     let response = http_client
@@ -1685,7 +1443,7 @@ async fn test_fake_mint_melt_spend_after_fail() {
 /// Tests that attempting to swap with duplicate proofs fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_duplicate_proofs_swap() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -1694,20 +1452,9 @@ async fn test_fake_mint_duplicate_proofs_swap() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
+    let proofs = fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
+    let active_keyset_id = active_keyset_id(&wallet).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let inputs = vec![proofs[0].clone(), proofs[0].clone()];
@@ -1769,7 +1516,7 @@ async fn test_fake_mint_duplicate_proofs_swap() {
 /// Tests that attempting to melt with duplicate proofs fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_mint_duplicate_proofs_melt() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -1778,29 +1525,14 @@ async fn test_fake_mint_duplicate_proofs_melt() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    let proofs = fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
     let inputs = vec![proofs[0].clone(), proofs[0].clone()];
 
     let invoice = create_fake_invoice(7000, "".to_string());
 
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
-
-    let melt_request = MeltRequest::new(melt_quote.id, inputs, None);
+    let payment = quote_payment(&wallet, invoice).await;
+    let melt_request = MeltRequest::new(payment.id().to_string(), inputs, None);
 
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
     let response = http_client
@@ -1827,7 +1559,7 @@ async fn test_fake_mint_duplicate_proofs_melt() {
 /// by swapping them to new proofs, preventing loss of funds
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_wallet_proof_recovery_after_failed_melt() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -1836,21 +1568,9 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
     )
     .expect("failed to create new wallet");
 
-    // Mint 100 sats
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-    let _roof_streams = wallet
-        .wait_and_mint_quote(
-            mint_quote.clone(),
-            SplitTarget::default(),
-            None,
-            Duration::from_secs(1000),
-        )
-        .await;
+    fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
-    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(100));
+    assert_eq!(wallet.balance().await.unwrap().available, Amount::from(100));
 
     // Model an authoritative backend failure response. An error from the
     // dispatch call would be ambiguous even if an immediate status check
@@ -1863,17 +1583,11 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
     };
 
     let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
+    let payment = quote_payment(&wallet, invoice).await;
 
     // Attempt to melt - this should fail but trigger proof recovery
     let melt_result = tokio::time::timeout(Duration::from_secs(15), async {
-        let prepared = wallet
-            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-            .await?;
-        prepared.confirm().await
+        payment.prepare().await?.execute().await
     })
     .await
     .expect("authoritative failure should not remain pending");
@@ -1881,25 +1595,16 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
 
     // Verify wallet still has balance (proofs recovered)
     assert_eq!(
-        wallet.total_balance().await.unwrap(),
+        wallet.balance().await.unwrap().available,
         Amount::from(100),
         "Balance should be recovered"
     );
 
     // Verify we can still spend the recovered proofs
     let valid_invoice = create_fake_invoice(7000, "".to_string());
-    let valid_melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, valid_invoice.to_string(), None, None)
-        .await
-        .unwrap();
+    let valid_payment = quote_payment(&wallet, valid_invoice).await;
 
-    let successful_melt = async {
-        let prepared = wallet
-            .prepare_melt(&valid_melt_quote.id, std::collections::HashMap::new())
-            .await?;
-        prepared.confirm().await
-    }
-    .await;
+    let successful_melt = async { valid_payment.prepare().await?.execute().await }.await;
     assert!(
         successful_melt.is_ok(),
         "Should be able to spend recovered proofs"
@@ -1908,12 +1613,12 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
 
 /// Regression test for cashubtc/cdk#1891.
 ///
-/// Exercises the chained `prepare_melt(...).await?.confirm().await?` pattern
-/// where `PreparedMelt` is consumed on failure. The wallet should recover via
+/// Exercises the chained `PaymentSession::prepare().await?.execute().await?`
+/// pattern where the plan is consumed on failure. The wallet should recover via
 /// the persisted melt saga without requiring `check_all_pending_proofs()`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_chained_confirm_auto_releases_proofs_on_failure() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -1922,18 +1627,9 @@ async fn test_chained_confirm_auto_releases_proofs_on_failure() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-    proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
-    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(100));
+    assert_eq!(wallet.balance().await.unwrap().available, Amount::from(100));
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Failed,
@@ -1942,31 +1638,18 @@ async fn test_chained_confirm_auto_releases_proofs_on_failure() {
         check_err: false,
     };
     let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
+    let payment = quote_payment(&wallet, invoice).await;
 
-    let melt_result = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-        .await
-        .unwrap()
-        .confirm()
-        .await;
+    let melt_result = payment.prepare().await.unwrap().execute().await;
     assert!(melt_result.is_err(), "Melt should fail on Failed state");
 
-    let pending = wallet
-        .localstore
-        .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await
-        .unwrap();
     assert!(
-        pending.is_empty(),
+        proof_count(&wallet, State::Pending).await == 0,
         "no proofs should remain Pending after automatic saga recovery"
     );
 
     assert_eq!(
-        wallet.total_balance().await.unwrap(),
+        wallet.balance().await.unwrap().available,
         Amount::from(100),
         "balance should be fully recovered without explicit recovery calls"
     );
@@ -1975,10 +1658,11 @@ async fn test_chained_confirm_auto_releases_proofs_on_failure() {
 /// Regression test for the recovered-paid confirm path.
 ///
 /// If the initial melt request errors locally but recovery sees the quote as
-/// `Paid`, chained `prepare_melt(...).confirm()` should still return success.
+/// `Paid`, chained payment-plan preparation and confirmation should still
+/// return success.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_chained_confirm_recovers_paid_melt() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -1987,18 +1671,9 @@ async fn test_chained_confirm_recovers_paid_melt() {
     )
     .expect("Failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-    proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
-    let old_balance = wallet.total_balance().await.expect("balance");
+    let old_balance = wallet.balance().await.expect("balance").available;
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Failed,
@@ -2007,33 +1682,25 @@ async fn test_chained_confirm_recovers_paid_melt() {
         check_err: false,
     };
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
+    let payment = quote_payment(&wallet, invoice).await;
 
-    let melt = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+    let melt = payment
+        .prepare()
         .await
         .unwrap()
-        .confirm()
+        .execute()
         .await
         .expect("confirm should recover to Paid");
 
-    assert_eq!(melt.fee_paid(), Amount::ZERO);
-    assert_eq!(melt.amount(), Amount::from(7));
+    assert_eq!(melt.fee_paid, Amount::ZERO);
+    assert_eq!(melt.amount, Amount::from(7));
     assert_eq!(
-        old_balance - melt.amount(),
-        wallet.total_balance().await.expect("new balance")
+        old_balance - melt.amount,
+        wallet.balance().await.expect("new balance").available
     );
 
-    let pending = wallet
-        .localstore
-        .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await
-        .unwrap();
     assert!(
-        pending.is_empty(),
+        proof_count(&wallet, State::Pending).await == 0,
         "paid recovery should not leave pending proofs"
     );
 }
@@ -2051,7 +1718,7 @@ async fn test_concurrent_melt_same_invoice() {
     let mut wallets = Vec::with_capacity(NUM_WALLETS);
     for i in 0..NUM_WALLETS {
         let wallet = Arc::new(
-            Wallet::new(
+            cdk_integration_tests::open_test_wallet(
                 MINT_URL,
                 CurrencyUnit::Sat,
                 Arc::new(memory::empty().await.unwrap()),
@@ -2064,18 +1731,8 @@ async fn test_concurrent_melt_same_invoice() {
     }
 
     // Mint proofs for all wallets
-    for (i, wallet) in wallets.iter().enumerate() {
-        let mint_quote = wallet
-            .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-            .await
-            .unwrap();
-        let mut proof_streams =
-            wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-        proof_streams
-            .next()
-            .await
-            .unwrap_or_else(|| panic!("payment for wallet {}", i))
-            .expect("no error");
+    for wallet in &wallets {
+        fund_wallet(wallet, 100.into(), SplitTarget::default()).await;
     }
 
     // Create a single invoice that all wallets will try to pay
@@ -2083,34 +1740,21 @@ async fn test_concurrent_melt_same_invoice() {
     let invoice = create_fake_invoice(9000, serde_json::to_string(&fake_description).unwrap());
 
     // All wallets create melt quotes for the same invoice
-    let mut melt_quotes = Vec::with_capacity(NUM_WALLETS);
+    let mut payment_sessions = Vec::with_capacity(NUM_WALLETS);
     for wallet in &wallets {
-        let melt_quote = wallet
-            .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-            .await
-            .unwrap();
-        melt_quotes.push(melt_quote);
+        payment_sessions.push(quote_payment(wallet, &invoice).await);
     }
 
-    // Verify all quotes have the same request (same invoice = same lookup_id)
-    for quote in &melt_quotes[1..] {
-        assert_eq!(
-            melt_quotes[0].request, quote.request,
-            "All quotes should be for the same invoice"
-        );
+    for session in &payment_sessions[1..] {
+        assert_eq!(payment_sessions[0].quote().amount, session.quote().amount);
+        assert_ne!(payment_sessions[0].id(), session.id());
     }
 
     // Attempt all melts concurrently
     let mut handles = Vec::with_capacity(NUM_WALLETS);
-    for (wallet, quote) in wallets.iter().zip(melt_quotes.iter()) {
-        let wallet_clone = Arc::clone(wallet);
-        let quote_id = quote.id.clone();
-        handles.push(tokio::spawn(async move {
-            let prepared = wallet_clone
-                .prepare_melt(&quote_id, std::collections::HashMap::new())
-                .await?;
-            prepared.confirm().await
-        }));
+    for session in payment_sessions {
+        let plan = session.prepare().await.expect("payment plan");
+        handles.push(tokio::spawn(async move { plan.execute().await }));
     }
 
     // Collect results
@@ -2155,7 +1799,7 @@ async fn test_concurrent_melt_same_invoice() {
 /// Tests that wallet automatically recovers proofs after a failed swap operation
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_wallet_proof_recovery_after_failed_swap() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -2164,27 +1808,17 @@ async fn test_wallet_proof_recovery_after_failed_swap() {
     )
     .expect("failed to create new wallet");
 
-    // Mint 100 sats
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-    let initial_proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    let initial_proofs = fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
     let initial_ys: Vec<_> = initial_proofs.iter().map(|p| p.y().unwrap()).collect();
 
-    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(100));
+    assert_eq!(wallet.balance().await.unwrap().available, Amount::from(100));
 
-    let unspent_proofs = wallet.get_unspent_proofs().await.unwrap();
+    let available_proofs = unspent_proofs(&wallet).await;
 
     // Create an invalid swap by manually constructing a request that will fail
     // We'll use the wallet's swap with invalid parameters to trigger a failure
-    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
+    let active_keyset_id = active_keyset_id(&wallet).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     // Create invalid swap request (requesting more than we have)
@@ -2196,7 +1830,7 @@ async fn test_wallet_proof_recovery_after_failed_swap() {
     )
     .unwrap();
 
-    let swap_request = SwapRequest::new(unspent_proofs.clone(), preswap.blinded_messages());
+    let swap_request = SwapRequest::new(available_proofs.clone(), preswap.blinded_messages());
 
     // Use HTTP client directly to bypass wallet's validation and trigger recovery
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
@@ -2209,14 +1843,22 @@ async fn test_wallet_proof_recovery_after_failed_swap() {
 
     // Verify balance is still available after the failed operation
     assert_eq!(
-        wallet.total_balance().await.unwrap(),
+        wallet.balance().await.unwrap().available,
         Amount::from(100),
         "Balance should still be available"
     );
 
     // Verify we can perform a successful swap operation
     let successful_swap = wallet
-        .swap(None, SplitTarget::None, unspent_proofs, None, false, false)
+        .advanced()
+        .reissue(ReissueRequest {
+            proofs: available_proofs,
+            amount: None,
+            amount_split_target: SplitTarget::None,
+            conditions: None,
+            fee_policy: ReissueFeePolicy::Deduct,
+            protection: ReissueProtection::Plain,
+        })
         .await;
 
     assert!(
@@ -2225,7 +1867,7 @@ async fn test_wallet_proof_recovery_after_failed_swap() {
     );
 
     // Verify the proofs were swapped to new ones
-    let final_proofs = wallet.get_unspent_proofs().await.unwrap();
+    let final_proofs = unspent_proofs(&wallet).await;
     let final_ys: Vec<_> = final_proofs.iter().map(|p| p.y().unwrap()).collect();
 
     // The Ys should be different after the successful swap
@@ -2245,7 +1887,7 @@ async fn test_wallet_proof_recovery_after_failed_swap() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_melt_proofs_external() {
     // Create sender wallet (Wallet A) and mint some proofs
-    let wallet_sender = Wallet::new(
+    let wallet_sender = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -2254,25 +1896,13 @@ async fn test_melt_proofs_external() {
     )
     .expect("failed to create sender wallet");
 
-    let mint_quote = wallet_sender
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-
-    let mut proof_streams =
-        wallet_sender.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    let proofs = fund_wallet(&wallet_sender, 100.into(), SplitTarget::default()).await;
 
     assert_eq!(proofs.total_amount().unwrap(), Amount::from(100));
 
     // Create receiver/melter wallet (Wallet B) with a separate database
     // These proofs are NOT in Wallet B's database
-    let wallet_melter = Wallet::new(
+    let wallet_melter = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -2282,7 +1912,7 @@ async fn test_melt_proofs_external() {
     .expect("failed to create melter wallet");
 
     // Verify proofs are not in the melter wallet's database
-    let melter_proofs = wallet_melter.get_unspent_proofs().await.unwrap();
+    let melter_proofs = unspent_proofs(&wallet_melter).await;
     assert!(
         melter_proofs.is_empty(),
         "Melter wallet should have no proofs initially"
@@ -2293,39 +1923,32 @@ async fn test_melt_proofs_external() {
     let invoice = create_fake_invoice(9000, serde_json::to_string(&fake_description).unwrap());
 
     // Wallet B creates a melt quote
-    let melt_quote = wallet_melter
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
+    let payment = quote_payment(&wallet_melter, invoice).await;
 
     // Wallet B calls melt_proofs with external proofs (from Wallet A)
     // These proofs are NOT in wallet_melter's database
-    let prepared = wallet_melter
-        .prepare_melt_proofs(
-            &melt_quote.id,
-            proofs.clone(),
-            std::collections::HashMap::new(),
-        )
+    let prepared = payment
+        .prepare_with(PaymentPrepareOptions {
+            funding: PaymentFunding::Proofs(proofs.clone()),
+        })
         .await
         .unwrap();
-    let melted = prepared.confirm().await.unwrap();
+    let melted = prepared.execute().await.unwrap();
 
     // Verify the melt succeeded
-    assert_eq!(melted.amount(), Amount::from(9));
-    assert_eq!(melted.fee_paid(), 1.into());
+    assert_eq!(melted.amount, Amount::from(9));
+    assert_eq!(melted.fee_paid, 1.into());
 
-    // Verify change was returned (100 input - 9 melt amount = 91 change, minus fee reserve)
-    assert!(melted.change().is_some());
-    let change_amount = melted.change().unwrap().total_amount().unwrap();
-    assert!(change_amount > Amount::ZERO, "Should have received change");
-
-    // Verify the melter wallet now has the change proofs
-    let melter_balance = wallet_melter.total_balance().await.unwrap();
-    assert_eq!(melter_balance, change_amount);
+    // Change from externally funded proofs is persisted in the paying wallet.
+    let melter_balance = wallet_melter.balance().await.unwrap().available;
+    assert_eq!(melter_balance, Amount::from(90));
 
     // Verify a transaction was recorded
     let transactions = wallet_melter
-        .list_transactions(Some(TransactionDirection::Outgoing))
+        .history(HistoryQuery {
+            direction: Some(TransactionDirection::Outgoing),
+            limit: None,
+        })
         .await
         .unwrap();
     assert_eq!(transactions.len(), 1);
@@ -2342,7 +1965,7 @@ async fn test_melt_proofs_external() {
 /// 4. Verify the melt succeeded
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_melt_with_swap_for_exact_amount() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -2352,20 +1975,9 @@ async fn test_melt_with_swap_for_exact_amount() {
     .expect("failed to create new wallet");
 
     // Mint 100 sats - this will give us proofs in standard denominations
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
+    let proofs = fund_wallet(&wallet, 100.into(), SplitTarget::default()).await;
 
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let initial_balance = wallet.total_balance().await.unwrap();
+    let initial_balance = wallet.balance().await.unwrap().available;
     assert_eq!(initial_balance, Amount::from(100));
 
     // Log the proof denominations we received
@@ -2377,40 +1989,35 @@ async fn test_melt_with_swap_for_exact_amount() {
     let fake_description = FakeInvoiceDescription::default();
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
+    let payment = quote_payment(&wallet, invoice).await;
+    let quote = payment.quote();
 
     tracing::info!(
         "Melt quote: amount={}, fee_reserve={}",
-        melt_quote.amount,
-        melt_quote.fee_reserve
+        quote.amount,
+        quote.fee_reserve
     );
 
     // Call melt() - this should trigger swap-before-melt if proofs don't match exactly
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-        .await
-        .unwrap();
-    let melted = prepared.confirm().await.unwrap();
+    let prepared = payment.prepare().await.unwrap();
+    let melted = prepared.execute().await.unwrap();
 
     // Verify the melt succeeded
-    assert_eq!(melted.amount(), Amount::from(7));
+    assert_eq!(melted.amount, Amount::from(7));
 
     tracing::info!(
         "Melt completed: amount={}, fee_paid={}",
-        melted.amount(),
-        melted.fee_paid()
+        melted.amount,
+        melted.fee_paid
     );
 
     // Verify final balance is correct (initial - melt_amount - fees)
-    let final_balance = wallet.total_balance().await.unwrap();
+    let final_balance = wallet.balance().await.unwrap().available;
     tracing::info!(
         "Balance: initial={}, final={}, paid={}",
         initial_balance,
         final_balance,
-        melted.amount() + melted.fee_paid()
+        melted.amount + melted.fee_paid
     );
 
     assert!(
@@ -2419,7 +2026,7 @@ async fn test_melt_with_swap_for_exact_amount() {
     );
     assert_eq!(
         final_balance,
-        initial_balance - melted.amount() - melted.fee_paid(),
+        initial_balance - melted.amount - melted.fee_paid,
         "Final balance should be initial - amount - fees"
     );
 }
@@ -2428,7 +2035,7 @@ async fn test_melt_with_swap_for_exact_amount() {
 /// In this case, no swap should be needed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_melt_exact_proofs_no_swap_needed() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -2438,56 +2045,39 @@ async fn test_melt_exact_proofs_no_swap_needed() {
     .expect("failed to create new wallet");
 
     // Mint a larger amount to have more denomination options
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(1000.into()), None, None)
-        .await
-        .unwrap();
+    fund_wallet(&wallet, 1000.into(), SplitTarget::default()).await;
 
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let _proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let initial_balance = wallet.total_balance().await.unwrap();
+    let initial_balance = wallet.balance().await.unwrap().available;
     assert_eq!(initial_balance, Amount::from(1000));
 
     // Create a melt for a power-of-2 amount that's more likely to match existing denominations
     let fake_description = FakeInvoiceDescription::default();
     let invoice = create_fake_invoice(64_000, serde_json::to_string(&fake_description).unwrap()); // 64 sats
 
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
+    let payment = quote_payment(&wallet, invoice).await;
 
     // Melt should succeed
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-        .await
-        .unwrap();
-    let melted = prepared.confirm().await.unwrap();
+    let prepared = payment.prepare().await.unwrap();
+    let melted = prepared.execute().await.unwrap();
 
-    assert_eq!(melted.amount(), Amount::from(64));
+    assert_eq!(melted.amount, Amount::from(64));
 
-    let final_balance = wallet.total_balance().await.unwrap();
+    let final_balance = wallet.balance().await.unwrap().available;
     assert_eq!(
         final_balance,
-        initial_balance - melted.amount() - melted.fee_paid()
+        initial_balance - melted.amount - melted.fee_paid
     );
 }
 
-/// Tests the check_all_mint_quotes functionality for Bolt11 quotes
+/// Tests that synchronization claims all paid Bolt11 mint sessions.
 ///
 /// This test verifies that:
 /// 1. Paid mint quotes are automatically minted when check_all_mint_quotes is called
 /// 2. The total amount returned matches the minted proofs
 /// 3. Quote state is properly updated after minting
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_check_all_mint_quotes_bolt11() {
-    let wallet = Wallet::new(
+async fn test_synchronize_claims_paid_bolt11_sessions() {
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -2496,48 +2086,24 @@ async fn test_check_all_mint_quotes_bolt11() {
     )
     .expect("failed to create new wallet");
 
-    // Create first mint quote and pay it (using proof_stream triggers fake wallet payment)
-    let mint_quote_1 = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
-        .await
-        .unwrap();
-
-    // Wait for the payment to be registered (fake wallet auto-pays)
-    let mut payment_stream_1 = wallet.payment_stream(&mint_quote_1);
-    payment_stream_1
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    // Create second mint quote and pay it
-    let mint_quote_2 = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(50.into()), None, None)
-        .await
-        .unwrap();
-
-    let mut payment_stream_2 = wallet.payment_stream(&mint_quote_2);
-    payment_stream_2
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    paid_mint_session(&wallet, PaymentMethod::BOLT11, Some(100.into())).await;
+    paid_mint_session(&wallet, PaymentMethod::BOLT11, Some(50.into())).await;
 
     // Verify no proofs have been minted yet
-    assert_eq!(wallet.total_balance().await.unwrap(), Amount::ZERO);
+    assert_eq!(wallet.balance().await.unwrap().available, Amount::ZERO);
 
     // Call mint_unissued_quotes - this should mint both paid quotes
-    let total_minted = wallet.mint_unissued_quotes().await.unwrap();
+    let report = wallet.synchronize(SyncPolicy::Online).await.unwrap();
 
     // Verify the total amount minted is correct (100 + 50 = 150)
-    assert_eq!(total_minted, Amount::from(150));
+    assert_eq!(report.claimed_amount, Amount::from(150));
 
     // Verify wallet balance matches
-    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(150));
+    assert_eq!(report.balance.available, Amount::from(150));
 
     // Calling mint_unissued_quotes again should return 0 (quotes already minted)
-    let second_check = wallet.mint_unissued_quotes().await.unwrap();
-    assert_eq!(second_check, Amount::ZERO);
+    let second_report = wallet.synchronize(SyncPolicy::Online).await.unwrap();
+    assert_eq!(second_report.claimed_amount, Amount::ZERO);
 }
 
 /// Tests the get_unissued_mint_quotes wallet method
@@ -2549,7 +2115,7 @@ async fn test_check_all_mint_quotes_bolt11() {
 /// 4. Only quotes for the current mint URL are returned
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_get_unissued_mint_quotes_wallet() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -2559,37 +2125,30 @@ async fn test_get_unissued_mint_quotes_wallet() {
     .expect("failed to create new wallet");
 
     // Create a quote but don't pay it (stays unpaid)
-    let unpaid_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+    let unpaid_session = wallet
+        .request_mint(WalletMintRequest::bolt11(100.into()))
         .await
         .unwrap();
 
     // Create another quote and pay it but don't mint
-    let paid_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(50.into()), None, None)
-        .await
-        .unwrap();
-    let mut payment_stream = wallet.payment_stream(&paid_quote);
-    payment_stream
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    let paid_session = paid_mint_session(&wallet, PaymentMethod::BOLT11, Some(50.into())).await;
 
     // Create a third quote and fully mint it
-    let minted_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(25.into()), None, None)
+    let minted_session = wallet
+        .request_mint(WalletMintRequest::bolt11(25.into()))
         .await
         .unwrap();
-    let mut proof_stream = wallet.proof_stream(minted_quote.clone(), SplitTarget::default(), None);
-    proof_stream
-        .next()
+    minted_session
+        .wait(Duration::from_secs(30))
         .await
-        .expect("payment")
-        .expect("no error");
+        .expect("mint receipt");
 
     // Get unissued quotes
-    let unissued_quotes = wallet.get_unissued_mint_quotes().await.unwrap();
+    let unissued_quotes = wallet
+        .advanced()
+        .mint_sessions(MintSessionFilter::Unissued)
+        .await
+        .unwrap();
 
     // Should have 2 quotes: unpaid and paid-but-not-issued
     // The fully minted quote should be excluded
@@ -2599,17 +2158,20 @@ async fn test_get_unissued_mint_quotes_wallet() {
         "Should have 2 unissued quotes (unpaid and paid-not-issued)"
     );
 
-    let quote_ids: Vec<&str> = unissued_quotes.iter().map(|q| q.id.as_str()).collect();
+    let quote_ids: Vec<&str> = unissued_quotes
+        .iter()
+        .map(|session| session.id().as_str())
+        .collect();
     assert!(
-        quote_ids.contains(&unpaid_quote.id.as_str()),
+        quote_ids.contains(&unpaid_session.id().as_str()),
         "Unpaid quote should be included"
     );
     assert!(
-        quote_ids.contains(&paid_quote.id.as_str()),
+        quote_ids.contains(&paid_session.id().as_str()),
         "Paid but not issued quote should be included"
     );
     assert!(
-        !quote_ids.contains(&minted_quote.id.as_str()),
+        !quote_ids.contains(&minted_session.id().as_str()),
         "Fully minted quote should NOT be included"
     );
 }
@@ -2622,7 +2184,7 @@ async fn test_get_unissued_mint_quotes_wallet() {
 /// 3. The quote is stored properly in the localstore
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_check_mint_quote_status_updates_after_minting() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -2632,63 +2194,39 @@ async fn test_check_mint_quote_status_updates_after_minting() {
     .expect("failed to create new wallet");
 
     let mint_amount = Amount::from(100);
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
+    let session = wallet
+        .request_mint(WalletMintRequest::bolt11(mint_amount))
         .await
         .unwrap();
 
-    // Get the quote from localstore before minting
-    let quote_before = wallet
-        .localstore
-        .get_mint_quote(&mint_quote.id)
-        .await
-        .unwrap()
-        .expect("Quote should exist");
-
     // Verify initial state
-    assert_eq!(quote_before.amount_issued, Amount::ZERO);
+    assert_eq!(session.initial_state().amount_claimed, Amount::ZERO);
 
     // Mint the tokens using wait_and_mint_quote
-    let proofs = wallet
-        .wait_and_mint_quote(
-            mint_quote.clone(),
-            SplitTarget::default(),
-            None,
-            Duration::from_secs(60),
-        )
+    let receipt = session
+        .wait(Duration::from_secs(60))
         .await
         .expect("minting should succeed");
 
-    let minted_amount = proofs.total_amount().unwrap();
+    let minted_amount = receipt.amount;
     assert_eq!(minted_amount, mint_amount);
 
-    // Check the quote is now either removed or updated in the localstore
-    // After minting, the quote should be removed from localstore (it's fully issued)
-    let quote_after = wallet
-        .localstore
-        .get_mint_quote(&mint_quote.id)
-        .await
-        .unwrap();
-
-    // The quote should either be removed or have amount_issued updated
-    match quote_after {
-        Some(quote) => {
-            // If still present, amount_issued should equal the minted amount
-            assert_eq!(
-                quote.amount_issued, minted_amount,
-                "amount_issued should be updated after minting"
-            );
-        }
-        None => {
-            // Quote was removed after being fully issued - this is also valid behavior
-        }
-    }
+    let state = session.refresh().await.expect("mint session state");
+    assert_eq!(state.amount_claimed, minted_amount);
+    assert_eq!(state.state, MintState::Issued);
 
     // Verify the unissued quotes no longer contains this quote
-    let unissued = wallet.get_unissued_mint_quotes().await.unwrap();
-    let unissued_ids: Vec<&str> = unissued.iter().map(|q| q.id.as_str()).collect();
+    let unissued = wallet
+        .advanced()
+        .mint_sessions(MintSessionFilter::Unissued)
+        .await
+        .unwrap();
+    let unissued_ids: Vec<&str> = unissued
+        .iter()
+        .map(|session| session.id().as_str())
+        .collect();
     assert!(
-        !unissued_ids.contains(&mint_quote.id.as_str()),
+        !unissued_ids.contains(&session.id().as_str()),
         "Fully minted quote should not appear in unissued quotes"
     );
 }
@@ -2700,7 +2238,7 @@ async fn test_check_mint_quote_status_updates_after_minting() {
 /// `check_mint_quote_status` to drift from the notification-driven state.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_check_mint_quote_status_updates_amount_issued_for_bolt12() {
-    let wallet = Wallet::new(
+    let wallet = cdk_integration_tests::open_test_wallet(
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
@@ -2709,62 +2247,42 @@ async fn test_check_mint_quote_status_updates_amount_issued_for_bolt12() {
     )
     .expect("failed to create new wallet");
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT12, Some(Amount::from(100)), None, None)
-        .await
-        .expect("failed to create Bolt12 quote");
+    let session = paid_mint_session(&wallet, PaymentMethod::BOLT12, Some(Amount::from(100))).await;
+    let quote_after_notification = session.refresh().await.expect("paid quote state");
+    let paid_amount = quote_after_notification.amount_paid;
 
-    let mut payment_stream = wallet.payment_stream(&mint_quote);
-    let paid_amount = payment_stream
-        .next()
-        .await
-        .expect("payment event")
-        .expect("no payment stream error")
-        .1
-        .expect("Bolt12 payment stream should return remaining amount to mint");
-
-    let quote_after_notification = wallet
-        .localstore
-        .get_mint_quote(&mint_quote.id)
-        .await
-        .expect("quote lookup should succeed")
-        .expect("quote should remain in localstore after notification");
-
-    assert_eq!(quote_after_notification.amount_paid, Amount::from(100));
+    assert_eq!(paid_amount, Amount::from(100));
     assert_eq!(
-        quote_after_notification.amount_issued,
+        quote_after_notification.amount_claimed,
         Amount::ZERO,
         "payment notification should not mark funds as issued before minting"
     );
 
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+    let minted_amount = session
+        .claim()
         .await
-        .expect("minting should succeed");
-    let minted_amount = proofs.total_amount().expect("proofs should total");
+        .expect("minting should succeed")
+        .amount;
 
     assert_eq!(minted_amount, paid_amount);
 
-    let quote_after_mint = wallet
-        .check_mint_quote_status(&mint_quote.id)
-        .await
-        .expect("quote status check should succeed");
+    let quote_after_mint = session.refresh().await.expect("quote status check");
 
-    assert_eq!(quote_after_mint.payment_method, PaymentMethod::BOLT12);
+    assert_eq!(quote_after_mint.method, PaymentMethod::BOLT12);
     assert_eq!(quote_after_mint.amount_paid, minted_amount);
     assert_eq!(
-        quote_after_mint.amount_issued, minted_amount,
+        quote_after_mint.amount_claimed, minted_amount,
         "amount_issued should match the issued amount after Bolt12 minting"
     );
     assert_eq!(
         quote_after_mint.state,
-        MintQuoteState::Issued,
+        MintState::Issued,
         "quote should be fully issued after minting"
     );
 
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
     let mint_response = http_client
-        .get_mint_quote_status(PaymentMethod::BOLT12, &mint_quote.id)
+        .get_mint_quote_status(PaymentMethod::BOLT12, session.id().as_str())
         .await
         .expect("mint quote status request should succeed");
 

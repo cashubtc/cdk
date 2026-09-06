@@ -1,51 +1,74 @@
 //! FFI types for Nostr mint backup (NUT-27)
 
-use cdk::wallet::{
-    BackupOptions as CdkBackupOptions, BackupResult as CdkBackupResult,
-    RestoreOptions as CdkRestoreOptions, RestoreResult as CdkRestoreResult,
+use cdk::wallet::advanced::{
+    MintBackupReceipt as CdkMintBackupReceipt, MintBackupRequest as CdkMintBackupRequest,
+    MintRestorePolicy as CdkMintRestorePolicy, MintRestoreReceipt as CdkMintRestoreReceipt,
+    MintRestoreRequest as CdkMintRestoreRequest,
 };
 
 use super::MintUrl;
 
-/// Options for backup operations
-#[derive(Debug, Clone, Default, uniffi::Record)]
-pub struct BackupOptions {
-    /// Client name to include in the event tags
+/// Request to publish an encrypted NUT-27 mint backup.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MintBackupRequest {
+    /// Relay URLs that receive the backup event.
+    pub relays: Vec<String>,
+    /// Client name to include in the event tags.
+    #[uniffi(default = None)]
     pub client: Option<String>,
 }
 
-impl From<BackupOptions> for CdkBackupOptions {
-    fn from(options: BackupOptions) -> Self {
-        let mut opts = CdkBackupOptions::new();
-        if let Some(client) = options.client {
-            opts = opts.client(client);
+impl From<MintBackupRequest> for CdkMintBackupRequest {
+    fn from(request: MintBackupRequest) -> Self {
+        let mut converted = Self::new(request.relays);
+        if let Some(client) = request.client {
+            converted = converted.with_client(client);
         }
-        opts
+        converted
     }
 }
 
-/// Options for restore operations
+/// Whether restoring a mint backup changes manager configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MintRestorePolicy {
+    /// Decrypt and return the backup without registering its mints.
+    Preview,
+    /// Register every newly discovered mint.
+    Register,
+}
+
+impl From<MintRestorePolicy> for CdkMintRestorePolicy {
+    fn from(value: MintRestorePolicy) -> Self {
+        match value {
+            MintRestorePolicy::Preview => Self::Preview,
+            MintRestorePolicy::Register => Self::Register,
+        }
+    }
+}
+
+/// Request to fetch and decrypt a NUT-27 mint backup.
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct RestoreOptions {
-    /// Timeout in seconds for waiting for relay responses
-    pub timeout_secs: u64,
+pub struct MintRestoreRequest {
+    /// Relay URLs queried for the backup event.
+    pub relays: Vec<String>,
+    /// Whether discovered mints should be registered.
+    pub policy: MintRestorePolicy,
+    /// Timeout in seconds for waiting for relay responses.
+    #[uniffi(default = 10)]
+    pub timeout_seconds: u64,
 }
 
-impl Default for RestoreOptions {
-    fn default() -> Self {
-        Self { timeout_secs: 10 }
+impl From<MintRestoreRequest> for CdkMintRestoreRequest {
+    fn from(request: MintRestoreRequest) -> Self {
+        Self::new(request.relays)
+            .with_policy(request.policy.into())
+            .with_timeout(std::time::Duration::from_secs(request.timeout_seconds))
     }
 }
 
-impl From<RestoreOptions> for CdkRestoreOptions {
-    fn from(options: RestoreOptions) -> Self {
-        CdkRestoreOptions::new().timeout(std::time::Duration::from_secs(options.timeout_secs))
-    }
-}
-
-/// Result of a backup operation
+/// Receipt for a published mint backup.
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct BackupResult {
+pub struct MintBackupReceipt {
     /// The event ID of the published backup (hex encoded)
     pub event_id: String,
     /// The public key used for the backup (hex encoded)
@@ -54,8 +77,8 @@ pub struct BackupResult {
     pub mint_count: u64,
 }
 
-impl From<CdkBackupResult> for BackupResult {
-    fn from(result: CdkBackupResult) -> Self {
+impl From<CdkMintBackupReceipt> for MintBackupReceipt {
+    fn from(result: CdkMintBackupReceipt) -> Self {
         Self {
             event_id: result.event_id.to_hex(),
             public_key: result.public_key.to_hex(),
@@ -64,9 +87,9 @@ impl From<CdkBackupResult> for BackupResult {
     }
 }
 
-/// Result of a restore operation
+/// Receipt for a fetched and decrypted mint backup.
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct RestoreResult {
+pub struct MintRestoreReceipt {
     /// The restored mint backup data
     pub backup: MintBackup,
     /// Number of mints found in the backup
@@ -75,8 +98,8 @@ pub struct RestoreResult {
     pub mints_added: u64,
 }
 
-impl From<CdkRestoreResult> for RestoreResult {
-    fn from(result: CdkRestoreResult) -> Self {
+impl From<CdkMintRestoreReceipt> for MintRestoreReceipt {
+    fn from(result: CdkMintRestoreReceipt) -> Self {
         Self {
             backup: result.backup.into(),
             mint_count: result.mint_count as u64,

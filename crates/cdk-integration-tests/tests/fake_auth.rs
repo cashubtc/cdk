@@ -9,11 +9,19 @@ use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{
     AuthProof, AuthToken, BlindAuthToken, CheckStateRequest, CurrencyUnit, MeltQuoteBolt11Request,
-    MeltQuoteState, MeltRequest, MintQuoteBolt11Request, MintRequest, PaymentMethod,
-    RestoreRequest, State, SwapRequest,
+    MeltRequest, MintQuoteBolt11Request, MintRequest, PaymentMethod, RestoreRequest, State,
+    SwapRequest,
 };
-use cdk::wallet::{AuthHttpClient, AuthMintConnector, HttpClient, MintConnector, WalletBuilder};
+use cdk::wallet::advanced::{
+    AuthHttpClient, AuthMintConnector, HttpClient, MetadataSource, MintConnector,
+    MintMetadataRequest, ProofCheckRequest, ProofQuery, ReissueFeePolicy, ReissueProtection,
+    ReissueRequest, WalletBuilder,
+};
+use cdk::wallet::mint::MintRequest as WalletMintRequest;
+use cdk::wallet::payment::{PaymentQuoteRequest, PaymentTarget};
+use cdk::wallet::Wallet;
 use cdk::{Error, OidcClient};
+use cdk_common::database::WalletDatabase;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_http_client::HttpClient as CommonHttpClient;
 use cdk_integration_tests::fund_wallet;
@@ -22,6 +30,17 @@ use cdk_sqlite::wallet::memory;
 const MINT_URL: &str = "http://127.0.0.1:8087";
 const ENV_OIDC_USER: &str = "CDK_TEST_OIDC_USER";
 const ENV_OIDC_PASSWORD: &str = "CDK_TEST_OIDC_PASSWORD";
+
+async fn load_mint_info(wallet: &Wallet) -> MintInfo {
+    wallet
+        .advanced()
+        .mint_metadata(MintMetadataRequest {
+            source: MetadataSource::Refresh,
+        })
+        .await
+        .expect("mint metadata")
+        .info
+}
 
 fn get_oidc_credentials() -> (String, String) {
     let user = env::var(ENV_OIDC_USER).unwrap_or_else(|_| "test".to_string());
@@ -34,18 +53,14 @@ async fn test_invalid_credentials() {
     let db = Arc::new(memory::empty().await.unwrap());
 
     let wallet = WalletBuilder::new()
-        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
-        .unit(CurrencyUnit::Sat)
-        .localstore(db.clone())
-        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .with_mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+        .with_unit(CurrencyUnit::Sat)
+        .with_store(db.clone())
+        .with_seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
 
-    let mint_info = wallet
-        .fetch_mint_info()
-        .await
-        .expect("mint info")
-        .expect("could not get mint info");
+    let mint_info = load_mint_info(&wallet).await;
 
     // Try to get a token with invalid credentials
     let token_result =
@@ -288,27 +303,33 @@ async fn test_mint_blind_auth() {
     let db = Arc::new(memory::empty().await.unwrap());
 
     let wallet = WalletBuilder::new()
-        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
-        .unit(CurrencyUnit::Sat)
-        .localstore(db.clone())
-        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .with_mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+        .with_unit(CurrencyUnit::Sat)
+        .with_store(db.clone())
+        .with_seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
-    let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
+    let mint_info = load_mint_info(&wallet).await;
 
     let (access_token, _) = get_tokens(&mint_info, false)
         .await
         .expect("could not get access token");
 
-    wallet.set_cat(access_token).await.unwrap();
+    wallet
+        .advanced()
+        .set_clear_auth_token(access_token)
+        .await
+        .unwrap();
 
     wallet
+        .advanced()
         .mint_blind_auth(10.into())
         .await
         .expect("Could not mint blind auth");
 
     let proofs = wallet
-        .get_unspent_auth_proofs()
+        .advanced()
+        .blind_auth_proofs()
         .await
         .expect("Could not get auth proofs");
 
@@ -320,18 +341,14 @@ async fn test_mint_with_auth() {
     let db = Arc::new(memory::empty().await.unwrap());
 
     let wallet = WalletBuilder::new()
-        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
-        .unit(CurrencyUnit::Sat)
-        .localstore(db.clone())
-        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .with_mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+        .with_unit(CurrencyUnit::Sat)
+        .with_store(db.clone())
+        .with_seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
 
-    let mint_info = wallet
-        .fetch_mint_info()
-        .await
-        .expect("mint info")
-        .expect("could not get mint info");
+    let mint_info = load_mint_info(&wallet).await;
 
     let (access_token, _) = get_tokens(&mint_info, false)
         .await
@@ -339,9 +356,14 @@ async fn test_mint_with_auth() {
 
     println!("st{}", access_token);
 
-    wallet.set_cat(access_token).await.unwrap();
+    wallet
+        .advanced()
+        .set_clear_auth_token(access_token)
+        .await
+        .unwrap();
 
     wallet
+        .advanced()
         .mint_blind_auth(10.into())
         .await
         .expect("Could not mint blind auth");
@@ -350,22 +372,17 @@ async fn test_mint_with_auth() {
 
     let mint_amount: Amount = 100.into();
 
-    let quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
+    let session = wallet
+        .request_mint(WalletMintRequest::bolt11(mint_amount))
         .await
         .unwrap();
 
-    let proofs = wallet
-        .wait_and_mint_quote(
-            quote.clone(),
-            SplitTarget::default(),
-            None,
-            tokio::time::Duration::from_secs(60),
-        )
+    let receipt = session
+        .wait(tokio::time::Duration::from_secs(60))
         .await
         .expect("payment");
 
-    assert!(proofs.total_amount().expect("Could not get proofs amount") == mint_amount);
+    assert_eq!(receipt.amount, mint_amount);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -373,45 +390,58 @@ async fn test_swap_with_auth() {
     let db = Arc::new(memory::empty().await.unwrap());
 
     let wallet = WalletBuilder::new()
-        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
-        .unit(CurrencyUnit::Sat)
-        .localstore(db.clone())
-        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .with_mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+        .with_unit(CurrencyUnit::Sat)
+        .with_store(db.clone())
+        .with_seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
-    let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
+    let mint_info = load_mint_info(&wallet).await;
     let (access_token, _) = get_tokens(&mint_info, false)
         .await
         .expect("could not get access token");
 
-    wallet.set_cat(access_token).await.unwrap();
+    wallet
+        .advanced()
+        .set_clear_auth_token(access_token)
+        .await
+        .unwrap();
 
     let wallet = Arc::new(wallet);
 
-    wallet.mint_blind_auth(10.into()).await.unwrap();
+    wallet.advanced().mint_blind_auth(10.into()).await.unwrap();
 
     fund_wallet(wallet.clone(), 100.into()).await;
 
     let proofs = wallet
-        .get_unspent_proofs()
+        .advanced()
+        .proofs(ProofQuery::default())
         .await
-        .expect("Could not get proofs");
+        .expect("Could not get proofs")
+        .into_iter()
+        .map(|record| record.proof)
+        .collect::<Vec<_>>();
 
     let swapped_proofs = wallet
-        .swap(
-            Some(proofs.total_amount().unwrap()),
-            SplitTarget::default(),
-            proofs.clone(),
-            None,
-            false,
-            false,
-        )
+        .advanced()
+        .reissue(ReissueRequest {
+            amount: Some(proofs.total_amount().unwrap()),
+            amount_split_target: SplitTarget::default(),
+            proofs: proofs.clone(),
+            conditions: None,
+            fee_policy: ReissueFeePolicy::Deduct,
+            protection: ReissueProtection::Plain,
+        })
         .await
         .expect("Could not swap")
+        .proofs
         .expect("Could not swap");
 
     let check_spent = wallet
-        .check_proofs_spent(proofs.clone())
+        .advanced()
+        .check_proofs(ProofCheckRequest {
+            proofs: proofs.clone(),
+        })
         .await
         .expect("Could not check proofs");
 
@@ -429,45 +459,51 @@ async fn test_melt_with_auth() {
     let db = Arc::new(memory::empty().await.unwrap());
 
     let wallet = WalletBuilder::new()
-        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
-        .unit(CurrencyUnit::Sat)
-        .localstore(db.clone())
-        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .with_mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+        .with_unit(CurrencyUnit::Sat)
+        .with_store(db.clone())
+        .with_seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
 
-    let mint_info = wallet
-        .fetch_mint_info()
-        .await
-        .expect("Mint info not found")
-        .expect("Mint info not found");
+    let mint_info = load_mint_info(&wallet).await;
 
     let (access_token, _) = get_tokens(&mint_info, false)
         .await
         .expect("could not get access token");
 
-    wallet.set_cat(access_token).await.unwrap();
+    wallet
+        .advanced()
+        .set_clear_auth_token(access_token)
+        .await
+        .unwrap();
 
     let wallet = Arc::new(wallet);
 
-    wallet.mint_blind_auth(10.into()).await.unwrap();
+    wallet.advanced().mint_blind_auth(10.into()).await.unwrap();
 
     fund_wallet(wallet.clone(), 100.into()).await;
 
     let bolt11 = create_fake_invoice(2_000, "".to_string());
 
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, bolt11.to_string(), None, None)
+    let payment = wallet
+        .quote_payment(PaymentQuoteRequest::new(PaymentTarget::bolt11(
+            bolt11.to_string(),
+        )))
         .await
-        .expect("Could not get melt quote");
+        .expect("Could not get payment quote")
+        .into_single()
+        .expect("single payment quote");
 
-    let prepared = wallet
-        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+    let receipt = payment
+        .prepare()
         .await
-        .expect("Could not prepare melt");
-    let after_melt = prepared.confirm().await.expect("Could not melt");
+        .expect("Could not prepare payment")
+        .execute()
+        .await
+        .expect("Could not pay");
 
-    assert!(after_melt.state() == MeltQuoteState::Paid);
+    assert_eq!(receipt.amount, 2.into());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -475,28 +511,29 @@ async fn test_mint_auth_over_max() {
     let db = Arc::new(memory::empty().await.unwrap());
 
     let wallet = WalletBuilder::new()
-        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
-        .unit(CurrencyUnit::Sat)
-        .localstore(db.clone())
-        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .with_mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+        .with_unit(CurrencyUnit::Sat)
+        .with_store(db.clone())
+        .with_seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
 
     let wallet = Arc::new(wallet);
 
-    let mint_info = wallet
-        .fetch_mint_info()
-        .await
-        .expect("Mint info not found")
-        .expect("Mint info not found");
+    let mint_info = load_mint_info(&wallet).await;
 
     let (access_token, _) = get_tokens(&mint_info, false)
         .await
         .expect("could not get access token");
 
-    wallet.set_cat(access_token).await.unwrap();
+    wallet
+        .advanced()
+        .set_clear_auth_token(access_token)
+        .await
+        .unwrap();
 
     let auth_proofs = wallet
+        .advanced()
         .mint_blind_auth((mint_info.nuts.nut22.expect("Auth enabled").bat_max_mint + 1).into())
         .await;
 
@@ -519,24 +556,27 @@ async fn test_reuse_auth_proof() {
     let db = Arc::new(memory::empty().await.unwrap());
 
     let wallet = WalletBuilder::new()
-        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
-        .unit(CurrencyUnit::Sat)
-        .localstore(db.clone())
-        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .with_mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+        .with_unit(CurrencyUnit::Sat)
+        .with_store(db.clone())
+        .with_seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
-    let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
+    let mint_info = load_mint_info(&wallet).await;
 
     let (access_token, _) = get_tokens(&mint_info, false)
         .await
         .expect("could not get access token");
 
-    wallet.set_cat(access_token).await.unwrap();
+    wallet
+        .advanced()
+        .set_clear_auth_token(access_token)
+        .await
+        .unwrap();
 
-    wallet.mint_blind_auth(1.into()).await.unwrap();
+    wallet.advanced().mint_blind_auth(1.into()).await.unwrap();
 
-    let proofs = wallet
-        .localstore
+    let proofs = db
         .get_proofs(None, Some(CurrencyUnit::Auth), None, None)
         .await
         .unwrap();
@@ -544,23 +584,19 @@ async fn test_reuse_auth_proof() {
     assert!(proofs.len() == 1);
 
     {
-        let quote = wallet
-            .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
+        let session = wallet
+            .request_mint(WalletMintRequest::bolt11(10.into()))
             .await
             .expect("Quote should be allowed");
 
-        assert!(quote.amount == Some(10.into()));
+        assert_eq!(session.initial_state().amount, Some(10.into()));
     }
 
-    wallet
-        .localstore
-        .update_proofs(proofs, vec![])
-        .await
-        .unwrap();
+    db.update_proofs(proofs, vec![]).await.unwrap();
 
     {
         let quote_res = wallet
-            .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
+            .request_mint(WalletMintRequest::bolt11(10.into()))
             .await;
         assert!(
             matches!(quote_res, Err(Error::TokenAlreadySpent)),
@@ -575,28 +611,36 @@ async fn test_melt_with_invalid_auth() {
     let db = Arc::new(memory::empty().await.unwrap());
 
     let wallet = WalletBuilder::new()
-        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
-        .unit(CurrencyUnit::Sat)
-        .localstore(db.clone())
-        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .with_mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+        .with_unit(CurrencyUnit::Sat)
+        .with_store(db.clone())
+        .with_seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
-    let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
+    let mint_info = load_mint_info(&wallet).await;
 
     let (access_token, _) = get_tokens(&mint_info, false)
         .await
         .expect("could not get access token");
 
-    wallet.set_cat(access_token).await.unwrap();
+    wallet
+        .advanced()
+        .set_clear_auth_token(access_token)
+        .await
+        .unwrap();
 
-    wallet.mint_blind_auth(10.into()).await.unwrap();
+    wallet.advanced().mint_blind_auth(10.into()).await.unwrap();
 
     fund_wallet(Arc::new(wallet.clone()), 1.into()).await;
 
     let proofs = wallet
-        .get_unspent_proofs()
+        .advanced()
+        .proofs(ProofQuery::default())
         .await
-        .expect("wallet has proofs");
+        .expect("wallet has proofs")
+        .into_iter()
+        .map(|record| record.proof)
+        .collect::<Vec<_>>();
 
     println!("{:#?}", proofs);
     let proof = proofs.first().expect("wallet has one proof");
@@ -633,7 +677,11 @@ async fn test_melt_with_invalid_auth() {
             .await
             .expect("could not get access token");
 
-        wallet.set_cat(access_token).await.unwrap();
+        wallet
+            .advanced()
+            .set_clear_auth_token(access_token)
+            .await
+            .unwrap();
     }
 }
 
@@ -642,18 +690,14 @@ async fn test_refresh_access_token() {
     let db = Arc::new(memory::empty().await.unwrap());
 
     let wallet = WalletBuilder::new()
-        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
-        .unit(CurrencyUnit::Sat)
-        .localstore(db.clone())
-        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .with_mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+        .with_unit(CurrencyUnit::Sat)
+        .with_store(db.clone())
+        .with_seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
 
-    let mint_info = wallet
-        .fetch_mint_info()
-        .await
-        .expect("mint info")
-        .expect("could not get mint info");
+    let mint_info = load_mint_info(&wallet).await;
 
     let (access_token, refresh_token) = get_tokens(&mint_info, true)
         .await
@@ -661,38 +705,43 @@ async fn test_refresh_access_token() {
     let refresh_token = refresh_token.expect("No refresh token in response");
 
     // Set the initial access token and refresh token
-    wallet.set_cat(access_token.clone()).await.unwrap();
     wallet
+        .advanced()
+        .set_clear_auth_token(access_token.clone())
+        .await
+        .unwrap();
+    wallet
+        .advanced()
         .set_refresh_token(refresh_token.clone())
         .await
         .unwrap();
 
     // Mint some blind auth tokens with the initial access token
-    wallet.mint_blind_auth(5.into()).await.unwrap();
+    wallet.advanced().mint_blind_auth(5.into()).await.unwrap();
 
     // Refresh the access token
-    wallet.refresh_access_token().await.unwrap();
+    wallet.advanced().refresh_access_token().await.unwrap();
 
     // Verify we can still perform operations with the refreshed token
     let mint_amount: Amount = 10.into();
 
     // Try to mint more blind auth tokens with the refreshed token
-    let auth_proofs = wallet.mint_blind_auth(5.into()).await.unwrap();
+    let auth_proofs = wallet.advanced().mint_blind_auth(5.into()).await.unwrap();
     assert_eq!(auth_proofs.len(), 5);
 
-    let total_auth_proofs = wallet.get_unspent_auth_proofs().await.unwrap();
+    let total_auth_proofs = wallet.advanced().blind_auth_proofs().await.unwrap();
     assert_eq!(total_auth_proofs.len(), 10); // 5 from before refresh + 5 after refresh
 
     // Try to get a mint quote with the refreshed token
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(mint_amount), None, None)
+    let mint_session = wallet
+        .request_mint(WalletMintRequest::bolt11(mint_amount))
         .await
         .expect("failed to get mint quote with refreshed token");
 
-    assert_eq!(mint_quote.amount, Some(mint_amount));
+    assert_eq!(mint_session.initial_state().amount, Some(mint_amount));
 
     // Verify the total number of auth tokens
-    let total_auth_proofs = wallet.get_unspent_auth_proofs().await.unwrap();
+    let total_auth_proofs = wallet.advanced().blind_auth_proofs().await.unwrap();
     assert_eq!(total_auth_proofs.len(), 9); // 5 from before refresh + 5 after refresh - 1 for the quote
 }
 
@@ -701,34 +750,35 @@ async fn test_invalid_refresh_token() {
     let db = Arc::new(memory::empty().await.unwrap());
 
     let wallet = WalletBuilder::new()
-        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
-        .unit(CurrencyUnit::Sat)
-        .localstore(db.clone())
-        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .with_mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+        .with_unit(CurrencyUnit::Sat)
+        .with_store(db.clone())
+        .with_seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
 
-    let mint_info = wallet
-        .fetch_mint_info()
-        .await
-        .expect("mint info")
-        .expect("could not get mint info");
+    let mint_info = load_mint_info(&wallet).await;
 
     let (access_token, _) = get_tokens(&mint_info, false)
         .await
         .expect("could not get access token");
 
     // Set the initial access token
-    wallet.set_cat(access_token.clone()).await.unwrap();
+    wallet
+        .advanced()
+        .set_clear_auth_token(access_token.clone())
+        .await
+        .unwrap();
 
     // Set an invalid refresh token
     wallet
+        .advanced()
         .set_refresh_token("invalid_refresh_token".to_string())
         .await
         .unwrap();
 
     // Attempt to refresh the access token with an invalid refresh token
-    let refresh_result = wallet.refresh_access_token().await;
+    let refresh_result = wallet.advanced().refresh_access_token().await;
 
     // Should fail with an error
     assert!(refresh_result.is_err(), "Expected refresh token error");
@@ -739,50 +789,50 @@ async fn test_auth_token_spending_order() {
     let db = Arc::new(memory::empty().await.unwrap());
 
     let wallet = WalletBuilder::new()
-        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
-        .unit(CurrencyUnit::Sat)
-        .localstore(db.clone())
-        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .with_mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+        .with_unit(CurrencyUnit::Sat)
+        .with_store(db.clone())
+        .with_seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
 
-    let mint_info = wallet
-        .fetch_mint_info()
-        .await
-        .expect("mint info")
-        .expect("could not get mint info");
+    let mint_info = load_mint_info(&wallet).await;
 
     let (access_token, _) = get_tokens(&mint_info, false)
         .await
         .expect("could not get access token");
 
-    wallet.set_cat(access_token).await.unwrap();
+    wallet
+        .advanced()
+        .set_clear_auth_token(access_token)
+        .await
+        .unwrap();
 
     // Mint auth tokens in two batches to test ordering
-    wallet.mint_blind_auth(2.into()).await.unwrap();
+    wallet.advanced().mint_blind_auth(2.into()).await.unwrap();
 
     // Get the first batch of auth proofs
-    let first_batch = wallet.get_unspent_auth_proofs().await.unwrap();
+    let first_batch = wallet.advanced().blind_auth_proofs().await.unwrap();
     assert_eq!(first_batch.len(), 2);
 
     // Mint a second batch
-    wallet.mint_blind_auth(3.into()).await.unwrap();
+    wallet.advanced().mint_blind_auth(3.into()).await.unwrap();
 
     // Get all auth proofs
-    let all_proofs = wallet.get_unspent_auth_proofs().await.unwrap();
+    let all_proofs = wallet.advanced().blind_auth_proofs().await.unwrap();
     assert_eq!(all_proofs.len(), 5);
 
     // Use tokens and verify they're used in the expected order (FIFO)
     for i in 0..3 {
-        let mint_quote = wallet
-            .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
+        let mint_session = wallet
+            .request_mint(WalletMintRequest::bolt11(10.into()))
             .await
             .expect("failed to get mint quote");
 
-        assert_eq!(mint_quote.amount, Some(10.into()));
+        assert_eq!(mint_session.initial_state().amount, Some(10.into()));
 
         // Check remaining tokens after each operation
-        let remaining = wallet.get_unspent_auth_proofs().await.unwrap();
+        let remaining = wallet.advanced().blind_auth_proofs().await.unwrap();
         assert_eq!(
             remaining.len(),
             5 - (i + 1),

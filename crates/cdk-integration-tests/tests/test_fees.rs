@@ -1,147 +1,120 @@
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bip39::Mnemonic;
-use cashu::{Bolt11Invoice, PaymentMethod, ProofsMethods};
-use cdk::amount::{Amount, SplitTarget};
+use cashu::Bolt11Invoice;
+use cdk::amount::Amount;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{ReceiveOptions, SendKind, SendOptions, Wallet};
+use cdk::wallet::advanced::{
+    FeeEstimateRequest, PaymentFunding, PaymentPrepareOptions, ProofQuery, WalletBuilder,
+};
+use cdk::wallet::mint::MintRequest;
+use cdk::wallet::payment::{PaymentQuoteRequest, PaymentTarget};
+use cdk::wallet::receive::ReceiveRequest;
+use cdk::wallet::send::{SendMode, SendRequest};
+use cdk::wallet::Wallet;
 use cdk_integration_tests::init_regtest::get_temp_dir;
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
 use tracing_subscriber::EnvFilter;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_swap() {
-    // Set up logging
-    let default_filter = "debug";
-    let sqlx_filter = "sqlx=warn,hyper_util=warn,reqwest=warn,rustls=warn";
-    let env_filter = EnvFilter::new(format!("{},{}", default_filter, sqlx_filter));
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
-    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
-    let wallet = Wallet::new(
-        &get_mint_url_from_env(),
-        CurrencyUnit::Sat,
-        Arc::new(memory::empty().await.unwrap()),
-        seed,
-        None,
-    )
-    .expect("failed to create new wallet");
-
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+async fn funded_wallet() -> Wallet {
+    let session_seed = Mnemonic::generate(12)
+        .expect("mnemonic")
+        .to_seed_normalized("");
+    let wallet = WalletBuilder::new()
+        .with_mint_url(get_mint_url_from_env().parse().expect("mint URL"))
+        .with_unit(CurrencyUnit::Sat)
+        .with_store(Arc::new(memory::empty().await.expect("database")))
+        .with_seed(session_seed)
+        .build()
+        .expect("wallet");
+    let session = wallet
+        .request_mint(MintRequest::bolt11(100.into()))
         .await
-        .unwrap();
-
-    let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
-    pay_if_regtest(&get_temp_dir(), &invoice).await.unwrap();
-
-    let _proofs = wallet
-        .wait_and_mint_quote(
-            mint_quote.clone(),
-            SplitTarget::default(),
-            None,
-            tokio::time::Duration::from_secs(60),
-        )
+        .expect("mint session");
+    let invoice =
+        Bolt11Invoice::from_str(&session.initial_state().payment_request).expect("BOLT11 invoice");
+    pay_if_regtest(&get_temp_dir(), &invoice)
         .await
-        .expect("payment");
-
-    let send = wallet
-        .prepare_send(
-            4.into(),
-            SendOptions {
-                send_kind: SendKind::OfflineExact,
-                ..Default::default()
-            },
-        )
+        .expect("pay invoice");
+    session
+        .wait(Duration::from_secs(60))
         .await
-        .unwrap();
-
-    let proofs = send.proofs();
-
-    let fee = wallet.get_proofs_fee(&proofs).await.unwrap().total;
-
-    assert_eq!(fee, 1.into());
-
-    let send = send.confirm(None).await.unwrap();
-
-    let rec_amount = wallet
-        .receive(&send.to_string(), ReceiveOptions::default())
-        .await
-        .unwrap();
-
-    assert_eq!(rec_amount, 3.into());
-
-    let wallet_balance = wallet.total_balance().await.unwrap();
-
-    assert_eq!(wallet_balance, 99.into());
+        .expect("claim mint quote");
+    wallet
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_melt_change_in_quote() {
-    let wallet = Wallet::new(
-        &get_mint_url_from_env(),
-        CurrencyUnit::Sat,
-        Arc::new(memory::empty().await.unwrap()),
-        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
-        None,
-    )
-    .expect("failed to create new wallet");
+async fn send_fee_is_visible_before_confirmation() {
+    let default_filter = "debug";
+    let sqlx_filter = "sqlx=warn,hyper_util=warn,reqwest=warn,rustls=warn";
+    let env_filter = EnvFilter::new(format!("{default_filter},{sqlx_filter}"));
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    let wallet = funded_wallet().await;
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+    let mut request = SendRequest::new(4.into());
+    request.mode = SendMode::OfflineExact;
+    request.include_fee = false;
+    let plan = wallet.plan_send(request).await.expect("send plan");
+
+    assert_eq!(plan.fee(), 1.into());
+
+    let token = plan.execute().await.expect("send receipt").token;
+    let received = wallet
+        .receive(ReceiveRequest::new(token.to_string()))
         .await
-        .unwrap();
+        .expect("receive token");
 
-    let bolt11 = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
+    assert_eq!(received.amount, 3.into());
+    assert_eq!(
+        wallet.balance().await.expect("balance").available,
+        99.into()
+    );
+}
 
-    pay_if_regtest(&get_temp_dir(), &bolt11).await.unwrap();
-
-    let _proofs = wallet
-        .wait_and_mint_quote(
-            mint_quote.clone(),
-            SplitTarget::default(),
-            None,
-            tokio::time::Duration::from_secs(60),
-        )
-        .await
-        .expect("payment");
-
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn explicit_payment_funding_reports_the_same_input_fee() {
+    let wallet = funded_wallet().await;
     let invoice_amount = 9;
-
-    let invoice = create_invoice_for_env(Some(invoice_amount)).await.unwrap();
-
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+    let invoice = create_invoice_for_env(Some(invoice_amount))
         .await
-        .unwrap();
-
-    let proofs = wallet.get_unspent_proofs().await.unwrap();
-
-    let proofs_total = proofs.total_amount().unwrap();
-
-    let fee_breakdown = wallet.get_proofs_fee(&proofs).await.unwrap();
-    let prepared = wallet
-        .prepare_melt_proofs(
-            &melt_quote.id,
-            proofs.clone(),
-            std::collections::HashMap::new(),
-        )
+        .expect("invoice");
+    let session = wallet
+        .quote_payment(PaymentQuoteRequest::new(PaymentTarget::bolt11(invoice)))
         .await
-        .unwrap();
-    let melt = prepared.confirm().await.unwrap();
-    let change = melt.change().unwrap().total_amount().unwrap();
-    let idk = proofs.total_amount().unwrap() - Amount::from(invoice_amount) - change;
+        .expect("payment quote")
+        .into_single()
+        .expect("single payment quote");
 
-    println!("{}", idk);
-    println!("{}", fee_breakdown.total);
-    println!("{}", proofs_total);
-    println!("{}", change);
+    let proofs = wallet
+        .advanced()
+        .proofs(ProofQuery::default())
+        .await
+        .expect("proofs")
+        .into_iter()
+        .map(|record| record.proof)
+        .collect::<Vec<_>>();
+    let fee = wallet
+        .advanced()
+        .estimate_fee(FeeEstimateRequest::Proofs(proofs.clone()))
+        .await
+        .expect("fee estimate")
+        .total;
 
-    let ln_fee = 1;
+    let receipt = session
+        .prepare_with(PaymentPrepareOptions {
+            funding: PaymentFunding::Proofs(proofs),
+        })
+        .await
+        .expect("payment plan")
+        .execute()
+        .await
+        .expect("payment receipt");
 
     assert_eq!(
-        wallet.total_balance().await.unwrap(),
-        Amount::from(100 - invoice_amount - u64::from(fee_breakdown.total) - ln_fee)
+        wallet.balance().await.expect("balance").available,
+        Amount::from(100 - invoice_amount - u64::from(fee) - u64::from(receipt.fee_paid))
     );
 }

@@ -1756,6 +1756,10 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), DatabaseError> {
         let expected_version = quote.version;
+        let expected_owner = match &quote.used_by_operation {
+            Some(owner) => format!("eq.{}", url_encode(owner)),
+            None => "is.null".to_owned(),
+        };
         let mut item: MeltQuoteTable = quote.try_into()?;
 
         // Try UPDATE first: only matches a row whose stored version equals the
@@ -1763,9 +1767,10 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         item.version = Some(expected_version.wrapping_add(1) as i32);
 
         let path = format!(
-            "rest/v1/melt_quote?id=eq.{}&version=eq.{}",
+            "rest/v1/melt_quote?id=eq.{}&version=eq.{}&used_by_operation={}",
             url_encode(&item.id),
-            expected_version
+            expected_version,
+            expected_owner
         );
 
         // Use `return=representation` so PostgREST returns the updated rows as JSON.

@@ -31,14 +31,22 @@ use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::subscription::Params;
 use cdk::types::QuoteTTL;
-use cdk::wallet::types::{TransactionDirection, TransactionId, TransactionStatus};
-use cdk::wallet::{MintConnector, P2PKLockedProofSendMode, ReceiveOptions, SendMemo, SendOptions};
-use cdk::{Amount, StreamExt};
+use cdk::wallet::advanced::{
+    LockedProofPolicy, MetadataSource, MintBatchClaimRequest, MintConnector, MintMetadataRequest,
+    PaymentFunding, PaymentPrepareOptions, ProofQuery, ReceiveAdvancedOptions, SendAdvancedOptions,
+};
+use cdk::wallet::history::{HistoryEntry, HistoryQuery};
+use cdk::wallet::mint::{MintQuoteId, MintRequest as WalletMintRequest, MintSession, MintState};
+use cdk::wallet::payment::{PaymentQuoteRequest, PaymentSession, PaymentTarget};
+use cdk::wallet::receive::ReceiveRequest;
+use cdk::wallet::send::SendRequest;
+use cdk::wallet::RestoreRequest;
+use cdk::Amount;
 use cdk_common::mint::OperationKind;
 use cdk_common::payment::{
     MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse,
 };
-use cdk_common::wallet::ProofInfo;
+use cdk_common::wallet::{ProofInfo, TransactionDirection, TransactionId, TransactionStatus};
 use cdk_common::{MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse};
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
@@ -56,6 +64,128 @@ fn to_keyset_infos(keysets: &[KeySet]) -> Vec<KeySetInfo> {
             final_expiry: ks.final_expiry,
         })
         .collect()
+}
+
+async fn available_balance(wallet: &cdk::Wallet) -> Amount {
+    wallet.balance().await.expect("wallet balance").available
+}
+
+async fn proof_set(wallet: &cdk::Wallet, state: State) -> cashu::Proofs {
+    wallet
+        .advanced()
+        .proofs(ProofQuery {
+            states: vec![state],
+            conditions: None,
+        })
+        .await
+        .expect("proof records")
+        .into_iter()
+        .map(|record| record.proof)
+        .collect()
+}
+
+async fn replace_wallet_proofs(
+    wallet: &cdk::Wallet,
+    store: &TestWalletDatabase,
+    proofs: cashu::Proofs,
+    replaced_ys: Vec<cashu::PublicKey>,
+) {
+    let identity = wallet.identity();
+    let proof_infos = proofs
+        .into_iter()
+        .map(|proof| {
+            ProofInfo::new(
+                proof,
+                identity.mint_url.clone(),
+                State::Unspent,
+                identity.unit.clone(),
+            )
+            .expect("valid proof fixture")
+        })
+        .collect();
+    store
+        .update_proofs(proof_infos, replaced_ys)
+        .await
+        .expect("replace wallet proof fixtures");
+}
+
+async fn wallet_keysets(wallet: &cdk::Wallet) -> Vec<KeySet> {
+    wallet
+        .advanced()
+        .mint_metadata(MintMetadataRequest {
+            source: MetadataSource::CacheOrNetwork,
+        })
+        .await
+        .expect("mint metadata")
+        .keysets
+}
+
+async fn wallet_history(
+    wallet: &cdk::Wallet,
+    direction: Option<TransactionDirection>,
+) -> Vec<HistoryEntry> {
+    wallet
+        .history(HistoryQuery {
+            direction,
+            limit: None,
+        })
+        .await
+        .expect("wallet history")
+}
+
+async fn history_entry(wallet: &cdk::Wallet, id: TransactionId) -> HistoryEntry {
+    wallet_history(wallet, None)
+        .await
+        .into_iter()
+        .find(|entry| entry.id == id)
+        .expect("transaction history entry")
+}
+
+async fn quote_payment(wallet: &cdk::Wallet, request: impl Into<String>) -> PaymentSession {
+    wallet
+        .quote_payment(PaymentQuoteRequest::new(PaymentTarget::bolt11(
+            request.into(),
+        )))
+        .await
+        .expect("payment quote")
+        .into_single()
+        .expect("single payment quote")
+}
+
+async fn paid_mint_session(wallet: &cdk::Wallet, amount: Amount) -> MintSession {
+    let session = wallet
+        .request_mint(WalletMintRequest::bolt11(amount))
+        .await
+        .expect("mint session");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if session.refresh().await.expect("mint state").state == MintState::Paid {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("paid mint session");
+    session
+}
+
+async fn claim_mint_batch(
+    wallet: &cdk::Wallet,
+    sessions: &[&MintSession],
+) -> Result<cdk::wallet::advanced::MintBatchReceipt, cdk::Error> {
+    wallet
+        .advanced()
+        .claim_mint_batch(MintBatchClaimRequest {
+            quote_ids: sessions
+                .iter()
+                .map(|session| session.id().clone())
+                .collect(),
+            amount_split_target: SplitTarget::default(),
+            conditions: None,
+            external_keys: HashMap::new(),
+        })
+        .await
 }
 
 /// Tests the token swap and send functionality:
@@ -77,115 +207,72 @@ async fn test_swap_to_send() {
     fund_wallet(wallet_alice.clone(), 64, None)
         .await
         .expect("Failed to fund wallet");
-    let balance_alice = wallet_alice
-        .total_balance()
-        .await
-        .expect("Failed to get balance");
+    let balance_alice = available_balance(&wallet_alice).await;
     assert_eq!(Amount::from(64), balance_alice);
 
     // Alice wants to send 40 sats, which internally swaps
     let prepared_send = wallet_alice
-        .prepare_send(Amount::from(40), SendOptions::default())
+        .plan_send(SendRequest::new(Amount::from(40)).with_memo("test_swapt_to_send"))
         .await
         .expect("Failed to prepare send");
     assert_eq!(
-        HashSet::<_, RandomState>::from_iter(
-            prepared_send.proofs().ys().expect("Failed to get ys")
-        ),
-        HashSet::from_iter(
-            wallet_alice
-                .get_reserved_proofs()
-                .await
-                .expect("Failed to get reserved proofs")
-                .ys()
-                .expect("Failed to get ys")
-        )
+        proof_set(&wallet_alice, State::Reserved)
+            .await
+            .total_amount()
+            .expect("reserved amount"),
+        prepared_send.amount() + prepared_send.fee()
     );
-    let send_transaction_id = TransactionId::from_saga_id(prepared_send.operation_id());
-    let token = prepared_send
-        .confirm(Some(SendMemo::for_token("test_swapt_to_send")))
-        .await
-        .expect("Failed to send token");
-    let keysets_info = to_keyset_infos(&wallet_alice.keysets(Default::default()).await.unwrap());
-    let token_proofs = token.proofs(&keysets_info).unwrap();
+    let send_transaction_id = TransactionId::from_saga_id(prepared_send.operation_id().as_uuid());
+    let send = prepared_send.execute().await.expect("Failed to send token");
+    let keysets_info = to_keyset_infos(&wallet_keysets(&wallet_alice).await);
+    let token_proofs = send.token.proofs(&keysets_info).unwrap();
     assert_eq!(
         Amount::from(40),
         token_proofs
             .total_amount()
             .expect("Failed to get total amount")
     );
-    assert_eq!(
-        Amount::from(24),
-        wallet_alice
-            .total_balance()
-            .await
-            .expect("Failed to get balance")
-    );
+    assert_eq!(Amount::from(24), available_balance(&wallet_alice).await);
     assert_eq!(
         HashSet::<_, RandomState>::from_iter(token_proofs.ys().expect("Failed to get ys")),
         HashSet::from_iter(
-            wallet_alice
-                .get_pending_spent_proofs()
+            proof_set(&wallet_alice, State::PendingSpent)
                 .await
-                .expect("Failed to get pending spent proofs")
                 .ys()
                 .expect("Failed to get ys")
         )
     );
 
-    let transaction = wallet_alice
-        .get_transaction(send_transaction_id)
-        .await
-        .expect("Failed to get transaction")
-        .expect("Transaction not found");
-    assert_eq!(wallet_alice.mint_url, transaction.mint_url);
+    let transaction = history_entry(&wallet_alice, send_transaction_id).await;
+    assert_eq!(wallet_alice.identity(), transaction.wallet);
     assert_eq!(TransactionDirection::Outgoing, transaction.direction);
     assert_eq!(Amount::from(40), transaction.amount);
     assert_eq!(Amount::from(0), transaction.fee);
-    assert_eq!(CurrencyUnit::Sat, transaction.unit);
-    assert_eq!(token_proofs.ys().unwrap(), transaction.ys);
     assert_eq!(TransactionStatus::Pending, transaction.status);
 
     // Alice sends cashu, Carol receives
     let wallet_carol = create_test_wallet_for_mint(mint_bob.clone())
         .await
         .expect("Failed to create Carol's wallet");
-    let received_amount = wallet_carol
-        .receive_proofs(
-            token_proofs.clone(),
-            ReceiveOptions::default(),
-            token.memo().clone(),
-            Some(token.to_string()),
-        )
+    let received = wallet_carol
+        .receive(ReceiveRequest::new(send.token.to_string()))
         .await
         .expect("Failed to receive proofs");
 
-    assert_eq!(Amount::from(40), received_amount);
-    assert_eq!(
-        Amount::from(40),
-        wallet_carol
-            .total_balance()
-            .await
-            .expect("Failed to get Carol's balance")
-    );
+    assert_eq!(Amount::from(40), received.amount);
+    assert_eq!(Amount::from(40), available_balance(&wallet_carol).await);
 
-    let transaction = wallet_carol
-        .list_transactions(Some(TransactionDirection::Incoming))
+    let transaction = wallet_history(&wallet_carol, Some(TransactionDirection::Incoming))
         .await
-        .expect("Failed to list transactions")
         .into_iter()
-        .find(|transaction| {
-            transaction.ys == token_proofs.ys().expect("Failed to get transaction ys")
-        })
+        .find(|transaction| transaction.amount == Amount::from(40))
         .expect("Transaction not found");
-    assert_ne!(send_transaction_id, transaction.id());
-    assert_eq!(wallet_carol.mint_url, transaction.mint_url);
+    assert_ne!(send_transaction_id, transaction.id);
+    assert_eq!(wallet_carol.identity(), transaction.wallet);
     assert_eq!(TransactionDirection::Incoming, transaction.direction);
     assert_eq!(Amount::from(40), transaction.amount);
     assert_eq!(Amount::from(0), transaction.fee);
-    assert_eq!(CurrencyUnit::Sat, transaction.unit);
-    assert_eq!(token_proofs.ys().unwrap(), transaction.ys);
-    assert_eq!(token.memo().clone(), transaction.memo);
+    assert_eq!(Some("test_swapt_to_send".to_owned()), transaction.memo);
     assert_eq!(TransactionStatus::Completed, transaction.status);
 }
 
@@ -205,46 +292,28 @@ async fn test_send_to_same_wallet_preserves_transaction_history() {
         .expect("Failed to fund wallet");
 
     let prepared_send = wallet
-        .prepare_send(Amount::from(40), SendOptions::default())
+        .plan_send(SendRequest::new(Amount::from(40)).with_memo("self-send"))
         .await
         .expect("Failed to prepare send");
-    let outgoing_id = TransactionId::from_saga_id(prepared_send.operation_id());
-    let token = prepared_send
-        .confirm(Some(SendMemo::for_token("self-send")))
-        .await
-        .expect("Failed to send token");
-    let keysets_info = to_keyset_infos(&wallet.keysets(Default::default()).await.unwrap());
-    let token_proofs = token.proofs(&keysets_info).unwrap();
-    let token_ys = token_proofs.ys().expect("Failed to get token ys");
+    let outgoing_id = TransactionId::from_saga_id(prepared_send.operation_id().as_uuid());
+    let send = prepared_send.execute().await.expect("Failed to send token");
 
     wallet
-        .receive_proofs(
-            token_proofs,
-            ReceiveOptions::default(),
-            token.memo().clone(),
-            Some(token.to_string()),
-        )
+        .receive(ReceiveRequest::new(send.token.to_string()))
         .await
         .expect("Failed to receive token");
 
-    let outgoing = wallet
-        .get_transaction(outgoing_id)
-        .await
-        .expect("Failed to get outgoing transaction")
-        .expect("Outgoing transaction not found");
+    let outgoing = history_entry(&wallet, outgoing_id).await;
     assert_eq!(outgoing.direction, TransactionDirection::Outgoing);
     assert_eq!(outgoing.status, TransactionStatus::Pending);
-    assert_eq!(outgoing.ys, token_ys);
 
-    let incoming = wallet
-        .list_transactions(Some(TransactionDirection::Incoming))
+    let incoming = wallet_history(&wallet, Some(TransactionDirection::Incoming))
         .await
-        .expect("Failed to list incoming transactions")
         .into_iter()
-        .find(|transaction| transaction.ys == token_ys)
+        .find(|transaction| transaction.memo.as_deref() == Some("self-send"))
         .expect("Incoming transaction not found");
     assert_eq!(incoming.status, TransactionStatus::Completed);
-    assert_ne!(incoming.id(), outgoing_id);
+    assert_ne!(incoming.id, outgoing_id);
 }
 
 /// Tests the NUT-06 functionality (mint discovery):
@@ -266,10 +335,7 @@ async fn test_mint_nut06() {
     fund_wallet(wallet_alice.clone(), 64, None)
         .await
         .expect("Failed to fund wallet");
-    let balance_alice = wallet_alice
-        .total_balance()
-        .await
-        .expect("Failed to get balance");
+    let balance_alice = available_balance(&wallet_alice).await;
     assert_eq!(Amount::from(64), balance_alice);
 
     // Verify keyset amounts after minting
@@ -285,25 +351,25 @@ async fn test_mint_nut06() {
         "Should have issued 64 sats"
     );
 
-    let transaction = wallet_alice
-        .list_transactions(None)
+    let transaction = wallet_history(&wallet_alice, None)
         .await
-        .expect("Failed to list transactions")
         .pop()
         .expect("No transactions found");
-    assert_eq!(wallet_alice.mint_url, transaction.mint_url);
+    assert_eq!(wallet_alice.identity(), transaction.wallet);
     assert_eq!(TransactionDirection::Incoming, transaction.direction);
     assert_eq!(Amount::from(64), transaction.amount);
     assert_eq!(Amount::from(0), transaction.fee);
-    assert_eq!(CurrencyUnit::Sat, transaction.unit);
     assert_eq!(TransactionStatus::Completed, transaction.status);
 
-    let initial_mint_url = wallet_alice.mint_url.clone();
+    let initial_mint_url = wallet_alice.identity().mint_url;
     let mint_info_before = wallet_alice
-        .fetch_mint_info()
+        .advanced()
+        .mint_metadata(MintMetadataRequest {
+            source: MetadataSource::Refresh,
+        })
         .await
         .expect("Failed to get mint info")
-        .unwrap();
+        .info;
     assert!(mint_info_before
         .urls
         .unwrap()
@@ -312,15 +378,13 @@ async fn test_mint_nut06() {
     // Wallet updates mint URL
     let new_mint_url = MintUrl::from_str("https://new-mint-url").expect("Failed to parse mint URL");
     wallet_alice
-        .update_mint_url(new_mint_url.clone())
+        .advanced_mut()
+        .relocate_mint(new_mint_url.clone())
         .await
         .expect("Failed to update mint URL");
 
     // Check balance after mint URL was updated
-    let balance_alice_after = wallet_alice
-        .total_balance()
-        .await
-        .expect("Failed to get balance after URL update");
+    let balance_alice_after = available_balance(&wallet_alice).await;
     assert_eq!(Amount::from(64), balance_alice_after);
 }
 
@@ -340,10 +404,7 @@ async fn test_mint_double_spend() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = proof_set(&wallet_alice, State::Unspent).await;
 
     let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
     let keyset_id = keys.id;
@@ -398,10 +459,7 @@ async fn test_attempt_to_swap_by_overflowing() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = proof_set(&wallet_alice, State::Unspent).await;
 
     let amount = 2_u64.pow(63);
 
@@ -466,10 +524,7 @@ async fn test_swap_unbalanced() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = proof_set(&wallet_alice, State::Unspent).await;
 
     let keyset_id = get_keyset_id(&mint_bob).await;
 
@@ -529,10 +584,7 @@ pub async fn test_p2pk_swap() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = proof_set(&wallet_alice, State::Unspent).await;
 
     let keyset_id = get_keyset_id(&mint_bob).await;
 
@@ -670,10 +722,7 @@ async fn test_swap_overpay_underpay_fee() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = proof_set(&wallet_alice, State::Unspent).await;
 
     let keyset_id = mint_bob.pubkeys().keysets.first().unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
@@ -754,10 +803,7 @@ async fn test_mint_enforce_fee() {
     .await
     .expect("Failed to fund wallet");
 
-    let mut proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let mut proofs = proof_set(&wallet_alice, State::Unspent).await;
 
     let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
     let keyset_id = keys.id;
@@ -896,22 +942,16 @@ async fn test_mint_max_inputs_exceeded_melt() {
     .await
     .expect("Failed to fund wallet");
 
-    let proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = proof_set(&wallet_alice, State::Unspent).await;
 
     // Use 6 proofs (limit is 5)
     let six_proofs: Vec<_> = proofs.iter().take(6).cloned().collect();
     assert_eq!(six_proofs.len(), 6);
 
     let fake_invoice = create_fake_invoice(1000, "".to_string());
-    let melt_quote = wallet_alice
-        .melt_quote(PaymentMethod::BOLT11, fake_invoice.to_string(), None, None)
-        .await
-        .expect("Failed to create melt quote");
+    let payment = quote_payment(&wallet_alice, fake_invoice.to_string()).await;
 
-    let melt_request = MeltRequest::new(melt_quote.id.parse().unwrap(), six_proofs, None);
+    let melt_request = MeltRequest::new(payment.id().as_str().parse().unwrap(), six_proofs, None);
 
     match mint_bob.melt(&melt_request).await {
         Ok(_) => panic!("Melt allowed exceeding max inputs"),
@@ -942,16 +982,10 @@ async fn test_mint_max_outputs_exceeded_melt() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = proof_set(&wallet_alice, State::Unspent).await;
 
     let fake_invoice = create_fake_invoice(1000, "".to_string()); // 1000 msat = 1 sat
-    let melt_quote = wallet_alice
-        .melt_quote(PaymentMethod::BOLT11, fake_invoice.to_string(), None, None)
-        .await
-        .expect("Failed to create melt quote");
+    let payment = quote_payment(&wallet_alice, fake_invoice.to_string()).await;
 
     let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
     let keyset_id = keys.id;
@@ -971,7 +1005,7 @@ async fn test_mint_max_outputs_exceeded_melt() {
     let excessive_change: Vec<_> = change_messages.into_iter().take(21).collect();
 
     let melt_request = MeltRequest::new(
-        melt_quote.id.parse().unwrap(),
+        payment.id().as_str().parse().unwrap(),
         proofs,
         Some(excessive_change),
     );
@@ -1008,10 +1042,7 @@ async fn test_mint_max_inputs_exceeded() {
     .await
     .expect("Failed to fund wallet");
 
-    let proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = proof_set(&wallet_alice, State::Unspent).await;
 
     let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
     let keyset_id = keys.id;
@@ -1060,10 +1091,7 @@ async fn test_mint_max_outputs_exceeded() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = proof_set(&wallet_alice, State::Unspent).await;
 
     let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
     let keyset_id = keys.id;
@@ -1153,25 +1181,21 @@ async fn test_mint_change_with_fee_melt() {
         "Should have redeemed 0 sats initially, "
     );
 
-    let proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = proof_set(&wallet_alice, State::Unspent).await;
 
     let fake_invoice = create_fake_invoice(1000, "".to_string());
 
-    let melt_quote = wallet_alice
-        .melt_quote(PaymentMethod::BOLT11, fake_invoice.to_string(), None, None)
+    let payment = quote_payment(&wallet_alice, fake_invoice.to_string()).await;
+
+    let prepared = payment
+        .prepare_with(PaymentPrepareOptions {
+            funding: PaymentFunding::Proofs(proofs),
+        })
         .await
         .unwrap();
+    prepared.execute().await.unwrap();
 
-    let prepared = wallet_alice
-        .prepare_melt_proofs(&melt_quote.id, proofs, std::collections::HashMap::new())
-        .await
-        .unwrap();
-    let w = prepared.confirm().await.unwrap();
-
-    assert_eq!(w.change().unwrap().total_amount().unwrap(), 97.into());
+    assert_eq!(available_balance(&wallet_alice).await, 97.into());
 
     // Check amounts after melting
     // Melting redeems 100 sats and issues 97 sats as change
@@ -1213,10 +1237,7 @@ async fn test_concurrent_double_spend_swap() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = proof_set(&wallet_alice, State::Unspent).await;
 
     let keyset_id = get_keyset_id(&mint_bob).await;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
@@ -1320,29 +1341,23 @@ async fn test_concurrent_double_spend_melt() {
         .await
         .expect("Failed to fund wallet");
 
-    let proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Could not get proofs");
+    let proofs = proof_set(&wallet_alice, State::Unspent).await;
 
     // Create a Lightning invoice for the melt
     let invoice = create_fake_invoice(1000, "".to_string());
 
     // Create a melt quote
-    let melt_quote = wallet_alice
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .expect("Failed to create melt quote");
+    let payment = quote_payment(&wallet_alice, invoice.to_string()).await;
 
     // Get the quote ID and payment request
-    let quote_id = melt_quote.id.clone();
+    let quote_id = payment.id();
 
     // Create 3 identical melt requests with the same proofs
     let mint_clone1 = mint_bob.clone();
     let mint_clone2 = mint_bob.clone();
     let mint_clone3 = mint_bob.clone();
 
-    let melt_request = MeltRequest::new(quote_id.parse().unwrap(), proofs.clone(), None);
+    let melt_request = MeltRequest::new(quote_id.as_str().parse().unwrap(), proofs.clone(), None);
     let melt_request2 = melt_request.clone();
     let melt_request3 = melt_request.clone();
 
@@ -1436,10 +1451,7 @@ async fn test_p2pk_send_force_swap_with_fees() {
     fund_wallet(wallet.clone(), 64, None)
         .await
         .expect("Failed to fund wallet");
-    assert_eq!(
-        Amount::from(64),
-        wallet.total_balance().await.expect("Failed to get balance")
-    );
+    assert_eq!(Amount::from(64), available_balance(&wallet).await);
 
     // Generate P2PK spending conditions
     let secret = SecretKey::generate();
@@ -1448,43 +1460,32 @@ async fn test_p2pk_send_force_swap_with_fees() {
     let send_amount = Amount::from(10);
 
     // Attempt to send with P2PK conditions (triggers force_swap since no proofs match)
+    let mut request = SendRequest::new(send_amount).with_advanced(SendAdvancedOptions {
+        conditions: Some(spending_conditions),
+        ..Default::default()
+    });
+    request.include_fee = false;
     let prepared = wallet
-        .prepare_send(
-            send_amount,
-            SendOptions {
-                conditions: Some(spending_conditions),
-                ..Default::default() // include_fee: false
-            },
-        )
+        .plan_send(request)
         .await
         .expect("prepare_send should select enough proofs to cover amount + swap fee");
 
-    let swap_fee = prepared.swap_fee();
+    let swap_fee = prepared.fee();
     assert!(
         swap_fee > Amount::ZERO,
         "Expected non-zero swap fee for force_swap with fee_ppk=1000"
     );
 
-    // All proofs should be routed through swap (force_swap=true)
-    assert!(
-        !prepared.proofs_to_swap().is_empty(),
-        "Expected proofs_to_swap to be non-empty for force_swap"
-    );
-    assert!(
-        prepared.proofs_to_send().is_empty(),
-        "Expected proofs_to_send to be empty for force_swap"
-    );
-
     // Confirm the send — this is where the bug manifests: the swap can't
     // produce enough output because the selected proofs don't cover the fee
-    let token = prepared
-        .confirm(None)
+    let send = prepared
+        .execute()
         .await
         .expect("confirm should succeed — swap should produce enough output");
 
     // Verify token contains exactly the requested amount
-    let keysets_info = to_keyset_infos(&wallet.keysets(Default::default()).await.unwrap());
-    let token_proofs = token.proofs(&keysets_info).unwrap();
+    let keysets_info = to_keyset_infos(&wallet_keysets(&wallet).await);
+    let token_proofs = send.token.proofs(&keysets_info).unwrap();
     assert_eq!(
         send_amount,
         token_proofs.total_amount().unwrap(),
@@ -1495,7 +1496,7 @@ async fn test_p2pk_send_force_swap_with_fees() {
     let expected_balance = Amount::from(64) - send_amount - swap_fee;
     assert_eq!(
         expected_balance,
-        wallet.total_balance().await.unwrap(),
+        available_balance(&wallet).await,
         "Wallet balance should be reduced by send amount + swap fee"
     );
 }
@@ -1534,36 +1535,25 @@ async fn test_p2pk_send_force_swap_with_fees_include_fee() {
 
     // Send with include_fee=true so token covers the redemption fee
     let prepared = wallet_sender
-        .prepare_send(
-            send_amount,
-            SendOptions {
+        .plan_send(
+            SendRequest::new(send_amount).with_advanced(SendAdvancedOptions {
                 conditions: Some(spending_conditions),
-                include_fee: true,
                 ..Default::default()
-            },
+            }),
         )
         .await
         .expect("prepare_send should succeed with include_fee and force_swap");
 
-    let swap_fee = prepared.swap_fee();
-    let send_fee = prepared.send_fee();
-    assert!(
-        swap_fee > Amount::ZERO,
-        "Expected non-zero swap fee for force_swap with fee_ppk=1000"
-    );
-    assert!(
-        send_fee > Amount::ZERO,
-        "Expected non-zero send fee with include_fee=true and fee_ppk=1000"
-    );
-
-    let token = prepared
-        .confirm(None)
-        .await
-        .expect("confirm should succeed");
+    let total_fee = prepared.fee();
+    let send = prepared.execute().await.expect("confirm should succeed");
 
     // Token should include amount + send_fee (so recipient can pay the redemption fee)
-    let keysets_info = to_keyset_infos(&wallet_sender.keysets(Default::default()).await.unwrap());
-    let token_proofs = token.proofs(&keysets_info).unwrap();
+    let keysets_info = to_keyset_infos(&wallet_keysets(&wallet_sender).await);
+    let token_proofs = send.token.proofs(&keysets_info).unwrap();
+    let send_fee = token_proofs.total_amount().unwrap() - send_amount;
+    let swap_fee = total_fee - send_fee;
+    assert!(swap_fee > Amount::ZERO, "expected a swap fee");
+    assert!(send_fee > Amount::ZERO, "expected a redemption fee");
     assert_eq!(
         send_amount + send_fee,
         token_proofs.total_amount().unwrap(),
@@ -1572,15 +1562,15 @@ async fn test_p2pk_send_force_swap_with_fees_include_fee() {
 
     // Receiver redeems the token using the P2PK signing key
     let received_amount = wallet_receiver
-        .receive(
-            &token.to_string(),
-            ReceiveOptions {
+        .receive(ReceiveRequest::new(send.token.to_string()).with_advanced(
+            ReceiveAdvancedOptions {
                 p2pk_signing_keys: vec![secret],
                 ..Default::default()
             },
-        )
+        ))
         .await
-        .expect("Receiver should be able to redeem P2PK token");
+        .expect("Receiver should be able to redeem P2PK token")
+        .amount;
 
     // Receiver should get exactly the send_amount after the redemption fee is deducted
     assert_eq!(
@@ -1592,7 +1582,7 @@ async fn test_p2pk_send_force_swap_with_fees_include_fee() {
     let expected_sender_balance = Amount::from(64) - send_amount - swap_fee - send_fee;
     assert_eq!(
         expected_sender_balance,
-        wallet_sender.total_balance().await.unwrap(),
+        available_balance(&wallet_sender).await,
         "Sender balance should be reduced by amount + swap_fee + send_fee"
     );
 }
@@ -1607,53 +1597,25 @@ async fn test_batch_mint_two_quotes() {
         .await
         .expect("Failed to create test wallet");
 
-    let quote1 = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
-        .await
-        .expect("Failed to create quote1");
-    let quote2 = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
-        .await
-        .expect("Failed to create quote2");
-
-    wallet
-        .payment_stream(&quote1)
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-    wallet
-        .payment_stream(&quote2)
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let proofs = wallet
-        .batch_mint(
-            &[&quote1.id, &quote2.id],
-            SplitTarget::default(),
-            None,
-            None,
-        )
+    let quote1 = paid_mint_session(&wallet, Amount::from(32)).await;
+    let quote2 = paid_mint_session(&wallet, Amount::from(32)).await;
+    let receipt = claim_mint_batch(&wallet, &[&quote1, &quote2])
         .await
         .expect("Failed to batch mint");
 
-    let issued_quote1 = wallet
-        .check_mint_quote_status(&quote1.id)
-        .await
-        .expect("Failed to check quote1");
-    let issued_quote2 = wallet
-        .check_mint_quote_status(&quote2.id)
-        .await
-        .expect("Failed to check quote2");
-    assert_eq!(issued_quote1.amount_issued, Amount::from(32));
-    assert_eq!(issued_quote2.amount_issued, Amount::from(32));
+    assert_eq!(
+        quote1.refresh().await.unwrap().amount_claimed,
+        Amount::from(32)
+    );
+    assert_eq!(
+        quote2.refresh().await.unwrap().amount_claimed,
+        Amount::from(32)
+    );
 
-    let total = proofs.total_amount().expect("Failed to get total amount");
+    let total = receipt.amount;
     assert_eq!(total, Amount::from(64), "Total minted should be 64 sats");
 
-    let balance = wallet.total_balance().await.expect("Failed to get balance");
+    let balance = available_balance(&wallet).await;
     assert_eq!(
         balance,
         Amount::from(64),
@@ -1671,27 +1633,15 @@ async fn test_batch_mint_single_quote() {
         .await
         .expect("Failed to create test wallet");
 
-    let quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(64)), None, None)
-        .await
-        .expect("Failed to create quote");
-
-    wallet
-        .payment_stream(&quote)
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let proofs = wallet
-        .batch_mint(&[&quote.id], SplitTarget::default(), None, None)
+    let quote = paid_mint_session(&wallet, Amount::from(64)).await;
+    let receipt = claim_mint_batch(&wallet, &[&quote])
         .await
         .expect("Failed to batch mint with single quote");
 
-    let total = proofs.total_amount().expect("Failed to get total amount");
+    let total = receipt.amount;
     assert_eq!(total, Amount::from(64), "Total minted should be 64 sats");
 
-    let balance = wallet.total_balance().await.expect("Failed to get balance");
+    let balance = available_balance(&wallet).await;
     assert_eq!(
         balance,
         Amount::from(64),
@@ -1709,52 +1659,17 @@ async fn test_batch_mint_three_quotes_different_amounts() {
         .await
         .expect("Failed to create test wallet");
 
-    let quote1 = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(10)), None, None)
-        .await
-        .expect("Failed to create quote1");
-    let quote2 = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(20)), None, None)
-        .await
-        .expect("Failed to create quote2");
-    let quote3 = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(34)), None, None)
-        .await
-        .expect("Failed to create quote3");
-
-    wallet
-        .payment_stream(&quote1)
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-    wallet
-        .payment_stream(&quote2)
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-    wallet
-        .payment_stream(&quote3)
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let proofs = wallet
-        .batch_mint(
-            &[&quote1.id, &quote2.id, &quote3.id],
-            SplitTarget::default(),
-            None,
-            None,
-        )
+    let quote1 = paid_mint_session(&wallet, Amount::from(10)).await;
+    let quote2 = paid_mint_session(&wallet, Amount::from(20)).await;
+    let quote3 = paid_mint_session(&wallet, Amount::from(34)).await;
+    let receipt = claim_mint_batch(&wallet, &[&quote1, &quote2, &quote3])
         .await
         .expect("Failed to batch mint");
 
-    let total = proofs.total_amount().expect("Failed to get total amount");
+    let total = receipt.amount;
     assert_eq!(total, Amount::from(64), "Total minted should be 64 sats");
 
-    let balance = wallet.total_balance().await.expect("Failed to get balance");
+    let balance = available_balance(&wallet).await;
     assert_eq!(
         balance,
         Amount::from(64),
@@ -1772,21 +1687,9 @@ async fn test_batch_mint_duplicate_quote_ids() {
         .await
         .expect("Failed to create test wallet");
 
-    let quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
-        .await
-        .expect("Failed to create quote");
+    let quote = paid_mint_session(&wallet, Amount::from(32)).await;
 
-    wallet
-        .payment_stream(&quote)
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let result = wallet
-        .batch_mint(&[&quote.id, &quote.id], SplitTarget::default(), None, None)
-        .await;
+    let result = claim_mint_batch(&wallet, &[&quote, &quote]).await;
 
     assert!(result.is_err());
     assert!(matches!(result.unwrap_err(), cdk::Error::DuplicateInputs));
@@ -1802,9 +1705,7 @@ async fn test_batch_mint_empty_quotes() {
         .await
         .expect("Failed to create test wallet");
 
-    let result = wallet
-        .batch_mint(&[], SplitTarget::default(), None, None)
-        .await;
+    let result = claim_mint_batch(&wallet, &[]).await;
 
     assert!(result.is_err());
     assert!(matches!(result.unwrap_err(), cdk::Error::UnknownQuote));
@@ -1869,57 +1770,56 @@ async fn test_fake_wallet_custom_mint_and_melt_flow() {
         .expect("Failed to create test wallet");
     let method = PaymentMethod::Custom("paypal".to_string());
 
-    let mint_quote = wallet
-        .mint_quote(method.clone(), Some(Amount::from(64)), None, None)
+    let mint_session = wallet
+        .request_mint(WalletMintRequest::new(
+            method.clone(),
+            Some(Amount::from(64)),
+        ))
         .await
         .expect("Failed to create custom mint quote");
 
-    assert_eq!(mint_quote.payment_method, method);
-    assert!(mint_quote.request.starts_with("paypal:"));
+    assert_eq!(mint_session.initial_state().method, method);
+    assert!(mint_session
+        .initial_state()
+        .payment_request
+        .starts_with("paypal:"));
 
-    let proofs = wallet
-        .wait_and_mint_quote(
-            mint_quote,
-            SplitTarget::default(),
-            None,
-            Duration::from_secs(10),
-        )
+    let receipt = mint_session
+        .wait(Duration::from_secs(10))
         .await
         .expect("Failed to mint custom quote");
 
-    assert_eq!(
-        Amount::from(64),
-        proofs.total_amount().expect("Failed to total proofs")
-    );
-    assert_eq!(
-        Amount::from(64),
-        wallet.total_balance().await.expect("Failed to get balance")
-    );
+    assert_eq!(Amount::from(64), receipt.amount);
+    assert_eq!(Amount::from(64), available_balance(&wallet).await);
 
-    let melt_quote = wallet
-        .melt_quote(
-            method.clone(),
-            "paypal:merchant-request",
-            None,
-            Some(r#"{"amount":20}"#.to_string()),
-        )
+    let payment = wallet
+        .quote_payment(PaymentQuoteRequest::new(PaymentTarget::Custom {
+            method: "paypal".to_owned(),
+            request: "paypal:merchant-request".to_owned(),
+            amount: None,
+            extra: Some(r#"{"amount":20}"#.to_owned()),
+        }))
         .await
-        .expect("Failed to create custom melt quote");
+        .expect("Failed to create custom melt quote")
+        .into_single()
+        .expect("single custom payment");
 
-    assert_eq!(melt_quote.payment_method, method);
-    assert_eq!(Amount::from(20), melt_quote.amount);
+    assert_eq!(payment.quote().method, method);
+    assert_eq!(Amount::from(20), payment.quote().amount);
 
-    let finalized = wallet
-        .prepare_melt(&melt_quote.id, HashMap::new())
+    let finalized = payment
+        .prepare()
         .await
         .expect("Failed to prepare custom melt")
-        .confirm()
+        .execute()
         .await
         .expect("Failed to confirm custom melt");
 
-    assert_eq!(cdk_common::nuts::MeltQuoteState::Paid, finalized.state());
-    assert_eq!(Amount::from(20), finalized.amount());
-    assert_eq!(Some("paypal:merchant-request"), finalized.payment_proof());
+    assert_eq!(Amount::from(20), finalized.amount);
+    assert_eq!(
+        Some("paypal:merchant-request"),
+        finalized.payment_proof.as_deref()
+    );
 }
 
 #[tokio::test]
@@ -1932,25 +1832,19 @@ async fn test_batch_mint_unknown_quote() {
         .await
         .expect("Failed to create test wallet");
 
-    let quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
-        .await
-        .expect("Failed to create quote");
-
-    wallet
-        .payment_stream(&quote)
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
+    let quote = paid_mint_session(&wallet, Amount::from(32)).await;
 
     let result = wallet
-        .batch_mint(
-            &[&quote.id, "non-existent-quote-id"],
-            SplitTarget::default(),
-            None,
-            None,
-        )
+        .advanced()
+        .claim_mint_batch(MintBatchClaimRequest {
+            quote_ids: vec![
+                quote.id().clone(),
+                MintQuoteId::new("non-existent-quote-id"),
+            ],
+            amount_split_target: SplitTarget::default(),
+            conditions: None,
+            external_keys: HashMap::new(),
+        })
         .await;
 
     assert!(result.is_err());
@@ -1968,43 +1862,13 @@ async fn test_batch_mint_already_issued_quote() {
         .expect("Failed to create test wallet");
 
     // First, mint normally
-    let quote1 = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
-        .await
-        .expect("Failed to create quote1");
-
-    wallet
-        .payment_stream(&quote1)
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    // Normal mint
-    let mut stream = wallet.proof_stream(quote1.clone(), SplitTarget::default(), None);
-    stream.next().await.expect("proofs").expect("mint error");
+    let quote1 = paid_mint_session(&wallet, Amount::from(32)).await;
+    quote1.claim().await.expect("mint quote1");
 
     // Now create a second quote and try to batch with the already-issued one
-    let quote2 = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
-        .await
-        .expect("Failed to create quote2");
+    let quote2 = paid_mint_session(&wallet, Amount::from(32)).await;
 
-    wallet
-        .payment_stream(&quote2)
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let result = wallet
-        .batch_mint(
-            &[&quote1.id, &quote2.id],
-            SplitTarget::default(),
-            None,
-            None,
-        )
-        .await;
+    let result = claim_mint_batch(&wallet, &[&quote1, &quote2]).await;
 
     assert!(result.is_err());
     assert!(matches!(result.unwrap_err(), cdk::Error::IssuedQuote));
@@ -2020,55 +1884,29 @@ async fn test_batch_mint_then_spend() {
         .await
         .expect("Failed to create test wallet");
 
-    let quote1 = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
-        .await
-        .expect("Failed to create quote1");
-    let quote2 = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
-        .await
-        .expect("Failed to create quote2");
+    let quote1 = paid_mint_session(&wallet, Amount::from(32)).await;
+    let quote2 = paid_mint_session(&wallet, Amount::from(32)).await;
 
-    wallet
-        .payment_stream(&quote1)
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-    wallet
-        .payment_stream(&quote2)
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let proofs = wallet
-        .batch_mint(
-            &[&quote1.id, &quote2.id],
-            SplitTarget::default(),
-            None,
-            None,
-        )
+    let receipt = claim_mint_batch(&wallet, &[&quote1, &quote2])
         .await
         .expect("Failed to batch mint");
 
-    let total = proofs.total_amount().expect("Failed to get total amount");
+    let total = receipt.amount;
     assert_eq!(total, Amount::from(64));
 
-    let balance_before = wallet.total_balance().await.expect("Failed to get balance");
+    let balance_before = available_balance(&wallet).await;
     assert_eq!(balance_before, Amount::from(64));
 
+    let mut request = SendRequest::new(Amount::from(40)).with_memo("test_batch_mint_then_spend");
+    request.include_fee = false;
     let prepared_send = wallet
-        .prepare_send(Amount::from(40), SendOptions::default())
+        .plan_send(request)
         .await
         .expect("Failed to prepare send");
 
-    let token = prepared_send
-        .confirm(Some(SendMemo::for_token("test_batch_mint_then_spend")))
-        .await
-        .expect("Failed to send token");
+    let send = prepared_send.execute().await.expect("Failed to send token");
 
-    let balance_after = wallet.total_balance().await.expect("Failed to get balance");
+    let balance_after = available_balance(&wallet).await;
 
     // Original 64 - 40 sent = 24 remaining (minus fees)
     assert!(
@@ -2076,8 +1914,8 @@ async fn test_batch_mint_then_spend() {
         "Balance should decrease after send"
     );
 
-    let keysets_info = to_keyset_infos(&wallet.keysets(Default::default()).await.unwrap());
-    let token_proofs = token.proofs(&keysets_info).unwrap();
+    let keysets_info = to_keyset_infos(&wallet_keysets(&wallet).await);
+    let token_proofs = send.token.proofs(&keysets_info).unwrap();
     let token_amount = token_proofs
         .total_amount()
         .expect("Failed to get total amount");
@@ -2098,35 +1936,10 @@ async fn test_batch_mint_completed_operation_integrity() {
         .await
         .expect("Failed to create test wallet");
 
-    let quote1 = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
-        .await
-        .expect("Failed to create quote1");
-    let quote2 = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(Amount::from(32)), None, None)
-        .await
-        .expect("Failed to create quote2");
+    let quote1 = paid_mint_session(&wallet, Amount::from(32)).await;
+    let quote2 = paid_mint_session(&wallet, Amount::from(32)).await;
 
-    wallet
-        .payment_stream(&quote1)
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-    wallet
-        .payment_stream(&quote2)
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let _proofs = wallet
-        .batch_mint(
-            &[&quote1.id, &quote2.id],
-            SplitTarget::default(),
-            None,
-            None,
-        )
+    claim_mint_batch(&wallet, &[&quote1, &quote2])
         .await
         .expect("Failed to batch mint");
 
@@ -2193,47 +2006,39 @@ async fn test_p2bk_send_and_receive() {
 
     // Send with include_fee=true and use_p2bk=true so token uses NUT-28 P2BK privacy
     let prepared = wallet_sender
-        .prepare_send(
-            send_amount,
-            SendOptions {
+        .plan_send(
+            SendRequest::new(send_amount).with_advanced(SendAdvancedOptions {
                 conditions: Some(spending_conditions),
-                include_fee: true,
                 use_p2bk: true,
                 ..Default::default()
-            },
+            }),
         )
         .await
         .expect("Failed to prepare send");
 
     let token = prepared
-        .confirm(None)
+        .execute()
         .await
-        .expect("Failed to confirm send");
+        .expect("Failed to confirm send")
+        .token;
 
     // Check if the proofs have p2pk_e
-    let keysets_info = to_keyset_infos(&wallet_sender.keysets(Default::default()).await.unwrap());
+    let keysets_info = to_keyset_infos(&wallet_keysets(&wallet_sender).await);
     let token_proofs = token.proofs(&keysets_info).unwrap();
     for proof in &token_proofs {
         assert!(proof.p2pk_e.is_some(), "Proof should have p2pk_e set");
     }
-    // Check if the proofs have p2pk_e
-    let keysets_info = to_keyset_infos(&wallet_sender.keysets(Default::default()).await.unwrap());
-    let token_proofs = token.proofs(&keysets_info).unwrap();
-    for proof in &token_proofs {
-        assert!(proof.p2pk_e.is_some(), "Proof should have p2pk_e set");
-    }
-
     // Receiver redeems the token using the P2PK signing key
     let received_amount = wallet_receiver
         .receive(
-            &token.to_string(),
-            ReceiveOptions {
+            ReceiveRequest::new(token.to_string()).with_advanced(ReceiveAdvancedOptions {
                 p2pk_signing_keys: vec![secret],
                 ..Default::default()
-            },
+            }),
         )
         .await
-        .expect("Receiver should be able to redeem P2BK token");
+        .expect("Receiver should be able to redeem P2BK token")
+        .amount;
 
     assert_eq!(
         send_amount, received_amount,
@@ -2281,34 +2086,33 @@ async fn test_p2bk_multi_key_receive() {
     let send_amount = Amount::from(10);
 
     let prepared = wallet_sender
-        .prepare_send(
-            send_amount,
-            SendOptions {
+        .plan_send(
+            SendRequest::new(send_amount).with_advanced(SendAdvancedOptions {
                 conditions: Some(spending_conditions),
-                include_fee: true,
                 use_p2bk: true,
                 ..Default::default()
-            },
+            }),
         )
         .await
         .expect("Failed to prepare send");
 
     let token = prepared
-        .confirm(None)
+        .execute()
         .await
-        .expect("Failed to confirm send");
+        .expect("Failed to confirm send")
+        .token;
 
     // Try to receive with ONLY the second key
     let received_amount = wallet_receiver
         .receive(
-            &token.to_string(),
-            ReceiveOptions {
+            ReceiveRequest::new(token.to_string()).with_advanced(ReceiveAdvancedOptions {
                 p2pk_signing_keys: vec![secret2.clone()],
                 ..Default::default()
-            },
+            }),
         )
         .await
-        .expect("Receiver should be able to redeem P2PK token with second key");
+        .expect("Receiver should be able to redeem P2PK token with second key")
+        .amount;
 
     assert_eq!(send_amount, received_amount);
 }
@@ -2342,7 +2146,7 @@ async fn test_restore_after_keyset_rotation() {
         .expect("Failed to fund wallet before rotation");
 
     assert_eq!(
-        wallet.total_balance().await.unwrap(),
+        available_balance(&wallet).await,
         Amount::from(amount_before_rotation)
     );
 
@@ -2359,16 +2163,19 @@ async fn test_restore_after_keyset_rotation() {
         .expect("Failed to fund wallet after rotation");
 
     let total = amount_before_rotation + amount_after_rotation;
-    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(total));
+    assert_eq!(available_balance(&wallet).await, Amount::from(total));
 
     // Create a fresh wallet with the same seed — simulates restore from backup
     let wallet_restored = create_test_wallet_for_mint_with_seed(mint.clone(), seed)
         .await
         .expect("Failed to create restore wallet");
 
-    assert_eq!(wallet_restored.total_balance().await.unwrap(), Amount::ZERO);
+    assert_eq!(available_balance(&wallet_restored).await, Amount::ZERO);
 
-    let restored = wallet_restored.restore().await.expect("Restore failed");
+    let restored = wallet_restored
+        .restore_from_seed(RestoreRequest::default())
+        .await
+        .expect("Restore failed");
 
     // All proofs (from both keysets) should be recovered
     assert_eq!(
@@ -2732,7 +2539,7 @@ async fn test_p2pk_send_options_signing_keys() {
     let mint = create_and_start_test_mint()
         .await
         .expect("Failed to create test mint");
-    let wallet_alice = create_test_wallet_for_mint(mint.clone())
+    let (wallet_alice, wallet_store) = create_test_wallet_and_store_for_mint(mint.clone())
         .await
         .expect("Failed to create alice wallet");
     let wallet_bob = create_test_wallet_for_mint(mint.clone())
@@ -2749,10 +2556,7 @@ async fn test_p2pk_send_options_signing_keys() {
     let spending_conditions = SpendingConditions::new_p2pk(alice_secret.public_key(), None);
 
     // Get alice's plain proofs so we can swap them for P2PK-locked proofs
-    let plain_proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Failed to get alice's proofs");
+    let plain_proofs = proof_set(&wallet_alice, State::Unspent).await;
     let plain_ys: Vec<_> = plain_proofs.iter().map(|p| p.y().unwrap()).collect();
 
     let keyset_id = get_keyset_id(&mint).await;
@@ -2780,53 +2584,38 @@ async fn test_p2pk_send_options_signing_keys() {
     .unwrap();
 
     // Replace alice's plain proofs in the wallet DB with the P2PK-locked proofs
-    let p2pk_proof_infos: Vec<_> = p2pk_proofs
-        .iter()
-        .map(|p| {
-            ProofInfo::new(
-                p.clone(),
-                wallet_alice.mint_url.clone(),
-                State::Unspent,
-                CurrencyUnit::Sat,
-            )
-            .unwrap()
-        })
-        .collect();
-    wallet_alice
-        .localstore
-        .update_proofs(p2pk_proof_infos, plain_ys)
-        .await
-        .unwrap();
+    replace_wallet_proofs(&wallet_alice, &wallet_store, p2pk_proofs, plain_ys).await;
 
     assert_eq!(
         Amount::from(64),
-        wallet_alice.total_balance().await.unwrap(),
+        available_balance(&wallet_alice).await,
         "Alice should have 64 sats of P2PK-locked proofs"
     );
 
     // Alice sends 10 sats; p2pk_signing_keys signs the input proofs before the swap
     let send_amount = Amount::from(10);
     let prepared = wallet_alice
-        .prepare_send(
-            send_amount,
-            SendOptions {
+        .plan_send(
+            SendRequest::new(send_amount).with_advanced(SendAdvancedOptions {
                 p2pk_signing_keys: vec![alice_secret],
                 ..Default::default()
-            },
+            }),
         )
         .await
         .expect("prepare_send should succeed with P2PK-locked input proofs");
 
     let token = prepared
-        .confirm(None)
+        .execute()
         .await
-        .expect("confirm should succeed — P2PK proofs signed before swap");
+        .expect("confirm should succeed — P2PK proofs signed before swap")
+        .token;
 
     // Bob receives the resulting clean token without needing any signing keys
     let received = wallet_bob
-        .receive(&token.to_string(), ReceiveOptions::default())
+        .receive(ReceiveRequest::new(token.to_string()))
         .await
-        .expect("Bob should receive the token without signing keys");
+        .expect("Bob should receive the token without signing keys")
+        .amount;
 
     assert_eq!(
         send_amount, received,
@@ -2849,7 +2638,7 @@ async fn test_p2pk_signing_keys_exact_denomination_short_circuit() {
     let mint = create_and_start_test_mint()
         .await
         .expect("Failed to create test mint");
-    let wallet_alice = create_test_wallet_for_mint(mint.clone())
+    let (wallet_alice, wallet_store) = create_test_wallet_and_store_for_mint(mint.clone())
         .await
         .expect("Failed to create alice wallet");
     let wallet_bob = create_test_wallet_for_mint(mint.clone())
@@ -2865,10 +2654,7 @@ async fn test_p2pk_signing_keys_exact_denomination_short_circuit() {
     let spending_conditions = SpendingConditions::new_p2pk(alice_secret.public_key(), None);
 
     // Replace alice's plain proofs with P2PK-locked proofs for the same total amount
-    let plain_proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Failed to get alice's proofs");
+    let plain_proofs = proof_set(&wallet_alice, State::Unspent).await;
     let plain_ys: Vec<_> = plain_proofs.iter().map(|p| p.y().unwrap()).collect();
     let total_amount = plain_proofs.total_amount().unwrap();
 
@@ -2895,53 +2681,38 @@ async fn test_p2pk_signing_keys_exact_denomination_short_circuit() {
     )
     .unwrap();
 
-    let p2pk_proof_infos: Vec<_> = p2pk_proofs
-        .iter()
-        .map(|p| {
-            ProofInfo::new(
-                p.clone(),
-                wallet_alice.mint_url.clone(),
-                State::Unspent,
-                CurrencyUnit::Sat,
-            )
-            .unwrap()
-        })
-        .collect();
-    wallet_alice
-        .localstore
-        .update_proofs(p2pk_proof_infos, plain_ys)
-        .await
-        .unwrap();
+    replace_wallet_proofs(&wallet_alice, &wallet_store, p2pk_proofs, plain_ys).await;
 
     assert_eq!(
         total_amount,
-        wallet_alice.total_balance().await.unwrap(),
+        available_balance(&wallet_alice).await,
         "Alice should have P2PK-locked proofs totalling the full amount"
     );
 
     // Send the EXACT total — without the force-swap fix this triggers the short-circuit:
     // proofs_to_swap is empty, signing is skipped, and locked proofs flow into the token.
     let prepared = wallet_alice
-        .prepare_send(
-            total_amount,
-            SendOptions {
+        .plan_send(
+            SendRequest::new(total_amount).with_advanced(SendAdvancedOptions {
                 p2pk_signing_keys: vec![alice_secret],
                 ..Default::default()
-            },
+            }),
         )
         .await
         .expect("prepare_send should succeed");
 
     let token = prepared
-        .confirm(None)
+        .execute()
         .await
-        .expect("confirm should succeed");
+        .expect("confirm should succeed")
+        .token;
 
     // Bob must receive the token without any signing keys, proving the proofs were unlocked.
     let received = wallet_bob
-        .receive(&token.to_string(), ReceiveOptions::default())
+        .receive(ReceiveRequest::new(token.to_string()))
         .await
-        .expect("Bob should receive the unlocked token without signing keys");
+        .expect("Bob should receive the unlocked token without signing keys")
+        .amount;
 
     assert_eq!(
         total_amount, received,
@@ -2961,7 +2732,7 @@ async fn test_p2pk_locked_proof_sign_and_send_passthrough() {
     let mint = create_and_start_test_mint()
         .await
         .expect("Failed to create test mint");
-    let wallet_alice = create_test_wallet_for_mint(mint.clone())
+    let (wallet_alice, wallet_store) = create_test_wallet_and_store_for_mint(mint.clone())
         .await
         .expect("Failed to create alice wallet");
     let wallet_bob = create_test_wallet_for_mint(mint.clone())
@@ -2977,10 +2748,7 @@ async fn test_p2pk_locked_proof_sign_and_send_passthrough() {
     let shared_secret = SecretKey::generate();
     let spending_conditions = SpendingConditions::new_p2pk(shared_secret.public_key(), None);
 
-    let plain_proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Failed to get alice's proofs");
+    let plain_proofs = proof_set(&wallet_alice, State::Unspent).await;
     let plain_ys: Vec<_> = plain_proofs.iter().map(|p| p.y().unwrap()).collect();
     let total_amount = plain_proofs.total_amount().unwrap();
 
@@ -3007,49 +2775,34 @@ async fn test_p2pk_locked_proof_sign_and_send_passthrough() {
     )
     .unwrap();
 
-    let p2pk_proof_infos: Vec<_> = p2pk_proofs
-        .iter()
-        .map(|p| {
-            ProofInfo::new(
-                p.clone(),
-                wallet_alice.mint_url.clone(),
-                State::Unspent,
-                CurrencyUnit::Sat,
-            )
-            .unwrap()
-        })
-        .collect();
-    wallet_alice
-        .localstore
-        .update_proofs(p2pk_proof_infos, plain_ys)
-        .await
-        .unwrap();
+    replace_wallet_proofs(&wallet_alice, &wallet_store, p2pk_proofs, plain_ys).await;
 
     // Alice sends with SignAndSend: proofs are signed but not swapped.
     let prepared = wallet_alice
-        .prepare_send(
-            total_amount,
-            SendOptions {
+        .plan_send(
+            SendRequest::new(total_amount).with_advanced(SendAdvancedOptions {
                 p2pk_signing_keys: vec![shared_secret.clone()],
-                p2pk_locked_proof_send_mode: P2PKLockedProofSendMode::SignAndSend,
+                locked_proof_policy: LockedProofPolicy::PassThrough,
                 ..Default::default()
-            },
+            }),
         )
         .await
         .expect("prepare_send should succeed");
 
     let token = prepared
-        .confirm(None)
+        .execute()
         .await
-        .expect("confirm should succeed with SignAndSend");
+        .expect("confirm should succeed with SignAndSend")
+        .token;
 
     // Alice pre-signed the proofs before sending, so the witness is already attached and the
     // proof is effectively bearer.  Bob does NOT need to provide the signing key — the mint
     // will verify Alice's existing witness signature and accept the swap.
     let received = wallet_bob
-        .receive(&token.to_string(), ReceiveOptions::default())
+        .receive(ReceiveRequest::new(token.to_string()))
         .await
-        .expect("Bob should receive the token using the shared signing key");
+        .expect("Bob should receive the token using the shared signing key")
+        .amount;
 
     assert_eq!(total_amount, received, "Bob should receive the full amount");
 }
@@ -3067,7 +2820,7 @@ async fn test_p2pk_locked_proof_sign_and_send_rejects_sig_all() {
     let mint = create_and_start_test_mint()
         .await
         .expect("Failed to create test mint");
-    let wallet_alice = create_test_wallet_for_mint(mint.clone())
+    let (wallet_alice, wallet_store) = create_test_wallet_and_store_for_mint(mint.clone())
         .await
         .expect("Failed to create alice wallet");
 
@@ -3083,10 +2836,7 @@ async fn test_p2pk_locked_proof_sign_and_send_rejects_sig_all() {
     let spending_conditions =
         SpendingConditions::new_p2pk(alice_secret.public_key(), Some(sig_all_conditions));
 
-    let plain_proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Failed to get alice's proofs");
+    let plain_proofs = proof_set(&wallet_alice, State::Unspent).await;
     let plain_ys: Vec<_> = plain_proofs.iter().map(|p| p.y().unwrap()).collect();
     let total_amount = plain_proofs.total_amount().unwrap();
 
@@ -3113,39 +2863,22 @@ async fn test_p2pk_locked_proof_sign_and_send_rejects_sig_all() {
     )
     .unwrap();
 
-    let p2pk_proof_infos: Vec<_> = p2pk_proofs
-        .iter()
-        .map(|p| {
-            ProofInfo::new(
-                p.clone(),
-                wallet_alice.mint_url.clone(),
-                State::Unspent,
-                CurrencyUnit::Sat,
-            )
-            .unwrap()
-        })
-        .collect();
-    wallet_alice
-        .localstore
-        .update_proofs(p2pk_proof_infos, plain_ys)
-        .await
-        .unwrap();
+    replace_wallet_proofs(&wallet_alice, &wallet_store, p2pk_proofs, plain_ys).await;
 
     // prepare_send succeeds: SignAndSend skips the force-swap path.
     let prepared = wallet_alice
-        .prepare_send(
-            total_amount,
-            SendOptions {
+        .plan_send(
+            SendRequest::new(total_amount).with_advanced(SendAdvancedOptions {
                 p2pk_signing_keys: vec![alice_secret],
-                p2pk_locked_proof_send_mode: P2PKLockedProofSendMode::SignAndSend,
+                locked_proof_policy: LockedProofPolicy::PassThrough,
                 ..Default::default()
-            },
+            }),
         )
         .await
         .expect("prepare_send should succeed");
 
     // confirm must fail: SIG_ALL proofs cannot be pre-signed for passthrough
-    let result = prepared.confirm(None).await;
+    let result = prepared.execute().await;
     assert!(
         result.is_err(),
         "confirm should fail for SIG_ALL proofs in passthrough mode"
@@ -3166,7 +2899,7 @@ async fn test_p2pk_send_keyring_auto_detection() {
     let mint = create_and_start_test_mint()
         .await
         .expect("Failed to create test mint");
-    let wallet_alice = create_test_wallet_for_mint(mint.clone())
+    let (wallet_alice, wallet_store) = create_test_wallet_and_store_for_mint(mint.clone())
         .await
         .expect("Failed to create alice wallet");
     let wallet_bob = create_test_wallet_for_mint(mint.clone())
@@ -3175,7 +2908,8 @@ async fn test_p2pk_send_keyring_auto_detection() {
 
     // Alice generates a P2PK key and stores it in her keyring.
     let alice_pubkey = wallet_alice
-        .generate_public_key()
+        .advanced()
+        .create_signing_key()
         .await
         .expect("generate_public_key should succeed");
     let spending_conditions = SpendingConditions::new_p2pk(alice_pubkey, None);
@@ -3185,10 +2919,7 @@ async fn test_p2pk_send_keyring_auto_detection() {
         .await
         .expect("Failed to fund alice");
 
-    let plain_proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Failed to get alice's proofs");
+    let plain_proofs = proof_set(&wallet_alice, State::Unspent).await;
     let plain_ys: Vec<_> = plain_proofs.iter().map(|p| p.y().unwrap()).collect();
 
     let keyset_id = get_keyset_id(&mint).await;
@@ -3214,47 +2945,33 @@ async fn test_p2pk_send_keyring_auto_detection() {
     )
     .unwrap();
 
-    let p2pk_proof_infos: Vec<_> = p2pk_proofs
-        .iter()
-        .map(|p| {
-            ProofInfo::new(
-                p.clone(),
-                wallet_alice.mint_url.clone(),
-                State::Unspent,
-                CurrencyUnit::Sat,
-            )
-            .unwrap()
-        })
-        .collect();
-    wallet_alice
-        .localstore
-        .update_proofs(p2pk_proof_infos, plain_ys)
-        .await
-        .unwrap();
+    replace_wallet_proofs(&wallet_alice, &wallet_store, p2pk_proofs, plain_ys).await;
 
     assert_eq!(
         Amount::from(64),
-        wallet_alice.total_balance().await.unwrap(),
+        available_balance(&wallet_alice).await,
         "Alice should have 64 sats of P2PK-locked proofs"
     );
 
     // Alice sends 10 sats without providing p2pk_signing_keys — keyring auto-detects the key.
     let send_amount = Amount::from(10);
     let prepared = wallet_alice
-        .prepare_send(send_amount, SendOptions::default())
+        .plan_send(SendRequest::new(send_amount))
         .await
         .expect("prepare_send should succeed with keyring keys");
 
     let token = prepared
-        .confirm(None)
+        .execute()
         .await
-        .expect("confirm should sign proofs from keyring and produce a clean token");
+        .expect("confirm should sign proofs from keyring and produce a clean token")
+        .token;
 
     // Bob receives the clean token without needing any signing keys.
     let received = wallet_bob
-        .receive(&token.to_string(), ReceiveOptions::default())
+        .receive(ReceiveRequest::new(token.to_string()))
         .await
-        .expect("Bob should receive the token without signing keys");
+        .expect("Bob should receive the token without signing keys")
+        .amount;
 
     assert_eq!(
         send_amount, received,
@@ -3272,7 +2989,7 @@ async fn test_p2pk_unsignable_proof_falls_back_to_bearer() {
     let mint = create_and_start_test_mint()
         .await
         .expect("Failed to create test mint");
-    let wallet_alice = create_test_wallet_for_mint(mint.clone())
+    let (wallet_alice, wallet_store) = create_test_wallet_and_store_for_mint(mint.clone())
         .await
         .expect("Failed to create alice wallet");
     let wallet_bob = create_test_wallet_for_mint(mint.clone())
@@ -3288,10 +3005,7 @@ async fn test_p2pk_unsignable_proof_falls_back_to_bearer() {
     let unknown_key = SecretKey::generate();
     let spending_conditions = SpendingConditions::new_p2pk(unknown_key.public_key(), None);
 
-    let plain_proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Failed to get alice's proofs");
+    let plain_proofs = proof_set(&wallet_alice, State::Unspent).await;
     let proof_to_lock = plain_proofs
         .iter()
         .find(|p| p.amount == cashu::Amount::from(8))
@@ -3322,39 +3036,31 @@ async fn test_p2pk_unsignable_proof_falls_back_to_bearer() {
     )
     .unwrap();
 
-    let locked_proof_infos: Vec<_> = locked_proofs
-        .iter()
-        .map(|p| {
-            ProofInfo::new(
-                p.clone(),
-                wallet_alice.mint_url.clone(),
-                State::Unspent,
-                CurrencyUnit::Sat,
-            )
-            .unwrap()
-        })
-        .collect();
-    wallet_alice
-        .localstore
-        .update_proofs(locked_proof_infos, vec![proof_to_lock_y])
-        .await
-        .unwrap();
+    replace_wallet_proofs(
+        &wallet_alice,
+        &wallet_store,
+        locked_proofs,
+        vec![proof_to_lock_y],
+    )
+    .await;
 
     // Alice sends 4 sats — a small amount well within her bearer balance.
     // The selection algorithm must skip the locked 8-sat proof and use bearer proofs only.
     let send_amount = cashu::Amount::from(4);
     let token = wallet_alice
-        .prepare_send(send_amount, SendOptions::default())
+        .plan_send(SendRequest::new(send_amount))
         .await
         .expect("prepare_send should succeed using only bearer proofs")
-        .confirm(None)
+        .execute()
         .await
-        .expect("confirm should succeed");
+        .expect("confirm should succeed")
+        .token;
 
     let received = wallet_bob
-        .receive(&token.to_string(), ReceiveOptions::default())
+        .receive(ReceiveRequest::new(token.to_string()))
         .await
-        .expect("Bob should receive the clean token");
+        .expect("Bob should receive the clean token")
+        .amount;
 
     assert_eq!(send_amount, received);
 }
@@ -3368,7 +3074,7 @@ async fn test_malformed_p2pk_proof_falls_back_to_bearer() {
     let mint = create_and_start_test_mint()
         .await
         .expect("Failed to create test mint");
-    let wallet_alice = create_test_wallet_for_mint(mint.clone())
+    let (wallet_alice, wallet_store) = create_test_wallet_and_store_for_mint(mint.clone())
         .await
         .expect("Failed to create alice wallet");
     let wallet_bob = create_test_wallet_for_mint(mint.clone())
@@ -3382,10 +3088,7 @@ async fn test_malformed_p2pk_proof_falls_back_to_bearer() {
     let unknown_key = SecretKey::generate();
     let spending_conditions = SpendingConditions::new_p2pk(unknown_key.public_key(), None);
 
-    let plain_proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Failed to get alice's proofs");
+    let plain_proofs = proof_set(&wallet_alice, State::Unspent).await;
     let proof_to_lock = plain_proofs
         .iter()
         .find(|p| p.amount == cashu::Amount::from(8))
@@ -3418,37 +3121,29 @@ async fn test_malformed_p2pk_proof_falls_back_to_bearer() {
     locked_proofs[0].secret =
         cdk::secret::Secret::new(r#"["P2PK",{"nonce":"bad","data":"not-a-public-key"}]"#);
 
-    let locked_proof_infos: Vec<_> = locked_proofs
-        .iter()
-        .map(|p| {
-            ProofInfo::new(
-                p.clone(),
-                wallet_alice.mint_url.clone(),
-                State::Unspent,
-                CurrencyUnit::Sat,
-            )
-            .unwrap()
-        })
-        .collect();
-    wallet_alice
-        .localstore
-        .update_proofs(locked_proof_infos, vec![proof_to_lock_y])
-        .await
-        .unwrap();
+    replace_wallet_proofs(
+        &wallet_alice,
+        &wallet_store,
+        locked_proofs,
+        vec![proof_to_lock_y],
+    )
+    .await;
 
     let send_amount = cashu::Amount::from(4);
     let token = wallet_alice
-        .prepare_send(send_amount, SendOptions::default())
+        .plan_send(SendRequest::new(send_amount))
         .await
         .expect("prepare_send should succeed using only bearer proofs")
-        .confirm(None)
+        .execute()
         .await
-        .expect("confirm should succeed");
+        .expect("confirm should succeed")
+        .token;
 
     let received = wallet_bob
-        .receive(&token.to_string(), ReceiveOptions::default())
+        .receive(ReceiveRequest::new(token.to_string()))
         .await
-        .expect("Bob should receive the clean token");
+        .expect("Bob should receive the clean token")
+        .amount;
 
     assert_eq!(send_amount, received);
 }
@@ -3463,7 +3158,7 @@ async fn test_p2pk_unsignable_proof_only_gives_insufficient_funds() {
     let mint = create_and_start_test_mint()
         .await
         .expect("Failed to create test mint");
-    let wallet_alice = create_test_wallet_for_mint(mint.clone())
+    let (wallet_alice, wallet_store) = create_test_wallet_and_store_for_mint(mint.clone())
         .await
         .expect("Failed to create alice wallet");
 
@@ -3475,10 +3170,7 @@ async fn test_p2pk_unsignable_proof_only_gives_insufficient_funds() {
     let unknown_key = SecretKey::generate();
     let spending_conditions = SpendingConditions::new_p2pk(unknown_key.public_key(), None);
 
-    let plain_proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Failed to get alice's proofs");
+    let plain_proofs = proof_set(&wallet_alice, State::Unspent).await;
     let plain_ys: Vec<_> = plain_proofs.iter().map(|p| p.y().unwrap()).collect();
 
     let keyset_id = get_keyset_id(&mint).await;
@@ -3504,29 +3196,13 @@ async fn test_p2pk_unsignable_proof_only_gives_insufficient_funds() {
     )
     .unwrap();
 
-    let locked_proof_infos: Vec<_> = locked_proofs
-        .iter()
-        .map(|p| {
-            ProofInfo::new(
-                p.clone(),
-                wallet_alice.mint_url.clone(),
-                State::Unspent,
-                CurrencyUnit::Sat,
-            )
-            .unwrap()
-        })
-        .collect();
-    wallet_alice
-        .localstore
-        .update_proofs(locked_proof_infos, plain_ys)
-        .await
-        .unwrap();
+    replace_wallet_proofs(&wallet_alice, &wallet_store, locked_proofs, plain_ys).await;
 
     // All proofs are locked to an unknown key. prepare_send must fail with InsufficientFunds.
     let err = wallet_alice
-        .prepare_send(Amount::from(10), SendOptions::default())
+        .plan_send(SendRequest::new(Amount::from(10)))
         .await
-        .expect_err("prepare_send should fail when no signable proofs exist");
+        .expect_err("plan_send should fail when no signable proofs exist");
 
     assert!(
         matches!(err, cdk::Error::InsufficientFunds),
@@ -3545,12 +3221,13 @@ async fn test_p2pk_partially_signable_proof_only_gives_insufficient_funds() {
     let mint = create_and_start_test_mint()
         .await
         .expect("Failed to create test mint");
-    let wallet_alice = create_test_wallet_for_mint(mint.clone())
+    let (wallet_alice, wallet_store) = create_test_wallet_and_store_for_mint(mint.clone())
         .await
         .expect("Failed to create alice wallet");
 
     let alice_pubkey = wallet_alice
-        .generate_public_key()
+        .advanced()
+        .create_signing_key()
         .await
         .expect("generate_public_key should succeed");
     let unknown_key = SecretKey::generate();
@@ -3569,10 +3246,7 @@ async fn test_p2pk_partially_signable_proof_only_gives_insufficient_funds() {
         .await
         .expect("Failed to fund alice");
 
-    let plain_proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Failed to get alice's proofs");
+    let plain_proofs = proof_set(&wallet_alice, State::Unspent).await;
     let plain_ys: Vec<_> = plain_proofs.iter().map(|p| p.y().unwrap()).collect();
     let total_amount = plain_proofs.total_amount().unwrap();
 
@@ -3599,28 +3273,12 @@ async fn test_p2pk_partially_signable_proof_only_gives_insufficient_funds() {
     )
     .unwrap();
 
-    let locked_proof_infos: Vec<_> = locked_proofs
-        .iter()
-        .map(|p| {
-            ProofInfo::new(
-                p.clone(),
-                wallet_alice.mint_url.clone(),
-                State::Unspent,
-                CurrencyUnit::Sat,
-            )
-            .unwrap()
-        })
-        .collect();
-    wallet_alice
-        .localstore
-        .update_proofs(locked_proof_infos, plain_ys)
-        .await
-        .unwrap();
+    replace_wallet_proofs(&wallet_alice, &wallet_store, locked_proofs, plain_ys).await;
 
     let err = wallet_alice
-        .prepare_send(total_amount, SendOptions::default())
+        .plan_send(SendRequest::new(total_amount))
         .await
-        .expect_err("prepare_send should fail when P2PK requirements cannot be satisfied");
+        .expect_err("plan_send should fail when P2PK requirements cannot be satisfied");
 
     assert!(
         matches!(err, cdk::Error::InsufficientFunds),
@@ -3636,7 +3294,7 @@ async fn test_p2pk_locked_proof_sign_and_send_rejects_partial_signatures() {
     let mint = create_and_start_test_mint()
         .await
         .expect("Failed to create test mint");
-    let wallet_alice = create_test_wallet_for_mint(mint.clone())
+    let (wallet_alice, wallet_store) = create_test_wallet_and_store_for_mint(mint.clone())
         .await
         .expect("Failed to create alice wallet");
 
@@ -3658,10 +3316,7 @@ async fn test_p2pk_locked_proof_sign_and_send_rejects_partial_signatures() {
     let spending_conditions =
         SpendingConditions::new_p2pk(alice_secret.public_key(), Some(conditions));
 
-    let plain_proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Failed to get alice's proofs");
+    let plain_proofs = proof_set(&wallet_alice, State::Unspent).await;
     let plain_ys: Vec<_> = plain_proofs.iter().map(|p| p.y().unwrap()).collect();
     let total_amount = plain_proofs.total_amount().unwrap();
 
@@ -3688,37 +3343,20 @@ async fn test_p2pk_locked_proof_sign_and_send_rejects_partial_signatures() {
     )
     .unwrap();
 
-    let locked_proof_infos: Vec<_> = locked_proofs
-        .iter()
-        .map(|p| {
-            ProofInfo::new(
-                p.clone(),
-                wallet_alice.mint_url.clone(),
-                State::Unspent,
-                CurrencyUnit::Sat,
-            )
-            .unwrap()
-        })
-        .collect();
-    wallet_alice
-        .localstore
-        .update_proofs(locked_proof_infos, plain_ys)
-        .await
-        .unwrap();
+    replace_wallet_proofs(&wallet_alice, &wallet_store, locked_proofs, plain_ys).await;
 
     let prepared = wallet_alice
-        .prepare_send(
-            total_amount,
-            SendOptions {
+        .plan_send(
+            SendRequest::new(total_amount).with_advanced(SendAdvancedOptions {
                 p2pk_signing_keys: vec![alice_secret],
-                p2pk_locked_proof_send_mode: P2PKLockedProofSendMode::SignAndSend,
+                locked_proof_policy: LockedProofPolicy::PassThrough,
                 ..Default::default()
-            },
+            }),
         )
         .await
-        .expect("prepare_send should succeed in passthrough mode");
+        .expect("plan_send should succeed in passthrough mode");
 
-    let result = prepared.confirm(None).await;
+    let result = prepared.execute().await;
     assert!(
         matches!(
             result,
@@ -3742,7 +3380,7 @@ async fn test_p2pk_signing_keys_mixed_locked_and_unlocked_proofs() {
     let mint = create_and_start_test_mint()
         .await
         .expect("Failed to create test mint");
-    let wallet_alice = create_test_wallet_for_mint(mint.clone())
+    let (wallet_alice, wallet_store) = create_test_wallet_and_store_for_mint(mint.clone())
         .await
         .expect("Failed to create alice wallet");
     let wallet_bob = create_test_wallet_for_mint(mint.clone())
@@ -3761,10 +3399,7 @@ async fn test_p2pk_signing_keys_mixed_locked_and_unlocked_proofs() {
     // then replace them in her wallet.  After this alice holds:
     //   - ~56 sats of plain unlocked proofs
     //   -   8 sats of P2PK-locked proofs
-    let plain_proofs = wallet_alice
-        .get_unspent_proofs()
-        .await
-        .expect("Failed to get alice's proofs");
+    let plain_proofs = proof_set(&wallet_alice, State::Unspent).await;
 
     let keyset_id = get_keyset_id(&mint).await;
     let keys = mint.pubkeys().keysets.first().cloned().unwrap().keys;
@@ -3798,27 +3433,17 @@ async fn test_p2pk_signing_keys_mixed_locked_and_unlocked_proofs() {
     .unwrap();
 
     // Replace the plain 8-sat proof with the locked ones in alice's wallet.
-    let locked_proof_infos: Vec<_> = locked_proofs
-        .iter()
-        .map(|p| {
-            ProofInfo::new(
-                p.clone(),
-                wallet_alice.mint_url.clone(),
-                State::Unspent,
-                CurrencyUnit::Sat,
-            )
-            .unwrap()
-        })
-        .collect();
-    wallet_alice
-        .localstore
-        .update_proofs(locked_proof_infos, vec![proof_to_lock_y])
-        .await
-        .unwrap();
+    replace_wallet_proofs(
+        &wallet_alice,
+        &wallet_store,
+        locked_proofs,
+        vec![proof_to_lock_y],
+    )
+    .await;
 
     assert_eq!(
         cashu::Amount::from(64),
-        wallet_alice.total_balance().await.unwrap(),
+        available_balance(&wallet_alice).await,
         "Alice should still have 64 sats total (56 unlocked + 8 locked)"
     );
 
@@ -3827,27 +3452,28 @@ async fn test_p2pk_signing_keys_mixed_locked_and_unlocked_proofs() {
     // are routed through the swap; the unlocked ones bypass it.
     let send_amount = cashu::Amount::from(10);
     let prepared = wallet_alice
-        .prepare_send(
-            send_amount,
-            SendOptions {
+        .plan_send(
+            SendRequest::new(send_amount).with_advanced(SendAdvancedOptions {
                 p2pk_signing_keys: vec![alice_secret],
                 ..Default::default()
-            },
+            }),
         )
         .await
-        .expect("prepare_send should succeed with a mixed wallet");
+        .expect("plan_send should succeed with a mixed wallet");
 
     let token = prepared
-        .confirm(None)
+        .execute()
         .await
-        .expect("confirm should succeed");
+        .expect("confirm should succeed")
+        .token;
 
     // Bob must be able to receive the token without any signing keys, proving that
     // the locked proofs were swapped to fresh, unconditioned ones.
     let received = wallet_bob
-        .receive(&token.to_string(), ReceiveOptions::default())
+        .receive(ReceiveRequest::new(token.to_string()))
         .await
-        .expect("Bob should receive the token without signing keys");
+        .expect("Bob should receive the token without signing keys")
+        .amount;
 
     assert_eq!(
         send_amount, received,

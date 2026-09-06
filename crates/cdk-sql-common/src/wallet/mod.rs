@@ -1337,6 +1337,8 @@ where
      mint_url = excluded.mint_url,
      used_by_operation = excluded.used_by_operation
  WHERE melt_quote.version = :expected_version
+   AND (melt_quote.used_by_operation = excluded.used_by_operation
+        OR (melt_quote.used_by_operation IS NULL AND excluded.used_by_operation IS NULL))
  ;
          "#,
         )?

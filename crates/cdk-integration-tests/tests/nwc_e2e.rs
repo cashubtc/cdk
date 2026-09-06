@@ -179,7 +179,7 @@ async fn nwc_e2e_full_flow() {
 
     let wallet = Arc::new(wallet);
 
-    let service_secret_key = wallet.derive_nwc_secret_key().expect("nwc key");
+    let service_secret_key = wallet.advanced().derive_nwc_secret_key().expect("nwc key");
     let service_keys = Keys::parse(&service_secret_key.to_secret_hex()).expect("keys");
     let client_secret = SecretKey::generate();
     let relay_url = RelayUrl::parse(&relay.ws_url()).expect("relay url");

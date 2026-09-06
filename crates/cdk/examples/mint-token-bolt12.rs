@@ -4,9 +4,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cdk::error::Error;
-use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
-use cdk::wallet::{SendOptions, Wallet};
+use cdk::wallet::mint::MintRequest;
+use cdk::wallet::send::SendRequest;
+use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 use rand::random;
@@ -35,27 +36,23 @@ async fn main() -> Result<(), Error> {
     let amount = Amount::from(10);
 
     // Create a new wallet
-    let wallet = Wallet::new(mint_url, unit, localstore, seed, None)?;
+    let wallet = Wallet::open(cdk::wallet::WalletOpenRequest::new(
+        cdk::wallet::WalletIdentity::new(mint_url.parse()?, unit),
+        localstore,
+        seed,
+    ))?;
 
-    let quote = wallet
-        .mint_quote(PaymentMethod::BOLT12, None, None, None)
+    let session = wallet
+        .request_mint(MintRequest::new(PaymentMethod::BOLT12, None))
         .await?;
-    let proofs = wallet
-        .wait_and_mint_quote(
-            quote,
-            Default::default(),
-            Default::default(),
-            Duration::from_secs(10),
-        )
-        .await?;
+    let receipt = session.wait(Duration::from_secs(10)).await?;
 
     // Mint the received amount
-    let receive_amount = proofs.total_amount()?;
-    println!("Received {} from mint {}", receive_amount, mint_url);
+    println!("Received {} from mint {}", receipt.amount, mint_url);
 
     // Send a token with the specified amount
-    let prepared_send = wallet.prepare_send(amount, SendOptions::default()).await?;
-    let token = prepared_send.confirm(None).await?;
+    let plan = wallet.plan_send(SendRequest::new(amount)).await?;
+    let token = plan.execute().await?.token;
     println!("Token:");
     println!("{}", token);
 

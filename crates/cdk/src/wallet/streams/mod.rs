@@ -12,7 +12,6 @@ use super::{Wallet, WalletSubscription};
 
 pub mod payment;
 pub mod proof;
-mod wait;
 
 #[cfg(feature = "npubcash")]
 pub mod npubcash;
@@ -143,7 +142,7 @@ impl WaitableEvent {
 impl Wallet {
     /// Streams all proofs from a single mint quote
     #[inline(always)]
-    pub fn proof_stream(
+    pub(crate) fn proof_stream(
         &self,
         quote: MintQuote,
         amount_split_target: SplitTarget,
@@ -154,7 +153,7 @@ impl Wallet {
 
     /// Streams all new proofs for a set of mints
     #[inline(always)]
-    pub fn mints_proof_stream(
+    pub(crate) fn mints_proof_stream(
         &self,
         quotes: Vec<MintQuote>,
         amount_split_target: SplitTarget,
@@ -165,11 +164,45 @@ impl Wallet {
 
     /// Returns a BoxFuture that will wait for payment on the given event with a timeout check
     #[allow(private_bounds)]
-    pub fn payment_stream<T>(&self, events: T) -> PaymentStream<'_>
+    pub(crate) fn payment_stream<T>(&self, events: T) -> PaymentStream<'_>
     where
         T: Into<WaitableEvent>,
     {
         PaymentStream::new(self, events.into().into_subscription())
+    }
+}
+
+impl super::advanced::AdvancedWallet<'_> {
+    /// Stream issued proofs for one raw mint quote.
+    pub fn mint_proof_stream(
+        &self,
+        quote: MintQuote,
+        amount_split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+    ) -> SingleMintQuoteProofStream<'_> {
+        self.core_wallet()
+            .proof_stream(quote, amount_split_target, spending_conditions)
+    }
+
+    /// Stream issued proofs across several raw mint quotes.
+    pub fn batch_mint_proof_stream(
+        &self,
+        quotes: Vec<MintQuote>,
+        amount_split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+    ) -> MultipleMintQuoteProofStream<'_> {
+        self.core_wallet()
+            .mints_proof_stream(quotes, amount_split_target, spending_conditions)
+    }
+
+    /// Stream state changes for raw incoming mint quotes.
+    pub fn mint_quote_payment_stream(&self, quotes: &[MintQuote]) -> PaymentStream<'_> {
+        self.core_wallet().payment_stream(quotes)
+    }
+
+    /// Stream state changes for raw outgoing payment quotes.
+    pub fn payment_quote_stream(&self, quotes: &[MeltQuote]) -> PaymentStream<'_> {
+        self.core_wallet().payment_stream(quotes)
     }
 }
 #[cfg(all(feature = "nostr", not(target_arch = "wasm32")))]
