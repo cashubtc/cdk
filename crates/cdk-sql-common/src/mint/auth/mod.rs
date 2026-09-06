@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::str::FromStr;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::database::{self, MintAuthDatabase, MintAuthTransaction};
@@ -16,39 +15,37 @@ use tracing::instrument;
 use super::SQLTransaction;
 use crate::column_as_string;
 use crate::common::migrate;
-use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
+use crate::database::{DatabaseExecutor, SqlBackend, SqlTransaction};
 use crate::mint::keys::sql_row_to_keyset_info;
 use crate::mint::signatures::sql_row_to_blind_signature;
 use crate::mint::Error;
-use crate::pool::{DatabasePool, Pool, PooledResource};
 use crate::stmt::query;
 
 /// Mint SQL Database
 #[derive(Debug, Clone)]
 pub struct SQLMintAuthDatabase<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
-    pool: Arc<Pool<RM>>,
+    pool: RM,
 }
 
 impl<RM> SQLMintAuthDatabase<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     /// Creates a new instance
     pub async fn new<X>(db: X) -> Result<Self, Error>
     where
         X: Into<RM::Config>,
     {
-        let pool = Pool::new(db.into());
-        Self::migrate(pool.get().await.map_err(|e| Error::Database(Box::new(e)))?).await?;
+        let pool = RM::new(db.into())?;
+        Self::migrate(pool.begin_migration().await?).await?;
         Ok(Self { pool })
     }
 
     /// Migrate
-    async fn migrate(conn: PooledResource<RM>) -> Result<(), Error> {
-        let tx = ConnectionWithTransaction::new(conn).await?;
+    async fn migrate(tx: RM::Transaction) -> Result<(), Error> {
         migrate(&tx, RM::Connection::name(), MIGRATIONS).await?;
         tx.commit().await?;
         Ok(())
@@ -63,7 +60,7 @@ mod migrations {
 #[async_trait]
 impl<RM> MintAuthTransaction<database::Error> for SQLTransaction<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     #[instrument(skip(self))]
     async fn set_active_keyset(&mut self, id: Id) -> Result<(), database::Error> {
@@ -244,7 +241,7 @@ where
 #[async_trait]
 impl<RM> MintAuthDatabase for SQLMintAuthDatabase<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     type Err = database::Error;
 
@@ -252,23 +249,13 @@ where
         &'a self,
     ) -> Result<Box<dyn MintAuthTransaction<database::Error> + Send + Sync + 'a>, database::Error>
     {
-        Ok(Box::new(SQLTransaction {
-            inner: ConnectionWithTransaction::new(
-                self.pool
-                    .get()
-                    .await
-                    .map_err(|e| Error::Database(Box::new(e)))?,
-            )
-            .await?,
+        Ok(Box::new(SQLTransaction::<RM> {
+            inner: self.pool.begin_transaction().await?,
         }))
     }
 
     async fn get_active_keyset_id(&self) -> Result<Option<Id>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         Ok(query(
             r#"
             SELECT
@@ -280,18 +267,14 @@ where
             "#,
         )?
         .bind("active", true)
-        .pluck(&*conn)
+        .pluck(&conn)
         .await?
         .map(|id| Ok::<_, Error>(column_as_string!(id, Id::from_str, Id::from_bytes)))
         .transpose()?)
     }
 
     async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         Ok(query(
             r#"SELECT
                 id,
@@ -308,18 +291,14 @@ where
                 WHERE id=:id"#,
         )?
         .bind("id", id.to_string())
-        .fetch_one(&*conn)
+        .fetch_one(&conn)
         .await?
         .map(sql_row_to_keyset_info)
         .transpose()?)
     }
 
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         Ok(query(
             r#"SELECT
                 id,
@@ -335,7 +314,7 @@ where
                 keyset
                 WHERE id=:id"#,
         )?
-        .fetch_all(&*conn)
+        .fetch_all(&conn)
         .await?
         .into_iter()
         .map(sql_row_to_keyset_info)
@@ -343,14 +322,10 @@ where
     }
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         let mut current_states = query(r#"SELECT y, state FROM proof WHERE y IN (:ys)"#)?
             .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
-            .fetch_all(&*conn)
+            .fetch_all(&conn)
             .await?
             .into_iter()
             .map(|row| {
@@ -368,11 +343,7 @@ where
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         let mut blinded_signatures = query(
             r#"SELECT
                 keyset_id,
@@ -393,7 +364,7 @@ where
                 .map(|bm| bm.to_bytes().to_vec())
                 .collect(),
         )?
-        .fetch_all(&*conn)
+        .fetch_all(&conn)
         .await?
         .into_iter()
         .map(|mut row| {
@@ -417,15 +388,11 @@ where
         &self,
         protected_endpoint: ProtectedEndpoint,
     ) -> Result<Option<AuthRequired>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         Ok(
             query(r#"SELECT auth FROM protected_endpoints WHERE endpoint = :endpoint"#)?
                 .bind("endpoint", serde_json::to_string(&protected_endpoint)?)
-                .pluck(&*conn)
+                .pluck(&conn)
                 .await?
                 .map(|auth| {
                     Ok::<_, Error>(column_as_string!(
@@ -441,13 +408,9 @@ where
     async fn get_auth_for_endpoints(
         &self,
     ) -> Result<HashMap<ProtectedEndpoint, Option<AuthRequired>>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         Ok(query(r#"SELECT endpoint, auth FROM protected_endpoints"#)?
-            .fetch_all(&*conn)
+            .fetch_all(&conn)
             .await?
             .into_iter()
             .map(|row| {

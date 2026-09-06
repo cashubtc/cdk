@@ -3,15 +3,15 @@
 use cdk_sql_common::mint::SQLMintAuthDatabase;
 use cdk_sql_common::SQLMintDatabase;
 
-use crate::common::SqliteConnectionManager;
+use crate::SqliteBackend;
 
 pub mod memory;
 
 /// Mint SQLite implementation with rusqlite
-pub type MintSqliteDatabase = SQLMintDatabase<SqliteConnectionManager>;
+pub type MintSqliteDatabase = SQLMintDatabase<SqliteBackend>;
 
 /// Mint Auth database with rusqlite
-pub type MintSqliteAuthDatabase = SQLMintAuthDatabase<SqliteConnectionManager>;
+pub type MintSqliteAuthDatabase = SQLMintAuthDatabase<SqliteBackend>;
 
 #[cfg(test)]
 mod test {
@@ -23,7 +23,7 @@ mod test {
     use cdk_common::database::{self, MintAuthDatabase};
     use cdk_common::secret::Secret;
     use cdk_common::{mint_db_test, AuthProof, Id, SecretKey, State};
-    use cdk_sql_common::pool::Pool;
+    use cdk_sql_common::database::SqlBackend;
     use cdk_sql_common::stmt::query;
 
     use super::*;
@@ -47,8 +47,8 @@ mod test {
     async fn bug_opening_relative_path() {
         let config: Config = "test.db".into();
 
-        let pool = Pool::<SqliteConnectionManager>::new(config);
-        let db = pool.get().await;
+        let pool = SqliteBackend::new(config).expect("backend");
+        let db = pool.acquire().await;
         assert!(db.is_ok());
         let _ = remove_file("test.db");
     }
@@ -56,12 +56,22 @@ mod test {
     #[tokio::test]
     async fn exhausted_in_memory_pool_times_out() {
         let config: Config = ":memory:".into();
-        let pool = Pool::<SqliteConnectionManager>::new(config);
+        let pool = SqliteBackend::new(config).expect("backend");
 
-        let _conn = pool.get().await.expect("valid connection");
-        let result = pool.get_timeout(Duration::from_millis(10)).await;
+        let _conn = pool.acquire().await.expect("valid connection");
+        let result = pool
+            .inner
+            .pool()
+            .timeout_get(&deadpool_sqlite::Timeouts {
+                wait: Some(Duration::from_millis(10)),
+                ..Default::default()
+            })
+            .await;
 
-        assert!(matches!(result, Err(cdk_sql_common::pool::Error::Timeout)));
+        assert!(matches!(
+            result,
+            Err(deadpool_sqlite::PoolError::Timeout(_))
+        ));
     }
 
     async fn spend_auth_proof(
@@ -133,13 +143,13 @@ mod test {
             #[cfg(feature = "sqlcipher")]
             let config: Config = (file.as_str(), "test").into();
 
-            let pool = Pool::<SqliteConnectionManager>::new(config);
+            let pool = SqliteBackend::new(config).expect("backend");
 
-            let conn = pool.get().await.expect("valid connection");
+            let conn = pool.acquire().await.expect("valid connection");
 
             query(include_str!("../../tests/legacy-sqlx.sql"))
                 .expect("query")
-                .execute(&*conn)
+                .execute(&conn)
                 .await
                 .expect("create former db failed");
         }

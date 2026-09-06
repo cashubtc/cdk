@@ -2,12 +2,12 @@
 
 use cdk_sql_common::SQLWalletDatabase;
 
-use crate::common::SqliteConnectionManager;
+use crate::SqliteBackend;
 
 pub mod memory;
 
 /// Mint SQLite implementation with rusqlite
-pub type WalletSqliteDatabase = SQLWalletDatabase<SqliteConnectionManager>;
+pub type WalletSqliteDatabase = SQLWalletDatabase<SqliteBackend>;
 
 #[cfg(test)]
 mod tests {
@@ -39,7 +39,7 @@ mod tests {
         let path = std::env::temp_dir()
             .to_path_buf()
             .join(format!("cdk-test-{}.sqlite", uuid::Uuid::new_v4()));
-        let db = WalletSqliteDatabase::new((path, "password".to_string()))
+        let db = WalletSqliteDatabase::new((path.clone(), "password".to_string()))
             .await
             .unwrap();
 
@@ -50,9 +50,20 @@ mod tests {
             .await
             .unwrap();
 
-        let res = db.get_mint(mint_url).await.unwrap();
+        drop(db);
+        assert!(
+            WalletSqliteDatabase::new((path.clone(), "wrong-password".to_owned()))
+                .await
+                .is_err()
+        );
+        let reopened = WalletSqliteDatabase::new((path.clone(), "password".to_owned()))
+            .await
+            .unwrap();
+        let res = reopened.get_mint(mint_url).await.unwrap();
         assert_eq!(mint_info, res.clone().unwrap());
         assert_eq!("test", &res.unwrap().description.unwrap());
+        drop(reopened);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]

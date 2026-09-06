@@ -902,6 +902,9 @@
 
             # Database
             postgresql_16
+            pgbouncer
+            startPgbouncer
+            stopPgbouncer
             startPostgres
             stopPostgres
             pgStatus
@@ -985,6 +988,8 @@
           echo "  stop-postgres   - Stop PostgreSQL (run before exiting)" >&2
           echo "  pg-status       - Check PostgreSQL status" >&2
           echo "  pg-connect      - Connect to PostgreSQL with psql" >&2
+          echo "  start-pgbouncer - Start test proxies on ports 6432 and 6433" >&2
+          echo "  stop-pgbouncer  - Stop the test proxies" >&2
           echo "" >&2
         '';
 
@@ -1071,6 +1076,21 @@
           echo "Starting PostgreSQL on port $PGPORT..."
           start_postgres_server
           echo "PostgreSQL started. Connection URL: postgresql://$PGUSER:$PGPASSWORD@localhost:$PGPORT/$PGDATABASE"
+        '';
+
+        # Isolated PgBouncer endpoints used by the SQL compatibility suite.
+        startPgbouncer = pkgs.writeShellScriptBin "start-pgbouncer" ''
+          export CDK_TEST_PG_HOST="''${CDK_TEST_PG_HOST:-127.0.0.1}"
+          export CDK_TEST_PG_PORT="''${CDK_TEST_PG_PORT:-${postgresConf.pgPort}}"
+          export CDK_TEST_PG_USER="''${CDK_TEST_PG_USER:-${postgresConf.pgUser}}"
+          export CDK_TEST_PG_PASSWORD="''${CDK_TEST_PG_PASSWORD:-${postgresConf.pgPassword}}"
+          export CDK_TEST_PG_DATABASE="''${CDK_TEST_PG_DATABASE:-${postgresConf.pgDatabase}}"
+          export PATH=${pkgs.lib.makeBinPath [ pkgs.pgbouncer pkgs.postgresql_16 pkgs.coreutils ]}:$PATH
+          exec bash ${./misc/pgbouncer/start.sh}
+        '';
+
+        stopPgbouncer = pkgs.writeShellScriptBin "stop-pgbouncer" ''
+          exec bash ${./misc/pgbouncer/stop.sh}
         '';
 
         # Script to stop PostgreSQL

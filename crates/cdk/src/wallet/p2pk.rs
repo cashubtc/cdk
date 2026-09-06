@@ -179,6 +179,22 @@ mod tests {
             })
             .collect::<Vec<_>>();
         indexes.sort_unstable();
-        assert_eq!(indexes, (6..14).collect::<Vec<_>>());
+        // Concurrent reservations can each catch up from the same observed
+        // counter before incrementing it. Gaps are allowed; reusing an existing
+        // index or assigning the same index twice is not. Blocking database
+        // adapters used to hide this interleaving on a current-thread runtime.
+        assert_eq!(indexes.len(), 8);
+        assert!(indexes.iter().all(|index| *index >= 6));
+        assert!(indexes.windows(2).all(|pair| pair[0] < pair[1]));
+        let next = wallet
+            .generate_public_key()
+            .await
+            .expect("next key should derive");
+        let next = db
+            .get_p2pk_key(&next)
+            .await
+            .expect("key lookup")
+            .expect("stored key");
+        assert!(next.derivation_index > *indexes.last().expect("generated indexes"));
     }
 }

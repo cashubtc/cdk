@@ -22,6 +22,8 @@ async-trait.workspace = true
 cdk-common.workspace = true
 cdk-prometheus = { workspace = true, optional = true }
 cdk-sql-common = { workspace = true }
+deadpool-sqlite = { version = "0.8.1", default-features = false, features = ["rt_tokio_1", "tracing"] }
+thiserror.workspace = true
 rusqlite = { version = "0.31", features = ["bundled"]}
 tokio = { workspace = true, features = ["rt-multi-thread"]}
 tracing.workspace = true

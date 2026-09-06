@@ -11,8 +11,7 @@ use cdk_common::mint::MintKeySetInfo;
 use cdk_common::{CurrencyUnit, Id};
 
 use super::{SQLMintDatabase, SQLTransaction};
-use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
-use crate::pool::DatabasePool;
+use crate::database::{DatabaseExecutor, SqlBackend};
 use crate::stmt::{query, Column};
 use crate::{
     column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string,
@@ -134,7 +133,7 @@ where
 #[async_trait]
 impl<RM> MintKeyDatabaseTransaction<'_, Error> for SQLTransaction<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     async fn add_keyset_info(&mut self, keyset: MintKeySetInfo) -> Result<(), Error> {
         query(
@@ -262,7 +261,7 @@ where
 
 impl<RM> SQLTransaction<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     /// Take the global keyset advisory lock, held until the transaction commits,
     /// so every keyset transaction (rotation, reload, boot reactivation)
@@ -312,21 +311,15 @@ where
 #[async_trait]
 impl<RM> MintKeysDatabase for SQLMintDatabase<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     type Err = Error;
 
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn MintKeyDatabaseTransaction<'a, Error> + Send + Sync + 'a>, Error> {
-        let tx = SQLTransaction {
-            inner: ConnectionWithTransaction::new(
-                self.pool
-                    .get()
-                    .await
-                    .map_err(|e| Error::Database(Box::new(e)))?,
-            )
-            .await?,
+        let tx = SQLTransaction::<RM> {
+            inner: self.pool.begin_transaction().await?,
         };
 
         // Serialize every keyset transaction on one global advisory lock, held
@@ -341,12 +334,8 @@ where
         // A single-row counter bumped inside every keyset-writing transaction,
         // so it moves on any change (insert or active-pointer reassignment). One
         // row to read, far cheaper than reading every keyset.
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        read_keysets_epoch(&*conn).await
+        let conn = self.pool.acquire().await?;
+        read_keysets_epoch(&conn).await
     }
 }
 

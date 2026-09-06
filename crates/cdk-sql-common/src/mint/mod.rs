@@ -9,15 +9,13 @@
 //! clients in a pool and expose them to an asynchronous environment, making them compatible with
 //! Mint.
 use std::fmt::Debug;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::database::{self, DbTransactionFinalizer, Error, MintDatabase};
 use cdk_common::QuoteId;
 
 use crate::common::migrate;
-use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
-use crate::pool::{DatabasePool, Pool, PooledResource};
+use crate::database::{DatabaseExecutor, SqlBackend, SqlTransaction};
 use crate::stmt::query;
 
 mod auth;
@@ -43,18 +41,18 @@ use migrations::MIGRATIONS;
 #[derive(Debug, Clone)]
 pub struct SQLMintDatabase<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
-    pub(crate) pool: Arc<Pool<RM>>,
+    pub(crate) pool: RM,
 }
 
 /// SQL Transaction Writer
 #[allow(missing_debug_implementations)]
 pub struct SQLTransaction<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
-    pub(crate) inner: ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
+    pub(crate) inner: RM::Transaction,
 }
 
 /// Sorted, deduplicated advisory lock keys for a batch of quotes.
@@ -70,36 +68,32 @@ fn quote_lock_keys(quote_ids: &[QuoteId]) -> Vec<String> {
 
 impl<RM> SQLMintDatabase<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     /// Creates a new instance
     pub async fn new<X>(db: X) -> Result<Self, Error>
     where
         X: Into<RM::Config>,
     {
-        let pool = Pool::new(db.into());
+        let pool = RM::new(db.into())?;
 
-        Self::migrate(pool.get().await.map_err(|e| Error::Database(Box::new(e)))?).await?;
+        Self::migrate(pool.begin_migration().await?).await?;
 
         Ok(Self { pool })
     }
 
     async fn begin_transaction_from_pool(
-        pool: &Arc<Pool<RM>>,
+        pool: &RM,
     ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {
-        let tx = SQLTransaction {
-            inner: ConnectionWithTransaction::new(
-                pool.get().await.map_err(|e| Error::Database(Box::new(e)))?,
-            )
-            .await?,
+        let tx = SQLTransaction::<RM> {
+            inner: pool.begin_transaction().await?,
         };
 
         Ok(Box::new(tx))
     }
 
     /// Migrate
-    async fn migrate(conn: PooledResource<RM>) -> Result<(), Error> {
-        let tx = ConnectionWithTransaction::new(conn).await?;
+    async fn migrate(tx: RM::Transaction) -> Result<(), Error> {
         migrate(&tx, RM::Connection::name(), MIGRATIONS).await?;
         tx.commit().await?;
         Ok(())
@@ -108,7 +102,7 @@ where
 
 impl<RM> SQLTransaction<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     /// Take quote advisory locks in one statement and stable key order.
     async fn take_quote_locks(&mut self, quote_ids: &[QuoteId]) -> Result<bool, Error> {
@@ -135,7 +129,7 @@ where
 #[async_trait]
 impl<RM> database::MintTransaction<Error> for SQLTransaction<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     async fn lock_quotes(&mut self, quote_ids: &[QuoteId]) -> Result<bool, Error> {
         self.take_quote_locks(quote_ids).await
@@ -145,7 +139,7 @@ where
 #[async_trait]
 impl<RM> DbTransactionFinalizer for SQLTransaction<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     type Err = Error;
 
@@ -180,7 +174,7 @@ where
 #[async_trait]
 impl<RM> MintDatabase<Error> for SQLMintDatabase<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     async fn begin_transaction(
         &self,
@@ -191,19 +185,12 @@ where
 
 #[cfg(all(test, feature = "prometheus"))]
 mod tests {
-    use std::fmt;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
-    use std::time::Duration;
 
     use cdk_common::database::{DbTransactionFinalizer, Error as DatabaseError};
     use cdk_prometheus::METRICS;
 
     use super::SQLTransaction;
-    use crate::database::{
-        ConnectionWithTransaction, DatabaseConnector, DatabaseExecutor, DatabaseTransaction,
-    };
-    use crate::pool::{DatabaseConfig, DatabasePool, Error as PoolError, Pool};
+    use crate::database::{DatabaseExecutor, SqlBackend, SqlConnection, SqlTransaction};
     use crate::stmt::{Column, Statement};
 
     #[derive(Debug, Clone)]
@@ -211,27 +198,6 @@ mod tests {
         fail_commit: bool,
         fail_rollback: bool,
     }
-
-    impl DatabaseConfig for TestConfig {
-        fn max_size(&self) -> usize {
-            1
-        }
-
-        fn default_timeout(&self) -> Duration {
-            Duration::from_millis(10)
-        }
-    }
-
-    #[derive(Debug)]
-    struct TestResourceError;
-
-    impl fmt::Display for TestResourceError {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("test resource error")
-        }
-    }
-
-    impl std::error::Error for TestResourceError {}
 
     #[derive(Debug)]
     struct TestConnection {
@@ -272,25 +238,17 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
-    struct TestTransaction;
-
     #[async_trait::async_trait]
-    impl DatabaseTransaction<TestConnection> for TestTransaction {
-        async fn commit(conn: &mut TestConnection) -> Result<(), DatabaseError> {
-            if conn.fail_commit {
+    impl SqlTransaction for TestConnection {
+        async fn commit(self) -> Result<(), DatabaseError> {
+            if self.fail_commit {
                 Err(DatabaseError::Internal("commit failed".to_owned()))
             } else {
                 Ok(())
             }
         }
-
-        async fn begin(_conn: &mut TestConnection) -> Result<(), DatabaseError> {
-            Ok(())
-        }
-
-        async fn rollback(conn: &mut TestConnection) -> Result<(), DatabaseError> {
-            if conn.fail_rollback {
+        async fn rollback(self) -> Result<(), DatabaseError> {
+            if self.fail_rollback {
                 Err(DatabaseError::Internal("rollback failed".to_owned()))
             } else {
                 Ok(())
@@ -298,44 +256,43 @@ mod tests {
         }
     }
 
-    impl DatabaseConnector for TestConnection {
-        type Transaction = TestTransaction;
+    #[async_trait::async_trait]
+    impl SqlConnection for TestConnection {
+        type Transaction = Self;
+        async fn begin_transaction(self) -> Result<Self, DatabaseError> {
+            Ok(self)
+        }
     }
 
-    #[derive(Debug)]
-    struct TestPool;
+    #[derive(Debug, Clone)]
+    struct TestBackend(TestConfig);
 
-    impl DatabasePool for TestPool {
+    #[async_trait::async_trait]
+    impl SqlBackend for TestBackend {
         type Connection = TestConnection;
+        type Transaction = TestConnection;
         type Config = TestConfig;
-        type Error = TestResourceError;
-
-        fn new_resource(
-            config: &Self::Config,
-            _stale: Arc<AtomicBool>,
-            _timeout: Duration,
-        ) -> Result<Self::Connection, PoolError<Self::Error>> {
+        fn new(config: TestConfig) -> Result<Self, DatabaseError> {
+            Ok(Self(config))
+        }
+        async fn acquire(&self) -> Result<TestConnection, DatabaseError> {
             Ok(TestConnection {
-                fail_commit: config.fail_commit,
-                fail_rollback: config.fail_rollback,
+                fail_commit: self.0.fail_commit,
+                fail_rollback: self.0.fail_rollback,
             })
         }
     }
 
-    async fn new_transaction(fail_commit: bool, fail_rollback: bool) -> SQLTransaction<TestPool> {
-        let pool = Pool::<TestPool>::new(TestConfig {
-            fail_commit,
-            fail_rollback,
-        });
-        let conn = pool
-            .get()
-            .await
-            .expect("test resource should be checked out");
-        let inner = ConnectionWithTransaction::new(conn)
-            .await
-            .expect("test transaction should begin");
-
-        SQLTransaction { inner }
+    async fn new_transaction(
+        fail_commit: bool,
+        fail_rollback: bool,
+    ) -> SQLTransaction<TestBackend> {
+        SQLTransaction {
+            inner: TestConnection {
+                fail_commit,
+                fail_rollback,
+            },
+        }
     }
 
     fn labels_match(

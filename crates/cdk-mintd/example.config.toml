@@ -93,6 +93,8 @@ tti = 60
 engine = "sqlite"
 
 # PostgreSQL configuration (when engine = "postgres")
+# PgBouncer transaction mode requires max_prepared_statements > 0 (start with 200).
+# See crates/cdk-postgres/README.md for supported pooling modes and migrations.
 [database.postgres]
 # PostgreSQL connection URL
 # The referenced variable is also the bootstrap URL used to open the
@@ -106,7 +108,8 @@ url = "env:CDK_MINTD_POSTGRES_URL"
 tls_mode = "disable"
 # Maximum total number of connections (optional, defaults to 20).
 max_connections = 20
-# Connection timeout in seconds (optional, defaults to 10)
+# Timeout in seconds for each wait/create/recycle phase and transaction cleanup.
+# This is not a total acquisition deadline (optional, defaults to 10).
 connection_timeout_seconds = 10
 
 # Auth database configuration (optional, only used when auth is enabled)
@@ -122,7 +125,8 @@ url = "env:CDK_MINTD_AUTH_POSTGRES_URL"
 tls_mode = "disable"
 # Maximum number of connections in the pool (optional, defaults to 20)
 max_connections = 20
-# Connection timeout in seconds (optional, defaults to 10)
+# Timeout in seconds for each wait/create/recycle phase and transaction cleanup.
+# This is not a total acquisition deadline (optional, defaults to 10).
 connection_timeout_seconds = 10
 
 # Payment backends. Use [payment_backend] for a single backend, or repeat

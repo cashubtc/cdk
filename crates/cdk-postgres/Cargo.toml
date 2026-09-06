@@ -14,11 +14,15 @@ rust-version.workspace = true                            # MSRV
 default = ["mint", "wallet"]
 mint = ["cdk-common/mint", "cdk-sql-common/mint"]
 wallet = ["cdk-common/wallet", "cdk-sql-common/wallet"]
+prometheus = ["cdk-sql-common/prometheus"]
 
 [dependencies]
 async-trait.workspace = true
 cdk-common.workspace = true
 cdk-sql-common = { workspace = true }
+deadpool-postgres = { version = "0.14.2", default-features = false, features = ["rt_tokio_1"] }
+thiserror.workspace = true
+tracing.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 uuid.workspace = true
 tokio-postgres = "0.7.13"
@@ -28,6 +32,7 @@ native-tls = "=0.2.18"
 percent-encoding = "2"
 
 [dev-dependencies]
+cdk-prometheus.workspace = true
 cdk-common = { workspace = true, features = ["test"] }
 # Needed at macro-expansion sites of cdk-common's `*_db_test!` macros
 paste.workspace = true

@@ -9,7 +9,7 @@ use cdk_common::util::unix_time;
 use cdk_common::{mint, Amount, PaymentMethod};
 
 use super::{SQLMintDatabase, SQLTransaction};
-use crate::pool::DatabasePool;
+use crate::database::SqlBackend;
 use crate::stmt::{query, Column};
 use crate::{column_as_nullable_string, column_as_number, column_as_string, unpack_into};
 
@@ -62,7 +62,7 @@ fn sql_row_to_completed_operation(row: Vec<Column>) -> Result<mint::Operation, E
 #[async_trait]
 impl<RM> CompletedOperationsTransaction for SQLTransaction<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     type Err = Error;
 
@@ -120,7 +120,7 @@ where
 #[async_trait]
 impl<RM> CompletedOperationsDatabase for SQLMintDatabase<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     type Err = Error;
 
@@ -128,11 +128,7 @@ where
         &self,
         operation_id: &uuid::Uuid,
     ) -> Result<Option<mint::Operation>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         Ok(query(
             r#"
             SELECT
@@ -150,7 +146,7 @@ where
             "#,
         )?
         .bind("operation_id", operation_id.to_string())
-        .fetch_one(&*conn)
+        .fetch_one(&conn)
         .await?
         .map(sql_row_to_completed_operation)
         .transpose()?)
@@ -160,11 +156,7 @@ where
         &self,
         operation_kind: mint::OperationKind,
     ) -> Result<Vec<mint::Operation>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         Ok(query(
             r#"
             SELECT
@@ -183,7 +175,7 @@ where
             "#,
         )?
         .bind("operation_kind", operation_kind.to_string())
-        .fetch_all(&*conn)
+        .fetch_all(&conn)
         .await?
         .into_iter()
         .map(sql_row_to_completed_operation)
@@ -191,11 +183,7 @@ where
     }
 
     async fn get_completed_operations(&self) -> Result<Vec<mint::Operation>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         Ok(query(
             r#"
             SELECT
@@ -211,7 +199,7 @@ where
             ORDER BY completed_at DESC
             "#,
         )?
-        .fetch_all(&*conn)
+        .fetch_all(&conn)
         .await?
         .into_iter()
         .map(sql_row_to_completed_operation)
