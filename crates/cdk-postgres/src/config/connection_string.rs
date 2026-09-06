@@ -7,10 +7,12 @@ use super::ConfigError;
 type Parsed = (String, Option<String>, Option<String>);
 
 fn driver_tls_mode(mode: &str) -> Result<&str, ConfigError> {
-    match mode {
+    match mode.to_ascii_lowercase().as_str() {
         "verify-ca" | "verify-full" => Ok("require"),
         "allow" => Ok("prefer"),
-        "disable" | "prefer" | "require" => Ok(mode),
+        "disable" => Ok("disable"),
+        "prefer" => Ok("prefer"),
+        "require" => Ok("require"),
         _ => Err(ConfigError::TlsMode),
     }
 }
