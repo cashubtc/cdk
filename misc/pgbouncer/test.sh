@@ -3,6 +3,7 @@ set -euo pipefail
 trap 'stop-pgbouncer; stop-postgres' EXIT
 start-postgres
 start-pgbouncer
+bash misc/pgbouncer/test-derivation-rpc.sh
 
 # Include the integration-test binaries that assert the shared gauges balance.
 cargo test -p cdk-sql-common -p cdk-sqlite --features cdk-sqlite/prometheus
@@ -17,11 +18,23 @@ for mode in direct session transaction; do
     esac
     export CDK_MINTD_DATABASE_URL="host=127.0.0.1 port=$port user=${CDK_TEST_PG_USER:-cdk_user} password=${CDK_TEST_PG_PASSWORD:-cdk_password} dbname=${CDK_TEST_PG_DATABASE:-cdk_mint}"
     export CDK_TEST_PGBOUNCER_MODE="$mode"
-    # Two-server fault tests hold a control transaction; avoid unrelated tests
-    # consuming its required second server at the same time.
-    cargo test -p cdk-postgres --features prometheus -- --test-threads 1
-    if [[ "$mode" == transaction ]]; then
-        cargo test -p cdk-postgres --features prometheus connection::tests::pgbouncer_ -- --ignored --test-threads 1
-    fi
+    # Keep normal suites concurrent; deliberate outages and blocked-server tests
+    # run in a separate invocation below, using their own transaction proxy.
+    RUST_TEST_THREADS="${CDK_TEST_SQL_THREADS:-8}" cargo test -p cdk-postgres --features prometheus
     cargo test -p cdk-integration-tests --test signatory_rotation
+done
+
+for mode in direct session transaction; do
+    case "$mode" in
+        direct) port="${CDK_TEST_PG_PORT:-5432}" ;;
+        session) port="${CDK_TEST_PGBOUNCER_SESSION_PORT:-6433}" ;;
+        transaction) port="${CDK_TEST_PGBOUNCER_FAULT_PORT:-6434}" ;;
+    esac
+    export CDK_MINTD_DATABASE_URL="host=127.0.0.1 port=$port user=${CDK_TEST_PG_USER:-cdk_user} password=${CDK_TEST_PG_PASSWORD:-cdk_password} dbname=${CDK_TEST_PG_DATABASE:-cdk_mint}"
+    export CDK_TEST_PGBOUNCER_MODE="$mode"
+    skip=()
+    if [[ "$mode" != transaction ]]; then
+        skip=(--skip pgbouncer_)
+    fi
+    cargo test -p cdk-postgres --features prometheus connection::tests:: -- --ignored --test-threads 1 "${skip[@]}"
 done

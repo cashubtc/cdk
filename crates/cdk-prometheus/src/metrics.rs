@@ -72,6 +72,8 @@ pub struct CdkMetrics {
     db_operations_total: IntCounter,
     db_operation_duration: HistogramVec,
     db_connections_active: IntGauge,
+    db_connection_cleanup_total: IntCounterVec,
+    db_connections_discarded_total: IntCounterVec,
 
     // Error metrics
     errors_total: IntCounter,
@@ -104,6 +106,23 @@ impl CdkMetrics {
         let (db_operations_total, db_operation_duration, db_connections_active) =
             Self::create_db_metrics(&registry)?;
 
+        let db_connection_cleanup_total = IntCounterVec::new(
+            prometheus::Opts::new(
+                "cdk_db_connection_cleanup_total",
+                "Connection cleanup outcomes",
+            ),
+            &["backend", "outcome"],
+        )?;
+        registry.register(Box::new(db_connection_cleanup_total.clone()))?;
+        let db_connections_discarded_total = IntCounterVec::new(
+            prometheus::Opts::new(
+                "cdk_db_connections_discarded_total",
+                "Connections discarded after unsuccessful cleanup",
+            ),
+            &["backend", "reason"],
+        )?;
+        registry.register(Box::new(db_connections_discarded_total.clone()))?;
+
         // Create and register error metrics
         let errors_total = Self::create_error_metrics(&registry)?;
 
@@ -123,11 +142,28 @@ impl CdkMetrics {
             db_operations_total,
             db_operation_duration,
             db_connections_active,
+            db_connection_cleanup_total,
+            db_connections_discarded_total,
             errors_total,
             mint_operations_total,
             mint_in_flight_requests,
             mint_operation_duration,
         })
+    }
+
+    /// Record one asynchronous connection cleanup outcome.
+    ///
+    /// Callers must use bounded backend/outcome labels, never connection strings
+    /// or driver error messages. Disposals are counted in addition to outcomes.
+    pub fn record_db_connection_cleanup(&self, backend: &str, outcome: &str, discarded: bool) {
+        self.db_connection_cleanup_total
+            .with_label_values(&[backend, outcome])
+            .inc();
+        if discarded {
+            self.db_connections_discarded_total
+                .with_label_values(&[backend, outcome])
+                .inc();
+        }
     }
 
     /// Create and register HTTP metrics

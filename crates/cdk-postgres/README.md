@@ -44,7 +44,10 @@ does not make multiple active mint replicas safe.
 ## Schemas and migrations
 
 The existing `schema=name` connection-string extension selects one schema
-identifier. CDK uses parameterized transaction-local `search_path`; it never sets
+identifier. Keyword values support PostgreSQL quoting and escaping, for example
+`schema='mint data'`; URI parameters support percent-encoding, for example
+`?schema=mint%20data`. Passwords and other driver parameters are preserved.
+CDK uses parameterized transaction-local `search_path`; it never sets
 session-level schema state. Explicit transactions set the path immediately after
 `BEGIN`. Standalone reads, writes, and batches with a configured schema use a
 short transaction, adding begin/schema/commit round trips. Connections without a
@@ -75,6 +78,14 @@ survives. Acquire a new connection for subsequent work.
 Writes and commits are never automatically retried. A lost commit response can
 mean the commit succeeded; higher-level recovery must resolve that uncertainty.
 
+With the `prometheus` feature, `cdk_db_connection_cleanup_total{backend,outcome}`
+counts asynchronous cleanup results and
+`cdk_db_connections_discarded_total{backend,reason}` counts cleanup disposals.
+Outcomes are `rolled_back`, `timeout`, `rollback_error`, `worker_error` (SQLite),
+`runtime_unavailable`, and `task_cancelled`. Successful cleanup returns the
+connection without incrementing the disposal counter. Disposal warnings carry
+bounded `backend` and `reason` fields, never driver messages or credentials.
+The existing active-connection gauge remains balanced through cleanup.
 
 ## Low-level API migration
 
@@ -126,11 +137,14 @@ nix develop .#regtest
 bash misc/pgbouncer/test.sh
 ```
 
-The helper starts PostgreSQL and two isolated PgBouncer listeners: transaction
-pooling on 6432 (two server connections, round robin) and session pooling on 6433.
-It runs the suites through all three endpoints and separately runs the test that
-pins one backend and proves a prepared statement executes on a different backend
-PID. `start-pgbouncer` and `stop-pgbouncer` can also be used independently with
+The helper starts PostgreSQL and three isolated PgBouncer listeners: transaction
+pooling on 6432 and session pooling on 6433 (32 servers each), plus a dedicated
+transaction proxy on 6434 with two servers and round robin. Ordinary suites run
+through direct, session, and transaction endpoints with eight test workers
+(configurable through `CDK_TEST_SQL_THREADS`). Fault tests run separately and
+serially; transaction faults and verified backend-PID switching use port 6434.
+This keeps deliberate proxy disconnects and blocked-server tests out of normal
+concurrent execution. `start-pgbouncer` and `stop-pgbouncer` can also be used independently with
 `start-postgres`. Port and upstream overrides are documented in
 `misc/pgbouncer/start.sh`; the generated authentication configuration is for local
 testing only and must not be deployed.
