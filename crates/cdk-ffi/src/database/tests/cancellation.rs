@@ -1,11 +1,11 @@
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
-use cdk_sql_common::database::ConnectionWithTransaction;
-use cdk_sql_common::pool::{self, DatabaseConfig, DatabasePool, Pool};
+use cdk_common::database::Error;
+use cdk_sql_common::database::{DatabaseExecutor, SqlBackend, SqlConnection, SqlTransaction};
+use cdk_sql_common::stmt::query;
 use cdk_sql_common::SQLWalletDatabase;
-use cdk_sqlite::SqliteConnectionManager;
+use cdk_sqlite::{SqliteBackend, SqliteConnection, SqliteTransaction};
 
 use super::{run, FfiWalletDatabaseWrapper, WakeThread, WalletDatabase};
 
@@ -15,31 +15,46 @@ struct Config {
     creates: Arc<AtomicUsize>,
 }
 
-impl DatabaseConfig for Config {
-    fn max_size(&self) -> usize {
-        1
-    }
-
-    fn default_timeout(&self) -> Duration {
-        Duration::from_secs(5)
-    }
+/// SQLite backend that counts physical connections.
+///
+/// TEMP tables are private to one SQLite connection, so a missing marker
+/// identifies a connection that has not been checked out before.
+#[derive(Debug, Clone)]
+struct CountingBackend {
+    inner: SqliteBackend,
+    creates: Arc<AtomicUsize>,
 }
 
-#[derive(Debug)]
-struct Manager;
-
-impl DatabasePool for Manager {
+#[async_trait::async_trait]
+impl SqlBackend for CountingBackend {
     type Config = Config;
-    type Connection = <SqliteConnectionManager as DatabasePool>::Connection;
-    type Error = <SqliteConnectionManager as DatabasePool>::Error;
+    type Connection = SqliteConnection;
+    type Transaction = SqliteTransaction;
 
-    fn new_resource(
-        config: &Config,
-        stale: Arc<AtomicBool>,
-        timeout: Duration,
-    ) -> Result<Self::Connection, pool::Error<Self::Error>> {
-        config.creates.fetch_add(1, Ordering::SeqCst);
-        SqliteConnectionManager::new_resource(&config.path.as_str().into(), stale, timeout)
+    fn new(config: Config) -> Result<Self, Error> {
+        Ok(Self {
+            inner: SqliteBackend::new(config.path.as_str().into())?,
+            creates: config.creates,
+        })
+    }
+
+    async fn acquire(&self) -> Result<SqliteConnection, Error> {
+        let conn = self.inner.acquire().await?;
+        let marked = conn
+            .pluck(query(
+                "SELECT count(*) FROM sqlite_temp_master WHERE name = 'connection_marker'",
+            )?)
+            .await?;
+        if !matches!(marked, Some(cdk_sql_common::stmt::Column::Integer(1))) {
+            self.creates.fetch_add(1, Ordering::SeqCst);
+            conn.execute(query("CREATE TEMP TABLE connection_marker (id INTEGER)")?)
+                .await?;
+        }
+        Ok(conn)
+    }
+
+    async fn close(&self) -> Result<(), Error> {
+        self.inner.close().await
     }
 }
 
@@ -52,12 +67,18 @@ fn cancelled_database_trait_call_cleans_up_outside_tokio() {
     };
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let native = runtime
-        .block_on(SQLWalletDatabase::<Manager>::new(config.clone()))
+        .block_on(SQLWalletDatabase::<CountingBackend>::new(config.clone()))
         .unwrap();
     let foreign: Arc<dyn WalletDatabase> = FfiWalletDatabaseWrapper::new(native);
-    let blocker = Pool::<SqliteConnectionManager>::new(config.path.as_str().into());
+    let blocker = runtime
+        .block_on(async { SqliteBackend::new(config.path.as_str().into()) })
+        .unwrap();
     let transaction = runtime.block_on(async {
-        ConnectionWithTransaction::new(blocker.get().await.unwrap())
+        blocker
+            .acquire()
+            .await
+            .unwrap()
+            .begin_transaction()
             .await
             .unwrap()
     });

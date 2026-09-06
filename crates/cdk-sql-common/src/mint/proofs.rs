@@ -14,8 +14,7 @@ use cdk_common::util::unix_time;
 use cdk_common::{Amount, Id, Proof, Proofs, PublicKey, State};
 
 use super::{SQLMintDatabase, SQLTransaction};
-use crate::database::DatabaseExecutor;
-use crate::pool::DatabasePool;
+use crate::database::{DatabaseExecutor, SqlBackend};
 use crate::stmt::{query, Column};
 use crate::{column_as_nullable_string, column_as_number, column_as_string, unpack_into};
 
@@ -113,7 +112,7 @@ pub(super) fn sql_row_to_hashmap_amount(row: Vec<Column>) -> Result<(Id, Amount)
 #[async_trait]
 impl<RM> database::MintProofsTransaction for SQLTransaction<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     type Err = Error;
 
@@ -430,16 +429,12 @@ where
 #[async_trait]
 impl<RM> MintProofsDatabase for SQLMintDatabase<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     type Err = Error;
 
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         let mut proofs = query(
             r#"
             SELECT
@@ -456,7 +451,7 @@ where
             "#,
         )?
         .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
-        .fetch_all(&*conn)
+        .fetch_all(&conn)
         .await?
         .into_iter()
         .map(|mut row| {
@@ -478,11 +473,7 @@ where
         &self,
         quote_id: &QuoteId,
     ) -> Result<Vec<PublicKey>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         Ok(query(
             r#"
             SELECT
@@ -498,7 +489,7 @@ where
             "#,
         )?
         .bind("quote_id", quote_id.to_string())
-        .fetch_all(&*conn)
+        .fetch_all(&conn)
         .await?
         .into_iter()
         .map(sql_row_to_proof)
@@ -507,12 +498,8 @@ where
     }
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        let current_states = get_current_states(&*conn, ys, false).await?;
+        let conn = self.pool.acquire().await?;
+        let current_states = get_current_states(&conn, ys, false).await?;
 
         Ok(ys.iter().map(|y| current_states.get(y).copied()).collect())
     }
@@ -521,11 +508,7 @@ where
         &self,
         keyset_id: &Id,
     ) -> Result<(Proofs, Vec<Option<State>>), Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
 
         let (proofs, states): (Vec<Proof>, Vec<State>) = query(
             r#"
@@ -543,7 +526,7 @@ where
             "#,
         )?
         .bind("keyset_id", keyset_id.to_string())
-        .fetch_all(&*conn)
+        .fetch_all(&conn)
         .await?
         .into_iter()
         .map(sql_row_to_proof_with_state)
@@ -556,11 +539,7 @@ where
 
     /// Get total proofs redeemed by keyset id
     async fn get_total_redeemed(&self) -> Result<HashMap<Id, Amount>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         query(
             r#"
             SELECT
@@ -570,7 +549,7 @@ where
                 keyset_amounts
         "#,
         )?
-        .fetch_all(&*conn)
+        .fetch_all(&conn)
         .await?
         .into_iter()
         .map(sql_row_to_hashmap_amount)
@@ -581,11 +560,7 @@ where
         &self,
         operation_id: &uuid::Uuid,
     ) -> Result<Vec<PublicKey>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         query(
             r#"
             SELECT
@@ -597,7 +572,7 @@ where
             "#,
         )?
         .bind("operation_id", operation_id.to_string())
-        .fetch_all(&*conn)
+        .fetch_all(&conn)
         .await?
         .into_iter()
         .map(|row| -> Result<PublicKey, Error> {
