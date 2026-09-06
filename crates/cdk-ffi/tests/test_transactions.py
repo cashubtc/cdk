@@ -259,6 +259,12 @@ async def test_wallet_derivation_counter():
         assert counter3 == 6, f"Expected current counter 6, got {counter3}"
         assert p2pk_counter == 2, f"Expected independent counter 2, got {p2pk_counter}"
 
+        indexes = await asyncio.gather(
+            *(db.reserve_derivation_index("p2pk", 6) for _ in range(8))
+        )
+        assert sorted(indexes) == list(range(6, 14)), indexes
+        assert await db.reserve_derivation_index("p2pk", 6) == 14
+
         print("✓ Test passed: namespaced derivation counters work")
 
     finally:
