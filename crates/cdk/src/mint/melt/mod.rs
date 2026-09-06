@@ -124,10 +124,11 @@ impl Mint {
     /// Loads a settled (non-pending, non-unknown) melt response from the database.
     ///
     /// Returns `Ok(None)` while the quote is still `Pending` or in an `Unknown`
-    /// state (backend could not determine status); the caller should keep
-    /// waiting. Returns `Ok(Some(response))` once the quote has reached a
-    /// final state (`Paid`, `Failed`, or post-attempt `Unpaid`), with any
-    /// change blind signatures attached.
+    /// state (backend could not determine status), or while a paid melt is
+    /// still finalizing its change; the caller should keep waiting. Returns
+    /// `Ok(Some(response))` once the quote has reached a final state (`Paid`,
+    /// `Failed`, or post-attempt `Unpaid`) and finalization has committed,
+    /// with any change blind signatures attached.
     ///
     /// `Unknown` is treated as "keep waiting" by design: a backend may recover
     /// and report a definitive status through its event stream or an explicit
@@ -147,6 +148,19 @@ impl Mint {
             quote.state,
             MeltQuoteState::Pending | MeltQuoteState::Unknown
         ) {
+            return Ok(None);
+        }
+
+        // Finalization commits Paid before signing change in a second
+        // transaction. That transaction also removes the saga, so check it
+        // before reading signatures to avoid returning an incomplete response
+        // while another task or mint replica is still finalizing the melt.
+        if quote.state == MeltQuoteState::Paid
+            && localstore
+                .get_melt_saga_by_quote_id(quote_id)
+                .await?
+                .is_some()
+        {
             return Ok(None);
         }
 

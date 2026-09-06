@@ -357,6 +357,121 @@ async fn paid_response_with_wrong_unit_preserves_paid_handoff() {
 }
 
 #[tokio::test]
+async fn paid_melt_waits_for_committed_change_before_returning_response() {
+    use cdk_common::mint::{MeltFinalizationData, MeltSagaState, SagaStateEnum};
+
+    use crate::mint::melt::melt_saga::MeltSaga;
+    use crate::mint::melt::shared;
+
+    let mint = create_pending_test_mint(Arc::new(NoEventPendingBackend::new(usize::MAX, None)))
+        .await
+        .unwrap();
+    let db = mint.localstore();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let (outputs, _) =
+        crate::test_helpers::mint::create_test_blinded_messages(&mint, Amount::from(1_023))
+            .await
+            .unwrap();
+    let request = cdk_common::nuts::MeltRequest::new(quote.id.clone(), proofs, Some(outputs));
+    let verification = mint.verify_inputs(request.inputs()).await.unwrap();
+    let setup = MeltSaga::new(Arc::new(mint.clone()), db.clone(), mint.pubsub_manager())
+        .setup_melt(
+            &request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+    drop(setup);
+
+    let operation_id = db
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .operation_id;
+    let finalization = MeltFinalizationData {
+        total_spent: Amount::new(9_001, CurrencyUnit::Sat),
+        payment_lookup_id: quote.request_lookup_id.clone().unwrap(),
+        payment_proof: None,
+    };
+    let mut tx = db.begin_transaction().await.unwrap();
+    let mut saga = tx
+        .get_saga_for_update(&operation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    tx.update_acquired_saga_with_finalization_data(
+        &mut saga,
+        SagaStateEnum::Melt(MeltSagaState::Finalizing),
+        Some(&finalization),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // Stop at the actual transaction boundary: payment and spent proofs are
+    // committed, but change signing and saga removal have not run yet.
+    let mut tx = db.begin_transaction().await.unwrap();
+    let locked_quote = shared::load_melt_quotes_exclusively(&mut tx, &quote.id)
+        .await
+        .unwrap();
+    let info = tx
+        .get_melt_request_and_blinded_messages(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let (_, paid_quote) = shared::finalize_melt_core(
+        tx,
+        &mint.pubsub_manager(),
+        locked_quote,
+        &input_ys,
+        info.inputs_amount,
+        info.inputs_fee,
+        finalization.total_spent.clone(),
+        finalization.payment_proof.clone(),
+        &finalization.payment_lookup_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(paid_quote.state, MeltQuoteState::Paid);
+    assert!(db
+        .get_blind_signatures_for_quote(&quote.id)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(Mint::load_settled_melt_response(&db, &quote.id)
+        .await
+        .unwrap()
+        .is_none());
+
+    shared::finalize_melt_quote(
+        &mint,
+        &db,
+        &mint.pubsub_manager(),
+        &paid_quote,
+        finalization.total_spent,
+        finalization.payment_proof,
+        &finalization.payment_lookup_id,
+        Some(operation_id),
+    )
+    .await
+    .unwrap();
+    let response = Mint::load_settled_melt_response(&db, &quote.id)
+        .await
+        .unwrap()
+        .expect("completed finalization should release the response");
+    assert_eq!(response.state(), MeltQuoteState::Paid);
+    let change = response.change().expect("payment should leave change");
+    assert_eq!(
+        Amount::try_sum(change.iter().map(|sig| sig.amount)).unwrap(),
+        Amount::from(999)
+    );
+}
+
+#[tokio::test]
 async fn status_check_rounds_msat_spend_up_before_signing_change() {
     let mut backend = NoEventPendingBackend::new(2, Some(MeltQuoteState::Paid));
     backend.spent_msat = Some(9_000_001);
