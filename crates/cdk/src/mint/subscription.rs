@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use cdk_common::common::PaymentProcessorKey;
 use cdk_common::database::DynMintDatabase;
@@ -27,6 +27,8 @@ use crate::event::MintEvent;
 pub struct MintPubSubSpec {
     db: DynMintDatabase,
     payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+    // The manager owns this spec; a strong reference back would retain both forever.
+    pubsub_manager: Weak<PubSubManager>,
 }
 
 impl MintPubSubSpec {
@@ -51,7 +53,7 @@ impl MintPubSubSpec {
             Mint::check_mint_quote_payments(
                 self.db.clone(),
                 self.payment_processors.clone(),
-                None,
+                self.pubsub_manager.upgrade(),
                 &mut quote,
             )
             .await?;
@@ -230,6 +232,7 @@ impl Spec for MintPubSubSpec {
         Arc::new(Self {
             db: context.0,
             payment_processors: context.1,
+            pubsub_manager: Weak::new(),
         })
     }
 
@@ -257,7 +260,13 @@ impl PubSubManager {
             Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
         ),
     ) -> Arc<Self> {
-        Arc::new(Self(Pubsub::new(MintPubSubSpec::new_instance(context))))
+        Arc::new_cyclic(|manager| {
+            Self(Pubsub::new(Arc::new(MintPubSubSpec {
+                db: context.0,
+                payment_processors: context.1,
+                pubsub_manager: manager.clone(),
+            })))
+        })
     }
 
     /// Helper function to emit a ProofState status
@@ -409,14 +418,26 @@ impl Deref for PubSubManager {
 
 #[cfg(test)]
 mod tests {
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
     use cdk_common::database::DynMintDatabase;
     use cdk_common::mint::MintQuote;
-    use cdk_common::payment::PaymentIdentifier;
+    use cdk_common::payment::{
+        self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
+        MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse,
+        SettingsResponse, WaitPaymentResponse,
+    };
+    use cdk_common::subscription::Params;
     use cdk_common::QuoteId;
+    use futures::Stream;
+    use tokio::sync::Notify;
+    use tokio::time::timeout;
 
     use super::*;
 
-    fn paid_bolt11_quote(id: QuoteId, amount: u64) -> MintQuote {
+    fn bolt11_quote(id: QuoteId, amount: u64) -> MintQuote {
         MintQuote::new(
             Some(id),
             format!("lnbc1test{amount}"),
@@ -459,13 +480,10 @@ mod tests {
         );
         let first_quote_id = QuoteId::new();
         let second_quote_id = QuoteId::new();
-        add_mint_quote(&db, paid_bolt11_quote(first_quote_id.clone(), 21)).await;
-        add_mint_quote(&db, paid_bolt11_quote(second_quote_id.clone(), 34)).await;
+        add_mint_quote(&db, bolt11_quote(first_quote_id.clone(), 21)).await;
+        add_mint_quote(&db, bolt11_quote(second_quote_id.clone(), 34)).await;
 
-        let spec = MintPubSubSpec {
-            db,
-            payment_processors: Arc::new(HashMap::new()),
-        };
+        let spec = MintPubSubSpec::new_instance((db, Arc::new(HashMap::new())));
         let events = spec
             .get_events_from_db(&[
                 NotificationId::MintQuoteBolt11(first_quote_id.clone()),
@@ -621,7 +639,7 @@ mod tests {
         let db: DynMintDatabase =
             Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
         let method = "test_method".to_owned();
-        let mut quote = paid_bolt11_quote(QuoteId::new(), 21);
+        let mut quote = bolt11_quote(QuoteId::new(), 21);
         quote.payment_method = cdk_common::PaymentMethod::Custom(method.clone());
         quote.extra_json = Some(serde_json::json!({"receipt": "mint-receipt"}));
         add_mint_quote(&db, quote.clone()).await;
@@ -686,5 +704,180 @@ mod tests {
             }
             payload => panic!("unexpected payload: {payload:?}"),
         }
+    }
+
+    #[derive(Default)]
+    struct BlockingPaymentBackend {
+        entered: Notify,
+        release: Notify,
+        checks: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl MintPayment for BlockingPaymentBackend {
+        type Err = payment::Error;
+
+        async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+
+        async fn create_incoming_payment_request(
+            &self,
+            _options: IncomingPaymentOptions,
+        ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+
+        async fn get_payment_quote(
+            &self,
+            _unit: &CurrencyUnit,
+            _options: OutgoingPaymentOptions,
+        ) -> Result<PaymentQuoteResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+
+        async fn make_payment(
+            &self,
+            _unit: &CurrencyUnit,
+            _options: OutgoingPaymentOptions,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+
+        async fn wait_payment_event(
+            &self,
+        ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
+            Ok(Box::pin(futures::stream::pending()))
+        }
+
+        fn is_payment_event_stream_active(&self) -> bool {
+            false
+        }
+
+        fn cancel_payment_event_stream(&self) {}
+
+        async fn check_incoming_payment_status(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+            self.checks.fetch_add(1, Ordering::Relaxed);
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(vec![WaitPaymentResponse {
+                payment_identifier: payment_identifier.clone(),
+                payment_amount: Amount::new(21, CurrencyUnit::Sat),
+                payment_id: "backfill-payment".to_owned(),
+            }])
+        }
+
+        async fn check_outgoing_payment(
+            &self,
+            _payment_identifier: &PaymentIdentifier,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+    }
+
+    #[tokio::test]
+    async fn backfill_payment_transition_notifies_concurrent_subscriber() {
+        use cdk_common::nut00::KnownMethod;
+        use cdk_common::nut17::Kind;
+        use cdk_common::PaymentMethod;
+
+        for (method, kind) in [
+            (
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                Kind::Bolt11MintQuote,
+            ),
+            (
+                PaymentMethod::Custom("test_method".to_owned()),
+                Kind::Custom("test_method_mint_quote".to_owned()),
+            ),
+        ] {
+            timeout(Duration::from_secs(5), async {
+                let db: DynMintDatabase =
+                    Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
+                let mut quote = bolt11_quote(QuoteId::new(), 21);
+                quote.payment_method = method.clone();
+                let mut tx = db.begin_transaction().await.expect("transaction");
+                tx.add_mint_quote(quote.clone())
+                    .await
+                    .expect("unpaid quote");
+                tx.commit().await.expect("commit");
+
+                let backend = Arc::new(BlockingPaymentBackend::default());
+                let processors = HashMap::from([(
+                    PaymentProcessorKey::new(CurrencyUnit::Sat, method),
+                    backend.clone() as DynMintPayment,
+                )]);
+                let manager = PubSubManager::new((db.clone(), Arc::new(processors)));
+                let params = Params {
+                    kind,
+                    filters: vec![quote.id.to_string()],
+                    id: Arc::new(SubId::from("first")),
+                };
+                let mut first = manager
+                    .subscribe(params.clone())
+                    .expect("first subscription");
+                backend.entered.notified().await;
+
+                let mut second = manager
+                    .subscribe(Params {
+                        id: Arc::new(SubId::from("second")),
+                        ..params
+                    })
+                    .expect("second subscription");
+                let initial = second.recv().await.expect("unpaid backfill");
+                match initial.inner() {
+                    NotificationPayload::MintQuoteBolt11Response(r) => {
+                        assert_eq!(r.state, MintQuoteState::Unpaid)
+                    }
+                    NotificationPayload::CustomMintQuoteResponse(_, r) => {
+                        assert_eq!(r.amount_paid, Amount::ZERO)
+                    }
+                    payload => panic!("unexpected payload: {payload:?}"),
+                }
+                assert_eq!(backend.checks.load(Ordering::Relaxed), 1);
+
+                backend.release.notify_one();
+                for subscriber in [&mut first, &mut second] {
+                    let event = subscriber.recv().await.expect("paid notification");
+                    match event.inner() {
+                        NotificationPayload::MintQuoteBolt11Response(r) => {
+                            assert_eq!(r.quote, quote.id);
+                            assert_eq!(r.state, MintQuoteState::Paid);
+                        }
+                        NotificationPayload::CustomMintQuoteResponse(method, r) => {
+                            assert_eq!(method, "test_method");
+                            assert_eq!(r.quote, quote.id);
+                            assert_eq!(r.amount_paid, Amount::from(21));
+                            assert_eq!(r.amount_issued, Amount::ZERO);
+                        }
+                        payload => panic!("unexpected payload: {payload:?}"),
+                    }
+                    let stored = db
+                        .get_mint_quote(&quote.id)
+                        .await
+                        .expect("read quote")
+                        .expect("quote");
+                    assert_eq!(stored.amount_paid(), Amount::new(21, CurrencyUnit::Sat));
+                }
+                assert_eq!(backend.checks.load(Ordering::Relaxed), 1);
+            })
+            .await
+            .expect("both subscribers must observe the committed payment");
+        }
+    }
+
+    #[tokio::test]
+    async fn pubsub_manager_does_not_retain_its_database() {
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
+        let db_weak = Arc::downgrade(&db);
+        let manager = PubSubManager::new((db, Arc::new(HashMap::new())));
+        let manager_weak = Arc::downgrade(&manager);
+        drop(manager);
+        assert!(manager_weak.upgrade().is_none());
+        assert!(db_weak.upgrade().is_none());
     }
 }
