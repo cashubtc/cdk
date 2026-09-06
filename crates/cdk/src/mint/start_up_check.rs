@@ -8,6 +8,7 @@ use std::str::FromStr;
 use cdk_common::database::DynMintTransaction;
 use cdk_common::mint::{MeltPaymentRequest, OperationKind, Saga};
 use cdk_common::payment::PaymentIdentifier;
+use cdk_common::util::unix_time;
 use cdk_common::{PublicKey, QuoteId, State};
 
 use super::{Error, Mint};
@@ -420,20 +421,30 @@ impl Mint {
             .await?;
 
         if incomplete_sagas.is_empty() {
-            tracing::info!("No incomplete melt sagas found to recover.");
+            tracing::info!(
+                incomplete_saga_count = 0,
+                "melt saga recovery found no incomplete operations",
+            );
             return Ok(());
         }
 
         let total_sagas = incomplete_sagas.len();
-        tracing::info!("Found {} incomplete melt sagas to recover.", total_sagas);
+        let recovery_started_at = unix_time();
+        tracing::info!(
+            incomplete_saga_count = total_sagas,
+            "melt saga recovery inventory loaded",
+        );
 
         for saga in incomplete_sagas {
+            let observed_at = unix_time();
             tracing::info!(
                 saga_id = %saga.operation_id,
                 quote_id = ?saga.quote_id,
                 saga_state = %saga.state.state(),
                 created_at = saga.created_at,
                 updated_at = saga.updated_at,
+                age_seconds = observed_at.saturating_sub(saga.created_at),
+                idle_seconds = observed_at.saturating_sub(saga.updated_at),
                 "recovering incomplete melt saga",
             );
 
@@ -793,14 +804,24 @@ impl Mint {
                             MeltQuoteState::Pending | MeltQuoteState::Unknown => {
                                 // Not authoritative: an orchestrator may be
                                 // between payment attempts.
-                                tracing::warn!(
-                                    saga_id = %saga.operation_id,
-                                    quote_id = %quote_id,
-                                    payment_lookup_id = %payment_response.payment_lookup_id,
-                                    payment_status = %payment_response.status,
-                                    proof_count = input_ys.len(),
-                                    "recovery cannot prove payment failure; quote and proofs remain pending",
-                                );
+                                if payment_response.status == MeltQuoteState::Unknown {
+                                    tracing::warn!(
+                                        saga_id = %saga.operation_id,
+                                        quote_id = %quote_id,
+                                        payment_lookup_id = %payment_response.payment_lookup_id,
+                                        payment_status = %payment_response.status,
+                                        proof_count = input_ys.len(),
+                                        "recovery cannot prove payment failure; quote and proofs remain pending",
+                                    );
+                                } else {
+                                    tracing::info!(
+                                        saga_id = %saga.operation_id,
+                                        quote_id = %quote_id,
+                                        payment_lookup_id = %payment_response.payment_lookup_id,
+                                        proof_count = input_ys.len(),
+                                        "recovery found an in-flight payment; quote and proofs remain pending",
+                                    );
+                                }
                                 continue; // Skip this saga
                             }
                         }
@@ -869,8 +890,9 @@ impl Mint {
         }
 
         tracing::info!(
-            "Successfully recovered {} incomplete melt sagas.",
-            total_sagas
+            examined_saga_count = total_sagas,
+            recovery_duration_seconds = unix_time().saturating_sub(recovery_started_at),
+            "melt saga recovery pass completed; individual outcomes are logged by quote and saga id",
         );
 
         Ok(())
