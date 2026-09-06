@@ -118,6 +118,17 @@ where
     /// Atomically increment a namespaced derivation counter and return its new value.
     async fn increment_derivation_counter(&self, namespace: &str, count: u32) -> Result<u32, Err>;
 
+    /// Atomically reserve and return an unused derivation index at least `minimum_index`.
+    ///
+    /// Advance the namespaced counter to `max(counter, minimum_index) + 1` in
+    /// one database operation. Return an error without modifying the counter
+    /// if its next value cannot be represented as a `u32`.
+    async fn reserve_derivation_index(
+        &self,
+        namespace: &str,
+        minimum_index: u32,
+    ) -> Result<u32, Err>;
+
     /// Add Mint to storage
     async fn add_mint(&self, mint_url: MintUrl, mint_info: Option<MintInfo>) -> Result<(), Err>;
 

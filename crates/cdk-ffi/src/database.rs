@@ -185,6 +185,13 @@ pub trait WalletDatabase: Send + Sync {
         count: u32,
     ) -> Result<u32, FfiError>;
 
+    /// Atomically reserve an unused index at least `minimum_index`.
+    async fn reserve_derivation_index(
+        &self,
+        namespace: String,
+        minimum_index: u32,
+    ) -> Result<u32, FfiError>;
+
     /// Add Mint to storage
     async fn add_mint(
         &self,
@@ -745,6 +752,17 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
             .increment_derivation_counter(namespace.to_owned(), count)
             .await
             .map_err(into_database_error)
+    }
+
+    async fn reserve_derivation_index(
+        &self,
+        namespace: &str,
+        minimum_index: u32,
+    ) -> Result<u32, cdk::cdk_database::Error> {
+        self.ffi_db
+            .reserve_derivation_index(namespace.to_owned(), minimum_index)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
     async fn add_mint(
@@ -1459,6 +1477,17 @@ where
             .map_err(FfiError::internal)
     }
 
+    async fn reserve_derivation_index(
+        &self,
+        namespace: String,
+        minimum_index: u32,
+    ) -> Result<u32, FfiError> {
+        self.inner
+            .reserve_derivation_index(&namespace, minimum_index)
+            .await
+            .map_err(FfiError::internal)
+    }
+
     async fn add_mint(
         &self,
         mint_url: MintUrl,
@@ -1882,6 +1911,16 @@ macro_rules! impl_ffi_wallet_database {
             ) -> Result<u32, FfiError> {
                 self.inner
                     .increment_derivation_counter(namespace, count)
+                    .await
+            }
+
+            async fn reserve_derivation_index(
+                &self,
+                namespace: String,
+                minimum_index: u32,
+            ) -> Result<u32, FfiError> {
+                self.inner
+                    .reserve_derivation_index(namespace, minimum_index)
                     .await
             }
 

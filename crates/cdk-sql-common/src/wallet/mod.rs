@@ -969,6 +969,40 @@ where
         Ok(new_counter)
     }
 
+    #[instrument(skip(self))]
+    async fn reserve_derivation_index(
+        &self,
+        namespace: &str,
+        minimum_index: u32,
+    ) -> Result<u32, database::Error> {
+        let next = minimum_index
+            .checked_add(1)
+            .ok_or(database::Error::AmountOverflow)?;
+        let conn = self.pool.acquire().await?;
+        let counter: u32 = query(
+            r#"
+            INSERT INTO derivation_counter (namespace, counter)
+            VALUES (:namespace, :next)
+            ON CONFLICT(namespace) DO UPDATE SET counter = CASE
+                WHEN derivation_counter.counter < :next THEN :next
+                ELSE derivation_counter.counter + 1 END
+            WHERE derivation_counter.counter < :maximum
+            RETURNING counter
+            "#,
+        )?
+        .bind("namespace", namespace.to_owned())
+        .bind("next", next)
+        .bind("maximum", u32::MAX)
+        .pluck(&conn)
+        .await?
+        .map(|n| Ok::<_, Error>(column_as_number!(n)))
+        .transpose()?
+        .ok_or(database::Error::AmountOverflow)?;
+        counter
+            .checked_sub(1)
+            .ok_or(database::Error::AmountOverflow)
+    }
+
     #[instrument(skip(self, mint_info))]
     async fn add_mint(
         &self,
