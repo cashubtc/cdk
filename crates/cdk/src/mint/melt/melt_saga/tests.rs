@@ -27,7 +27,7 @@ use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 
 use crate::mint::melt::melt_saga::{MeltSaga, PaymentOutcome};
 use crate::mint::melt::shared::{
-    finalize_melt_quote, process_melt_change, rollback_melt_quote, MeltChangeResult,
+    finalize_melt_quote, process_melt_change, rollback_melt_quote, MeltChangeResult, Notifiers,
 };
 use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
 
@@ -604,9 +604,14 @@ async fn test_finalizing_recovery_uses_persisted_payment_fee() {
     .unwrap();
 
     let mut proofs_with_state = tx.get_proofs(&input_ys).await.unwrap();
-    crate::mint::Mint::update_proofs_state(&mut tx, &mut proofs_with_state, State::Spent)
-        .await
-        .unwrap();
+    crate::mint::Mint::update_proofs_state(
+        &mut tx,
+        &mint.state_filters(),
+        &mut proofs_with_state,
+        State::Spent,
+    )
+    .await
+    .unwrap();
     let mut saga = tx
         .get_saga_for_update(&operation_id)
         .await
@@ -1298,7 +1303,7 @@ async fn test_internal_settlement_aborts_after_rollback() {
         .unwrap();
     rollback_melt_quote(
         &mint.localstore(),
-        &mint.pubsub_manager(),
+        Notifiers::new(&mint.pubsub_manager(), &mint.state_filters()),
         &melt_quote.id,
         &input_ys,
         &blinded_secrets,
@@ -1377,7 +1382,7 @@ async fn test_rollback_refused_after_internal_settlement() {
         .unwrap();
     let result = rollback_melt_quote(
         &mint.localstore(),
-        &mint.pubsub_manager(),
+        Notifiers::new(&mint.pubsub_manager(), &mint.state_filters()),
         &melt_quote.id,
         &input_ys,
         &blinded_secrets,
@@ -3424,7 +3429,7 @@ async fn test_rollback_melt_quote_duplicate_failure_is_idempotent() {
 
     rollback_melt_quote(
         &mint.localstore(),
-        &mint.pubsub_manager(),
+        Notifiers::new(&mint.pubsub_manager(), &mint.state_filters()),
         &quote.id,
         &input_ys,
         &blinded_secrets,
@@ -3444,7 +3449,7 @@ async fn test_rollback_melt_quote_duplicate_failure_is_idempotent() {
 
     rollback_melt_quote(
         &mint.localstore(),
-        &mint.pubsub_manager(),
+        Notifiers::new(&mint.pubsub_manager(), &mint.state_filters()),
         &quote.id,
         &input_ys,
         &blinded_secrets,
@@ -3505,7 +3510,7 @@ async fn test_stale_remove_melt_setup_does_not_clobber_retry() {
     // The first rollback completes and deletes saga A.
     rollback_melt_quote(
         &mint.localstore(),
-        &mint.pubsub_manager(),
+        Notifiers::new(&mint.pubsub_manager(), &mint.state_filters()),
         &quote.id,
         &input_ys,
         &blinded_secrets,
@@ -3533,7 +3538,11 @@ async fn test_stale_remove_melt_setup_does_not_clobber_retry() {
     // The delayed stale compensation from saga A executes; it must not tear
     // down saga B's live attempt.
     let _ = stale_compensation
-        .execute(&mint.localstore(), &mint.pubsub_manager())
+        .execute(
+            &mint.localstore(),
+            &mint.pubsub_manager(),
+            &mint.state_filters(),
+        )
         .await;
 
     let quote_after_stale_compensation = mint

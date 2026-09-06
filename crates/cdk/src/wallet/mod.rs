@@ -64,6 +64,7 @@ mod reclaim;
 mod recovery;
 pub(crate) mod saga;
 mod send;
+pub mod state_filters;
 #[cfg(not(target_arch = "wasm32"))]
 mod streams;
 pub mod subscription;
@@ -795,7 +796,7 @@ impl Wallet {
 
                 tracing::debug!("Restored {} proofs", proofs.len());
 
-                let states = self.check_proofs_spent(proofs.clone()).await?;
+                let states = self.proof_states_preferring_filters(&proofs).await?;
 
                 let (unspent_proofs, updated_restored) = proofs
                     .into_iter()

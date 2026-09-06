@@ -10,8 +10,8 @@ use super::nut01::PublicKey;
 use super::nut17::SupportedMethods;
 use super::nut19::CachedEndpoint;
 use super::{
-    nut04, nut05, nut15, nut19, nut29, AuthRequired, BlindAuthSettings, ClearAuthSettings,
-    MppMethodSettings, ProtectedEndpoint,
+    nut04, nut05, nut15, nut19, nut29, state_filters, AuthRequired, BlindAuthSettings,
+    ClearAuthSettings, MppMethodSettings, ProtectedEndpoint,
 };
 use crate::util::serde_helpers::deserialize_empty_string_as_none;
 use crate::CurrencyUnit;
@@ -348,6 +348,14 @@ pub struct Nuts {
     #[serde(rename = "29")]
     #[serde(skip_serializing_if = "nut29::Settings::is_empty")]
     pub nut29: nut29::Settings,
+    /// Compact state filter settings
+    ///
+    /// The number is provisional: the NUT has not been assigned one yet, and
+    /// this attribute is the only place it appears.
+    #[serde(default)]
+    #[serde(rename = "31")]
+    #[serde(skip_serializing_if = "state_filters::Settings::is_empty")]
+    pub state_filters: state_filters::Settings,
 }
 
 impl Nuts {
@@ -469,6 +477,14 @@ impl Nuts {
     pub fn nut29(self, settings: nut29::Settings) -> Self {
         Self {
             nut29: settings,
+            ..self
+        }
+    }
+
+    /// Compact state filter settings
+    pub fn state_filters(self, settings: state_filters::Settings) -> Self {
+        Self {
+            state_filters: settings,
             ..self
         }
     }

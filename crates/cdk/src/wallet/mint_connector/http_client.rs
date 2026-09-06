@@ -27,8 +27,9 @@ use crate::nuts::nut00::{KnownMethod, PaymentMethod};
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
     AuthToken, BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse,
-    Id, KeySet, KeysResponse, KeysetResponse, MeltOnchainRequest, MeltRequest, MintInfo,
-    MintRequest, MintResponse, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    GetFiltersInfoResponse, GetFiltersResponse, Id, KeySet, KeysResponse, KeysetResponse,
+    MeltOnchainRequest, MeltRequest, MintInfo, MintRequest, MintResponse, PendingFilterResponse,
+    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
 use crate::OidcClient;
@@ -502,6 +503,31 @@ where
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "keysets"])?;
+        self.transport_http_get(url, None).await
+    }
+
+    /// Get the parameters of the mint's compact state filters
+    ///
+    /// Filters are public and identical for every requester, so this carries no
+    /// auth token and nothing about the caller.
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_filters_info(&self) -> Result<GetFiltersInfoResponse, Error> {
+        let url = self.mint_url.join_paths(&["v1", "filters", "info"])?;
+        self.transport_http_get(url, None).await
+    }
+
+    /// Get a page of compact state filters
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_filters(&self, page: u64) -> Result<GetFiltersResponse, Error> {
+        let page = page.to_string();
+        let url = self.mint_url.join_paths(&["v1", "filters", &page])?;
+        self.transport_http_get(url, None).await
+    }
+
+    /// Get the filter of the epoch that is still open
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_filters_pending(&self) -> Result<PendingFilterResponse, Error> {
+        let url = self.mint_url.join_paths(&["v1", "filters", "pending"])?;
         self.transport_http_get(url, None).await
     }
 

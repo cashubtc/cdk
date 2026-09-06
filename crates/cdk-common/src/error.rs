@@ -325,6 +325,15 @@ pub enum Error {
         /// Maximum allowed batch size
         max: usize,
     },
+    /// Filter not available
+    #[error("Filter not available")]
+    FilterNotAvailable,
+    /// Filter page out of range
+    #[error("Filter page out of range")]
+    FilterPageOutOfRange,
+    /// State filter parameters are invalid or cannot be changed
+    #[error("Invalid state filter configuration: {0}")]
+    StateFilterConfig(String),
     /// Proof content too large (secret or witness exceeds max length)
     #[error("Proof content too large: {actual} bytes, max {max}")]
     ProofContentTooLarge {
@@ -537,6 +546,9 @@ pub enum Error {
     /// NUT00 Error
     #[error(transparent)]
     NUT00(#[from] crate::nuts::nut00::Error),
+    /// State filter error
+    #[error(transparent)]
+    StateFilter(#[from] crate::nuts::state_filters::Error),
     /// Nut01 error
     #[error(transparent)]
     NUT01(#[from] crate::nuts::nut01::Error),
@@ -1194,6 +1206,14 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::DuplicateQuoteIds,
                 detail: err.to_string(),
             },
+            Error::FilterNotAvailable => ErrorResponse {
+                code: ErrorCode::FilterNotAvailable,
+                detail: err.to_string(),
+            },
+            Error::FilterPageOutOfRange => ErrorResponse {
+                code: ErrorCode::FilterPageOutOfRange,
+                detail: err.to_string(),
+            },
             Error::BatchSizeExceeded { .. } => ErrorResponse {
                 code: ErrorCode::BatchSizeExceeded,
                 detail: err.to_string(),
@@ -1266,6 +1286,8 @@ impl From<ErrorResponse> for Error {
             }
             ErrorCode::DuplicateQuoteIds => Self::DuplicateQuoteIds,
             ErrorCode::BatchSizeExceeded => Self::BatchSizeExceeded { actual: 0, max: 0 },
+            ErrorCode::FilterNotAvailable => Self::FilterNotAvailable,
+            ErrorCode::FilterPageOutOfRange => Self::FilterPageOutOfRange,
             ErrorCode::MultipleUnits => Self::MultipleUnits,
             ErrorCode::UnitMismatch => Self::UnitMismatch,
             ErrorCode::AmountlessInvoiceNotSupported => Self::AmountLessNotAllowed,
@@ -1352,6 +1374,11 @@ pub enum ErrorCode {
     DuplicateQuoteIds,
     /// Batch size exceeds mint limit (11017)
     BatchSizeExceeded,
+
+    /// Filter not available (40001)
+    FilterNotAvailable,
+    /// Filter page out of range (40002)
+    FilterPageOutOfRange,
     // 12xxx - Keyset errors
     /// Keyset is not known (12001)
     KeysetNotFound,
@@ -1427,6 +1454,8 @@ impl ErrorCode {
             11015 => Self::MaxOutputsExceeded,
             11016 => Self::DuplicateQuoteIds,
             11017 => Self::BatchSizeExceeded,
+            40001 => Self::FilterNotAvailable,
+            40002 => Self::FilterPageOutOfRange,
             // 12xxx - Keyset errors
             12001 => Self::KeysetNotFound,
             12002 => Self::KeysetInactive,
@@ -1476,6 +1505,8 @@ impl ErrorCode {
             Self::MaxOutputsExceeded => 11015,
             Self::DuplicateQuoteIds => 11016,
             Self::BatchSizeExceeded => 11017,
+            Self::FilterNotAvailable => 40001,
+            Self::FilterPageOutOfRange => 40002,
             // 12xxx - Keyset errors
             Self::KeysetNotFound => 12001,
             Self::KeysetInactive => 12002,

@@ -1129,6 +1129,9 @@ pub struct Settings {
     /// Transaction limits for DoS protection
     #[serde(default)]
     pub limits: Limits,
+    /// Compact state filters
+    #[serde(default)]
+    pub state_filters: StateFilters,
     #[cfg(feature = "cln")]
     pub cln: Option<Cln>,
     #[cfg(feature = "lnd")]
@@ -1157,6 +1160,62 @@ pub struct Prometheus {
     pub enabled: bool,
     pub address: Option<String>,
     pub port: Option<u16>,
+}
+
+/// Compact state filter configuration
+///
+/// The parameters are fixed the first time the mint runs with filters enabled.
+/// Changing one afterwards is refused at startup rather than renumbering pages
+/// under wallets that already hold history.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateFilters {
+    /// Publish compact state filters
+    #[serde(default)]
+    pub enabled: bool,
+    /// Epoch duration in seconds
+    #[serde(default = "default_filter_epoch")]
+    pub epoch: u64,
+    /// Golomb-Rice parameter
+    #[serde(default = "default_filter_p")]
+    pub p: u8,
+    /// Number of filters on a full page
+    #[serde(default = "default_filter_page_size")]
+    pub page_size: u64,
+    /// Serve the filter of the epoch that is still open
+    #[serde(default = "default_filter_pending")]
+    pub pending: bool,
+    /// Kinds the filters cover; every kind by default
+    #[serde(default)]
+    pub kinds: Option<Vec<String>>,
+}
+
+impl Default for StateFilters {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            epoch: default_filter_epoch(),
+            p: default_filter_p(),
+            page_size: default_filter_page_size(),
+            pending: default_filter_pending(),
+            kinds: None,
+        }
+    }
+}
+
+fn default_filter_epoch() -> u64 {
+    cdk::nuts::state_filters::DEFAULT_EPOCH
+}
+
+fn default_filter_p() -> u8 {
+    cdk::nuts::state_filters::DEFAULT_P
+}
+
+fn default_filter_page_size() -> u64 {
+    cdk::nuts::state_filters::DEFAULT_PAGE_SIZE
+}
+
+fn default_filter_pending() -> bool {
+    true
 }
 
 /// Transaction limits configuration

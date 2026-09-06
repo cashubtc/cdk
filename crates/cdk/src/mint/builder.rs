@@ -15,6 +15,7 @@ use cdk_signatory::signatory::{RotateKeyArguments, Signatory};
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
+use super::state_filters::{StateFilterOptions, StateFilterService};
 use super::verification::validate_custom_payment_method;
 use super::Nuts;
 use crate::amount::Amount;
@@ -22,7 +23,7 @@ use crate::cdk_database;
 use crate::mint::Mint;
 use crate::nuts::{
     AuthRequired, ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings,
-    MintVersion, MppMethodSettings, PaymentMethod, ProtectedEndpoint,
+    MintVersion, MppMethodSettings, PaymentMethod, ProtectedEndpoint, StateFilterSettings,
 };
 use crate::types::PaymentProcessorKey;
 
@@ -76,6 +77,7 @@ pub struct MintBuilder {
     max_inputs: usize,
     max_outputs: usize,
     max_batch_size: Option<u64>,
+    state_filters: Option<StateFilterOptions>,
     /// Interval at which the built signatory reloads keysets from the shared
     /// database. `None` (the default) disables the reload for a single-instance
     /// deployment that owns its database; set an interval only to run several
@@ -124,6 +126,7 @@ impl MintBuilder {
             max_inputs: 1000,
             max_outputs: 1000,
             max_batch_size: None,
+            state_filters: None,
             keyset_refresh_interval: None,
         }
     }
@@ -345,6 +348,17 @@ impl MintBuilder {
     ) -> Self {
         self.max_batch_size = max_batch_size;
         self.mint_info.nuts.nut29 = cdk_common::nut29::Settings::new(max_batch_size, methods);
+        self
+    }
+
+    /// Publish compact state filters
+    ///
+    /// The parameters are fixed the first time a mint runs with filters
+    /// enabled; a later change is refused at build time rather than
+    /// renumbering pages under wallets that already hold history.
+    pub fn with_state_filters(mut self, options: StateFilterOptions) -> Self {
+        self.mint_info.nuts.state_filters = StateFilterSettings::new(options.kinds.clone());
+        self.state_filters = Some(options);
         self
     }
 
@@ -708,6 +722,21 @@ impl MintBuilder {
             ));
         }
 
+        let state_filter_service = match self.state_filters {
+            Some(options) => Some(Arc::new(
+                StateFilterService::new(
+                    self.localstore.clone(),
+                    options.epoch_seconds,
+                    options.p,
+                    options.page_size,
+                    options.kinds,
+                    options.pending,
+                )
+                .await?,
+            )),
+            None => None,
+        };
+
         if let Some(auth_localstore) = self.auth_localstore {
             let mut protected_endpoints = HashMap::new();
             for endpoint in self.clear_auth_endpoints {
@@ -723,7 +752,7 @@ impl MintBuilder {
                 tx.commit().await?;
             }
 
-            return Mint::new_with_auth(
+            let mut mint = Mint::new_with_auth(
                 self.mint_info,
                 signatory,
                 self.localstore,
@@ -732,9 +761,12 @@ impl MintBuilder {
                 self.max_inputs,
                 self.max_outputs,
             )
-            .await;
+            .await?;
+            mint.set_state_filter_service(state_filter_service);
+            return Ok(mint);
         }
-        Mint::new(
+
+        let mut mint = Mint::new(
             self.mint_info,
             signatory,
             self.localstore,
@@ -742,7 +774,9 @@ impl MintBuilder {
             self.max_inputs,
             self.max_outputs,
         )
-        .await
+        .await?;
+        mint.set_state_filter_service(state_filter_service);
+        Ok(mint)
     }
 
     /// Build the mint with the provided keystore and seed

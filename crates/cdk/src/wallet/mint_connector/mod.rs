@@ -13,9 +13,10 @@ use super::Error;
 // Re-export Lightning address types for trait implementers
 pub use crate::lightning_address::{LnurlPayInvoiceResponse, LnurlPayResponse};
 use crate::nuts::{
-    BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse, Id,
-    KeySet, KeysetResponse, MeltRequest, MintInfo, MintRequest, MintResponse, PaymentMethod,
-    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse,
+    GetFiltersInfoResponse, GetFiltersResponse, Id, KeySet, KeysetResponse, MeltRequest, MintInfo,
+    MintRequest, MintResponse, PaymentMethod, PendingFilterResponse, RestoreRequest,
+    RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::wallet::{AuthMintConnector, AuthWallet};
 use crate::OidcClient;
@@ -174,6 +175,15 @@ pub trait MintConnector: Debug {
     ) -> Result<CheckStateResponse, Error>;
     /// Restore request [NUT-13]
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error>;
+
+    /// Get the parameters of the mint's compact state filters
+    async fn get_filters_info(&self) -> Result<GetFiltersInfoResponse, Error>;
+
+    /// Get a page of compact state filters
+    async fn get_filters(&self, page: u64) -> Result<GetFiltersResponse, Error>;
+
+    /// Get the filter of the epoch that is still open
+    async fn get_filters_pending(&self) -> Result<PendingFilterResponse, Error>;
 
     /// Get the auth wallet for the client
     async fn get_auth_wallet(&self) -> Option<AuthWallet>;

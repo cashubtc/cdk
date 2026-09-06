@@ -8,6 +8,8 @@ use cdk_common::nuts::MeltQuoteState;
 use cdk_common::payment::MakePaymentResponse;
 use tracing::instrument;
 
+use crate::mint::melt::shared::Notifiers;
+use crate::mint::state_filters::StateFilters;
 use crate::mint::subscription::PubSubManager;
 use crate::mint::Mint;
 use crate::Error;
@@ -79,7 +81,7 @@ pub(crate) async fn process_melt_saga_outcome(
 
             persist_permanent_payment_failure(saga, quote, db, payment_response).await?;
 
-            recover_recorded_payment_failure(saga, quote, db, pubsub).await
+            recover_recorded_payment_failure(saga, quote, db, pubsub, &mint.state_filters()).await
         }
         MeltQuoteState::Pending => {
             persist_pending_after_dispatch(saga, quote, payment_response, db).await?;
@@ -186,6 +188,7 @@ pub(crate) async fn recover_recorded_payment_failure(
     quote: &mut MeltQuote,
     db: &cdk_common::database::DynMintDatabase,
     pubsub: &PubSubManager,
+    filters: &StateFilters,
 ) -> Result<(), Error> {
     let current_saga = db.get_melt_saga_by_quote_id(&quote.id).await?;
     let Some(saga) = current_saga else {
@@ -214,7 +217,7 @@ pub(crate) async fn recover_recorded_payment_failure(
         .await?;
     let rollback = super::melt::shared::rollback_failed_melt_quote(
         db,
-        pubsub,
+        Notifiers::new(pubsub, filters),
         &quote.id,
         &input_ys,
         &blinded_secrets,

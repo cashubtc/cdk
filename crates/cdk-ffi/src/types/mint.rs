@@ -515,6 +515,10 @@ pub struct Nuts {
     pub nut22: Option<BlindAuthSettings>,
     /// NUT29 Settings - Batch minting
     pub nut29: Nut29Settings,
+    /// Compact state filters - whether the mint publishes them
+    pub state_filters_supported: bool,
+    /// Compact state filters - the kinds the mint's filters cover
+    pub state_filters_kinds: Vec<String>,
     /// Supported currency units for minting
     pub mint_units: Vec<CurrencyUnit>,
     /// Supported currency units for melting
@@ -548,6 +552,13 @@ impl From<cdk::nuts::Nuts> for Nuts {
             nut21: nuts.nut21.map(Into::into),
             nut22: nuts.nut22.map(Into::into),
             nut29: nuts.nut29.into(),
+            state_filters_supported: nuts.state_filters.supported,
+            state_filters_kinds: nuts
+                .state_filters
+                .kinds
+                .iter()
+                .map(|kind| kind.to_string())
+                .collect(),
             mint_units,
             melt_units,
         }
@@ -591,6 +602,15 @@ impl TryFrom<Nuts> for cdk::nuts::Nuts {
             nut21: n.nut21.map(|s| s.try_into()).transpose()?,
             nut22: n.nut22.map(|s| s.try_into()).transpose()?,
             nut29: n.nut29.into(),
+            state_filters: cdk::nuts::StateFilterSettings {
+                supported: n.state_filters_supported,
+                kinds: n
+                    .state_filters_kinds
+                    .iter()
+                    .map(|kind| kind.parse())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(FfiError::internal)?,
+            },
         })
     }
 }
@@ -772,6 +792,7 @@ mod tests {
                 )],
             }),
             nut29: Default::default(),
+            state_filters: Default::default(),
         }
     }
 
@@ -912,6 +933,7 @@ mod tests {
             nut21: None,
             nut22: None,
             nut29: Default::default(),
+            state_filters: Default::default(),
         };
 
         let ffi_nuts: Nuts = cdk_nuts.into();
@@ -944,6 +966,8 @@ mod tests {
             nut21: None,
             nut22: None,
             nut29: Default::default(),
+            state_filters_supported: false,
+            state_filters_kinds: Vec::new(),
             mint_units: vec![],
             melt_units: vec![],
         };
@@ -1107,6 +1131,8 @@ mod tests {
                     }],
                 }),
                 nut29: Nut29Settings::default(),
+                state_filters_supported: false,
+                state_filters_kinds: Vec::new(),
                 mint_units: vec![],
                 melt_units: vec![],
             },

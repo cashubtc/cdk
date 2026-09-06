@@ -1,9 +1,11 @@
 use cdk_common::database::mint::Acquired;
 use cdk_common::database::DynMintTransaction;
 use cdk_common::mint::ProofsWithState;
+use cdk_common::nuts::ProofsMethods;
 use cdk_common::state::{self, check_state_transition};
-use cdk_common::{Error, State};
+use cdk_common::{Error, PublicKey, State};
 
+use super::state_filters::StateFilters;
 use crate::Mint;
 
 impl Mint {
@@ -20,6 +22,7 @@ impl Mint {
     /// - [`Error::TokenAlreadySpent`] if the database rejects the update (proofs already spent)
     pub async fn update_proofs_state(
         tx: &mut DynMintTransaction,
+        filters: &StateFilters,
         proofs: &mut Acquired<ProofsWithState>,
         new_state: State,
     ) -> Result<(), Error> {
@@ -29,13 +32,33 @@ impl Mint {
             _ => Error::UnexpectedProofState,
         })?;
 
+        let ys = proofs.ys()?;
+
         tx.update_proofs_state(proofs, new_state)
             .await
             .map_err(|err| match err {
                 cdk_common::database::Error::AttemptUpdateSpentProof
                 | cdk_common::database::Error::AttemptRemoveSpentProof => Error::TokenAlreadySpent,
                 err => err.into(),
-            })
+            })?;
+
+        filters.record_proof_states(tx, &ys, new_state).await
+    }
+
+    /// Removes proofs, reverting them to unspent.
+    ///
+    /// This is the compensating path for a swap or melt that did not complete.
+    /// It is a real observable transition, so it publishes a filter element
+    /// even though it publishes no NUT-17 event.
+    pub async fn remove_proofs(
+        tx: &mut DynMintTransaction,
+        filters: &StateFilters,
+        ys: &[PublicKey],
+        quote_id: Option<cdk_common::QuoteId>,
+    ) -> Result<(), Error> {
+        tx.remove_proofs(ys, quote_id).await?;
+
+        filters.record_proof_states(tx, ys, State::Unspent).await
     }
 }
 
@@ -75,9 +98,14 @@ mod tests {
 
         assert_eq!(acquired.state, State::Unspent);
 
-        Mint::update_proofs_state(&mut tx, &mut acquired, State::Pending)
-            .await
-            .unwrap();
+        Mint::update_proofs_state(
+            &mut tx,
+            &mint.state_filters(),
+            &mut acquired,
+            State::Pending,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(acquired.state, State::Pending);
         tx.commit().await.unwrap();
@@ -112,9 +140,14 @@ mod tests {
         {
             let mut tx = db.begin_transaction().await.unwrap();
             let mut acquired = tx.get_proofs(&ys).await.unwrap();
-            Mint::update_proofs_state(&mut tx, &mut acquired, State::Pending)
-                .await
-                .unwrap();
+            Mint::update_proofs_state(
+                &mut tx,
+                &mint.state_filters(),
+                &mut acquired,
+                State::Pending,
+            )
+            .await
+            .unwrap();
             tx.commit().await.unwrap();
         }
 
@@ -124,7 +157,7 @@ mod tests {
 
         assert_eq!(acquired.state, State::Pending);
 
-        Mint::update_proofs_state(&mut tx, &mut acquired, State::Spent)
+        Mint::update_proofs_state(&mut tx, &mint.state_filters(), &mut acquired, State::Spent)
             .await
             .unwrap();
 
@@ -161,9 +194,14 @@ mod tests {
         {
             let mut tx = db.begin_transaction().await.unwrap();
             let mut acquired = tx.get_proofs(&ys).await.unwrap();
-            Mint::update_proofs_state(&mut tx, &mut acquired, State::Pending)
-                .await
-                .unwrap();
+            Mint::update_proofs_state(
+                &mut tx,
+                &mint.state_filters(),
+                &mut acquired,
+                State::Pending,
+            )
+            .await
+            .unwrap();
             tx.commit().await.unwrap();
         }
 
@@ -173,7 +211,13 @@ mod tests {
 
         assert_eq!(acquired.state, State::Pending);
 
-        let result = Mint::update_proofs_state(&mut tx, &mut acquired, State::Pending).await;
+        let result = Mint::update_proofs_state(
+            &mut tx,
+            &mint.state_filters(),
+            &mut acquired,
+            State::Pending,
+        )
+        .await;
 
         assert!(matches!(result, Err(Error::TokenPending)));
     }
@@ -203,10 +247,15 @@ mod tests {
         {
             let mut tx = db.begin_transaction().await.unwrap();
             let mut acquired = tx.get_proofs(&ys).await.unwrap();
-            Mint::update_proofs_state(&mut tx, &mut acquired, State::Pending)
-                .await
-                .unwrap();
-            Mint::update_proofs_state(&mut tx, &mut acquired, State::Spent)
+            Mint::update_proofs_state(
+                &mut tx,
+                &mint.state_filters(),
+                &mut acquired,
+                State::Pending,
+            )
+            .await
+            .unwrap();
+            Mint::update_proofs_state(&mut tx, &mint.state_filters(), &mut acquired, State::Spent)
                 .await
                 .unwrap();
             tx.commit().await.unwrap();
@@ -218,7 +267,13 @@ mod tests {
 
         assert_eq!(acquired.state, State::Spent);
 
-        let result = Mint::update_proofs_state(&mut tx, &mut acquired, State::Pending).await;
+        let result = Mint::update_proofs_state(
+            &mut tx,
+            &mint.state_filters(),
+            &mut acquired,
+            State::Pending,
+        )
+        .await;
 
         assert!(matches!(result, Err(Error::TokenAlreadySpent)));
     }
@@ -252,9 +307,14 @@ mod tests {
         assert_eq!(acquired.state, State::Unspent);
 
         // After update
-        Mint::update_proofs_state(&mut tx, &mut acquired, State::Pending)
-            .await
-            .unwrap();
+        Mint::update_proofs_state(
+            &mut tx,
+            &mint.state_filters(),
+            &mut acquired,
+            State::Pending,
+        )
+        .await
+        .unwrap();
 
         // The wrapper's state field should be updated
         assert_eq!(

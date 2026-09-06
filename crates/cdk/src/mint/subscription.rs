@@ -18,6 +18,7 @@ use cdk_common::{
     ProofState, PublicKey, QuoteId,
 };
 
+use super::state_filters::SharedStateFilters;
 use super::Mint;
 use crate::event::MintEvent;
 
@@ -27,6 +28,7 @@ use crate::event::MintEvent;
 pub struct MintPubSubSpec {
     db: DynMintDatabase,
     payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+    state_filters: SharedStateFilters,
 }
 
 impl MintPubSubSpec {
@@ -52,6 +54,7 @@ impl MintPubSubSpec {
                 self.db.clone(),
                 self.payment_processors.clone(),
                 None,
+                &self.state_filters.load(),
                 &mut quote,
             )
             .await?;
@@ -183,12 +186,14 @@ impl Spec for MintPubSubSpec {
     type Context = (
         DynMintDatabase,
         Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+        SharedStateFilters,
     );
 
     fn new_instance(context: Self::Context) -> Arc<Self> {
         Arc::new(Self {
             db: context.0,
             payment_processors: context.1,
+            state_filters: context.2,
         })
     }
 
@@ -214,6 +219,7 @@ impl PubSubManager {
         context: (
             DynMintDatabase,
             Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+            SharedStateFilters,
         ),
     ) -> Arc<Self> {
         Arc::new(Self(Pubsub::new(MintPubSubSpec::new_instance(context))))
@@ -424,6 +430,7 @@ mod tests {
         let spec = MintPubSubSpec {
             db,
             payment_processors: Arc::new(HashMap::new()),
+            state_filters: Default::default(),
         };
         let events = spec
             .get_events_from_db(&[

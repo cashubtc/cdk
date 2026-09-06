@@ -112,20 +112,35 @@ mod tests {
             State::Pending => {
                 let mut tx = db.begin_transaction().await.unwrap();
                 let mut acquired = tx.get_proofs(&ys).await.unwrap();
-                Mint::update_proofs_state(&mut tx, &mut acquired, State::Pending)
-                    .await
-                    .unwrap();
+                Mint::update_proofs_state(
+                    &mut tx,
+                    &mint.state_filters(),
+                    &mut acquired,
+                    State::Pending,
+                )
+                .await
+                .unwrap();
                 tx.commit().await.unwrap();
             }
             State::Spent => {
                 let mut tx = db.begin_transaction().await.unwrap();
                 let mut acquired = tx.get_proofs(&ys).await.unwrap();
-                Mint::update_proofs_state(&mut tx, &mut acquired, State::Pending)
-                    .await
-                    .unwrap();
-                Mint::update_proofs_state(&mut tx, &mut acquired, State::Spent)
-                    .await
-                    .unwrap();
+                Mint::update_proofs_state(
+                    &mut tx,
+                    &mint.state_filters(),
+                    &mut acquired,
+                    State::Pending,
+                )
+                .await
+                .unwrap();
+                Mint::update_proofs_state(
+                    &mut tx,
+                    &mint.state_filters(),
+                    &mut acquired,
+                    State::Spent,
+                )
+                .await
+                .unwrap();
                 tx.commit().await.unwrap();
             }
             State::Reserved | State::PendingSpent => {
@@ -184,10 +199,15 @@ mod tests {
         {
             let mut tx = db.begin_transaction().await.unwrap();
             let mut acquired = tx.get_proofs(&ys).await.unwrap();
-            Mint::update_proofs_state(&mut tx, &mut acquired, State::Pending)
-                .await
-                .unwrap();
-            Mint::update_proofs_state(&mut tx, &mut acquired, State::Spent)
+            Mint::update_proofs_state(
+                &mut tx,
+                &mint.state_filters(),
+                &mut acquired,
+                State::Pending,
+            )
+            .await
+            .unwrap();
+            Mint::update_proofs_state(&mut tx, &mint.state_filters(), &mut acquired, State::Spent)
                 .await
                 .unwrap();
             tx.commit().await.unwrap();

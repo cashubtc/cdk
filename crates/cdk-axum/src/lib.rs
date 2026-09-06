@@ -20,6 +20,7 @@ mod auth;
 pub mod cache;
 mod custom_handlers;
 mod custom_router;
+mod filters_handlers;
 mod router_handlers;
 mod ws;
 
@@ -108,6 +109,18 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/checkstate", post(post_check))
         .route("/info", get(get_mint_info))
         .route("/restore", post(post_restore));
+
+    let v1_router = if state.mint.state_filter_service().is_some() {
+        v1_router
+            .route("/filters/info", get(filters_handlers::get_filters_info))
+            .route(
+                "/filters/pending",
+                get(filters_handlers::get_filters_pending),
+            )
+            .route("/filters/{page}", get(filters_handlers::get_filters))
+    } else {
+        v1_router
+    };
 
     let mut mint_router = Router::new().nest("/v1", v1_router);
 

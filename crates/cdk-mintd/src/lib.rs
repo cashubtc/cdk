@@ -15,7 +15,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, KVStore, KVStoreCompareAndSwap, MintDatabase, MintKeysDatabase};
-use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
+use cdk::mint::{Mint, MintBuilder, MintMeltLimits, StateFilterOptions};
 use cdk::nuts::nut00::KnownMethod;
 #[cfg(any(
     feature = "cln",
@@ -27,6 +27,7 @@ use cdk::nuts::nut00::KnownMethod;
 ))]
 use cdk::nuts::nut17::SupportedMethods;
 use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path};
+use cdk::nuts::state_filters::{FilterKind, RECOMMENDED_MIN_P};
 use cdk::nuts::{
     AuthRequired, ContactInfo, Method, MintVersion, PaymentMethod, ProtectedEndpoint, RoutePath,
 };
@@ -1100,6 +1101,8 @@ async fn configure_mint_builder_with_wallet_info(
     let mint_builder =
         mint_builder.with_limits(settings.limits.max_inputs, settings.limits.max_outputs);
 
+    let mint_builder = configure_state_filters(settings, mint_builder)?;
+
     // Verify at least one payment processor is configured
     if mint_builder
         .current_mint_info()
@@ -1673,6 +1676,46 @@ fn units_are_compatible(
 }
 
 /// Configures cache settings with support for custom payment methods
+fn configure_state_filters(
+    settings: &config::Settings,
+    mint_builder: MintBuilder,
+) -> Result<MintBuilder> {
+    if !settings.state_filters.enabled {
+        return Ok(mint_builder);
+    }
+
+    let config = &settings.state_filters;
+
+    let kinds = match &config.kinds {
+        Some(kinds) => kinds
+            .iter()
+            .map(|kind| kind.parse::<FilterKind>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| anyhow::anyhow!("Invalid state filter kind: {err}"))?,
+        None => vec![
+            FilterKind::ProofState,
+            FilterKind::MintQuote,
+            FilterKind::MeltQuote,
+        ],
+    };
+
+    if config.p < RECOMMENDED_MIN_P {
+        tracing::warn!(
+            "State filter parameter p is {}, below the recommended minimum of {}. False positives will be common across a long history.",
+            config.p,
+            RECOMMENDED_MIN_P
+        );
+    }
+
+    Ok(mint_builder.with_state_filters(StateFilterOptions {
+        epoch_seconds: config.epoch,
+        p: config.p,
+        page_size: config.page_size,
+        kinds,
+        pending: config.pending,
+    }))
+}
+
 async fn configure_cache(
     settings: &config::Settings,
     mint_builder: MintBuilder,

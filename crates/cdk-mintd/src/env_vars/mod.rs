@@ -12,6 +12,7 @@ mod mint_info;
 mod onchain;
 mod payment_backend;
 mod signatory;
+mod state_filters;
 
 mod auth;
 #[cfg(feature = "bdk")]
@@ -117,6 +118,7 @@ impl Settings {
         }
         self.onchain = Some(self.onchain.clone().unwrap_or_default().from_env());
         self.limits = self.limits.clone().from_env();
+        self.state_filters = self.state_filters.clone().from_env();
 
         {
             // Check env vars for auth config even if None

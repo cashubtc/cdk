@@ -12,8 +12,8 @@ use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
 };
 use crate::nuts::{
-    BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
-    State,
+    BlindSignature, BlindedMessage, CurrencyUnit, Filter, FilterElement, Id, MeltQuoteState, Proof,
+    Proofs, PublicKey, State,
 };
 use crate::payment::PaymentIdentifier;
 
@@ -666,6 +666,75 @@ pub trait CompletedOperationsDatabase {
     async fn get_completed_operations(&self) -> Result<Vec<mint::Operation>, Self::Err>;
 }
 
+/// Persisted parameters of a mint's state filters.
+///
+/// These are fixed for the life of a mint's filter history: changing `p`
+/// changes the false positive rate under wallets that already hold filters, and
+/// changing `epoch_seconds` or `page_size` renumbers pages that wallets have
+/// cached as immutable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateFilterConfig {
+    /// Unix timestamp at which the mint's first epoch began
+    pub genesis: u64,
+    /// Epoch duration in seconds
+    pub epoch_seconds: u64,
+    /// Golomb-Rice parameter
+    pub p: u8,
+    /// Number of filters on a full page
+    pub page_size: u64,
+}
+
+#[async_trait]
+/// State Filter Transaction trait
+pub trait StateFilterTransaction {
+    /// State Filter Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Store the filter parameters, which may only be written once
+    async fn set_state_filter_config(
+        &mut self,
+        config: &StateFilterConfig,
+    ) -> Result<(), Self::Err>;
+
+    /// Record elements for the epoch that is currently open
+    async fn add_filter_elements(
+        &mut self,
+        epoch: u64,
+        elements: &[FilterElement],
+    ) -> Result<(), Self::Err>;
+
+    /// Read and delete every element recorded for an epoch
+    async fn take_filter_elements(&mut self, epoch: u64) -> Result<Vec<FilterElement>, Self::Err>;
+
+    /// Store a built filter
+    async fn add_filter(
+        &mut self,
+        epoch: u64,
+        start: u64,
+        end: u64,
+        data: &[u8],
+    ) -> Result<(), Self::Err>;
+}
+
+#[async_trait]
+/// State Filter Database trait
+pub trait StateFilterDatabase {
+    /// State Filter Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Get the stored filter parameters
+    async fn get_state_filter_config(&self) -> Result<Option<StateFilterConfig>, Self::Err>;
+
+    /// Get the highest epoch that has a built filter
+    async fn latest_built_epoch(&self) -> Result<Option<u64>, Self::Err>;
+
+    /// Get built filters starting at an epoch, in ascending order
+    async fn get_filters(&self, first_epoch: u64, limit: u64) -> Result<Vec<Filter>, Self::Err>;
+
+    /// Get the elements recorded so far for an epoch, without removing them
+    async fn get_filter_elements(&self, epoch: u64) -> Result<Vec<FilterElement>, Self::Err>;
+}
+
 /// Base database writer
 ///
 /// Quote advisory locks coordinate transactional quote updates. Callers must
@@ -681,6 +750,7 @@ pub trait Transaction<Error>:
     + KVStoreTransaction<Error>
     + SagaTransaction<Err = Error>
     + CompletedOperationsTransaction<Err = Error>
+    + StateFilterTransaction<Err = Error>
 {
     /// Lock a set of quote identifiers for this transaction.
     ///
@@ -700,6 +770,7 @@ pub trait Database<Error>:
     + SignaturesDatabase<Err = Error>
     + SagaDatabase<Err = Error>
     + CompletedOperationsDatabase<Err = Error>
+    + StateFilterDatabase<Err = Error>
 {
     /// Begins a transaction
     async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;

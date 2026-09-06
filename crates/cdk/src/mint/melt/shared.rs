@@ -16,6 +16,7 @@ use cdk_common::{Amount, CurrencyUnit, Error, PublicKey, QuoteId};
 use cdk_prometheus::METRICS;
 use cdk_signatory::signatory::SignatoryKeySet;
 
+use crate::mint::state_filters::StateFilters;
 use crate::mint::subscription::PubSubManager;
 use crate::mint::MeltQuote;
 use crate::Mint;
@@ -147,10 +148,29 @@ pub(crate) async fn persist_melt_finalization_handoff(
 ///
 /// Returns database errors if transaction fails, `Error::PaidQuote` if the
 /// quote is already paid, and `Error::UnknownPaymentState` if the saga has
+/// Where a state change is published once it has committed.
+///
+/// The two always travel together: the pubsub is best-effort delivery to live
+/// subscribers, the filters are the durable record.
+#[derive(Clone, Copy)]
+pub struct Notifiers<'a> {
+    /// Live subscribers
+    pub pubsub: &'a PubSubManager,
+    /// Compact state filters
+    pub filters: &'a StateFilters,
+}
+
+impl<'a> Notifiers<'a> {
+    /// Bundle a pubsub manager and a filter recorder.
+    pub fn new(pubsub: &'a PubSubManager, filters: &'a StateFilters) -> Self {
+        Self { pubsub, filters }
+    }
+}
+
 /// already advanced to `Finalizing` and must not be rolled back.
 pub async fn rollback_melt_quote(
     db: &DynMintDatabase,
-    pubsub: &PubSubManager,
+    notifiers: Notifiers<'_>,
     quote_id: &QuoteId,
     input_ys: &[PublicKey],
     blinded_secrets: &[PublicKey],
@@ -164,7 +184,7 @@ pub async fn rollback_melt_quote(
     tx.lock_quotes(std::slice::from_ref(quote_id)).await?;
     rollback_melt_quote_inner(
         tx,
-        pubsub,
+        notifiers,
         quote_id,
         input_ys,
         blinded_secrets,
@@ -177,7 +197,7 @@ pub async fn rollback_melt_quote(
 /// Roll back setup only if the saga still proves payment was never attempted.
 pub(crate) async fn rollback_setup_melt_quote(
     db: &DynMintDatabase,
-    pubsub: &PubSubManager,
+    notifiers: Notifiers<'_>,
     quote_id: &QuoteId,
     input_ys: &[PublicKey],
     blinded_secrets: &[PublicKey],
@@ -191,7 +211,7 @@ pub(crate) async fn rollback_setup_melt_quote(
     tx.lock_quotes(std::slice::from_ref(quote_id)).await?;
     rollback_melt_quote_inner(
         tx,
-        pubsub,
+        notifiers,
         quote_id,
         input_ys,
         blinded_secrets,
@@ -204,7 +224,7 @@ pub(crate) async fn rollback_setup_melt_quote(
 /// Roll back a melt only after an authoritative payment failure was recorded.
 pub(crate) async fn rollback_failed_melt_quote(
     db: &DynMintDatabase,
-    pubsub: &PubSubManager,
+    notifiers: Notifiers<'_>,
     quote_id: &QuoteId,
     input_ys: &[PublicKey],
     blinded_secrets: &[PublicKey],
@@ -218,7 +238,7 @@ pub(crate) async fn rollback_failed_melt_quote(
     tx.lock_quotes(std::slice::from_ref(quote_id)).await?;
     rollback_melt_quote_inner(
         tx,
-        pubsub,
+        notifiers,
         quote_id,
         input_ys,
         blinded_secrets,
@@ -230,7 +250,7 @@ pub(crate) async fn rollback_failed_melt_quote(
 
 async fn rollback_melt_quote_inner(
     mut tx: DynMintTransaction,
-    pubsub: &PubSubManager,
+    notifiers: Notifiers<'_>,
     quote_id: &QuoteId,
     input_ys: &[PublicKey],
     blinded_secrets: &[PublicKey],
@@ -300,8 +320,14 @@ async fn rollback_melt_quote_inner(
     let quote_option = if let Some(mut quote) = locked_quotes.target {
         match quote.state {
             MeltQuoteState::Pending => {
-                tx.update_melt_quote_state(&mut quote, MeltQuoteState::Unpaid, None)
-                    .await?;
+                Mint::update_melt_quote_state(
+                    &mut tx,
+                    notifiers.filters,
+                    &mut quote,
+                    MeltQuoteState::Unpaid,
+                    None,
+                )
+                .await?;
                 Some(quote)
             }
             MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
@@ -341,17 +367,19 @@ async fn rollback_melt_quote_inner(
 
     // Remove input proofs
     if !input_ys.is_empty() {
-        match tx.remove_proofs(input_ys, Some(quote_id.clone())).await {
+        match Mint::remove_proofs(&mut tx, notifiers.filters, input_ys, Some(quote_id.clone()))
+            .await
+        {
             Ok(_) => {
                 proofs_recovered = true;
             }
-            Err(database::Error::AttemptRemoveSpentProof) => {
+            Err(Error::Database(database::Error::AttemptRemoveSpentProof)) => {
                 tracing::warn!(
                     "Proofs already spent or missing during rollback for quote {}",
                     quote_id
                 );
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(e),
         }
     }
 
@@ -370,12 +398,14 @@ async fn rollback_melt_quote_inner(
     // Publish proof state changes
     if proofs_recovered {
         for pk in input_ys.iter() {
-            pubsub.proof_state((*pk, State::Unspent));
+            notifiers.pubsub.proof_state((*pk, State::Unspent));
         }
     }
 
     if let Some(quote) = quote_option {
-        pubsub.melt_quote_status(&quote, None, None, MeltQuoteState::Unpaid);
+        notifiers
+            .pubsub
+            .melt_quote_status(&quote, None, None, MeltQuoteState::Unpaid);
     }
 
     tracing::info!(
@@ -674,6 +704,7 @@ pub async fn load_melt_quotes_exclusively(
 pub(crate) async fn finalize_melt_core(
     mut tx: Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
     pubsub: &PubSubManager,
+    filters: &StateFilters,
     mut quote: Acquired<MeltQuote>,
     input_ys: &[PublicKey],
     inputs_amount: Amount<CurrencyUnit>,
@@ -744,12 +775,17 @@ pub(crate) async fn finalize_melt_core(
     }
 
     // Update quote state to Paid
-    if let Err(err) = tx
-        .update_melt_quote_state(&mut quote, MeltQuoteState::Paid, payment_proof.clone())
-        .await
+    if let Err(err) = Mint::update_melt_quote_state(
+        &mut tx,
+        filters,
+        &mut quote,
+        MeltQuoteState::Paid,
+        payment_proof.clone(),
+    )
+    .await
     {
         tx.rollback().await?;
-        return Err(err.into());
+        return Err(err);
     }
 
     quote.state = MeltQuoteState::Paid;
@@ -779,7 +815,7 @@ pub(crate) async fn finalize_melt_core(
         }
     };
 
-    if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await {
+    if let Err(err) = Mint::update_proofs_state(&mut tx, filters, &mut proofs, State::Spent).await {
         tx.rollback().await?;
         return Err(err);
     }
@@ -935,8 +971,13 @@ pub async fn finalize_melt_quote(
         let mut proofs_with_state = tx.get_proofs(&input_ys).await?;
         let spend_pending = proofs_with_state.state == State::Pending;
         if spend_pending {
-            if let Err(err) =
-                Mint::update_proofs_state(&mut tx, &mut proofs_with_state, State::Spent).await
+            if let Err(err) = Mint::update_proofs_state(
+                &mut tx,
+                &mint.state_filters(),
+                &mut proofs_with_state,
+                State::Spent,
+            )
+            .await
             {
                 tx.rollback().await?;
                 return Err(err);
@@ -954,6 +995,7 @@ pub async fn finalize_melt_quote(
         let (proofs, quote) = finalize_melt_core(
             tx,
             pubsub,
+            &mint.state_filters(),
             locked_quote,
             &input_ys,
             melt_request_info.inputs_amount.clone(),

@@ -159,8 +159,8 @@ impl Wallet {
         }
 
         let states = self
-            .check_proofs_spent(
-                orphaned_proofs
+            .proof_states_preferring_filters(
+                &orphaned_proofs
                     .clone()
                     .into_iter()
                     .map(|p| p.proof)

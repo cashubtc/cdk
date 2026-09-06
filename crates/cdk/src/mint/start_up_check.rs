@@ -10,6 +10,7 @@ use cdk_common::mint::{MeltPaymentRequest, OperationKind, Saga};
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::{PublicKey, QuoteId, State};
 
+use super::melt::shared::Notifiers;
 use super::{Error, Mint};
 use crate::mint::swap::swap_saga::compensation::{CompensatingAction, RemoveSwapSetup};
 use crate::mint::{MeltQuote, MeltQuoteState};
@@ -289,7 +290,11 @@ impl Mint {
 
             // Execute compensation (includes saga deletion)
             if let Err(e) = compensation
-                .execute(&self.localstore, &self.pubsub_manager)
+                .execute(
+                    &self.localstore,
+                    &self.pubsub_manager,
+                    &self.state_filters(),
+                )
                 .await
             {
                 tracing::error!(
@@ -830,7 +835,7 @@ impl Mint {
                     ) => {
                         super::melt::shared::rollback_setup_melt_quote(
                             &self.localstore,
-                            &self.pubsub_manager,
+                            Notifiers::new(&self.pubsub_manager, &self.state_filters()),
                             &quote_id_parsed,
                             &input_ys,
                             &blinded_secrets,
@@ -843,7 +848,7 @@ impl Mint {
                     ) => {
                         super::melt::shared::rollback_failed_melt_quote(
                             &self.localstore,
-                            &self.pubsub_manager,
+                            Notifiers::new(&self.pubsub_manager, &self.state_filters()),
                             &quote_id_parsed,
                             &input_ys,
                             &blinded_secrets,
@@ -913,6 +918,7 @@ impl Mint {
                 quote,
                 &self.localstore,
                 &self.pubsub_manager,
+                &self.state_filters(),
             )
             .await;
         }
@@ -1006,9 +1012,14 @@ mod tests {
         {
             let mut tx = db.begin_transaction().await.unwrap();
             let mut proofs = tx.get_proofs(&input_ys).await.unwrap();
-            Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent)
-                .await
-                .unwrap();
+            Mint::update_proofs_state(
+                &mut tx,
+                &crate::mint::StateFilters::disabled(),
+                &mut proofs,
+                State::Spent,
+            )
+            .await
+            .unwrap();
             tx.commit().await.unwrap();
         }
 

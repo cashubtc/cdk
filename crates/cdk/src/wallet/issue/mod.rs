@@ -325,7 +325,10 @@ impl Wallet {
     }
 
     /// Checks the state of a mint quote with the mint
-    async fn check_state(&self, mint_quote: &mut MintQuote) -> Result<(), Error> {
+    pub(crate) async fn check_mint_quote_state(
+        &self,
+        mint_quote: &mut MintQuote,
+    ) -> Result<(), Error> {
         let mint_quote_response: MintQuoteResponse<String> = self
             .client
             .get_mint_quote_status(mint_quote.payment_method.clone(), &mint_quote.id)
@@ -347,7 +350,7 @@ impl Wallet {
     ) -> Result<MintQuote, Error> {
         let quote_id = mint_quote.id.clone();
         // First, check/update the state from the mint
-        self.check_state(&mut mint_quote).await?;
+        self.check_mint_quote_state(&mut mint_quote).await?;
 
         // Check if there's an in-progress saga for this quote
         if let Some(ref operation_id_str) = mint_quote.used_by_operation {
@@ -443,8 +446,17 @@ impl Wallet {
         let mint_quotes = self.localstore.get_unissued_mint_quotes().await?;
         let mut updated_quotes = Vec::new();
 
+        let changed = self.state_filter_quote_candidates().await?;
+
         for mint_quote in mint_quotes {
             if mint_quote.mint_url != self.mint_url || mint_quote.unit != self.unit {
+                continue;
+            }
+
+            if changed
+                .as_ref()
+                .is_some_and(|changed| !changed.contains(&mint_quote.id))
+            {
                 continue;
             }
 

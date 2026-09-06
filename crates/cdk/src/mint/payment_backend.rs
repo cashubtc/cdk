@@ -9,6 +9,7 @@ use cdk_common::util::unix_time;
 use cdk_common::MintQuoteState;
 use tracing::instrument;
 
+use super::state_filters::StateFilters;
 use super::subscription::PubSubManager;
 use super::Mint;
 use crate::Error;
@@ -22,6 +23,7 @@ impl Mint {
         localstore: DynMintDatabase,
         payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
         pubsub_manager: Option<Arc<PubSubManager>>,
+        filters: &StateFilters,
         quote: &mut MintQuote,
     ) -> Result<(), Error> {
         let state = quote.state();
@@ -106,7 +108,7 @@ impl Mint {
 
                 match new_quote.add_payment(amount_paid, payment.payment_id.clone(), None) {
                     Ok(()) => {
-                        tx.update_mint_quote(&mut new_quote).await?;
+                        Mint::update_mint_quote(&mut tx, filters, &mut new_quote).await?;
                         should_notify = true;
                     }
                     Err(crate::Error::DuplicatePaymentId) => {
@@ -143,6 +145,7 @@ impl Mint {
             self.localstore.clone(),
             self.payment_processors.clone(),
             Some(self.pubsub_manager.clone()),
+            &self.state_filters(),
             quote,
         )
         .await
