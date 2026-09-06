@@ -368,18 +368,20 @@ impl Mint {
                 Some(create_invoice_response.extra_json.unwrap_or_default()),
             );
 
-            tracing::debug!(
-                "New {} mint quote {} for {:?} {} with request id {:?}",
-                payment_method,
-                quote.id,
-                amount,
-                unit,
-                create_invoice_response.request_lookup_id.to_string(),
-            );
-
             let mut tx = self.localstore.begin_transaction().await?;
             tx.add_mint_quote(quote.clone()).await?;
             tx.commit().await?;
+
+            tracing::info!(
+                quote_id = %quote.id,
+                method = %payment_method,
+                unit = %unit,
+                amount = ?amount,
+                request_lookup_id = %create_invoice_response.request_lookup_id,
+                expiry = quote.expiry,
+                state = %quote.state(),
+                "mint quote created and persisted",
+            );
 
             if payment_method.is_bolt11() {
                 let res: MintQuoteBolt11Response<QuoteId> = quote.clone().into();

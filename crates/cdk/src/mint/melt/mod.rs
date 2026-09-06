@@ -351,18 +351,21 @@ impl Mint {
                 payment_quote.estimated_blocks,
             );
 
-            tracing::debug!(
-                "New {} melt quote {} for {} {} with request id {:?}",
-                quote.payment_method,
-                quote.id,
-                quote_amount,
-                unit,
-                payment_quote.request_lookup_id
-            );
-
             let mut tx = self.localstore.begin_transaction().await?;
             tx.add_melt_quote(quote.clone()).await?;
             tx.commit().await?;
+
+            tracing::info!(
+                quote_id = %quote.id,
+                method = %quote.payment_method,
+                unit = %quote.unit,
+                amount = %quote.amount(),
+                fee_reserve = %quote.fee_reserve(),
+                request_lookup_id = ?quote.request_lookup_id,
+                expiry = quote.expiry,
+                state = %quote.state,
+                "melt quote created and persisted",
+            );
 
             Ok(quote.into())
         }
@@ -467,18 +470,21 @@ impl Mint {
                 payment_quote.estimated_blocks,
             );
 
-            tracing::debug!(
-                "New {} melt quote {} for {} {} with request id {:?}",
-                quote.payment_method,
-                quote.id,
-                quote_amount,
-                unit,
-                payment_quote.request_lookup_id
-            );
-
             let mut tx = self.localstore.begin_transaction().await?;
             tx.add_melt_quote(quote.clone()).await?;
             tx.commit().await?;
+
+            tracing::info!(
+                quote_id = %quote.id,
+                method = %quote.payment_method,
+                unit = %quote.unit,
+                amount = %quote.amount(),
+                fee_reserve = %quote.fee_reserve(),
+                request_lookup_id = ?quote.request_lookup_id,
+                expiry = quote.expiry,
+                state = %quote.state,
+                "melt quote created and persisted",
+            );
 
             Ok(quote.into())
         }
@@ -614,6 +620,18 @@ impl Mint {
             tx.add_melt_quote(quote.clone()).await?;
             tx.commit().await?;
 
+            tracing::info!(
+                quote_id = %quote.id,
+                method = %quote.payment_method,
+                unit = %quote.unit,
+                amount = %quote.amount(),
+                fee_reserve = %quote.fee_reserve(),
+                request_lookup_id = ?quote.request_lookup_id,
+                expiry = quote.expiry,
+                state = %quote.state,
+                "melt quote created and persisted",
+            );
+
             Ok(quote.into())
         }
         .await;
@@ -730,18 +748,21 @@ impl Mint {
                 payment_quote.estimated_blocks,
             );
 
-            tracing::debug!(
-                "New {} melt quote {} for {} {} with request id {:?}",
-                method,
-                quote.id,
-                quote_amount,
-                unit,
-                payment_quote.request_lookup_id
-            );
-
             let mut tx = self.localstore.begin_transaction().await?;
             tx.add_melt_quote(quote.clone()).await?;
             tx.commit().await?;
+
+            tracing::info!(
+                quote_id = %quote.id,
+                method = %quote.payment_method,
+                unit = %quote.unit,
+                amount = %quote.amount(),
+                fee_reserve = %quote.fee_reserve(),
+                request_lookup_id = ?quote.request_lookup_id,
+                expiry = quote.expiry,
+                state = %quote.state,
+                "melt quote created and persisted",
+            );
 
             Ok(quote.into())
         }
@@ -1055,7 +1076,7 @@ impl Mint {
 
             match &result {
                 Ok(_) => {
-                    tracing::info!(
+                    tracing::debug!(
                         "Background melt completed successfully for quote: {}",
                         quote_id_for_log
                     );

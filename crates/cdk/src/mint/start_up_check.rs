@@ -104,7 +104,7 @@ impl Mint {
                 Error::Internal
             })?;
 
-        tracing::info!(
+        tracing::debug!(
             "Payment status for melt quote {}: {}",
             quote.id,
             pay_invoice_response.status
@@ -429,11 +429,12 @@ impl Mint {
 
         for saga in incomplete_sagas {
             tracing::info!(
-                "Recovering melt saga {} in state '{}' (created: {}, updated: {})",
-                saga.operation_id,
-                saga.state.state(),
-                saga.created_at,
-                saga.updated_at
+                saga_id = %saga.operation_id,
+                quote_id = ?saga.quote_id,
+                saga_state = %saga.state.state(),
+                created_at = saga.created_at,
+                updated_at = saga.updated_at,
+                "recovering incomplete melt saga",
             );
 
             // Look up input_ys and blinded_secrets from the proof and blind_signature tables
@@ -792,11 +793,13 @@ impl Mint {
                             MeltQuoteState::Pending | MeltQuoteState::Unknown => {
                                 // Not authoritative: an orchestrator may be
                                 // between payment attempts.
-                                tracing::info!(
-                                    "Saga {} for quote {} - payment {} on the payment backend, skipping",
-                                    saga.operation_id,
-                                    quote_id,
-                                    payment_response.status
+                                tracing::warn!(
+                                    saga_id = %saga.operation_id,
+                                    quote_id = %quote_id,
+                                    payment_lookup_id = %payment_response.payment_lookup_id,
+                                    payment_status = %payment_response.status,
+                                    proof_count = input_ys.len(),
+                                    "recovery cannot prove payment failure; quote and proofs remain pending",
                                 );
                                 continue; // Skip this saga
                             }

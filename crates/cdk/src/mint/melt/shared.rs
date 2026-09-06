@@ -374,14 +374,19 @@ async fn rollback_melt_quote_inner(
         }
     }
 
+    let quote_reset = quote_option.is_some();
     if let Some(quote) = quote_option {
         pubsub.melt_quote_status(&quote, None, None, MeltQuoteState::Unpaid);
     }
 
     tracing::info!(
-        "Successfully rolled back melt quote {} and deleted saga {}",
-        quote_id,
-        operation_id
+        quote_id = %quote_id,
+        saga_id = %operation_id,
+        quote_state_reset_to_unpaid = quote_reset,
+        proof_count = input_ys.len(),
+        proofs_recovered,
+        change_output_count = blinded_secrets.len(),
+        "melt rollback committed; reservation cleanup completed",
     );
 
     Ok(())
@@ -834,7 +839,7 @@ pub async fn finalize_melt_quote(
     payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
     operation_id: Option<uuid::Uuid>,
 ) -> Result<Option<Vec<BlindSignature>>, Error> {
-    tracing::info!("Finalizing melt quote {}", quote.id);
+    tracing::debug!("Finalizing melt quote {}", quote.id);
 
     let total_spent = total_spent_for_quote_unit(&total_spent, &quote.unit)?;
 
@@ -1074,7 +1079,16 @@ pub async fn finalize_melt_quote(
         MeltQuoteState::Paid,
     );
 
-    tracing::info!("Successfully finalized melt quote {}", quote.id);
+    tracing::info!(
+        quote_id = %quote.id,
+        saga_id = ?operation_id,
+        payment_lookup_id = %payment_lookup_id,
+        new_quote_state = %MeltQuoteState::Paid,
+        total_spent = %total_spent,
+        proof_count = input_ys.len(),
+        change_signature_count = change_sigs.as_ref().map_or(0, Vec::len),
+        "melt finalized; quote is paid and input proofs are spent",
+    );
 
     #[cfg(feature = "prometheus")]
     if should_record_payment_metrics {
