@@ -29,7 +29,7 @@ tokio-postgres = "0.7.13"
 futures-util = "0.3.31"
 postgres-native-tls = "0.5.1"
 native-tls = "=0.2.18"
-percent-encoding = "2"
+percent-encoding = { version = "2.3", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 cdk-prometheus.workspace = true

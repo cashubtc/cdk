@@ -4,12 +4,16 @@ use std::time::Duration;
 use native_tls::TlsConnector;
 use postgres_native_tls::MakeTlsConnector;
 
+mod connection_string;
+
 /// PostgreSQL connection and pool settings.
 #[derive(Clone)]
 pub struct PgConfig {
     pub(crate) url: String,
     pub(crate) schema: Option<String>,
     tls_mode: Option<String>,
+    inferred_tls_mode: Option<String>,
+    invalid_connection_string: bool,
     pub(crate) max_connections: usize,
     pub(crate) connection_timeout: Duration,
 }
@@ -35,6 +39,8 @@ pub(crate) enum ConfigError {
     TlsMode,
     #[error("PostgreSQL schema must not be empty or contain a NUL byte")]
     Schema,
+    #[error("Invalid PostgreSQL connection string")]
+    ConnectionString,
 }
 
 // Retain the driver cause for programmatic inspection without printing a
@@ -60,21 +66,14 @@ impl PgConfig {
         max_connections: Option<usize>,
         connection_timeout_secs: Option<u64>,
     ) -> Self {
-        let mut schema = None;
-        let url = conn_str
-            .split_whitespace()
-            .filter(|part| match part.strip_prefix("schema=") {
-                Some(value) => {
-                    schema = Some(value.to_owned());
-                    false
-                }
-                None => true,
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+        let parsed = connection_string::parse(conn_str);
+        let invalid_connection_string = parsed.is_err();
+        let (url, schema, inferred_tls_mode) = parsed.unwrap_or_default();
         Self {
             url,
             schema,
+            inferred_tls_mode,
+            invalid_connection_string,
             tls_mode: tls_mode.map(str::to_lowercase),
             max_connections: max_connections.unwrap_or(20),
             connection_timeout: Duration::from_secs(connection_timeout_secs.unwrap_or(10)),
@@ -96,16 +95,16 @@ impl PgConfig {
         {
             return Err(database_error(ConfigError::Schema));
         }
-        let inferred = self
-            .url
-            .split(['?', '&', ' '])
-            .find_map(|s| s.strip_prefix("sslmode="));
-        let mode = self.tls_mode.as_deref().or(inferred).unwrap_or("disable");
+        if self.invalid_connection_string {
+            return Err(database_error(ConfigError::ConnectionString));
+        }
+        let mode = self
+            .tls_mode
+            .as_deref()
+            .or(self.inferred_tls_mode.as_deref())
+            .unwrap_or("disable");
         let mut driver: tokio_postgres::Config = self
             .url
-            .replace("sslmode=verify-full", "sslmode=require")
-            .replace("sslmode=verify-ca", "sslmode=require")
-            .replace("sslmode=allow", "sslmode=prefer")
             .parse()
             .map_err(|error| database_error(ConnectionStringError(error)))?;
         let (ssl, invalid_certs, invalid_hostnames) = match mode {
@@ -134,3 +133,6 @@ impl From<&str> for PgConfig {
         Self::new(value, None, None, None)
     }
 }
+
+#[cfg(test)]
+mod tests;
