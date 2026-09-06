@@ -988,7 +988,7 @@
           echo "  stop-postgres   - Stop PostgreSQL (run before exiting)" >&2
           echo "  pg-status       - Check PostgreSQL status" >&2
           echo "  pg-connect      - Connect to PostgreSQL with psql" >&2
-          echo "  start-pgbouncer - Start test proxies on ports 6432 and 6433" >&2
+          echo "  start-pgbouncer - Start test proxies on ports 6432, 6433, and 6434" >&2
           echo "  stop-pgbouncer  - Stop the test proxies" >&2
           echo "" >&2
         '';

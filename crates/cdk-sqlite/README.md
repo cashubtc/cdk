@@ -70,3 +70,6 @@ and `SqlTransaction` traits; see the
 Create the backend inside a Tokio runtime. Backend handles retain the runtime
 handle needed to safely dispose of blocking connections, including when dropped
 by synchronous FFI callers. They do not create or own another runtime.
+
+Cleanup diagnostics use the same outcome/disposal counters and structured warning
+fields as PostgreSQL; see [cleanup metrics](../cdk-postgres/README.md#cancellation-and-errors).

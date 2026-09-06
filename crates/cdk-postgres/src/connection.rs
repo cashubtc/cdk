@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use cdk_common::database::Error;
 use cdk_sql_common::database::{
-    ConnectionMetrics, DatabaseExecutor, SqlConnection, SqlTransaction,
+    CleanupOutcome, ConnectionMetrics, DatabaseExecutor, SqlConnection, SqlTransaction,
 };
 use cdk_sql_common::stmt::{Column, Statement};
 use deadpool_postgres::Object;
@@ -47,21 +47,24 @@ impl Drop for Lease {
             let mut cleanup = Cleanup {
                 object: Some(object),
                 _metrics: self.metrics.take(),
+                outcome: CleanupOutcome::RuntimeUnavailable,
             };
             let timeout = self.timeout;
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                cleanup.outcome = CleanupOutcome::TaskCancelled;
                 runtime.spawn(async move {
                     let result =
                         tokio::time::timeout(timeout, cleanup.client().batch_execute("ROLLBACK"))
                             .await;
                     match result {
                         Ok(Ok(())) => {
+                            CleanupOutcome::RolledBack.record("postgres");
                             drop(cleanup.object.take());
                         }
-                        _ => tracing::warn!(
-                            "Discarding PostgreSQL connection after unsuccessful rollback"
-                        ),
+                        Ok(Err(_)) => cleanup.outcome = CleanupOutcome::RollbackError,
+                        Err(_) => cleanup.outcome = CleanupOutcome::Timeout,
                     }
+                    drop(cleanup);
                 });
             }
             // Without a runtime, or if the task is cancelled, Cleanup detaches.
@@ -72,6 +75,7 @@ impl Drop for Lease {
 struct Cleanup {
     object: Option<Object>,
     _metrics: Option<ConnectionMetrics>,
+    outcome: CleanupOutcome,
 }
 
 impl Cleanup {
@@ -83,6 +87,7 @@ impl Cleanup {
 impl Drop for Cleanup {
     fn drop(&mut self) {
         if let Some(object) = self.object.take() {
+            self.outcome.record("postgres");
             drop(Object::take(object));
         }
     }

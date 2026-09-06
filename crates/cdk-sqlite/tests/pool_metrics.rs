@@ -19,6 +19,28 @@ fn active() -> f64 {
         .value()
 }
 
+fn cleanup_count(outcome: &str, discarded: bool) -> f64 {
+    let name = if discarded {
+        "cdk_db_connections_discarded_total"
+    } else {
+        "cdk_db_connection_cleanup_total"
+    };
+    METRICS
+        .registry()
+        .gather()
+        .iter()
+        .filter(|family| family.name() == name)
+        .flat_map(|family| family.get_metric())
+        .filter(|metric| {
+            metric
+                .get_label()
+                .iter()
+                .any(|label| label.value() == outcome)
+        })
+        .map(|metric| metric.get_counter().value())
+        .sum()
+}
+
 #[tokio::test]
 async fn checkouts_errors_and_cleanup_balance_gauge() {
     let backend = cdk_sqlite::SqliteBackend::new(cdk_sqlite::Config::from(":memory:")).unwrap();
@@ -56,6 +78,8 @@ async fn checkouts_errors_and_cleanup_balance_gauge() {
     })
     .await
     .unwrap();
+    assert_eq!(cleanup_count("rolled_back", false), 1.0);
+    assert_eq!(cleanup_count("rolled_back", true), 0.0);
     let tx = backend.begin_transaction().await.unwrap();
     tx.rollback().await.unwrap();
     assert_eq!(active(), 0.0);
@@ -69,4 +93,38 @@ async fn checkouts_errors_and_cleanup_balance_gauge() {
         0.0,
         "failed checkout must not increment the gauge"
     );
+    for queued in [false, true] {
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let (backend, tx) = runtime.block_on(async {
+                let backend =
+                    cdk_sqlite::SqliteBackend::new(cdk_sqlite::Config::from(":memory:")).unwrap();
+                let tx = backend.begin_transaction().await.unwrap();
+                (backend, tx)
+            });
+            if queued {
+                runtime.block_on(async {
+                    drop(tx);
+                });
+                drop(runtime);
+            } else {
+                drop(runtime);
+                drop(tx);
+            }
+            drop(backend);
+        })
+        .join()
+        .unwrap();
+        let reason = if queued {
+            "task_cancelled"
+        } else {
+            "runtime_unavailable"
+        };
+        assert_eq!(cleanup_count(reason, false), 1.0);
+        assert_eq!(cleanup_count(reason, true), 1.0);
+        assert_eq!(active(), 0.0);
+    }
 }

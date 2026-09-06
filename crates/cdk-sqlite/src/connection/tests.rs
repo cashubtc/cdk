@@ -120,6 +120,8 @@ async fn in_memory_connection_is_never_silently_replaced() {
 
 #[tokio::test]
 async fn in_memory_poisoned_connection_fails_closed() {
+    #[cfg(feature = "prometheus")]
+    let failures = cleanup_count("worker_error");
     let backend = database().await;
     let conn = backend.acquire().await.unwrap();
     assert!(conn
@@ -129,10 +131,14 @@ async fn in_memory_poisoned_connection_fails_closed() {
     drop(conn);
     assert!(backend.acquire().await.is_err());
     assert!(backend.inner.pool().is_closed());
+    #[cfg(feature = "prometheus")]
+    assert!(cleanup_count("worker_error") >= failures + 1.0);
 }
 
 #[tokio::test]
 async fn cleanup_deadline_discards_memory_connection_with_unfinished_work() {
+    #[cfg(feature = "prometheus")]
+    let timeouts = cleanup_count("timeout");
     let backend = database().await;
     let tx = backend.begin_transaction().await.unwrap();
     let (started, entered) = oneshot::channel();
@@ -156,6 +162,8 @@ async fn cleanup_deadline_discards_memory_connection_with_unfinished_work() {
     let closed = backend.inner.pool().is_closed();
     release.send(()).unwrap();
     assert!(closed, "cleanup timeout must close an in-memory backend");
+    #[cfg(feature = "prometheus")]
+    assert_eq!(cleanup_count("timeout"), timeouts + 1.0);
 }
 
 #[test]
@@ -306,4 +314,44 @@ async fn file_database_recovers_after_worker_failure() {
     assert_eq!(count(&backend).await, 1);
     drop(backend);
     std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(feature = "wallet")]
+#[tokio::test]
+async fn derivation_reservations_are_atomic_across_independent_pools() {
+    use cdk_common::database::WalletDatabase;
+
+    let path = std::env::temp_dir().join(format!("cdk-counter-{}.sqlite", uuid::Uuid::new_v4()));
+    let first = crate::WalletSqliteDatabase::new(&path).await.unwrap();
+    let second = crate::WalletSqliteDatabase::new(&path).await.unwrap();
+    let (a, b, c, d) = tokio::join!(
+        first.reserve_derivation_index("p2pk", 6),
+        second.reserve_derivation_index("p2pk", 6),
+        first.reserve_derivation_index("p2pk", 6),
+        second.reserve_derivation_index("p2pk", 6),
+    );
+    let mut indexes = [a, b, c, d].map(Result::unwrap);
+    indexes.sort_unstable();
+    assert_eq!(indexes, [6, 7, 8, 9]);
+    drop(first);
+    drop(second);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(feature = "prometheus")]
+fn cleanup_count(reason: &str) -> f64 {
+    cdk_prometheus::METRICS
+        .registry()
+        .gather()
+        .iter()
+        .filter(|family| family.name() == "cdk_db_connections_discarded_total")
+        .flat_map(|family| family.get_metric())
+        .filter(|metric| {
+            metric
+                .get_label()
+                .iter()
+                .any(|label| label.name() == "reason" && label.value() == reason)
+        })
+        .map(|metric| metric.get_counter().value())
+        .sum()
 }

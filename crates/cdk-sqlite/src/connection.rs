@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use cdk_common::database::Error;
 use cdk_sql_common::database::{
-    ConnectionMetrics, DatabaseExecutor, SqlConnection, SqlTransaction,
+    CleanupOutcome, ConnectionMetrics, DatabaseExecutor, SqlConnection, SqlTransaction,
 };
 use cdk_sql_common::stmt::{Column, Statement};
 use deadpool_sqlite::Object;
@@ -52,8 +52,10 @@ impl Drop for Lease {
                 pending: self.pending.take(),
                 owner: self.owner.clone(),
                 _metrics: self.metrics.take(),
+                outcome: CleanupOutcome::RuntimeUnavailable,
             };
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                cleanup.outcome = CleanupOutcome::TaskCancelled;
                 runtime.spawn(async move {
                     let result = tokio::time::timeout(Duration::from_secs(10), async {
                         // interact cancellation does not cancel its blocking
@@ -76,12 +78,14 @@ impl Drop for Lease {
                     .await;
                     match result {
                         Ok(Ok(Ok(()))) => {
+                            CleanupOutcome::RolledBack.record("sqlite");
                             drop(cleanup.object.take());
                         }
-                        _ => tracing::warn!(
-                            "Discarding SQLite connection after unsuccessful rollback"
-                        ),
+                        Ok(Ok(Err(_))) => cleanup.outcome = CleanupOutcome::RollbackError,
+                        Ok(Err(_)) => cleanup.outcome = CleanupOutcome::WorkerError,
+                        Err(_) => cleanup.outcome = CleanupOutcome::Timeout,
                     }
+                    drop(cleanup);
                 });
             }
         }
@@ -93,6 +97,7 @@ struct Cleanup {
     pending: Option<oneshot::Receiver<()>>,
     owner: Arc<BackendInner>,
     _metrics: Option<ConnectionMetrics>,
+    outcome: CleanupOutcome,
 }
 
 impl Cleanup {
@@ -104,6 +109,7 @@ impl Cleanup {
 impl Drop for Cleanup {
     fn drop(&mut self) {
         if let Some(object) = self.object.take() {
+            self.outcome.record("sqlite");
             let _entered = self.owner.runtime.enter();
             self.owner.discard_memory();
             drop(Object::take(object));

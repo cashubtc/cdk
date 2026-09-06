@@ -13,14 +13,18 @@ pg_test_database="${CDK_TEST_PG_DATABASE:-cdk_mint}"
 printf '"%s" "%s"\n' "$pg_test_user" "$pg_test_password" > "$pg_test_dir/users.txt"
 chmod 600 "$pg_test_dir/users.txt"
 
-for mode in transaction session; do
-    if [[ "$mode" == transaction ]]; then
-        port="${CDK_TEST_PGBOUNCER_TRANSACTION_PORT:-6432}"
-        size=2
-    else
-        port="${CDK_TEST_PGBOUNCER_SESSION_PORT:-6433}"
-        size=32
-    fi
+for mode in transaction session fault; do
+    pool_mode="$mode"
+    size=32
+    case "$mode" in
+        transaction) port="${CDK_TEST_PGBOUNCER_TRANSACTION_PORT:-6432}" ;;
+        session) port="${CDK_TEST_PGBOUNCER_SESSION_PORT:-6433}" ;;
+        fault)
+            port="${CDK_TEST_PGBOUNCER_FAULT_PORT:-6434}"
+            pool_mode=transaction
+            size=2
+            ;;
+    esac
     if [[ -f "$pg_test_dir/$mode.pid" ]] && kill -0 "$(cat "$pg_test_dir/$mode.pid")" 2>/dev/null; then
         echo "PgBouncer $mode is already running on port $port"
         continue
@@ -35,7 +39,7 @@ unix_socket_dir = $pg_test_dir
 auth_type = plain
 auth_file = $pg_test_dir/users.txt
 admin_users = $pg_test_user
-pool_mode = $mode
+pool_mode = $pool_mode
 default_pool_size = $size
 max_client_conn = 300
 max_prepared_statements = 200

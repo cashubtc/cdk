@@ -80,6 +80,50 @@ pub trait SqlBackend: Clone + Debug + Send + Sync + 'static {
     }
 }
 
+/// Bounded diagnostic reasons for transaction cleanup and connection disposal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanupOutcome {
+    /// Rollback was acknowledged and the connection returned to the pool.
+    RolledBack,
+    /// The cleanup deadline elapsed.
+    Timeout,
+    /// The database rejected rollback or its connection was lost.
+    RollbackError,
+    /// SQLite's blocking worker failed.
+    WorkerError,
+    /// No runtime was available to schedule cleanup.
+    RuntimeUnavailable,
+    /// The runtime cancelled the cleanup task before completion.
+    TaskCancelled,
+}
+
+impl CleanupOutcome {
+    fn label(self) -> &'static str {
+        match self {
+            Self::RolledBack => "rolled_back",
+            Self::Timeout => "timeout",
+            Self::RollbackError => "rollback_error",
+            Self::WorkerError => "worker_error",
+            Self::RuntimeUnavailable => "runtime_unavailable",
+            Self::TaskCancelled => "task_cancelled",
+        }
+    }
+
+    /// Record the outcome exactly once, when the connection is returned or detached.
+    pub fn record(self, backend: &'static str) {
+        let discarded = self != Self::RolledBack;
+        if discarded {
+            tracing::warn!(
+                backend,
+                reason = self.label(),
+                "Discarding connection after unsuccessful cleanup"
+            );
+        }
+        #[cfg(feature = "prometheus")]
+        cdk_prometheus::METRICS.record_db_connection_cleanup(backend, self.label(), discarded);
+    }
+}
+
 /// Metrics for the lifetime of a successful connection checkout.
 ///
 /// Move this guard with the connection into asynchronous cleanup so cleanup is
