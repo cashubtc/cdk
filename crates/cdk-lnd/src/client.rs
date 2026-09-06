@@ -210,6 +210,36 @@ pub async fn connect<P: AsRef<Path>>(
 }
 
 impl Client {
+    #[cfg(test)]
+    pub(crate) fn for_test(uri: http::Uri) -> Self {
+        let config = ClientConfig::builder_with_provider(Arc::new(default_provider()))
+            .with_safe_default_protocol_versions()
+            .expect("TLS versions")
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth();
+        let connector = HttpsConnectorBuilder::new()
+            .with_tls_config(config)
+            .https_or_http()
+            .enable_http2()
+            .build();
+        let client = HyperClient::builder(TokioExecutor::new())
+            .http2_only(true)
+            .build(connector);
+        let service = InterceptedService::new(
+            client,
+            MacaroonInterceptor {
+                macaroon: String::new(),
+            },
+        );
+        Self {
+            lightning: lnrpc::lightning_client::LightningClient::with_origin(
+                service.clone(),
+                uri.clone(),
+            ),
+            router: RouterClient::with_origin(service, uri),
+        }
+    }
+
     pub fn lightning(
         &mut self,
     ) -> &mut lnrpc::lightning_client::LightningClient<

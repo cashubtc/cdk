@@ -56,6 +56,23 @@ export CDK_MINTD_LND_MACAROON_FILE=/home/user/.lnd/data/chain/bitcoin/mainnet/ad
 cdk-mintd
 ```
 
+## Pending outgoing payments
+
+Regular BOLT11 payments return `Pending` when LND reports `INITIATED` or
+`IN_FLIGHT`. Status checks return the current payment state without waiting for
+settlement. Dispatch acknowledgement and status lookups have a 10-second timeout;
+a timeout is an indeterminate result, never a terminal payment failure.
+
+The backend tracks outgoing payments in memory before dispatch. While
+`wait_payment_event()` is consumed (as it is by the mint), a background monitor
+tracks each payment by hash and emits success or failure events for the mint's
+saga handlers. Tracking resumes after stream interruptions within the same
+backend instance. After a process restart, callers must reconcile outstanding
+payments through status checks.
+Cancelling or dropping the event subscription stops its monitors without
+cancelling Lightning payments. Applications using the backend directly must
+consume the event stream or reconcile payments through status checks.
+
 ## Minimum Supported Rust Version (MSRV)
 
 This crate supports Rust version **1.75.0** or higher.

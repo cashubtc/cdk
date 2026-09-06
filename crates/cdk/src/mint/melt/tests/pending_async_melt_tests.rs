@@ -534,6 +534,55 @@ async fn pending_melt_wait_resolves_via_external_successful_event() {
 }
 
 #[tokio::test]
+async fn pending_melt_failure_event_releases_proofs_without_wallet_polling() {
+    // Dispatch verification sees Pending; the failure event's authoritative
+    // recheck sees Failed. No wallet quote poll is needed to release the funds.
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
+        Arc::new(NoEventPendingBackend::new(2, Some(MeltQuoteState::Failed)));
+    let mint = Arc::new(create_pending_test_mint(backend).await.unwrap());
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let pending = mint
+        .melt(&create_test_melt_request(&proofs, &quote))
+        .await
+        .unwrap();
+
+    for _ in 0..2 {
+        // Replayed terminal events must be harmless after compensation.
+        Mint::handle_failed_melt_payment_event(
+            &mint,
+            &mint.localstore(),
+            &mint.pubsub_manager(),
+            &quote.id,
+        )
+        .await
+        .unwrap();
+    }
+
+    assert_eq!(pending.await.unwrap().state(), MeltQuoteState::Unpaid);
+    let stored = mint
+        .localstore()
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.state, MeltQuoteState::Unpaid);
+    let states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(states.iter().all(Option::is_none));
+    assert!(mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn pending_melt_wait_times_out_without_settled_progress() {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
         Arc::new(NoEventPendingBackend::new(usize::MAX, None));
