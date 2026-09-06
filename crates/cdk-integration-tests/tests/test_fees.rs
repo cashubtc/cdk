@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bip39::Mnemonic;
-use cashu::Bolt11Invoice;
+use cashu::{Bolt11Invoice, ProofsMethods};
 use cdk::amount::Amount;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{CurrencyUnit, State};
 use cdk::wallet::advanced::{
     FeeEstimateRequest, PaymentFunding, PaymentPrepareOptions, ProofQuery, WalletBuilder,
 };
@@ -59,7 +59,30 @@ async fn send_fee_is_visible_before_confirmation() {
     request.include_fee = false;
     let plan = wallet.plan_send(request).await.expect("send plan");
 
-    assert_eq!(plan.fee(), 1.into());
+    // An offline send reserves no sender fee when the receiver pays redemption fees.
+    assert_eq!(plan.fee(), Amount::ZERO);
+
+    // Estimate redemption fees from the actual selected proofs before confirmation.
+    let proofs = wallet
+        .advanced()
+        .proofs(ProofQuery {
+            states: vec![State::Reserved],
+            ..Default::default()
+        })
+        .await
+        .expect("reserved proofs")
+        .into_iter()
+        .filter(|record| record.used_by_operation == Some(plan.operation_id().as_uuid()))
+        .map(|record| record.proof)
+        .collect::<Vec<_>>();
+    assert_eq!(proofs.total_amount().expect("proof amount"), 4.into());
+    let redemption_fee = wallet
+        .advanced()
+        .estimate_fee(FeeEstimateRequest::Proofs(proofs))
+        .await
+        .expect("redemption fee estimate")
+        .total;
+    assert_eq!(redemption_fee, Amount::ONE);
 
     let token = plan.execute().await.expect("send receipt").token;
     let received = wallet
@@ -96,7 +119,7 @@ async fn explicit_payment_funding_reports_the_same_input_fee() {
         .into_iter()
         .map(|record| record.proof)
         .collect::<Vec<_>>();
-    let fee = wallet
+    let input_fee = wallet
         .advanced()
         .estimate_fee(FeeEstimateRequest::Proofs(proofs.clone()))
         .await
@@ -113,8 +136,11 @@ async fn explicit_payment_funding_reports_the_same_input_fee() {
         .await
         .expect("payment receipt");
 
+    // The fake Lightning backend charges one sat independently of the input fee.
+    let lightning_fee = Amount::ONE;
+    assert_eq!(receipt.fee_paid, input_fee + lightning_fee);
     assert_eq!(
         wallet.balance().await.expect("balance").available,
-        Amount::from(100 - invoice_amount - u64::from(fee) - u64::from(receipt.fee_paid))
+        Amount::from(100 - invoice_amount - u64::from(input_fee) - u64::from(lightning_fee))
     );
 }
