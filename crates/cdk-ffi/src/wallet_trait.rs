@@ -38,36 +38,31 @@ impl WalletTraitDef for Wallet {
     type RecoveryReport = RecoveryReport;
 
     fn mint_url(&self) -> Self::MintUrl {
-        self.inner().mint_url.clone().into()
+        Wallet::mint_url(self)
     }
 
     fn unit(&self) -> Self::CurrencyUnit {
-        self.inner().unit.clone().into()
+        Wallet::unit(self)
     }
 
     async fn total_balance(&self) -> Result<Self::Amount, Self::Error> {
-        let balance = WalletTraitDef::total_balance(self.inner().as_ref()).await?;
-        Ok(balance.into())
+        Wallet::total_balance(self).await
     }
 
     async fn total_pending_balance(&self) -> Result<Self::Amount, Self::Error> {
-        let balance = WalletTraitDef::total_pending_balance(self.inner().as_ref()).await?;
-        Ok(balance.into())
+        Wallet::total_pending_balance(self).await
     }
 
     async fn total_reserved_balance(&self) -> Result<Self::Amount, Self::Error> {
-        let balance = WalletTraitDef::total_reserved_balance(self.inner().as_ref()).await?;
-        Ok(balance.into())
+        Wallet::total_reserved_balance(self).await
     }
 
     async fn fetch_mint_info(&self) -> Result<Option<Self::MintInfo>, Self::Error> {
-        let info = WalletTraitDef::fetch_mint_info(self.inner().as_ref()).await?;
-        Ok(info.map(Into::into))
+        Wallet::fetch_mint_info(self).await
     }
 
     async fn load_mint_info(&self) -> Result<Self::MintInfo, Self::Error> {
-        let info = WalletTraitDef::load_mint_info(self.inner().as_ref()).await?;
-        Ok(info.into())
+        Wallet::load_mint_info(self).await
     }
 
     async fn keysets(
@@ -79,8 +74,7 @@ impl WalletTraitDef for Wallet {
     }
 
     async fn active_keyset(&self) -> Result<Self::KeySetInfo, Self::Error> {
-        let keyset = WalletTraitDef::active_keyset(self.inner().as_ref()).await?;
-        Ok(keyset.into())
+        Wallet::active_keyset(self).await
     }
 
     async fn keyset(
@@ -125,15 +119,7 @@ impl WalletTraitDef for Wallet {
         description: Option<String>,
         extra: Option<String>,
     ) -> Result<Self::MintQuote, Self::Error> {
-        let quote = WalletTraitDef::mint_quote(
-            self.inner().as_ref(),
-            method.into(),
-            amount.map(Into::into),
-            description,
-            extra,
-        )
-        .await?;
-        Ok(quote.into())
+        Wallet::mint_quote(self, method, amount, description, extra).await
     }
 
     async fn melt_quote(
@@ -143,15 +129,7 @@ impl WalletTraitDef for Wallet {
         options: Option<Self::MeltOptions>,
         extra: Option<String>,
     ) -> Result<Self::MeltQuote, Self::Error> {
-        let quote = WalletTraitDef::melt_quote(
-            self.inner().as_ref(),
-            method.into(),
-            request,
-            options.map(Into::into),
-            extra,
-        )
-        .await?;
-        Ok(quote.into())
+        Wallet::melt_quote(self, method, request, options, extra).await
     }
 
     async fn cross_mint_transfer_quote_max(
@@ -199,13 +177,11 @@ impl WalletTraitDef for Wallet {
     }
 
     async fn check_all_pending_proofs(&self) -> Result<Self::Amount, Self::Error> {
-        let amount = WalletTraitDef::check_all_pending_proofs(self.inner().as_ref()).await?;
-        Ok(amount.into())
+        Wallet::check_all_pending_proofs(self).await
     }
 
     async fn recover_incomplete_sagas(&self) -> Result<Self::RecoveryReport, Self::Error> {
-        let report = WalletTraitDef::recover_incomplete_sagas(self.inner().as_ref()).await?;
-        Ok(report.into())
+        Wallet::recover_incomplete_sagas(self).await
     }
 
     async fn check_proofs_spent(
@@ -266,22 +242,15 @@ impl WalletTraitDef for Wallet {
     }
 
     async fn get_pending_sends(&self) -> Result<Vec<String>, Self::Error> {
-        let ids = WalletTraitDef::get_pending_sends(self.inner().as_ref()).await?;
-        Ok(ids.into_iter().map(|id| id.to_string()).collect())
+        Wallet::get_pending_sends(self).await
     }
 
     async fn revoke_send(&self, operation_id: String) -> Result<Self::Amount, Self::Error> {
-        let uuid = uuid::Uuid::parse_str(&operation_id)
-            .map_err(|e| FfiError::internal(format!("Invalid operation ID: {}", e)))?;
-        let amount = WalletTraitDef::revoke_send(self.inner().as_ref(), uuid).await?;
-        Ok(amount.into())
+        Wallet::revoke_send(self, operation_id).await
     }
 
     async fn check_send_status(&self, operation_id: String) -> Result<bool, Self::Error> {
-        let uuid = uuid::Uuid::parse_str(&operation_id)
-            .map_err(|e| FfiError::internal(format!("Invalid operation ID: {}", e)))?;
-        let claimed = WalletTraitDef::check_send_status(self.inner().as_ref(), uuid).await?;
-        Ok(claimed)
+        Wallet::check_send_status(self, operation_id).await
     }
 
     async fn mint(
@@ -301,8 +270,7 @@ impl WalletTraitDef for Wallet {
     }
 
     async fn mint_unissued_quotes(&self) -> Result<Self::Amount, Self::Error> {
-        let amount = WalletTraitDef::mint_unissued_quotes(self.inner().as_ref()).await?;
-        Ok(amount.into())
+        Wallet::mint_unissued_quotes(self).await
     }
 
     async fn check_mint_quote_status(
@@ -383,18 +351,15 @@ impl WalletTraitDef for Wallet {
     }
 
     async fn set_cat(&self, cat: String) -> Result<(), Self::Error> {
-        WalletTraitDef::set_cat(self.inner().as_ref(), cat).await?;
-        Ok(())
+        Wallet::set_cat(self, cat).await
     }
 
     async fn set_refresh_token(&self, refresh_token: String) -> Result<(), Self::Error> {
-        WalletTraitDef::set_refresh_token(self.inner().as_ref(), refresh_token).await?;
-        Ok(())
+        Wallet::set_refresh_token(self, refresh_token).await
     }
 
     async fn refresh_access_token(&self) -> Result<(), Self::Error> {
-        WalletTraitDef::refresh_access_token(self.inner().as_ref()).await?;
-        Ok(())
+        Wallet::refresh_access_token(self).await
     }
 
     async fn mint_blind_auth(
@@ -435,21 +400,11 @@ impl WalletTraitDef for Wallet {
         quote_ids: Vec<String>,
         method: Self::PaymentMethod,
     ) -> Result<Arc<crate::types::ActiveSubscription>, Self::Error> {
-        let cdk_sub = WalletTraitDef::subscribe_mint_quote_state(
-            self.inner().as_ref(),
-            quote_ids,
-            method.into(),
-        )
-        .await?;
-        let sub_id = uuid::Uuid::new_v4().to_string();
-        Ok(Arc::new(crate::types::ActiveSubscription::new(
-            cdk_sub, sub_id,
-        )))
+        Wallet::subscribe_mint_quote_state(self, quote_ids, method).await
     }
 
     fn set_metadata_cache_ttl(&self, ttl_secs: Option<u64>) {
-        let ttl = ttl_secs.map(std::time::Duration::from_secs);
-        self.inner().set_metadata_cache_ttl(ttl);
+        Wallet::set_metadata_cache_ttl(self, ttl_secs);
     }
 
     fn set_rate_limiting_config(&self, config: Option<RateLimitConfig>) {
@@ -457,23 +412,18 @@ impl WalletTraitDef for Wallet {
     }
 
     fn is_rate_limited(&self) -> bool {
-        WalletTraitDef::is_rate_limited(self.inner().as_ref())
+        Wallet::is_rate_limited(self)
     }
 
     async fn flush_rate_limits(&self) {
-        WalletTraitDef::flush_rate_limits(self.inner().as_ref()).await;
+        Wallet::flush_rate_limits(self).await;
     }
 
     async fn subscribe(
         &self,
         params: crate::types::SubscribeParams,
     ) -> Result<Arc<crate::types::ActiveSubscription>, Self::Error> {
-        let cdk_params: cdk_common::subscription::WalletParams = params.into();
-        let sub_id = cdk_params.id.to_string();
-        let active_sub = WalletTraitDef::subscribe(self.inner().as_ref(), cdk_params).await?;
-        Ok(Arc::new(crate::types::ActiveSubscription::new(
-            active_sub, sub_id,
-        )))
+        Wallet::subscribe(self, params).await
     }
 
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
