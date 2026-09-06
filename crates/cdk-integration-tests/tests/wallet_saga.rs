@@ -172,12 +172,10 @@ async fn test_concurrent_melts_isolated() -> Result<()> {
     let quote_id2 = quote2.id.clone();
 
     // Prepare both melts
-    let prepared1 = wallet1
-        .prepare_melt(&quote_id1, std::collections::HashMap::new())
-        .await?;
-    let prepared2 = wallet2
-        .prepare_melt(&quote_id2, std::collections::HashMap::new())
-        .await?;
+    let (prepared1, prepared2) = tokio::try_join!(
+        wallet1.prepare_melt(&quote_id1, std::collections::HashMap::new()),
+        wallet2.prepare_melt(&quote_id2, std::collections::HashMap::new()),
+    )?;
 
     // Confirm both in parallel
     let (result1, result2) = tokio::join!(prepared1.confirm(), prepared2.confirm());

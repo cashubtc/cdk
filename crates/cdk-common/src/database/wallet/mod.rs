@@ -184,7 +184,12 @@ where
     /// Get all incomplete sagas.
     async fn get_incomplete_sagas(&self) -> Result<Vec<wallet::WalletSaga>, Err>;
 
-    /// Reserve proofs for an operation
+    /// Reserve proofs for an operation.
+    ///
+    /// All requested proofs must be unspent. A `ProofNotUnspent` error must
+    /// leave no proofs reserved by this call, allowing the caller to select
+    /// different proofs after a concurrent reservation. Other errors may have
+    /// an uncertain outcome and must not be reported as `ProofNotUnspent`.
     async fn reserve_proofs(
         &self,
         ys: Vec<PublicKey>,
