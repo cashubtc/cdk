@@ -527,8 +527,6 @@ impl<'a> MeltSaga<'a, Initial> {
             self.state_data.operation_id
         );
 
-        let quote_info = self.initialize_melt(quote_id).await?;
-
         // External proofs (e.g. from a token) may be P2PK/HTLC locked and
         // need witnesses before the mint will accept them as melt inputs.
         //
@@ -555,6 +553,9 @@ impl<'a> MeltSaga<'a, Initial> {
         .await?;
         crate::wallet::util::sign_proofs(&mut proofs, &signing_keys)?;
         crate::wallet::util::verify_locked_proofs(&proofs)?;
+
+        // Validate locked inputs before reserving the quote.
+        let quote_info = self.initialize_melt(quote_id).await?;
 
         let metadata = options.metadata;
 
@@ -1555,6 +1556,8 @@ mod tests {
             ))
         ));
         assert!(db.get_proofs_by_ys(vec![proof_y]).await.unwrap().is_empty());
+        let quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
+        assert!(quote.used_by_operation.is_none());
     }
 
     #[tokio::test]
@@ -1602,6 +1605,8 @@ mod tests {
         // Nothing should have been reserved
         let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
         assert!(stored.is_empty());
+        let quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
+        assert!(quote.used_by_operation.is_none());
     }
 
     #[tokio::test]
