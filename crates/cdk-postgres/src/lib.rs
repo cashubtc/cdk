@@ -722,7 +722,7 @@ mod test {
     #[cfg(feature = "federation-bark")]
     #[tokio::test]
     async fn federation_bark_projection_persistence() {
-        cdk_federation_bark::test_support::federation_bark_projection_persistence(
+        cdk_sql_common::federation_bark_test_support::federation_bark_projection_persistence(
             provide_mint_db(unique_federation_test_id(
                 "federation_bark_projection_persistence",
             ))
@@ -734,7 +734,7 @@ mod test {
     #[cfg(feature = "federation-bark")]
     #[tokio::test]
     async fn federation_bark_action_reads() {
-        cdk_federation_bark::test_support::federation_bark_action_reads(
+        cdk_sql_common::federation_bark_test_support::federation_bark_action_reads(
             provide_mint_db(unique_federation_test_id("federation_bark_action_reads")).await,
         )
         .await;

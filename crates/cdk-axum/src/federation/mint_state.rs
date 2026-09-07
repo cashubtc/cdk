@@ -9,13 +9,13 @@ use cdk::federation::FederationOnchainWalletStatus;
 #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use cdk::federation::{
     FederationAddressAllocationScope, FederationAddressKeychain, FederationChainObservation,
-    FederationFrostApplicationId,
+    FederationError, FederationFrostApplicationId,
 };
 use cdk::federation::{
     FederationAlephBftUnitPayload, FederationCheckpointQuorum, FederationConsensusRuntimeStatus,
     FederationDkgActivationRequest, FederationDkgFinalizedMemberConfig,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
+    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest,
     FederationInvalidOperationAlertSummary, FederationJournalAppendOutcome,
     FederationJournalCatchUpResponse, FederationJournalEntry, FederationOperationEnvelope,
     FederationOperationId, FederationOperationKind, FederationOperationStatus,

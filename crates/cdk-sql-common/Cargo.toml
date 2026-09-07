@@ -17,6 +17,7 @@ mint = ["cdk-common/mint"]
 wallet = ["cdk-common/wallet"]
 federation = ["cdk-common/federation"]
 federation-bark = ["federation", "dep:cdk-federation-bark"]
+test = ["cdk-federation-bark?/test-util"]
 prometheus = ["cdk-prometheus"]
 [dependencies]
 async-trait.workspace = true

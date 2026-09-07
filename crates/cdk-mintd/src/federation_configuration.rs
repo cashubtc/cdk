@@ -1,10 +1,9 @@
 //! Federation configuration loading and startup validation.
 
 use std::path::{Path, PathBuf};
+#[cfg(feature = "federation-bark")]
 use std::str::FromStr;
 
-use crate::cli::CLIArgs;
-use crate::config::PaymentBackendType;
 use anyhow::{anyhow, bail, Context, Result};
 use cdk::mint::FederationRuntimeConfig;
 use cdk::mint::MintBuilder;
@@ -18,6 +17,9 @@ use cdk_common::federation::{
 use cdk_federation_bark::FederationBarkReceiveAntiDosPolicy;
 use serde::de::DeserializeOwned;
 
+use crate::cli::CLIArgs;
+#[cfg(feature = "federation-bark")]
+use crate::config::PaymentBackendType;
 use crate::{config, federation_setup_command, get_work_directory, load_stored_settings};
 
 pub(crate) fn configure_federation(

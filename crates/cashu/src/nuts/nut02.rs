@@ -21,7 +21,7 @@ use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
 use super::nut01::Keys;
-#[cfg(feature = "federation")]
+#[cfg(all(feature = "mint", feature = "federation"))]
 use super::nut01::SecretKey;
 #[cfg(feature = "mint")]
 use super::nut01::{MintKeyPair, MintKeys};

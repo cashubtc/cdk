@@ -257,3 +257,21 @@ pub trait DbTransactionFinalizer {
     /// Rollbacks the write transaction
     async fn rollback(self: Box<Self>) -> Result<(), Self::Err>;
 }
+
+// Gate at the defining crate, not at macro expansion sites: wallet backends need
+// not define their own federation feature to run these tests when Cashu has it.
+#[cfg(all(feature = "test", feature = "federation"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __federation_db_tests {
+    ($suite:ident, $make_db_fn:ident, $($name:ident),+ $(,)?) => {
+        $crate::$suite!($make_db_fn, $($name),+);
+    };
+}
+
+#[cfg(all(feature = "test", not(feature = "federation")))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __federation_db_tests {
+    ($suite:ident, $make_db_fn:ident, $($name:ident),+ $(,)?) => {};
+}

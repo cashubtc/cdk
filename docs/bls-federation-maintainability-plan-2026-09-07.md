@@ -188,3 +188,44 @@ Preserve federation wire formats and canonical encodings unless a package requir
 - Pinned Nix stable: `RUST_MIN_STACK=16777216 cargo test --offline -p cdk-axum --lib --features federation-bdk,federation-bark,iroh,prometheus -- --test-threads=1`: 584 passed, 2 failed, 5 existing manual/stress tests ignored, in 1,109.68 seconds.
 - Both failures came from the shared custom-handler fixture constructing BLS outputs for an ordinary mint after ordinary keyset defaults were restored. The fixture now calls the established `hash_to_curve_for_version` helper. Only the two ordinary cached-method tests use that fixture with a standalone state; their focused rerun passed both tests in 0.33 seconds (`cached_url_method_quote_method_mismatch -- --nocapture --test-threads=1`, otherwise identical feature flags). All 586 non-ignored Axum tests are now verified across the full run and this focused rerun.
 - All runtime scenarios passed: partial startup, essential-worker failure/panic, bounded shutdown, DKG restart at every durable phase, multiple process-session restart patterns, four/five-member offline value windows, catch-up without duplicate payment, checkpoint paging/replay, state digests, and public error redaction. The ignored cases are four manual benchmarks and the pre-existing process stress regression; no tests were removed or newly ignored.
+
+### Focused-read call-site follow-up
+
+- Evidence-attestation routing and the operator's post-retry phase lookup now use the same action-scoped accessor. Together with the two certificate paths, four single-action consumers avoid unrelated history reads.
+- Retained complete reads for recovery/replay, phase-history reconstruction, auditing, and independent custody validation against reserved VTXOs. The latter needs the action and its associated reservation state; replacing only its action lookup would not remove the snapshot or improve its validation boundary.
+- A remaining send-plan materialization failure now logs the already-redacted Bark error while preserving the existing degraded-state outcome. The typed accessor retains the action-ID predicate previously enforced by snapshot lookup. Follow-up tests passed: 2 SDK Bark tests, 19 Axum Bark tests, and 4 Axum service-lifecycle tests, using the full-run feature flags above and filters `bark` and `federation::services::tests`.
+
+### Feature-matrix follow-up
+
+- The disabled-feature build found BLS-only storage fixtures imported by the shared `test` feature. BLS fixture definitions and registration are now gated at `cdk-common`'s feature boundary. This retains BLS tests for every backend when federation is enabled, without requiring each backend to invent its own federation feature or registering no-op tests when it is disabled.
+- The narrow consensus-only lint check found one relocated error import used only by custody integrations. Its gate now matches those callers.
+- BDK-only lint additionally found two Bark-only imports in the daemon configuration module; those imports now carry the Bark gate. The sync worker explicitly clones its owned handle inside the loop, preserving its required task lifetime while satisfying Clippy.
+- Corrected disabled-feature check passed: `cargo check --offline -p cdk-mintd -p cdk-cli -p cdk-ffi --no-default-features --features cdk-mintd/sqlite,cdk-mintd/cln,cdk-ffi/bip353`.
+- Strict lint passed for all three custody combinations: `cargo clippy --offline -p cdk-mintd --no-default-features --features sqlite,federation -- -D warnings`, then the same command with `sqlite,federation-bdk` and `sqlite,federation-bark`.
+
+### Final verification: SDK, daemon, and storage
+
+All final commands use the repository's Nix stable shell (Rust/Cargo 1.98). Federation test commands set `RUST_MIN_STACK=16777216`; PostgreSQL commands set `CDK_MINTD_DATABASE_URL` to the local fixture. Tests run serially to avoid unrelated consensus timing pressure.
+
+| Command | Result |
+| --- | --- |
+| `python3 scripts/check_standalone_api.py` | 2 passed; independent ordinary dependency graph and API/serialization checks passed |
+| `cargo test --offline -p cashu --lib` | 603 passed, 2 existing ignored |
+| `cargo test --offline -p cashu --lib --features federation` | 640 passed, 2 existing ignored |
+| `cargo test --offline -p cdk --lib --no-default-features --features mint,wallet,federation-bark -- --test-threads=1` | 950 passed, no ignored; includes all 103 federation wallet tests |
+| `cargo check --offline -p cdk-ffi --features federation` | Passed, including default binding features |
+| `cargo check --offline --workspace --all-targets` | Passed, including binding crates and test targets |
+| `cargo test --offline -p cdk-sqlite --lib --features federation-bark federation -- --test-threads=1` | 36 passed |
+| `cargo test --offline -p cdk-postgres --lib --features federation-bark federation -- --test-threads=1` | 30 passed |
+| `cargo test --offline -p cdk-mintd --lib --features federation-bdk,federation-bark,federation-test-utils,iroh -- --test-threads=1` | 365 passed, no ignored |
+
+The SDK run took 927.01 seconds and the daemon tests took 152.59 seconds, excluding compilation. Storage runs cover federation transactions, rollback, checkpoints, replay, and materialized-state agreement. The focused-read call-site and narrow feature corrections are being verified separately below; these results do not yet establish fresh live payment verification.
+
+- Backend fixture follow-up: SQLite and PostgreSQL each passed both BLS storage tests (`cargo test --offline -p <backend> --lib --features federation-bark bls -- --test-threads=1`). A Redb-only run exposed that canonical federation operations already require shared mint quote/payment types but `cdk-common/federation` did not declare that dependency. The feature now explicitly enables `cdk-common/mint`; this selects shared types, not the SDK mint feature, and has no effect when federation is disabled. `cargo check --offline -p cdk --no-default-features --features wallet,federation` passed; `cargo test --offline -p cdk-redb --lib --features cdk-common/federation bls -- --test-threads=1` passed its existing BLS transaction test.
+
+- Ordinary SQLite tests exposed an unconditional Bark dev-dependency that enabled federation types without the SQL implementation feature. Both SQL backends now request fixture support through `cdk-sql-common/test`, whose weak optional dependency enables Bark test utilities only when `federation-bark` is active. Existing test names and scenario bodies are unchanged. `cargo test --offline -p cdk-sqlite --lib --no-default-features --features mint,wallet -- --test-threads=1`: all 149 ordinary tests passed. The isolated downstream dependency check now includes SQLite to guard this boundary too.
+
+- After changing fixture access, the `bark` filter passed 5 SQLite tests and 3 PostgreSQL tests, including ordinary-to-Bark migration coverage. No tests were deleted or renamed; their helper now comes from the conditionally enabled SQL test support re-export. Production federation builds do not enable this fixture feature.
+
+- Final expanded isolated check (`python3 scripts/check_standalone_api.py`) passed both API/serialization tests with ordinary SQLite in the dependency graph; the graph excludes BLS/FROST/Bark and FFI defaults remain ordinary.
+- `cargo build --offline -p cdk-mintd -p cdk-cli --features cdk-mintd/federation-bdk,cdk-mintd/federation-bark,cdk-mintd/iroh,cdk-cli/federation` passed. The live-test binaries retain ordinary defaults and explicitly enable federation; `federation-test-utils` is not enabled. `cargo fmt --all -- --check` passed.

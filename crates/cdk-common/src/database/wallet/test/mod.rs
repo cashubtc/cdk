@@ -15,6 +15,7 @@ use cashu::{Amount, CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey};
 
 use super::*;
 use crate::mint_url::MintUrl;
+#[cfg(feature = "federation")]
 use crate::nuts::nut01::BlsG1PublicKey;
 use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, State};
 use crate::wallet::{
@@ -1010,6 +1011,7 @@ where
 }
 
 /// Test adding and retrieving transactions containing federation proof identifiers.
+#[cfg(feature = "federation")]
 pub async fn add_and_get_bls_transaction<DB>(db: DB)
 where
     DB: Database<crate::database::Error>,
@@ -1763,6 +1765,7 @@ where
 #[macro_export]
 macro_rules! wallet_db_test {
     ($make_db_fn:ident) => {
+        $crate::__federation_db_tests!(wallet_db_test, $make_db_fn, add_and_get_bls_transaction);
         wallet_db_test!(
             $make_db_fn,
             add_and_get_mint,
@@ -1798,7 +1801,6 @@ macro_rules! wallet_db_test {
             add_and_get_transaction,
             update_transaction_status,
             same_proofs_in_different_sagas,
-            add_and_get_bls_transaction,
             list_transactions,
             filter_transactions_by_mint,
             remove_transaction,

@@ -1056,7 +1056,8 @@ pub(super) fn spawn_federation_onchain_sync(state: &MintState) {
     let Some(sync_interval) = state.federation.onchain_sync_interval else {
         return;
     };
-    for sync_wallet in state.federation.onchain_wallets().iter().cloned() {
+    for wallet in state.federation.onchain_wallets() {
+        let sync_wallet = wallet.clone();
         let sync_correlation_id = cdk::federation::FederationOperationId::from_bytes(
             sync_wallet.scope().application_id(),
         )

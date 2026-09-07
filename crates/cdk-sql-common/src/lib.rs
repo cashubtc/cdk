@@ -13,6 +13,9 @@ pub mod stmt;
 pub mod value;
 
 pub use cdk_common::database::ConversionError;
+#[cfg(all(feature = "test", feature = "federation-bark"))]
+#[doc(hidden)]
+pub use cdk_federation_bark::test_support as federation_bark_test_support;
 pub use common::{migrate, run_db_operation, run_db_operation_sync};
 
 #[cfg(feature = "mint")]

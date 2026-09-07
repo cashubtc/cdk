@@ -32,10 +32,9 @@ uuid.workspace = true
 
 [dev-dependencies]
 cdk-common = { workspace = true, features = ["test"] }
+cdk-sql-common = { workspace = true, features = ["test"] }
 # Needed at macro-expansion sites of cdk-common's `*_db_test!` macros
 paste.workspace = true
-
-cdk-federation-bark = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { workspace = true, features = ["js"] }

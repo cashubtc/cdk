@@ -4,12 +4,17 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "federation")]
 use cashu::nuts::nut01::BlsG1PublicKey;
 use cashu::secret::Secret;
-use cashu::{Amount, Id, PublicKey, SecretKey, State};
+#[cfg(feature = "federation")]
+use cashu::PublicKey;
+use cashu::{Amount, Id, SecretKey, State};
 use tokio::sync::Barrier;
 
-use crate::database::mint::test::{setup_bls_keyset, setup_keyset};
+#[cfg(feature = "federation")]
+use crate::database::mint::test::setup_bls_keyset;
+use crate::database::mint::test::setup_keyset;
 use crate::database::mint::{Database, DynMintDatabase, Error, KeysDatabase, Proof, QuoteId};
 use crate::mint::Operation;
 use crate::state::check_state_transition;
@@ -179,6 +184,7 @@ where
 }
 
 /// Test that v3 proofs are indexed by BLS G1 Y and can be queried and spent.
+#[cfg(feature = "federation")]
 pub async fn bls_g1_proofs_can_be_stored_queried_and_spent<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,

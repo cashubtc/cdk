@@ -588,7 +588,7 @@ mod test {
     #[cfg(feature = "federation-bark")]
     #[tokio::test]
     async fn federation_bark_projection_persistence() {
-        cdk_federation_bark::test_support::federation_bark_projection_persistence(
+        cdk_sql_common::federation_bark_test_support::federation_bark_projection_persistence(
             provide_db("federation_bark_projection_persistence".to_string()).await,
         )
         .await;
@@ -597,7 +597,7 @@ mod test {
     #[cfg(feature = "federation-bark")]
     #[tokio::test]
     async fn federation_bark_action_reads() {
-        cdk_federation_bark::test_support::federation_bark_action_reads(
+        cdk_sql_common::federation_bark_test_support::federation_bark_action_reads(
             provide_db("federation_bark_action_reads".to_string()).await,
         )
         .await;
@@ -609,7 +609,7 @@ mod test {
         const LIFECYCLES_PER_MODE: usize = 20;
 
         for _ in 0..LIFECYCLES_PER_MODE {
-            cdk_federation_bark::test_support::federation_bark_projection_persistence(
+            cdk_sql_common::federation_bark_test_support::federation_bark_projection_persistence(
                 memory::empty()
                     .await
                     .expect("sequential Bark workload database"),
@@ -620,7 +620,7 @@ mod test {
         let mut parallel = tokio::task::JoinSet::new();
         for _ in 0..LIFECYCLES_PER_MODE {
             parallel.spawn(async {
-                cdk_federation_bark::test_support::federation_bark_projection_persistence(
+                cdk_sql_common::federation_bark_test_support::federation_bark_projection_persistence(
                     memory::empty()
                         .await
                         .expect("parallel Bark workload database"),

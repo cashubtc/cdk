@@ -28,6 +28,8 @@ grpc = ["dep:tonic"]
 # lines up whenever the HTTP backend is present.
 bip353 = ["cdk-http-client?/bip353"]
 federation = [
+    # Canonical operations use the shared mint quote and payment types.
+    "mint",
     "cashu/federation",
     "dep:cdk-frost",
     "dep:cdk-frost-bip32",

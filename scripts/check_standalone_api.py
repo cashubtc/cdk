@@ -16,6 +16,7 @@ def main():
         dependencies = {
             "cashu": {"default-features": False},
             "cdk": {"default-features": False, "features": ["mint", "wallet"]},
+            "cdk-sqlite": {"default-features": False, "features": ["mint", "wallet"]},
         }
         manifest = '[package]\nname = "standalone-api-check"\nversion = "0.0.0"\nedition = "2021"\n\n[workspace]\n\n[dependencies]\nserde_json = "1"\n'
         for name, options in dependencies.items():

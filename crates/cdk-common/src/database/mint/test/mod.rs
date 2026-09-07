@@ -7,7 +7,9 @@ use std::str::FromStr;
 
 // For derivation path parsing
 use bitcoin::bip32::DerivationPath;
-use cashu::{CurrencyUnit, KeySetVersion};
+use cashu::CurrencyUnit;
+#[cfg(feature = "federation")]
+use cashu::KeySetVersion;
 
 use super::*;
 use crate::common::IssuerVersion;
@@ -64,6 +66,7 @@ where
     keyset_id
 }
 
+#[cfg(feature = "federation")]
 #[inline]
 async fn setup_bls_keyset<DB>(db: &DB) -> Id
 where
@@ -379,11 +382,11 @@ where
 #[macro_export]
 macro_rules! mint_db_test {
     ($make_db_fn:ident) => {
+        $crate::__federation_db_tests!(mint_db_test, $make_db_fn, bls_g1_proofs_can_be_stored_queried_and_spent);
         mint_db_test!(
             $make_db_fn,
             add_and_find_proofs,
             add_duplicate_proofs,
-            bls_g1_proofs_can_be_stored_queried_and_spent,
             kvstore_functionality,
             kvstore_write_if_absent,
             kvstore_write_if_equals,
