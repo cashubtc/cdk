@@ -751,8 +751,8 @@ release m="":
   # Extract version from the cdk-ffi crate
   VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "cdk-ffi") | .version')
 
-  if ! git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
-    echo "Tag v$VERSION does not exist on origin. Push the release tag before publishing crates."
+  if ! git ls-remote --exit-code --tags upstream "refs/tags/v$VERSION" > /dev/null; then
+    echo "Tag v$VERSION does not exist on upstream. Push the release tag before publishing crates."
     exit 1
   fi
 
