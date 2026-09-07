@@ -1133,9 +1133,9 @@ fn outputs_for_amount_with_label(
         .get(&CurrencyUnit::Sat)
         .expect("active sat keyset");
 
-    let blinded_secret = cdk::nuts::PublicKey::from(
-        cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(label.as_bytes()),
-    );
+    let blinded_secret =
+        cdk::dhke::hash_to_curve_for_version(label.as_bytes(), keyset_id.get_version())
+            .expect("output curve matches the active keyset");
 
     vec![BlindedMessage::new(
         Amount::from(amount),
