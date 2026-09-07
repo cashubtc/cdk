@@ -97,7 +97,6 @@ pub struct FederationServices {
     state: MintState,
     peer_sync: Option<super::FederationPeerSyncConfig>,
     dkg: Option<super::FederationDkgAutoStartConfig>,
-    application_ready: bool,
 }
 
 impl FederationServices {
@@ -105,19 +104,17 @@ impl FederationServices {
         state: MintState,
         peer_sync: Option<super::FederationPeerSyncConfig>,
         dkg: Option<super::FederationDkgAutoStartConfig>,
-        application_ready: bool,
     ) -> Self {
         Self {
             state,
             peer_sync,
             dkg,
-            application_ready,
         }
     }
 
     /// Start maintenance and retain ownership of every worker and quote task.
     pub async fn start(self) -> Result<RunningFederationServices, cdk::Error> {
-        let tasks = self.state.federation.payment_observer.tasks.clone();
+        let tasks = self.state.federation.tasks.clone();
         let running = RunningFederationServices {
             tasks: tasks.clone(),
             state: self.state.clone(),
@@ -130,7 +127,7 @@ impl FederationServices {
                     config,
                 );
             }
-            if !self.application_ready {
+            if !self.state.federation.membership.is_active() {
                 return Ok(());
             }
             // Validate the peer client before starting any wallet work.

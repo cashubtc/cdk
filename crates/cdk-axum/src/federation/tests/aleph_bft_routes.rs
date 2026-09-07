@@ -65,11 +65,7 @@ async fn local_status_includes_aleph_bft_adapter_counters() {
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
     {
-        let consensus = state
-            .federation
-            .consensus
-            .as_ref()
-            .expect("consensus handle");
+        let consensus = state.federation.consensus().expect("consensus handle");
         consensus
             .lock()
             .await

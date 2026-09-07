@@ -20,8 +20,9 @@ use cdk_bdk::{
 };
 
 use super::mint_state::*;
-use super::state::*;
 use crate::federation;
+#[cfg(test)]
+use crate::{default_federation_transport, FederationConsensusHandle, FederationSequenceHandle};
 use crate::{FederationPeerSyncConfig, FederationTransport};
 
 pub(crate) fn checkpoint_is_exact_startup_frontier(
@@ -177,8 +178,7 @@ impl FederationCheckpointStartupVerifier<'_> {
 }
 
 pub(crate) struct FederationRuntimeState {
-    pub(crate) consensus: Option<FederationConsensusHandle>,
-    pub(crate) sequences: Option<FederationSequenceHandle>,
+    pub(crate) member: Option<federation::FederationMemberContext>,
     #[cfg(feature = "federation-bdk")]
     pub(crate) onchain_wallets: Vec<FederatedBdkWallet>,
     pub(crate) frost_signing: Option<federation::frost_signing::FederationFrostSigningRuntime>,
@@ -211,8 +211,7 @@ pub(crate) async fn create_federation_runtime_state_with_wallet(
             ));
         }
         return Ok(FederationRuntimeState {
-            consensus: None,
-            sequences: None,
+            member: None,
             #[cfg(feature = "federation-bdk")]
             onchain_wallets: Vec::new(),
             frost_signing: None,
@@ -618,8 +617,12 @@ pub(crate) async fn create_federation_runtime_state_with_wallet(
     }
 
     Ok(FederationRuntimeState {
-        consensus: Some(Arc::new(tokio::sync::Mutex::new(consensus))),
-        sequences: Some(Arc::new(tokio::sync::Mutex::new(sequences))),
+        member: Some(federation::FederationMemberContext::new(
+            Arc::clone(mint),
+            Arc::new(tokio::sync::Mutex::new(consensus)),
+            Arc::new(tokio::sync::Mutex::new(sequences)),
+            _peer_sync_config,
+        )),
         #[cfg(feature = "federation-bdk")]
         onchain_wallets,
         frost_signing,
@@ -796,7 +799,10 @@ pub(crate) async fn create_federation_runtime_state(
         None,
     )
     .await?;
-    Ok((state.consensus, state.sequences))
+    Ok(match state.member {
+        Some(member) => (Some(member.consensus), Some(member.sequences)),
+        None => (None, None),
+    })
 }
 
 #[cfg(feature = "federation-bdk")]

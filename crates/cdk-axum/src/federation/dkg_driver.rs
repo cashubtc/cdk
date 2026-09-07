@@ -1495,7 +1495,7 @@ where
         && ticks < driver_config.max_ticks
         && ceremony_started_at.elapsed() < driver_config.ceremony_timeout
     {
-        let stop = state.federation.payment_observer.tasks.stop_token();
+        let stop = state.federation.tasks.stop_token();
         tokio::select! {
             _ = stop.cancelled() => return Err(cdk::Error::Custom("federation DKG shutdown requested".to_string())),
             _ = tokio::time::sleep(driver_config.retry_delay) => {}
@@ -1573,7 +1573,7 @@ pub(crate) fn spawn_federation_dkg_driver(
         .federation_config()
         .expect("validated DKG auto-start has a federation runtime config")
         .member_id();
-    let tasks = state.federation.payment_observer.tasks.clone();
+    let tasks = state.federation.tasks.clone();
     let failures = tasks.clone();
     tasks.spawn("DKG", false, async move {
         match run_federation_dkg_driver(

@@ -1278,10 +1278,10 @@ async fn aleph_bft_live_sessions_with_unavailable_member_stall_safely_without_du
     }
     assert_eq!(live_session_handles.len(), 4);
 
-    states[0].federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    states[0].federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(250),
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&states[0], &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
@@ -1384,10 +1384,10 @@ async fn aleph_bft_live_sessions_finalize_after_unavailable_member_returns() {
         );
     }
 
-    states[0].federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    states[0].federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(250),
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&states[0], &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
@@ -1415,10 +1415,10 @@ async fn aleph_bft_live_sessions_finalize_after_unavailable_member_returns() {
     );
     assert_eq!(live_session_handles.len(), 5);
 
-    states[0].federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    states[0].federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_secs(10),
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let retry_envelope = mint_quote_envelope(&states[0], &quote_id);
     let response = states[0]
         .submit_federation_envelope_to_consensus(retry_envelope)
@@ -1691,10 +1691,13 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
     drop(fourth_handle);
 
     for index in 0..3 {
-        session.states[index].federation.peer_sync_config = Some(FederationPeerSyncConfig {
+        session.states[index]
+            .federation
+            .member_mut_for_test()
+            .peer_sync_config = FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_millis(250),
             ..session.sync_config
-        });
+        };
     }
     for (index, envelope, operation_id) in [
         (0_usize, first_swap_envelope, first_swap_operation_id),
@@ -1816,7 +1819,7 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
             .with_state(session.states[3].clone()),
     );
     for state in &mut session.states[..4] {
-        state.federation.peer_sync_config = Some(session.sync_config);
+        state.federation.member_mut_for_test().peer_sync_config = session.sync_config;
     }
 
     let first_status =

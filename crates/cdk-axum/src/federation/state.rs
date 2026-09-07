@@ -17,6 +17,10 @@ use cdk::federation::{
 use sha2::{Digest, Sha256};
 
 use crate::auth;
+#[cfg(test)]
+use cdk::federation::{
+    FederationAlephBftFinalizedItem, FederationJournalCatchUpResponse, FederationJournalEntry,
+};
 
 pub(crate) type FederationConsensusHandle = Arc<tokio::sync::Mutex<FederationConsensusRuntime>>;
 pub(crate) type FederationSequenceHandle = Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
@@ -102,12 +106,13 @@ pub(crate) fn federation_aleph_bft_inbound_byte_budget() -> usize {
     FEDERATION_ALEPH_BFT_INBOUND_BYTE_BUDGET
 }
 
-const FEDERATION_INVALID_OPERATION_ALERT_THRESHOLD: u64 = 20;
+pub(crate) const FEDERATION_INVALID_OPERATION_ALERT_THRESHOLD: u64 = 20;
 const FEDERATION_INVALID_OPERATION_ALERT_WINDOW: std::time::Duration =
     std::time::Duration::from_secs(60);
 // The blocking closure owns the permit so cancellation cannot admit
 // overlapping uncancellable DKG work.
-static FEDERATION_DKG_CPU_ADMISSION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+pub(crate) static FEDERATION_DKG_CPU_ADMISSION: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(1);
 
 #[derive(Debug)]
 pub(crate) struct FederationDkgAdmissionState {
@@ -1083,6 +1088,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::federation::bootstrap::initialize_accepted_federation_onchain_wallets;
+    use cdk::federation::{FederationJournalAppendOutcome, FederationOperationEnvelope};
 
     #[test]
     fn active_onchain_application_requires_local_watch_only_config() {

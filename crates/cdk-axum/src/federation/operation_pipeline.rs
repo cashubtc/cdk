@@ -76,7 +76,7 @@ impl FederationNodeRuntime {
         envelope: &cdk::federation::FederationOperationEnvelope,
     ) -> Result<(), cdk::Error> {
         self.validate_envelope_static_admission(envelope).await?;
-        let Some(mint) = &self.mint else {
+        let Some(mint) = &self.mint() else {
             return Ok(());
         };
         if let cdk::federation::FederationOperation::TransactionSigned(signed) = &envelope.operation
@@ -109,7 +109,7 @@ impl FederationNodeRuntime {
         &self,
         envelope: &cdk::federation::FederationOperationEnvelope,
     ) -> Result<(), cdk::Error> {
-        let Some(mint) = &self.mint else {
+        let Some(mint) = &self.mint() else {
             return Ok(());
         };
         let Some(config) = mint.effective_federation_config().await? else {
@@ -121,15 +121,12 @@ impl FederationNodeRuntime {
     }
 
     pub(super) fn active_mint(&self) -> Result<&Arc<Mint>, cdk::Error> {
-        self.mint
-            .as_ref()
-            .ok_or_else(|| runtime_unavailable("mint"))
+        self.mint().ok_or_else(|| runtime_unavailable("mint"))
     }
 
     #[cfg(feature = "prometheus")]
     pub(crate) fn metric_member_label(&self) -> Option<String> {
-        self.mint
-            .as_ref()
+        self.mint()
             .and_then(|mint| mint.federation_config())
             .map(|config| config.member_id().to_string())
     }
@@ -178,7 +175,7 @@ impl FederationNodeRuntime {
     ) -> Result<Option<FederationSubmitOperationResponse>, cdk::Error> {
         self.wait_for_operation_result_with_limit(
             operation_id,
-            self.peer_sync_config
+            self.peer_sync_config()
                 .unwrap_or_default()
                 .response_waiter_limit,
         )
@@ -190,7 +187,7 @@ impl FederationNodeRuntime {
         operation_id: FederationOperationId,
         waiter_limit: usize,
     ) -> Result<Option<FederationSubmitOperationResponse>, cdk::Error> {
-        let Some(notifications) = self.notifications.as_ref() else {
+        let Some(notifications) = self.notifications() else {
             return Ok(None);
         };
         Ok(Some(
@@ -200,15 +197,14 @@ impl FederationNodeRuntime {
 
     #[cfg(test)]
     pub(crate) fn pending_response_waiter_count(&self) -> usize {
-        self.notifications
-            .as_ref()
+        self.notifications()
             .map(|notifications| notifications.pending_waiter_count())
             .unwrap_or_default()
     }
 
     #[cfg(test)]
     pub(crate) async fn wait_for_pending_response_waiter_count(&self, expected: usize) {
-        match self.notifications.as_ref() {
+        match self.notifications() {
             Some(notifications) => notifications.wait_for_pending_waiter_count(expected).await,
             None => assert_eq!(
                 expected, 0,
@@ -219,21 +215,19 @@ impl FederationNodeRuntime {
 
     #[cfg(test)]
     pub(crate) fn response_cache_entry_count(&self) -> usize {
-        self.notifications
-            .as_ref()
+        self.notifications()
             .map(|notifications| notifications.response_cache_count())
             .unwrap_or_default()
     }
 
     pub(crate) fn operation_notification_stats(&self) -> FederationOperationNotificationStats {
-        self.notifications
-            .as_ref()
+        self.notifications()
             .map(|notifications| notifications.stats())
             .unwrap_or_default()
     }
 
     pub(crate) fn notify_operation(&self, response: FederationSubmitOperationResponse) {
-        let Some(notifications) = &self.notifications else {
+        let Some(notifications) = &self.notifications() else {
             return;
         };
         super::aleph_bft_latency::record(
@@ -241,7 +235,7 @@ impl FederationNodeRuntime {
             [response.operation_id],
         );
         let response_cache_limit = self
-            .peer_sync_config
+            .peer_sync_config()
             .unwrap_or_default()
             .response_cache_limit;
         notifications.notify(response, response_cache_limit);
@@ -251,7 +245,7 @@ impl FederationNodeRuntime {
         &self,
         responses: &[FederationSubmitOperationResponse],
     ) -> Vec<FederationSubmitOperationResponse> {
-        let Some(consensus) = &self.consensus else {
+        let Some(consensus) = &self.consensus() else {
             return responses.to_vec();
         };
         let consensus = consensus.lock().await;
@@ -452,16 +446,10 @@ impl FederationNodeRuntime {
             .iter()
             .map(FederationOperationEnvelope::operation_id)
             .collect::<Result<Vec<_>, _>>()?;
-        let sync_config = self.peer_sync_config.unwrap_or_default();
-        let notifications = self
-            .notifications
-            .as_ref()
-            .ok_or_else(|| runtime_unavailable("operation notifications"))?;
-        let consensus = self
-            .consensus
-            .as_ref()
-            .ok_or_else(|| runtime_unavailable("consensus"))?;
-        let mut consensus = consensus.lock().await;
+        let member = self.configured_member()?;
+        let sync_config = member.peer_sync_config;
+        let notifications = &member.notifications;
+        let mut consensus = member.consensus.lock().await;
 
         let existing = operation_ids
             .iter()
@@ -594,16 +582,10 @@ impl FederationNodeRuntime {
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
         #[cfg(feature = "prometheus")]
         let operation_label = envelope.operation.kind().to_string();
-        let sync_config = self.peer_sync_config.unwrap_or_default();
-        let notifications = self
-            .notifications
-            .as_ref()
-            .ok_or_else(|| runtime_unavailable("operation notifications"))?;
-        let consensus = self
-            .consensus
-            .as_ref()
-            .ok_or_else(|| runtime_unavailable("consensus"))?;
-        let mut consensus = consensus.lock().await;
+        let member = self.configured_member()?;
+        let sync_config = member.peer_sync_config;
+        let notifications = &member.notifications;
+        let mut consensus = member.consensus.lock().await;
         if let Some(entry) = consensus.journal().entry_by_operation_id(operation_id) {
             if matches!(
                 entry.status(),
@@ -711,8 +693,7 @@ impl FederationNodeRuntime {
 
         let unit = {
             let consensus = self
-                .consensus
-                .as_ref()
+                .consensus()
                 .ok_or_else(|| runtime_unavailable("consensus"))?;
             consensus.lock().await.next_aleph_bft_unit_payload()?
         };
@@ -836,7 +817,7 @@ impl FederationNodeRuntime {
         sender: MemberId,
         sequence: u64,
     ) {
-        if let Some(sequences) = &self.sequences {
+        if let Some(sequences) = &self.sequences() {
             sequences
                 .lock()
                 .await
@@ -881,8 +862,7 @@ impl FederationNodeRuntime {
             }
         }
         let consensus = self
-            .consensus
-            .as_ref()
+            .consensus()
             .ok_or_else(|| runtime_unavailable("consensus"))?;
         let mut consensus = consensus.lock().await;
         for entry in durable_entries.into_values() {
@@ -1116,7 +1096,7 @@ impl FederationNodeRuntime {
         &self,
         operations: &[(FederationOperationId, FederationApplicationState)],
     ) -> Result<(), cdk::Error> {
-        let Some(consensus) = &self.consensus else {
+        let Some(consensus) = &self.consensus() else {
             return Ok(());
         };
         let mut consensus = consensus.lock().await;

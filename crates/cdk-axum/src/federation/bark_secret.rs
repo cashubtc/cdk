@@ -247,7 +247,6 @@ pub(super) async fn post_bark_evidence_attestation(
         let wake_state = state.clone();
         state
             .federation
-            .payment_observer
             .tasks
             .spawn("Bark evidence wake", false, async move {
                 let result = match phase {

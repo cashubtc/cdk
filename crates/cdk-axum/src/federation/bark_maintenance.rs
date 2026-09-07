@@ -25,7 +25,7 @@ pub(crate) fn spawn(state: &MintState) {
     let Some(runtime) = state.federation.bark_runtime().cloned() else {
         return;
     };
-    let tasks = state.federation.payment_observer.tasks.clone();
+    let tasks = state.federation.tasks.clone();
     let stop = tasks.stop_token();
     let host = Arc::new(AxumBarkRecoveryHost {
         state: state.clone(),

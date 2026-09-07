@@ -871,7 +871,7 @@ impl FederationWalletLivenessWorker {
         }
         let public_config = runtime.public_config().clone();
         let private_config = runtime.private_config().clone();
-        let sync_config = state.federation.peer_sync_config.unwrap_or_default();
+        let sync_config = state.federation.peer_sync_config().unwrap_or_default();
         let client = FederationRestPeerClient::new_with_validated_config(
             state.federation.transport.clone(),
             &public_config,
@@ -879,7 +879,7 @@ impl FederationWalletLivenessWorker {
             sync_config,
         )
         .map_err(|err| cdk::Error::Custom(err.to_string()))?;
-        let tasks = state.federation.payment_observer.tasks.clone();
+        let tasks = state.federation.tasks.clone();
         let stop = tasks.stop_token();
         tasks.spawn("wallet_liveness", true, async move {
             let mut interval = tokio::time::interval(self.inner.config.round_interval);

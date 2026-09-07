@@ -33,8 +33,7 @@ async fn submit_mint_quote_operation_applies_quote_to_local_store() {
     assert_eq!(
         state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("consensus")
             .lock()
             .await
@@ -202,7 +201,7 @@ async fn materialized_state_digest_excludes_rejection_metadata() {
 #[tokio::test]
 async fn materialized_state_digest_tracks_keyset_rotation_rows() {
     let (state, public_config, _) = federation_route_state().await;
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let before_entries = consensus.lock().await.journal().entries().to_vec();
     let before_digest = materialized_state_digest(&state, &before_entries)
         .await
@@ -289,8 +288,7 @@ async fn materialized_state_digest_ignores_local_mint_payment_metadata() {
 
     let first_entries = first_state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -299,8 +297,7 @@ async fn materialized_state_digest_ignores_local_mint_payment_metadata() {
         .to_vec();
     let second_entries = second_state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -329,7 +326,7 @@ async fn materialized_state_digest_tracks_unfinalized_payment_observation_rows()
         .await
         .expect("submit mint quote");
 
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let before_entries = consensus.lock().await.journal().entries().to_vec();
     let before_digest = materialized_state_digest(&state, &before_entries)
         .await
@@ -388,7 +385,7 @@ async fn materialized_state_digest_tracks_swap_spend_and_output_share_rows() {
     let mut peer_consensus =
         test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
     finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted swap");
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     let catch_up_request = local_consensus.lock().await.catch_up_request();
     let catch_up_response = checked_test_catch_up_response(&peer_consensus, &catch_up_request)
         .expect("catch-up response");
@@ -534,8 +531,10 @@ async fn failed_mint_apply_preserves_materialized_digest_and_replays_on_restart(
         crate::create_federation_runtime_state(&restarted_state.mint)
             .await
             .expect("restart replay after failed mint apply");
-    restarted_state.federation.consensus = replayed_consensus;
-    restarted_state.federation.sequences = replayed_sequences;
+    restarted_state.federation.member_mut_for_test().consensus =
+        replayed_consensus.expect("configured member handle");
+    restarted_state.federation.member_mut_for_test().sequences =
+        replayed_sequences.expect("configured member handle");
 
     let replayed_entries = db
         .get_federation_journal_entries()
@@ -667,8 +666,10 @@ async fn failed_swap_apply_preserves_materialized_digest_and_replays_on_restart(
         crate::create_federation_runtime_state(&restarted_state.mint)
             .await
             .expect("restart replay after failed swap apply");
-    restarted_state.federation.consensus = replayed_consensus;
-    restarted_state.federation.sequences = replayed_sequences;
+    restarted_state.federation.member_mut_for_test().consensus =
+        replayed_consensus.expect("configured member handle");
+    restarted_state.federation.member_mut_for_test().sequences =
+        replayed_sequences.expect("configured member handle");
 
     let replayed_entries = db
         .get_federation_journal_entries()
@@ -795,8 +796,8 @@ async fn wallet_publisher_timeout_releases_waiter_before_fallback_submission() {
         FederationJournalAppendOutcome::Appended(_)
     ));
 
-    state.federation.notifications =
-        Some(Arc::new(crate::FederationOperationNotifications::default()));
+    state.federation.member_mut_for_test().notifications =
+        Arc::new(crate::FederationOperationNotifications::default());
     let after_restart = wallet_operation_publisher::wait_for_prior_publisher(
         &state.federation,
         operation_id,
@@ -898,7 +899,7 @@ async fn submit_federation_envelope_returns_duplicate_when_acceptance_races_subm
 
     let stats = state.federation_operation_notification_stats();
     assert_eq!(stats.duplicate_submissions, 1);
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.peer_status().operation_count, 1);
 }
@@ -906,10 +907,10 @@ async fn submit_federation_envelope_returns_duplicate_when_acceptance_races_subm
 #[tokio::test]
 async fn submit_federation_envelope_bounds_response_cache() {
     let (mut state, _, _) = federation_route_state().await;
-    state.federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    state.federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         response_cache_limit: 1,
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let first_quote_id = QuoteId::new();
     let first_envelope = mint_quote_envelope(&state, &first_quote_id);
     let first_operation_id = first_envelope.operation_id().expect("first operation id");
@@ -976,8 +977,7 @@ async fn catch_up_replay_materializes_completed_operation_rows() {
     finalize_test_operation(&mut peer_consensus, mint_envelope).expect("peer accepted mint");
     let catch_up_request = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("local consensus")
         .lock()
         .await
@@ -1033,8 +1033,7 @@ async fn catch_up_replay_materializes_unresolved_payment_observation_rows() {
         .expect("peer accepted unresolved payment observation");
     let catch_up_request = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("local consensus")
         .lock()
         .await
@@ -1276,8 +1275,7 @@ async fn materialized_state_digest_ignores_member_local_signature_share_bytes() 
 
     let first_entries = first_state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -1286,8 +1284,7 @@ async fn materialized_state_digest_ignores_member_local_signature_share_bytes() 
         .to_vec();
     let second_entries = second_state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -1334,7 +1331,7 @@ async fn materialized_state_digest_tracks_melt_quote_spend_and_change_rows() {
         MeltQuoteState::Paid,
         Some(String::new()),
     );
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     let mut peer_consensus = local_consensus.lock().await.clone();
     finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted melt");
     finalize_test_operation(&mut peer_consensus, payment_envelope)
@@ -1789,7 +1786,7 @@ async fn benchmark_checkpoint_startup_is_history_length_independent() {
         assert_eq!(exact.materialized_state_audits, 0.0);
         print_synthetic_checkpoint_startup("exact", operation_count, 0, &exact);
 
-        restarted.federation.consensus = Some(exact.consensus);
+        restarted.federation.member_mut_for_test().consensus = exact.consensus;
         seed_synthetic_active_session_backup(&restarted, 0, 4, 1_024).await;
         drop(restarted);
 
@@ -1831,7 +1828,7 @@ async fn benchmark_checkpoint_startup_is_history_length_independent() {
             &exact_with_backup,
         );
 
-        backup_state.federation.consensus = Some(exact_with_backup.consensus);
+        backup_state.federation.member_mut_for_test().consensus = exact_with_backup.consensus;
         let base_entry = backup_state
             .mint
             .localstore()

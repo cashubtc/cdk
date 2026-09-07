@@ -338,7 +338,7 @@ pub(crate) async fn federation_aleph_bft_live_session_startup_decision(
         return Ok(FederationAlephBftLiveSessionStartupDecision::AlreadyStarted);
     }
 
-    let Some(consensus) = &state.federation.consensus else {
+    let Some(consensus) = &state.federation.consensus() else {
         return Ok(FederationAlephBftLiveSessionStartupDecision::MissingConsensusRuntime);
     };
     let session_id = consensus.lock().await.aleph_bft_status()?.session;
@@ -692,14 +692,9 @@ where
         .collect::<Vec<_>>();
     let keychain =
         CdkAlephBftKeychain::try_new_for_validated_config(&public_config, private_config.clone())?;
-    let consensus = state
-        .federation
-        .consensus
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| {
-            cdk::Error::Custom("AlephBFT live session missing consensus runtime".to_string())
-        })?;
+    let consensus = state.federation.consensus().cloned().ok_or_else(|| {
+        cdk::Error::Custom("AlephBFT live session missing consensus runtime".to_string())
+    })?;
     let db = state.mint.localstore();
     let mut tx = db.begin_transaction().await.map_err(|err| {
         cdk::Error::Custom(format!(
@@ -1112,7 +1107,7 @@ fn spawn_federation_aleph_bft_replay_readiness_watcher(
     state: MintState,
     handle: Arc<AlephBftSessionSupervisor>,
 ) {
-    let tasks = state.federation.payment_observer.tasks.clone();
+    let tasks = state.federation.tasks.clone();
     let stop = tasks.stop_token();
     tasks.spawn("AlephBFT replay readiness", false, async move {
         tokio::select! {
@@ -1619,7 +1614,7 @@ async fn stop_federation_aleph_bft_generation_for_backup_recovery(
         reason,
         "AlephBFT live session stopped for backup recovery"
     );
-    let operation_count = match state.federation.consensus.as_ref() {
+    let operation_count = match state.federation.consensus() {
         Some(consensus) => consensus.lock().await.status().accepted_operation_count,
         None => 0,
     };
@@ -1781,7 +1776,7 @@ where
         return Ok(None);
     }
 
-    let Some(consensus) = state.federation.consensus.as_ref().cloned() else {
+    let Some(consensus) = state.federation.consensus().cloned() else {
         return Err(cdk::federation::FederationError::RuntimeUnavailable {
             component: "consensus",
         }
@@ -1874,7 +1869,7 @@ where
         return Ok(None);
     }
 
-    let Some(consensus) = state.federation.consensus.as_ref().cloned() else {
+    let Some(consensus) = state.federation.consensus().cloned() else {
         return Err(cdk::Error::Custom(
             "AlephBFT completed-session rotation requires federation consensus runtime".to_string(),
         ));

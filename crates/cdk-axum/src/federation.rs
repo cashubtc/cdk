@@ -135,7 +135,8 @@ use self::frost_signing::{
     post_frost_signing_package,
 };
 pub(crate) use self::node_runtime::{
-    apply_federation_journal_entry_for_replay, FederationNodeRuntime,
+    apply_federation_journal_entry_for_replay, FederationMemberContext, FederationMembership,
+    FederationNodeRuntime,
 };
 #[cfg(feature = "federation-bark")]
 use self::operator_routes::{
@@ -162,7 +163,7 @@ use self::sync_config::{
     federation_peer_sync_interval, federation_reconnect_backoff_delay,
 };
 pub use self::sync_config::{FederationPeerSyncConfig, FederationPeerSyncConfigError};
-#[cfg(all(test, feature = "prometheus"))]
+#[cfg(test)]
 use self::sync_loop::exchange_checkpoint_round;
 pub(crate) use self::sync_loop::spawn_federation_peer_sync_loop_with_config;
 #[cfg(test)]
@@ -504,7 +505,7 @@ fn acquire_private_rest_admission(
     state: &MintState,
     kind: FederationRestMessageKind,
 ) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, Response> {
-    let Some(admission) = state.federation.private_rest_admission.as_ref() else {
+    let Some(admission) = state.federation.private_rest_admission() else {
         return Ok(None);
     };
     match admission.clone().try_acquire_owned() {
@@ -715,8 +716,8 @@ fn federation_runtime_config(
 fn federation_sequences(state: &MintState) -> Result<SequenceHandle, Response> {
     state
         .federation
-        .sequences
-        .clone()
+        .sequences()
+        .cloned()
         .ok_or_else(federation_not_configured)
 }
 
@@ -851,8 +852,7 @@ async fn local_peer_order_status_with_latest_operation_status(
     let next_item_index = local_finalized_item_cursor(state).await?;
     let recovery_cursor = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .ok_or(FederationError::RuntimeUnavailable {
             component: "AlephBFT consensus",
         })?

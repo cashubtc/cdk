@@ -281,8 +281,7 @@ async fn rest_peer_client_pages_catch_up_across_default_limit_boundary() {
         let checkpoint_id = checkpoint.id().expect("genesis catch-up checkpoint id");
         let peer_consensus = peer_state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("peer consensus")
             .lock()
             .await
@@ -400,8 +399,7 @@ async fn checkpoint_catch_up_resumes_after_each_durable_page_restart() {
     let checkpoint_id = checkpoint.id().expect("restart checkpoint id");
     let peer_consensus = peer_state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("peer consensus")
         .lock()
         .await
@@ -441,8 +439,10 @@ async fn checkpoint_catch_up_resumes_after_each_durable_page_restart() {
             crate::create_federation_runtime_state(&state.mint)
                 .await
                 .expect("restart from durable checkpoint page");
-        state.federation.consensus = restarted_consensus;
-        state.federation.sequences = restarted_sequences;
+        state.federation.member_mut_for_test().consensus =
+            restarted_consensus.expect("configured member handle");
+        state.federation.member_mut_for_test().sequences =
+            restarted_sequences.expect("configured member handle");
 
         let mut transport = MockFederationTransport::default();
         for page in pages.iter().skip(crash_after_pages).cloned() {
@@ -517,8 +517,7 @@ async fn one_page_and_many_page_checkpoint_catch_up_produce_identical_state() {
     .await;
     let source_runtime = source
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("source page-equivalence consensus")
         .lock()
         .await
@@ -669,8 +668,7 @@ async fn checkpoint_catch_up_rejects_bad_source_then_uses_second_source() {
     let checkpoint_id = checkpoint.id().expect("source failover checkpoint id");
     let source_consensus = source_state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("source consensus")
         .lock()
         .await

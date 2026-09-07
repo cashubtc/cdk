@@ -72,7 +72,7 @@ pub(crate) fn spawn_federation_peer_sync_loop_with_config(
         sync_config,
     )
     .map_err(|err| cdk::Error::Custom(err.to_string()))?;
-    let tasks = state.federation.payment_observer.tasks.clone();
+    let tasks = state.federation.tasks.clone();
     let stop = tasks.stop_token();
     tasks.spawn("peer sync", true, async move {
         if !initial_delay.is_zero() {
@@ -1033,7 +1033,7 @@ pub(super) async fn reconcile_federation_startup_with_quorum<T>(
     }
 
     if target_session > local_status.aleph_bft_session {
-        let Some(consensus) = state.federation.consensus.as_ref() else {
+        let Some(consensus) = state.federation.consensus() else {
             return;
         };
         let mut consensus = consensus.lock().await;
@@ -1291,7 +1291,7 @@ where
             current_checkpoint.as_ref().map(|quorum| &quorum.checkpoint),
         )?;
         let checkpoint_id = checkpoint.id()?;
-        let consensus = state.federation.consensus.as_ref().ok_or({
+        let consensus = state.federation.consensus().ok_or({
             FederationError::RuntimeUnavailable {
                 component: "consensus",
             }

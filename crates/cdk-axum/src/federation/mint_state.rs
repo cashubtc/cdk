@@ -380,7 +380,7 @@ impl MintState {
     pub(crate) async fn federation_invalid_operation_alert_summaries(
         &self,
     ) -> Vec<FederationInvalidOperationAlertSummary> {
-        match &self.federation.invalid_operation_alerts {
+        match &self.federation.invalid_operation_alerts() {
             Some(alerts) => alerts.lock().await.summaries(std::time::Instant::now()),
             None => Vec::new(),
         }
@@ -390,7 +390,7 @@ impl MintState {
         &self,
         source: FederationInvalidOperationSource,
     ) {
-        let Some(alerts) = &self.federation.invalid_operation_alerts else {
+        let Some(alerts) = &self.federation.invalid_operation_alerts() else {
             return;
         };
         let Some(event) = alerts

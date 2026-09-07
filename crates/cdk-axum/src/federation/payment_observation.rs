@@ -142,7 +142,6 @@ fn advance_bark_melt_quote<'a>(
 
 #[derive(Debug, Clone)]
 pub(crate) struct FederationPaymentObserver {
-    pub(super) tasks: super::services::FederationTaskGroup,
     schedule: FederationPaymentObservationSchedule,
     accepted_operation_wakes:
         tokio::sync::broadcast::Sender<(FederationPaymentQuote, u64, Instant)>,
@@ -154,7 +153,6 @@ impl Default for FederationPaymentObserver {
         let (accepted_operation_wakes, _) =
             tokio::sync::broadcast::channel(FEDERATION_PAYMENT_WAKE_CAPACITY);
         Self {
-            tasks: super::services::FederationTaskGroup::default(),
             schedule: FederationPaymentObservationSchedule::default(),
             accepted_operation_wakes,
             quote_tasks: std::sync::Arc::new(tokio::sync::Semaphore::new(
@@ -549,7 +547,8 @@ impl FederationPaymentObserver {
                     super::latency::FederationLatencyDirection::Outgoing
                 }
             };
-            self.tasks.spawn("payment quote", false, async move {
+            let tasks = state.federation.tasks.clone();
+            tasks.spawn("payment quote", false, async move {
                 let _permit = permit;
                 super::latency::record_duration(
                     super::latency::FederationLatencyCorrelation::Quote,
@@ -1134,7 +1133,7 @@ impl FederationPaymentObserver {
         let mut payment_events = state.mint.subscribe_federation_payment_events();
         let mut accepted_operation_wakes = self.accepted_operation_wakes.subscribe();
         let mut schedule_changes = self.schedule.subscribe_changes();
-        let tasks = self.tasks.clone();
+        let tasks = state.federation.tasks.clone();
         let stop = tasks.stop_token();
         tasks.spawn("payment observer", true, async move {
             let mut repair_interval = tokio::time::interval(FEDERATION_PAYMENT_REPAIR_INTERVAL);

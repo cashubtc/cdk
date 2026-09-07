@@ -131,3 +131,14 @@ Preserve federation wire formats and canonical encodings unless a package requir
 - Retained all existing tests. Removed imports and redundant feature gates made unnecessary by the gated module boundaries.
 - `cargo fix --offline --allow-dirty --lib -p cdk-axum -p cdk-mintd -p cdk-common --no-default-features --features cdk-axum/federation-bdk,cdk-axum/federation-bark,cdk-mintd/federation-bdk,cdk-mintd/federation-bark,cdk-mintd/sqlite`: library compilation passed while pruning relocation imports.
 - Pinned-toolchain all-target compilation is in progress; final test results will be recorded below. This commit is mechanical and does not claim runtime or payment verification.
+
+### Package 3: member context and lifecycle
+
+- Required mint, consensus, sequencing, notification, admission, and peer-policy handles now live in one member context. Membership distinguishes standalone, setup, and active operation. Setup cannot enable payment workers through a separate boolean.
+- The federation runtime owns the shared task group. Payment observation, DKG, synchronization, checkpoint work, Bark work, and readiness monitoring use that group; cancellation, failure propagation, durable identities, and bounded shutdown are preserved.
+- Prepared routers return their services directly. Ordinary public router constructors keep their existing signatures and automatic lifetime behavior.
+- Pinned Nix stable check passed: `cargo check --offline -p cdk-axum -p cdk-mintd --all-targets --no-default-features --features cdk-axum/federation-bdk,cdk-axum/federation-bark,cdk-mintd/federation-bdk,cdk-mintd/federation-bark,cdk-mintd/sqlite`. The restricted daemon test feature set reports existing unused-helper warnings; no Axum errors or warnings remain.
+- `RUST_MIN_STACK=16777216 cargo test --offline -p cdk-axum --lib --no-default-features --features federation-bdk,federation-bark federation::services::tests -- --test-threads=1`: 4 passed, including drain, timeout/abort, explicit failure, and panic propagation.
+- Same configuration with filter `service_startup_failure_cancels_workers_already_started`: 1 passed.
+- The test build also verified the module extraction. Moved test imports were made explicit. Two federation test helpers used outside metrics tests had an unnecessary metrics feature gate; removing those gates restores the no-metrics test combination. No tests were deleted.
+- Full setup/restart/catch-up and payment verification remain part of final validation.

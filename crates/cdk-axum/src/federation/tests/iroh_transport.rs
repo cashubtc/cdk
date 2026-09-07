@@ -363,8 +363,10 @@ async fn mixed_http_iroh_roster_operates_restarts_and_catches_up() {
         crate::create_federation_runtime_state(&restarted_first.mint)
             .await
             .expect("replay first runtime after restart");
-    restarted_first.federation.consensus = replayed_consensus;
-    restarted_first.federation.sequences = replayed_sequences;
+    restarted_first.federation.member_mut_for_test().consensus =
+        replayed_consensus.expect("configured member handle");
+    restarted_first.federation.member_mut_for_test().sequences =
+        replayed_sequences.expect("configured member handle");
     restarted_first.federation.transport = federation_transport_with_iroh_node(nodes[0].clone());
     let restarted_listener = tokio::net::TcpListener::bind(first_address)
         .await

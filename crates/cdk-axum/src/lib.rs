@@ -131,6 +131,7 @@ pub async fn create_mint_router_with_custom_cache(
         FederationRouterStartup::Automatic,
     )
     .await
+    .map(|built| built.router)
 }
 
 /// Member-local federation services attached to a mint router.
@@ -169,7 +170,7 @@ impl Default for FederationRouterConfig {
 #[cfg(feature = "federation")]
 enum FederationRouterStartup {
     Automatic,
-    Prepared(tokio::sync::oneshot::Sender<FederationServices>),
+    Prepared,
     Setup,
     #[cfg(test)]
     LocalFinality,
@@ -193,6 +194,7 @@ pub async fn create_federation_mint_router(
         FederationRouterStartup::Automatic,
     )
     .await
+    .map(|built| built.router)
 }
 
 /// Create the isolated setup runtime exposing only authenticated DKG routes.
@@ -236,6 +238,7 @@ pub async fn create_federation_dkg_setup_router_with_transport(
         FederationRouterStartup::Setup,
     )
     .await
+    .map(|built| built.router)
 }
 
 /// Prepare federation routes and workers for explicit daemon lifecycle ownership.
@@ -247,17 +250,16 @@ pub async fn prepare_federation_router(
     enable_info_page: bool,
     config: FederationRouterConfig,
 ) -> Result<(Router, Option<FederationServices>)> {
-    let (handoff, services) = tokio::sync::oneshot::channel();
     let router = create_mint_router_with_custom_cache_inner(
         mint,
         cache,
         custom_methods,
         enable_info_page,
         config,
-        FederationRouterStartup::Prepared(handoff),
+        FederationRouterStartup::Prepared,
     )
     .await?;
-    Ok((router, services.await.ok()))
+    Ok((router.router, router.services))
 }
 
 /// Build member routes without cross-member synchronization for isolated tests.
@@ -275,6 +277,13 @@ pub(crate) async fn create_mint_router_without_federation_peer_sync(
         FederationRouterStartup::LocalFinality,
     )
     .await
+    .map(|built| built.router)
+}
+
+struct BuiltMintRouter {
+    router: Router,
+    #[cfg(feature = "federation")]
+    services: Option<FederationServices>,
 }
 
 #[allow(unused_mut, unused_variables)]
@@ -285,7 +294,7 @@ async fn create_mint_router_with_custom_cache_inner(
     enable_info_page: bool,
     #[cfg(feature = "federation")] federation_config: FederationRouterConfig,
     #[cfg(feature = "federation")] startup: FederationRouterStartup,
-) -> Result<Router> {
+) -> Result<BuiltMintRouter> {
     #[cfg(feature = "federation")]
     let FederationRouterConfig {
         peer_sync: federation_peer_sync_config,
@@ -301,17 +310,12 @@ async fn create_mint_router_with_custom_cache_inner(
     #[cfg(feature = "federation")]
     let spawn_federation_peer_sync = matches!(
         startup,
-        FederationRouterStartup::Automatic | FederationRouterStartup::Prepared(_)
+        FederationRouterStartup::Automatic | FederationRouterStartup::Prepared
     );
     #[cfg(feature = "federation")]
     let federation_setup_only = matches!(startup, FederationRouterStartup::Setup);
     #[cfg(all(test, feature = "federation"))]
     let federation_local_finality_test = matches!(startup, FederationRouterStartup::LocalFinality);
-    #[cfg(feature = "federation")]
-    let mut federation_services_handoff = match startup {
-        FederationRouterStartup::Prepared(handoff) => Some(handoff),
-        _ => None,
-    };
     #[cfg(all(feature = "federation", feature = "prometheus"))]
     let federation_startup_started_at = std::time::Instant::now();
     #[cfg(feature = "federation")]
@@ -326,9 +330,7 @@ async fn create_mint_router_with_custom_cache_inner(
     )
     .await?;
     #[cfg(feature = "federation")]
-    let federation_consensus = federation_runtime_state.consensus;
-    #[cfg(feature = "federation")]
-    let federation_sequences = federation_runtime_state.sequences;
+    let federation_member = federation_runtime_state.member;
     #[cfg(feature = "federation-bdk")]
     let federation_onchain_wallets = federation_runtime_state.onchain_wallets;
     #[cfg(feature = "federation")]
@@ -338,9 +340,8 @@ async fn create_mint_router_with_custom_cache_inner(
     #[cfg(feature = "federation-bdk")]
     let federation_startup_bdk_degraded_reason = federation_runtime_state.bdk_degraded_reason;
     #[cfg(feature = "federation")]
-    let federation_sync = federation_consensus
+    let federation_sync = federation_member
         .as_ref()
-        .and_then(|_| mint.federation_config())
         .map(|_| Arc::new(tokio::sync::Mutex::new(FederationSyncState::for_aleph_bft())));
     let mut state = MintState {
         mint: Arc::clone(&mint),
@@ -348,25 +349,11 @@ async fn create_mint_router_with_custom_cache_inner(
         #[cfg(feature = "federation")]
         federation: federation::FederationNodeRuntime {
             transport: federation_transport,
-            mint: federation_consensus.as_ref().map(|_| Arc::clone(&mint)),
-            consensus: federation_consensus.clone(),
-            peer_sync_config: federation_consensus
-                .as_ref()
-                .map(|_| federation_peer_sync_config),
-            sequences: federation_sequences,
-            notifications: federation_consensus
-                .as_ref()
-                .map(|_| Arc::new(FederationOperationNotifications::default())),
-            private_rest_admission: federation_consensus.as_ref().map(|_| {
-                Arc::new(tokio::sync::Semaphore::new(
-                    federation_peer_sync_config.private_rest_inbound_concurrency_limit,
-                ))
-            }),
-            invalid_operation_alerts: federation_consensus.as_ref().map(|_| {
-                Arc::new(tokio::sync::Mutex::new(
-                    FederationInvalidOperationAlertTracker::default(),
-                ))
-            }),
+            membership: federation_member.map_or(
+                federation::FederationMembership::Standalone,
+                federation::FederationMembership::configured,
+            ),
+            tasks: crate::federation::services::FederationTaskGroup::default(),
             payment_observer: federation::FederationPaymentObserver::default(),
             #[cfg(feature = "federation-bdk")]
             transaction_broadcaster: federation::FederationTransactionBroadcaster::default(),
@@ -402,8 +389,7 @@ async fn create_mint_router_with_custom_cache_inner(
         state.federation.set_sync_handle(
             state
                 .federation
-                .consensus
-                .as_ref()
+                .consensus()
                 .map(|_| Arc::new(tokio::sync::Mutex::new(FederationSyncState::default()))),
         );
     }
@@ -448,12 +434,7 @@ async fn create_mint_router_with_custom_cache_inner(
         );
     }
     #[cfg(feature = "federation")]
-    let federation_application_ready = state
-        .mint
-        .federation_config()
-        .is_some_and(|config| !config.public_config().keysets.is_empty());
-    #[cfg(feature = "federation")]
-    if state.federation.consensus.is_some() {
+    if state.federation.consensus().is_some() {
         state
             .federation
             .recover_scheduled_checkpoint_candidate_at_startup()
@@ -477,7 +458,7 @@ async fn create_mint_router_with_custom_cache_inner(
     }
     #[cfg(feature = "federation")]
     let expose_federation_routes =
-        state.federation.consensus.is_some() || federation_dkg_config.is_some();
+        state.federation.consensus().is_some() || federation_dkg_config.is_some();
     #[cfg(feature = "federation")]
     let mut federation_services = state.mint.federation_config().map(|_| {
         FederationServices::new(
@@ -488,7 +469,6 @@ async fn create_mint_router_with_custom_cache_inner(
             } else {
                 None
             },
-            federation_application_ready && state.federation.consensus.is_some(),
         )
     });
     #[cfg(feature = "federation")]
@@ -505,7 +485,10 @@ async fn create_mint_router_with_custom_cache_inner(
             Some(services) => router.layer(axum::Extension(Arc::new(services.start().await?))),
             None => router,
         };
-        return Ok(router);
+        return Ok(BuiltMintRouter {
+            router,
+            services: None,
+        });
     }
 
     let v1_router = Router::new()
@@ -570,15 +553,14 @@ async fn create_mint_router_with_custom_cache_inner(
         .with_state(state);
 
     #[cfg(feature = "federation")]
-    if let Some(services) = federation_services {
-        match federation_services_handoff.take() {
-            Some(handoff) => {
-                let _ = handoff.send(services);
-            }
-            None => {
-                mint_router = mint_router.layer(axum::Extension(Arc::new(services.start().await?)));
-            }
+    if !matches!(startup, FederationRouterStartup::Prepared) {
+        if let Some(services) = federation_services.take() {
+            mint_router = mint_router.layer(axum::Extension(Arc::new(services.start().await?)));
         }
     }
-    Ok(mint_router)
+    Ok(BuiltMintRouter {
+        router: mint_router,
+        #[cfg(feature = "federation")]
+        services: federation_services,
+    })
 }

@@ -251,7 +251,7 @@ impl FederationTransactionBroadcaster {
         {
             return;
         }
-        let tasks = state.federation.payment_observer.tasks.clone();
+        let tasks = state.federation.tasks.clone();
         let stop = tasks.stop_token();
         tasks.spawn("broadcast", true, async move {
             let mut interval = tokio::time::interval(BROADCAST_ROUND_INTERVAL);

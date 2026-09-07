@@ -156,9 +156,7 @@ impl FederationNodeRuntime {
         #[cfg(feature = "prometheus")]
         let canonical_started_at = std::time::Instant::now();
         let batch_canonical_bytes = async {
-            let consensus = self
-                .consensus
-                .as_ref()
+            let consensus = self.consensus()
                 .ok_or_else(|| runtime_unavailable("consensus"))?
                 .lock()
                 .await;
@@ -382,8 +380,7 @@ impl FederationNodeRuntime {
     ) -> Result<(), cdk::Error> {
         let _application = self.components.operation.lock().await;
         let consensus = self
-            .consensus
-            .as_ref()
+            .consensus()
             .ok_or_else(|| runtime_unavailable("consensus"))?;
         let consensus = consensus.lock().await;
         let status = consensus.aleph_bft_status()?;
@@ -518,8 +515,7 @@ impl FederationNodeRuntime {
             .await?;
         let (session, next_unit_finalization_index, next_unit_index_by_member) = {
             let consensus = self
-                .consensus
-                .as_ref()
+                .consensus()
                 .ok_or_else(|| runtime_unavailable("consensus"))?
                 .lock()
                 .await;
@@ -650,8 +646,7 @@ impl FederationNodeRuntime {
             None => None,
         };
         let consensus = self
-            .consensus
-            .as_ref()
+            .consensus()
             .ok_or_else(|| runtime_unavailable("consensus"))?;
         let boundary = self
             .current_checkpoint_boundary_under_application_lock()

@@ -80,7 +80,7 @@ async fn federation_aleph_bft_finalized_unit_persists_applies_and_notifies() {
     let envelope = mint_quote_envelope(&state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let unit = {
-        let consensus = state.federation.consensus.as_ref().expect("consensus");
+        let consensus = state.federation.consensus().expect("consensus");
         let mut consensus = consensus.lock().await;
         consensus
             .submit_aleph_bft_envelope(envelope)
@@ -139,7 +139,7 @@ async fn federation_aleph_bft_finalized_unit_persists_applies_and_notifies() {
         FederationOperationStatus::Applied
     );
 
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.peer_status().operation_count, 1);
     assert_eq!(
@@ -164,7 +164,7 @@ async fn federation_aleph_bft_duplicate_finalized_unit_applies_unmaterialized_en
     let envelope = mint_quote_envelope(&state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let (unit, finalized_items, entries) = {
-        let consensus = state.federation.consensus.as_ref().expect("consensus");
+        let consensus = state.federation.consensus().expect("consensus");
         let mut consensus = consensus.lock().await;
         let mut next_consensus = consensus.clone();
         next_consensus
@@ -269,7 +269,7 @@ async fn duplicate_finalized_unit_recovers_lost_applied_response_publication() {
     let envelope = mint_quote_envelope(&state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
     let unit = {
-        let consensus = state.federation.consensus.as_ref().expect("consensus");
+        let consensus = state.federation.consensus().expect("consensus");
         let mut consensus = consensus.lock().await;
         consensus
             .submit_aleph_bft_envelope(envelope)
@@ -314,8 +314,7 @@ async fn duplicate_finalized_unit_recovers_lost_applied_response_publication() {
         .is_some());
     state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -444,8 +443,7 @@ async fn duplicate_finalized_unit_recovers_lost_rejected_response_publication() 
     assert_eq!(persisted.rejection(), Some(&rejection));
     state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -1043,8 +1041,7 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
 
     let first_entries = first_state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("first consensus")
         .lock()
         .await
@@ -1053,8 +1050,7 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
         .to_vec();
     let second_entries = second_state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("second consensus")
         .lock()
         .await
@@ -1152,7 +1148,7 @@ async fn federation_aleph_bft_finalized_unit_conflict_does_not_mutate_runtime() 
         .expect("journal entries after rejected finalization")
         .is_empty());
 
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.peer_status().operation_count, 0);
 }

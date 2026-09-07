@@ -32,7 +32,7 @@ async fn aleph_bft_public_submit_is_not_ready_until_live_session_is_started() {
         .expect("quote lookup after gated submit")
         .is_none());
 
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 0);
     assert_eq!(consensus.peer_status().operation_count, 0);
@@ -79,7 +79,7 @@ async fn aleph_bft_public_submit_stays_gated_when_sync_is_healthy_without_live_s
         .expect("quote lookup after gated submit")
         .is_none());
 
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 0);
     assert_eq!(consensus.peer_status().operation_count, 0);
@@ -102,7 +102,7 @@ async fn aleph_bft_live_session_opens_queueing_but_still_waits_for_finalized_uni
         operation_submission_timeout: Duration::from_millis(10),
         ..FederationPeerSyncConfig::default()
     };
-    state.federation.peer_sync_config = Some(sync_config);
+    state.federation.member_mut_for_test().peer_sync_config = sync_config;
     assert!(matches!(
         state.federation_sync_status().await,
         Some(crate::FederationSyncStatus::Healthy)
@@ -131,7 +131,7 @@ async fn aleph_bft_live_session_opens_queueing_but_still_waits_for_finalized_uni
         .expect("quote lookup after gated submit")
         .is_none());
     {
-        let consensus = state.federation.consensus.as_ref().expect("consensus");
+        let consensus = state.federation.consensus().expect("consensus");
         let consensus = consensus.lock().await;
         assert_eq!(consensus.queued_len(), 0);
         assert_eq!(consensus.peer_status().operation_count, 0);
@@ -165,7 +165,7 @@ async fn aleph_bft_live_session_opens_queueing_but_still_waits_for_finalized_uni
         .await
         .expect("quote lookup after unfinalized submit")
         .is_none());
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
     assert_eq!(consensus.peer_status().operation_count, 0);
@@ -866,11 +866,7 @@ async fn aleph_bft_startup_does_not_restore_transient_healthy_status() {
         .expect("quote lookup after restored gated submit")
         .is_none());
 
-    let consensus = restored_state
-        .federation
-        .consensus
-        .as_ref()
-        .expect("consensus");
+    let consensus = restored_state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 0);
     assert_eq!(consensus.peer_status().operation_count, 0);
@@ -933,11 +929,7 @@ async fn aleph_bft_startup_restore_requires_quorum_even_with_manual_live_session
         .await
         .expect("quote lookup after pending finality")
         .is_none());
-    let consensus = restored_state
-        .federation
-        .consensus
-        .as_ref()
-        .expect("consensus");
+    let consensus = restored_state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 0);
     assert_eq!(consensus.peer_status().operation_count, 0);
@@ -1081,7 +1073,7 @@ async fn aleph_bft_restart_after_unfinalized_local_unit_requires_retry_without_s
         .expect("finalized items before restart")
         .is_empty());
     {
-        let consensus = state.federation.consensus.as_ref().expect("consensus");
+        let consensus = state.federation.consensus().expect("consensus");
         let consensus = consensus.lock().await;
         assert_eq!(consensus.queued_len(), 0);
         assert_eq!(consensus.pending_mempool_len(), 1);
@@ -1120,8 +1112,7 @@ async fn aleph_bft_restart_after_unfinalized_local_unit_requires_retry_without_s
     {
         let consensus = restarted_state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("restarted consensus");
         let consensus = consensus.lock().await;
         assert_eq!(consensus.queued_len(), 0);
@@ -1248,10 +1239,10 @@ async fn aleph_bft_submit_envelope_times_out_without_finalization() {
         &mnemonic.to_seed_normalized(""),
     )
     .await;
-    state.federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    state.federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(10),
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
@@ -1271,7 +1262,7 @@ async fn aleph_bft_submit_envelope_times_out_without_finalization() {
         .expect("quote lookup after timeout")
         .is_none());
 
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
     assert!(consensus.journal().entries().is_empty());
@@ -1289,11 +1280,11 @@ async fn aleph_bft_timed_out_submit_retry_receives_finalized_response_without_re
         &mnemonic.to_seed_normalized(""),
     )
     .await;
-    state.federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    state.federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(10),
         response_waiter_limit: 2,
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
@@ -1304,16 +1295,16 @@ async fn aleph_bft_timed_out_submit_retry_receives_finalized_response_without_re
         .expect_err("unfinalized submit should time out");
     assert_pending_finalization_error(&err, operation_id, 10);
     assert_eq!(state.federation_pending_response_waiter_count(), 0);
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
     drop(consensus);
 
-    state.federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    state.federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_secs(5),
         response_waiter_limit: 2,
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let retry_state = state.clone();
     let retry_submit = tokio::spawn(async move {
         retry_state
@@ -1324,7 +1315,7 @@ async fn aleph_bft_timed_out_submit_retry_receives_finalized_response_without_re
         .wait_for_federation_pending_response_waiter_count(1)
         .await;
     assert_eq!(state.federation_pending_response_waiter_count(), 1);
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
     drop(consensus);
@@ -1362,11 +1353,11 @@ async fn aleph_bft_submit_envelope_releases_response_waiter_after_timeout() {
         &mnemonic.to_seed_normalized(""),
     )
     .await;
-    state.federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    state.federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(10),
         response_waiter_limit: 1,
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let first_envelope = mint_quote_envelope(&state, &QuoteId::new());
     let first_operation_id = first_envelope.operation_id().expect("first operation id");
 
@@ -1399,11 +1390,11 @@ async fn aleph_bft_submit_envelope_rejects_when_response_waiters_are_full() {
         &mnemonic.to_seed_normalized(""),
     )
     .await;
-    state.federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    state.federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_secs(5),
         response_waiter_limit: 1,
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let first_envelope = mint_quote_envelope(&state, &QuoteId::new());
     let first_operation_id = first_envelope.operation_id().expect("first operation id");
     let first_state = state.clone();
@@ -1430,7 +1421,7 @@ async fn aleph_bft_submit_envelope_rejects_when_response_waiters_are_full() {
         cdk::Error::Federation(FederationError::ResponseWaiterLimitExceeded { waiting: 1, max: 1 })
     ));
     assert_eq!(state.federation_pending_response_waiter_count(), 1);
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
     let session = consensus
@@ -1470,11 +1461,11 @@ async fn aleph_bft_pending_persistence_failure_releases_waiter_and_allows_retry(
         &mnemonic.to_seed_normalized(""),
     )
     .await;
-    state.federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    state.federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(10),
         response_waiter_limit: 1,
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let envelope = mint_quote_envelope(&state, &QuoteId::new());
     let operation_id = envelope.operation_id().expect("operation id");
     state
@@ -1487,7 +1478,7 @@ async fn aleph_bft_pending_persistence_failure_releases_waiter_and_allows_retry(
         .expect_err("injected pending persistence failure");
 
     assert_eq!(state.federation_pending_response_waiter_count(), 0);
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     let session = consensus
         .aleph_bft_status()
@@ -1509,7 +1500,7 @@ async fn aleph_bft_pending_persistence_failure_releases_waiter_and_allows_retry(
         .expect_err("unfinalized retry should time out after successful admission");
     assert_pending_finalization_error(&retry_error, operation_id, 10);
     assert_eq!(state.federation_pending_response_waiter_count(), 0);
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
     drop(consensus);
@@ -1536,7 +1527,7 @@ async fn aleph_bft_finalization_persistence_failure_leaves_runtime_unchanged() {
     )
     .await;
     let payload = {
-        let consensus = state.federation.consensus.as_ref().expect("consensus");
+        let consensus = state.federation.consensus().expect("consensus");
         let consensus = consensus.lock().await;
         let status = consensus.status();
         FederationAlephBftUnitPayload::new(
@@ -1553,8 +1544,7 @@ async fn aleph_bft_finalization_persistence_failure_leaves_runtime_unchanged() {
     };
     let before = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -1570,8 +1560,7 @@ async fn aleph_bft_finalization_persistence_failure_leaves_runtime_unchanged() {
 
     let after = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -1959,11 +1948,11 @@ async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeu
         &mnemonic.to_seed_normalized(""),
     )
     .await;
-    state.federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    state.federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_secs(5),
         response_waiter_limit: 3,
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
@@ -1995,7 +1984,7 @@ async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeu
     assert_eq!(stats.response_cache_hits, 0);
     assert_eq!(stats.duplicate_submissions, 1);
     assert_eq!(stats.duplicate_pending_waiter_joins, 1);
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
     drop(consensus);
@@ -2034,16 +2023,16 @@ async fn aleph_bft_duplicate_accepted_submit_waits_until_state_application_finis
         &mnemonic.to_seed_normalized(""),
     )
     .await;
-    state.federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    state.federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_secs(5),
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
 
     let accepted_response = {
-        let consensus = state.federation.consensus.as_ref().expect("consensus");
+        let consensus = state.federation.consensus().expect("consensus");
         let mut consensus = consensus.lock().await;
         consensus
             .submit_aleph_bft_envelope(envelope.clone())
@@ -2080,7 +2069,7 @@ async fn aleph_bft_duplicate_accepted_submit_waits_until_state_application_finis
     );
 
     {
-        let consensus = state.federation.consensus.as_ref().expect("consensus");
+        let consensus = state.federation.consensus().expect("consensus");
         consensus
             .lock()
             .await
@@ -2123,10 +2112,10 @@ async fn aleph_bft_duplicate_after_response_cache_eviction_returns_journal_dupli
         &mnemonic.to_seed_normalized(""),
     )
     .await;
-    state.federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    state.federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         response_cache_limit: 1,
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let first_quote_id = QuoteId::new();
     let first_envelope = mint_quote_envelope(&state, &first_quote_id);
     let first_operation_id = first_envelope.operation_id().expect("first operation id");
@@ -2180,7 +2169,7 @@ async fn aleph_bft_duplicate_after_response_cache_eviction_returns_journal_dupli
     ));
     assert_eq!(state.federation_pending_response_waiter_count(), 0);
     assert_eq!(state.federation_response_cache_entry_count(), 1);
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 0);
     assert_eq!(consensus.peer_status().operation_count, 2);
@@ -2228,8 +2217,8 @@ async fn aleph_bft_duplicate_after_lost_waiters_returns_journal_duplicate() {
     assert_eq!(state.federation_response_cache_entry_count(), 1);
 
     // Simulate a restart after accepted apply where in-memory waiters/cache are gone.
-    state.federation.notifications =
-        Some(Arc::new(crate::FederationOperationNotifications::default()));
+    state.federation.member_mut_for_test().notifications =
+        Arc::new(crate::FederationOperationNotifications::default());
     assert_eq!(state.federation_pending_response_waiter_count(), 0);
     assert_eq!(state.federation_response_cache_entry_count(), 0);
 
@@ -2244,7 +2233,7 @@ async fn aleph_bft_duplicate_after_lost_waiters_returns_journal_duplicate() {
     ));
     assert_eq!(state.federation_pending_response_waiter_count(), 0);
     assert_eq!(state.federation_response_cache_entry_count(), 0);
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 0);
     assert_eq!(consensus.peer_status().operation_count, 1);
@@ -2281,10 +2270,10 @@ async fn aleph_bft_duplicate_after_sqlite_restart_returns_journal_duplicate_afte
         &seed,
     )
     .await;
-    state.federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    state.federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(10),
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
@@ -2337,8 +2326,10 @@ async fn aleph_bft_duplicate_after_sqlite_restart_returns_journal_duplicate_afte
         crate::create_federation_runtime_state(&restarted_state.mint)
             .await
             .expect("replay restarted AlephBFT runtime");
-    restarted_state.federation.consensus = replayed_consensus;
-    restarted_state.federation.sequences = replayed_sequences;
+    restarted_state.federation.member_mut_for_test().consensus =
+        replayed_consensus.expect("configured member handle");
+    restarted_state.federation.member_mut_for_test().sequences =
+        replayed_sequences.expect("configured member handle");
 
     assert_eq!(
         restarted_state.federation_pending_response_waiter_count(),
@@ -2369,8 +2360,7 @@ async fn aleph_bft_duplicate_after_sqlite_restart_returns_journal_duplicate_afte
     assert_eq!(restarted_state.federation_response_cache_entry_count(), 0);
     let consensus = restarted_state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("restarted consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 0);
@@ -2456,7 +2446,7 @@ async fn aleph_bft_duplicate_after_admission_race_returns_journal_duplicate() {
         FederationJournalAppendOutcome::Duplicate(_)
     ));
     assert_eq!(state.federation_pending_response_waiter_count(), 0);
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 0);
     assert_eq!(consensus.peer_status().operation_count, 1);
@@ -2494,20 +2484,16 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
         &mnemonic.to_seed_normalized(""),
     )
     .await;
-    state.federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    state.federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(10),
         pending_mempool_item_limit: 1,
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let queued_quote_id = QuoteId::new();
     let queued_envelope = mint_quote_envelope(&state, &queued_quote_id);
     let queued_operation_id = queued_envelope.operation_id().expect("queued operation id");
     {
-        let consensus = state
-            .federation
-            .consensus
-            .as_ref()
-            .expect("consensus handle");
+        let consensus = state.federation.consensus().expect("consensus handle");
         consensus
             .lock()
             .await
@@ -2532,7 +2518,7 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
         .await
         .expect("quote lookup after mempool rejection")
         .is_none());
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
     assert!(consensus.journal().entries().is_empty());
@@ -2543,7 +2529,7 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
         .await
         .expect_err("duplicate pending operation should wait on existing queue entry");
     assert_pending_finalization_error(&duplicate_err, queued_operation_id, 10);
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let mut consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
     let retained_unit = consensus
@@ -2585,7 +2571,7 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
         stored_finalized_items[0].operation_id,
         Some(queued_operation_id)
     );
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 0);
     assert_eq!(consensus.peer_status().operation_count, 1);
@@ -2654,7 +2640,7 @@ async fn aleph_bft_submit_envelope_returns_finalized_duplicate_without_requeuing
     assert_eq!(stats.duplicate_submissions, 2);
     assert_eq!(stats.duplicate_pending_waiter_joins, 0);
 
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 0);
     assert_eq!(consensus.peer_status().operation_count, 1);
@@ -2708,8 +2694,10 @@ async fn startup_replays_accepted_but_unapplied_journal_entry_to_same_state_dige
         crate::create_federation_runtime_state(&restarted_state.mint)
             .await
             .expect("runtime state replay");
-    restarted_state.federation.consensus = replayed_consensus;
-    restarted_state.federation.sequences = replayed_sequences;
+    restarted_state.federation.member_mut_for_test().consensus =
+        replayed_consensus.expect("configured member handle");
+    restarted_state.federation.member_mut_for_test().sequences =
+        replayed_sequences.expect("configured member handle");
 
     let replayed_quote = restarted_state
         .mint
@@ -2745,8 +2733,7 @@ async fn startup_replays_accepted_but_unapplied_journal_entry_to_same_state_dige
     );
     let replayed_consensus = restarted_state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("replayed consensus")
         .lock()
         .await;

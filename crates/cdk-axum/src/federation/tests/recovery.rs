@@ -80,7 +80,7 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
     }
 
     let mut restarted_state = state.clone();
-    restarted_state.federation.consensus = Some(checkpoint_consensus);
+    restarted_state.federation.member_mut_for_test().consensus = checkpoint_consensus;
     let mut conflicting = mint_quote_envelope(&restarted_state, &quote_id);
     let FederationOperation::MintQuote(operation) = &mut conflicting.operation else {
         panic!("mint quote operation");
@@ -95,8 +95,7 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
     let conflict_payload = {
         let consensus = restarted_state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("checkpoint consensus")
             .lock()
             .await;
@@ -129,12 +128,12 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
     let (suffix_consensus, _) = crate::create_federation_runtime_state(&state.mint)
         .await
         .expect("checkpoint suffix startup before duplicate");
-    restarted_state.federation.consensus = suffix_consensus;
+    restarted_state.federation.member_mut_for_test().consensus =
+        suffix_consensus.expect("configured member handle");
     let duplicate_payload = {
         let consensus = restarted_state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("suffix consensus")
             .lock()
             .await;
@@ -167,7 +166,8 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
     let (consensus, _) = crate::create_federation_runtime_state(&state.mint)
         .await
         .expect("checkpoint suffix startup");
-    restarted_state.federation.consensus = consensus;
+    restarted_state.federation.member_mut_for_test().consensus =
+        consensus.expect("configured member handle");
     let replayed_duplicate = restarted_state
         .federation
         .apply_finalized_unit(duplicate_payload)
@@ -181,8 +181,7 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
     ));
     let consensus = restarted_state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("suffix consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.status().accepted_operation_count, 3);
@@ -239,8 +238,7 @@ async fn assert_trusted_checkpoint_partial_tail_restart_recovers(
     let payload = {
         let consensus = state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("checkpoint crash consensus")
             .lock()
             .await;
@@ -262,8 +260,7 @@ async fn assert_trusted_checkpoint_partial_tail_restart_recovers(
     let (next_consensus, finalized_items, entries) = {
         let consensus = state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("checkpoint crash consensus")
             .lock()
             .await;
@@ -296,8 +293,7 @@ async fn assert_trusted_checkpoint_partial_tail_restart_recovers(
         .expect("persist checkpoint crash suffix before application");
     *state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("checkpoint crash consensus")
         .lock()
         .await = next_consensus;
@@ -447,8 +443,7 @@ async fn assert_trusted_checkpoint_suffix_rejects_corruption(alter_consensus_evi
     let (journal_entry, finalized_items) = {
         let consensus = state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("corruption checkpoint consensus")
             .lock()
             .await;
@@ -699,8 +694,7 @@ async fn trusted_checkpoint_restart_replays_rejection_and_later_operation() {
     let payload = {
         let consensus = state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("rejection checkpoint consensus")
             .lock()
             .await;
@@ -720,8 +714,7 @@ async fn trusted_checkpoint_restart_replays_rejection_and_later_operation() {
     let (finalized_items, entries) = {
         let consensus = state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("rejection checkpoint consensus")
             .lock()
             .await;
@@ -1094,8 +1087,10 @@ async fn startup_recovers_an_interrupted_eligible_checkpoint_capture_once() {
     let (consensus, sequences) = crate::create_federation_runtime_state(&restarted.mint)
         .await
         .expect("restart federation runtime");
-    restarted.federation.consensus = consensus;
-    restarted.federation.sequences = sequences;
+    restarted.federation.member_mut_for_test().consensus =
+        consensus.expect("configured member handle");
+    restarted.federation.member_mut_for_test().sequences =
+        sequences.expect("configured member handle");
 
     restarted
         .federation
@@ -1236,13 +1231,12 @@ async fn assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(
     let (consensus, sequences) = crate::create_federation_runtime_state(&state.mint)
         .await
         .expect("restart idle checkpoint member");
-    state.federation.consensus = consensus;
-    state.federation.sequences = sequences;
+    state.federation.member_mut_for_test().consensus = consensus.expect("configured member handle");
+    state.federation.member_mut_for_test().sequences = sequences.expect("configured member handle");
     {
         let consensus = state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("restarted idle checkpoint consensus")
             .lock()
             .await;
@@ -1725,8 +1719,10 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         crate::create_federation_runtime_state(&target.mint)
             .await
             .expect("restart exact staged checkpoint frontier");
-    target.federation.consensus = restarted_consensus;
-    target.federation.sequences = restarted_sequences;
+    target.federation.member_mut_for_test().consensus =
+        restarted_consensus.expect("configured member handle");
+    target.federation.member_mut_for_test().sequences =
+        restarted_sequences.expect("configured member handle");
     target
         .mark_federation_awaiting_quorum(checkpoint.journal_next_index)
         .await;
@@ -1799,8 +1795,7 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
     let duplicate_payload = {
         let consensus = source
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("source consensus")
             .lock()
             .await;
@@ -1887,8 +1882,7 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
     assert_eq!(second_applied[0].index, checkpoint.journal_next_index);
     let target_consensus = target
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("target consensus")
         .lock()
         .await;
@@ -2030,8 +2024,7 @@ async fn empty_database_bootstrap_crosses_scheduled_checkpoints_and_recovery() {
             .expect("apply bootstrap checkpoint");
         let consensus = target
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("target consensus")
             .lock()
             .await;
@@ -2244,11 +2237,7 @@ async fn checkpoint_peer_request_does_not_hold_runtime_mutation_locks() {
     let application_guard = tokio::time::timeout(Duration::from_secs(1), application.lock())
         .await
         .expect("peer request left the application lock available");
-    let consensus = target
-        .federation
-        .consensus
-        .as_ref()
-        .expect("target consensus");
+    let consensus = target.federation.consensus().expect("target consensus");
     let consensus_guard = tokio::time::timeout(Duration::from_secs(1), consensus.lock())
         .await
         .expect("peer request left the consensus lock available");
@@ -2388,8 +2377,7 @@ async fn long_offline_member_recovers_from_one_quorum_holder_without_signer_work
     }
     let consensus = target
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("recovered target consensus")
         .lock()
         .await;
@@ -2854,8 +2842,7 @@ async fn finalized_catch_up_does_not_carry_backup_state() {
 
     let request = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("local consensus")
         .lock()
         .await
@@ -2898,7 +2885,7 @@ async fn finalized_catch_up_does_not_carry_backup_state() {
         .await
         .expect("stored journal entries");
     assert_eq!(stored_entries.len(), 1);
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.peer_status().operation_count, 1);
     assert_eq!(

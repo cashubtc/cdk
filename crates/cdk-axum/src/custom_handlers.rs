@@ -369,7 +369,7 @@ async fn ensure_federation_mint_quotes_paid_for_signing(
 
         let wait_timeout = state
             .federation
-            .peer_sync_config
+            .peer_sync_config()
             .unwrap_or_default()
             .operation_submission_timeout;
         tokio::time::timeout(

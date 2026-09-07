@@ -34,10 +34,10 @@ pub(super) async fn post_checkpoint_summary(
         state.federation.request_recovery_checkpoint().await;
         let recovery_state = state.clone();
         let requester = verified.sender();
-        state.federation.payment_observer.tasks.spawn(
-            "checkpoint recovery request",
-            false,
-            async move {
+        state
+            .federation
+            .tasks
+            .spawn("checkpoint recovery request", false, async move {
                 if let Err(err) = recovery_state
                     .federation
                     .propose_recovery_barrier_if_requested()
@@ -49,8 +49,7 @@ pub(super) async fn post_checkpoint_summary(
                         err
                     );
                 }
-            },
-        );
+            });
     }
     let response = state
         .federation

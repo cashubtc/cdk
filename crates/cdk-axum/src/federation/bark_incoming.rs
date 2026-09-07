@@ -954,7 +954,7 @@ async fn accepted_invoice(
         federation.private_config().clone(),
         state
             .federation
-            .peer_sync_config
+            .peer_sync_config()
             .ok_or_else(bark_unavailable)?,
     )
     .map_err(|_| bark_unavailable())?;

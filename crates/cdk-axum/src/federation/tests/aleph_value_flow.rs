@@ -107,8 +107,7 @@ async fn aleph_bft_wallet_publisher_reduces_five_member_fanout_to_one_data_unit(
     let (baseline_items, candidate_items) = {
         let consensus = session.states[0]
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("wallet publisher consensus")
             .lock()
             .await;
@@ -260,8 +259,7 @@ async fn aleph_bft_wallet_publisher_falls_back_when_primary_is_offline() {
             .expect("active fallback member");
         let consensus = session.states[active_index]
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("fallback consensus")
             .lock()
             .await;
@@ -1001,7 +999,10 @@ async fn aleph_bft_live_sessions_finalize_keyset_rotation_with_one_unavailable_m
     assert_eq!(live_session_handles.len(), 3);
 
     for index in [0_usize, 2, 3] {
-        states[index].federation.peer_sync_config = Some(sync_config);
+        states[index]
+            .federation
+            .member_mut_for_test()
+            .peer_sync_config = sync_config;
     }
 
     let runtime_config =
@@ -1187,10 +1188,10 @@ async fn aleph_bft_live_sessions_finalize_multiple_pending_operations_after_long
         );
     }
 
-    states[0].federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    states[0].federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(250),
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let mut pending_operations = Vec::new();
     for _ in 0..3 {
         let quote_id = QuoteId::new();
@@ -1384,10 +1385,10 @@ async fn aleph_bft_live_session_replays_pending_operation_when_restart_precedes_
         );
     }
 
-    states[0].federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    states[0].federation.member_mut_for_test().peer_sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(250),
         ..FederationPeerSyncConfig::default()
-    });
+    };
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&states[0], &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
@@ -1438,8 +1439,14 @@ async fn aleph_bft_live_session_replays_pending_operation_when_restart_precedes_
         crate::create_federation_runtime_state(&restarted_first_state.mint)
             .await
             .expect("replay restarted first AlephBFT runtime");
-    restarted_first_state.federation.consensus = replayed_consensus;
-    restarted_first_state.federation.sequences = replayed_sequences;
+    restarted_first_state
+        .federation
+        .member_mut_for_test()
+        .consensus = replayed_consensus.expect("configured member handle");
+    restarted_first_state
+        .federation
+        .member_mut_for_test()
+        .sequences = replayed_sequences.expect("configured member handle");
     let restarted_first_handle = start_federation_aleph_bft_live_session_with_transport(
         &restarted_first_state,
         FederationPeerSyncConfig {
@@ -1676,8 +1683,14 @@ async fn aleph_bft_live_session_restarts_from_persisted_backup_and_continues_fin
         crate::create_federation_runtime_state(&restarted_first_state.mint)
             .await
             .expect("replay restarted first AlephBFT runtime");
-    restarted_first_state.federation.consensus = replayed_consensus;
-    restarted_first_state.federation.sequences = replayed_sequences;
+    restarted_first_state
+        .federation
+        .member_mut_for_test()
+        .consensus = replayed_consensus.expect("configured member handle");
+    restarted_first_state
+        .federation
+        .member_mut_for_test()
+        .sequences = replayed_sequences.expect("configured member handle");
     let _restarted_first_handle = start_federation_aleph_bft_live_session_with_transport(
         &restarted_first_state,
         sync_config,
@@ -1899,8 +1912,14 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
         crate::create_federation_runtime_state(&recovered_first_state.mint)
             .await
             .expect("replay backup-only AlephBFT runtime");
-    recovered_first_state.federation.consensus = replayed_consensus;
-    recovered_first_state.federation.sequences = replayed_sequences;
+    recovered_first_state
+        .federation
+        .member_mut_for_test()
+        .consensus = replayed_consensus.expect("configured member handle");
+    recovered_first_state
+        .federation
+        .member_mut_for_test()
+        .sequences = replayed_sequences.expect("configured member handle");
     let recovered_status = recovered_first_state
         .federation_aleph_bft_status()
         .await
@@ -2130,8 +2149,14 @@ async fn aleph_bft_live_five_member_sessions_continue_after_post_backup_restart_
         crate::create_federation_runtime_state(&restarted_first_state.mint)
             .await
             .expect("replay restarted first AlephBFT runtime");
-    restarted_first_state.federation.consensus = replayed_consensus;
-    restarted_first_state.federation.sequences = replayed_sequences;
+    restarted_first_state
+        .federation
+        .member_mut_for_test()
+        .consensus = replayed_consensus.expect("configured member handle");
+    restarted_first_state
+        .federation
+        .member_mut_for_test()
+        .sequences = replayed_sequences.expect("configured member handle");
     let restarted_status = restarted_first_state
         .federation_aleph_bft_status()
         .await

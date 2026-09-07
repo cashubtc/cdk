@@ -699,11 +699,13 @@ async fn private_status_route_rejects_inbound_overflow_before_sequence_persisten
         .federation_config()
         .expect("federation config")
         .member_id();
-    state.federation.private_rest_admission = Some(Arc::new(tokio::sync::Semaphore::new(1)));
+    state
+        .federation
+        .member_mut_for_test()
+        .private_rest_admission = Arc::new(tokio::sync::Semaphore::new(1));
     let held_permit = state
         .federation
-        .private_rest_admission
-        .as_ref()
+        .private_rest_admission()
         .expect("admission")
         .clone()
         .try_acquire_owned()

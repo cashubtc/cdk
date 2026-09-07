@@ -525,11 +525,7 @@ async fn byzantine_balance_overflow_operation_does_not_halt_finalized_applicatio
         .operation_id()
         .expect("same-unit operation id");
     {
-        let consensus = byzantine_state
-            .federation
-            .consensus
-            .as_ref()
-            .expect("consensus");
+        let consensus = byzantine_state.federation.consensus().expect("consensus");
         let mut consensus = consensus.lock().await;
         assert_eq!(
             consensus
@@ -704,7 +700,7 @@ async fn byzantine_balance_overflow_operation_does_not_halt_finalized_applicatio
             .with_state(session.states[3].clone()),
     );
     for state in &mut session.states[..4] {
-        state.federation.peer_sync_config = Some(session.sync_config);
+        state.federation.member_mut_for_test().peer_sync_config = session.sync_config;
     }
 
     let post_restart_quote_id = QuoteId::new();
@@ -848,8 +844,7 @@ async fn byzantine_paid_melt_observation_without_saga_rejects_item_without_halt(
         let consensus = session
             .first_state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("consensus");
         let mut consensus = consensus.lock().await;
         assert_eq!(
@@ -987,8 +982,7 @@ async fn duplicate_pending_and_paid_melts_reject_without_halting_later_finality(
         let consensus = session
             .first_state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("consensus");
         let mut consensus = consensus.lock().await;
         assert_eq!(
@@ -1419,8 +1413,7 @@ async fn aleph_bft_live_session_persists_and_recovers_empty_active_session() {
     .await;
     state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -1471,8 +1464,10 @@ async fn aleph_bft_live_session_persists_and_recovers_empty_active_session() {
     let (consensus, sequences) = crate::create_federation_runtime_state(&restarted_state.mint)
         .await
         .expect("recover active empty session");
-    restarted_state.federation.consensus = consensus;
-    restarted_state.federation.sequences = sequences;
+    restarted_state.federation.member_mut_for_test().consensus =
+        consensus.expect("configured member handle");
+    restarted_state.federation.member_mut_for_test().sequences =
+        sequences.expect("configured member handle");
     let status = restarted_state
         .federation_aleph_bft_status()
         .await
@@ -1544,8 +1539,8 @@ async fn aleph_bft_restart_finalizes_atomically_rebound_pending_operations() {
     let (consensus, sequences) = crate::create_federation_runtime_state(&state.mint)
         .await
         .expect("recover and rebind pending operations");
-    state.federation.consensus = consensus;
-    state.federation.sequences = sequences;
+    state.federation.member_mut_for_test().consensus = consensus.expect("configured member handle");
+    state.federation.member_mut_for_test().sequences = sequences.expect("configured member handle");
     assert_eq!(
         state
             .federation_aleph_bft_status()
@@ -1569,8 +1564,7 @@ async fn aleph_bft_restart_finalizes_atomically_rebound_pending_operations() {
 
     let unit = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("recovered consensus")
         .lock()
         .await
@@ -1691,8 +1685,7 @@ async fn aleph_bft_live_session_rotates_to_next_empty_session_and_uses_new_netwo
     let next_envelope = mint_quote_envelope(&state, &QuoteId::new());
     state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -1785,8 +1778,7 @@ async fn aleph_bft_live_session_rotation_refuses_non_empty_pending_mempool() {
     let envelope = mint_quote_envelope(&state, &QuoteId::new());
     state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -1875,8 +1867,8 @@ async fn aleph_bft_live_session_uses_recovered_session_for_network_pump_messages
     let (consensus, sequences) = crate::create_federation_runtime_state(&state.mint)
         .await
         .expect("recover session one runtime");
-    state.federation.consensus = consensus;
-    state.federation.sequences = sequences;
+    state.federation.member_mut_for_test().consensus = consensus.expect("configured member handle");
+    state.federation.member_mut_for_test().sequences = sequences.expect("configured member handle");
     assert_eq!(
         state
             .federation_aleph_bft_status()
@@ -1923,8 +1915,7 @@ async fn aleph_bft_live_session_uses_recovered_session_for_network_pump_messages
     let next_envelope = mint_quote_envelope(&state, &QuoteId::new());
     state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -2413,7 +2404,7 @@ async fn aleph_bft_four_live_sessions_finalize_operation_over_private_rest_netwo
     }
     assert_eq!(live_session_handles.len(), 4);
 
-    states[0].federation.peer_sync_config = Some(sync_config);
+    states[0].federation.member_mut_for_test().peer_sync_config = sync_config;
 
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&states[0], &quote_id);
@@ -2476,7 +2467,10 @@ async fn aleph_bft_live_network_pump_wakes_on_outbound_before_peer_sync_interval
         max_messages_per_tick: 1,
         max_peer_deliveries_per_message: 128,
     };
-    first_state.federation.peer_sync_config = Some(sync_config);
+    first_state
+        .federation
+        .member_mut_for_test()
+        .peer_sync_config = sync_config;
 
     let _first_handle = start_federation_aleph_bft_live_session_with_transport(
         &first_state,

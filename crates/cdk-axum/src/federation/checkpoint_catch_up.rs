@@ -102,8 +102,7 @@ impl FederationNodeRuntime {
         if !target_reached {
             checkpoint.committed_frontier().ensure_covers(
                 &frontier.committed_frontier(
-                    self.consensus
-                        .as_ref()
+                    self.consensus()
                         .ok_or_else(|| runtime_unavailable("consensus"))?
                         .lock()
                         .await
@@ -175,8 +174,7 @@ impl FederationNodeRuntime {
             );
         }
         let consensus = self
-            .consensus
-            .as_ref()
+            .consensus()
             .ok_or_else(|| runtime_unavailable("consensus"))?;
         *consensus.lock().await = checkpoint_runtime;
         #[cfg(feature = "prometheus")]
@@ -221,8 +219,7 @@ impl FederationNodeRuntime {
             .cloned()
             .ok_or_else(|| runtime_unavailable("mint configuration"))?;
         let consensus = self
-            .consensus
-            .as_ref()
+            .consensus()
             .ok_or_else(|| runtime_unavailable("consensus"))?;
         let mut consensus = consensus.lock().await;
         let base_journal_frontier = base_checkpoint
@@ -307,8 +304,7 @@ impl FederationNodeRuntime {
             .ok_or_else(|| runtime_unavailable("mint configuration"))?;
         let public_config = runtime_config.public_config().clone();
         let consensus = self
-            .consensus
-            .as_ref()
+            .consensus()
             .ok_or_else(|| runtime_unavailable("consensus"))?;
         let mut consensus = consensus.lock().await;
         let local_entries = consensus.journal().entries().to_vec();

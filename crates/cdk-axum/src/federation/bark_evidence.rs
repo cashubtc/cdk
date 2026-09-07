@@ -97,7 +97,7 @@ async fn collect_bark_evidence_certificate_inner(
             federation.private_config().clone(),
             state
                 .federation
-                .peer_sync_config
+                .peer_sync_config()
                 .ok_or(cdk::Error::Internal)?,
         )
         .map_err(|_| cdk::Error::Internal)?;

@@ -24,18 +24,81 @@ use cdk::federation::{
 };
 use cdk::mint::Mint;
 
+/// Required handles shared by setup and active member operation.
+#[derive(Clone)]
+pub(crate) struct FederationMemberContext {
+    pub(crate) mint: Arc<Mint>,
+    pub(crate) consensus: FederationConsensusHandle,
+    pub(crate) sequences: FederationSequenceHandle,
+    pub(crate) notifications: FederationNotificationHandle,
+    pub(crate) peer_sync_config: FederationPeerSyncConfig,
+    pub(crate) private_rest_admission: FederationRestAdmissionHandle,
+    pub(crate) invalid_operation_alerts: FederationInvalidOperationAlertHandle,
+}
+
+impl FederationMemberContext {
+    pub(crate) fn new(
+        mint: Arc<Mint>,
+        consensus: FederationConsensusHandle,
+        sequences: FederationSequenceHandle,
+        peer_sync_config: FederationPeerSyncConfig,
+    ) -> Self {
+        Self {
+            mint,
+            consensus,
+            sequences,
+            peer_sync_config,
+            notifications: Arc::new(crate::FederationOperationNotifications::default()),
+            private_rest_admission: Arc::new(tokio::sync::Semaphore::new(
+                peer_sync_config.private_rest_inbound_concurrency_limit,
+            )),
+            invalid_operation_alerts: Arc::new(tokio::sync::Mutex::new(
+                crate::FederationInvalidOperationAlertTracker::default(),
+            )),
+        }
+    }
+}
+
+/// Setup owns authenticated coordination handles but cannot start payment workers.
+#[derive(Clone)]
+pub(crate) enum FederationMembership {
+    Standalone,
+    Setup(FederationMemberContext),
+    Active(FederationMemberContext),
+}
+
+impl FederationMembership {
+    pub(crate) fn configured(member: FederationMemberContext) -> Self {
+        if member
+            .mint
+            .federation_config()
+            .is_some_and(|config| !config.public_config().keysets.is_empty())
+        {
+            Self::Active(member)
+        } else {
+            Self::Setup(member)
+        }
+    }
+
+    fn context(&self) -> Option<&FederationMemberContext> {
+        match self {
+            Self::Standalone => None,
+            Self::Setup(member) | Self::Active(member) => Some(member),
+        }
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        matches!(self, Self::Active(_))
+    }
+}
+
 /// Runtime-owned handles for one active federation member.
 #[derive(Clone)]
 #[allow(missing_debug_implementations)]
 pub(crate) struct FederationNodeRuntime {
     pub(crate) transport: FederationTransport,
-    pub(crate) mint: Option<Arc<Mint>>,
-    pub(crate) consensus: Option<FederationConsensusHandle>,
-    pub(crate) peer_sync_config: Option<FederationPeerSyncConfig>,
-    pub(crate) sequences: Option<FederationSequenceHandle>,
-    pub(crate) notifications: Option<FederationNotificationHandle>,
-    pub(crate) private_rest_admission: Option<FederationRestAdmissionHandle>,
-    pub(crate) invalid_operation_alerts: Option<FederationInvalidOperationAlertHandle>,
+    pub(crate) membership: FederationMembership,
+    pub(crate) tasks: super::services::FederationTaskGroup,
     pub(crate) payment_observer: super::FederationPaymentObserver,
     #[cfg(feature = "federation-bdk")]
     pub(crate) transaction_broadcaster: super::FederationTransactionBroadcaster,
@@ -329,18 +392,65 @@ fn federation_not_ready_error(status: FederationSyncStatus) -> cdk::Error {
 }
 
 impl FederationNodeRuntime {
+    pub(super) fn configured_member(&self) -> Result<&FederationMemberContext, cdk::Error> {
+        self.membership
+            .context()
+            .ok_or_else(|| runtime_unavailable("member context"))
+    }
+
+    pub(crate) fn mint(&self) -> Option<&Arc<Mint>> {
+        self.membership.context().map(|member| &member.mint)
+    }
+
+    pub(crate) fn consensus(&self) -> Option<&FederationConsensusHandle> {
+        self.membership.context().map(|member| &member.consensus)
+    }
+
+    pub(crate) fn sequences(&self) -> Option<&FederationSequenceHandle> {
+        self.membership.context().map(|member| &member.sequences)
+    }
+
+    pub(crate) fn notifications(&self) -> Option<&FederationNotificationHandle> {
+        self.membership
+            .context()
+            .map(|member| &member.notifications)
+    }
+
+    pub(crate) fn peer_sync_config(&self) -> Option<FederationPeerSyncConfig> {
+        self.membership
+            .context()
+            .map(|member| member.peer_sync_config)
+    }
+
+    pub(crate) fn private_rest_admission(&self) -> Option<&FederationRestAdmissionHandle> {
+        self.membership
+            .context()
+            .map(|member| &member.private_rest_admission)
+    }
+
+    pub(crate) fn invalid_operation_alerts(
+        &self,
+    ) -> Option<&FederationInvalidOperationAlertHandle> {
+        self.membership
+            .context()
+            .map(|member| &member.invalid_operation_alerts)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn member_mut_for_test(&mut self) -> &mut FederationMemberContext {
+        match &mut self.membership {
+            FederationMembership::Standalone => panic!("test requires a configured member"),
+            FederationMembership::Setup(member) | FederationMembership::Active(member) => member,
+        }
+    }
+
     /// Build the inert runtime stored by a standalone mint in a federation-enabled binary.
     #[cfg(test)]
     pub(crate) fn disabled() -> Self {
         Self {
             transport: super::default_federation_transport(),
-            mint: None,
-            consensus: None,
-            peer_sync_config: None,
-            sequences: None,
-            notifications: None,
-            private_rest_admission: None,
-            invalid_operation_alerts: None,
+            membership: FederationMembership::Standalone,
+            tasks: crate::federation::services::FederationTaskGroup::default(),
             payment_observer: super::FederationPaymentObserver::default(),
             #[cfg(feature = "federation-bdk")]
             transaction_broadcaster: super::FederationTransactionBroadcaster::default(),
@@ -579,8 +689,7 @@ impl FederationNodeRuntime {
 
     #[cfg(feature = "prometheus")]
     fn record_sync_transition(&self, transition: cdk_prometheus::FederationSyncTransition) {
-        let Some(runtime_config) = self.mint.as_ref().and_then(|mint| mint.federation_config())
-        else {
+        let Some(runtime_config) = self.mint().and_then(|mint| mint.federation_config()) else {
             return;
         };
         cdk_prometheus::METRICS
@@ -637,14 +746,14 @@ impl FederationNodeRuntime {
     }
 
     pub(crate) async fn pending_mempool_len(&self) -> usize {
-        match &self.consensus {
+        match &self.consensus() {
             Some(consensus) => consensus.lock().await.pending_mempool_len(),
             None => 0,
         }
     }
 
     pub(crate) async fn aleph_bft_status(&self) -> Option<FederationConsensusRuntimeStatus> {
-        let consensus = self.consensus.as_ref()?;
+        let consensus = self.consensus()?;
         consensus.lock().await.aleph_bft_status().ok()
     }
 

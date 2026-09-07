@@ -231,8 +231,7 @@ async fn idle_member_does_not_propose_recovery_barrier_work() {
         .expect("idle recovery proposal"));
     assert!(!state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -315,8 +314,7 @@ async fn ordered_recovery_barrier_captures_complete_unit_without_stopping_traffi
     let payload = {
         let consensus = state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("consensus")
             .lock()
             .await;
@@ -370,8 +368,7 @@ async fn ordered_recovery_barrier_captures_complete_unit_without_stopping_traffi
     let finality_only_unit = {
         let consensus = state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("consensus")
             .lock()
             .await;
@@ -399,8 +396,7 @@ async fn ordered_recovery_barrier_captures_complete_unit_without_stopping_traffi
     let redundant_barrier = {
         let consensus = state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("consensus")
             .lock()
             .await;
@@ -450,8 +446,7 @@ async fn ordered_recovery_barrier_captures_complete_unit_without_stopping_traffi
     let repeated_barrier = {
         let consensus = state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("consensus")
             .lock()
             .await;
@@ -560,8 +555,7 @@ async fn concurrent_recovery_requests_queue_one_effective_barrier() {
     );
     let consensus = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await;
@@ -592,8 +586,7 @@ async fn stale_pending_barrier_does_not_block_current_recovery_request() {
         .expect("stale recovery barrier");
     state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -626,8 +619,7 @@ async fn stale_pending_barrier_does_not_block_current_recovery_request() {
 
     let finalized_barriers = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -672,7 +664,8 @@ async fn restart_retries_last_ordered_barrier_with_the_same_checkpoint_id() {
     let (restarted_consensus, _) = crate::create_federation_runtime_state(&state.mint)
         .await
         .expect("restart consensus from durable finalized barrier");
-    state.federation.consensus = restarted_consensus;
+    state.federation.member_mut_for_test().consensus =
+        restarted_consensus.expect("configured member handle");
 
     state
         .federation
@@ -3222,8 +3215,7 @@ async fn recovery_checkpoint_for_state(
         .expect("checkpoint frontier");
     let consensus = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await;
@@ -3400,19 +3392,17 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
         cache: Arc::new(crate::cache::HttpCache::default()),
         federation: crate::federation::FederationNodeRuntime {
             transport: crate::default_federation_transport(),
-            mint: Some(mint),
-            consensus: Some(Arc::new(tokio::sync::Mutex::new(consensus))),
-            peer_sync_config: Some(FederationPeerSyncConfig::default()),
-            sequences: Some(Arc::new(tokio::sync::Mutex::new(
-                FederationRestSequenceTracker::new(),
-            ))),
-            notifications: Some(Arc::new(crate::FederationOperationNotifications::default())),
-            private_rest_admission: Some(Arc::new(tokio::sync::Semaphore::new(
-                FederationPeerSyncConfig::default().private_rest_inbound_concurrency_limit,
-            ))),
-            invalid_operation_alerts: Some(Arc::new(tokio::sync::Mutex::new(
-                crate::FederationInvalidOperationAlertTracker::default(),
-            ))),
+            membership: crate::federation::FederationMembership::configured(
+                crate::federation::FederationMemberContext::new(
+                    mint,
+                    Arc::new(tokio::sync::Mutex::new(consensus)),
+                    Arc::new(tokio::sync::Mutex::new(
+                        cdk::federation::FederationRestSequenceTracker::new(),
+                    )),
+                    crate::FederationPeerSyncConfig::default(),
+                ),
+            ),
+            tasks: crate::federation::services::FederationTaskGroup::default(),
             payment_observer: crate::federation::FederationPaymentObserver::default(),
             #[cfg(feature = "federation-bdk")]
             transaction_broadcaster: crate::federation::FederationTransactionBroadcaster::default(),
@@ -3618,8 +3608,7 @@ async fn backup_recovery_test_state() -> (
 
     let catch_up_request = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("local consensus")
         .lock()
         .await
@@ -4041,8 +4030,7 @@ fn signed_dkg_transcript_signature_request(
 async fn consensus_operation_count(state: &MintState) -> u64 {
     state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -4052,13 +4040,12 @@ async fn consensus_operation_count(state: &MintState) -> u64 {
 
 fn reset_federation_runtime_journal(state: &mut MintState) {
     let runtime_config = state.mint.federation_config().expect("federation config");
-    state.federation.consensus = Some(Arc::new(tokio::sync::Mutex::new(
-        FederationConsensusRuntime::new(
+    state.federation.member_mut_for_test().consensus =
+        Arc::new(tokio::sync::Mutex::new(FederationConsensusRuntime::new(
             runtime_config.federation_id(),
             runtime_config.member_id(),
             0,
-        ),
-    )));
+        )));
 }
 
 fn activate_local_test_finality(state: &mut MintState) {
@@ -4771,7 +4758,7 @@ async fn queue_local_aleph_bft_unit(
     state: &MintState,
     envelope: FederationOperationEnvelope,
 ) -> FederationAlephBftUnitPayload {
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
+    let consensus = state.federation.consensus().expect("consensus");
     let mut consensus = consensus.lock().await;
     consensus
         .submit_aleph_bft_envelope(envelope)
@@ -4785,7 +4772,7 @@ async fn queue_local_aleph_bft_unit(
 async fn wait_for_local_aleph_bft_unit(state: &MintState) -> FederationAlephBftUnitPayload {
     for _ in 0..50 {
         let maybe_unit = {
-            let consensus = state.federation.consensus.as_ref().expect("consensus");
+            let consensus = state.federation.consensus().expect("consensus");
             let mut consensus = consensus.lock().await;
             consensus
                 .next_aleph_bft_unit_payload()
@@ -5228,8 +5215,7 @@ async fn reset_synthetic_history_consensus(
     let (status, next_unit_index_by_member) = {
         let consensus = state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("synthetic history consensus")
             .lock()
             .await;
@@ -5261,7 +5247,7 @@ async fn reset_synthetic_history_consensus(
     consensus
         .register_historical_journal_entry(base_entry.clone())
         .expect("register synthetic history conflict anchor");
-    state.federation.consensus = Some(Arc::new(tokio::sync::Mutex::new(consensus)));
+    state.federation.member_mut_for_test().consensus = Arc::new(tokio::sync::Mutex::new(consensus));
 }
 
 #[cfg(feature = "prometheus")]
@@ -5296,8 +5282,7 @@ async fn append_synthetic_history_conflicts(
         let (finalized_items, entries) = {
             let mut consensus = state
                 .federation
-                .consensus
-                .as_ref()
+                .consensus()
                 .expect("synthetic history consensus")
                 .lock()
                 .await;
@@ -5425,7 +5410,6 @@ fn checkpoint_work_delta(member: &str, work: &str, before: f64) -> f64 {
     ) - before
 }
 
-#[cfg(feature = "prometheus")]
 async fn seed_synthetic_active_session_backup(
     state: &MintState,
     session: u64,
@@ -5496,8 +5480,10 @@ async fn replay_aleph_bft_runtime_after_test_process_restart(state: &mut MintSta
         crate::create_federation_runtime_state(&state.mint)
             .await
             .expect("replay AlephBFT runtime after test process restart");
-    state.federation.consensus = replayed_consensus;
-    state.federation.sequences = replayed_sequences;
+    state.federation.member_mut_for_test().consensus =
+        replayed_consensus.expect("configured member handle");
+    state.federation.member_mut_for_test().sequences =
+        replayed_sequences.expect("configured member handle");
 }
 
 async fn submit_live_operation_allowing_pending_timeout(
@@ -6046,8 +6032,7 @@ async fn apply_identical_finalized_unit(
     let payload = {
         let consensus = first
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("first agreement consensus")
             .lock()
             .await;
@@ -6077,13 +6062,13 @@ async fn apply_identical_finalized_unit(
 #[tokio::test]
 async fn service_startup_failure_cancels_workers_already_started() {
     let (state, _, _) = federation_route_state().await;
-    let tasks = state.federation.payment_observer.tasks.clone();
+    let tasks = state.federation.tasks.clone();
     let stop = tasks.stop_token();
     let invalid_sync = FederationPeerSyncConfig {
         catch_up_limit: 0,
         ..Default::default()
     };
-    let services = super::services::FederationServices::new(state, Some(invalid_sync), None, true);
+    let services = super::services::FederationServices::new(state, Some(invalid_sync), None);
     assert!(services.start().await.is_err());
     assert!(stop.is_cancelled());
 }

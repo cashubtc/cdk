@@ -36,8 +36,7 @@ async fn catch_up_application_precedes_dependent_live_finality() {
         .expect("finalize prerequisite unit");
     let catch_up_request = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("local consensus")
         .lock()
         .await
@@ -269,7 +268,7 @@ async fn peer_sync_round_catches_up_from_configured_peer() {
         .await
         .expect("persist peer active session");
     tx.commit().await.expect("commit peer backup");
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     let transport = RouterFederationTransportRegistry::default();
     transport.insert(
         peer_member.federation_api_url.clone(),
@@ -893,7 +892,7 @@ async fn catch_up_applies_mint_quote_operation_to_local_store() {
     let mut peer_consensus =
         test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
     finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted quote");
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     let catch_up_response = checked_test_catch_up_response(
         &peer_consensus,
         &local_consensus.lock().await.catch_up_request(),
@@ -962,7 +961,7 @@ async fn catch_up_reports_conflicting_payment_observations() {
     ] {
         finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted operation");
     }
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     let catch_up_response = checked_test_catch_up_response(
         &peer_consensus,
         &local_consensus.lock().await.catch_up_request(),
@@ -1035,7 +1034,7 @@ async fn catch_up_applies_melt_quote_operation_to_local_store() {
     let mut peer_consensus =
         test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
     finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted melt quote");
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     let catch_up_response = checked_test_catch_up_response(
         &peer_consensus,
         &local_consensus.lock().await.catch_up_request(),
@@ -1104,7 +1103,7 @@ async fn catch_up_applies_swap_operation_to_local_store() {
     let mut peer_consensus =
         test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
     finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted swap");
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     let catch_up_response = checked_test_catch_up_response(
         &peer_consensus,
         &local_consensus.lock().await.catch_up_request(),
@@ -1202,7 +1201,7 @@ async fn catch_up_marks_conflicting_swap_rejected_and_continues_replay() {
         finalize_test_operation(&mut peer_consensus, envelope)
             .expect("peer accepted swap operation");
     }
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     let catch_up_response = checked_test_catch_up_response(
         &peer_consensus,
         &local_consensus.lock().await.catch_up_request(),
@@ -1337,7 +1336,7 @@ async fn catch_up_applies_melt_operation_to_local_store() {
     let payment_operation_id = payment_envelope
         .operation_id()
         .expect("payment operation id");
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     let mut peer_consensus = local_consensus.lock().await.clone();
     finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted melt");
     finalize_test_operation(&mut peer_consensus, payment_envelope)
@@ -1453,7 +1452,7 @@ async fn catch_up_applies_paid_melt_payment_observation_to_pending_melt() {
         Some("federation-paid-preimage".to_string()),
     );
     let paid_operation_id = paid_envelope.operation_id().expect("paid operation id");
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     let mut peer_consensus = local_consensus.lock().await.clone();
     finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
@@ -1578,7 +1577,7 @@ async fn catch_up_resolves_pending_melt_after_later_paid_observation() {
         MeltQuoteState::Paid,
         Some("late-paid-observation-preimage".to_string()),
     );
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     let mut peer_consensus = local_consensus.lock().await.clone();
     finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
@@ -1714,8 +1713,7 @@ async fn catch_up_rolls_back_pending_melt_after_later_failed_observation() {
         melt_payment_observation_envelope(&state, &quote_id, MeltQuoteState::Failed, None);
     let mut peer_consensus = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -1723,7 +1721,7 @@ async fn catch_up_rolls_back_pending_melt_after_later_failed_observation() {
     finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
 
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     let pending_response = checked_test_catch_up_response(
         &peer_consensus,
         &local_consensus.lock().await.catch_up_request(),
@@ -1849,8 +1847,7 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_paid_observation(
     );
     let mut peer_consensus = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -1858,7 +1855,7 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_paid_observation(
     finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
 
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     let pending_response = checked_test_catch_up_response(
         &peer_consensus,
         &local_consensus.lock().await.catch_up_request(),
@@ -1888,13 +1885,14 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_paid_observation(
         crate::create_federation_runtime_state(&state.mint)
             .await
             .expect("recreate federation runtime state");
-    state.federation.consensus = replayed_consensus;
-    state.federation.sequences = replayed_sequences;
+    state.federation.member_mut_for_test().consensus =
+        replayed_consensus.expect("configured member handle");
+    state.federation.member_mut_for_test().sequences =
+        replayed_sequences.expect("configured member handle");
     assert_eq!(
         state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("replayed consensus")
             .lock()
             .await
@@ -1912,11 +1910,7 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_paid_observation(
 
     finalize_test_operation(&mut peer_consensus, paid_envelope)
         .expect("peer accepted paid observation");
-    let replayed_consensus = state
-        .federation
-        .consensus
-        .as_ref()
-        .expect("replayed consensus");
+    let replayed_consensus = state.federation.consensus().expect("replayed consensus");
     let paid_response = checked_test_catch_up_response(
         &peer_consensus,
         &replayed_consensus.lock().await.catch_up_request(),
@@ -1965,8 +1959,7 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_paid_observation(
     assert_eq!(
         state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("final consensus")
             .lock()
             .await
@@ -2015,8 +2008,7 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_failed_observatio
         melt_payment_observation_envelope(&state, &quote_id, MeltQuoteState::Failed, None);
     let mut peer_consensus = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -2024,7 +2016,7 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_failed_observatio
     finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
 
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     let pending_response = checked_test_catch_up_response(
         &peer_consensus,
         &local_consensus.lock().await.catch_up_request(),
@@ -2054,13 +2046,14 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_failed_observatio
         crate::create_federation_runtime_state(&state.mint)
             .await
             .expect("recreate federation runtime state");
-    state.federation.consensus = replayed_consensus;
-    state.federation.sequences = replayed_sequences;
+    state.federation.member_mut_for_test().consensus =
+        replayed_consensus.expect("configured member handle");
+    state.federation.member_mut_for_test().sequences =
+        replayed_sequences.expect("configured member handle");
     assert_eq!(
         state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("replayed consensus")
             .lock()
             .await
@@ -2078,11 +2071,7 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_failed_observatio
 
     finalize_test_operation(&mut peer_consensus, failed_envelope)
         .expect("peer accepted failed observation");
-    let replayed_consensus = state
-        .federation
-        .consensus
-        .as_ref()
-        .expect("replayed consensus");
+    let replayed_consensus = state.federation.consensus().expect("replayed consensus");
     let failed_response = checked_test_catch_up_response(
         &peer_consensus,
         &replayed_consensus.lock().await.catch_up_request(),
@@ -2128,8 +2117,7 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_failed_observatio
     assert_eq!(
         state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("final consensus")
             .lock()
             .await
@@ -2197,8 +2185,7 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_paid_observation() 
     );
     let mut peer_consensus = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -2207,7 +2194,7 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_paid_observation() 
         .expect("peer accepted pending melt");
 
     let pending_response = {
-        let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+        let local_consensus = state.federation.consensus().expect("consensus");
         checked_test_catch_up_response(
             &peer_consensus,
             &local_consensus.lock().await.catch_up_request(),
@@ -2252,13 +2239,14 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_paid_observation() 
         crate::create_federation_runtime_state(&restarted_state.mint)
             .await
             .expect("recreate federation runtime state from sqlite");
-    restarted_state.federation.consensus = replayed_consensus;
-    restarted_state.federation.sequences = replayed_sequences;
+    restarted_state.federation.member_mut_for_test().consensus =
+        replayed_consensus.expect("configured member handle");
+    restarted_state.federation.member_mut_for_test().sequences =
+        replayed_sequences.expect("configured member handle");
     assert_eq!(
         restarted_state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("replayed consensus")
             .lock()
             .await
@@ -2287,8 +2275,7 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_paid_observation() 
     let paid_response = {
         let replayed_consensus = restarted_state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("replayed consensus");
         checked_test_catch_up_response(
             &peer_consensus,
@@ -2340,8 +2327,7 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_paid_observation() 
     assert_eq!(
         restarted_state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("final consensus")
             .lock()
             .await
@@ -2405,8 +2391,7 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_failed_observation(
         melt_payment_observation_envelope(&state, &quote_id, MeltQuoteState::Failed, None);
     let mut peer_consensus = state
         .federation
-        .consensus
-        .as_ref()
+        .consensus()
         .expect("consensus")
         .lock()
         .await
@@ -2415,7 +2400,7 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_failed_observation(
         .expect("peer accepted pending melt");
 
     let pending_response = {
-        let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+        let local_consensus = state.federation.consensus().expect("consensus");
         checked_test_catch_up_response(
             &peer_consensus,
             &local_consensus.lock().await.catch_up_request(),
@@ -2460,13 +2445,14 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_failed_observation(
         crate::create_federation_runtime_state(&restarted_state.mint)
             .await
             .expect("recreate federation runtime state from sqlite");
-    restarted_state.federation.consensus = replayed_consensus;
-    restarted_state.federation.sequences = replayed_sequences;
+    restarted_state.federation.member_mut_for_test().consensus =
+        replayed_consensus.expect("configured member handle");
+    restarted_state.federation.member_mut_for_test().sequences =
+        replayed_sequences.expect("configured member handle");
     assert_eq!(
         restarted_state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("replayed consensus")
             .lock()
             .await
@@ -2495,8 +2481,7 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_failed_observation(
     let failed_response = {
         let replayed_consensus = restarted_state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("replayed consensus");
         checked_test_catch_up_response(
             &peer_consensus,
@@ -2544,8 +2529,7 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_failed_observation(
     assert_eq!(
         restarted_state
             .federation
-            .consensus
-            .as_ref()
+            .consensus()
             .expect("final consensus")
             .lock()
             .await
@@ -2588,7 +2572,7 @@ async fn catch_up_applies_unpaid_melt_payment_observation_to_pending_melt() {
     let melt_envelope = config.melt_operation(melt_request).expect("melt envelope");
     let unpaid_envelope =
         melt_payment_observation_envelope(&state, &quote_id, MeltQuoteState::Unpaid, None);
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     let mut peer_consensus = local_consensus.lock().await.clone();
     finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
@@ -2745,7 +2729,7 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
         finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted operation");
     }
 
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     assert_eq!(
         local_consensus.lock().await.peer_status().operation_count,
         0
@@ -2776,10 +2760,12 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
         crate::create_federation_runtime_state(&state.mint)
             .await
             .expect("restart federation runtime from durable catch-up state");
-    state.federation.consensus = replayed_consensus;
-    state.federation.sequences = replayed_sequences;
+    state.federation.member_mut_for_test().consensus =
+        replayed_consensus.expect("configured member handle");
+    state.federation.member_mut_for_test().sequences =
+        replayed_sequences.expect("configured member handle");
     activate_local_test_finality(&mut state);
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
 
     let persisted = state
         .mint
@@ -3036,7 +3022,7 @@ async fn diverged_member_rejects_peer_catch_up_digest_mismatch() {
         .await
         .expect("local accepted divergent operation");
 
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let local_consensus = state.federation.consensus().expect("consensus");
     let request = local_consensus.lock().await.catch_up_request();
     assert_eq!(request.next_index, 1);
     assert!(matches!(

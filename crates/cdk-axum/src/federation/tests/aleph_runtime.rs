@@ -48,10 +48,13 @@ async fn run_five_member_partition_and_heal(partition_size: usize, finalizes_whi
     session
         .transport
         .set_network_partition(&first, &second, true);
-    session.states[0].federation.peer_sync_config = Some(FederationPeerSyncConfig {
+    session.states[0]
+        .federation
+        .member_mut_for_test()
+        .peer_sync_config = FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(500),
         ..session.sync_config
-    });
+    };
 
     let partitioned_quote_id = QuoteId::new();
     let partitioned = mint_quote_envelope(&session.states[0], &partitioned_quote_id);
@@ -95,7 +98,10 @@ async fn run_five_member_partition_and_heal(partition_size: usize, finalizes_whi
     session
         .transport
         .set_network_partition(&first, &second, false);
-    session.states[0].federation.peer_sync_config = Some(session.sync_config);
+    session.states[0]
+        .federation
+        .member_mut_for_test()
+        .peer_sync_config = session.sync_config;
     if !finalizes_while_split {
         let response = session.states[0]
             .submit_federation_envelope_to_consensus(partitioned)
@@ -576,8 +582,7 @@ async fn aleph_bft_live_healthy_swaps_do_not_trigger_catch_up() {
         heights.push(
             state
                 .federation
-                .consensus
-                .as_ref()
+                .consensus()
                 .expect("member consensus")
                 .lock()
                 .await
