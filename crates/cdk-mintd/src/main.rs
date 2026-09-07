@@ -74,6 +74,11 @@ fn main() -> Result<()> {
                     Ok(())
                 }
                 ConfigCommands::Init(init) => {
+                    tracing_subscriber::fmt()
+                        .with_max_level(tracing::Level::WARN)
+                        .with_writer(std::io::stderr)
+                        .try_init()
+                        .map_err(|err| anyhow::anyhow!("Could not initialize configuration logging: {err}"))?;
                     let work_dir = work_dir
                         .as_deref()
                         .expect("database commands have a work directory");
