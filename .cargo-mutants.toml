@@ -9,4 +9,15 @@ exclude_re = [
     # PartialEq implementations are simple delegations to as_str(), well-tested
     "cashu/src/nuts/nut00/mod.rs.*impl PartialEq<&str> for PaymentMethod",
     "cashu/src/nuts/nut00/mod.rs.*impl PartialEq<str> for PaymentMethod",
+    # get_pubkeys_and_required_sigs cannot currently return a NUT14 error:
+    # its HTLC branch only parses Conditions and checks duplicate pubkeys.
+    'cashu/src/nuts/nut14/mod.rs.*delete match arm super::nut10::Error::NUT14.* in Proof::verify_htlc',
+    # Direct delegation to the UR library; no independent CDK behavior.
+    'cashu/src/nuts/nut16.rs.*TokenUrEncoder::current_index ->',
+    'cashu/src/nuts/nut16.rs.*TokenUrDecoder::fragment_count ->',
+    # Diagnostic formatting only.
+    'cashu/src/nuts/nut16.rs.*<impl fmt::Debug for TokenUrEncoder>::fmt',
+    # Single-part payloads cannot reach 1 MiB after the 4,296-byte frame limit.
+    # Restrict this to the single-part comparison, preserving frame-size coverage.
+    'cashu/src/nuts/nut16.rs:272:.*replace > with (==|>=) in TokenUrDecoder::receive',
 ]
