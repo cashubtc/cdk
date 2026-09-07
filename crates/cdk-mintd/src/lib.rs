@@ -630,8 +630,6 @@ fn validate_listen_config(settings: &config::Settings) -> Result<()> {
 }
 
 fn validate_signing_config(settings: &config::Settings) -> Result<()> {
-    const MIN_SEED_BYTES: usize = 32;
-
     if let Some(signatory) = settings.enabled_signatory() {
         let has_local_seed = settings
             .info
@@ -671,12 +669,7 @@ fn validate_signing_config(settings: &config::Settings) -> Result<()> {
         if seed.is_empty() {
             bail!("Seed in [info].seed must not be empty");
         }
-        if seed.len() < MIN_SEED_BYTES {
-            bail!(
-                "Seed in [info].seed is too short ({} bytes); require at least {MIN_SEED_BYTES} bytes",
-                seed.len()
-            );
-        }
+        // Preserve compatibility with existing CDK and Nutshell mint seeds of any length.
         return Ok(());
     }
 
@@ -3244,9 +3237,11 @@ engine = "sqlite"
     async fn initialization_mode_distinguishes_existing_mint_state() {
         let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_existing_init");
         fs::create_dir_all(&work_dir).expect("create work dir");
-        let secret_path = work_dir.join("mnemonic.secret");
-        fs::write(&secret_path, TEST_MNEMONIC).expect("write mnemonic secret");
-        let document = sqlite_configuration_document(&secret_path, "existing");
+        let seed = "legacy";
+        let secret_path = work_dir.join("seed.secret");
+        fs::write(&secret_path, seed).expect("write original short seed");
+        let document =
+            sqlite_configuration_document(&secret_path, "existing").replace("mnemonic =", "seed =");
 
         #[cfg(feature = "sqlcipher")]
         let password = Some("test-password".to_string());
@@ -3262,9 +3257,8 @@ engine = "sqlite"
         builder
             .configure_unit(CurrencyUnit::Sat, Default::default())
             .expect("configure sat unit");
-        let mnemonic = Mnemonic::parse(TEST_MNEMONIC).expect("test mnemonic");
         let mint = builder
-            .build_with_seed(keystore, &mnemonic.to_seed_normalized(""))
+            .build_with_seed(keystore, seed.as_bytes())
             .await
             .expect("create existing mint state");
         drop(mint);
@@ -4402,11 +4396,18 @@ backend = "fakewallet"
 
     #[cfg(feature = "fakewallet")]
     #[test]
-    fn test_load_settings_reports_short_seed() {
-        assert_load_settings_error(
-            r#"
+    fn test_load_settings_accepts_nonempty_seeds_of_any_length() {
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+
+        for seed_len in [1, 7, 16, 31, 32, 64, 65] {
+            let seed = "a".repeat(seed_len);
+            let settings = load_settings_from_toml(
+                "cdk_mintd_seed_length",
+                &format!(
+                    r#"
 [info]
-seed = "tooshort"
+seed = "{seed}"
 
 [database]
 engine = "sqlite"
@@ -4414,8 +4415,11 @@ engine = "sqlite"
 [payment_backend]
 backend = "fakewallet"
 "#,
-            "Seed in [info].seed is too short",
-        );
+                ),
+            )
+            .expect("Nonempty legacy mint seeds should pass validation");
+            assert_eq!(settings.info.seed.as_deref(), Some(seed.as_str()));
+        }
     }
 
     #[cfg(feature = "fakewallet")]
