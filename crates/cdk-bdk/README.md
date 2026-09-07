@@ -89,6 +89,10 @@ reveal and batch construction are not blocked during long chain catch-ups.
 Chain-source clients are reused across sync iterations and rebuilt only on
 error.
 
+Esplora sync, broadcast, and fee-estimation requests have a 10-second timeout.
+Esplora's `parallel_requests` must be greater than zero. Missed polling ticks
+are skipped so a slow sync does not trigger a burst of catch-up polls.
+
 Fresh Bitcoin Core wallets checkpoint at the current chain tip instead of
 scanning from genesis. When restoring from a mnemonic, set
 `BitcoinRpcConfig::wallet_rescan_from_height` to the wallet's known birthday
