@@ -1103,6 +1103,7 @@ ffi-release-all VERSION:
 
   gh workflow run "FFI - Publish All Bindings" \
     --repo cashubtc/cdk \
+    --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
     --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
@@ -1120,6 +1121,7 @@ ffi-release-dart VERSION:
 
   gh workflow run "FFI - Dart Bindings" \
     --repo cashubtc/cdk \
+    --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
     --field cdk_version="{{VERSION}}"
 
@@ -1136,6 +1138,7 @@ ffi-release-swift VERSION:
   # Trigger the workflow using GitHub CLI
   gh workflow run "FFI - Swift Bindings" \
     --repo cashubtc/cdk \
+    --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
     --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
@@ -1154,6 +1157,7 @@ ffi-release-kotlin VERSION:
   # Trigger the workflow using GitHub CLI
   gh workflow run "FFI - Kotlin Bindings" \
     --repo cashubtc/cdk \
+    --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
     --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
@@ -1205,6 +1209,7 @@ ffi-release-go VERSION:
 
   gh workflow run "FFI - Go Bindings" \
     --repo cashubtc/cdk \
+    --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
     --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
