@@ -14,7 +14,7 @@ readme = "README.md"
 async-trait.workspace = true
 anyhow.workspace = true
 cdk-common = { workspace = true, features = ["mint"] }
-futures.workspace = true
+futures = { workspace = true, features = ["alloc"] }
 tokio = { workspace = true, default-features = false, features = ["fs"] }
 tokio-util.workspace = true
 tracing.workspace = true
@@ -31,6 +31,13 @@ rustls-pemfile = "2.2.0"
 
 [build-dependencies]
 tonic-prost-build.workspace = true
+
+[dev-dependencies]
+cdk-sqlite.workspace = true
+cdk-fake-wallet.workspace = true
+http-body-util = "0.1"
+hyper = { version = "1.6.0", features = ["server"] }
+tokio = { workspace = true, features = ["net"] }
 
 [lints]
 workspace = true

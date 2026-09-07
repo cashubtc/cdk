@@ -28,13 +28,16 @@ use cdk_common::Bolt11Invoice;
 use error::Error;
 use futures::{Stream, StreamExt};
 use lnrpc::fee_limit::Limit;
-use lnrpc::payment::PaymentStatus;
 use lnrpc::{FeeLimit, Hop, MppRecord};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
 mod client;
 pub mod error;
+mod outgoing;
+
+#[cfg(test)]
+mod outgoing_tests;
 
 mod proto;
 pub(crate) use proto::{lnrpc, routerrpc};
@@ -60,6 +63,7 @@ pub struct Lnd {
     wait_invoice_is_active: Arc<AtomicBool>,
     settings: SettingsResponse,
     unit: CurrencyUnit,
+    outgoing_tracking: Arc<outgoing::Tracking>,
 }
 
 impl std::fmt::Debug for Lnd {
@@ -135,6 +139,7 @@ impl Lnd {
                 custom: std::collections::HashMap::new(),
             },
             unit,
+            outgoing_tracking: Arc::new(outgoing::Tracking::default()),
         })
     }
 
@@ -401,7 +406,24 @@ impl MintPayment for Lnd {
             },
         );
 
-        Ok(Box::pin(event_stream))
+        // End the combined subscription if either stream ends, allowing the
+        // mint's supervisor to reconnect both incoming and outgoing tracking.
+        let outgoing = outgoing::events(
+            self.lnd_client.clone(),
+            self.outgoing_tracking.clone(),
+            self.wait_invoice_cancel_token.child_token(),
+        );
+        let incoming = event_stream
+            .map(Some)
+            .chain(futures::stream::once(async { None }));
+        let outgoing = outgoing
+            .map(Some)
+            .chain(futures::stream::once(async { None }));
+        Ok(Box::pin(
+            futures::stream::select(Box::pin(incoming), Box::pin(outgoing))
+                .take_while(|event| futures::future::ready(event.is_some()))
+                .filter_map(futures::future::ready),
+        ))
     }
 
     #[instrument(skip_all)]
@@ -492,6 +514,11 @@ impl MintPayment for Lnd {
                         });
                     }
                     MeltQuoteState::Pending => {
+                        outgoing::register(
+                            &self.outgoing_tracking,
+                            bolt11_options.quote_id.clone(),
+                            *bolt11.payment_hash().as_ref(),
+                        );
                         tracing::debug!("Melt attempted on invoice already pending");
                         return Ok(MakePaymentResponse {
                             payment_lookup_id: payment_lookup_id.clone(),
@@ -618,6 +645,14 @@ impl MintPayment for Lnd {
                                     .route
                                     .map_or(0, |route| route.total_amt_msat as u64);
 
+                                if status == MeltQuoteState::Pending {
+                                    outgoing::register(
+                                        &self.outgoing_tracking,
+                                        bolt11_options.quote_id.clone(),
+                                        payment_hash.to_byte_array(),
+                                    );
+                                }
+
                                 return Ok(MakePaymentResponse {
                                     payment_lookup_id: PaymentIdentifier::PaymentHash(
                                         payment_hash.to_byte_array(),
@@ -674,59 +709,36 @@ impl MintPayment for Lnd {
                             ..Default::default()
                         };
 
-                        let mut payment_stream = lnd_client
-                            .router()
-                            .send_payment_v2(pay_req)
-                            .await
-                            .map_err(|err| {
-                                tracing::warn!("Lightning payment dispatch error: {}", err);
-                                // A gRPC error here may arrive after LND accepted
-                                // the payment; the dispatch outcome is unknown.
-                                Error::AmbiguousDispatch
-                            })?
-                            .into_inner();
+                        // Register before dispatch: a lost RPC response must not
+                        // lose the payment's association with its melt saga.
+                        let _dispatch = outgoing::register(
+                            &self.outgoing_tracking,
+                            bolt11_options.quote_id,
+                            *bolt11.payment_hash().as_ref(),
+                        );
 
-                        while let Some(update) = payment_stream.message().await.map_err(|err| {
-                            tracing::warn!("Lightning payment stream error: {}", err);
-                            // The stream dropped after dispatch began; the payment
-                            // may still settle.
+                        let update = tokio::time::timeout(outgoing::RPC_TIMEOUT, async {
+                            let mut stream = lnd_client
+                                .router()
+                                .send_payment_v2(pay_req)
+                                .await?
+                                .into_inner();
+                            stream.message().await
+                        })
+                        .await
+                        .map_err(|_| Error::AmbiguousDispatch)?
+                        .map_err(|err| {
+                            tracing::warn!("Lightning payment dispatch error: {err}");
                             Error::AmbiguousDispatch
-                        })? {
-                            let status = update.status();
+                        })?
+                        .ok_or(Error::AmbiguousDispatch)?;
 
-                            let response_status = match status {
-                                PaymentStatus::InFlight | PaymentStatus::Initiated => {
-                                    continue;
-                                }
-                                PaymentStatus::Succeeded => MeltQuoteState::Paid,
-                                PaymentStatus::Failed => MeltQuoteState::Failed,
-                                #[allow(deprecated)]
-                                PaymentStatus::Unknown => MeltQuoteState::Unknown,
-                            };
-
-                            let total_msat = update
-                                .value_msat
-                                .checked_add(update.fee_msat)
-                                .ok_or(Error::AmountOverflow)?;
-
-                            let payment_preimage = if update.payment_preimage.is_empty() {
-                                None
-                            } else {
-                                Some(update.payment_preimage)
-                            };
-
-                            let payment_identifier =
-                                PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref());
-
-                            return Ok(MakePaymentResponse {
-                                payment_lookup_id: payment_identifier,
-                                payment_proof: payment_preimage,
-                                status: response_status,
-                                total_spent: msat_total_spent_for_unit(total_msat as u64, unit)?,
-                            });
-                        }
-
-                        Err(Error::UnknownPaymentStatus.into())
+                        // SendPaymentV2's cancelable flag is false. Dropping
+                        // this stream does not cancel dispatch; the background
+                        // monitor attaches by hash and observes even a payment
+                        // that settles between the two subscriptions.
+                        outgoing::payment_response(update, payment_lookup_id, unit)
+                            .map_err(Into::into)
                     }
                 }
             }
@@ -832,80 +844,9 @@ impl MintPayment for Lnd {
         &self,
         payment_identifier: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        let mut lnd_client = self.lnd_client.clone();
-
-        let payment_hash = &payment_identifier.to_string();
-
-        let track_request = routerrpc::TrackPaymentRequest {
-            payment_hash: hex::decode(payment_hash).map_err(|_| Error::InvalidHash)?,
-            no_inflight_updates: true,
-        };
-
-        let payment_response = lnd_client.router().track_payment_v2(track_request).await;
-
-        let mut payment_stream = match payment_response {
-            Ok(stream) => stream.into_inner(),
-            Err(err) => {
-                let err_code = err.code();
-                if err_code == tonic::Code::NotFound {
-                    return Ok(MakePaymentResponse {
-                        payment_lookup_id: payment_identifier.clone(),
-                        payment_proof: None,
-                        status: MeltQuoteState::Unknown,
-                        total_spent: Amount::new(0, self.unit.clone()),
-                    });
-                } else {
-                    return Err(payment::Error::UnknownPaymentState);
-                }
-            }
-        };
-
-        while let Some(update_result) = payment_stream.next().await {
-            match update_result {
-                Ok(update) => {
-                    let status = update.status();
-
-                    let response = match status {
-                        #[allow(deprecated)]
-                        PaymentStatus::Unknown => MakePaymentResponse {
-                            payment_lookup_id: payment_identifier.clone(),
-                            payment_proof: Some(update.payment_preimage),
-                            status: MeltQuoteState::Unknown,
-                            total_spent: Amount::new(0, self.unit.clone()),
-                        },
-                        PaymentStatus::InFlight | PaymentStatus::Initiated => {
-                            // Continue waiting for the next update
-                            continue;
-                        }
-                        PaymentStatus::Succeeded => {
-                            let total_spent = lnrpc_payment_total_spent(&update)?;
-
-                            MakePaymentResponse {
-                                payment_lookup_id: payment_identifier.clone(),
-                                payment_proof: Some(update.payment_preimage),
-                                status: MeltQuoteState::Paid,
-                                total_spent,
-                            }
-                        }
-                        PaymentStatus::Failed => MakePaymentResponse {
-                            payment_lookup_id: payment_identifier.clone(),
-                            payment_proof: Some(update.payment_preimage),
-                            status: MeltQuoteState::Failed,
-                            total_spent: Amount::new(0, self.unit.clone()),
-                        },
-                    };
-
-                    return Ok(response);
-                }
-                Err(_) => {
-                    // Handle the case where the update itself is an error (e.g., stream failure)
-                    return Err(Error::UnknownPaymentStatus.into());
-                }
-            }
-        }
-
-        // If the stream is exhausted without a final status
-        Err(Error::UnknownPaymentStatus.into())
+        outgoing::check_payment(self.lnd_client.clone(), payment_identifier, &self.unit)
+            .await
+            .map_err(Into::into)
     }
 }
 
