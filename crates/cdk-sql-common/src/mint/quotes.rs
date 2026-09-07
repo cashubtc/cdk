@@ -33,26 +33,38 @@ use crate::{
     unpack_into,
 };
 
+#[derive(Debug)]
+struct RawQuotePayment {
+    payment_id: String,
+    timestamp: u64,
+    amount: u64,
+}
+
+#[derive(Debug)]
+struct RawQuoteIssuance {
+    amount: i64,
+    timestamp: u64,
+}
+
 async fn get_mint_quote_payments<C>(
     conn: &C,
     quote_id: &QuoteId,
+    unit: &CurrencyUnit,
 ) -> Result<Vec<IncomingPayment>, Error>
 where
     C: DatabaseExecutor + Send + Sync,
 {
-    // Get payment IDs and timestamps from the mint_quote_payments table
     query(
         r#"
         SELECT
-            p.payment_id,
-            p.timestamp,
-            p.amount,
-            q.unit
+            payment_id,
+            timestamp,
+            amount
         FROM
-            mint_quote_payments p
-        JOIN mint_quote q ON p.quote_id = q.id
+            mint_quote_payments
         WHERE
-            p.quote_id=:quote_id
+            quote_id = :quote_id
+        ORDER BY id
         "#,
     )?
     .bind("quote_id", quote_id.to_string())
@@ -62,9 +74,8 @@ where
     .map(|row| {
         let amount: u64 = column_as_number!(row[2].clone());
         let time: u64 = column_as_number!(row[1].clone());
-        let unit = column_as_string!(&row[3], CurrencyUnit::from_str);
         Ok(IncomingPayment::new(
-            Amount::from(amount).with_unit(unit),
+            Amount::from(amount).with_unit(unit.clone()),
             column_as_string!(&row[0]),
             time,
         ))
@@ -72,18 +83,25 @@ where
     .collect()
 }
 
-async fn get_mint_quote_issuance<C>(conn: &C, quote_id: &QuoteId) -> Result<Vec<Issuance>, Error>
+async fn get_mint_quote_issuance<C>(
+    conn: &C,
+    quote_id: &QuoteId,
+    unit: &CurrencyUnit,
+) -> Result<Vec<Issuance>, Error>
 where
     C: DatabaseExecutor + Send + Sync,
 {
-    // Get payment IDs and timestamps from the mint_quote_payments table
     query(
         r#"
-SELECT i.amount, i.timestamp, q.unit
-FROM mint_quote_issued i
-JOIN mint_quote q ON i.quote_id = q.id
-WHERE i.quote_id=:quote_id
-            "#,
+        SELECT
+            amount,
+            timestamp
+        FROM
+            mint_quote_issued
+        WHERE
+            quote_id = :quote_id
+        ORDER BY id
+        "#,
     )?
     .bind("quote_id", quote_id.to_string())
     .fetch_all(conn)
@@ -91,15 +109,102 @@ WHERE i.quote_id=:quote_id
     .into_iter()
     .map(|row| {
         let time: u64 = column_as_number!(row[1].clone());
-        let unit = column_as_string!(&row[2], CurrencyUnit::from_str);
         Ok(Issuance::new(
             Amount::from_i64(column_as_number!(row[0].clone()))
                 .expect("Is amount when put into db")
-                .with_unit(unit),
+                .with_unit(unit.clone()),
             time,
         ))
     })
     .collect()
+}
+
+async fn get_mint_quote_payments_for_ids<C>(
+    conn: &C,
+    quote_ids: &[String],
+) -> Result<HashMap<String, Vec<RawQuotePayment>>, Error>
+where
+    C: DatabaseExecutor + Send + Sync,
+{
+    if quote_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows = query(
+        r#"
+        SELECT
+            quote_id,
+            payment_id,
+            timestamp,
+            amount
+        FROM
+            mint_quote_payments
+        WHERE
+            quote_id IN (:quote_ids)
+        ORDER BY id
+        "#,
+    )?
+    .bind_vec("quote_ids", quote_ids.to_vec())?
+    .fetch_all(conn)
+    .await?;
+
+    let mut map: HashMap<String, Vec<RawQuotePayment>> = HashMap::new();
+    for row in rows {
+        let quote_id = column_as_string!(&row[0]);
+        let payment_id = column_as_string!(&row[1]);
+        let timestamp: u64 = column_as_number!(row[2].clone());
+        let amount: u64 = column_as_number!(row[3].clone());
+
+        map.entry(quote_id).or_default().push(RawQuotePayment {
+            payment_id,
+            timestamp,
+            amount,
+        });
+    }
+
+    Ok(map)
+}
+
+async fn get_mint_quote_issuance_for_ids<C>(
+    conn: &C,
+    quote_ids: &[String],
+) -> Result<HashMap<String, Vec<RawQuoteIssuance>>, Error>
+where
+    C: DatabaseExecutor + Send + Sync,
+{
+    if quote_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows = query(
+        r#"
+        SELECT
+            quote_id,
+            amount,
+            timestamp
+        FROM
+            mint_quote_issued
+        WHERE
+            quote_id IN (:quote_ids)
+        ORDER BY id
+        "#,
+    )?
+    .bind_vec("quote_ids", quote_ids.to_vec())?
+    .fetch_all(conn)
+    .await?;
+
+    let mut map: HashMap<String, Vec<RawQuoteIssuance>> = HashMap::new();
+    for row in rows {
+        let quote_id = column_as_string!(&row[0]);
+        let amount: i64 = column_as_number!(row[1].clone());
+        let timestamp: u64 = column_as_number!(row[2].clone());
+
+        map.entry(quote_id)
+            .or_default()
+            .push(RawQuoteIssuance { amount, timestamp });
+    }
+
+    Ok(map)
 }
 
 // Inline helper functions that work with both connections and transactions
@@ -148,8 +253,8 @@ where
     // Any concurrent writer must wait for our transaction before it can acquire its
     // own lock, so these reads reflect the true committed state.
     if let Some(quote) = mint_quote.as_mut() {
-        let payments = get_mint_quote_payments(executor, quote_id).await?;
-        let issuance = get_mint_quote_issuance(executor, quote_id).await?;
+        let payments = get_mint_quote_payments(executor, quote_id, &quote.unit).await?;
+        let issuance = get_mint_quote_issuance(executor, quote_id, &quote.unit).await?;
         quote.payments = payments;
         quote.issuance = issuance;
     }
@@ -199,8 +304,8 @@ where
         .transpose()?;
 
     if let Some(quote) = mint_quote.as_mut() {
-        let payments = get_mint_quote_payments(executor, &quote.id).await?;
-        let issuance = get_mint_quote_issuance(executor, &quote.id).await?;
+        let payments = get_mint_quote_payments(executor, &quote.id, &quote.unit).await?;
+        let issuance = get_mint_quote_issuance(executor, &quote.id, &quote.unit).await?;
         quote.issuance = issuance;
         quote.payments = payments;
     }
@@ -252,8 +357,8 @@ where
         .transpose()?;
 
     if let Some(quote) = mint_quote.as_mut() {
-        let payments = get_mint_quote_payments(executor, &quote.id).await?;
-        let issuance = get_mint_quote_issuance(executor, &quote.id).await?;
+        let payments = get_mint_quote_payments(executor, &quote.id, &quote.unit).await?;
+        let issuance = get_mint_quote_issuance(executor, &quote.id, &quote.unit).await?;
         quote.issuance = issuance;
         quote.payments = payments;
     }
@@ -358,12 +463,39 @@ where
         quote_map.insert(quote.id.to_string(), quote);
     }
 
-    // Now fetch payments and issuance for each found quote
-    for quote in quote_map.values_mut() {
-        let payments = get_mint_quote_payments(executor, &quote.id).await?;
-        let issuance = get_mint_quote_issuance(executor, &quote.id).await?;
-        quote.payments = payments;
-        quote.issuance = issuance;
+    if !quote_map.is_empty() {
+        let found_ids: Vec<String> = quote_map.keys().cloned().collect();
+        let mut payments_by_quote = get_mint_quote_payments_for_ids(executor, &found_ids).await?;
+        let mut issuance_by_quote = get_mint_quote_issuance_for_ids(executor, &found_ids).await?;
+
+        for quote in quote_map.values_mut() {
+            let quote_id_str = quote.id.to_string();
+            if let Some(raw_payments) = payments_by_quote.remove(&quote_id_str) {
+                quote.payments = raw_payments
+                    .into_iter()
+                    .map(|p| {
+                        IncomingPayment::new(
+                            Amount::from(p.amount).with_unit(quote.unit.clone()),
+                            p.payment_id,
+                            p.timestamp,
+                        )
+                    })
+                    .collect();
+            }
+            if let Some(raw_issuances) = issuance_by_quote.remove(&quote_id_str) {
+                quote.issuance = raw_issuances
+                    .into_iter()
+                    .map(|i| {
+                        Issuance::new(
+                            Amount::from_i64(i.amount)
+                                .expect("Is amount when put into db")
+                                .with_unit(quote.unit.clone()),
+                            i.timestamp,
+                        )
+                    })
+                    .collect();
+            }
+        }
     }
 
     // Reconstruct in the same order as input IDs
@@ -1371,11 +1503,39 @@ where
         .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
         .collect::<Result<Vec<_>, _>>()?;
 
-        for quote in mint_quotes.as_mut_slice() {
-            let payments = get_mint_quote_payments(&*conn, &quote.id).await?;
-            let issuance = get_mint_quote_issuance(&*conn, &quote.id).await?;
-            quote.issuance = issuance;
-            quote.payments = payments;
+        if !mint_quotes.is_empty() {
+            let quote_ids: Vec<String> = mint_quotes.iter().map(|q| q.id.to_string()).collect();
+            let mut payments_by_quote = get_mint_quote_payments_for_ids(&*conn, &quote_ids).await?;
+            let mut issuance_by_quote = get_mint_quote_issuance_for_ids(&*conn, &quote_ids).await?;
+
+            for quote in mint_quotes.as_mut_slice() {
+                let quote_id_str = quote.id.to_string();
+                if let Some(raw_payments) = payments_by_quote.remove(&quote_id_str) {
+                    quote.payments = raw_payments
+                        .into_iter()
+                        .map(|p| {
+                            IncomingPayment::new(
+                                Amount::from(p.amount).with_unit(quote.unit.clone()),
+                                p.payment_id,
+                                p.timestamp,
+                            )
+                        })
+                        .collect();
+                }
+                if let Some(raw_issuances) = issuance_by_quote.remove(&quote_id_str) {
+                    quote.issuance = raw_issuances
+                        .into_iter()
+                        .map(|i| {
+                            Issuance::new(
+                                Amount::from_i64(i.amount)
+                                    .expect("Is amount when put into db")
+                                    .with_unit(quote.unit.clone()),
+                                i.timestamp,
+                            )
+                        })
+                        .collect();
+                }
+            }
         }
 
         Ok(mint_quotes)
