@@ -2750,19 +2750,27 @@ fn private_federation_error_statuses_preserve_failure_class() {
 
 #[tokio::test]
 async fn private_internal_federation_error_hides_diagnostic_detail() {
-    let response =
-        federation_error_response(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+    for error in [
+        FederationError::AlephBftFinalizedItemRecoveryMismatch {
             reason: "secret=internal-value".to_string(),
-        });
-
-    assert_eq!(
-        response.status(),
-        axum::http::StatusCode::INTERNAL_SERVER_ERROR
-    );
-    assert_eq!(
-        response_error_detail(response).await,
-        "federation internal error"
-    );
+        },
+        FederationError::BackendFailure {
+            backend: "Bark",
+            phase: "observe outgoing payment",
+            operation_id: Some(FederationOperationId::from_bytes([42; 32])),
+            reason: "internal diagnostic sentinel".to_string(),
+        },
+    ] {
+        let response = federation_error_response(error);
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            response_error_detail(response).await,
+            "federation internal error"
+        );
+    }
 }
 
 fn private_member(value: u16) -> MemberConfigPrivate {

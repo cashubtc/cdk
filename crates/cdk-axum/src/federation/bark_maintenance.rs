@@ -21,7 +21,7 @@ const BARK_ROUTINE_MAINTENANCE_PAYMENT_QUIET_PERIOD: std::time::Duration =
     std::time::Duration::from_secs(30);
 const BARK_RECENT_PAYMENT_JOURNAL_LIMIT: usize = 256;
 
-pub(crate) fn spawn(state: &MintState) {
+pub(super) fn spawn(state: &MintState) {
     let Some(runtime) = state.federation.bark_runtime().cloned() else {
         return;
     };
@@ -37,26 +37,47 @@ pub(crate) fn spawn(state: &MintState) {
     );
 }
 
+/// Keep projection failures ambiguous while retaining a redacted local diagnostic.
+pub(super) fn projection_error(error: impl std::fmt::Display) -> cdk::Error {
+    cdk::federation::FederationError::BackendFailure {
+        backend: "Bark",
+        phase: "load ready projection",
+        operation_id: None,
+        reason: cdk::federation::redact_federation_operator_message(&error.to_string()),
+    }
+    .into()
+}
+
 /// Retry at most one consensus-visible step for one exact accepted action.
 pub(super) async fn retry_federated_bark_maintenance_action(
     state: MintState,
     action_id: FederationBarkActionId,
-) -> Result<usize, cdk::Error> {
-    advance_federated_bark_maintenance_inner(state, Some(action_id)).await
-}
-
-async fn advance_federated_bark_maintenance_inner(
-    state: MintState,
-    target_action_id: Option<FederationBarkActionId>,
 ) -> Result<usize, cdk::Error> {
     let runtime = match state.federation.bark_runtime() {
         Some(runtime) => runtime.clone(),
         None => return Ok(0),
     };
     cdk_bark::FederatedBarkRecoveryDriver::new(runtime)
-        .advance(&AxumBarkRecoveryHost { state }, target_action_id)
+        .advance(&AxumBarkRecoveryHost { state }, Some(action_id))
         .await
-        .map_err(|_| cdk::Error::Internal)
+        .map_err(|error| {
+            let reason = match error {
+                cdk_bark::FederatedBarkRecoveryDriverError::Backend(error) => error.to_string(),
+                cdk_bark::FederatedBarkRecoveryDriverError::Host(error) => {
+                    cdk::federation::redact_federation_operator_message(&error.to_string())
+                }
+                cdk_bark::FederatedBarkRecoveryDriverError::InvalidAcceptedState => {
+                    "accepted recovery state is invalid".to_string()
+                }
+            };
+            cdk::federation::FederationError::BackendFailure {
+                backend: "Bark",
+                phase: "advance maintenance",
+                operation_id: None,
+                reason,
+            }
+            .into()
+        })
 }
 
 #[derive(Clone)]
@@ -187,14 +208,14 @@ pub(super) async fn recovery_projection(
 ) -> Result<FederationBarkProjectionSnapshot, cdk::Error> {
     match crate::federation_bark_ready_projection(&state.mint, runtime).await {
         Ok(projection) => Ok(projection),
-        Err(_) => {
+        Err(error) => {
             let projection = state.mint.federation_bark_projection_snapshot().await?;
             let required_frontier = projection.frontier().unwrap_or(0);
             let status = runtime.status(required_frontier).await;
             if runtime_allows_recovery(status, required_frontier) {
                 Ok(projection)
             } else {
-                Err(cdk::Error::Internal)
+                Err(projection_error(error))
             }
         }
     }

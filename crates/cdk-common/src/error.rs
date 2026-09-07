@@ -785,6 +785,25 @@ mod tests {
         assert!(!Error::from(response).is_definitive_failure());
     }
 
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federation_backend_failure_is_ambiguous_and_hides_diagnostics() {
+        let error = Error::Federation(crate::federation::FederationError::BackendFailure {
+            backend: "Bark",
+            phase: "observe outgoing payment",
+            operation_id: Some(crate::federation::FederationOperationId::from_bytes(
+                [42; 32],
+            )),
+            reason: "internal diagnostic sentinel".to_string(),
+        });
+        assert!(!error.is_definitive_failure());
+        let response = ErrorResponse::from(error);
+        let ordinary_internal = ErrorResponse::from(Error::Internal);
+        assert_eq!(response.code, ordinary_internal.code);
+        assert_eq!(response.detail, ordinary_internal.detail);
+        assert!(!Error::from(response).is_definitive_failure());
+    }
+
     #[test]
     fn test_max_outputs_and_inputs_error_responses_decode() {
         let max_inputs = Error::from(ErrorResponse {
@@ -1363,6 +1382,11 @@ impl From<Error> for ErrorResponse {
                 detail: err.to_string(),
             },
 
+            #[cfg(feature = "federation")]
+            Error::Federation(crate::federation::FederationError::BackendFailure { .. }) => ErrorResponse {
+                code: ErrorCode::Unknown(50000),
+                detail: Error::Internal.to_string(),
+            },
             // Internal/system errors - use Unknown(99999)
             Error::Internal => ErrorResponse {
                 code: ErrorCode::Unknown(50000),

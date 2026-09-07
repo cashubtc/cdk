@@ -108,7 +108,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
     projection_timer.finish(super::latency::FederationLatencyOutcome::from_success(
         projection_result.is_ok(),
     ));
-    let projection = projection_result.map_err(|_| cdk::Error::Internal)?;
+    let projection = projection_result.map_err(super::bark_maintenance::projection_error)?;
     let quote_label = quote_id.to_string();
     let existing_action = projection.actions.iter().find(|action| {
         action.quote.as_deref() == Some(quote_label.as_str())
@@ -141,7 +141,9 @@ pub(super) async fn advance_federated_bark_melt_quote(
         runtime
             .apply_lightning_send_plan(&quote, &projection, &plan)
             .await
-            .map_err(|_| cdk::Error::Internal)?;
+            .map_err(|error| {
+                error.into_federation_error("apply outgoing plan", Some(plan_entry.operation_id))
+            })?;
 
         let htlc_entry = if matches!(
             effective_phase,
@@ -167,7 +169,12 @@ pub(super) async fn advance_federated_bark_melt_quote(
             runtime
                 .apply_lightning_send_htlcs(&quote, &projection, &plan_entry, htlcs)
                 .await
-                .map_err(|_| cdk::Error::Internal)?;
+                .map_err(|error| {
+                    error.into_federation_error(
+                        "apply outgoing HTLCs",
+                        Some(plan_entry.operation_id),
+                    )
+                })?;
         }
 
         let failed_entry = if matches!(
@@ -195,7 +202,12 @@ pub(super) async fn advance_federated_bark_melt_quote(
             runtime
                 .apply_lightning_send_failed(&quote, &projection, &plan_entry, failed)
                 .await
-                .map_err(|_| cdk::Error::Internal)?;
+                .map_err(|error| {
+                    error.into_federation_error(
+                        "apply failed outgoing payment",
+                        Some(plan_entry.operation_id),
+                    )
+                })?;
         }
 
         let revocation_plan_entry = if matches!(
@@ -252,7 +264,12 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     Err(cdk_bark::Error::CustodySignerUnavailable) => {
                         let retry = runtime
                             .advance_signing_attempt(action, &plan_entry)
-                            .map_err(|_| cdk::Error::Internal)?;
+                            .map_err(|error| {
+                                error.into_federation_error(
+                                    "advance outgoing signing attempt",
+                                    Some(plan_entry.operation_id),
+                                )
+                            })?;
                         return submit_bark_operation(
                             state,
                             federation.operation_envelope(super::bark_federation_operation(
@@ -261,7 +278,14 @@ pub(super) async fn advance_federated_bark_melt_quote(
                         )
                         .await;
                     }
-                    Err(_) => return Err(cdk::Error::Internal),
+                    Err(error) => {
+                        return Err(error
+                            .into_federation_error(
+                                "execute outgoing HTLCs",
+                                Some(plan_entry.operation_id),
+                            )
+                            .into())
+                    }
                 };
                 submit_bark_operation(
                     state,
@@ -298,7 +322,12 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     }
                     let transition = runtime
                         .finalize_lightning_send_failure(&plan_entry, htlcs)
-                        .map_err(|_| cdk::Error::Internal)?;
+                        .map_err(|error| {
+                            error.into_federation_error(
+                                "finalize outgoing failure",
+                                Some(plan_entry.operation_id),
+                            )
+                        })?;
                     return submit_bark_operation(
                         state,
                         federation.operation_envelope(super::bark_federation_operation(
@@ -364,7 +393,12 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     Err(_) => super::latency::FederationLatencyOutcome::Error,
                 };
                 terminal_timer.finish(terminal_outcome);
-                let mut status = status_result.map_err(|_| cdk::Error::Internal)?;
+                let mut status = status_result.map_err(|error| {
+                    error.into_federation_error(
+                        "observe outgoing payment",
+                        Some(plan_entry.operation_id),
+                    )
+                })?;
                 if send_needs_initiation(&status) {
                     let initiation_timer = super::latency::FederationLatencyTimer::start(
                         super::latency::FederationLatencyCorrelation::Action,
@@ -381,7 +415,12 @@ pub(super) async fn advance_federated_bark_melt_quote(
                             initiation_result.is_ok(),
                         ),
                     );
-                    initiation_result.map_err(|_| cdk::Error::Internal)?;
+                    initiation_result.map_err(|error| {
+                        error.into_federation_error(
+                            "initiate outgoing payment",
+                            Some(plan_entry.operation_id),
+                        )
+                    })?;
                     let terminal_timer = super::latency::FederationLatencyTimer::start(
                         super::latency::FederationLatencyCorrelation::Action,
                         action.action_id.to_string(),
@@ -412,7 +451,12 @@ pub(super) async fn advance_federated_bark_melt_quote(
                         Err(_) => super::latency::FederationLatencyOutcome::Error,
                     };
                     terminal_timer.finish(terminal_outcome);
-                    status = status_result.map_err(|_| cdk::Error::Internal)?;
+                    status = status_result.map_err(|error| {
+                        error.into_federation_error(
+                            "observe outgoing payment",
+                            Some(plan_entry.operation_id),
+                        )
+                    })?;
                 }
                 match status {
                     cdk_bark::FederatedBarkSendTerminalStatus::Pending
@@ -451,7 +495,12 @@ pub(super) async fn advance_federated_bark_melt_quote(
                                 observation_result.is_ok(),
                             ),
                         );
-                        let observation = observation_result.map_err(|_| cdk::Error::Internal)?;
+                        let observation = observation_result.map_err(|error| {
+                            error.into_federation_error(
+                                "validate outgoing success",
+                                Some(plan_entry.operation_id),
+                            )
+                        })?;
                         let required =
                             u16::try_from(success_required).map_err(|_| cdk::Error::Internal)?;
                         let collector_fallback_round = scheduled_bark_evidence_collector_round(
@@ -528,7 +577,12 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 validation_timer.finish(super::latency::FederationLatencyOutcome::from_success(
                     apply_result.is_ok(),
                 ));
-                apply_result.map_err(|_| cdk::Error::Internal)?;
+                apply_result.map_err(|error| {
+                    error.into_federation_error(
+                        "apply outgoing success",
+                        Some(success_entry.operation_id),
+                    )
+                })?;
                 Ok(FederationPaymentAdvancement::Complete)
             }
             FederationBarkSemanticPhase::PaymentFailed => {
@@ -541,7 +595,12 @@ pub(super) async fn advance_federated_bark_melt_quote(
                         &plan_entry,
                         failed_entry.as_ref().ok_or(cdk::Error::Internal)?,
                     )
-                    .map_err(|_| cdk::Error::Internal)?;
+                    .map_err(|error| {
+                        error.into_federation_error(
+                            "plan outgoing revocation",
+                            Some(plan_entry.operation_id),
+                        )
+                    })?;
                 submit_bark_operation(
                     state,
                     federation.operation_envelope(super::bark_federation_operation(
@@ -578,7 +637,12 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     Err(cdk_bark::Error::CustodySignerUnavailable) => {
                         let retry = runtime
                             .advance_signing_attempt(action, revocation_plan_entry)
-                            .map_err(|_| cdk::Error::Internal)?;
+                            .map_err(|error| {
+                                error.into_federation_error(
+                                    "advance revocation signing attempt",
+                                    Some(revocation_plan_entry.operation_id),
+                                )
+                            })?;
                         return submit_bark_operation(
                             state,
                             federation.operation_envelope(super::bark_federation_operation(
@@ -587,12 +651,13 @@ pub(super) async fn advance_federated_bark_melt_quote(
                         )
                         .await;
                     }
-                    Err(_) => {
+                    Err(error) => {
                         runtime
                             .mark_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
                             .await;
                         tracing::warn!(
                             action_id = %action.action_id,
+                            error = %error,
                             "accepted Bark revocation remains recovery-required"
                         );
                         return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
@@ -672,12 +737,13 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     .await
                 {
                     Ok(observation) => observation,
-                    Err(_) => {
+                    Err(error) => {
                         runtime
                             .mark_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
                             .await;
                         tracing::error!(
                             action_id = %action.action_id,
+                            error = %error,
                             "accepted Bark revocation result could not be validated locally"
                         );
                         return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
@@ -702,7 +768,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
     runtime
         .ensure_ready(projection.frontier().unwrap_or(0))
         .await
-        .map_err(|_| cdk::Error::Internal)?;
+        .map_err(|error| error.into_federation_error("verify outgoing readiness", None))?;
 
     let saga = state
         .mint
@@ -845,7 +911,7 @@ pub(crate) async fn submit_federated_bark_melt_with_plan(
     quote.state = MeltQuoteState::Pending;
     let projection = crate::federation_bark_ready_projection(&state.mint, runtime)
         .await
-        .map_err(|_| cdk::Error::Internal)?;
+        .map_err(super::bark_maintenance::projection_error)?;
     let application = super::bark_application(federation.public_config())?;
     let signer_set = federation
         .public_config()

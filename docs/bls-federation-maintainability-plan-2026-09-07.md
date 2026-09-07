@@ -174,3 +174,11 @@ Preserve federation wire formats and canonical encodings unless a package requir
 - Pinned Nix stable: `RUST_MIN_STACK=16777216 cargo test --offline -p cdk --lib --no-default-features --features mint,wallet,federation-bark wallet::federation::tests -- --nocapture --test-threads=1`: 103 passed. This covers malicious shares, incompatible groups, insufficient quorum, partial change, fallback, restore, and catch-up.
 - The repeated-pass comparison verifies the same aggregate with 12 individual share verifications using three fresh passes versus 4 with request-local retention. Changed outputs, member signatures, and amount metadata are rejected. This measures cryptographic work for that workload, not end-to-end latency.
 - The final ready-response preservation adjustment will also run through the complete CDK suite. No wallet public methods changed, and no tests were deleted.
+
+### Package 6: diagnostics and internal interfaces
+
+- Bark execution/reconciliation errors retain their typed, redacted backend reason with phase and accepted-operation context. Database/host projection failures retain a redacted reason while preserving their prior ambiguous classification. Public Cashu and private HTTP responses remain generic internal failures.
+- Special custody-signer recovery, uncertain external outcomes, degraded-state decisions, and evidence requirements remain unchanged. Diagnostic conversion never authorizes initiation or retry.
+- Removed the maintenance wrapper whose only caller always supplied one action. Reduced visibility of maintenance startup and the local wallet-liveness configuration; retained the configuration's timing invariants and explicit consensus signing lease.
+- `cargo test --offline -p cdk-common --lib --features federation federation_backend_failure -- --test-threads=1`: 1 passed, verifying public redaction and ambiguous failure classification before/after wire conversion. The existing private HTTP diagnostic test now also covers backend errors; the full Axum run is pending.
+- Fixture consolidation uses the complete member-context constructor and shared cross-backend Bark conformance helper. No existing tests were deleted: admission, application, SQL, network, restart, and cryptographic scenarios remain separate. The old-to-retained coverage mapping is identity for every existing test.

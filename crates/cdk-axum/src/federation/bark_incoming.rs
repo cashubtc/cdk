@@ -205,7 +205,7 @@ async fn advance_federated_bark_mint_quote_inner(
     projection_timer.finish(super::latency::FederationLatencyOutcome::from_success(
         projection_result.is_ok(),
     ));
-    let projection = projection_result.map_err(|_| bark_unavailable())?;
+    let projection = projection_result.map_err(super::bark_maintenance::projection_error)?;
     let Some(action) = projection
         .actions
         .iter()
@@ -251,7 +251,12 @@ async fn advance_federated_bark_mint_quote_inner(
         runtime
             .apply_receive_prepared(&intent, prepared)
             .await
-            .map_err(|_| bark_unavailable())?;
+            .map_err(|error| {
+                error.into_federation_error(
+                    "apply incoming preparation",
+                    Some(action.origin_operation_id),
+                )
+            })?;
     }
 
     match action.phase {
@@ -283,7 +288,12 @@ async fn advance_federated_bark_mint_quote_inner(
                     federation.member_id(),
                     federation.public_config(),
                 )
-                .map_err(|_| bark_unavailable())?;
+                .map_err(|error| {
+                    error.into_federation_error(
+                        "read incoming evidence binding",
+                        Some(action.latest_operation_id),
+                    )
+                })?;
             if !is_selected_bark_observer(
                 federation.public_config().members.keys().copied(),
                 receive_actor,
@@ -311,7 +321,12 @@ async fn advance_federated_bark_mint_quote_inner(
                                     &observation,
                                 )
                                 .await
-                                .map_err(|_| bark_unavailable())?,
+                                .map_err(|error| {
+                                    error.into_federation_error(
+                                        "reconstruct incoming HTLC transition",
+                                        Some(prepared_record.operation_id),
+                                    )
+                                })?,
                         )
                     } else {
                         None
@@ -346,8 +361,12 @@ async fn advance_federated_bark_mint_quote_inner(
                         Err(_) => super::latency::FederationLatencyOutcome::Error,
                     };
                     observation_timer.finish(observation_outcome);
-                    let Some((observation, transition)) =
-                        observation_result.map_err(|_| bark_unavailable())?
+                    let Some((observation, transition)) = observation_result.map_err(|error| {
+                        error.into_federation_error(
+                            "observe incoming HTLCs",
+                            Some(prepared_record.operation_id),
+                        )
+                    })?
                     else {
                         return Ok(if wait_for_backend_update {
                             FederationPaymentAdvancement::AwaitingBackendNotification
@@ -386,7 +405,12 @@ async fn advance_federated_bark_mint_quote_inner(
                         )?,
                     )
                     .await
-                    .map_err(|_| bark_unavailable())?;
+                    .map_err(|error| {
+                        error.into_federation_error(
+                            "plan certified incoming claim",
+                            Some(prepared_record.operation_id),
+                        )
+                    })?;
                 let envelope = federation.operation_envelope(super::bark_federation_operation(
                     FederationBarkOperation::ActionPlan(plan),
                 )?);
@@ -460,7 +484,12 @@ async fn advance_federated_bark_mint_quote_inner(
                 Err(cdk_bark::Error::CustodySignerUnavailable) => {
                     let retry = runtime
                         .advance_signing_attempt(&action, &plan_entry)
-                        .map_err(|_| bark_unavailable())?;
+                        .map_err(|error| {
+                            error.into_federation_error(
+                                "advance incoming signing attempt",
+                                Some(plan_entry.operation_id),
+                            )
+                        })?;
                     let envelope = federation.operation_envelope(super::bark_federation_operation(
                         FederationBarkOperation::ActionTransition(retry),
                     )?);
@@ -470,7 +499,14 @@ async fn advance_federated_bark_mint_quote_inner(
                         .ensure_accepted()?;
                     return Ok(FederationPaymentAdvancement::Progressed);
                 }
-                Err(_) => return Err(bark_unavailable()),
+                Err(error) => {
+                    return Err(error
+                        .into_federation_error(
+                            "execute incoming claim",
+                            Some(plan_entry.operation_id),
+                        )
+                        .into())
+                }
             };
             let effective_phase = action.signing_retry_phase.unwrap_or(action.phase);
             match outcome {
@@ -512,7 +548,12 @@ async fn advance_federated_bark_mint_quote_inner(
                                 disclosed_operation_id,
                                 *result,
                             )
-                            .map_err(|_| bark_unavailable())?;
+                            .map_err(|error| {
+                                error.into_federation_error(
+                                    "prepare incoming claim successor",
+                                    Some(disclosed_operation_id),
+                                )
+                            })?;
                         validate_atomic_receive_claim_group(
                             &preimage_disclosed,
                             disclosed_operation_id,
@@ -544,7 +585,12 @@ async fn advance_federated_bark_mint_quote_inner(
                         .await?;
                         let claimed = runtime
                             .finalize_receive_claim(&accepted_preimage, *result)
-                            .map_err(|_| bark_unavailable())?;
+                            .map_err(|error| {
+                                error.into_federation_error(
+                                    "finalize incoming claim",
+                                    Some(action.latest_operation_id),
+                                )
+                            })?;
                         let envelope =
                             federation.operation_envelope(super::bark_federation_operation(
                                 FederationBarkOperation::ActionTransition(claimed.clone()),
@@ -587,7 +633,12 @@ async fn advance_federated_bark_mint_quote_inner(
                             acknowledge_result.is_ok(),
                         ),
                     );
-                    acknowledge_result.map_err(|_| bark_unavailable())?;
+                    acknowledge_result.map_err(|error| {
+                        error.into_federation_error(
+                            "acknowledge incoming claim",
+                            Some(response.operation_id),
+                        )
+                    })?;
                     Ok(FederationPaymentAdvancement::Progressed)
                 }
             }
@@ -659,7 +710,12 @@ async fn advance_receive_claimed_evidence(
             federation.member_id(),
             public_config,
         )
-        .map_err(|_| bark_unavailable())?;
+        .map_err(|error| {
+            error.into_federation_error(
+                "read incoming evidence binding",
+                Some(action.latest_operation_id),
+            )
+        })?;
     if !is_selected_bark_observer(
         public_config.members.keys().copied(),
         action.actor,
@@ -682,7 +738,12 @@ async fn advance_receive_claimed_evidence(
             let amount = runtime
                 .validate_receive_claim_result(claimed)
                 .await
-                .map_err(|_| bark_unavailable())?;
+                .map_err(|error| {
+                    error.into_federation_error(
+                        "validate incoming claim result",
+                        Some(action.latest_operation_id),
+                    )
+                })?;
             FederationBarkMemberObservation {
                 version: FEDERATION_BARK_OPERATION_VERSION,
                 action_id: action.action_id,
@@ -761,7 +822,7 @@ pub(crate) async fn advance_federated_bark_receive_intent(
     projection_timer.finish(super::latency::FederationLatencyOutcome::from_success(
         projection_result.is_ok(),
     ));
-    let projection = projection_result.map_err(|_| bark_unavailable())?;
+    let projection = projection_result.map_err(super::bark_maintenance::projection_error)?;
     let action = projection
         .actions
         .iter()
@@ -864,7 +925,7 @@ async fn accepted_invoice(
     }
     let projection = crate::federation_bark_ready_projection(&state.mint, runtime)
         .await
-        .map_err(|_| bark_unavailable())?;
+        .map_err(super::bark_maintenance::projection_error)?;
     let quote = quote_id.to_string();
     let action = projection
         .actions
@@ -913,7 +974,7 @@ async fn accepted_invoice(
     let store = runtime.receive_secret_store();
     let resumable = store
         .find_by_quote(federation.federation_id(), &quote)
-        .map_err(|_| bark_unavailable())?;
+        .map_err(|error| error.into_federation_error("find protected receive secret", None))?;
     let now = unix_time()?;
     let (mut intent, secret) = match resumable {
         Some(resumable) => {
@@ -940,7 +1001,7 @@ async fn accepted_invoice(
             federation.private_config(),
             now,
         )
-        .map_err(|_| bark_unavailable())?;
+        .map_err(|error| error.into_federation_error("prepare protected receive secret", None))?;
     let remote_members = federation
         .public_config()
         .members
@@ -994,7 +1055,10 @@ async fn accepted_invoice(
                 operation_index: entry.index,
             },
         )
-        .map_err(|_| bark_unavailable())?;
+        .map_err(|error| {
+            error
+                .into_federation_error("persist accepted incoming intent", Some(entry.operation_id))
+        })?;
     let (invoice, _, envelope) =
         prepare_invoice_candidate(state, entry.operation_id, entry.index, &intent).await?;
     Ok((invoice, Some(envelope)))
@@ -1023,7 +1087,7 @@ async fn fresh_intent(
     let minimum_cltv_delta = runtime
         .minimum_receive_cltv_delta()
         .await
-        .map_err(|_| bark_unavailable())?;
+        .map_err(|error| error.into_federation_error("read incoming CLTV requirement", None))?;
     let next_index = projection
         .derivation_allocations
         .iter()
@@ -1037,7 +1101,7 @@ async fn fresh_intent(
     }
     let mailbox_id = runtime
         .derive_public_key(next_index)
-        .map_err(|_| bark_unavailable())?
+        .map_err(|error| error.into_federation_error("derive incoming mailbox", None))?
         .serialize();
     let mut preimage = [0; 32];
     OsRng.fill_bytes(&mut preimage);
@@ -1136,7 +1200,12 @@ async fn prepare_invoice_candidate(
                 operation_index: intent_operation_index,
             },
         )
-        .map_err(|_| bark_unavailable())?;
+        .map_err(|error| {
+            error.into_federation_error(
+                "persist accepted incoming intent",
+                Some(intent_operation_id),
+            )
+        })?;
     let invoice_timer = super::latency::FederationLatencyTimer::start(
         super::latency::FederationLatencyCorrelation::Action,
         intent.action_id.to_string(),
@@ -1150,7 +1219,9 @@ async fn prepare_invoice_candidate(
     invoice_timer.finish(super::latency::FederationLatencyOutcome::from_success(
         prepared_result.is_ok(),
     ));
-    let prepared = prepared_result.map_err(|_| bark_unavailable())?;
+    let prepared = prepared_result.map_err(|error| {
+        error.into_federation_error("prepare incoming invoice", Some(intent_operation_id))
+    })?;
     let envelope = federation.operation_envelope(super::bark_federation_operation(
         FederationBarkOperation::ReceivePrepared(prepared.clone()),
     )?);
@@ -1169,16 +1240,13 @@ async fn apply_accepted_receive_prepared(
     let Some(runtime) = state.federation.bark_runtime() else {
         return;
     };
-    if runtime
-        .apply_receive_prepared(intent, prepared)
-        .await
-        .is_err()
-    {
+    if let Err(error) = runtime.apply_receive_prepared(intent, prepared).await {
         runtime
             .mark_degraded(cdk_bark::FederatedBarkDegradedReason::ProjectionInvalid)
             .await;
         tracing::error!(
             action_id = %intent.action_id,
+            error = %error,
             "accepted Bark receive plan could not be materialized locally"
         );
     }

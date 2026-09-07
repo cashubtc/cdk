@@ -652,7 +652,11 @@ pub(crate) async fn reconcile_federation_bark_runtime(
     cdk_bark::FederatedBarkRecoveryDriver::new(runtime.clone())
         .reconcile(&AxumFederatedBarkReplaySource { mint }, entries)
         .await
-        .map_err(|_| anyhow::anyhow!("accepted Bark state could not be replayed"))
+        .map_err(|error| {
+            error
+                .into_federation_error("replay accepted state", None)
+                .into()
+        })
 }
 
 #[cfg(feature = "federation-bark")]
@@ -727,7 +731,7 @@ pub(crate) async fn federation_bark_ready_projection(
     runtime
         .ensure_ready(projection.frontier().unwrap_or(0))
         .await
-        .map_err(|_| anyhow::anyhow!("federation Bark runtime is behind or degraded"))?;
+        .map_err(|error| error.into_federation_error("verify projection readiness", None))?;
     Ok(projection)
 }
 

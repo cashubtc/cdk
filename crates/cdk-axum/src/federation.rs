@@ -759,9 +759,8 @@ fn federation_error_status(err: &FederationError) -> StatusCode {
         | FederationError::OperationPendingFinalization { .. }
         | FederationError::PendingAlephBftFinalization { .. }
         | FederationError::AlephBftSessionRotationBlocked { .. } => StatusCode::SERVICE_UNAVAILABLE,
-        FederationError::AlephBftFinalizedItemRecoveryMismatch { .. } => {
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
+        FederationError::AlephBftFinalizedItemRecoveryMismatch { .. }
+        | FederationError::BackendFailure { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
     }
 }

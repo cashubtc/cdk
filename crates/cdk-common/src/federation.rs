@@ -767,6 +767,22 @@ pub enum FederationError {
         /// Stable name of the unavailable runtime component.
         component: &'static str,
     },
+    /// A custody backend failed while processing an accepted operation or local recovery.
+    /// Diagnostic text must already be redacted by the backend boundary.
+    #[error(
+        "Federation {backend} backend failed during {phase} (operation {operation}): {reason}",
+        operation = .operation_id.map_or_else(|| "unbound".to_string(), |id| id.to_string())
+    )]
+    BackendFailure {
+        /// Stable backend name.
+        backend: &'static str,
+        /// Stable execution or recovery phase.
+        phase: &'static str,
+        /// Accepted operation, when the failure is associated with one.
+        operation_id: Option<FederationOperationId>,
+        /// Safe backend diagnostic, retained for local troubleshooting only.
+        reason: String,
+    },
     /// The member has not yet validated its local view against a peer quorum.
     #[error(
         "Federation member is awaiting quorum peer validation at operation count {operation_count}"

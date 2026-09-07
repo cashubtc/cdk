@@ -191,6 +191,24 @@ pub enum Error {
     Payment,
 }
 
+impl Error {
+    /// Preserve this adapter's redacted diagnostic with federation operation context.
+    ///
+    /// This conversion does not classify an uncertain payment as failed or authorize a retry.
+    pub fn into_federation_error(
+        self,
+        phase: &'static str,
+        operation_id: Option<cdk_common::federation::FederationOperationId>,
+    ) -> cdk_common::federation::FederationError {
+        cdk_common::federation::FederationError::BackendFailure {
+            backend: "Bark",
+            phase,
+            operation_id,
+            reason: self.to_string(),
+        }
+    }
+}
+
 impl From<payment::Error> for Error {
     fn from(_error: payment::Error) -> Self {
         Self::Payment
