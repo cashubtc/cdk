@@ -234,6 +234,12 @@ jobs:
           - target: aarch64-linux-android
             runner: ubuntu-22.04
             artifact: libcdk_ffi_kotlin.so
+          - target: armv7-linux-androideabi
+            runner: ubuntu-22.04
+            artifact: libcdk_ffi_kotlin.so
+          - target: i686-linux-android
+            runner: ubuntu-22.04
+            artifact: libcdk_ffi_kotlin.so
           - target: x86_64-linux-android
             runner: ubuntu-22.04
             artifact: libcdk_ffi_kotlin.so
@@ -313,6 +319,9 @@ jobs:
             bash -c '"$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-all '"$FILE"
 
       - name: Verify Android ELF 16 KB alignment
+        # The 16 KB page size requirement applies to 64-bit ABIs only;
+        # 32-bit Android always uses 4 KB pages
+        if: matrix.target == 'aarch64-linux-android' || matrix.target == 'x86_64-linux-android'
         working-directory: cdk-kotlin/rust
         shell: bash
         run: |
@@ -386,6 +395,8 @@ jobs:
         run: |
           declare -A ANDROID_ABI=(
             ["aarch64-linux-android"]="arm64-v8a"
+            ["armv7-linux-androideabi"]="armeabi-v7a"
+            ["i686-linux-android"]="x86"
             ["x86_64-linux-android"]="x86_64"
           )
 
