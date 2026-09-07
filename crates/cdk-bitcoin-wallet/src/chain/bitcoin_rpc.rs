@@ -1,9 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use bdk_bitcoind_rpc::bitcoincore_rpc::{
-    jsonrpc, Auth, Client, Error as BitcoinRpcError, RawTx, RpcApi,
-};
+use bdk_bitcoind_rpc::bitcoincore_rpc::{jsonrpc, Client, Error as BitcoinRpcError, RawTx, RpcApi};
 use bdk_bitcoind_rpc::{BlockEvent, Emitter, NO_EXPECTED_MEMPOOL_TXS};
 use bdk_wallet::bitcoin::{Block, Transaction};
 use bdk_wallet::chain::BlockId;
@@ -15,11 +13,8 @@ use crate::error::Error;
 use crate::{BdkWalletEngine, WalletWithDb};
 
 pub(crate) fn initial_checkpoint(config: &BitcoinRpcConfig) -> Result<BlockId, Error> {
-    let client = Client::new(
-        &format!("http://{}:{}", config.host, config.port),
-        Auth::UserPass(config.user.clone(), config.password.clone()),
-    )
-    .map_err(|source| Error::ChainTipFetchFailed { source })?;
+    let client =
+        build_bitcoin_rpc_client(config).map_err(|source| Error::ChainTipFetchFailed { source })?;
     let chain_info = client
         .get_blockchain_info()
         .map_err(|source| Error::ChainTipFetchFailed { source })?;
@@ -110,9 +105,15 @@ pub(crate) async fn sync_bitcoin_rpc_once(
         let wallet_with_db = engine.wallet_with_db.lock().await;
         wallet_with_db.wallet.latest_checkpoint()
     };
-    stream_bitcoin_rpc_blocks(&engine.wallet_with_db, checkpoint, config, 100, u64::MAX)
-        .await
-        .map(|_| ())
+    stream_bitcoin_rpc_blocks(
+        &engine.wallet_with_db,
+        checkpoint,
+        config,
+        engine.sync_config.apply_chunk_size,
+        engine.sync_config.lock_hold_warn_ms,
+    )
+    .await
+    .map(|_| ())
 }
 
 async fn stream_bitcoin_rpc_blocks(
@@ -552,6 +553,16 @@ mod tests {
         config.request_timeout_secs = 1;
         assert!(fetch_fee_rate_bitcoin_rpc(&config, 1).await.is_err());
         server.join().expect("timeout server");
+    }
+
+    #[test]
+    fn bootstrap_uses_configured_rpc_timeout() {
+        let (mut config, _, server) = start_mock_rpc("not-json", Duration::from_secs(3));
+        config.request_timeout_secs = 1;
+        let started = Instant::now();
+        assert!(initial_checkpoint(&config).is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        server.join().expect("bootstrap server");
     }
 
     #[tokio::test]

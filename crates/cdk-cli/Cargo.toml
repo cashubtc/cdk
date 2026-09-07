@@ -44,6 +44,7 @@ url.workspace = true
 lightning.workspace = true
 
 [dev-dependencies]
+cdk-common = { workspace = true, features = ["test"] }
 async-trait.workspace = true
 
 [lints]

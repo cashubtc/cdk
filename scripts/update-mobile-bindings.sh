@@ -96,8 +96,6 @@ done
 [[ -d "$WALLET_ROOT/android" ]] || die "Android wallet directory not found under $WALLET_ROOT"
 [[ -f "$BARK_ROOT/bark/Cargo.toml" ]] \
     || die "Bark frost-wallet checkout not found under $BARK_ROOT"
-[[ -f "$OVERLAY_DIR/federation-ffi.patch" ]] || die "federation FFI patch is missing"
-[[ -f "$OVERLAY_DIR/federation.rs" ]] || die "federation FFI module is missing"
 
 require_command patch
 require_command perl
@@ -165,12 +163,7 @@ perl -0pi -e '
     die "expected exactly one bark-wallet path dependency, found $count\\n" unless $count == 1;
 ' "$SOURCE_ROOT/crates/cdk-bark/Cargo.toml"
 
-log "Applying the federation FFI adapter to the temporary source copy"
-if ! patch --dry-run --silent -d "$SOURCE_ROOT" -p1 -i "$OVERLAY_DIR/federation-ffi.patch"; then
-    die "the federation FFI adapter no longer applies; update scripts/mobile-bindings for the latest CDK API"
-fi
-patch --silent -d "$SOURCE_ROOT" -p1 -i "$OVERLAY_DIR/federation-ffi.patch"
-cp "$OVERLAY_DIR/federation.rs" "$SOURCE_ROOT/crates/cdk-ffi/src/federation.rs"
+# Federation exports live in cdk-ffi and are enabled by the binding crates.
 
 for target in \
     aarch64-apple-ios \

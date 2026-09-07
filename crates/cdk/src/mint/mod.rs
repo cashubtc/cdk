@@ -143,9 +143,6 @@ pub struct Mint {
     max_inputs: usize,
     /// Maximum number of outputs allowed per transaction
     max_outputs: usize,
-    /// Federation mode selected for this mint.
-    #[cfg(feature = "federation")]
-    federation_mode: FederationMode,
     /// Validated federation config for member mode.
     #[cfg(feature = "federation")]
     federation_config: Option<FederationRuntimeConfig>,
@@ -167,6 +164,11 @@ impl std::fmt::Debug for Mint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Mint").finish_non_exhaustive()
     }
+}
+
+struct MintLimits {
+    inputs: usize,
+    outputs: usize,
 }
 
 /// State for managing background tasks
@@ -325,10 +327,10 @@ impl Mint {
             localstore,
             None,
             payment_processors,
-            max_inputs,
-            max_outputs,
-            #[cfg(feature = "federation")]
-            FederationMode::Standalone,
+            MintLimits {
+                inputs: max_inputs,
+                outputs: max_outputs,
+            },
             #[cfg(feature = "federation")]
             None,
         )
@@ -351,10 +353,10 @@ impl Mint {
             localstore,
             Some(auth_localstore),
             payment_processors,
-            max_inputs,
-            max_outputs,
-            #[cfg(feature = "federation")]
-            FederationMode::Standalone,
+            MintLimits {
+                inputs: max_inputs,
+                outputs: max_outputs,
+            },
             #[cfg(feature = "federation")]
             None,
         )
@@ -369,21 +371,13 @@ impl Mint {
         localstore: DynMintDatabase,
         auth_localstore: Option<DynMintAuthDatabase>,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
-        max_inputs: usize,
-        max_outputs: usize,
-        #[cfg(feature = "federation")] federation_mode: FederationMode,
+        limits: MintLimits,
         #[cfg(feature = "federation")] federation_config: Option<FederationRuntimeConfig>,
     ) -> Result<Self, Error> {
-        #[cfg(feature = "federation")]
-        if federation_mode.is_member() != federation_config.is_some() {
-            return Err(
-                cdk_common::federation::FederationError::RuntimeModeConfigMismatch {
-                    member_mode: federation_mode.is_member(),
-                    has_config: federation_config.is_some(),
-                }
-                .into(),
-            );
-        }
+        let MintLimits {
+            inputs: max_inputs,
+            outputs: max_outputs,
+        } = limits;
 
         // Subscribe up front and bootstrap the in-memory snapshot from the same
         // receiver that keeps it fresh. `borrow_and_update` pins the receiver
@@ -478,7 +472,7 @@ impl Mint {
 
         let payment_processors = Arc::new(payment_processors);
         #[cfg(feature = "federation")]
-        let pubsub_queries_mutate_payment_state = !federation_mode.is_member();
+        let pubsub_queries_mutate_payment_state = federation_config.is_none();
         #[cfg(not(feature = "federation"))]
         let pubsub_queries_mutate_payment_state = true;
         #[cfg(feature = "federation")]
@@ -510,8 +504,6 @@ impl Mint {
             })),
             max_inputs,
             max_outputs,
-            #[cfg(feature = "federation")]
-            federation_mode,
             #[cfg(feature = "federation")]
             federation_config,
             #[cfg(feature = "federation")]
@@ -850,7 +842,10 @@ impl Mint {
     #[cfg(feature = "federation")]
     #[inline]
     pub fn federation_mode(&self) -> FederationMode {
-        self.federation_mode
+        match self.federation_config {
+            Some(_) => FederationMode::Member,
+            None => FederationMode::Standalone,
+        }
     }
 
     /// Federation runtime config selected for this mint, if any.

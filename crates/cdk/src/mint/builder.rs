@@ -87,8 +87,6 @@ pub struct MintBuilder {
     max_outputs: usize,
     max_batch_size: Option<u64>,
     #[cfg(feature = "federation")]
-    federation_mode: FederationMode,
-    #[cfg(feature = "federation")]
     federation_config: Option<FederationRuntimeConfig>,
     /// Interval at which the built signatory reloads keysets from the shared
     /// database. `None` (the default) disables the reload for a single-instance
@@ -140,8 +138,6 @@ impl MintBuilder {
             max_batch_size: None,
             keyset_refresh_interval: None,
             #[cfg(feature = "federation")]
-            federation_mode: FederationMode::Standalone,
-            #[cfg(feature = "federation")]
             federation_config: None,
         }
     }
@@ -155,23 +151,11 @@ impl MintBuilder {
         self.localstore.clone()
     }
 
-    /// Set the federation mode placeholder for this mint.
-    ///
-    /// This is intentionally inert until later federation milestones attach
-    /// consensus and threshold-signing behavior to member mode.
-    #[cfg(feature = "federation")]
-    pub fn with_federation_mode(mut self, federation_mode: FederationMode) -> Self {
-        self.federation_mode = federation_mode;
-        self
-    }
-
     /// Attach a validated federation runtime config to this mint.
     ///
-    /// This switches the mint to member mode but remains behaviorally inert until
-    /// later milestones wire consensus and threshold signing into the mint.
+    /// The presence of this config selects member mode and threshold signing.
     #[cfg(feature = "federation")]
     pub fn with_federation_config(mut self, federation_config: FederationRuntimeConfig) -> Self {
-        self.federation_mode = FederationMode::Member;
         self.federation_config = Some(federation_config);
         self
     }
@@ -180,7 +164,10 @@ impl MintBuilder {
     #[cfg(feature = "federation")]
     #[must_use]
     pub fn federation_mode(&self) -> FederationMode {
-        self.federation_mode
+        match self.federation_config {
+            Some(_) => FederationMode::Member,
+            None => FederationMode::Standalone,
+        }
     }
 
     /// Return the attached federation runtime config, if any.
@@ -292,7 +279,6 @@ impl MintBuilder {
                     finalized.public_config,
                     finalized.private_config,
                 )?);
-                self.federation_mode = FederationMode::Member;
                 tracing::info!(
                     %member_id,
                     keyset_count,
@@ -800,13 +786,10 @@ impl MintBuilder {
         self.activate_federation_dkg_records_if_complete().await?;
 
         #[cfg(feature = "federation")]
-        let federation_mode = self.federation_mode;
-        #[cfg(feature = "federation")]
-        let federation_has_active_keyset = federation_mode.is_member()
-            && self
-                .federation_config
-                .as_ref()
-                .is_some_and(FederationRuntimeConfig::has_active_non_auth_keyset);
+        let federation_has_active_keyset = self
+            .federation_config
+            .as_ref()
+            .is_some_and(FederationRuntimeConfig::has_active_non_auth_keyset);
 
         // Check active keysets and rotate if necessary
         let active_keysets = signatory.keysets().await?;
@@ -938,9 +921,10 @@ impl MintBuilder {
                 self.localstore,
                 Some(auth_localstore),
                 self.payment_processors,
-                self.max_inputs,
-                self.max_outputs,
-                federation_mode,
+                super::MintLimits {
+                    inputs: self.max_inputs,
+                    outputs: self.max_outputs,
+                },
                 self.federation_config,
             )
             .await;
@@ -965,9 +949,10 @@ impl MintBuilder {
             self.localstore,
             None,
             self.payment_processors,
-            self.max_inputs,
-            self.max_outputs,
-            federation_mode,
+            super::MintLimits {
+                inputs: self.max_inputs,
+                outputs: self.max_outputs,
+            },
             self.federation_config,
         )
         .await;
@@ -1557,36 +1542,12 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
-    async fn builder_rejects_inconsistent_federation_mode_and_config() {
-        let (builder, localstore) = builder_with_bolt11_processor().await;
-        let member_without_config = builder
-            .with_federation_mode(FederationMode::Member)
-            .build_with_seed(localstore, &seed())
-            .await
-            .expect_err("member mode without a runtime config must fail");
-        assert!(matches!(
-            member_without_config,
-            Error::Federation(FederationError::RuntimeModeConfigMismatch {
-                member_mode: true,
-                has_config: false,
-            })
-        ));
-
-        let (builder, localstore) = builder_with_bolt11_processor().await;
+    async fn builder_derives_member_mode_from_validated_config() {
+        let (builder, _) = builder_with_bolt11_processor().await;
+        assert_eq!(builder.federation_mode(), FederationMode::Standalone);
         let fixture = dkg_completion_fixture(member_id(2));
-        let standalone_with_config = builder
-            .with_federation_config(fixture.setup_runtime_config)
-            .with_federation_mode(FederationMode::Standalone)
-            .build_with_seed(localstore, &seed())
-            .await
-            .expect_err("standalone mode with a runtime config must fail");
-        assert!(matches!(
-            standalone_with_config,
-            Error::Federation(FederationError::RuntimeModeConfigMismatch {
-                member_mode: false,
-                has_config: true,
-            })
-        ));
+        let builder = builder.with_federation_config(fixture.setup_runtime_config);
+        assert_eq!(builder.federation_mode(), FederationMode::Member);
     }
 
     #[cfg(feature = "federation")]

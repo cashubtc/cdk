@@ -897,51 +897,6 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
-    async fn federation_aleph_bft_backup_chunk_migration_preserves_existing_bytes() {
-        let conn = rusqlite::Connection::open_in_memory().expect("SQLite migration connection");
-        conn.execute_batch(
-            r#"
-            CREATE TABLE federation_aleph_bft_backups (
-                session INTEGER PRIMARY KEY NOT NULL,
-                backup_bytes BLOB NOT NULL
-            );
-            INSERT INTO federation_aleph_bft_backups (session, backup_bytes)
-            VALUES (7, X'6669727374'), (8, X'7365636F6E64');
-            "#,
-        )
-        .expect("create legacy backup table");
-
-        conn.execute_batch(include_str!(
-            "../../../cdk-sql-common/src/mint/migrations/sqlite/20260714000000_chunk_federation_aleph_bft_backups.sql"
-        ))
-        .expect("migrate legacy backup table");
-
-        let rows = {
-            let mut statement = conn
-                .prepare(
-                    "SELECT session, chunk_index, backup_bytes FROM federation_aleph_bft_backups ORDER BY session",
-                )
-                .expect("prepare migrated backup query");
-            statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, Vec<u8>>(2)?,
-                    ))
-                })
-                .expect("query migrated backups")
-                .collect::<Result<Vec<_>, _>>()
-                .expect("read migrated backups")
-        };
-        assert_eq!(
-            rows,
-            vec![(7, 0, b"first".to_vec()), (8, 0, b"second".to_vec())]
-        );
-    }
-
-    #[cfg(feature = "federation")]
-    #[tokio::test]
     async fn federation_migrations_apply_to_empty_sqlite_and_keep_standalone_tables() {
         let path = std::env::temp_dir().to_path_buf().join(format!(
             "cdk-test-federation-empty-migration-{}.sqlite",
@@ -1071,10 +1026,7 @@ mod test {
             federation_migrations,
             vec![
                 "20260712000000_create_federation_schema.sql".to_owned(),
-                "20260713000000_allow_federation_payment_observation_revisions.sql".to_owned(),
-                "20260714000000_chunk_federation_aleph_bft_backups.sql".to_owned(),
                 "20260719000000_create_federation_bark_projection.sql".to_owned(),
-                "20260729000000_index_federation_payment_observation_quotes.sql".to_owned(),
             ]
         );
 

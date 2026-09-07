@@ -1,3 +1,80 @@
+use super::chain_observation::{
+    CHAIN_OBSERVATION_PRIMARY_NAMESPACE, CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
+    CHAIN_OBSERVATION_STATE_KEY,
+};
+use super::configuration_and_admission::{
+    FederationProofVerificationContext, FederationRuntimeConfig,
+    FEDERATION_EXTERNAL_ACTION_ACTOR_LEASE_ITEMS,
+};
+use super::helpers::{
+    ensure_melt_quote_matches_payment_observation, ensure_melt_quote_payment_proof_matches,
+    ensure_mint_quote_matches, ensure_same_federation_journal_entry_for_retry,
+    expected_federation_mint_amounts, federation_accepted_order,
+    federation_melt_quote_immutable_terms_match, federation_operation_status_label,
+    federation_operation_uuid, federation_payment_identifier_from_label,
+    federation_payment_identifier_label, federation_share_signatures, melt_quote_payment_response,
+    mint_input_from_federation_request, mint_quote_from_federation_operation,
+    mint_quote_state_label, payment_observation_record_from_entry, quote_id_from_federation,
+    validate_federation_mint_quote_signatures, validate_federation_mint_quote_states_for_signing,
+    validate_federation_mint_quotes, validate_federation_onchain_melt_receipt,
+};
+#[cfg(feature = "federation-bark")]
+use super::projection;
+use super::transaction_state::persist_pending_onchain_intent;
+use crate::fees::calculate_fee;
+use crate::mint::melt::ensure_melt_quote_matches_request;
+use crate::mint::verification::Verification;
+use crate::mint::Mint;
+use crate::mint::MintInput;
+use crate::types::PaymentProcessorKey;
+#[cfg(feature = "federation-bark")]
+use cdk_common::bitcoin::hashes::{sha256, Hash};
+use cdk_common::database;
+use cdk_common::error::Error;
+use cdk_common::federation::{
+    FederationAddressAllocationScope, FederationAddressKeychain, FederationApplicationState,
+    FederationError, FederationJournalEntry, FederationKeysetRotationOperation,
+    FederationMaterializedStateKey, FederationMeltOperation, FederationMeltQuoteOperation,
+    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationOnchainMeltPaymentReceipt,
+    FederationOperation, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationSignatureShareRecord, FederationSwapOperation, MemberId,
+};
+use cdk_common::mint::{
+    MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
+};
+use cdk_common::payment::PaymentIdentifier;
+use cdk_common::{
+    Amount, BlindSignature, BlindedMessage, CurrencyUnit, MeltRequest, MintQuoteBolt11Response,
+    MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteOnchainResponse, MintQuoteRequest,
+    MintQuoteResponse, MintQuoteState, MintResponse, NotificationPayload, Proofs, PublicKey,
+    QuoteId, State, SwapRequest, SwapResponse,
+};
+use cdk_common::{ProofsMethods, SpendingConditionVerification};
+#[cfg(feature = "federation-bark")]
+use cdk_federation_bark::{
+    FederationBarkCpfpPackageSet, FederationBarkCpfpPublication, FederationBarkOperation,
+    FederationBarkRecoveryState, FederationBarkSemanticPhase,
+};
+use std::collections::{HashMap, HashSet};
+
+struct FederationActiveMeltPayment {
+    active: std::sync::Arc<std::sync::Mutex<HashSet<QuoteId>>>,
+    quote_id: QuoteId,
+}
+
+impl Drop for FederationActiveMeltPayment {
+    fn drop(&mut self) {
+        let mut active = match self.active.lock() {
+            Ok(active) => active,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        active.remove(&self.quote_id);
+    }
+}
+
 async fn finish_federation_transaction<T>(
     transaction: database::mint::DynMintTransaction,
     entry: &FederationJournalEntry,
@@ -33,7 +110,7 @@ async fn finish_federation_transaction<T>(
     }
 }
 
-async fn finish_federation_apply_transaction<T>(
+pub(super) async fn finish_federation_apply_transaction<T>(
     mut transaction: database::mint::DynMintTransaction,
     entry: &FederationJournalEntry,
     outcome: Result<T, Error>,
@@ -55,23 +132,23 @@ async fn finish_federation_apply_transaction<T>(
 
 #[cfg(feature = "federation-bark")]
 #[derive(Debug, Clone, Copy)]
-struct FederationBarkResultObservationKey {
-    action_id: cdk_federation_bark::FederationBarkActionId,
-    status: cdk_federation_bark::FederationBarkObservationStatus,
-    payment_hash: cdk_federation_bark::FederationBarkDigest,
-    source_scope: cdk_federation_bark::FederationBarkDigest,
-    amount: Amount,
-    fee: Amount,
-    result_hash: cdk_federation_bark::FederationBarkDigest,
+pub(super) struct FederationBarkResultObservationKey {
+    pub(super) action_id: cdk_federation_bark::FederationBarkActionId,
+    pub(super) status: cdk_federation_bark::FederationBarkObservationStatus,
+    pub(super) payment_hash: cdk_federation_bark::FederationBarkDigest,
+    pub(super) source_scope: cdk_federation_bark::FederationBarkDigest,
+    pub(super) amount: Amount,
+    pub(super) fee: Amount,
+    pub(super) result_hash: cdk_federation_bark::FederationBarkDigest,
 }
 
 #[cfg(feature = "federation-bark")]
 const FEDERATION_BARK_CERTIFICATE_OBSERVATION_ID_DOMAIN: &[u8] =
     b"cdk/federation/bark-certificate-observation-id/v1";
 #[cfg(feature = "federation-bark")]
-const FEDERATION_BARK_RECOVERY_SECONDARY_NAMESPACE: &str = "bark_recovery";
+pub(super) const FEDERATION_BARK_RECOVERY_SECONDARY_NAMESPACE: &str = "bark_recovery";
 #[cfg(feature = "federation-bark")]
-const FEDERATION_BARK_RECOVERY_STATE_KEY: &str = "state_v1";
+pub(super) const FEDERATION_BARK_RECOVERY_STATE_KEY: &str = "state_v1";
 
 #[cfg(feature = "federation-bark")]
 enum FederationBarkRecoveryMutation {
@@ -99,7 +176,7 @@ fn federation_bark_certificate_observation_id(
 }
 
 #[cfg(all(test, feature = "federation-bark"))]
-fn federation_bark_matching_result_observers(
+pub(super) fn federation_bark_matching_result_observers(
     projection: &cdk_federation_bark::FederationBarkProjectionSnapshot,
     key: FederationBarkResultObservationKey,
 ) -> std::collections::BTreeSet<MemberId> {
@@ -125,7 +202,7 @@ fn federation_bark_matching_result_observers(
 
 #[cfg(feature = "federation-bark")]
 #[derive(Debug, Clone)]
-enum FederationBarkPaymentObservationTemplate {
+pub(super) enum FederationBarkPaymentObservationTemplate {
     Mint(FederationMintQuotePaymentObservation),
     Melt(FederationMeltQuotePaymentObservation),
 }
@@ -149,7 +226,7 @@ impl FederationBarkPaymentObservationTemplate {
 }
 
 #[cfg(feature = "federation-bark")]
-fn federation_bark_result_payment_records_from_projection(
+pub(super) fn federation_bark_result_payment_records_from_projection(
     projection: &cdk_federation_bark::FederationBarkProjectionSnapshot,
     expected: &cdk_federation_bark::FederationBarkMemberObservation,
     required_bark_observers: u16,
@@ -240,7 +317,7 @@ impl Mint {
     /// same journal frontier computes the same single actor, and takeover is
     /// safe because the operation's external identity and recovery state are
     /// durable before any side effect.
-    pub(super) async fn federation_external_action_lease_actor(
+    pub(in crate::mint) async fn federation_external_action_lease_actor(
         &self,
         config: &FederationRuntimeConfig,
         author: MemberId,
@@ -263,7 +340,7 @@ impl Mint {
     /// the decision was ordered. Catch-up must use the accepted plan's index
     /// rather than a later journal tip, otherwise future operations can change
     /// the actor expected for immutable history.
-    pub(super) fn federation_external_action_lease_actor_at_index(
+    pub(in crate::mint) fn federation_external_action_lease_actor_at_index(
         config: &FederationRuntimeConfig,
         author: MemberId,
         operation_index: u64,
@@ -927,7 +1004,9 @@ impl Mint {
                         "missing persisted federation signature share for operation {operation_id} output {output_index}"
                     ))
                 })?;
-            signatures.push(super::federation_signature_share_to_blind_signature(share));
+            signatures.push(crate::mint::federation_signature_share_to_blind_signature(
+                share,
+            ));
         }
 
         Ok(signatures)
@@ -1037,7 +1116,7 @@ impl Mint {
         let mut keyset_units = HashSet::new();
         for output in outputs {
             let keyset = config.public_config().validate_blinded_output(output)?;
-            let keyset_info = super::keysets::federated_keyset_to_mint_keyset_info(keyset);
+            let keyset_info = crate::mint::keysets::federated_keyset_to_mint_keyset_info(keyset);
             if keyset_info.is_expired() {
                 tracing::debug!(
                     "Transaction attempted with expired federated keyset in outputs: {}.",
@@ -1091,7 +1170,7 @@ impl Mint {
             let keyset = config
                 .public_config()
                 .validate_blinded_change_output(output)?;
-            let keyset_info = super::keysets::federated_keyset_to_mint_keyset_info(keyset);
+            let keyset_info = crate::mint::keysets::federated_keyset_to_mint_keyset_info(keyset);
             if keyset_info.is_expired() {
                 tracing::debug!(
                     "Transaction attempted with expired federated keyset in change outputs: {}.",
@@ -1143,7 +1222,7 @@ impl Mint {
                 .or_insert(1);
         }
 
-        Ok(calculate_fee(&proofs_per_keyset, &fee_per_keyset)?)
+        calculate_fee(&proofs_per_keyset, &fee_per_keyset)
     }
 
     /// Apply accepted federation journal entries to this member's local mint database.
@@ -2549,7 +2628,7 @@ impl Mint {
                                 observation,
                                 onchain_receipt.as_ref(),
                             )?;
-                            super::saga_recovery::process_federation_melt_saga_outcome(
+                            crate::mint::saga_recovery::process_federation_melt_saga_outcome(
                                 &saga,
                                 &mut quote,
                                 &payment_response,
@@ -2616,7 +2695,7 @@ impl Mint {
             })?;
         let payment_response =
             melt_quote_payment_response(operation_id, quote, observation, onchain_receipt)?;
-        super::saga_recovery::process_federation_melt_saga_outcome(
+        crate::mint::saga_recovery::process_federation_melt_saga_outcome(
             &saga,
             quote,
             &payment_response,
@@ -2627,7 +2706,7 @@ impl Mint {
         .await
     }
 
-    async fn validate_federation_onchain_melt_payment_observation(
+    pub(super) async fn validate_federation_onchain_melt_payment_observation(
         &self,
         quote: &MeltQuote,
         observation: &FederationMeltQuotePaymentObservation,
@@ -2787,7 +2866,7 @@ impl Mint {
         finish_federation_apply_transaction(transaction, entry, outcome).await
     }
 
-    pub(super) async fn verify_federation_inputs_with_context(
+    pub(in crate::mint) async fn verify_federation_inputs_with_context(
         &self,
         inputs: &Proofs,
         context: FederationProofVerificationContext,
@@ -2851,7 +2930,7 @@ impl Mint {
                 .iter()
                 .find(|keyset| keyset.id == proof.keyset_id)
                 .ok_or(Error::UnknownKeySet)?;
-            let keyset_info = super::keysets::federated_keyset_to_mint_keyset_info(keyset);
+            let keyset_info = crate::mint::keysets::federated_keyset_to_mint_keyset_info(keyset);
             if keyset_info.is_expired() {
                 tracing::debug!(
                     "Transaction attempted with expired federated keyset in inputs: {}.",

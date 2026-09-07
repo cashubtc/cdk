@@ -85,3 +85,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[[test]]
+name = "federation_operation_auth"
+required-features = ["federation", "test"]

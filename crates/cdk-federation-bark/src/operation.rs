@@ -27,11 +27,9 @@ use cdk_common::Amount;
 
 use crate::{canonical_json_bytes, FederationBarkEvidenceCertificate, FederationBarkEvidencePhase};
 
-const FEDERATION_BARK_LEGACY_OPERATION_VERSION: u16 = 1;
 /// Current nested Bark operation format.
 ///
-/// Version 2 lets same-action recovery plans reuse reservations. Version 1
-/// remains accepted with its original conflict keys for journal replay.
+/// Same-action recovery plans reuse reservations. Older formats are rejected.
 pub const FEDERATION_BARK_OPERATION_VERSION: u16 = 2;
 /// Current typed Bark participant-authorization format.
 pub const FEDERATION_BARK_AUTHORIZATION_VERSION: u16 = 1;
@@ -832,8 +830,7 @@ pub struct FederationBarkActionPlan {
     pub artifacts: Vec<FederationBarkArtifact>,
     /// Certified HTLC evidence combined with an incoming claim authorization.
     ///
-    /// `None` preserves replay compatibility with claim plans that follow a
-    /// separately accepted `ReceiveHtlcsReady` transition.
+    /// Required for incoming claims; absent for other action kinds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub certified_receive_htlcs: Option<Box<FederationBarkCertifiedReceiveHtlcs>>,
     /// Stable accepted execution identity; never sent as a custom Ark field.
@@ -1571,13 +1568,11 @@ impl FederationBarkOperation {
                         phase: certified.certificate.binding.phase,
                     });
                 }
-                let reuses_existing_reservations = operation.version
-                    >= FEDERATION_BARK_OPERATION_VERSION
-                    && matches!(
-                        operation.kind,
-                        FederationBarkActionKind::FailedSendRevocation
-                            | FederationBarkActionKind::EmergencyExit
-                    );
+                let reuses_existing_reservations = matches!(
+                    operation.kind,
+                    FederationBarkActionKind::FailedSendRevocation
+                        | FederationBarkActionKind::EmergencyExit
+                );
                 if !reuses_existing_reservations {
                     keys.extend(operation.inputs.iter().map(|input| {
                         FederationBarkConflictKey::VtxoReservation {
@@ -1990,7 +1985,13 @@ fn receive_external_id(
 impl FederationBarkActionPlan {
     fn validate_certified_receive_htlcs(&self) -> Result<()> {
         let Some(certified) = self.certified_receive_htlcs.as_deref() else {
-            return Ok(());
+            return if self.kind == FederationBarkActionKind::IncomingClaim {
+                Err(invalid_bark(
+                    "incoming claim requires certified HTLC evidence",
+                ))
+            } else {
+                Ok(())
+            };
         };
         if self.kind != FederationBarkActionKind::IncomingClaim {
             return Err(invalid_bark(
@@ -3548,10 +3549,7 @@ impl FederationBarkOperationRecord {
 }
 
 fn ensure_version(version: u16) -> Result<()> {
-    if !matches!(
-        version,
-        FEDERATION_BARK_LEGACY_OPERATION_VERSION | FEDERATION_BARK_OPERATION_VERSION
-    ) {
+    if version != FEDERATION_BARK_OPERATION_VERSION {
         return Err(invalid_bark(format!(
             "unsupported Bark operation version {version}"
         )));

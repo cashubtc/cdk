@@ -1112,8 +1112,13 @@ fn spawn_federation_aleph_bft_replay_readiness_watcher(
     state: MintState,
     handle: Arc<AlephBftSessionSupervisor>,
 ) {
-    tokio::spawn(async move {
-        handle.wait_until_replay_ready().await;
+    let tasks = state.federation.payment_observer.tasks.clone();
+    let stop = tasks.stop_token();
+    tasks.spawn("AlephBFT replay readiness", false, async move {
+        tokio::select! {
+            _ = stop.cancelled() => return,
+            _ = handle.wait_until_replay_ready() => {}
+        }
         let live_session = state.federation.aleph_bft_live_session.read().await;
         if live_session
             .as_ref()
@@ -1382,6 +1387,9 @@ fn cdk_aleph_bft_delay_config_with_activity(
     delay_config
 }
 
+// Keep the session/generation and publication/completion fences explicit at this
+// restart boundary; each refers to independently supervised lifecycle state.
+#[allow(clippy::too_many_arguments)]
 fn spawn_federation_aleph_bft_session_completion_watcher<T>(
     state: MintState,
     sync_config: FederationPeerSyncConfig,
@@ -1793,10 +1801,10 @@ where
                 .into(),
             );
         }
-        let next_session = status.session.checked_add(1).ok_or_else(|| {
+
+        status.session.checked_add(1).ok_or_else(|| {
             cdk::Error::Custom("AlephBFT live session rotation overflowed session id".to_string())
-        })?;
-        next_session
+        })?
     };
 
     let previous_handle = state.federation.aleph_bft_live_session.write().await.take();
@@ -2004,7 +2012,7 @@ async fn apply_federation_aleph_bft_finalized_unit_with_retry(
                         err
                     )));
                 }
-                if attempts == 1 || attempts % 10 == 0 {
+                if attempts == 1 || attempts.is_multiple_of(10) {
                     tracing::warn!(
                         retry_attempts = attempts,
                         retry_delay_ms = retry_delay.as_millis(),

@@ -581,7 +581,7 @@ impl MeltSaga<SetupComplete> {
     pub(super) async fn finalize_internal_settlement_federation(
         self,
         federation_operation_id: FederationOperationId,
-    ) -> Result<FederationInternalSettlementOutcome, Error> {
+    ) -> Result<Option<MeltQuoteResponse<QuoteId>>, Error> {
         match shared::finalize_federation_internal_melt_quote(
             &self.mint,
             &self.db,
@@ -592,9 +592,7 @@ impl MeltSaga<SetupComplete> {
         )
         .await
         {
-            Ok(shared::FederationInternalMeltSettlement::NotInternal) => {
-                Ok(FederationInternalSettlementOutcome::External(self))
-            }
+            Ok(shared::FederationInternalMeltSettlement::NotInternal) => Ok(None),
             Ok(shared::FederationInternalMeltSettlement::Finalized { quote, change_sigs }) => {
                 self.compensations.lock().await.clear();
 
@@ -603,9 +601,7 @@ impl MeltSaga<SetupComplete> {
                     metrics.record(true);
                 }
 
-                Ok(FederationInternalSettlementOutcome::Finalized(
-                    quote.into_response(change_sigs),
-                ))
+                Ok(Some(quote.into_response(change_sigs)))
             }
             Err(err) => {
                 self.compensate_all().await?;
@@ -1357,12 +1353,6 @@ impl MeltSaga<PaymentConfirmed> {
         )
         .await
     }
-}
-
-#[cfg(feature = "federation")]
-pub(super) enum FederationInternalSettlementOutcome {
-    Finalized(MeltQuoteResponse<QuoteId>),
-    External(MeltSaga<SetupComplete>),
 }
 
 /// Outcome of attempting to make a melt payment.

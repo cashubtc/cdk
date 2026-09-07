@@ -159,8 +159,6 @@ pub enum FederationPerformanceWork {
     ScheduledCaptureAttempts,
     /// Failed scheduled-checkpoint capture invocations.
     ScheduledCaptureFailures,
-    /// Captures skipped because a newer local candidate is already pending.
-    ScheduledCaptureSkippedPendingCandidate,
     /// Captures skipped because there is no complete finalized boundary.
     ScheduledCaptureSkippedNoBoundary,
     /// Captures skipped because the local frontier trails the trusted checkpoint.
@@ -239,7 +237,7 @@ pub enum FederationPerformanceWork {
 
 impl FederationPerformanceWork {
     /// Complete fixed label domain for schema and cardinality checks.
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 47] = [
         Self::ConfigValidationAttempts,
         Self::ConfigValidationFailures,
         Self::KeysetValidationAttempts,
@@ -250,7 +248,6 @@ impl FederationPerformanceWork {
         Self::SetupLineageValidationFailures,
         Self::ScheduledCaptureAttempts,
         Self::ScheduledCaptureFailures,
-        Self::ScheduledCaptureSkippedPendingCandidate,
         Self::ScheduledCaptureSkippedNoBoundary,
         Self::ScheduledCaptureSkippedFrontierBehind,
         Self::ScheduledCaptureSkippedIneligible,
@@ -302,9 +299,6 @@ impl FederationPerformanceWork {
             Self::SetupLineageValidationFailures => "setup_lineage_validation_failures",
             Self::ScheduledCaptureAttempts => "scheduled_capture_attempts",
             Self::ScheduledCaptureFailures => "scheduled_capture_failures",
-            Self::ScheduledCaptureSkippedPendingCandidate => {
-                "scheduled_capture_skipped_pending_candidate"
-            }
             Self::ScheduledCaptureSkippedNoBoundary => "scheduled_capture_skipped_no_boundary",
             Self::ScheduledCaptureSkippedFrontierBehind => {
                 "scheduled_capture_skipped_frontier_behind"

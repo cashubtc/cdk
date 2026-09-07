@@ -37,7 +37,7 @@ export function Transport() {
           ))}
         <SvgNode p={wallet} r={15} label="W" state="idle" pulse />
         {pub.map((m, i) => (
-          <SvgNode key={`pn${i}`} p={m} label={M[i]} state="idle" />
+          <SvgNode key={`public-node-${i}`} p={m} label={M[i]} state="idle" />
         ))}
         <text x={230} y={120} textAnchor="middle" fontSize={8} fill={FAINT} fontFamily="JetBrains Mono">
           same Cashu request to every member

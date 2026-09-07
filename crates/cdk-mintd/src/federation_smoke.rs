@@ -55,6 +55,14 @@ enum SmokeMemberExpectation {
     ThresholdMembers,
 }
 
+#[derive(Clone, Copy)]
+struct SmokeContext<'a> {
+    args: &'a FederationSmokeOperationsArgs,
+    public_config: &'a FederationConfig,
+    member_connectors: &'a BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+    transport: &'a cdk_axum::FederationTransport,
+}
+
 pub(crate) async fn run_smoke_operations_command(
     args: &FederationSmokeOperationsArgs,
     transport: cdk_axum::FederationTransport,
@@ -77,6 +85,12 @@ pub(crate) async fn run_smoke_operations_command(
     )
     .context("federated wallet connector")?;
     let connector = Arc::new(federation_connector);
+    let context = SmokeContext {
+        args,
+        public_config: &public_config,
+        member_connectors: &member_connectors,
+        transport: &transport,
+    };
 
     for batch_index in 0..args.operation_batches {
         let batch_seed_offset = args
@@ -87,27 +101,21 @@ pub(crate) async fn run_smoke_operations_command(
             match args.scenario {
                 FederationSmokeScenario::Standard => {
                     run_standard_smoke(
-                        args,
-                        &public_config,
+                        context,
                         unit.clone(),
-                        &member_connectors,
                         connector.clone(),
                         smoke_seed(STANDARD_SMOKE_SEED, batch_seed_offset),
                         SmokeMemberExpectation::AllMembers,
-                        &transport,
                     )
                     .await
                 }
                 FederationSmokeScenario::OfflineMemberOperations => {
                     run_standard_smoke(
-                        args,
-                        &public_config,
+                        context,
                         unit.clone(),
-                        &member_connectors,
                         connector.clone(),
                         smoke_seed(OFFLINE_MEMBER_SMOKE_SEED, batch_seed_offset),
                         SmokeMemberExpectation::ThresholdMembers,
-                        &transport,
                     )
                     .await
                 }
@@ -117,15 +125,12 @@ pub(crate) async fn run_smoke_operations_command(
                         .as_deref()
                         .context("--wallet-db is required for pending-melt-start")?;
                     run_pending_melt_start(
-                        args,
-                        &public_config,
+                        context,
                         unit.clone(),
-                        &member_connectors,
                         connector.clone(),
                         PENDING_PAID_SMOKE_SEED,
                         wallet_db,
                         MeltQuoteState::Paid,
-                        &transport,
                     )
                     .await
                 }
@@ -135,16 +140,13 @@ pub(crate) async fn run_smoke_operations_command(
                         .as_deref()
                         .context("--wallet-db is required for pending-melt-finish")?;
                     run_pending_melt_finish(
-                        args,
-                        &public_config,
+                        context,
                         unit.clone(),
-                        &member_connectors,
                         connector.clone(),
                         PENDING_PAID_SMOKE_SEED,
                         wallet_db,
                         MeltQuoteState::Paid,
                         SmokeMemberExpectation::ThresholdMembers,
-                        &transport,
                     )
                     .await
                 }
@@ -154,15 +156,12 @@ pub(crate) async fn run_smoke_operations_command(
                         .as_deref()
                         .context("--wallet-db is required for pending-melt-fail-start")?;
                     run_pending_melt_start(
-                        args,
-                        &public_config,
+                        context,
                         unit.clone(),
-                        &member_connectors,
                         connector.clone(),
                         PENDING_FAILED_SMOKE_SEED,
                         wallet_db,
                         MeltQuoteState::Failed,
-                        &transport,
                     )
                     .await
                 }
@@ -172,16 +171,13 @@ pub(crate) async fn run_smoke_operations_command(
                         .as_deref()
                         .context("--wallet-db is required for pending-melt-fail-finish")?;
                     run_pending_melt_finish(
-                        args,
-                        &public_config,
+                        context,
                         unit.clone(),
-                        &member_connectors,
                         connector.clone(),
                         PENDING_FAILED_SMOKE_SEED,
                         wallet_db,
                         MeltQuoteState::Failed,
                         SmokeMemberExpectation::ThresholdMembers,
-                        &transport,
                     )
                     .await
                 }
@@ -195,15 +191,12 @@ pub(crate) async fn run_smoke_operations_command(
                         "private federation config",
                     )?;
                     run_keyset_rotation_smoke(
-                        args,
-                        &public_config,
+                        context,
                         unit.clone(),
-                        &member_connectors,
                         connector.clone(),
                         smoke_seed(KEYSET_ROTATION_SMOKE_SEED, batch_seed_offset),
                         &private_config,
                         SmokeMemberExpectation::AllMembers,
-                        &transport,
                     )
                     .await
                 }
@@ -216,15 +209,12 @@ pub(crate) async fn run_smoke_operations_command(
                         "private federation config",
                     )?;
                     run_keyset_rotation_smoke(
-                        args,
-                        &public_config,
+                        context,
                         unit.clone(),
-                        &member_connectors,
                         connector.clone(),
                         smoke_seed(KEYSET_ROTATION_SMOKE_SEED, batch_seed_offset),
                         &private_config,
                         SmokeMemberExpectation::ThresholdMembers,
-                        &transport,
                     )
                     .await
                 }
@@ -300,8 +290,8 @@ fn smoke_connector_config(args: &FederationSmokeOperationsArgs) -> FederatedMint
         member_fallback_timeout: FEDERATION_SMOKE_MEMBER_TIMEOUT,
         member_request_timeout: FEDERATION_SMOKE_MEMBER_TIMEOUT,
         quote_status_member_timeout: FEDERATION_SMOKE_MEMBER_TIMEOUT,
-        mint_quote_visibility_attempts: args.quote_retries,
-        mint_quote_visibility_retry_delay: Duration::from_millis(args.quote_sleep_ms),
+        quote_visibility_attempts: args.quote_retries,
+        quote_visibility_retry_delay: Duration::from_millis(args.quote_sleep_ms),
         ..Default::default()
     }
 }
@@ -359,15 +349,18 @@ fn print_smoke_substage(stage_prefix: &str, suffix: &str, started_at: Instant) {
 }
 
 async fn run_standard_smoke(
-    args: &FederationSmokeOperationsArgs,
-    public_config: &FederationConfig,
+    context: SmokeContext<'_>,
     unit: CurrencyUnit,
-    member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
     connector: Arc<FederatedMintConnector>,
     seed: [u8; 64],
     member_expectation: SmokeMemberExpectation,
-    transport: &cdk_axum::FederationTransport,
 ) -> Result<()> {
+    let SmokeContext {
+        args,
+        public_config,
+        member_connectors,
+        transport: _,
+    } = context;
     let smoke_started_at = Instant::now();
     print_smoke_stage("standard.wallet.start", smoke_started_at);
     let wallet = smoke_wallet(public_config, unit.clone(), seed, connector.clone(), None).await?;
@@ -376,13 +369,10 @@ async fn run_standard_smoke(
     print_smoke_stage("standard.mint.start", smoke_started_at);
     let minted_amount = mint_smoke_funds(
         &wallet,
-        public_config,
-        member_connectors,
-        args,
+        context,
         member_expectation,
         "standard.mint",
         smoke_started_at,
-        transport,
     )
     .await?;
     print_smoke_stage("standard.mint.done", smoke_started_at);
@@ -491,16 +481,19 @@ async fn run_standard_smoke(
 }
 
 async fn run_keyset_rotation_smoke(
-    args: &FederationSmokeOperationsArgs,
-    public_config: &FederationConfig,
+    context: SmokeContext<'_>,
     unit: CurrencyUnit,
-    member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
     connector: Arc<FederatedMintConnector>,
     seed: [u8; 64],
     private_config: &MemberConfigPrivate,
     member_expectation: SmokeMemberExpectation,
-    transport: &cdk_axum::FederationTransport,
 ) -> Result<()> {
+    let SmokeContext {
+        args,
+        public_config,
+        member_connectors,
+        transport,
+    } = context;
     let smoke_started_at = Instant::now();
     let old_keyset = public_config
         .keysets
@@ -519,13 +512,10 @@ async fn run_keyset_rotation_smoke(
     let wallet = smoke_wallet(public_config, unit.clone(), seed, connector, None).await?;
     let pre_rotation_amount = mint_smoke_funds(
         &wallet,
-        public_config,
-        member_connectors,
-        args,
+        context,
         member_expectation,
         "keyset-rotation.pre-mint",
         smoke_started_at,
-        transport,
     )
     .await?;
 
@@ -626,13 +616,13 @@ async fn run_keyset_rotation_smoke(
 
     let post_rotation_amount = mint_smoke_funds(
         &restored_wallet,
-        &rotated_public_config,
-        member_connectors,
-        args,
+        SmokeContext {
+            public_config: &rotated_public_config,
+            ..context
+        },
         member_expectation,
         "keyset-rotation.post-mint",
         smoke_started_at,
-        transport,
     )
     .await?;
     print_smoke_stage("keyset-rotation.melt-quote.start", smoke_started_at);
@@ -709,27 +699,27 @@ fn federation_smoke_restore_opts() -> Result<NUT13Options> {
 }
 
 async fn run_pending_melt_start(
-    args: &FederationSmokeOperationsArgs,
-    public_config: &FederationConfig,
+    context: SmokeContext<'_>,
     unit: CurrencyUnit,
-    member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
     connector: Arc<FederatedMintConnector>,
     seed: [u8; 64],
     wallet_db: &Path,
     terminal_state: MeltQuoteState,
-    transport: &cdk_axum::FederationTransport,
 ) -> Result<()> {
+    let SmokeContext {
+        args,
+        public_config,
+        member_connectors,
+        transport: _,
+    } = context;
     let smoke_started_at = Instant::now();
     let wallet = smoke_wallet(public_config, unit, seed, connector, Some(wallet_db)).await?;
     let minted_amount = mint_smoke_funds(
         &wallet,
-        public_config,
-        member_connectors,
-        args,
+        context,
         SmokeMemberExpectation::AllMembers,
         "pending-melt.mint",
         smoke_started_at,
-        transport,
     )
     .await?;
 
@@ -802,17 +792,20 @@ async fn run_pending_melt_start(
 }
 
 async fn run_pending_melt_finish(
-    args: &FederationSmokeOperationsArgs,
-    public_config: &FederationConfig,
+    context: SmokeContext<'_>,
     unit: CurrencyUnit,
-    member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
     connector: Arc<FederatedMintConnector>,
     seed: [u8; 64],
     wallet_db: &Path,
     terminal_state: MeltQuoteState,
     member_expectation: SmokeMemberExpectation,
-    transport: &cdk_axum::FederationTransport,
 ) -> Result<()> {
+    let SmokeContext {
+        args,
+        public_config,
+        member_connectors,
+        transport,
+    } = context;
     let wallet = smoke_wallet(public_config, unit, seed, connector, Some(wallet_db)).await?;
     let quote = recoverable_pending_melt_quote(&wallet)
         .await
@@ -996,26 +989,30 @@ async fn submit_terminal_melt_payment_observation(
     let target_member = public_config
         .member(private_config.member_id)
         .context("private federation member is missing from the public federation config")?;
-    let envelope = runtime_config.melt_quote_payment_observation(
-        &quote.id,
-        quote.payment_method.clone(),
-        terminal_state,
-        quote.amount,
-        quote.fee_reserve,
-        match terminal_state {
-            MeltQuoteState::Paid => Some(
-                quote
-                    .amount
-                    .checked_add(quote.fee_reserve)
-                    .context("smoke melt amount plus fee reserve overflow")?,
-            ),
-            _ => None,
+    let envelope = runtime_config.operation_envelope(FederationOperation::MeltQuotePayment(
+        cdk_common::federation::FederationMeltQuotePaymentObservation {
+            quote: quote.id.clone(),
+            observer: runtime_config.member_id(),
+            method: quote.payment_method.clone(),
+            state: terminal_state,
+            amount: quote.amount,
+            fee_reserve: quote.fee_reserve,
+            total_spent: match terminal_state {
+                MeltQuoteState::Paid => Some(
+                    quote
+                        .amount
+                        .checked_add(quote.fee_reserve)
+                        .context("smoke melt amount plus fee reserve overflow")?,
+                ),
+                _ => None,
+            },
+            payment_proof: match terminal_state {
+                MeltQuoteState::Paid => Some(format!("federation-smoke-paid-{}", quote.id)),
+                _ => None,
+            },
+            payment_id: None,
         },
-        match terminal_state {
-            MeltQuoteState::Paid => Some(format!("federation-smoke-paid-{}", quote.id)),
-            _ => None,
-        },
-    );
+    ));
     let sequence = initial_smoke_sequence().saturating_add(1);
     submit_smoke_operation(
         transport,
@@ -1056,14 +1053,17 @@ fn wallet_melt_quote_state_for_terminal(terminal_state: MeltQuoteState) -> MeltQ
 
 async fn mint_smoke_funds(
     wallet: &Wallet,
-    public_config: &FederationConfig,
-    member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
-    args: &FederationSmokeOperationsArgs,
+    context: SmokeContext<'_>,
     member_expectation: SmokeMemberExpectation,
     stage_prefix: &str,
     started_at: Instant,
-    transport: &cdk_axum::FederationTransport,
 ) -> Result<Amount> {
+    let SmokeContext {
+        args,
+        public_config,
+        member_connectors,
+        transport,
+    } = context;
     print_smoke_substage(stage_prefix, "quote.start", started_at);
     let quote = wallet
         .mint_quote(

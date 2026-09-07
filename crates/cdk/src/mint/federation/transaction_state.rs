@@ -18,11 +18,12 @@ use cdk_common::federation::{
 use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 
 use super::super::Mint;
+use super::application::finish_federation_apply_transaction;
 use super::chain_observation::{
     CHAIN_OBSERVATION_PRIMARY_NAMESPACE, CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
     CHAIN_OBSERVATION_STATE_KEY,
 };
-use super::{finish_federation_apply_transaction, FederationRuntimeConfig};
+use super::FederationRuntimeConfig;
 
 pub(super) const TRANSACTION_STATE_PRIMARY_NAMESPACE: &str = "federation";
 pub(super) const TRANSACTION_STATE_SECONDARY_NAMESPACE: &str = "transaction";

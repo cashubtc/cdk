@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test]
 async fn aleph_bft_public_submit_is_not_ready_until_live_session_is_started() {
     let (public_config, local_private, _) = transport_config();
@@ -139,7 +141,7 @@ async fn aleph_bft_live_session_opens_queueing_but_still_waits_for_finalized_uni
         FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 0),
     );
     let handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut state,
+        &state,
         sync_config,
         CdkAlephBftNetworkPumpConfig::default(),
         transport,
@@ -1740,30 +1742,9 @@ async fn onchain_reconciliation_failure_does_not_halt_finalized_application() {
         );
     }
 
-    let _ = submit_task.abort();
+    submit_task.abort();
     let _ = submit_task.await;
 }
-
-struct ApplyRetryBudgetOverrideGuard;
-
-impl ApplyRetryBudgetOverrideGuard {
-    fn set(millis: u64) -> Self {
-        crate::FEDERATION_APPLY_RETRY_BUDGET_OVERRIDE_MILLIS
-            .store(millis, std::sync::atomic::Ordering::Relaxed);
-        Self
-    }
-}
-
-impl Drop for ApplyRetryBudgetOverrideGuard {
-    fn drop(&mut self) {
-        crate::FEDERATION_APPLY_RETRY_BUDGET_OVERRIDE_MILLIS
-            .store(0, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-/// Test-scale inbound channel budget used by the backpressure regression so
-/// the flood stays small and deterministic.
-const FEDERATION_ALEPH_BFT_CHANNEL_CAPACITY_TEST: u64 = 128;
 
 #[tokio::test]
 async fn recovery_candidate_fetch_falls_back_from_withholding_first_source() {
@@ -1962,7 +1943,7 @@ async fn permanent_apply_contention_transitions_to_bounded_operator_repairable_s
             .await
     );
 
-    let _ = submit_task.abort();
+    submit_task.abort();
     let _ = submit_task.await;
 }
 

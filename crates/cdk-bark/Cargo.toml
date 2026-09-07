@@ -40,10 +40,8 @@ federation-test-utils = ["federation-bark"]
 aes-gcm = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }
-# Temporary local development source. Before publication or push this must be
-# replaced by a remotely fetchable immutable revision of the reviewed
-# frost-wallet commit; absolute/floating dependencies are forbidden there.
-bark = { package = "bark-wallet", path = "../../../bark-cdk/bark", default-features = false, features = ["bitcoind-rpc", "native", "sqlite", "tls-webpki-roots"], optional = true }
+# Pin the reviewed federation custody and Lightning APIs.
+bark = { package = "bark-wallet", git = "https://github.com/callebtc/bark", rev = "8d1eda643dd11e9eb600ec44e36622c8f77b6322", default-features = false, features = ["bitcoind-rpc", "native", "sqlite", "tls-webpki-roots"], optional = true }
 bitcoin = { workspace = true, optional = true }
 cdk-common = { workspace = true, features = ["federation", "mint"], optional = true }
 cdk-bitcoin-wallet = { workspace = true, features = ["bitcoin-rpc", "esplora"], optional = true }

@@ -48,7 +48,6 @@ CREATE TABLE federation_bark_derivation_allocations (
     action_id TEXT NOT NULL,
     amount BIGINT NOT NULL,
     artifact_hash TEXT,
-    vtxo_id TEXT UNIQUE,
     operation_id TEXT NOT NULL,
     operation_index BIGINT NOT NULL,
     record_json TEXT NOT NULL,

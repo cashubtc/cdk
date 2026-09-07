@@ -12,7 +12,7 @@ use super::address_allocation::{
     ADDRESS_ALLOCATION_PRIMARY_NAMESPACE, ADDRESS_ALLOCATION_SECONDARY_NAMESPACE,
     ADDRESS_ALLOCATION_STATE_KEY,
 };
-use super::finish_federation_apply_transaction;
+use super::application::finish_federation_apply_transaction;
 
 pub(super) const CHAIN_OBSERVATION_PRIMARY_NAMESPACE: &str = "federation";
 pub(super) const CHAIN_OBSERVATION_SECONDARY_NAMESPACE: &str = "chain_observation";

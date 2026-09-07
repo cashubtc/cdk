@@ -276,8 +276,16 @@ impl FederationSetupCoordinatorService {
     /// Reject new work and wait until every detached timed-out operation finishes.
     pub async fn shutdown(&self) {
         self.shutting_down.store(true, Ordering::Release);
-        while self.active_tasks.load(Ordering::Acquire) != 0 {
-            self.idle.notified().await;
+        loop {
+            // Register before observing the count: the last task can finish
+            // between that load and awaiting its notify_waiters notification.
+            let idle = self.idle.notified();
+            tokio::pin!(idle);
+            idle.as_mut().enable();
+            if self.active_tasks.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            idle.await;
         }
     }
 
@@ -1700,15 +1708,15 @@ mod tests {
     #[cfg(feature = "iroh")]
     #[tokio::test]
     async fn setup_client_preserves_authenticated_headers_over_iroh() {
+        let config = cdk_iroh::IrohConfig::static_only().with_bind_addr(([127, 0, 0, 1], 0).into());
         let fixture = setup_http_fixture(FederationSetupCoordinatorServiceConfig::default()).await;
-        let server_node = cdk_iroh::IrohNode::ephemeral(cdk_iroh::IrohConfig::static_only())
+        let server_node = cdk_iroh::IrohNode::ephemeral(config.clone())
             .await
             .expect("setup Iroh server node");
-        let client_node = cdk_iroh::IrohNode::ephemeral(
-            cdk_iroh::IrohConfig::static_only().with_ticket(server_node.endpoint_ticket()),
-        )
-        .await
-        .expect("setup Iroh client node");
+        let client_node =
+            cdk_iroh::IrohNode::ephemeral(config.with_ticket(server_node.endpoint_ticket()))
+                .await
+                .expect("setup Iroh client node");
         let server = cdk_iroh::IrohServer::start(
             server_node.clone(),
             create_federation_setup_router(fixture.service.clone()),

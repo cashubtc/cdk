@@ -34,19 +34,23 @@ pub(super) async fn post_checkpoint_summary(
         state.federation.request_recovery_checkpoint().await;
         let recovery_state = state.clone();
         let requester = verified.sender();
-        tokio::spawn(async move {
-            if let Err(err) = recovery_state
-                .federation
-                .propose_recovery_barrier_if_requested()
-                .await
-            {
-                tracing::warn!(
-                    member_id = %requester,
-                    "Could not propose requested federation recovery checkpoint barrier: {}",
-                    err
-                );
-            }
-        });
+        state.federation.payment_observer.tasks.spawn(
+            "checkpoint recovery request",
+            false,
+            async move {
+                if let Err(err) = recovery_state
+                    .federation
+                    .propose_recovery_barrier_if_requested()
+                    .await
+                {
+                    tracing::warn!(
+                        member_id = %requester,
+                        "Could not propose requested federation recovery checkpoint barrier: {}",
+                        err
+                    );
+                }
+            },
+        );
     }
     let response = state
         .federation

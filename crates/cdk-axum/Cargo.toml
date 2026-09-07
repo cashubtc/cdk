@@ -60,6 +60,7 @@ cdk-federation-bark = { workspace = true, optional = true }
 cdk-http-client = { workspace = true, features = ["bitreq"] }
 cdk-iroh = { workspace = true, optional = true }
 tokio.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
 tower = { workspace = true, features = ["timeout"] }
 tracing.workspace = true
 thiserror.workspace = true

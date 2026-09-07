@@ -57,10 +57,10 @@ mod custom_handlers;
 mod custom_router;
 #[cfg(feature = "federation")]
 mod federation;
-#[cfg(feature = "federation-bark")]
-pub use self::federation::bark_maintenance::FederatedBarkMaintenanceHandle;
 #[cfg(all(feature = "federation", feature = "iroh"))]
 pub use self::federation::federation_transport_with_iroh_node;
+#[cfg(feature = "federation")]
+pub use self::federation::services::{FederationServices, RunningFederationServices};
 #[cfg(feature = "federation")]
 pub use self::federation::{
     create_federation_setup_router, default_federation_transport, FederationDkgAutoStartConfig,
@@ -144,7 +144,7 @@ pub(crate) const FEDERATION_ALEPH_BFT_INBOUND_BYTE_BUDGET: usize = 256 * 1024 * 
 pub(crate) static FEDERATION_ALEPH_BFT_CHANNEL_CAPACITY_OVERRIDE: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-#[cfg(feature = "federation")]
+#[cfg(all(test, feature = "federation"))]
 pub(crate) fn federation_aleph_bft_channel_capacity() -> usize {
     #[cfg(test)]
     {
@@ -634,7 +634,7 @@ pub(crate) struct FederationOperationNotificationStats {
 
 #[cfg(feature = "federation")]
 enum FederationOperationWaitRegistration<'a> {
-    Outcome(FederationSubmitOperationResponse),
+    Outcome(Box<FederationSubmitOperationResponse>),
     Waiting(FederationOperationWaiter<'a>),
 }
 
@@ -642,7 +642,7 @@ enum FederationOperationWaitRegistration<'a> {
 impl<'a> FederationOperationWaitRegistration<'a> {
     async fn wait(self) -> FederationSubmitOperationResponse {
         match self {
-            Self::Outcome(response) => response,
+            Self::Outcome(response) => *response,
             Self::Waiting(waiter) => waiter.wait().await,
         }
     }
@@ -705,7 +705,9 @@ impl FederationOperationNotifications {
         if let Some(response) = inner.outcomes.get(&operation_id) {
             let response = response.clone();
             inner.record_response_cache_lookup(true);
-            return Ok(FederationOperationWaitRegistration::Outcome(response));
+            return Ok(FederationOperationWaitRegistration::Outcome(Box::new(
+                response,
+            )));
         }
         inner.record_response_cache_lookup(false);
         if let Some(response) = inner
@@ -713,7 +715,9 @@ impl FederationOperationNotifications {
             .get(&operation_id)
             .and_then(|notifier| notifier.response.clone())
         {
-            return Ok(FederationOperationWaitRegistration::Outcome(response));
+            return Ok(FederationOperationWaitRegistration::Outcome(Box::new(
+                response,
+            )));
         }
         if inner.waiter_count >= waiter_limit {
             return Err(cdk::Error::from(
@@ -769,7 +773,7 @@ impl FederationOperationNotifications {
             .or_else(|| inner.outcomes.get(&operation_id).cloned())
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     fn pending_waiter_count(&self) -> usize {
         self.lock_inner().waiter_count
     }
@@ -795,7 +799,7 @@ impl FederationOperationNotifications {
             });
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     fn response_cache_count(&self) -> usize {
         self.lock_inner().outcomes.len()
     }
@@ -962,8 +966,9 @@ fn aleph_bft_catch_up_recovery_mismatch(reason: String) -> cdk::Error {
 }
 
 #[cfg(feature = "federation")]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) enum FederationSyncStatus {
+    #[default]
     Healthy,
     AwaitingQuorum {
         operation_count: u64,
@@ -982,12 +987,6 @@ pub(crate) enum FederationSyncStatus {
 }
 
 #[cfg(feature = "federation")]
-impl Default for FederationSyncStatus {
-    fn default() -> Self {
-        Self::Healthy
-    }
-}
-
 #[cfg(feature = "federation")]
 impl FederationSyncStatus {
     pub(crate) fn is_ready(&self) -> bool {
@@ -2047,7 +2046,7 @@ impl MintState {
             .await
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn federation_pending_response_waiter_count(&self) -> usize {
         self.federation.pending_response_waiter_count()
     }
@@ -2059,7 +2058,7 @@ impl MintState {
             .await;
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn federation_response_cache_entry_count(&self) -> usize {
         self.federation.response_cache_entry_count()
     }
@@ -2085,7 +2084,6 @@ impl MintState {
             .await
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn apply_federation_aleph_bft_finalized_unit(
         &self,
         payload: FederationAlephBftUnitPayload,
@@ -2500,105 +2498,77 @@ pub async fn create_mint_router_with_custom_cache(
     custom_methods: Vec<String>,
     enable_info_page: bool,
 ) -> Result<Router> {
-    #[cfg(feature = "federation")]
-    {
-        create_mint_router_with_custom_cache_and_federation_peer_sync_config(
-            mint,
-            cache,
-            custom_methods,
-            enable_info_page,
-            FederationPeerSyncConfig::default(),
-        )
-        .await
-    }
-    #[cfg(not(feature = "federation"))]
-    {
-        create_mint_router_with_custom_cache_inner(
-            mint,
-            cache,
-            custom_methods,
-            enable_info_page,
-            true,
-        )
-        .await
-    }
-}
-
-/// Create mint [`Router`] with a custom cache and federation peer sync policy.
-#[cfg(feature = "federation")]
-#[allow(unused_mut, unused_variables)]
-pub async fn create_mint_router_with_custom_cache_and_federation_peer_sync_config(
-    mint: Arc<Mint>,
-    cache: HttpCache,
-    custom_methods: Vec<String>,
-    enable_info_page: bool,
-    federation_peer_sync_config: FederationPeerSyncConfig,
-) -> Result<Router> {
-    create_mint_router_with_custom_cache_and_federation_dkg(
-        mint,
-        cache,
-        custom_methods,
-        enable_info_page,
-        federation_peer_sync_config,
-        None,
-    )
-    .await
-}
-
-/// Create mint [`Router`] with federation peer sync and optional DKG auto-start policy.
-#[cfg(feature = "federation")]
-#[allow(unused_mut, unused_variables)]
-pub async fn create_mint_router_with_custom_cache_and_federation_dkg(
-    mint: Arc<Mint>,
-    cache: HttpCache,
-    custom_methods: Vec<String>,
-    enable_info_page: bool,
-    federation_peer_sync_config: FederationPeerSyncConfig,
-    federation_dkg_config: Option<FederationDkgAutoStartConfig>,
-) -> Result<Router> {
-    create_mint_router_with_custom_cache_and_federation_dkg_with_transport(
-        mint,
-        cache,
-        custom_methods,
-        enable_info_page,
-        federation_peer_sync_config,
-        federation_dkg_config,
-        default_federation_transport(),
-    )
-    .await
-}
-
-/// Create a federation mint router without a wallet backend using an injected transport.
-#[cfg(feature = "federation")]
-#[allow(unused_mut, unused_variables)]
-pub async fn create_mint_router_with_custom_cache_and_federation_dkg_with_transport(
-    mint: Arc<Mint>,
-    cache: HttpCache,
-    custom_methods: Vec<String>,
-    enable_info_page: bool,
-    federation_peer_sync_config: FederationPeerSyncConfig,
-    federation_dkg_config: Option<FederationDkgAutoStartConfig>,
-    federation_transport: FederationTransport,
-) -> Result<Router> {
-    federation_peer_sync_config.validate()?;
     create_mint_router_with_custom_cache_inner(
         mint,
         cache,
         custom_methods,
         enable_info_page,
-        true,
-        federation_peer_sync_config,
-        federation_dkg_config,
-        #[cfg(feature = "federation-bdk")]
-        None,
-        #[cfg(feature = "federation-bark")]
-        None,
-        #[cfg(feature = "federation-bark")]
-        None,
-        false,
-        federation_transport,
-        #[cfg(test)]
-        false,
+        #[cfg(feature = "federation")]
+        FederationRouterConfig::default(),
+        #[cfg(feature = "federation")]
+        FederationRouterStartup::Automatic,
+    )
+    .await
+}
+
+/// Member-local federation services attached to a mint router.
+#[cfg(feature = "federation")]
+#[derive(Debug)]
+pub struct FederationRouterConfig {
+    /// Peer synchronization, admission, and retry policy.
+    pub peer_sync: FederationPeerSyncConfig,
+    /// Optional dealer-free DKG driver.
+    pub dkg: Option<FederationDkgAutoStartConfig>,
+    /// Optional watch-only Bitcoin wallet.
+    #[cfg(feature = "federation-bdk")]
+    pub bdk: Option<FederatedBdkLocalConfig>,
+    /// Optional Bark custody runtime.
+    #[cfg(feature = "federation-bark")]
+    pub bark: Option<cdk_bark::FederatedBarkLocalConfig>,
+    /// Shared outbound member transport.
+    pub transport: FederationTransport,
+}
+
+#[cfg(feature = "federation")]
+impl Default for FederationRouterConfig {
+    fn default() -> Self {
+        Self {
+            peer_sync: FederationPeerSyncConfig::default(),
+            dkg: None,
+            #[cfg(feature = "federation-bdk")]
+            bdk: None,
+            #[cfg(feature = "federation-bark")]
+            bark: None,
+            transport: default_federation_transport(),
+        }
+    }
+}
+
+#[cfg(feature = "federation")]
+enum FederationRouterStartup {
+    Automatic,
+    Prepared(tokio::sync::oneshot::Sender<FederationServices>),
+    Setup,
+    #[cfg(test)]
+    LocalFinality,
+}
+
+/// Create federation routes with services owned by the router's lifetime.
+#[cfg(feature = "federation")]
+pub async fn create_federation_mint_router(
+    mint: Arc<Mint>,
+    cache: HttpCache,
+    custom_methods: Vec<String>,
+    enable_info_page: bool,
+    config: FederationRouterConfig,
+) -> Result<Router> {
+    create_mint_router_with_custom_cache_inner(
+        mint,
+        cache,
+        custom_methods,
+        enable_info_page,
+        config,
+        FederationRouterStartup::Automatic,
     )
     .await
 }
@@ -2623,198 +2593,53 @@ pub async fn create_federation_dkg_setup_router(
 #[cfg(feature = "federation")]
 pub async fn create_federation_dkg_setup_router_with_transport(
     mint: Arc<Mint>,
-    federation_peer_sync_config: FederationPeerSyncConfig,
-    federation_dkg_config: FederationDkgAutoStartConfig,
-    federation_transport: FederationTransport,
+    peer_sync: FederationPeerSyncConfig,
+    dkg: FederationDkgAutoStartConfig,
+    transport: FederationTransport,
 ) -> Result<Router> {
-    federation_peer_sync_config.validate()?;
     create_mint_router_with_custom_cache_inner(
         mint,
         HttpCache::default(),
         Vec::new(),
         false,
-        false,
-        federation_peer_sync_config,
-        Some(federation_dkg_config),
-        #[cfg(feature = "federation-bdk")]
-        None,
-        #[cfg(feature = "federation-bark")]
-        None,
-        #[cfg(feature = "federation-bark")]
-        None,
-        true,
-        federation_transport,
-        #[cfg(test)]
-        false,
+        FederationRouterConfig {
+            peer_sync,
+            dkg: Some(dkg),
+            transport,
+            #[cfg(feature = "federation-bdk")]
+            bdk: None,
+            #[cfg(feature = "federation-bark")]
+            bark: None,
+        },
+        FederationRouterStartup::Setup,
     )
     .await
 }
 
-/// Create mint [`Router`] with federation DKG and member-local watch-only BDK policy.
-#[cfg(feature = "federation-bdk")]
-#[allow(unused_mut, unused_variables)]
-pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallet(
+/// Prepare federation routes and workers for explicit daemon lifecycle ownership.
+#[cfg(feature = "federation")]
+pub async fn prepare_federation_router(
     mint: Arc<Mint>,
     cache: HttpCache,
     custom_methods: Vec<String>,
     enable_info_page: bool,
-    federation_peer_sync_config: FederationPeerSyncConfig,
-    federation_dkg_config: Option<FederationDkgAutoStartConfig>,
-    federation_bdk_config: Option<FederatedBdkLocalConfig>,
-) -> Result<Router> {
-    create_mint_router_with_custom_cache_and_federation_dkg_and_wallet_with_transport(
-        mint,
-        cache,
-        custom_methods,
-        enable_info_page,
-        federation_peer_sync_config,
-        federation_dkg_config,
-        federation_bdk_config,
-        default_federation_transport(),
-    )
-    .await
-}
-
-/// Create a federation mint router with an injected shared outbound transport.
-#[cfg(feature = "federation-bdk")]
-#[allow(unused_mut, unused_variables)]
-pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallet_with_transport(
-    mint: Arc<Mint>,
-    cache: HttpCache,
-    custom_methods: Vec<String>,
-    enable_info_page: bool,
-    federation_peer_sync_config: FederationPeerSyncConfig,
-    federation_dkg_config: Option<FederationDkgAutoStartConfig>,
-    federation_bdk_config: Option<FederatedBdkLocalConfig>,
-    federation_transport: FederationTransport,
-) -> Result<Router> {
-    federation_peer_sync_config.validate()?;
-    create_mint_router_with_custom_cache_inner(
-        mint,
-        cache,
-        custom_methods,
-        enable_info_page,
-        true,
-        federation_peer_sync_config,
-        federation_dkg_config,
-        federation_bdk_config,
-        #[cfg(feature = "federation-bark")]
-        None,
-        #[cfg(feature = "federation-bark")]
-        None,
-        false,
-        federation_transport,
-        #[cfg(test)]
-        false,
-    )
-    .await
-}
-
-/// Create a mint router with both member-local federated wallet runtimes.
-#[cfg(feature = "federation-bark")]
-#[allow(unused_mut, unused_variables)]
-pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallets(
-    mint: Arc<Mint>,
-    cache: HttpCache,
-    custom_methods: Vec<String>,
-    enable_info_page: bool,
-    federation_peer_sync_config: FederationPeerSyncConfig,
-    federation_dkg_config: Option<FederationDkgAutoStartConfig>,
-    #[cfg(feature = "federation-bdk")] federation_bdk_config: Option<FederatedBdkLocalConfig>,
-    federation_bark_config: Option<cdk_bark::FederatedBarkLocalConfig>,
-) -> Result<Router> {
-    create_mint_router_with_custom_cache_and_federation_dkg_and_wallets_with_transport(
-        mint,
-        cache,
-        custom_methods,
-        enable_info_page,
-        federation_peer_sync_config,
-        federation_dkg_config,
-        #[cfg(feature = "federation-bdk")]
-        federation_bdk_config,
-        federation_bark_config,
-        default_federation_transport(),
-    )
-    .await
-}
-
-/// Create a federation mint router with both wallets and one shared outbound transport.
-#[cfg(feature = "federation-bark")]
-#[allow(unused_mut, unused_variables)]
-pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallets_with_transport(
-    mint: Arc<Mint>,
-    cache: HttpCache,
-    custom_methods: Vec<String>,
-    enable_info_page: bool,
-    federation_peer_sync_config: FederationPeerSyncConfig,
-    federation_dkg_config: Option<FederationDkgAutoStartConfig>,
-    #[cfg(feature = "federation-bdk")] federation_bdk_config: Option<FederatedBdkLocalConfig>,
-    federation_bark_config: Option<cdk_bark::FederatedBarkLocalConfig>,
-    federation_transport: FederationTransport,
-) -> Result<Router> {
-    federation_peer_sync_config.validate()?;
-    create_mint_router_with_custom_cache_inner(
-        mint,
-        cache,
-        custom_methods,
-        enable_info_page,
-        true,
-        federation_peer_sync_config,
-        federation_dkg_config,
-        #[cfg(feature = "federation-bdk")]
-        federation_bdk_config,
-        federation_bark_config,
-        None,
-        false,
-        federation_transport,
-        #[cfg(test)]
-        false,
-    )
-    .await
-}
-
-/// Create a federation mint router and hand Bark worker lifecycle ownership to mintd.
-#[cfg(feature = "federation-bark")]
-#[allow(unused_mut, unused_variables)]
-pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallets_with_transport_and_bark_lifecycle(
-    mint: Arc<Mint>,
-    cache: HttpCache,
-    custom_methods: Vec<String>,
-    enable_info_page: bool,
-    federation_peer_sync_config: FederationPeerSyncConfig,
-    federation_dkg_config: Option<FederationDkgAutoStartConfig>,
-    #[cfg(feature = "federation-bdk")] federation_bdk_config: Option<FederatedBdkLocalConfig>,
-    federation_bark_config: Option<cdk_bark::FederatedBarkLocalConfig>,
-    federation_transport: FederationTransport,
-) -> Result<(Router, Option<FederatedBarkMaintenanceHandle>)> {
-    federation_peer_sync_config.validate()?;
-    let (handoff, maintenance) = tokio::sync::oneshot::channel();
+    config: FederationRouterConfig,
+) -> Result<(Router, Option<FederationServices>)> {
+    let (handoff, services) = tokio::sync::oneshot::channel();
     let router = create_mint_router_with_custom_cache_inner(
         mint,
         cache,
         custom_methods,
         enable_info_page,
-        true,
-        federation_peer_sync_config,
-        federation_dkg_config,
-        #[cfg(feature = "federation-bdk")]
-        federation_bdk_config,
-        federation_bark_config,
-        Some(handoff),
-        false,
-        federation_transport,
-        #[cfg(test)]
-        false,
+        config,
+        FederationRouterStartup::Prepared(handoff),
     )
     .await?;
-    Ok((router, maintenance.await.ok()))
+    Ok((router, services.await.ok()))
 }
 
+/// Build member routes without cross-member synchronization for isolated tests.
 #[cfg(all(test, feature = "federation"))]
-/// Builds member HTTP routes without starting cross-member synchronization.
-///
-/// Wallet route tests use independent in-memory member stores; AlephBFT networking and
-/// convergence are exercised by the federation integration tests.
 pub(crate) async fn create_mint_router_without_federation_peer_sync(
     mint: Arc<Mint>,
     custom_methods: Vec<String>,
@@ -2824,18 +2649,8 @@ pub(crate) async fn create_mint_router_without_federation_peer_sync(
         HttpCache::default(),
         custom_methods,
         false,
-        false,
-        FederationPeerSyncConfig::default(),
-        None,
-        #[cfg(feature = "federation-bdk")]
-        None,
-        #[cfg(feature = "federation-bark")]
-        None,
-        #[cfg(feature = "federation-bark")]
-        None,
-        false,
-        default_federation_transport(),
-        true,
+        FederationRouterConfig::default(),
+        FederationRouterStartup::LocalFinality,
     )
     .await
 }
@@ -2846,20 +2661,35 @@ async fn create_mint_router_with_custom_cache_inner(
     cache: HttpCache,
     custom_methods: Vec<String>,
     enable_info_page: bool,
-    spawn_federation_peer_sync: bool,
-    #[cfg(feature = "federation")] federation_peer_sync_config: FederationPeerSyncConfig,
-    #[cfg(feature = "federation")] federation_dkg_config: Option<FederationDkgAutoStartConfig>,
-    #[cfg(feature = "federation-bdk")] federation_bdk_config: Option<FederatedBdkLocalConfig>,
-    #[cfg(feature = "federation-bark")] federation_bark_config: Option<
-        cdk_bark::FederatedBarkLocalConfig,
-    >,
-    #[cfg(feature = "federation-bark")] mut federation_bark_maintenance_handoff: Option<
-        tokio::sync::oneshot::Sender<FederatedBarkMaintenanceHandle>,
-    >,
-    #[cfg(feature = "federation")] federation_setup_only: bool,
-    #[cfg(feature = "federation")] federation_transport: FederationTransport,
-    #[cfg(all(test, feature = "federation"))] federation_local_finality_test: bool,
+    #[cfg(feature = "federation")] federation_config: FederationRouterConfig,
+    #[cfg(feature = "federation")] startup: FederationRouterStartup,
 ) -> Result<Router> {
+    #[cfg(feature = "federation")]
+    let FederationRouterConfig {
+        peer_sync: federation_peer_sync_config,
+        dkg: federation_dkg_config,
+        #[cfg(feature = "federation-bdk")]
+            bdk: federation_bdk_config,
+        #[cfg(feature = "federation-bark")]
+            bark: federation_bark_config,
+        transport: federation_transport,
+    } = federation_config;
+    #[cfg(feature = "federation")]
+    federation_peer_sync_config.validate()?;
+    #[cfg(feature = "federation")]
+    let spawn_federation_peer_sync = matches!(
+        startup,
+        FederationRouterStartup::Automatic | FederationRouterStartup::Prepared(_)
+    );
+    #[cfg(feature = "federation")]
+    let federation_setup_only = matches!(startup, FederationRouterStartup::Setup);
+    #[cfg(all(test, feature = "federation"))]
+    let federation_local_finality_test = matches!(startup, FederationRouterStartup::LocalFinality);
+    #[cfg(feature = "federation")]
+    let mut federation_services_handoff = match startup {
+        FederationRouterStartup::Prepared(handoff) => Some(handoff),
+        _ => None,
+    };
     #[cfg(all(feature = "federation", feature = "prometheus"))]
     let federation_startup_started_at = std::time::Instant::now();
     #[cfg(feature = "federation")]
@@ -3027,12 +2857,18 @@ async fn create_mint_router_with_custom_cache_inner(
     let expose_federation_routes =
         state.federation.consensus.is_some() || federation_dkg_config.is_some();
     #[cfg(feature = "federation")]
-    if spawn_federation_dkg_driver {
-        let config = federation_dkg_config
-            .expect("enabled federation DKG driver must retain its validated configuration");
-        federation::spawn_federation_dkg_driver(state.clone(), federation_peer_sync_config, config);
-    }
-
+    let mut federation_services = state.mint.federation_config().map(|_| {
+        FederationServices::new(
+            state.clone(),
+            spawn_federation_peer_sync.then_some(federation_peer_sync_config),
+            if spawn_federation_dkg_driver {
+                federation_dkg_config
+            } else {
+                None
+            },
+            federation_application_ready && state.federation.consensus.is_some(),
+        )
+    });
     #[cfg(feature = "federation")]
     if federation_setup_only {
         let router = Router::new()
@@ -3043,6 +2879,10 @@ async fn create_mint_router_with_custom_cache_inner(
             ))
             .layer(from_fn(cors_middleware))
             .with_state(state);
+        let router = match federation_services.take() {
+            Some(services) => router.layer(axum::Extension(Arc::new(services.start().await?))),
+            None => router,
+        };
         return Ok(router);
     }
 
@@ -3058,41 +2898,6 @@ async fn create_mint_router_with_custom_cache_inner(
 
     let mut mint_router = Router::new().nest("/v1", v1_router);
 
-    #[cfg(feature = "federation")]
-    if federation_application_ready && state.federation.consensus.is_some() {
-        state
-            .federation
-            .payment_observer
-            .clone()
-            .spawn(state.clone());
-        #[cfg(feature = "federation-bark")]
-        if let Some(maintenance) = FederatedBarkMaintenanceHandle::new(state.clone()) {
-            match federation_bark_maintenance_handoff.take() {
-                Some(handoff) => {
-                    let _ = handoff.send(maintenance);
-                }
-                None => maintenance.spawn_detached(),
-            }
-        }
-        #[cfg(feature = "federation-bdk")]
-        state
-            .federation
-            .transaction_broadcaster
-            .clone()
-            .spawn(state.clone());
-        #[cfg(feature = "federation-bdk")]
-        state
-            .federation
-            .wallet_liveness
-            .clone()
-            .spawn(state.clone());
-        if spawn_federation_peer_sync {
-            federation::spawn_federation_peer_sync_loop_with_config(
-                state.clone(),
-                federation_peer_sync_config,
-            );
-        }
-    }
     #[cfg(feature = "federation")]
     if expose_federation_routes {
         mint_router = mint_router.nest("/federation/v1", federation::create_federation_router());
@@ -3138,10 +2943,21 @@ async fn create_mint_router_with_custom_cache_inner(
         state.clone(),
         metrics::global_metrics_middleware,
     ));
-    let mint_router = mint_router
+    let mut mint_router = mint_router
         .layer(from_fn(cors_middleware))
         .with_state(state);
 
+    #[cfg(feature = "federation")]
+    if let Some(services) = federation_services {
+        match federation_services_handoff.take() {
+            Some(handoff) => {
+                let _ = handoff.send(services);
+            }
+            None => {
+                mint_router = mint_router.layer(axum::Extension(Arc::new(services.start().await?)));
+            }
+        }
+    }
     Ok(mint_router)
 }
 

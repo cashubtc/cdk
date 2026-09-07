@@ -1,4 +1,10 @@
+use super::*;
+
 use cdk_http_client::Transport;
+
+fn loopback_iroh_config() -> cdk_iroh::IrohConfig {
+    cdk_iroh::IrohConfig::static_only().with_bind_addr(([127, 0, 0, 1], 0).into())
+}
 
 fn iroh_federation_url(endpoint: cdk_iroh::EndpointId) -> MintUrl {
     MintUrl::from_str(&format!("iroh://{endpoint}")).expect("Iroh federation URL")
@@ -31,11 +37,11 @@ fn spawn_http_federation_server(
 
 #[tokio::test]
 async fn one_hybrid_transport_dials_mixed_http_and_iroh_roster() {
-    let first_node = cdk_iroh::IrohNode::ephemeral(cdk_iroh::IrohConfig::static_only())
+    let first_node = cdk_iroh::IrohNode::ephemeral(loopback_iroh_config())
         .await
         .expect("first Iroh node");
     let third_node = cdk_iroh::IrohNode::ephemeral(
-        cdk_iroh::IrohConfig::static_only().with_ticket(first_node.endpoint_ticket()),
+        loopback_iroh_config().with_ticket(first_node.endpoint_ticket()),
     )
     .await
     .expect("third Iroh node");
@@ -48,30 +54,22 @@ async fn one_hybrid_transport_dials_mixed_http_and_iroh_roster() {
         ThresholdParams::with_bft_consensus(3, 2).expect("three-member thresholds"),
         vec![
             iroh_federation_url(first_node.endpoint_id()),
-            MintUrl::from_str(&format!("http://{http_address}"))
-                .expect("HTTP federation URL"),
+            MintUrl::from_str(&format!("http://{http_address}")).expect("HTTP federation URL"),
             iroh_federation_url(third_node.endpoint_id()),
         ],
     );
     let mut first_state =
         federation_route_state_for_private(public.clone(), private[0].clone()).await;
-    first_state.federation.transport =
-        federation_transport_with_iroh_node(first_node.clone());
-    let second_state =
-        federation_route_state_for_private(public.clone(), private[1].clone()).await;
+    first_state.federation.transport = federation_transport_with_iroh_node(first_node.clone());
+    let second_state = federation_route_state_for_private(public.clone(), private[1].clone()).await;
     let mut third_state =
         federation_route_state_for_private(public.clone(), private[2].clone()).await;
-    third_state.federation.transport =
-        federation_transport_with_iroh_node(third_node.clone());
+    third_state.federation.transport = federation_transport_with_iroh_node(third_node.clone());
 
-    let first_server = cdk_iroh::IrohServer::start(
-        first_node.clone(),
-        federation_test_router(first_state),
-    );
-    let third_server = cdk_iroh::IrohServer::start(
-        third_node.clone(),
-        federation_test_router(third_state),
-    );
+    let first_server =
+        cdk_iroh::IrohServer::start(first_node.clone(), federation_test_router(first_state));
+    let third_server =
+        cdk_iroh::IrohServer::start(third_node.clone(), federation_test_router(third_state));
     let (http_shutdown, http_shutdown_rx) = tokio::sync::oneshot::channel();
     let http_server = tokio::spawn(async move {
         axum::serve(http_listener, federation_test_router(second_state))
@@ -92,8 +90,14 @@ async fn one_hybrid_transport_dials_mixed_http_and_iroh_roster() {
         client.peer_status(public.member(member_id(2)).expect("HTTP member")),
         client.peer_status(public.member(member_id(3)).expect("Iroh member")),
     );
-    assert_eq!(http_status.expect("HTTP peer status").member_id, member_id(2));
-    assert_eq!(iroh_status.expect("Iroh peer status").member_id, member_id(3));
+    assert_eq!(
+        http_status.expect("HTTP peer status").member_id,
+        member_id(2)
+    );
+    assert_eq!(
+        iroh_status.expect("Iroh peer status").member_id,
+        member_id(3)
+    );
 
     http_shutdown.send(()).expect("HTTP shutdown signal");
     http_server.await.expect("HTTP server task");
@@ -103,16 +107,16 @@ async fn one_hybrid_transport_dials_mixed_http_and_iroh_roster() {
 
 #[tokio::test]
 async fn all_iroh_private_routes_preserve_dkg_signatures_and_replay_fences() {
-    let first_node = cdk_iroh::IrohNode::ephemeral(cdk_iroh::IrohConfig::static_only())
+    let first_node = cdk_iroh::IrohNode::ephemeral(loopback_iroh_config())
         .await
         .expect("first Iroh node");
     let second_node = cdk_iroh::IrohNode::ephemeral(
-        cdk_iroh::IrohConfig::static_only().with_ticket(first_node.endpoint_ticket()),
+        loopback_iroh_config().with_ticket(first_node.endpoint_ticket()),
     )
     .await
     .expect("second Iroh node");
     let third_node = cdk_iroh::IrohNode::ephemeral(
-        cdk_iroh::IrohConfig::static_only().with_ticket(first_node.endpoint_ticket()),
+        loopback_iroh_config().with_ticket(first_node.endpoint_ticket()),
     )
     .await
     .expect("third Iroh node");
@@ -128,29 +132,21 @@ async fn all_iroh_private_routes_preserve_dkg_signatures_and_replay_fences() {
     );
     let mut first_state =
         federation_route_state_for_private(public.clone(), private[0].clone()).await;
-    first_state.federation.transport =
-        federation_transport_with_iroh_node(first_node.clone());
+    first_state.federation.transport = federation_transport_with_iroh_node(first_node.clone());
     let mut second_state =
         federation_route_state_for_private(public.clone(), private[1].clone()).await;
-    second_state.federation.transport =
-        federation_transport_with_iroh_node(second_node.clone());
+    second_state.federation.transport = federation_transport_with_iroh_node(second_node.clone());
 
-    let first_server = cdk_iroh::IrohServer::start(
-        first_node.clone(),
-        federation_test_router(first_state),
-    );
+    let first_server =
+        cdk_iroh::IrohServer::start(first_node.clone(), federation_test_router(first_state));
     let second_server = cdk_iroh::IrohServer::start(
         second_node.clone(),
         federation_test_router(second_state.clone()),
     );
     let target = public.member(member_id(2)).expect("second member");
     let transport = federation_transport_with_iroh_node(first_node.clone());
-    let client = FederationRestPeerClient::new(
-        transport.clone(),
-        &public,
-        private[0].clone(),
-    )
-    .expect("all-Iroh peer client");
+    let client = FederationRestPeerClient::new(transport.clone(), &public, private[0].clone())
+        .expect("all-Iroh peer client");
 
     assert_eq!(
         client
@@ -161,7 +157,11 @@ async fn all_iroh_private_routes_preserve_dkg_signatures_and_replay_fences() {
         member_id(1)
     );
     assert_eq!(
-        client.peer_status(target).await.expect("Iroh peer status").member_id,
+        client
+            .peer_status(target)
+            .await
+            .expect("Iroh peer status")
+            .member_id,
         member_id(2)
     );
     let commitment = dkg_commitment_request(&public, member_id(1), 11);
@@ -189,12 +189,7 @@ async fn all_iroh_private_routes_preserve_dkg_signatures_and_replay_fences() {
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0], secret_share);
 
-    let replay_request = signed_status_request(
-        &public,
-        &private[0],
-        member_id(2),
-        u64::MAX - 1,
-    );
+    let replay_request = signed_status_request(&public, &private[0], member_id(2), u64::MAX - 1);
     let status_url = target
         .federation_api_url
         .join_paths(&["federation", "v1", "status"])
@@ -207,7 +202,10 @@ async fn all_iroh_private_routes_preserve_dkg_signatures_and_replay_fences() {
         transport.http_post(status_url, None, &replay_request).await;
     assert!(replay.is_err(), "Iroh must not bypass replay rejection");
 
-    second_server.shutdown().await.expect("second Iroh shutdown");
+    second_server
+        .shutdown()
+        .await
+        .expect("second Iroh shutdown");
     first_server.shutdown().await.expect("first Iroh shutdown");
     third_node.close().await;
 }
@@ -215,13 +213,13 @@ async fn all_iroh_private_routes_preserve_dkg_signatures_and_replay_fences() {
 #[tokio::test]
 async fn mixed_http_iroh_roster_operates_restarts_and_catches_up() {
     let nodes = vec![
-        cdk_iroh::IrohNode::ephemeral(cdk_iroh::IrohConfig::static_only())
+        cdk_iroh::IrohNode::ephemeral(loopback_iroh_config())
             .await
             .expect("first client node"),
-        cdk_iroh::IrohNode::ephemeral(cdk_iroh::IrohConfig::static_only())
+        cdk_iroh::IrohNode::ephemeral(loopback_iroh_config())
             .await
             .expect("second server node"),
-        cdk_iroh::IrohNode::ephemeral(cdk_iroh::IrohConfig::static_only())
+        cdk_iroh::IrohNode::ephemeral(loopback_iroh_config())
             .await
             .expect("third client node"),
     ];
@@ -241,11 +239,9 @@ async fn mixed_http_iroh_roster_operates_restarts_and_catches_up() {
         .expect("third HTTP listener");
     let third_address = third_listener.local_addr().expect("third HTTP address");
     let federation_api_urls = vec![
-        MintUrl::from_str(&format!("http://{first_address}"))
-            .expect("first HTTP federation URL"),
+        MintUrl::from_str(&format!("http://{first_address}")).expect("first HTTP federation URL"),
         iroh_federation_url(nodes[1].endpoint_id()),
-        MintUrl::from_str(&format!("http://{third_address}"))
-            .expect("third HTTP federation URL"),
+        MintUrl::from_str(&format!("http://{third_address}")).expect("third HTTP federation URL"),
     ];
     let (public, private) = transport_config_with_member_federation_api_urls(
         ThresholdParams::with_bft_consensus(3, 2).expect("three-member thresholds"),
@@ -272,8 +268,10 @@ async fn mixed_http_iroh_roster_operates_restarts_and_catches_up() {
 
     let (first_shutdown, first_task) =
         spawn_http_federation_server(first_listener, first_state.clone());
-    let second_server =
-        cdk_iroh::IrohServer::start(nodes[1].clone(), federation_test_router(second_state.clone()));
+    let second_server = cdk_iroh::IrohServer::start(
+        nodes[1].clone(),
+        federation_test_router(second_state.clone()),
+    );
     let (third_shutdown, third_task) =
         spawn_http_federation_server(third_listener, third_state.clone());
     let clients = private
@@ -322,11 +320,16 @@ async fn mixed_http_iroh_roster_operates_restarts_and_catches_up() {
         .expect("begin source checkpoint promotion");
     transaction
         .promote_verified_federation_checkpoint(
-            &quorum.verify(&public).expect("verify source checkpoint quorum"),
+            &quorum
+                .verify(&public)
+                .expect("verify source checkpoint quorum"),
         )
         .await
         .expect("promote source checkpoint");
-    transaction.commit().await.expect("commit source checkpoint");
+    transaction
+        .commit()
+        .await
+        .expect("commit source checkpoint");
     let mut transaction = second_state
         .mint
         .localstore()
@@ -362,8 +365,7 @@ async fn mixed_http_iroh_roster_operates_restarts_and_catches_up() {
             .expect("replay first runtime after restart");
     restarted_first.federation.consensus = replayed_consensus;
     restarted_first.federation.sequences = replayed_sequences;
-    restarted_first.federation.transport =
-        federation_transport_with_iroh_node(nodes[0].clone());
+    restarted_first.federation.transport = federation_transport_with_iroh_node(nodes[0].clone());
     let restarted_listener = tokio::net::TcpListener::bind(first_address)
         .await
         .expect("restarted first HTTP listener");
@@ -406,7 +408,10 @@ async fn mixed_http_iroh_roster_operates_restarts_and_catches_up() {
         .expect("restarted first HTTP server task");
     third_shutdown.send(()).expect("stop third HTTP member");
     third_task.await.expect("third HTTP server task");
-    second_server.shutdown().await.expect("second Iroh shutdown");
+    second_server
+        .shutdown()
+        .await
+        .expect("second Iroh shutdown");
     nodes[0].close().await;
     nodes[2].close().await;
 }

@@ -832,6 +832,8 @@ fed-regtest-cli-smoke dir="target/cdk-fed-regtest-cli" wallet_dir="target/cdk-fe
   }
   cargo build -p cdk-cli --features federation
   just fed-regtest-clean "{{dir}}" >/dev/null 2>&1 || true
+  # Short smoke runs must checkpoint their final operation before the quorum assertion.
+  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "1" "1"
   just fed-regtest-start "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
   trap 'just fed-regtest-stop "{{dir}}"' EXIT
   wait_for_cli_smoke_status
@@ -956,7 +958,7 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
         --require-checkpoint-quorum \
         --require-no-digest-alerts \
         --require-no-invalid-operation-alerts 2>/dev/null)"; then
-        expected_lines="$(grep -Ec 'operations=10 latest_index=9 ' <<<"$status_output" || true)"
+        expected_lines="$(grep -Ec 'operations=11 latest_index=10 ' <<<"$status_output" || true)"
         if [[ "$expected_lines" == "{{members}}" ]]; then
           printf '%s\n' "$status_output" | tee "{{dir}}/slow-member-final-status.out"
           return 0
@@ -964,7 +966,7 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
       fi
       sleep 1
     done
-    printf 'all federation members did not converge on the ten expected value operations\n' >&2
+    printf 'all federation members did not converge on the eleven expected value operations\n' >&2
     target/debug/cdk-mintd federation status \
       --public-config "{{dir}}/federation-public.json" \
       --private-config "{{dir}}/member-1/federation-private.json" || true
@@ -991,14 +993,14 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
     mkdir -p "$work_dir"
     CDK_MINTD_FAKE_WALLET_MIN_DELAY="{{slow_delay_secs}}" \
     CDK_MINTD_FAKE_WALLET_MAX_DELAY="{{slow_delay_secs}}" \
-      nohup target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
+      nohup python3 scripts/start_federation_test_member.py "$config" "$work_dir" > "$work_dir/mintd.log" 2>&1 < /dev/null &
     echo "$!" > "$pid_file"
     echo "started slow member ${member} with pid $(cat "$pid_file")"
   }
   cargo build -p cdk-cli --features federation
   cargo build -p cdk-mintd --features federation-test-utils,sqlite,prometheus
   just fed-regtest-clean "{{dir}}" >/dev/null 2>&1 || true
-  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
+  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "1" "1"
   trap 'just fed-regtest-stop "{{dir}}"' EXIT
   for member in $(seq 1 "{{members}}"); do
     if [[ "$member" == "{{slow_member}}" ]]; then
@@ -1020,8 +1022,8 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
     --member-request-timeout-secs 45 \
     --member-fallback-timeout-secs 45 \
     --quote-status-member-timeout-secs 45 \
-    --mint-quote-visibility-attempts 20 \
-    --mint-quote-visibility-retry-delay-ms 250 \
+    --quote-visibility-attempts 20 \
+    --quote-visibility-retry-delay-ms 250 \
     --fanout-concurrency "{{members}}"
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive mint-info "$mint_url" >/dev/null
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
@@ -1051,8 +1053,8 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
     --member-request-timeout-secs 90 \
     --member-fallback-timeout-secs 90 \
     --quote-status-member-timeout-secs 90 \
-    --mint-quote-visibility-attempts 20 \
-    --mint-quote-visibility-retry-delay-ms 250 \
+    --quote-visibility-attempts 20 \
+    --quote-visibility-retry-delay-ms 250 \
     --fanout-concurrency "{{members}}"
   slow_mint_started="$(date +%s)"
   /usr/bin/time -p target/debug/cdk-cli --work-dir "{{wallet_dir}}-change" --non-interactive --unit sat \
@@ -1125,8 +1127,8 @@ fed-regtest-cli-smoke-insufficient-threshold dir="target/cdk-fed-regtest-cli-ins
     --member-request-timeout-secs 3 \
     --member-fallback-timeout-secs 3 \
     --quote-status-member-timeout-secs 3 \
-    --mint-quote-visibility-attempts 5 \
-    --mint-quote-visibility-retry-delay-ms 100
+    --quote-visibility-attempts 5 \
+    --quote-visibility-retry-delay-ms 100
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive mint-info "$mint_url" >/dev/null
   set +e
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive --unit sat \
@@ -1201,7 +1203,7 @@ fed-regtest-cli-smoke-mismatched-member dir="target/cdk-fed-regtest-cli-mismatch
   cargo build -p cdk-mintd --features federation-test-utils,sqlite,prometheus
   just fed-regtest-clean "{{dir}}" >/dev/null 2>&1 || true
   just fed-regtest-clean "{{bad_dir}}" >/dev/null 2>&1 || true
-  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
+  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "1" "1"
   just fed-regtest-generate "{{bad_dir}}" "{{members}}" "{{threshold}}" "$bad_port_start"
   trap 'just fed-regtest-stop "{{dir}}"; just fed-regtest-stop "{{bad_dir}}"' EXIT
   for member in 1 3 4 5; do
@@ -1213,7 +1215,7 @@ fed-regtest-cli-smoke-mismatched-member dir="target/cdk-fed-regtest-cli-mismatch
   mkdir -p "$work_dir"
   CDK_MINTD_FEDERATION_PUBLIC_CONFIG_PATH="{{bad_dir}}/federation-public.json" \
   CDK_MINTD_FEDERATION_PRIVATE_CONFIG_PATH="{{bad_dir}}/member-1/federation-private.json" \
-    nohup target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
+    nohup python3 scripts/start_federation_test_member.py "$config" "$work_dir" > "$work_dir/mintd.log" 2>&1 < /dev/null &
   echo "$!" > "$pid_file"
   echo "started mismatched member 2 with pid $(cat "$pid_file")"
   wait_for_honest_status
@@ -1267,7 +1269,7 @@ fed-regtest-cli-smoke-insufficient-valid-advertisements dir="target/cdk-fed-regt
     mkdir -p "$work_dir"
     CDK_MINTD_FEDERATION_PUBLIC_CONFIG_PATH="{{bad_dir}}/federation-public.json" \
     CDK_MINTD_FEDERATION_PRIVATE_CONFIG_PATH="{{bad_dir}}/member-${bad_private_member}/federation-private.json" \
-      nohup target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
+      nohup python3 scripts/start_federation_test_member.py "$config" "$work_dir" > "$work_dir/mintd.log" 2>&1 < /dev/null &
     echo "$!" > "$pid_file"
     echo "started mismatched member ${member} with pid $(cat "$pid_file")"
   }
@@ -1340,7 +1342,7 @@ fed-regtest-cli-smoke-missing-metadata dir="target/cdk-fed-regtest-cli-missing-m
     local pid_file="${work_dir}/mintd.pid"
     mkdir -p "$work_dir"
     CDK_MINTD_FEDERATION_ENABLED=false \
-      nohup target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
+      nohup python3 scripts/start_federation_test_member.py "$config" "$work_dir" > "$work_dir/mintd.log" 2>&1 < /dev/null &
     echo "$!" > "$pid_file"
     echo "started standalone member ${member} with pid $(cat "$pid_file")"
   }
@@ -1401,8 +1403,8 @@ fed-regtest-cli-smoke-all-members-unreachable dir="target/cdk-fed-regtest-cli-al
     --member-request-timeout-secs 1 \
     --member-fallback-timeout-secs 1 \
     --quote-status-member-timeout-secs 1 \
-    --mint-quote-visibility-attempts 2 \
-    --mint-quote-visibility-retry-delay-ms 50
+    --quote-visibility-attempts 2 \
+    --quote-visibility-retry-delay-ms 50
   set +e
   target/debug/cdk-cli --work-dir "{{wallet_dir}}" --non-interactive \
     mint-info "$mint_url" > "{{wallet_dir}}/mint-info-all-unreachable.out" 2>&1
@@ -1563,7 +1565,7 @@ fed-regtest-postgres-start dir="target/cdk-fed-regtest-postgres" members="5" thr
       continue
     fi
     mkdir -p "$work_dir"
-    nohup target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
+    nohup python3 scripts/start_federation_test_member.py "$config" "$work_dir" > "$work_dir/mintd.log" 2>&1 < /dev/null &
     echo "$!" > "$pid_file"
     echo "started member ${member} with pid $(cat "$pid_file")"
   done
@@ -1637,7 +1639,7 @@ fed-regtest-start dir="target/cdk-fed-regtest" members="5" threshold="3" port_st
       continue
     fi
     mkdir -p "$work_dir"
-    nohup "$mintd_bin" --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
+    CDK_MINTD_BIN="$mintd_bin" nohup python3 scripts/start_federation_test_member.py "$config" "$work_dir" > "$work_dir/mintd.log" 2>&1 < /dev/null &
     echo "$!" > "$pid_file"
     echo "started member ${member} with pid $(cat "$pid_file")"
   done
@@ -1666,7 +1668,7 @@ fed-regtest-start-member member dir="target/cdk-fed-regtest" build="1":
   if [[ "{{build}}" == "1" && "$mintd_bin" == "target/debug/cdk-mintd" ]]; then
     cargo build -p cdk-mintd --features federation-test-utils,sqlite,prometheus
   fi
-  nohup "$mintd_bin" --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
+  CDK_MINTD_BIN="$mintd_bin" nohup python3 scripts/start_federation_test_member.py "$config" "$work_dir" > "$work_dir/mintd.log" 2>&1 < /dev/null &
   echo "$!" > "$pid_file"
   echo "started member {{member}} with pid $(cat "$pid_file")"
   mint_url="$(awk -F' = ' '/^url = / { gsub("\"", "", $2); print $2; exit }' "$config")"

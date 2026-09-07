@@ -15,8 +15,9 @@ async fn persist_paid_mint_quote_projection_without_quote_journal(
     let FederationOperation::MintQuote(quote_operation) = &quote_envelope.operation else {
         panic!("expected mint quote operation");
     };
-    let materialized_quote = super::super::mint_quote_from_federation_operation(quote_operation)
-        .expect("materialized mint quote");
+    let materialized_quote =
+        super::super::helpers::mint_quote_from_federation_operation(quote_operation)
+            .expect("materialized mint quote");
 
     let mut tx = localstore.begin_transaction().await.expect("begin");
     tx.add_mint_quote(materialized_quote)

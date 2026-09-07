@@ -47,8 +47,6 @@ pub(crate) mod shared;
 #[cfg(test)]
 mod tests;
 
-#[cfg(feature = "federation")]
-use melt_saga::FederationInternalSettlementOutcome;
 use melt_saga::{MeltSaga, PaymentOutcome};
 
 fn pending_melt_wait_timeout() -> Duration {
@@ -1453,8 +1451,8 @@ impl Mint {
             .finalize_internal_settlement_federation(federation_operation_id)
             .await?
         {
-            FederationInternalSettlementOutcome::Finalized(response) => return Ok(response),
-            FederationInternalSettlementOutcome::External(_setup_saga) => {
+            Some(response) => Ok(response),
+            None => {
                 let mut quote = quote;
                 quote.state = MeltQuoteState::Pending;
                 Ok(quote.into_response(None))

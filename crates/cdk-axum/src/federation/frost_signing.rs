@@ -106,6 +106,7 @@ pub(crate) struct FrostLatencyContext {
 
 impl FrostLatencyContext {
     /// Construct bounded latency metadata without exposing it to consensus.
+    #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
     pub(crate) fn new(
         correlation: super::latency::FederationLatencyCorrelation,
         correlation_id: impl Into<String>,

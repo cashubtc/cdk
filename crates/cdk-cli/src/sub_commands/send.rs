@@ -363,6 +363,7 @@ mod federation_tests {
         send(
             &repository,
             &SendSubCommand {
+                animate: false,
                 memo: None,
                 preimage: None,
                 hash: None,

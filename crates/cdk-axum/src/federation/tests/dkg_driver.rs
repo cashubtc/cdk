@@ -89,9 +89,7 @@ impl DkgDriverTestFederation {
         }
 
         let mut members = Vec::new();
-        for ((state, db, seed), private_config) in
-            states.into_iter().zip(private_configs.into_iter())
-        {
+        for ((state, db, seed), private_config) in states.into_iter().zip(private_configs) {
             let participant =
                 prepare_federation_dkg_participant_state(&state, ceremony_id, keyset_spec.clone())
                     .await
@@ -987,8 +985,10 @@ async fn dkg_driver_times_out_one_slow_member_without_blocking_fast_members() {
         slow_member_id,
         [Duration::from_millis(100)],
     );
-    let mut sync_config = FederationPeerSyncConfig::default();
-    sync_config.peer_request_timeout = Duration::from_millis(20);
+    let sync_config = FederationPeerSyncConfig {
+        peer_request_timeout: Duration::from_millis(20),
+        ..Default::default()
+    };
     federation.members[0].client = FederationRestPeerClient::new_with_config(
         federation.transport.clone(),
         &federation.public_config,

@@ -187,10 +187,8 @@ fn bench_bls_proof_verification(c: &mut Criterion) {
                         .zip(&batch.signatures)
                         .zip(&message_refs)
                     {
-                        black_box(
-                            verify_bls_message(*mint_pubkey, *signature, message)
-                                .expect("scalar proof verification"),
-                        );
+                        black_box(verify_bls_message(*mint_pubkey, *signature, message))
+                            .expect("scalar proof verification");
                     }
                 });
             },
@@ -200,14 +198,12 @@ fn bench_bls_proof_verification(c: &mut Criterion) {
             &proof_count,
             |b, _| {
                 b.iter(|| {
-                    black_box(
-                        batch_verify_bls_messages(
-                            &batch.mint_pubkeys,
-                            &batch.signatures,
-                            &message_refs,
-                        )
-                        .expect("batch proof verification"),
-                    );
+                    black_box(batch_verify_bls_messages(
+                        &batch.mint_pubkeys,
+                        &batch.signatures,
+                        &message_refs,
+                    ))
+                    .expect("batch proof verification");
                 });
             },
         );

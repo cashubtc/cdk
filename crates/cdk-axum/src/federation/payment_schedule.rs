@@ -10,7 +10,6 @@ use sha2::{Digest, Sha256};
 const PRIMARY_NAMESPACE: &str = "cdk_federation";
 const SECONDARY_NAMESPACE: &str = "payment_observer";
 const SCHEDULE_KEY: &str = "payment_quote_backoff_v2";
-const LEGACY_MINT_SCHEDULE_KEY: &str = "mint_quote_backoff_v1";
 const SCHEDULE_VERSION: u8 = 4;
 
 const BASE_DELAY_MS: u64 = 5_000;
@@ -107,6 +106,14 @@ impl FederationPaymentObservationPermit {
     pub(super) fn observer_fallback_round(&self) -> u32 {
         self.observer_fallback_round
     }
+}
+
+/// Progress from one bounded attempt, used to update its durable retry schedule.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct FederationPaymentObservationProgress {
+    pub(super) advancement: FederationPaymentAdvancement,
+    pub(super) made_progress: bool,
+    pub(super) last_processed_operation_index: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -240,11 +247,14 @@ impl FederationPaymentObservationSchedule {
         db: &DynMintDatabase,
         permit: FederationPaymentObservationPermit,
         member_id: MemberId,
-        advancement: FederationPaymentAdvancement,
-        made_progress: bool,
-        last_processed_operation_index: Option<u64>,
+        progress: FederationPaymentObservationProgress,
         now_ms: u64,
     ) -> Result<(), cdk::Error> {
+        let FederationPaymentObservationProgress {
+            advancement,
+            made_progress,
+            last_processed_operation_index,
+        } = progress;
         let _guard = self.mutation_lock.lock().await;
         let mut schedules = load_schedules(db).await?;
         let Some(schedule) = schedules.quotes.get_mut(&permit.quote) else {
@@ -455,11 +465,6 @@ impl PersistedPaymentSchedule {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-struct LegacyMintSchedules {
-    quotes: BTreeMap<String, PersistedPaymentSchedule>,
-}
-
 async fn load_schedules(db: &DynMintDatabase) -> Result<PersistedPaymentSchedules, cdk::Error> {
     if let Some(bytes) = db
         .kv_read(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, SCHEDULE_KEY)
@@ -467,10 +472,6 @@ async fn load_schedules(db: &DynMintDatabase) -> Result<PersistedPaymentSchedule
     {
         return match serde_json::from_slice::<PersistedPaymentSchedules>(&bytes) {
             Ok(schedules) if schedules.version == SCHEDULE_VERSION => Ok(schedules),
-            Ok(mut schedules) if matches!(schedules.version, 2 | 3) => {
-                schedules.version = SCHEDULE_VERSION;
-                Ok(schedules)
-            }
             Ok(schedules) => {
                 tracing::warn!(
                     stored_version = schedules.version,
@@ -489,29 +490,7 @@ async fn load_schedules(db: &DynMintDatabase) -> Result<PersistedPaymentSchedule
         };
     }
 
-    let Some(bytes) = db
-        .kv_read(
-            PRIMARY_NAMESPACE,
-            SECONDARY_NAMESPACE,
-            LEGACY_MINT_SCHEDULE_KEY,
-        )
-        .await?
-    else {
-        return Ok(PersistedPaymentSchedules::default());
-    };
-    let Ok(legacy) = serde_json::from_slice::<LegacyMintSchedules>(&bytes) else {
-        return Ok(PersistedPaymentSchedules::default());
-    };
-    Ok(PersistedPaymentSchedules {
-        version: SCHEDULE_VERSION,
-        quotes: legacy
-            .quotes
-            .into_iter()
-            .map(|(quote, schedule)| (format!("mint:{quote}"), schedule))
-            .collect(),
-        mint_scan_after: None,
-        melt_scan_after: None,
-    })
+    Ok(PersistedPaymentSchedules::default())
 }
 
 async fn store_schedules(
@@ -736,9 +715,11 @@ mod tests {
                 &db,
                 permit,
                 member_id(),
-                FederationPaymentAdvancement::AwaitingBackendNotification,
-                false,
-                Some(1),
+                FederationPaymentObservationProgress {
+                    advancement: FederationPaymentAdvancement::AwaitingBackendNotification,
+                    made_progress: false,
+                    last_processed_operation_index: Some(1),
+                },
                 2_000,
             )
             .await
@@ -793,9 +774,11 @@ mod tests {
                     &db,
                     permit,
                     member_id(),
-                    FederationPaymentAdvancement::AwaitingExternalEvidence,
-                    false,
-                    Some(10),
+                    FederationPaymentObservationProgress {
+                        advancement: FederationPaymentAdvancement::AwaitingExternalEvidence,
+                        made_progress: false,
+                        last_processed_operation_index: Some(10),
+                    },
                     2_000,
                 )
                 .await
@@ -897,51 +880,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_mint_schedule_migrates_into_the_shared_namespace() {
-        let db: DynMintDatabase = Arc::new(
-            cdk_sqlite::mint::memory::empty()
-                .await
-                .expect("sqlite database"),
-        );
-        let quote = QuoteId::new();
-        let mut quotes = BTreeMap::new();
-        quotes.insert(
-            quote.to_string(),
-            serde_json::json!({
-                "consecutive_no_progress": 4,
-                "last_attempt_at_ms": 1_000,
-                "next_attempt_at_ms": 41_000,
-                "lease_until_ms": 0,
-                "generation": 2
-            }),
-        );
-        let legacy = serde_json::json!({
-            "version": 1,
-            "quotes": quotes
-        });
-        let bytes = serde_json::to_vec(&legacy).expect("legacy schedule JSON");
-        let mut tx = db.begin_transaction().await.expect("begin transaction");
-        tx.kv_write(
-            PRIMARY_NAMESPACE,
-            SECONDARY_NAMESPACE,
-            LEGACY_MINT_SCHEDULE_KEY,
-            &bytes,
-        )
-        .await
-        .expect("write legacy schedule");
-        tx.commit().await.expect("commit legacy schedule");
-
-        let schedules = load_schedules(&db).await.expect("load migrated schedule");
-        let migrated = schedules
-            .quotes
-            .get(&FederationPaymentQuote::mint(quote).schedule_key())
-            .expect("migrated mint schedule");
-        assert_eq!(migrated.consecutive_no_progress, 4);
-        assert_eq!(migrated.next_attempt_at_ms, 41_000);
-        assert_eq!(migrated.wait, PersistedPaymentWait::Ready);
-    }
-
-    #[tokio::test]
     async fn federation_wait_uses_slow_repair_without_changing_external_counter() {
         let db: DynMintDatabase = Arc::new(
             cdk_sqlite::mint::memory::empty()
@@ -965,9 +903,11 @@ mod tests {
                 &db,
                 permit,
                 member_id(),
-                FederationPaymentAdvancement::AwaitingFederationEvidence,
-                false,
-                Some(10),
+                FederationPaymentObservationProgress {
+                    advancement: FederationPaymentAdvancement::AwaitingFederationEvidence,
+                    made_progress: false,
+                    last_processed_operation_index: Some(10),
+                },
                 2_000,
             )
             .await
@@ -1011,9 +951,11 @@ mod tests {
                 &db,
                 permit,
                 member_id(),
-                FederationPaymentAdvancement::AwaitingObserverFallback,
-                false,
-                Some(10),
+                FederationPaymentObservationProgress {
+                    advancement: FederationPaymentAdvancement::AwaitingObserverFallback,
+                    made_progress: false,
+                    last_processed_operation_index: Some(10),
+                },
                 2_000,
             )
             .await
@@ -1036,9 +978,11 @@ mod tests {
                 &db,
                 early,
                 member_id(),
-                FederationPaymentAdvancement::AwaitingObserverFallback,
-                false,
-                Some(11),
+                FederationPaymentObservationProgress {
+                    advancement: FederationPaymentAdvancement::AwaitingObserverFallback,
+                    made_progress: false,
+                    last_processed_operation_index: Some(11),
+                },
                 3_100,
             )
             .await
@@ -1079,9 +1023,11 @@ mod tests {
                 &db,
                 expanded,
                 member_id(),
-                FederationPaymentAdvancement::AwaitingObserverFallback,
-                false,
-                Some(11),
+                FederationPaymentObservationProgress {
+                    advancement: FederationPaymentAdvancement::AwaitingObserverFallback,
+                    made_progress: false,
+                    last_processed_operation_index: Some(11),
+                },
                 8_100,
             )
             .await
@@ -1119,9 +1065,11 @@ mod tests {
                 &db,
                 permit,
                 member_id(),
-                FederationPaymentAdvancement::AwaitingObserverFallback,
-                false,
-                None,
+                FederationPaymentObservationProgress {
+                    advancement: FederationPaymentAdvancement::AwaitingObserverFallback,
+                    made_progress: false,
+                    last_processed_operation_index: None,
+                },
                 2_000,
             )
             .await
@@ -1142,9 +1090,11 @@ mod tests {
                 &db,
                 expanded,
                 member_id(),
-                FederationPaymentAdvancement::Progressed,
-                true,
-                Some(12),
+                FederationPaymentObservationProgress {
+                    advancement: FederationPaymentAdvancement::Progressed,
+                    made_progress: true,
+                    last_processed_operation_index: Some(12),
+                },
                 8_100,
             )
             .await
@@ -1160,43 +1110,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn version_two_schedule_migrates_without_losing_backoff() {
+    async fn unsupported_schedule_versions_rebuild_the_local_cache() {
         let db: DynMintDatabase = Arc::new(
             cdk_sqlite::mint::memory::empty()
                 .await
                 .expect("sqlite database"),
         );
-        let quote = FederationPaymentQuote::mint(QuoteId::new());
-        let schedules = serde_json::json!({
-            "version": 2,
-            "quotes": {
-                quote.schedule_key(): {
-                    "consecutive_no_progress": 4,
-                    "last_attempt_at_ms": 1_000,
-                    "next_attempt_at_ms": 41_000,
-                    "lease_until_ms": 0,
-                    "generation": 2,
-                    "wait": "external",
-                    "last_processed_operation_index": 9
-                }
-            }
-        });
-        let bytes = serde_json::to_vec(&schedules).expect("version two schedule JSON");
-        let mut tx = db.begin_transaction().await.expect("begin transaction");
-        tx.kv_write(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, SCHEDULE_KEY, &bytes)
-            .await
-            .expect("write version two schedule");
-        tx.commit().await.expect("commit version two schedule");
-
-        let migrated = load_schedules(&db).await.expect("load migrated schedule");
-        assert_eq!(migrated.version, SCHEDULE_VERSION);
-        let migrated = migrated
-            .quotes
-            .get(&quote.schedule_key())
-            .expect("quote schedule");
-        assert_eq!(migrated.consecutive_no_progress, 4);
-        assert_eq!(migrated.next_attempt_at_ms, 41_000);
-        assert_eq!(migrated.observer_fallback_round, 0);
+        for version in [1, 2, 3, SCHEDULE_VERSION + 1] {
+            let schedules = PersistedPaymentSchedules {
+                version,
+                quotes: BTreeMap::from([(
+                    "mint:obsolete".to_string(),
+                    PersistedPaymentSchedule {
+                        consecutive_no_progress: 4,
+                        next_attempt_at_ms: 41_000,
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            };
+            store_schedules(&db, &schedules).await.expect("store cache");
+            let rebuilt = load_schedules(&db).await.expect("rebuild cache");
+            assert_eq!(rebuilt.version, SCHEDULE_VERSION);
+            assert!(rebuilt.quotes.is_empty());
+        }
     }
 
     #[tokio::test]
@@ -1226,13 +1163,15 @@ mod tests {
                     &db,
                     permit,
                     member_id(),
-                    if quote == &completed {
-                        FederationPaymentAdvancement::Complete
-                    } else {
-                        FederationPaymentAdvancement::AwaitingExternalEvidence
+                    FederationPaymentObservationProgress {
+                        advancement: if quote == &completed {
+                            FederationPaymentAdvancement::Complete
+                        } else {
+                            FederationPaymentAdvancement::AwaitingExternalEvidence
+                        },
+                        made_progress: false,
+                        last_processed_operation_index: Some(10),
                     },
-                    false,
-                    Some(10),
                     2_000,
                 )
                 .await

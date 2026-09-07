@@ -384,6 +384,8 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::set_mint;
+    #[cfg(feature = "federation")]
+    use super::{get_wallet_for_mint, get_wallet_for_mint_without_probe};
 
     #[cfg(feature = "federation")]
     #[tokio::test]

@@ -533,7 +533,7 @@ fn runtime_config_rejects_invalid_aggregate_bls_proofs() {
 #[test]
 fn runtime_config_batch_verification_matches_scalar_boundary_and_rejects_corruption() {
     let runtime_config = runtime_config();
-    let proofs = (0..super::super::FEDERATION_BLS_PROOF_BATCH_MIN)
+    let proofs = (0..super::super::configuration_and_admission::FEDERATION_BLS_PROOF_BATCH_MIN)
         .map(|index| proof_for_runtime(&runtime_config, &format!("batch-proof-{index}")))
         .collect::<Vec<_>>();
 
@@ -647,7 +647,7 @@ fn runtime_config_signs_accepted_mint_operations() {
     let entry = accepted_entry_without_journal(
         0,
         runtime_config
-        .mint_operation(input.clone())
+            .mint_operation(input.clone())
             .expect("mint operation"),
     );
     let operation_id = entry.operation_id;
@@ -702,7 +702,7 @@ fn runtime_config_signs_accepted_swap_operations() {
     let entry = accepted_entry_without_journal(
         0,
         runtime_config
-        .swap_operation(swap.clone())
+            .swap_operation(swap.clone())
             .expect("swap operation"),
     );
     let operation_id = entry.operation_id;

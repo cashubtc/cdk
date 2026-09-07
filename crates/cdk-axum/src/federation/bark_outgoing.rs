@@ -70,11 +70,8 @@ fn matching_observer_count(
         .unwrap_or(0)
 }
 
-fn fallback_may_initiate(
-    is_actor: bool,
-    status: &cdk_bark::FederatedBarkSendTerminalStatus,
-) -> bool {
-    !is_actor && matches!(status, cdk_bark::FederatedBarkSendTerminalStatus::Missing)
+fn send_needs_initiation(status: &cdk_bark::FederatedBarkSendTerminalStatus) -> bool {
+    matches!(status, cdk_bark::FederatedBarkSendTerminalStatus::Missing)
 }
 
 /// Advance one accepted pending melt by at most one consensus-visible phase.
@@ -105,7 +102,9 @@ pub(super) async fn advance_federated_bark_melt_quote(
         super::latency::FederationLatencyDirection::Outgoing,
         super::latency::FederationLatencyPhase::BarkProjectionReady,
     );
-    let projection_result = crate::federation_bark_ready_projection(&state.mint, runtime).await;
+    // Accepted actions must remain recoverable when an earlier external action
+    // requires recovery. The recovery gate still requires complete local replay.
+    let projection_result = super::bark_maintenance::recovery_projection(state, runtime).await;
     projection_timer.finish(super::latency::FederationLatencyOutcome::from_success(
         projection_result.is_ok(),
     ));
@@ -332,25 +331,9 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 }
                 let next_epoch =
                     next_observation_epoch(&projection, action.action_id, federation.member_id())?;
-                let is_actor = plan.actor == federation.member_id();
-                if is_actor {
-                    let initiation_timer = super::latency::FederationLatencyTimer::start(
-                        super::latency::FederationLatencyCorrelation::Action,
-                        action.action_id.to_string(),
-                        super::latency::FederationLatencyBackend::Bark,
-                        super::latency::FederationLatencyDirection::Outgoing,
-                        super::latency::FederationLatencyPhase::BarkLightningInitiation,
-                    );
-                    let initiation_result = runtime
-                        .initiate_lightning_send(&quote, &projection, &plan_entry, htlcs)
-                        .await;
-                    initiation_timer.finish(
-                        super::latency::FederationLatencyOutcome::from_success(
-                            initiation_result.is_ok(),
-                        ),
-                    );
-                    initiation_result.map_err(|_| cdk::Error::Internal)?;
-                }
+                // A peer may have initiated this exact accepted payment while
+                // the actor still has an HTLC-only local checkpoint. Observe
+                // terminal state before retrying initiation, including on actor.
                 let terminal_timer = super::latency::FederationLatencyTimer::start(
                     super::latency::FederationLatencyCorrelation::Action,
                     action.action_id.to_string(),
@@ -382,7 +365,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 };
                 terminal_timer.finish(terminal_outcome);
                 let mut status = status_result.map_err(|_| cdk::Error::Internal)?;
-                if fallback_may_initiate(is_actor, &status) {
+                if send_needs_initiation(&status) {
                     let initiation_timer = super::latency::FederationLatencyTimer::start(
                         super::latency::FederationLatencyCorrelation::Action,
                         action.action_id.to_string(),
@@ -715,6 +698,12 @@ pub(super) async fn advance_federated_bark_melt_quote(
         };
     }
 
+    // Recovery permission never authorizes planning a new external payment.
+    runtime
+        .ensure_ready(projection.frontier().unwrap_or(0))
+        .await
+        .map_err(|_| cdk::Error::Internal)?;
+
     let saga = state
         .mint
         .localstore()
@@ -959,7 +948,7 @@ mod tests {
     };
     use cdk::Amount;
 
-    use super::{fallback_may_initiate, matching_observer_count};
+    use super::{matching_observer_count, send_needs_initiation};
 
     fn member(id: u16) -> MemberId {
         MemberId::new(id).expect("member ID")
@@ -1042,17 +1031,11 @@ mod tests {
     }
 
     #[test]
-    fn only_a_typed_missing_status_authorizes_fallback_initiation() {
-        assert!(!fallback_may_initiate(
-            false,
+    fn only_a_typed_missing_status_authorizes_initiation() {
+        assert!(!send_needs_initiation(
             &cdk_bark::FederatedBarkSendTerminalStatus::Pending,
         ));
-        assert!(fallback_may_initiate(
-            false,
-            &cdk_bark::FederatedBarkSendTerminalStatus::Missing,
-        ));
-        assert!(!fallback_may_initiate(
-            true,
+        assert!(send_needs_initiation(
             &cdk_bark::FederatedBarkSendTerminalStatus::Missing,
         ));
     }

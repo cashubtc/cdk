@@ -688,14 +688,18 @@ mod tests {
 
     #[test]
     fn retained_mint_error_response_preserves_exact_payload_and_classification() {
-        let response = ErrorResponse::new(
-            ErrorCode::TokenAlreadySpent,
-            "exact member response detail".to_string(),
-        );
-        let error = Error::MintErrorResponse(response.clone());
-
-        assert!(error.is_definitive_failure());
-        assert_eq!(ErrorResponse::from(error), response);
+        for (code, safe_to_release) in [
+            (ErrorCode::TokenAlreadySpent, false),
+            (ErrorCode::TokenPending, false),
+            (ErrorCode::DuplicateInputs, true),
+        ] {
+            let response = ErrorResponse::new(code, "exact member response detail".to_string());
+            let native = Error::from(response.clone());
+            let retained = Error::MintErrorResponse(response.clone());
+            assert_eq!(native.is_definitive_failure(), safe_to_release);
+            assert_eq!(retained.is_definitive_failure(), safe_to_release);
+            assert_eq!(ErrorResponse::from(retained), response);
+        }
     }
 
     #[cfg(feature = "federation")]

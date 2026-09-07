@@ -651,23 +651,34 @@ impl PreparedFederationMeltChange {
 pub(crate) enum FederationInternalMeltSettlement {
     NotInternal,
     Finalized {
-        quote: MeltQuote,
+        quote: Box<MeltQuote>,
         change_sigs: Option<Vec<BlindSignature>>,
     },
 }
 
 #[cfg(feature = "federation")]
-#[allow(clippy::too_many_arguments)]
+#[derive(Debug)]
+pub(crate) struct FederationMeltChange {
+    pub(crate) inputs_amount: Amount<CurrencyUnit>,
+    pub(crate) total_spent: Amount<CurrencyUnit>,
+    pub(crate) inputs_fee: Amount<CurrencyUnit>,
+    pub(crate) outputs: Vec<BlindedMessage>,
+}
+
+#[cfg(feature = "federation")]
 async fn prepare_federation_melt_change(
     mint: &super::super::Mint,
     quote_id: &QuoteId,
     federation_operation_id: FederationOperationId,
     signature_share_provenance: FederationSignatureShareProvenance,
-    inputs_amount: Amount<CurrencyUnit>,
-    total_spent: Amount<CurrencyUnit>,
-    inputs_fee: Amount<CurrencyUnit>,
-    change_outputs: Vec<BlindedMessage>,
+    change: FederationMeltChange,
 ) -> Result<PreparedFederationMeltChange, Error> {
+    let FederationMeltChange {
+        inputs_amount,
+        total_spent,
+        inputs_fee,
+        outputs: change_outputs,
+    } = change;
     if signature_share_provenance.entry.operation_id != federation_operation_id {
         return Err(
             cdk_common::federation::FederationError::SignatureShareOperationMismatch {
@@ -768,16 +779,13 @@ async fn prepare_federation_melt_change(
 }
 
 #[cfg(feature = "federation")]
-pub async fn process_federation_melt_change(
+pub(crate) async fn process_federation_melt_change(
     mint: &super::super::Mint,
     db: &DynMintDatabase,
     quote_id: &QuoteId,
     federation_operation_id: FederationOperationId,
     signature_share_provenance: FederationSignatureShareProvenance,
-    inputs_amount: Amount<CurrencyUnit>,
-    total_spent: Amount<CurrencyUnit>,
-    inputs_fee: Amount<CurrencyUnit>,
-    change_outputs: Vec<BlindedMessage>,
+    change: FederationMeltChange,
 ) -> Result<
     (
         Option<Vec<BlindSignature>>,
@@ -790,10 +798,7 @@ pub async fn process_federation_melt_change(
         quote_id,
         federation_operation_id,
         signature_share_provenance,
-        inputs_amount,
-        total_spent,
-        inputs_fee,
-        change_outputs,
+        change,
     )
     .await?;
     let mut tx = db.begin_transaction().await?;
@@ -1166,10 +1171,12 @@ pub(crate) async fn finalize_federation_internal_melt_quote(
         &quote.id,
         federation_operation_id,
         signature_share_provenance,
-        melt_request_info.inputs_amount.clone(),
-        total_spent.clone(),
-        melt_request_info.inputs_fee.clone(),
-        melt_request_info.change_outputs.clone(),
+        FederationMeltChange {
+            inputs_amount: melt_request_info.inputs_amount.clone(),
+            total_spent: total_spent.clone(),
+            inputs_fee: melt_request_info.inputs_fee.clone(),
+            outputs: melt_request_info.change_outputs.clone(),
+        },
     )
     .await?;
     let config = mint
@@ -1340,7 +1347,7 @@ pub(crate) async fn finalize_federation_internal_melt_quote(
     record_confirmed_payment_metrics(&paid_melt_quote, &total_spent);
 
     Ok(FederationInternalMeltSettlement::Finalized {
-        quote: paid_melt_quote,
+        quote: Box::new(paid_melt_quote),
         change_sigs: prepared_change.change_sigs,
     })
 }
@@ -1525,10 +1532,12 @@ async fn finalize_melt_quote_inner(
             &quote.id,
             federation_operation_id,
             signature_share_provenance,
-            melt_request_info.inputs_amount.clone(),
-            total_spent.clone(),
-            melt_request_info.inputs_fee.clone(),
-            melt_request_info.change_outputs.clone(),
+            FederationMeltChange {
+                inputs_amount: melt_request_info.inputs_amount.clone(),
+                total_spent: total_spent.clone(),
+                inputs_fee: melt_request_info.inputs_fee.clone(),
+                outputs: melt_request_info.change_outputs.clone(),
+            },
         )
         .await?;
         MeltChangeResult::Ready { change_sigs, tx }

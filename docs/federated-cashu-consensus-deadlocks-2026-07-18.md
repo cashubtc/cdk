@@ -1397,7 +1397,7 @@ legacy ID and discovery history.
 - **Observed behavior, exact code references, and evidence:**
   `begin_session_requeue_pending_finalization`
   (`crates/cdk-common/src/federation/consensus.rs:2531-2543`) clears the
-  pending-finalization maps *before* requeueing; a mid-loop `submit_item`
+  pending-finalization maps *before* requeuing; a mid-loop `submit_item`
   error propagates and silently drops the remaining items from every
   tracking structure. The same shape exists in `next_unit_payload`
   (`:2630-2636`): the provider drains the queue and burns the unit index
@@ -2995,7 +2995,7 @@ matching status metadata):
 
 `cargo test -p cdk --features federation,wallet --lib federated_melt_status_recovery_ignores_malformed_change_share -- --nocapture`
 
-FAILED with `NUT01(WrongKeyKind)`: one member's unparseable change-share `c`
+FAILED with `NUT01(WrongKeyKind)`: one member's unparsable change-share `c`
 aborted the entire status aggregation even though the two honest members
 alone met the threshold.
 

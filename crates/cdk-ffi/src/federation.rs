@@ -1,4 +1,4 @@
-//! Federation wallet bindings used by the local mobile packages.
+//! Federation discovery and wallet configuration bindings.
 
 use std::collections::BTreeSet;
 use std::str::FromStr;
@@ -160,10 +160,7 @@ pub(crate) fn federation_connector(
     .map_err(Into::into)
 }
 
-async fn fetch_json<T>(
-    transport: &IrohTransport<Async>,
-    url: url::Url,
-) -> Result<T, FfiError>
+async fn fetch_json<T>(transport: &IrohTransport<Async>, url: url::Url) -> Result<T, FfiError>
 where
     T: DeserializeOwned,
 {

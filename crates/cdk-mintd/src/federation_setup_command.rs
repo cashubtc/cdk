@@ -259,15 +259,17 @@ fn setup_frost_policy(
     args: &cli::FederationSetupCreateArgs,
     network: FederationSetupBitcoinNetwork,
 ) -> Result<FederationSetupFrostPolicy> {
-    #[allow(unused_mut)]
-    let mut applications = Vec::new();
-    #[cfg(feature = "federation-bdk")]
-    applications.push(FederationSetupFrostApplication::CdkOnchain {
-        application_key_epoch: args.frost_application_key_epoch,
-        confirmation_policy_version: 1,
-        minimum_confirmations: args.frost_minimum_confirmations,
-        fee_policy_version: args.frost_fee_policy_version,
-    });
+    let applications = vec![
+        #[cfg(feature = "federation-bdk")]
+        FederationSetupFrostApplication::CdkOnchain {
+            application_key_epoch: args.frost_application_key_epoch,
+            confirmation_policy_version: 1,
+            minimum_confirmations: args.frost_minimum_confirmations,
+            fee_policy_version: args.frost_fee_policy_version,
+        },
+    ];
+    #[cfg(feature = "federation-bark")]
+    let mut applications = applications;
     let bark = match (
         args.frost_bark_ark_server_public_key.as_deref(),
         args.frost_bark_application_key_epoch,
@@ -866,10 +868,9 @@ async fn build_setup_command_status(
             let records =
                 crate::federation_dkg_status::read_database_records_from_database(&dyn_database)
                     .await?;
-            let mut progress = records.progress(&handoff.public_config, &handoff.private_config);
-            if progress.finalized_ready {
-                let mut finalized = records
-                    .finalized_member_config(&handoff.public_config, &handoff.private_config)?;
+            let (mut progress, finalized) =
+                records.finalization_progress(&handoff.public_config, &handoff.private_config);
+            if let Some(mut finalized) = finalized {
                 crate::federation_dkg_status::attach_manifest_frost_applications(
                     &mut finalized,
                     records.frost_roots()?,
@@ -1059,15 +1060,11 @@ async fn activate_setup_with_faults(
     let dyn_database: cdk_common::database::DynMintDatabase = database.clone();
     let records =
         crate::federation_dkg_status::read_database_records_from_database(&dyn_database).await?;
-    let progress = records.progress(&handoff.public_config, &handoff.private_config);
-    if !progress.finalized_ready {
-        bail!(
-            "federation setup cannot activate before DKG and all final-config confirmations are complete"
-        );
-    }
-    let mut finalized = records
-        .finalized_member_config(&handoff.public_config, &handoff.private_config)
-        .context("failed to assemble confirmed final federation config")?;
+    let (_, finalized) =
+        records.finalization_progress(&handoff.public_config, &handoff.private_config);
+    let mut finalized = finalized.ok_or_else(|| anyhow!(
+        "federation setup cannot activate before DKG and all final-config confirmations are complete"
+    ))?;
     crate::federation_dkg_status::attach_manifest_frost_applications(
         &mut finalized,
         records.frost_roots()?,
@@ -1816,7 +1813,6 @@ impl FederationSetupLocalSecrets {
     }
 }
 
-#[allow(dead_code)] // Used by the M3 fake gate and the bounded M4 client.
 #[async_trait]
 pub(crate) trait FederationSetupCoordinator: Send + Sync {
     async fn enroll(
@@ -1949,7 +1945,6 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(dead_code)] // Wired to the public CLI when the bounded M4 client lands.
 pub(crate) async fn join_setup<DB, C>(
     db: &DB,
     coordinator: &C,
@@ -2175,7 +2170,6 @@ where
         .context("failed to render federation setup proposal review")
 }
 
-#[allow(dead_code)] // Wired to the public CLI when the bounded M4 client lands.
 pub(crate) async fn fetch_and_review_proposal<DB, C>(
     db: &DB,
     coordinator: &C,
@@ -2508,7 +2502,6 @@ where
         .context("failed to commit creator setup state")
 }
 
-#[allow(dead_code)] // Reachable through the M3 join application boundary.
 async fn persist_pending_join<DB>(
     db: &DB,
     config: &FederationSetupLocalConfig,
@@ -2540,7 +2533,6 @@ where
         .context("failed to commit pending joining enrollment")
 }
 
-#[allow(dead_code)] // Reachable through the M3 join application boundary.
 async fn mark_local_enrollment_accepted<DB>(
     db: &DB,
     config: &FederationSetupLocalConfig,

@@ -141,10 +141,15 @@ pub(super) async fn mark_federation_operation_apply_failure(
 }
 
 fn is_definitive_federation_apply_rejection(error: &cdk::Error) -> bool {
-    // A wallet-facing PendingQuote remains ambiguous, but after consensus
-    // ordering it means an earlier operation already owns the related quote.
-    // The losing operation made no state change and is safe to reject.
-    error.is_definitive_failure() || matches!(error, cdk::Error::PendingQuote)
+    // Wallet proof-release policy is deliberately conservative for spent or
+    // reserved inputs. At ordered application, those states instead identify a
+    // deterministic losing operation: its transaction rolled back, and replay
+    // must record the rejection and continue beyond it.
+    error.is_definitive_failure()
+        || matches!(
+            error,
+            cdk::Error::PendingQuote | cdk::Error::TokenAlreadySpent | cdk::Error::TokenPending
+        )
 }
 
 pub(crate) async fn apply_federation_journal_entry_for_replay(
@@ -196,7 +201,7 @@ pub(crate) async fn apply_federation_journal_entry_for_replay(
                         err
                     )));
                 }
-                if attempts == 1 || attempts % 10 == 0 {
+                if attempts == 1 || attempts.is_multiple_of(10) {
                     tracing::warn!(
                         operation_id = %entry.operation_id,
                         retry_attempts = attempts,
@@ -694,11 +699,15 @@ mod tests {
     use super::is_definitive_federation_apply_rejection;
 
     #[test]
-    fn ordered_pending_quote_is_a_rejection_without_changing_wallet_semantics() {
-        assert!(!cdk::Error::PendingQuote.is_definitive_failure());
-        assert!(is_definitive_federation_apply_rejection(
-            &cdk::Error::PendingQuote
-        ));
+    fn ordered_conflicts_are_rejections_without_releasing_wallet_proofs() {
+        for error in [
+            cdk::Error::PendingQuote,
+            cdk::Error::TokenAlreadySpent,
+            cdk::Error::TokenPending,
+        ] {
+            assert!(!error.is_definitive_failure());
+            assert!(is_definitive_federation_apply_rejection(&error));
+        }
         assert!(is_definitive_federation_apply_rejection(
             &cdk::Error::RequestAlreadyPaid
         ));

@@ -29,18 +29,17 @@ use super::{local_peer_order_status, local_peer_status};
 pub(crate) fn spawn_federation_peer_sync_loop_with_config(
     state: MintState,
     sync_config: FederationPeerSyncConfig,
-) {
-    if let Err(err) = sync_config.validate() {
-        tracing::error!("Could not start federation peer sync loop: {}", err);
-        return;
-    }
+) -> Result<(), cdk::Error> {
+    sync_config
+        .validate()
+        .map_err(|err| cdk::Error::Custom(err.to_string()))?;
     if federation_peer_sync_disabled_by_env() {
         tracing::warn!("Federation peer sync loop disabled by environment");
-        return;
+        return Ok(());
     }
 
     let Some(config) = state.mint.federation_config().cloned() else {
-        return;
+        return Ok(());
     };
     let public_config = config.public_config().clone();
     let local_member = config.member_id();
@@ -62,31 +61,34 @@ pub(crate) fn spawn_federation_peer_sync_loop_with_config(
         .collect::<Vec<_>>();
 
     if peers.is_empty() {
-        return;
+        return Ok(());
     }
 
     let private_config = config.private_config().clone();
-    tokio::spawn(async move {
-        let client = match FederationRestPeerClient::new_with_validated_config(
-            state.federation.transport.clone(),
-            &public_config,
-            private_config,
-            sync_config,
-        ) {
-            Ok(client) => client,
-            Err(err) => {
-                tracing::error!("Could not start federation peer sync loop: {}", err);
-                return;
-            }
-        };
+    let client = FederationRestPeerClient::new_with_validated_config(
+        state.federation.transport.clone(),
+        &public_config,
+        private_config,
+        sync_config,
+    )
+    .map_err(|err| cdk::Error::Custom(err.to_string()))?;
+    let tasks = state.federation.payment_observer.tasks.clone();
+    let stop = tasks.stop_token();
+    tasks.spawn("peer sync", true, async move {
         if !initial_delay.is_zero() {
-            time::sleep(initial_delay).await;
+            tokio::select! {
+                _ = stop.cancelled() => return,
+                _ = time::sleep(initial_delay) => {}
+            }
         }
         let mut interval = federation_peer_sync_interval(sync_config);
         let mut reconnect_backoff = FederationPeerReconnectBackoff::default();
 
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = stop.cancelled() => break,
+                _ = interval.tick() => {}
+            }
             run_federation_peer_sync_round_with_backoff(
                 &state,
                 &client,
@@ -96,9 +98,10 @@ pub(crate) fn spawn_federation_peer_sync_loop_with_config(
             .await;
         }
     });
+    Ok(())
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(super) async fn run_federation_peer_sync_round<T>(
     state: &MintState,
     client: &FederationRestPeerClient<T>,
@@ -273,18 +276,10 @@ async fn apply_checkpoint_discovered_during_peer_sync<T>(
         .iter()
         .filter(|status| status.operation_count > local_operation_count)
         .max_by_key(|status| status.operation_count);
-    // Inspecting a checkpoint target verifies its quorum. Keep that work off the healthy idle
-    // path unless a peer is ahead. During startup, however, a crash can leave a complete suffix
-    // durable immediately before its quorum is promoted. That exact target needs no more network
-    // data, but it must remain discoverable so the existing promotion guard can finish recovery.
-    if source_status.is_none()
-        && matches!(
-            state.federation_sync_status().await,
-            Some(crate::FederationSyncStatus::Healthy)
-        )
-    {
-        return;
-    }
+    // A healthy member can already hold an ordered suffix and all its quorums
+    // while an earlier promotion is still pending. Advance local trust even
+    // when every peer has the same operation count. Target lookup verifies only
+    // a quorum that is not already covered by the trusted checkpoint.
     let target = match next_local_checkpoint_catch_up_target(state).await {
         Ok(Some(target)) => target,
         Ok(None) => return,
@@ -858,7 +853,20 @@ async fn local_pending_checkpoint(
     kind: FederationCheckpointKind,
 ) -> Option<FederationCheckpoint> {
     let db = state.mint.localstore();
-    let candidate = match db.get_latest_federation_checkpoint(kind).await {
+    let candidate = match async {
+        match kind {
+            FederationCheckpointKind::Scheduled => {
+                let sequence = db
+                    .get_latest_federation_checkpoint_quorum(kind)
+                    .await?
+                    .map_or(0, |quorum| quorum.checkpoint.scheduled_checkpoint_sequence);
+                db.get_next_federation_scheduled_checkpoint(sequence).await
+            }
+            FederationCheckpointKind::Recovery => db.get_latest_federation_checkpoint(kind).await,
+        }
+    }
+    .await
+    {
         Ok(candidate) => candidate?,
         Err(err) => {
             tracing::warn!("Could not load local checkpoint candidate: {}", err);

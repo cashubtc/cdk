@@ -1,7 +1,7 @@
 //! Authenticated operator commands for the federated on-chain wallet.
 
+use crate::federation_operator::{load_configs, operator_sequence, target_member};
 use std::str::FromStr;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
@@ -82,9 +82,6 @@ async fn query_transaction_status<T>(
 where
     T: Transport,
 {
-    private_config
-        .validate_against_public(public_config)
-        .context("private federation config does not match public federation config")?;
     let request = signed_transaction_request(
         public_config,
         private_config,
@@ -112,9 +109,6 @@ async fn request_rebroadcast<T>(
 where
     T: Transport,
 {
-    private_config
-        .validate_against_public(public_config)
-        .context("private federation config does not match public federation config")?;
     let request = signed_transaction_request(
         public_config,
         private_config,
@@ -142,39 +136,11 @@ fn signed_transaction_request(
     Ok(FederationSignedRequest::new_signed(
         public_config.federation_id,
         member.member_id,
-        operator_sequence(),
+        operator_sequence()?,
         kind,
         FederationWalletTransactionRequest::new(proposal_id),
         private_config,
     )?)
-}
-
-async fn load_configs(
-    cli_args: &CLIArgs,
-    public_config: &Option<std::path::PathBuf>,
-    private_config: &Option<std::path::PathBuf>,
-    action: &str,
-) -> Result<(FederationConfig, MemberConfigPrivate)> {
-    let (public_path, private_path) =
-        crate::federation_config_paths(cli_args, public_config, private_config, action).await?;
-    let public_config = crate::read_federation_json(&public_path, "public federation config")?;
-    let private_config = crate::read_federation_json(&private_path, "private federation config")?;
-    Ok((public_config, private_config))
-}
-
-fn target_member(
-    public_config: &FederationConfig,
-    private_config: &MemberConfigPrivate,
-    requested: Option<u16>,
-) -> Result<MemberConfigPublic> {
-    let member_id = match requested {
-        Some(member_id) => MemberId::new(member_id)?,
-        None => private_config.member_id,
-    };
-    public_config
-        .member(member_id)
-        .cloned()
-        .with_context(|| format!("federation public config has no member {member_id}"))
 }
 
 fn parse_proposal_id(value: &str) -> Result<FederationTransactionProposalId> {
@@ -216,15 +182,6 @@ fn transaction_state_name(state: FederationAcceptedTransactionState) -> &'static
         FederationAcceptedTransactionState::Abandoned => "abandoned",
         FederationAcceptedTransactionState::Replaced { .. } => "replaced",
     }
-}
-
-fn operator_sequence() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .ok()
-        .and_then(|millis| u64::try_from(millis).ok())
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

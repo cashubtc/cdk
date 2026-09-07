@@ -108,9 +108,9 @@ async fn local_status_includes_aleph_bft_adapter_counters() {
 
 #[tokio::test]
 async fn private_aleph_bft_activity_route_wakes_live_session_and_preserves_rejected_sequence() {
-    let (mut state, public_config, peer_private) = aleph_bft_route_state().await;
+    let (state, public_config, peer_private) = aleph_bft_route_state().await;
     let handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut state,
+        &state,
         FederationPeerSyncConfig::default(),
         CdkAlephBftNetworkPumpConfig::default(),
         MockFederationTransport::default(),

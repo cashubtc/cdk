@@ -7,7 +7,7 @@ use cdk_common::federation::{
 };
 
 use super::super::Mint;
-use super::finish_federation_apply_transaction;
+use super::application::finish_federation_apply_transaction;
 
 pub(super) const ADDRESS_ALLOCATION_PRIMARY_NAMESPACE: &str = "federation";
 pub(super) const ADDRESS_ALLOCATION_SECONDARY_NAMESPACE: &str = "address_allocation";

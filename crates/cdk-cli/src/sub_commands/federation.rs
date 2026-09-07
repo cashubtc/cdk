@@ -85,14 +85,14 @@ pub struct FederationAddSubCommand {
     #[arg(long, default_value_t = 10)]
     quote_status_member_timeout_secs: u64,
     /// Maximum number of concurrent member calls.
-    #[arg(long, default_value_t = usize::MAX)]
+    #[arg(long, default_value_t = cdk_common::federation::FEDERATION_MAX_DKG_MEMBERS)]
     fanout_concurrency: usize,
     /// Attempts to wait for a newly created mint quote to become threshold-visible.
     #[arg(long, default_value_t = 100)]
-    mint_quote_visibility_attempts: u16,
+    quote_visibility_attempts: u16,
     /// Delay in milliseconds between mint quote threshold-visibility attempts.
     #[arg(long, default_value_t = 50)]
-    mint_quote_visibility_retry_delay_ms: u64,
+    quote_visibility_retry_delay_ms: u64,
 }
 
 impl FederationAddSubCommand {
@@ -108,8 +108,8 @@ impl FederationAddSubCommand {
             member_request_max_retries: self.member_request_max_retries,
             quote_status_member_timeout_secs: self.quote_status_member_timeout_secs,
             fanout_concurrency: self.fanout_concurrency,
-            mint_quote_visibility_attempts: self.mint_quote_visibility_attempts,
-            mint_quote_visibility_retry_delay_ms: self.mint_quote_visibility_retry_delay_ms,
+            quote_visibility_attempts: self.quote_visibility_attempts,
+            quote_visibility_retry_delay_ms: self.quote_visibility_retry_delay_ms,
         })
     }
 }
@@ -326,9 +326,9 @@ pub struct StoredFederationConnectorPolicy {
     /// Maximum number of concurrent member calls.
     pub fanout_concurrency: usize,
     /// Attempts to wait for a newly created mint quote to become threshold-visible.
-    pub mint_quote_visibility_attempts: u16,
+    pub quote_visibility_attempts: u16,
     /// Delay in milliseconds between mint quote threshold-visibility attempts.
-    pub mint_quote_visibility_retry_delay_ms: u64,
+    pub quote_visibility_retry_delay_ms: u64,
 }
 
 impl Default for StoredFederationConnectorPolicy {
@@ -347,10 +347,8 @@ impl StoredFederationConnectorPolicy {
             member_request_max_retries: config.member_request_max_retries,
             quote_status_member_timeout_secs: config.quote_status_member_timeout.as_secs(),
             fanout_concurrency: config.fanout_concurrency,
-            mint_quote_visibility_attempts: config.mint_quote_visibility_attempts,
-            mint_quote_visibility_retry_delay_ms: millis_u64(
-                config.mint_quote_visibility_retry_delay,
-            ),
+            quote_visibility_attempts: config.quote_visibility_attempts,
+            quote_visibility_retry_delay_ms: millis_u64(config.quote_visibility_retry_delay),
         }
     }
 
@@ -363,9 +361,9 @@ impl StoredFederationConnectorPolicy {
             member_request_max_retries: self.member_request_max_retries,
             quote_status_member_timeout: Duration::from_secs(self.quote_status_member_timeout_secs),
             fanout_concurrency: self.fanout_concurrency,
-            mint_quote_visibility_attempts: self.mint_quote_visibility_attempts,
-            mint_quote_visibility_retry_delay: Duration::from_millis(
-                self.mint_quote_visibility_retry_delay_ms,
+            quote_visibility_attempts: self.quote_visibility_attempts,
+            quote_visibility_retry_delay: Duration::from_millis(
+                self.quote_visibility_retry_delay_ms,
             ),
         }
     }
@@ -646,8 +644,8 @@ mod tests {
             member_request_max_retries: 0,
             quote_status_member_timeout_secs: 10,
             fanout_concurrency: usize::MAX,
-            mint_quote_visibility_attempts: 100,
-            mint_quote_visibility_retry_delay_ms: 50,
+            quote_visibility_attempts: 100,
+            quote_visibility_retry_delay_ms: 50,
         }
     }
 

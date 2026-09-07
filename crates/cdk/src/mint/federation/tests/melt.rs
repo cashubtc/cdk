@@ -103,7 +103,7 @@ async fn accepted_frost_onchain_melt_materializes_one_pending_payment_intent() {
     );
     assert_eq!(
         intent.intent.creation_time,
-        super::super::federation_accepted_order(&melt_entry)
+        super::super::helpers::federation_accepted_order(&melt_entry)
     );
     assert_eq!(intent.intent.melt_operation_id, melt_entry.operation_id);
     assert!(mint
@@ -263,7 +263,7 @@ async fn accepted_frost_onchain_melt_materializes_one_pending_payment_intent() {
         payment_id: Some(PaymentIdentifier::QuoteId(quote.clone())),
         payment_proof: Some(receipt.outpoint.to_string()),
     };
-    let response = super::super::melt_quote_payment_response(
+    let response = super::super::helpers::melt_quote_payment_response(
         FederationOperationId::from_bytes([34; 32]),
         &stored_quote,
         &observation,
@@ -278,7 +278,7 @@ async fn accepted_frost_onchain_melt_materializes_one_pending_payment_intent() {
     assert_eq!(response.status, MeltQuoteState::Paid);
     assert_eq!(response.total_spent, Amount::new(1, CurrencyUnit::Sat));
 
-    let exact_offchain_response = super::super::melt_quote_payment_response(
+    let exact_offchain_response = super::super::helpers::melt_quote_payment_response(
         FederationOperationId::from_bytes([35; 32]),
         &stored_quote,
         &observation,
@@ -729,10 +729,12 @@ async fn process_federation_melt_change_signs_rotated_keyset() {
         &quote,
         operation_id,
         signature_share_provenance,
-        Amount::new(3, CurrencyUnit::Sat),
-        Amount::new(2, CurrencyUnit::Sat),
-        Amount::ZERO.with_unit(CurrencyUnit::Sat),
-        vec![change_output],
+        super::super::super::melt::shared::FederationMeltChange {
+            inputs_amount: Amount::new(3, CurrencyUnit::Sat),
+            total_spent: Amount::new(2, CurrencyUnit::Sat),
+            inputs_fee: Amount::ZERO.with_unit(CurrencyUnit::Sat),
+            outputs: vec![change_output],
+        },
     )
     .await
     .expect("process federated change");
@@ -1481,9 +1483,7 @@ async fn apply_federation_melt_rejects_distinct_quote_for_paid_lookup_id_before_
         proof_for_runtime(&runtime_config, "paid-lookup-original-input-one"),
         proof_for_runtime(&runtime_config, "paid-lookup-original-input-two"),
     ];
-    let original_input_ys = original_inputs
-        .ys()
-        .expect("paid lookup original input ys");
+    let original_input_ys = original_inputs.ys().expect("paid lookup original input ys");
     let original_entry = appended_entry(
         &mut journal,
         runtime_config
@@ -2160,16 +2160,8 @@ async fn paid_federation_melt_replays_finalizing_cleanup_without_second_payment(
     assert_eq!(make_payment_calls.load(Ordering::Relaxed), 1);
     let payment_entry = appended_entry(
         &mut journal,
-        runtime_config.melt_quote_payment_observation_with_metadata(
-            payment_observation.quote,
-            payment_observation.method,
-            payment_observation.state,
-            payment_observation.amount,
-            payment_observation.fee_reserve,
-            payment_observation.total_spent,
-            payment_observation.payment_proof,
-            payment_observation.payment_id,
-        ),
+        runtime_config
+            .operation_envelope(FederationOperation::MeltQuotePayment(payment_observation)),
     );
     persist_journal_entry(&localstore, &payment_entry).await;
 
@@ -2298,7 +2290,8 @@ async fn paid_federation_melt_replays_finalizing_cleanup_without_second_payment(
     );
 
     drop(restarted);
-    let restarted_again = restart_federated_test_mint(runtime_config, Arc::clone(&localstore)).await;
+    let restarted_again =
+        restart_federated_test_mint(runtime_config, Arc::clone(&localstore)).await;
     assert!(
         restarted_again
             .apply_federation_journal_entries(std::slice::from_ref(&payment_entry))
@@ -2634,10 +2627,7 @@ async fn internal_melt_to_mint_settlement_updates_both_quotes_in_accepted_melt()
         stored_mint_quote.payments[0].payment_id,
         melt_quote.to_string()
     );
-    assert_eq!(
-        stored_mint_quote.payments[0].time,
-        0
-    );
+    assert_eq!(stored_mint_quote.payments[0].time, 0);
 
     let stored_melt_quote = localstore
         .get_melt_quote(&melt_quote)

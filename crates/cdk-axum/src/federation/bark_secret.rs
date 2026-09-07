@@ -245,8 +245,12 @@ pub(super) async fn post_bark_evidence_attestation(
     let quote = payload.payload.binding.quote.parse::<QuoteId>();
     if let Ok(quote) = quote {
         let wake_state = state.clone();
-        tokio::spawn(async move {
-            let result = match phase {
+        state
+            .federation
+            .payment_observer
+            .tasks
+            .spawn("Bark evidence wake", false, async move {
+                let result = match phase {
                 FederationBarkEvidencePhase::ReceiveHtlcsReady
                 | FederationBarkEvidencePhase::ReceiveClaimed => {
                     super::bark_incoming::advance_federated_bark_mint_quote_from_evidence_delivery(
@@ -265,10 +269,10 @@ pub(super) async fn post_bark_evidence_attestation(
                     .await
                 }
             };
-            if let Err(error) = result {
-                tracing::debug!(error = %error, "Bark evidence wake did not advance quote");
-            }
-        });
+                if let Err(error) = result {
+                    tracing::debug!(error = %error, "Bark evidence wake did not advance quote");
+                }
+            });
     }
     Ok(Json(response))
 }

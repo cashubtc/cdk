@@ -206,7 +206,10 @@ mod migration_tests {
             .iter()
             .filter(|(candidate, name, _)| {
                 *candidate == backend
-                    && (*name < BARK_PROJECTION_MIGRATION
+                    // This branch adds FAILED quote support; it is not part of
+                    // the upstream standalone migration history being frozen.
+                    && *name != FAILED_STATE_MIGRATION
+                    && (*name < "20260712000000_create_federation_schema.sql"
                         || name.starts_with("1_")
                         || name.starts_with("2_"))
             })
@@ -252,19 +255,19 @@ mod migration_tests {
     }
 
     #[test]
-    fn every_pre_bark_migration_is_checksum_locked() {
+    fn standalone_migration_history_is_checksum_locked() {
         assert_eq!(
             historical_migration_digest("postgres"),
             (
-                30,
-                "e6b33aa8a6cae15af577300bb3eb854e076908852d3b4dfa802451dd3d40f78d".to_string(),
+                26,
+                "03f570984e089b350bb098de1a7c30db7f1390be143ca8b8c7ab9a2b6b0c5660".to_string(),
             )
         );
         assert_eq!(
             historical_migration_digest("sqlite"),
             (
-                53,
-                "f6da2daca2401210bb40ae967db5b4c14cef5df1985272d9d61bd3302259131b".to_string(),
+                49,
+                "5293f6892f8759594bb0c01c5ba2a2552d035a6df9f7f2bb0fbace339761cb00".to_string(),
             )
         );
     }

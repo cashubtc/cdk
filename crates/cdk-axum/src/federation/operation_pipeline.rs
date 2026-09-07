@@ -198,6 +198,7 @@ impl FederationNodeRuntime {
         ))
     }
 
+    #[cfg(test)]
     pub(crate) fn pending_response_waiter_count(&self) -> usize {
         self.notifications
             .as_ref()
@@ -216,6 +217,7 @@ impl FederationNodeRuntime {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn response_cache_entry_count(&self) -> usize {
         self.notifications
             .as_ref()

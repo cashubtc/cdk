@@ -337,6 +337,7 @@ dependencies = [
 [[package]]
 name = "ark-lib"
 version = "0.6.0"
+source = "git+https://github.com/callebtc/bark?rev=8d1eda643dd11e9eb600ec44e36622c8f77b6322#8d1eda643dd11e9eb600ec44e36622c8f77b6322"
 dependencies = [
  "async-trait",
  "bark-bitcoin-ext",
@@ -838,6 +839,7 @@ dependencies = [
 [[package]]
 name = "bark-bitcoin-ext"
 version = "0.6.0"
+source = "git+https://github.com/callebtc/bark?rev=8d1eda643dd11e9eb600ec44e36622c8f77b6322#8d1eda643dd11e9eb600ec44e36622c8f77b6322"
 dependencies = [
  "async-trait",
  "bdk_bitcoind_rpc 0.22.0",
@@ -855,6 +857,7 @@ dependencies = [
 [[package]]
 name = "bark-common"
 version = "0.6.0"
+source = "git+https://github.com/callebtc/bark?rev=8d1eda643dd11e9eb600ec44e36622c8f77b6322#8d1eda643dd11e9eb600ec44e36622c8f77b6322"
 dependencies = [
  "anyhow",
  "serde",
@@ -864,6 +867,7 @@ dependencies = [
 [[package]]
 name = "bark-server-rpc"
 version = "0.6.0"
+source = "git+https://github.com/callebtc/bark?rev=8d1eda643dd11e9eb600ec44e36622c8f77b6322#8d1eda643dd11e9eb600ec44e36622c8f77b6322"
 dependencies = [
  "ark-lib",
  "bitcoin",
@@ -881,6 +885,7 @@ dependencies = [
 [[package]]
 name = "bark-wallet"
 version = "0.6.0"
+source = "git+https://github.com/callebtc/bark?rev=8d1eda643dd11e9eb600ec44e36622c8f77b6322#8d1eda643dd11e9eb600ec44e36622c8f77b6322"
 dependencies = [
  "anyhow",
  "ark-lib",
@@ -1116,6 +1121,7 @@ dependencies = [
 [[package]]
 name = "bip321"
 version = "0.4.0"
+source = "git+https://github.com/callebtc/bark?rev=8d1eda643dd11e9eb600ec44e36622c8f77b6322#8d1eda643dd11e9eb600ec44e36622c8f77b6322"
 dependencies = [
  "bark-bitcoin-ext",
  "bitcoin",
@@ -1697,6 +1703,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -1908,6 +1915,7 @@ dependencies = [
  "cdk",
  "cdk-common",
  "cdk-http-client",
+ "cdk-iroh",
  "cdk-nostr",
  "cdk-postgres",
  "cdk-sql-common",

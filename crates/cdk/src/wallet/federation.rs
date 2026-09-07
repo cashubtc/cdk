@@ -36,7 +36,6 @@ use crate::{Amount, Error};
 
 mod validation;
 
-pub use self::validation::FederationWalletConnector;
 use self::validation::{
     federated_keyset_to_keyset, federated_keyset_to_keyset_info, validate_member_active_keysets,
     validate_member_advertised_keyset,
@@ -56,6 +55,14 @@ fn member_websocket_url(mint_url: &crate::mint_url::MintUrl) -> Option<url::Url>
     Some(url)
 }
 
+type MemberConnectors = BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>;
+
+#[derive(Debug)]
+struct VerifiedMemberShares {
+    metadata: Vec<(Amount, Id)>,
+    shares: Vec<BlsBlindSignatureShare>,
+}
+
 /// Wallet mint connector that fans out signing requests to federation members.
 ///
 /// The connector preserves the existing wallet-to-mint protocol surface: member
@@ -66,11 +73,10 @@ fn member_websocket_url(mint_url: &crate::mint_url::MintUrl) -> Option<url::Url>
 pub struct FederatedMintConnector {
     public_config: FederationConfig,
     config_digest: FederationConfigDigest,
-    member_connectors: BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+    member_connectors: MemberConnectors,
     quote_coordinator_member_id: MemberId,
     config: FederatedMintConnectorConfig,
-    valid_member_connectors_cache:
-        Arc<tokio::sync::RwLock<Option<BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>>>>,
+    valid_member_connectors_cache: Arc<tokio::sync::RwLock<Option<MemberConnectors>>>,
     /// Original blinded change outputs retained per melt quote so status
     /// recovery can verify every member's change share and ignore invalid
     /// members instead of letting one bad share poison an honest threshold.
@@ -98,10 +104,10 @@ pub struct FederatedMintConnectorConfig {
     pub quote_status_member_timeout: Duration,
     /// Maximum number of concurrent member calls started by fanout collectors.
     pub fanout_concurrency: usize,
-    /// Number of attempts to wait for a newly-created mint quote to become threshold-visible.
-    pub mint_quote_visibility_attempts: u16,
-    /// Delay between mint quote threshold-visibility attempts.
-    pub mint_quote_visibility_retry_delay: Duration,
+    /// Number of attempts to wait for a newly-created quote to become threshold-visible.
+    pub quote_visibility_attempts: u16,
+    /// Delay between quote threshold-visibility attempts.
+    pub quote_visibility_retry_delay: Duration,
 }
 
 impl Default for FederatedMintConnectorConfig {
@@ -112,9 +118,9 @@ impl Default for FederatedMintConnectorConfig {
             member_request_timeout: Duration::from_secs(10),
             member_request_max_retries: 0,
             quote_status_member_timeout: Duration::from_secs(10),
-            fanout_concurrency: usize::MAX,
-            mint_quote_visibility_attempts: 100,
-            mint_quote_visibility_retry_delay: Duration::from_millis(50),
+            fanout_concurrency: cdk_common::federation::FEDERATION_MAX_DKG_MEMBERS,
+            quote_visibility_attempts: 100,
+            quote_visibility_retry_delay: Duration::from_millis(50),
         }
     }
 }
@@ -142,15 +148,14 @@ impl FederatedMintConnectorConfig {
                 "federation fanout concurrency must be greater than zero".to_string(),
             ));
         }
-        if self.mint_quote_visibility_attempts == 0 {
+        if self.quote_visibility_attempts == 0 {
             return Err(Error::InvalidMintResponse(
-                "federation mint quote visibility attempts must be greater than zero".to_string(),
+                "federation quote visibility attempts must be greater than zero".to_string(),
             ));
         }
-        if self.mint_quote_visibility_retry_delay.is_zero() {
+        if self.quote_visibility_retry_delay.is_zero() {
             return Err(Error::InvalidMintResponse(
-                "federation mint quote visibility retry delay must be greater than zero"
-                    .to_string(),
+                "federation quote visibility retry delay must be greater than zero".to_string(),
             ));
         }
 
@@ -161,7 +166,7 @@ impl FederatedMintConnectorConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShareAmountValidation {
     Exact,
-    AllowZeroAmountPlaceholder,
+    Change,
     Restore,
 }
 
@@ -304,7 +309,7 @@ impl FederatedMintConnector {
     /// Create a wallet connector for a static federation roster.
     pub fn new(
         public_config: FederationConfig,
-        member_connectors: BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+        member_connectors: MemberConnectors,
     ) -> Result<Self, Error> {
         Self::new_with_config(
             public_config,
@@ -421,7 +426,7 @@ impl FederatedMintConnector {
     /// Create a wallet connector with an explicit member-call policy.
     pub fn new_with_config(
         public_config: FederationConfig,
-        member_connectors: BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+        member_connectors: MemberConnectors,
         config: FederatedMintConnectorConfig,
     ) -> Result<Self, Error> {
         public_config.validate()?;
@@ -435,7 +440,7 @@ impl FederatedMintConnector {
     /// configs should use [`Self::new_with_config`].
     pub fn new_with_validated_config(
         public_config: FederationConfig,
-        member_connectors: BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+        member_connectors: MemberConnectors,
         config: FederatedMintConnectorConfig,
     ) -> Result<Self, Error> {
         Self::new_with_validated_config_and_member_cache(
@@ -448,7 +453,7 @@ impl FederatedMintConnector {
 
     fn new_with_validated_config_and_member_cache(
         public_config: FederationConfig,
-        member_connectors: BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+        member_connectors: MemberConnectors,
         config: FederatedMintConnectorConfig,
         derive_member_cache_from_config_urls: bool,
     ) -> Result<Self, Error> {
@@ -803,16 +808,15 @@ impl FederatedMintConnector {
     ) -> bool {
         match result {
             Ok((mint_info, advertised)) => {
-                let validation =
-                    FederationWalletConnector::validate_member_mint_info_with_config_digest(
-                        &self.public_config,
-                        member_id,
-                        &mint_info,
-                        self.config_digest,
-                    )
-                    .and_then(|_| {
-                        validate_member_active_keysets(&self.public_config, member_id, &advertised)
-                    });
+                let validation = self::validation::validate_member_mint_info_with_config_digest(
+                    &self.public_config,
+                    member_id,
+                    &mint_info,
+                    self.config_digest,
+                )
+                .and_then(|_| {
+                    validate_member_active_keysets(&self.public_config, member_id, &advertised)
+                });
                 match validation {
                     Ok(()) => {
                         if let Some(connector) = self.member_connectors.get(&member_id) {
@@ -1233,13 +1237,13 @@ impl FederatedMintConnector {
         Fut: Future<Output = Result<(), Error>>,
     {
         let mut last_error = None;
-        for attempt in 1..=self.config.mint_quote_visibility_attempts {
+        for attempt in 1..=self.config.quote_visibility_attempts {
             match visibility_check().await {
                 Ok(()) => return Ok(()),
                 Err(err) => {
                     last_error = Some(err);
-                    if attempt < self.config.mint_quote_visibility_attempts {
-                        tokio::time::sleep(self.config.mint_quote_visibility_retry_delay).await;
+                    if attempt < self.config.quote_visibility_attempts {
+                        tokio::time::sleep(self.config.quote_visibility_retry_delay).await;
                     }
                 }
             }
@@ -1248,7 +1252,7 @@ impl FederatedMintConnector {
         Err(Error::InvalidMintResponse(format!(
             "federation {} quote was not threshold-visible after {} attempts: {}",
             quote_kind,
-            self.config.mint_quote_visibility_attempts,
+            self.config.quote_visibility_attempts,
             last_error
                 .map(|err| err.to_string())
                 .unwrap_or_else(|| "no status response".to_string())
@@ -1373,7 +1377,7 @@ impl FederatedMintConnector {
             || visible_response.quote() != response.quote()
         {
             return Err(Error::InvalidMintResponse(
-                "federation mint quote visibility returned a different quote".to_string(),
+                "federation quote visibility returned a different quote".to_string(),
             ));
         }
 
@@ -1408,7 +1412,7 @@ impl FederatedMintConnector {
             })
             .await?;
         let visible_response = self
-            .aggregate_melt_quote_status_response(&quote_id, &member_responses)
+            .aggregate_melt_quote_status_response(quote_id, &member_responses)
             .await?;
         if visible_response.method() != response.method() || visible_response.quote() != quote_id {
             return Err(Error::InvalidMintResponse(
@@ -1427,7 +1431,7 @@ impl FederatedMintConnector {
     ) -> Result<MintResponse, Error> {
         match amount_validation {
             ShareAmountValidation::Exact => self.public_config.validate_blinded_outputs(outputs)?,
-            ShareAmountValidation::AllowZeroAmountPlaceholder => self
+            ShareAmountValidation::Change => self
                 .public_config
                 .validate_blinded_change_outputs(outputs)?,
             ShareAmountValidation::Restore => self
@@ -1452,7 +1456,7 @@ impl FederatedMintConnector {
 
         for (member_id, response) in member_responses {
             match self.valid_member_share_set(outputs, *member_id, response, amount_validation) {
-                Ok((metadata, shares)) => match matching_share_sets
+                Ok(VerifiedMemberShares { metadata, shares }) => match matching_share_sets
                     .iter_mut()
                     .find(|(candidate, _)| candidate == &metadata)
                 {
@@ -1526,8 +1530,16 @@ impl FederatedMintConnector {
         member_id: MemberId,
         response: &MintResponse,
         amount_validation: ShareAmountValidation,
-    ) -> Result<(Vec<(Amount, Id)>, Vec<BlsBlindSignatureShare>), Error> {
-        if response.signatures.len() != outputs.len() {
+    ) -> Result<VerifiedMemberShares, Error> {
+        // NUT-08 signs the prefix needed for actual change. Mint and restore
+        // responses must still cover every corresponding output exactly.
+        let valid_length = match amount_validation {
+            ShareAmountValidation::Change => response.signatures.len() <= outputs.len(),
+            ShareAmountValidation::Exact | ShareAmountValidation::Restore => {
+                response.signatures.len() == outputs.len()
+            }
+        };
+        if !valid_length {
             return Err(Error::InvalidMintResponse(format!(
                 "member {} returned {} signature shares for {} outputs",
                 member_id,
@@ -1547,8 +1559,7 @@ impl FederatedMintConnector {
             signed_output.amount = signature.amount;
             signed_output.keyset_id = signature.keyset_id;
             let keyset = match amount_validation {
-                ShareAmountValidation::Exact
-                | ShareAmountValidation::AllowZeroAmountPlaceholder => {
+                ShareAmountValidation::Exact | ShareAmountValidation::Change => {
                     self.public_config.validate_blinded_output(&signed_output)?
                 }
                 ShareAmountValidation::Restore => self
@@ -1619,7 +1630,7 @@ impl FederatedMintConnector {
             )));
         }
 
-        Ok((metadata, shares))
+        Ok(VerifiedMemberShares { metadata, shares })
     }
 
     fn aggregate_melt_response(
@@ -1684,7 +1695,7 @@ impl FederatedMintConnector {
         let aggregate_change = self.aggregate_member_responses(
             outputs,
             &change_responses,
-            ShareAmountValidation::AllowZeroAmountPlaceholder,
+            ShareAmountValidation::Change,
         )?;
         let mut response = first_response.clone();
         set_melt_response_change(&mut response, Some(aggregate_change.signatures));
@@ -1864,7 +1875,7 @@ impl FederatedMintConnector {
             let aggregate_change = self.aggregate_member_responses(
                 &outputs,
                 &change_responses,
-                ShareAmountValidation::AllowZeroAmountPlaceholder,
+                ShareAmountValidation::Change,
             )?;
             let mut response = first_response.clone();
             set_melt_response_change(&mut response, Some(aggregate_change.signatures));
@@ -2100,7 +2111,7 @@ impl MintConnector for FederatedMintConnector {
                     async move {
                         let mint_info = connector.get_mint_info().await?;
                         let advertised = connector.get_mint_keyset(keyset_id).await?;
-                        FederationWalletConnector::validate_member_mint_info_with_config_digest(
+                        self::validation::validate_member_mint_info_with_config_digest(
                             &public_config,
                             member_id,
                             &mint_info,
@@ -2373,7 +2384,7 @@ impl MintConnector for FederatedMintConnector {
                 )),
                 Ok(Err(err)) => failures.push(format!("member {}: {}", member_id, err)),
                 Ok(Ok(mint_info)) => {
-                    match FederationWalletConnector::validate_member_mint_info_with_config_digest(
+                    match self::validation::validate_member_mint_info_with_config_digest(
                         &self.public_config,
                         *member_id,
                         &mint_info,
@@ -2467,7 +2478,7 @@ fn validate_signature_metadata(
 ) -> Result<(), Error> {
     let amount_matches = match amount_validation {
         ShareAmountValidation::Exact => signature.amount == output.amount,
-        ShareAmountValidation::AllowZeroAmountPlaceholder | ShareAmountValidation::Restore => {
+        ShareAmountValidation::Change | ShareAmountValidation::Restore => {
             output.amount == Amount::ZERO || signature.amount == output.amount
         }
     };

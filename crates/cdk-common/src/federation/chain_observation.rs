@@ -157,7 +157,6 @@ pub struct FederationDepositObservation {
     /// Block evidence, or `None` while unconfirmed.
     pub confirmation: Option<FederationDepositConfirmation>,
     /// Consensus observation epoch for this output.
-    #[serde(default, skip_serializing_if = "is_zero")]
     pub observation_epoch: u64,
     /// Federation member reporting its local chain view.
     pub observer: MemberId,
@@ -209,7 +208,6 @@ pub struct FederationDepositReorgObservation {
     /// Previously accepted containing block height.
     pub disconnected_block_height: u32,
     /// Consensus observation epoch invalidated by this reorg evidence.
-    #[serde(default, skip_serializing_if = "is_zero")]
     pub observation_epoch: u64,
     /// Federation member reporting its local chain view.
     pub observer: MemberId,
@@ -332,7 +330,6 @@ pub struct FederationWalletUtxo {
     /// Confirmation depth required for spendability.
     pub minimum_confirmations: u32,
     /// Current consensus observation epoch for this output.
-    #[serde(default, skip_serializing_if = "is_zero")]
     pub observation_epoch: u64,
     /// Latest non-conflicting deposit evidence from each member.
     pub observations: BTreeMap<MemberId, FederationChainObservationEvidence>,
@@ -1048,7 +1045,7 @@ impl FederationChainObservationState {
                 Some((hash, height)) => (hash.to_string(), height.to_string()),
                 None => (String::new(), String::new()),
             };
-            let mut utxo_row =
+            let utxo_row =
                 FederationMaterializedStateRow::new("federation_wallet_utxos", key.clone())
                     .with_field("value_sat", utxo.txout.value.to_sat().to_string())
                     .with_field("script", utxo.txout.script_pubkey.to_hex_string())
@@ -1067,11 +1064,8 @@ impl FederationChainObservationState {
                         utxo.minimum_confirmations.to_string(),
                     )
                     .with_field("liability_issued", utxo.liability_issued.to_string())
-                    .with_field("liability_alarm", utxo.liability_alarm.to_string());
-            if utxo.observation_epoch != 0 {
-                utxo_row =
-                    utxo_row.with_field("observation_epoch", utxo.observation_epoch.to_string());
-            }
+                    .with_field("liability_alarm", utxo.liability_alarm.to_string())
+                    .with_field("observation_epoch", utxo.observation_epoch.to_string());
             rows.push(utxo_row);
             for (observer, evidence) in &utxo.observations {
                 let FederationChainObservation::Deposit(observation) = &evidence.observation else {
@@ -1085,7 +1079,7 @@ impl FederationChainObservationState {
                     ),
                     None => (String::new(), String::new(), "0".to_string()),
                 };
-                let mut evidence_row = FederationMaterializedStateRow::new(
+                let evidence_row = FederationMaterializedStateRow::new(
                     "federation_wallet_deposit_evidence",
                     format!("{key}:{observer}"),
                 )
@@ -1095,31 +1089,27 @@ impl FederationChainObservationState {
                 .with_field("source_scope", observation.source.scope.to_string())
                 .with_field("source_id", observation.source.source_id.clone())
                 .with_field("operation_id", evidence.operation_id.to_string())
-                .with_field("operation_index", evidence.operation_index.to_string());
-                if observation.observation_epoch != 0 {
-                    evidence_row = evidence_row.with_field(
-                        "observation_epoch",
-                        observation.observation_epoch.to_string(),
-                    );
-                }
+                .with_field("operation_index", evidence.operation_index.to_string())
+                .with_field(
+                    "observation_epoch",
+                    observation.observation_epoch.to_string(),
+                );
                 rows.push(evidence_row);
             }
             for (observer, evidence) in &utxo.reorg_observations {
                 let FederationChainObservation::Reorg(observation) = &evidence.observation else {
                     return Err(invalid_state("reorg evidence contains a deposit payload"));
                 };
-                let mut evidence_row = FederationMaterializedStateRow::new(
+                let evidence_row = FederationMaterializedStateRow::new(
                     "federation_wallet_reorg_evidence",
                     format!("{key}:{observer}"),
                 )
                 .with_field("operation_id", evidence.operation_id.to_string())
-                .with_field("operation_index", evidence.operation_index.to_string());
-                if observation.observation_epoch != 0 {
-                    evidence_row = evidence_row.with_field(
-                        "observation_epoch",
-                        observation.observation_epoch.to_string(),
-                    );
-                }
+                .with_field("operation_index", evidence.operation_index.to_string())
+                .with_field(
+                    "observation_epoch",
+                    observation.observation_epoch.to_string(),
+                );
                 rows.push(evidence_row);
             }
         }
@@ -1247,10 +1237,6 @@ fn utxo_is_spendable_at_or_before(utxo: &FederationWalletUtxo, max_operation_ind
         })
         .count()
         >= usize::from(utxo.required_observers)
-}
-
-fn is_zero(value: &u64) -> bool {
-    *value == 0
 }
 
 fn quarantine(utxo: &mut FederationWalletUtxo, observer: MemberId) {
@@ -1942,9 +1928,9 @@ mod tests {
         let decoded =
             FederationChainObservationState::from_bytes(&state.to_bytes().expect("state bytes"))
                 .expect("state decode");
-        let encoded = String::from_utf8(state.to_bytes().expect("legacy-compatible state"))
-            .expect("state JSON");
-        assert!(!encoded.contains("observation_epoch"));
+        let encoded =
+            String::from_utf8(state.to_bytes().expect("current state")).expect("state JSON");
+        assert!(encoded.contains("observation_epoch"));
         assert_eq!(decoded, state);
         assert_eq!(
             decoded.utxo(outpoint(3)).expect("utxo").source_summary(),
@@ -1956,7 +1942,7 @@ mod tests {
         let rows = state.materialized_rows().expect("rows");
         assert!(rows
             .iter()
-            .all(|row| !row.fields.contains_key("observation_epoch")));
+            .all(|row| row.fields.get("observation_epoch").map(String::as_str) == Some("0")));
         let mut changed = state.clone();
         let evidence = changed
             .utxos

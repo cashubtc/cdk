@@ -251,11 +251,16 @@ impl FederationTransactionBroadcaster {
         {
             return;
         }
-        tokio::spawn(async move {
+        let tasks = state.federation.payment_observer.tasks.clone();
+        let stop = tasks.stop_token();
+        tasks.spawn("broadcast", true, async move {
             let mut interval = tokio::time::interval(BROADCAST_ROUND_INTERVAL);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = stop.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
                 match self.run_round(&state).await {
                     Ok(submitted) if submitted > 0 => tracing::debug!(
                         submitted,

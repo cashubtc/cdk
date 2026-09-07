@@ -1006,6 +1006,19 @@ where
         Some(checkpoint.clone())
     );
     assert_eq!(
+        db.get_next_federation_scheduled_checkpoint(0)
+            .await
+            .expect("first scheduled candidate"),
+        Some(checkpoint.clone())
+    );
+    for sequence in [1, u64::MAX] {
+        assert!(db
+            .get_next_federation_scheduled_checkpoint(sequence)
+            .await
+            .expect("no later scheduled candidate")
+            .is_none());
+    }
+    assert_eq!(
         db.get_federation_checkpoint_signatures(checkpoint_id)
             .await
             .expect("stored checkpoint signatures"),

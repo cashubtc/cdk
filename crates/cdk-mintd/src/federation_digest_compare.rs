@@ -503,8 +503,7 @@ where
 }
 
 fn status_reports_digest_alert(status: &FederationLocalStatusResponse) -> bool {
-    status.sync_state == "materialized_state_mismatch"
-        || (status.sync_state == "halted" && status.sync_message.contains("digest mismatch"))
+    status.has_digest_alert()
 }
 
 fn display_list<T>(values: &[T]) -> String

@@ -10,6 +10,7 @@ const MAX_PROTECTED_FEDERATION_FILE_BYTES: u64 = 1024 * 1024;
 #[cfg(unix)]
 static PRIVATE_FILE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(any(test, feature = "federation-test-utils"))]
 pub(crate) fn write_json_file<T>(path: &Path, value: &T, force: bool) -> Result<()>
 where
     T: serde::Serialize + ?Sized,
@@ -26,6 +27,7 @@ where
     write_private_text_file(path, &format!("{json}\n"), force)
 }
 
+#[cfg(any(test, feature = "federation-test-utils"))]
 pub(crate) fn write_text_file(path: &Path, contents: &str, force: bool) -> Result<()> {
     if path.exists() && !force {
         bail!(

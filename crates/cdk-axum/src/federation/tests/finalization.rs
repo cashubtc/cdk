@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test]
 async fn federation_runtime_startup_rejects_aleph_bft_journal_mismatch() {
     let (public_config, local_private, peer_private) = transport_config();
@@ -1153,58 +1155,4 @@ async fn federation_aleph_bft_finalized_unit_conflict_does_not_mutate_runtime() 
     let consensus = state.federation.consensus.as_ref().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.peer_status().operation_count, 0);
-}
-
-async fn queue_local_aleph_bft_unit(
-    state: &MintState,
-    envelope: FederationOperationEnvelope,
-) -> FederationAlephBftUnitPayload {
-    let consensus = state.federation.consensus.as_ref().expect("consensus");
-    let mut consensus = consensus.lock().await;
-    consensus
-        .submit_aleph_bft_envelope(envelope)
-        .expect("queue AlephBFT envelope");
-    consensus
-        .next_aleph_bft_unit_payload()
-        .expect("drain AlephBFT unit")
-        .expect("queued unit")
-}
-
-async fn wait_for_local_aleph_bft_unit(state: &MintState) -> FederationAlephBftUnitPayload {
-    for _ in 0..50 {
-        let maybe_unit = {
-            let consensus = state.federation.consensus.as_ref().expect("consensus");
-            let mut consensus = consensus.lock().await;
-            consensus
-                .next_aleph_bft_unit_payload()
-                .expect("drain AlephBFT unit")
-        };
-        if let Some(unit) = maybe_unit {
-            return unit;
-        }
-        tokio::task::yield_now().await;
-    }
-
-    panic!("AlephBFT unit was not queued");
-}
-
-fn assert_pending_finalization_error(
-    err: &cdk::Error,
-    operation_id: FederationOperationId,
-    timeout_ms: u64,
-) {
-    assert!(
-        !err.is_definitive_failure(),
-        "pending finalization must remain retryable: {err}"
-    );
-    match err {
-        cdk::Error::Federation(FederationError::OperationPendingFinalization {
-            operation_id: found_operation_id,
-            timeout_ms: found_timeout_ms,
-        }) => {
-            assert_eq!(found_operation_id, &operation_id);
-            assert_eq!(*found_timeout_ms, timeout_ms);
-        }
-        _ => panic!("unexpected error: {err}"),
-    }
 }

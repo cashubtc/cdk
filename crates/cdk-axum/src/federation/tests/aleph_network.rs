@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test]
 async fn aleph_bft_live_sessions_finalize_with_duplicate_and_delayed_private_rest_messages() {
     let first_url = MintUrl::from_str("http://fed1.test").expect("first federation api url");
@@ -8,14 +10,14 @@ async fn aleph_bft_live_sessions_finalize_with_duplicate_and_delayed_private_res
     let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
     let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
     let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private,
         first_db,
         &first_mnemonic.to_seed_normalized(""),
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         second_private,
         second_db,
@@ -45,7 +47,7 @@ async fn aleph_bft_live_sessions_finalize_with_duplicate_and_delayed_private_res
     };
 
     let _first_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut first_state,
+        &first_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -60,7 +62,7 @@ async fn aleph_bft_live_sessions_finalize_with_duplicate_and_delayed_private_res
             .with_state(first_state.clone()),
     );
     let _second_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut second_state,
+        &second_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -129,14 +131,14 @@ async fn aleph_bft_live_session_rejects_malformed_signed_network_message_without
     let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
     let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
     let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private.clone(),
         first_db,
         &first_mnemonic.to_seed_normalized(""),
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         second_private.clone(),
         second_db,
@@ -157,7 +159,7 @@ async fn aleph_bft_live_session_rejects_malformed_signed_network_message_without
     };
 
     let _first_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut first_state,
+        &first_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -172,7 +174,7 @@ async fn aleph_bft_live_session_rejects_malformed_signed_network_message_without
             .with_state(first_state.clone()),
     );
     let _second_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut second_state,
+        &second_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -287,14 +289,14 @@ async fn aleph_bft_live_session_rejects_same_sequence_equivocated_network_messag
     let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
     let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
     let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private.clone(),
         first_db,
         &first_mnemonic.to_seed_normalized(""),
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         second_private.clone(),
         second_db,
@@ -315,7 +317,7 @@ async fn aleph_bft_live_session_rejects_same_sequence_equivocated_network_messag
     };
 
     let _first_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut first_state,
+        &first_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -330,7 +332,7 @@ async fn aleph_bft_live_session_rejects_same_sequence_equivocated_network_messag
             .with_state(first_state.clone()),
     );
     let _second_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut second_state,
+        &second_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -449,14 +451,14 @@ async fn aleph_bft_live_sessions_finalize_with_reordered_private_rest_messages()
     let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
     let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
     let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private,
         first_db,
         &first_mnemonic.to_seed_normalized(""),
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         second_private,
         second_db,
@@ -478,7 +480,7 @@ async fn aleph_bft_live_sessions_finalize_with_reordered_private_rest_messages()
     };
 
     let _first_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut first_state,
+        &first_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -493,7 +495,7 @@ async fn aleph_bft_live_sessions_finalize_with_reordered_private_rest_messages()
             .with_state(first_state.clone()),
     );
     let _second_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut second_state,
+        &second_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -607,7 +609,7 @@ async fn aleph_bft_live_five_member_sessions_finalize_with_reorder_duplicate_and
     let mut live_session_handles = Vec::new();
     for index in 0..states.len() {
         let handle = start_federation_aleph_bft_live_session_with_transport(
-            &mut states[index],
+            &states[index],
             sync_config,
             pump_config,
             transport.clone(),
@@ -719,7 +721,7 @@ async fn aleph_bft_live_five_member_sessions_reject_same_sequence_equivocation_a
     let mut live_session_handles = Vec::new();
     for index in 0..states.len() {
         let handle = start_federation_aleph_bft_live_session_with_transport(
-            &mut states[index],
+            &states[index],
             sync_config,
             pump_config,
             transport.clone(),
@@ -923,7 +925,7 @@ async fn aleph_bft_live_five_member_sessions_converge_after_valid_increasing_seq
 
     let honest_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("honest db"));
     let honest_mnemonic = Mnemonic::generate(12).expect("honest mnemonic");
-    let mut honest_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let honest_state = federation_route_state_for_private_with_db_and_aleph_bft(
         session.public_config.clone(),
         session.private_configs[0].clone(),
         honest_db,
@@ -932,7 +934,7 @@ async fn aleph_bft_live_five_member_sessions_converge_after_valid_increasing_seq
     .await;
     seed_aleph_bft_backup(&honest_state, 0, &duplicated_member_backup).await;
     let honest_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
-        &mut honest_state,
+        &honest_state,
         session.sync_config,
         live_options.clone(),
         session.transport.clone(),
@@ -951,7 +953,7 @@ async fn aleph_bft_live_five_member_sessions_converge_after_valid_increasing_seq
 
     let fork_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("fork db"));
     let fork_mnemonic = Mnemonic::generate(12).expect("fork mnemonic");
-    let mut fork_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let fork_state = federation_route_state_for_private_with_db_and_aleph_bft(
         session.public_config.clone(),
         session.private_configs[0].clone(),
         fork_db,
@@ -960,7 +962,7 @@ async fn aleph_bft_live_five_member_sessions_converge_after_valid_increasing_seq
     .await;
     seed_aleph_bft_backup(&fork_state, 0, &duplicated_member_backup).await;
     let fork_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
-        &mut fork_state,
+        &fork_state,
         session.sync_config,
         live_options,
         session.transport.clone(),
@@ -1258,7 +1260,7 @@ async fn aleph_bft_live_sessions_with_unavailable_member_stall_safely_without_du
 
     for index in 0..states.len() {
         let handle = start_federation_aleph_bft_live_session_with_transport(
-            &mut states[index],
+            &states[index],
             sync_config,
             pump_config,
             transport.clone(),
@@ -1365,7 +1367,7 @@ async fn aleph_bft_live_sessions_finalize_after_unavailable_member_returns() {
 
     for index in 0..4 {
         let handle = start_federation_aleph_bft_live_session_with_transport(
-            &mut states[index],
+            &states[index],
             sync_config,
             pump_config,
             transport.clone(),
@@ -1396,7 +1398,7 @@ async fn aleph_bft_live_sessions_finalize_after_unavailable_member_returns() {
     assert_pending_finalization_error(&err, operation_id, 250);
 
     let fifth_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut states[4],
+        &states[4],
         sync_config,
         pump_config,
         transport.clone(),
@@ -1798,7 +1800,7 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
 
     replay_aleph_bft_runtime_after_test_process_restart(&mut session.states[3]).await;
     let fourth_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
-        &mut session.states[3],
+        &session.states[3],
         session.sync_config,
         live_options.clone(),
         session.transport.clone(),
@@ -2142,4 +2144,3 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
     );
     assert_eq!(make_payment_calls[4].load(Ordering::SeqCst), 0);
 }
-

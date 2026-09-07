@@ -2402,7 +2402,7 @@ fn deserialize_transaction_ys(bytes: &[u8]) -> Result<Vec<PublicKey>, Error> {
         Ok(ys) => Ok(ys),
         Err(json_error) => {
             for key_size in [33, 48] {
-                if bytes.len() % key_size == 0 {
+                if bytes.len().is_multiple_of(key_size) {
                     if let Ok(ys) = bytes
                         .chunks(key_size)
                         .map(PublicKey::from_slice)

@@ -150,7 +150,7 @@ fn amount_to_msat(amount: Amount, unit: &CurrencyUnit) -> Result<u64, NIP47Error
 /// For `Sat` wallets, millisat amounts that are not whole satoshis are rejected
 /// rather than rounded.
 fn msat_to_amount(msat: u64, unit: &CurrencyUnit) -> Result<Amount, NIP47Error> {
-    if unit == &CurrencyUnit::Sat && msat % 1000 != 0 {
+    if unit == &CurrencyUnit::Sat && !msat.is_multiple_of(1000) {
         return Err(nip47_err(
             ErrorCode::Other,
             "sub-satoshi amounts are not supported by this wallet",

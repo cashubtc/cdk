@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test]
 async fn rest_peer_client_validates_peer_status() {
     let (public_config, local_private, _) = transport_config();
@@ -522,7 +524,7 @@ async fn rest_peer_client_rejects_status_wrong_federation() {
     let (public_config, local_private, _) = transport_config();
     let member = public_config.member(member_id(2)).expect("peer member");
     let status = FederationPeerStatus::new(
-        super::FederationId::from_bytes([32; 32]),
+        super::super::FederationId::from_bytes([32; 32]),
         member.member_id,
         0,
         None,
@@ -732,4 +734,3 @@ async fn rest_peer_client_rejects_oversized_operation_before_broadcast() {
     ));
     assert!(transport.submitted_operations().is_empty());
 }
-

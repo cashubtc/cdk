@@ -9,6 +9,8 @@
 pub mod bip321;
 pub mod database;
 pub mod error;
+#[cfg(feature = "federation")]
+pub mod federation;
 pub mod logging;
 #[cfg(feature = "nostr")]
 pub mod nostr;
@@ -30,6 +32,8 @@ mod wallet_trait;
 
 pub use database::*;
 pub use error::*;
+#[cfg(feature = "federation")]
+pub use federation::*;
 pub use logging::*;
 #[cfg(feature = "nostr")]
 pub use nostr::*;

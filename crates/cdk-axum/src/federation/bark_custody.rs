@@ -12,10 +12,11 @@ use cdk::federation::{
     FederationBarkVirtualMusigPartialResponse, FederationConfig, FederationFrostSigningAck,
     FederationRestMessageKind, FederationSignedRequest, MemberConfigPublic,
 };
+#[cfg(test)]
+use cdk_frost::ThresholdDhRequest;
 use cdk_frost::{
     AuthorizationRequest, CustodyProtocol, DerivedPublicPackage, SigningDerivation,
-    SigningSessionContext, ThresholdDhRequest, VirtualMusigNonceCommitmentSet,
-    VirtualMusigTranscript,
+    SigningSessionContext, VirtualMusigNonceCommitmentSet, VirtualMusigTranscript,
 };
 use futures::{stream, StreamExt, TryStreamExt};
 use tracing::instrument;
@@ -155,7 +156,6 @@ impl cdk_bark::FederatedBarkCustodyClient for FederatedBarkCustodyPeerClient {
 
 /// Coordinator for one accepted Bark signer attempt and exact signer subset.
 #[derive(Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct FederationBarkCustodyCoordinator<'a, T> {
     client: &'a super::peer_client::FederationRestPeerClient<T>,
     public: DerivedPublicPackage,
@@ -169,7 +169,6 @@ struct FederationBarkLocalSigner<'a> {
     runtime: &'a super::frost_signing::FederationFrostSigningRuntime,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl<'a, T> FederationBarkCustodyCoordinator<'a, T>
 where
     T: cdk_http_client::Transport,
@@ -353,6 +352,7 @@ where
     }
 
     /// Collect, verify, and interpolate an operation-bound threshold-DH point.
+    #[cfg(test)]
     pub(crate) async fn threshold_dh(
         &self,
         public_config: &FederationConfig,

@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test]
 async fn catch_up_application_precedes_dependent_live_finality() {
     let (public_config, local_private, peer_private) = transport_config();
@@ -582,10 +584,10 @@ async fn single_equal_height_digest_liar_does_not_halt_four_honest_members() {
     let liar_member = public_config.member(liar.member_id).expect("liar member");
 
     for honest_private in private_configs.iter().take(4) {
-        let mut state =
+        let state =
             federation_route_state_for_private(public_config.clone(), honest_private.clone()).await;
         let supervisor = start_federation_aleph_bft_live_session_with_options_and_transport(
-            &mut state,
+            &state,
             FederationPeerSyncConfig::default(),
             FederationAlephBftLiveSessionOptions::default(),
             RouterFederationTransportRegistry::default(),
@@ -638,7 +640,7 @@ async fn single_equal_height_digest_liar_does_not_halt_four_honest_members() {
             .expect("neighboring quote lookup")
             .is_some());
 
-        super::halt_current_federation_aleph_bft_session(&state, "test cleanup").await;
+        super::super::halt_current_federation_aleph_bft_session(&state, "test cleanup").await;
         assert_eq!(supervisor.state(), AlephBftSessionSupervisorState::Stopped);
     }
 }

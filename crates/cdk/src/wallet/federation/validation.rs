@@ -5,50 +5,22 @@ use cdk_common::federation::{
 use crate::nuts::{KeySet, KeySetInfo, MintInfo};
 use crate::Error;
 
-/// Minimal wallet federation connector validation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct FederationWalletConnector;
-
-impl FederationWalletConnector {
-    /// Validate the federation metadata advertised by one federation member.
-    pub fn validate_member_mint_info(
-        public_config: &FederationConfig,
-        member_id: MemberId,
-        mint_info: &MintInfo,
-    ) -> Result<(), Error> {
-        let federation_info = mint_info
-            .federation
-            .as_ref()
-            .ok_or(FederationError::MissingFederationMintInfo { member_id })?;
-        Ok(public_config.validate_member_mint_info(member_id, federation_info)?)
-    }
-
-    /// Validate one member's federation metadata with a precomputed config digest.
-    pub fn validate_member_mint_info_with_config_digest(
-        public_config: &FederationConfig,
-        member_id: MemberId,
-        mint_info: &MintInfo,
-        config_digest: FederationConfigDigest,
-    ) -> Result<(), Error> {
-        let federation_info = mint_info
-            .federation
-            .as_ref()
-            .ok_or(FederationError::MissingFederationMintInfo { member_id })?;
-        Ok(public_config.validate_member_mint_info_with_config_digest(
-            member_id,
-            federation_info,
-            config_digest,
-        )?)
-    }
-
-    /// Validate the aggregate keysets advertised by one federation member.
-    pub fn validate_member_keysets(
-        public_config: &FederationConfig,
-        member_id: MemberId,
-        advertised_keysets: &[KeySet],
-    ) -> Result<(), Error> {
-        Ok(public_config.validate_member_advertised_keysets(member_id, advertised_keysets)?)
-    }
+/// Validate one member's federation metadata with a precomputed config digest.
+pub(super) fn validate_member_mint_info_with_config_digest(
+    public_config: &FederationConfig,
+    member_id: MemberId,
+    mint_info: &MintInfo,
+    config_digest: FederationConfigDigest,
+) -> Result<(), Error> {
+    let federation_info = mint_info
+        .federation
+        .as_ref()
+        .ok_or(FederationError::MissingFederationMintInfo { member_id })?;
+    Ok(public_config.validate_member_mint_info_with_config_digest(
+        member_id,
+        federation_info,
+        config_digest,
+    )?)
 }
 
 pub(super) fn federated_keyset_to_keyset(keyset: &FederatedKeyset) -> KeySet {

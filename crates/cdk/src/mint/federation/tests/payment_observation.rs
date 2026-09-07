@@ -1,6 +1,9 @@
 use super::*;
+#[cfg(feature = "federation-bark")]
+use cdk_common::federation::FederationPaymentObservationReport;
 
 #[test]
+#[cfg(feature = "federation-bark")]
 fn one_false_bark_result_observer_cannot_form_the_inner_quorum() {
     use cdk_common::federation::FederationOperationId;
     use cdk_federation_bark::{
@@ -13,26 +16,22 @@ fn one_false_bark_result_observer_cannot_form_the_inner_quorum() {
     let payment_hash = FederationBarkDigest::from_bytes([2; 32]).expect("payment hash");
     let source_scope = FederationBarkDigest::from_bytes([3; 32]).expect("source scope");
     let result_hash = FederationBarkDigest::from_bytes([4; 32]).expect("result hash");
-    let observation = |observer: MemberId, operation_index: u64| {
-        FederationBarkObservationRecord {
-            operation_id: FederationOperationId::from_bytes([operation_index as u8; 32]),
-            operation_index,
-            operation: FederationBarkOperation::MemberObservation(
-                FederationBarkMemberObservation {
-                    version: FEDERATION_BARK_OPERATION_VERSION,
-                    action_id,
-                    quote: Some("quote".to_string()),
-                    observer,
-                    observation_epoch: operation_index,
-                    source_scope,
-                    payment_hash: Some(payment_hash),
-                    status: FederationBarkObservationStatus::Succeeded,
-                    amount: Amount::from(42),
-                    fee: Amount::from(7),
-                    result_hash,
-                },
-            ),
-        }
+    let observation = |observer: MemberId, operation_index: u64| FederationBarkObservationRecord {
+        operation_id: FederationOperationId::from_bytes([operation_index as u8; 32]),
+        operation_index,
+        operation: FederationBarkOperation::MemberObservation(FederationBarkMemberObservation {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: Some("quote".to_string()),
+            observer,
+            observation_epoch: operation_index,
+            source_scope,
+            payment_hash: Some(payment_hash),
+            status: FederationBarkObservationStatus::Succeeded,
+            amount: Amount::from(42),
+            fee: Amount::from(7),
+            result_hash,
+        }),
     };
     let dishonest = MemberId::new(1).expect("member one");
     let honest = MemberId::new(2).expect("member two");
@@ -93,6 +92,7 @@ fn one_false_bark_result_observer_cannot_form_the_inner_quorum() {
 }
 
 #[test]
+#[cfg(feature = "federation-bark")]
 fn bark_result_records_materialize_only_after_distinct_inner_quorum() {
     use cdk_common::federation::FederationOperationId;
     use cdk_federation_bark::{
@@ -106,29 +106,25 @@ fn bark_result_records_materialize_only_after_distinct_inner_quorum() {
     let source_scope = FederationBarkDigest::from_bytes([13; 32]).expect("source scope");
     let result_hash = FederationBarkDigest::from_bytes([14; 32]).expect("result hash");
     let quote = QuoteId::new();
-    let observation = |observer: u16, operation_index: u64| {
-        FederationBarkObservationRecord {
-            operation_id: FederationOperationId::from_bytes([operation_index as u8; 32]),
-            operation_index,
-            operation: FederationBarkOperation::MemberObservation(
-                FederationBarkMemberObservation {
-                    version: FEDERATION_BARK_OPERATION_VERSION,
-                    action_id,
-                    quote: Some(quote.to_string()),
-                    observer: MemberId::new(observer).expect("observer"),
-                    observation_epoch: operation_index,
-                    source_scope,
-                    payment_hash: Some(payment_hash),
-                    status: FederationBarkObservationStatus::Succeeded,
-                    amount: Amount::from(50),
-                    fee: Amount::from(2),
-                    result_hash,
-                },
-            ),
-        }
+    let observation = |observer: u16, operation_index: u64| FederationBarkObservationRecord {
+        operation_id: FederationOperationId::from_bytes([operation_index as u8; 32]),
+        operation_index,
+        operation: FederationBarkOperation::MemberObservation(FederationBarkMemberObservation {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: Some(quote.to_string()),
+            observer: MemberId::new(observer).expect("observer"),
+            observation_epoch: operation_index,
+            source_scope,
+            payment_hash: Some(payment_hash),
+            status: FederationBarkObservationStatus::Succeeded,
+            amount: Amount::from(50),
+            fee: Amount::from(2),
+            result_hash,
+        }),
     };
-    let template = FederationBarkPaymentObservationTemplate::Mint(
-        FederationMintQuotePaymentObservation {
+    let template =
+        FederationBarkPaymentObservationTemplate::Mint(FederationMintQuotePaymentObservation {
             quote: quote.to_string(),
             observer: MemberId::new(1).expect("observer"),
             method: PaymentMethod::BOLT11,
@@ -137,8 +133,7 @@ fn bark_result_records_materialize_only_after_distinct_inner_quorum() {
             amount_issued: Amount::ZERO,
             payment_id: Some(PaymentIdentifier::QuoteId(quote.clone())),
             payment_proof: None,
-        },
-    );
+        });
     let mut projection = FederationBarkProjectionSnapshot {
         observations: vec![observation(1, 8), observation(1, 9), observation(2, 7)],
         ..FederationBarkProjectionSnapshot::default()
@@ -200,9 +195,8 @@ fn bark_result_records_materialize_only_after_distinct_inner_quorum() {
     );
     assert_conflict_does_not_complete(
         conflicting_observation(|candidate| {
-            candidate.payment_hash = Some(
-                FederationBarkDigest::from_bytes([16; 32]).expect("conflicting payment hash"),
-            );
+            candidate.payment_hash =
+                Some(FederationBarkDigest::from_bytes([16; 32]).expect("conflicting payment hash"));
         }),
         "payment hash",
     );
@@ -277,8 +271,8 @@ fn bark_result_records_materialize_only_after_distinct_inner_quorum() {
         &records,
     );
     assert!(report.groups[0].quorum_reached);
-    let melt_template = FederationBarkPaymentObservationTemplate::Melt(
-        FederationMeltQuotePaymentObservation {
+    let melt_template =
+        FederationBarkPaymentObservationTemplate::Melt(FederationMeltQuotePaymentObservation {
             quote: quote.to_string(),
             observer: MemberId::new(1).expect("observer"),
             method: PaymentMethod::BOLT11,
@@ -288,8 +282,7 @@ fn bark_result_records_materialize_only_after_distinct_inner_quorum() {
             total_spent: Some(Amount::from(52)),
             payment_id: Some(PaymentIdentifier::PaymentHash(payment_hash.to_bytes())),
             payment_proof: Some("proof".to_string()),
-        },
-    );
+        });
     let melt_records = federation_bark_result_payment_records_from_projection(
         &projection,
         &expected,
@@ -463,9 +456,9 @@ async fn proposer_only_invoice_visibility_cannot_form_payment_quorum() {
     let mut configs = runtime_configs();
     let mut first_config = configs.remove(0);
     let mut second_config = configs.remove(0);
-    first_config.public_config.payment_observation_policy =
+    first_config.public_config_mut().payment_observation_policy =
         FederationPaymentObservationPolicy::member_quorum(2);
-    second_config.public_config.payment_observation_policy =
+    second_config.public_config_mut().payment_observation_policy =
         FederationPaymentObservationPolicy::member_quorum(2);
     let (first_mint, first_store) = federated_test_mint(first_config.clone()).await;
     let (second_mint, second_store) = federated_test_mint(second_config.clone()).await;

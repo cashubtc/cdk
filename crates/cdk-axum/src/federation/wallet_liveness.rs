@@ -859,39 +859,36 @@ impl FederationWalletLivenessWorker {
         status.signing_attempts = status.signing_attempts.saturating_add(1);
     }
 
-    pub(crate) fn spawn(self, state: MintState) {
+    pub(crate) fn spawn(self, state: MintState) -> Result<(), cdk::Error> {
         let Some(runtime) = state.mint.federation_config() else {
-            return;
+            return Ok(());
         };
         if runtime.public_config().frost_wallet.is_none()
             || state.federation.onchain_wallets().is_empty()
             || state.federation.frost_signing().is_none()
         {
-            return;
+            return Ok(());
         }
         let public_config = runtime.public_config().clone();
         let private_config = runtime.private_config().clone();
         let sync_config = state.federation.peer_sync_config.unwrap_or_default();
-        tokio::spawn(async move {
-            let client = match FederationRestPeerClient::new_with_validated_config(
-                state.federation.transport.clone(),
-                &public_config,
-                private_config,
-                sync_config,
-            ) {
-                Ok(client) => client,
-                Err(error) => {
-                    tracing::error!(
-                        "Could not start federation wallet liveness worker: {}",
-                        cdk::federation::redact_federation_operator_message(&error.to_string())
-                    );
-                    return;
-                }
-            };
+        let client = FederationRestPeerClient::new_with_validated_config(
+            state.federation.transport.clone(),
+            &public_config,
+            private_config,
+            sync_config,
+        )
+        .map_err(|err| cdk::Error::Custom(err.to_string()))?;
+        let tasks = state.federation.payment_observer.tasks.clone();
+        let stop = tasks.stop_token();
+        tasks.spawn("wallet_liveness", true, async move {
             let mut interval = tokio::time::interval(self.inner.config.round_interval);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = stop.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
                 match self.run_round(&state, &client, epoch_millis()).await {
                     Ok(advanced) if advanced > 0 => tracing::debug!(
                         advanced,
@@ -905,6 +902,7 @@ impl FederationWalletLivenessWorker {
                 }
             }
         });
+        Ok(())
     }
 }
 

@@ -69,11 +69,13 @@ pub(crate) struct TrustedDealerCoreMemberArtifacts {
 
 #[cfg(feature = "federation")]
 #[derive(Debug)]
-#[allow(dead_code)]
 struct TrustedDealerCoreGeneration {
     core_artifacts: TrustedDealerCoreArtifacts,
+    #[cfg(feature = "fakewallet")]
     output_dir: PathBuf,
+    #[cfg(feature = "fakewallet")]
     unit: CurrencyUnit,
+    #[cfg(feature = "fakewallet")]
     bundle: TrustedDealerConfigBundle,
 }
 
@@ -154,7 +156,6 @@ pub(crate) fn run_trusted_dealer_command(args: &FederationTrustedDealerArgs) -> 
 }
 
 #[cfg(feature = "federation")]
-#[cfg_attr(feature = "fakewallet", allow(dead_code))]
 pub(crate) fn generate_trusted_dealer_core_artifacts(
     args: &FederationTrustedDealerArgs,
 ) -> Result<TrustedDealerCoreArtifacts> {
@@ -188,29 +189,11 @@ fn generate_trusted_dealer_core_generation(
     print_trusted_dealer_stage("setup.roster.done", setup_started_at);
 
     print_trusted_dealer_stage("setup.active-keyset.start", setup_started_at);
-    let keyset_spec = trusted_dealer_keyset_spec(
-        unit.clone(),
-        true,
-        args.input_fee_ppk,
-        args.final_expiry,
-        args.threshold,
-        &args.amounts,
-        deterministic_test_seed,
-        "active",
-    )?;
+    let keyset_spec = trusted_dealer_keyset_spec(unit.clone(), true, args, "active")?;
     print_trusted_dealer_stage("setup.active-keyset.done", setup_started_at);
 
     print_trusted_dealer_stage("setup.rotation-keyset.start", setup_started_at);
-    let rotation_keyset_spec = trusted_dealer_keyset_spec(
-        unit.clone(),
-        false,
-        args.input_fee_ppk,
-        args.final_expiry,
-        args.threshold,
-        &args.amounts,
-        deterministic_test_seed,
-        "rotation",
-    )?;
+    let rotation_keyset_spec = trusted_dealer_keyset_spec(unit.clone(), false, args, "rotation")?;
     print_trusted_dealer_stage("setup.rotation-keyset.done", setup_started_at);
 
     print_trusted_dealer_stage("setup.bundle.start", setup_started_at);
@@ -262,8 +245,11 @@ fn generate_trusted_dealer_core_generation(
             public_config_path,
             member_artifacts: core_member_artifacts,
         },
+        #[cfg(feature = "fakewallet")]
         output_dir,
+        #[cfg(feature = "fakewallet")]
         unit,
+        #[cfg(feature = "fakewallet")]
         bundle,
     })
 }
@@ -295,45 +281,31 @@ pub(crate) fn generate_trusted_dealer_artifacts(
         let work_dir = member_dir.join("work");
         let config_path = member_dir.join(MEMBER_CONFIG_FILE);
         let member_url = member.public_mint_url.to_string();
-        let federation_api_url = member.federation_api_url.to_string();
         let database_config = member_database_config(args, *member_id)?;
-        let listen_port = args
-            .port_start
-            .checked_add(member_id.get() - 1)
-            .ok_or_else(|| anyhow!("member ports overflow u16"))?;
         let prometheus_port = args
             .port_start
             .checked_add(args.members)
             .and_then(|port| port.checked_add(member_id.get() - 1))
             .ok_or_else(|| anyhow!("member Prometheus ports overflow u16"))?;
         let prometheus_url = format!("http://127.0.0.1:{prometheus_port}/metrics");
+        let artifacts = TrustedDealerMemberArtifacts {
+            config_path,
+            private_config_path: core_member.private_config_path.clone(),
+            work_dir,
+            public_mint_url: member_url,
+            prometheus_url,
+        };
         let config_toml = member_config_toml(
-            member_id,
-            &args.host,
-            &member_url,
-            &federation_api_url,
-            listen_port,
-            prometheus_port,
+            args,
             &public_config_path,
-            &core_member.private_config_path,
-            &config_path,
-            &work_dir,
+            member,
+            &artifacts,
             &generation.unit,
             &database_config,
-            args.deterministic_test_seed.as_deref(),
+            prometheus_port,
         )?;
-        write_private_text_file(&config_path, &config_toml, args.force)?;
-
-        member_artifacts.insert(
-            *member_id,
-            TrustedDealerMemberArtifacts {
-                config_path,
-                private_config_path: core_member.private_config_path.clone(),
-                work_dir,
-                public_mint_url: member_url,
-                prometheus_url,
-            },
-        );
+        write_private_text_file(&artifacts.config_path, &config_toml, args.force)?;
+        member_artifacts.insert(*member_id, artifacts);
     }
     print_trusted_dealer_stage("setup.local-member-files.done", setup_started_at);
 
@@ -479,18 +451,22 @@ fn trusted_dealer_members(
 fn trusted_dealer_keyset_spec(
     unit: CurrencyUnit,
     active: bool,
-    input_fee_ppk: u64,
-    final_expiry: Option<u64>,
-    threshold: u16,
-    amounts: &[u64],
-    deterministic_test_seed: Option<&str>,
+    args: &FederationTrustedDealerArgs,
     keyset_label: &str,
 ) -> Result<TrustedDealerKeysetSpec> {
+    let FederationTrustedDealerArgs {
+        input_fee_ppk,
+        final_expiry,
+        threshold,
+        amounts,
+        deterministic_test_seed,
+        ..
+    } = args;
     let mut amount_coefficients = BTreeMap::new();
     for amount in amounts {
         let coefficients = bls_coefficients(
-            threshold,
-            deterministic_test_seed,
+            *threshold,
+            deterministic_test_seed.as_deref(),
             &[keyset_label, &amount.to_string()],
         )?;
         if amount_coefficients
@@ -504,8 +480,8 @@ fn trusted_dealer_keyset_spec(
     Ok(TrustedDealerKeysetSpec::new(
         unit,
         active,
-        input_fee_ppk,
-        final_expiry,
+        *input_fee_ppk,
+        *final_expiry,
         amount_coefficients,
     ))
 }
@@ -609,20 +585,26 @@ fn validate_bundle(bundle: &TrustedDealerConfigBundle) -> Result<()> {
 
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 fn member_config_toml(
-    member_id: &MemberId,
-    listen_host: &str,
-    mint_url: &str,
-    federation_url: &str,
-    listen_port: u16,
-    prometheus_port: u16,
+    args: &FederationTrustedDealerArgs,
     public_config_path: &Path,
-    private_config_path: &Path,
-    config_path: &Path,
-    work_dir: &Path,
+    member: &cdk_common::federation::MemberConfigPublic,
+    artifacts: &TrustedDealerMemberArtifacts,
     unit: &CurrencyUnit,
     database_config: &str,
-    deterministic_test_seed: Option<&str>,
+    prometheus_port: u16,
 ) -> Result<String> {
+    let member_id = member.member_id;
+    let listen_host = &args.host;
+    let mint_url = &artifacts.public_mint_url;
+    let federation_url = &member.federation_api_url;
+    let config_path = &artifacts.config_path;
+    let private_config_path = &artifacts.private_config_path;
+    let work_dir = &artifacts.work_dir;
+    let deterministic_test_seed = args.deterministic_test_seed.as_deref();
+    let listen_port = args
+        .port_start
+        .checked_add(member_id.get() - 1)
+        .context("member ports overflow u16")?;
     let member_label = member_id.get().to_string();
     let mnemonic = match deterministic_test_seed {
         Some(seed) => deterministic_test_mnemonic(seed, &[&member_label])?,

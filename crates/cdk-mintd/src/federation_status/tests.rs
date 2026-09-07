@@ -890,33 +890,20 @@ fn status_digest_alert_guard_rejects_order_digest_mismatch() {
 }
 
 #[test]
-fn status_digest_alert_guard_rejects_reported_materialized_state_mismatch() {
+fn status_digest_alert_guard_uses_checkpoint_evidence_independently_of_message() {
     let (public_config, _) = status_fixture();
-    let mut status = local_status(&public_config, 1, 2);
-    status.sync_state = "materialized_state_mismatch".to_string();
-    status.sync_ready = false;
-    status.sync_message =
-        "waiting for materialized state digest convergence with peer 2".to_string();
-
-    let err = ensure_statuses_no_digest_alerts(&[status]).expect_err("reported mismatch fails");
-
-    assert!(err.to_string().contains("reports digest alert"));
-    assert!(err.to_string().contains("materialized_state_mismatch"));
-}
-
-#[test]
-fn status_digest_alert_guard_rejects_halted_digest_mismatch() {
-    let (public_config, _) = status_fixture();
-    let mut status = local_status(&public_config, 1, 2);
-    status.sync_state = "halted".to_string();
-    status.sync_ready = false;
-    status.sync_message = "peer 2 digest mismatch at operation count 2".to_string();
-
-    let err =
-        ensure_statuses_no_digest_alerts(&[status]).expect_err("halted digest mismatch fails");
-
-    assert!(err.to_string().contains("reports digest alert"));
-    assert!(err.to_string().contains("halted"));
+    for message in ["peer digest mismatch", "audit failed", "unrelated message"] {
+        for mismatch in [false, true] {
+            let mut status = local_status(&public_config, 1, 2);
+            status.sync_state = "halted".to_string();
+            status.sync_message = message.to_string();
+            status.checkpoint.frontier.materialized_state_audit_mismatch = mismatch;
+            assert_eq!(
+                ensure_statuses_no_digest_alerts(&[status]).is_err(),
+                mismatch
+            );
+        }
+    }
 }
 
 #[test]
@@ -925,6 +912,7 @@ fn status_digest_alert_guard_redacts_sensitive_halted_message() {
     let mut status = local_status(&public_config, 1, 2);
     status.sync_state = "halted".to_string();
     status.sync_ready = false;
+    status.checkpoint.frontier.materialized_state_audit_mismatch = true;
     status.sync_message = concat!(
         "peer 2 digest mismatch at operation count 2 ",
         "password=hunter2 private_config_path=/home/example/fed/private.json"

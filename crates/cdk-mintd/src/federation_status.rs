@@ -767,10 +767,7 @@ fn ensure_statuses_operation_lag(
 fn ensure_statuses_no_digest_alerts(statuses: &[FederationLocalStatusResponse]) -> Result<()> {
     ensure_statuses_have_application_digest(statuses)?;
     for status in statuses {
-        if status.checkpoint.frontier.materialized_state_audit_mismatch
-            || status.sync_state == "materialized_state_mismatch"
-            || (status.sync_state == "halted" && status.sync_message.contains("digest mismatch"))
-        {
+        if status.has_digest_alert() {
             bail!(
                 "federation member {} reports digest alert: sync={} message={}",
                 status.peer_status.member_id,

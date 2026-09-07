@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test]
 async fn private_local_status_route_returns_consensus_and_sync_state() {
     let (state, public_config, peer_private) = federation_route_state().await;
@@ -806,13 +808,13 @@ async fn catching_up_member_blocks_wallet_observer_and_broadcaster_work() {
         .await;
 
     assert!(
-        super::payment_observation::FederationPaymentObserver::default()
+        super::super::payment_observation::FederationPaymentObserver::default()
             .run_round(&state)
             .await
             .is_err()
     );
     assert!(
-        super::broadcast::FederationTransactionBroadcaster::default()
+        super::super::broadcast::FederationTransactionBroadcaster::default()
             .run_round(&state)
             .await
             .is_err()
@@ -1119,7 +1121,8 @@ async fn finalized_item_catch_up_pages_mixed_suffix_without_count_mismatch() {
             FederationConsensusItem::operation(accepted_a.clone()),
             FederationConsensusItem::operation(accepted_a.clone()),
             FederationConsensusItem::recovery_barrier(invalid_barrier),
-            FederationConsensusItem::Default(FederationConsensusDefaultItem::new(
+            FederationConsensusItem::ModuleFact(FederationConsensusModuleFact::new(
+                "test",
                 "module-fact",
                 serde_json::json!({"fact": 1}),
             )),
@@ -1515,7 +1518,7 @@ async fn poisoned_melt_quote_cannot_starve_observer_round() {
     // The single sequential observer worker must isolate the poisoned quote
     // and still observe the healthy one; the poisoned quote must remain
     // pending rather than being translated into a terminal failure.
-    let observer = super::payment_observation::FederationPaymentObserver::default();
+    let observer = super::super::payment_observation::FederationPaymentObserver::default();
     let submitted = observer
         .run_round(&state)
         .await

@@ -643,10 +643,13 @@ pub struct MintInfo {
     pub tos_url: Option<String>,
     /// max length the mint accepts for any array in a request
     pub max_array_length: Option<u64>,
+    /// Whether the mint advertises federation metadata.
+    pub is_federation: bool,
 }
 
 impl From<cdk::nuts::MintInfo> for MintInfo {
     fn from(info: cdk::nuts::MintInfo) -> Self {
+        let is_federation = info.federation.is_some();
         Self {
             name: info.name,
             pubkey: info.pubkey.map(|p| p.to_string()),
@@ -662,6 +665,7 @@ impl From<cdk::nuts::MintInfo> for MintInfo {
             motd: info.motd,
             time: info.time,
             tos_url: info.tos_url,
+            is_federation,
             max_array_length: info.max_array_length,
         }
     }
@@ -1116,6 +1120,7 @@ mod tests {
             motd: None,
             time: None,
             tos_url: None,
+            is_federation: false,
             max_array_length: None,
         };
 

@@ -185,6 +185,7 @@ name = "revoke_send"
 required-features = ["wallet"]
 
 [dev-dependencies]
+cdk-common = { workspace = true, features = ["test"] }
 axum.workspace = true
 rand.workspace = true
 cdk-sqlite = { workspace = true, features = ["federation-bark"] }

@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test]
 async fn aleph_bft_live_session_startup_decision_spawns_for_federation_member() {
     let (public_config, local_private, _) = transport_config();
@@ -27,7 +29,7 @@ async fn aleph_bft_live_session_start_installs_inbound_queue() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
@@ -36,7 +38,7 @@ async fn aleph_bft_live_session_start_installs_inbound_queue() {
     .await;
 
     let handle = start_federation_aleph_bft_live_session_with_config(
-        &mut state,
+        &state,
         FederationPeerSyncConfig::default(),
         CdkAlephBftNetworkPumpConfig::default(),
     )
@@ -86,7 +88,7 @@ async fn aleph_bft_session_supervisor_partial_startup_failure_publishes_no_tasks
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
@@ -98,7 +100,7 @@ async fn aleph_bft_session_supervisor_partial_startup_failure_publishes_no_tasks
             .with_pre_spawn_failure();
 
     start_federation_aleph_bft_live_session_with_options_and_transport(
-        &mut state,
+        &state,
         FederationPeerSyncConfig::default(),
         options,
         RouterFederationTransportRegistry::default(),
@@ -115,7 +117,7 @@ async fn aleph_bft_session_supervisor_halts_and_cleans_up_after_root_task_panic(
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
@@ -126,7 +128,7 @@ async fn aleph_bft_session_supervisor_halts_and_cleans_up_after_root_task_panic(
         FederationAlephBftLiveSessionOptions::new(CdkAlephBftNetworkPumpConfig::default())
             .with_panicking_session_task();
     let supervisor = start_federation_aleph_bft_live_session_with_options_and_transport(
-        &mut state,
+        &state,
         FederationPeerSyncConfig::default(),
         options,
         RouterFederationTransportRegistry::default(),
@@ -178,10 +180,10 @@ async fn aleph_bft_session_tasks_wait_for_supervisor_publication_before_activati
             )
             .with_root_task_activation_observer(Arc::clone(&root_task_activated));
     let observed_state = state.clone();
-    let mut start_state = state;
+    let start_state = state;
     let start_task = tokio::spawn(async move {
         start_federation_aleph_bft_live_session_with_options_and_transport(
-            &mut start_state,
+            &start_state,
             FederationPeerSyncConfig::default(),
             options,
             RouterFederationTransportRegistry::default(),
@@ -267,10 +269,10 @@ async fn aleph_bft_session_halt_during_construction_aborts_without_publication()
             )
             .with_root_task_activation_observer(Arc::clone(&root_task_activated));
     let observed_state = state.clone();
-    let mut start_state = state;
+    let start_state = state;
     let start_task = tokio::spawn(async move {
         start_federation_aleph_bft_live_session_with_options_and_transport(
-            &mut start_state,
+            &start_state,
             FederationPeerSyncConfig::default(),
             options,
             RouterFederationTransportRegistry::default(),
@@ -308,7 +310,7 @@ async fn aleph_bft_session_supervisor_halts_after_network_pump_panic() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         local_private,
         db,
@@ -319,7 +321,7 @@ async fn aleph_bft_session_supervisor_halts_after_network_pump_panic() {
         FederationAlephBftLiveSessionOptions::new(CdkAlephBftNetworkPumpConfig::default())
             .with_panicking_network_pump_task();
     let supervisor = start_federation_aleph_bft_live_session_with_options_and_transport(
-        &mut state,
+        &state,
         FederationPeerSyncConfig::default(),
         options,
         RouterFederationTransportRegistry::default(),
@@ -686,7 +688,7 @@ async fn byzantine_balance_overflow_operation_does_not_halt_finalized_applicatio
     )
     .await;
     let third_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
-        &mut session.states[3],
+        &session.states[3],
         session.sync_config,
         live_options.clone(),
         session.transport.clone(),
@@ -891,7 +893,7 @@ async fn byzantine_paid_melt_observation_without_saga_rejects_item_without_halt(
         );
         assert!(state.federation_aleph_bft_live_session_active().await);
     }
-    let _ = trailing_submit.abort();
+    trailing_submit.abort();
     let _ = trailing_submit.await;
 }
 
@@ -927,11 +929,7 @@ async fn duplicate_pending_and_paid_melts_reject_without_halting_later_finality(
     let pending_duplicate_quote = QuoteId::new();
     let duplicate_quote = QuoteId::new();
 
-    for quote in [
-        &original_quote,
-        &pending_duplicate_quote,
-        &duplicate_quote,
-    ] {
+    for quote in [&original_quote, &pending_duplicate_quote, &duplicate_quote] {
         let quote_envelope = test_melt_quote_operation_with_lookup_id(
             &runtime_config,
             quote.clone(),
@@ -1066,11 +1064,9 @@ async fn duplicate_pending_and_paid_melts_reject_without_halting_later_finality(
         &session.second_state,
         &actor_observation.observation,
     );
-    let follower_observation_id = submit_live_operation_allowing_pending_timeout(
-        &session.second_state,
-        follower_observation,
-    )
-    .await;
+    let follower_observation_id =
+        submit_live_operation_allowing_pending_timeout(&session.second_state, follower_observation)
+            .await;
     for state in [&session.first_state, &session.second_state] {
         assert_eq!(
             wait_for_terminal_operation(state, follower_observation_id).await,
@@ -1183,15 +1179,13 @@ async fn duplicate_pending_and_paid_melts_reject_without_halting_later_finality(
             wait_for_terminal_operation(state, trailing_operation_id).await,
             FederationOperationStatus::Applied
         );
-        assert!(
-            state
-                .mint
-                .localstore()
-                .get_mint_quote(&trailing_quote)
-                .await
-                .expect("trailing quote lookup")
-                .is_some()
-        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_mint_quote(&trailing_quote)
+            .await
+            .expect("trailing quote lookup")
+            .is_some());
         let (restarted, _) = crate::create_federation_runtime_state(&state.mint)
             .await
             .expect("restart runtime from rejected melt history");
@@ -1416,7 +1410,7 @@ async fn aleph_bft_live_session_persists_and_recovers_empty_active_session() {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
     let seed = mnemonic.to_seed_normalized("");
-    let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         local_private.clone(),
         Arc::clone(&db),
@@ -1448,7 +1442,7 @@ async fn aleph_bft_live_session_persists_and_recovers_empty_active_session() {
         max_peer_deliveries_per_message: 128,
     };
     let handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut state,
+        &state,
         sync_config,
         stale_pump_config,
         transport,
@@ -1635,7 +1629,7 @@ async fn aleph_bft_live_session_rotates_to_next_empty_session_and_uses_new_netwo
             FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 0),
         );
     let initial_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut state,
+        &state,
         sync_config,
         pump_config,
         initial_transport.clone(),
@@ -1779,7 +1773,7 @@ async fn aleph_bft_live_session_rotation_refuses_non_empty_pending_mempool() {
         FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 0),
     );
     let handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut state,
+        &state,
         sync_config,
         pump_config,
         transport,
@@ -1917,7 +1911,7 @@ async fn aleph_bft_live_session_uses_recovered_session_for_network_pump_messages
         max_peer_deliveries_per_message: 128,
     };
     let handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut state,
+        &state,
         sync_config,
         stale_pump_config,
         transport.clone(),
@@ -2250,14 +2244,14 @@ async fn aleph_bft_live_sessions_finalize_operation_over_private_rest_network_me
     let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
     let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
     let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private,
         first_db,
         &first_mnemonic.to_seed_normalized(""),
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         second_private,
         second_db,
@@ -2278,7 +2272,7 @@ async fn aleph_bft_live_sessions_finalize_operation_over_private_rest_network_me
     };
 
     let _first_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut first_state,
+        &first_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -2293,7 +2287,7 @@ async fn aleph_bft_live_sessions_finalize_operation_over_private_rest_network_me
             .with_state(first_state.clone()),
     );
     let _second_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut second_state,
+        &second_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -2401,7 +2395,7 @@ async fn aleph_bft_four_live_sessions_finalize_operation_over_private_rest_netwo
     for index in 0_usize..4 {
         let options = fast_aleph_bft_live_session_options(pump_config, 500);
         let handle = start_federation_aleph_bft_live_session_with_options_and_transport(
-            &mut states[index],
+            &states[index],
             sync_config,
             options,
             transport.clone(),
@@ -2463,7 +2457,7 @@ async fn aleph_bft_live_network_pump_wakes_on_outbound_before_peer_sync_interval
         &first_mnemonic.to_seed_normalized(""),
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         second_private,
         second_db,
@@ -2485,7 +2479,7 @@ async fn aleph_bft_live_network_pump_wakes_on_outbound_before_peer_sync_interval
     first_state.federation.peer_sync_config = Some(sync_config);
 
     let _first_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut first_state,
+        &first_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -2500,7 +2494,7 @@ async fn aleph_bft_live_network_pump_wakes_on_outbound_before_peer_sync_interval
             .with_state(first_state.clone()),
     );
     let _second_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut second_state,
+        &second_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -2574,7 +2568,7 @@ async fn aleph_bft_live_sessions_rotate_after_finality_through_router_clones() {
     };
 
     let first_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut first_state,
+        &first_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -2589,7 +2583,7 @@ async fn aleph_bft_live_sessions_rotate_after_finality_through_router_clones() {
             .with_state(first_state.clone()),
     );
     let second_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut second_state,
+        &second_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -2717,14 +2711,14 @@ async fn aleph_bft_live_sessions_auto_rotate_after_session_completion() {
     let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
     let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
     let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
-    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private,
         first_db,
         &first_mnemonic.to_seed_normalized(""),
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config,
         second_private,
         second_db,
@@ -2747,7 +2741,7 @@ async fn aleph_bft_live_sessions_auto_rotate_after_session_completion() {
         fast_aleph_bft_live_session_options(pump_config, 6).with_automatic_rotation_limit(2);
 
     let first_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
-        &mut first_state,
+        &first_state,
         sync_config,
         options.clone(),
         transport.clone(),
@@ -2762,7 +2756,7 @@ async fn aleph_bft_live_sessions_auto_rotate_after_session_completion() {
             .with_state(first_state.clone()),
     );
     let second_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
-        &mut second_state,
+        &second_state,
         sync_config,
         options,
         transport.clone(),

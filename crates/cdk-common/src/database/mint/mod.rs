@@ -1456,6 +1456,15 @@ pub trait FederationJournalDatabase {
         kind: FederationCheckpointKind,
     ) -> Result<Option<FederationCheckpoint>, Self::Err>;
 
+    /// Get the next scheduled candidate after the supplied sequence.
+    ///
+    /// Candidate capture is independent of signature collection. Quorums must
+    /// still be assembled and promoted in lineage order.
+    async fn get_next_federation_scheduled_checkpoint(
+        &self,
+        scheduled_checkpoint_sequence: u64,
+    ) -> Result<Option<FederationCheckpoint>, Self::Err>;
+
     /// Get persisted checkpoint payloads after a finalized-item cursor.
     async fn get_federation_checkpoints_after(
         &self,

@@ -445,22 +445,21 @@ fn sql_row_to_federation_aleph_bft_finalized_item(
 
 fn sql_member_id(column: Column) -> Result<MemberId, Error> {
     let member_id_raw: u64 = column_as_number!(column);
-    MemberId::new(member_id_raw as u16)
+    let member_id = u16::try_from(member_id_raw).map_err(|_| {
+        Error::Internal(format!(
+            "Federation member id out of range: {member_id_raw}"
+        ))
+    })?;
+    MemberId::new(member_id)
         .map_err(|e| Error::Internal(format!("Invalid federation member id: {e}")))
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct StoredFederationAlephBftPendingEnvelope {
     pub(super) envelope: FederationOperationEnvelope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) ordered_group: Option<FederationAlephBftOrderedOperationGroup>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(untagged)]
-enum StoredFederationAlephBftPendingEnvelopeCompat {
-    Current(StoredFederationAlephBftPendingEnvelope),
-    Legacy(FederationOperationEnvelope),
 }
 
 fn sql_row_to_federation_aleph_bft_pending_operation(
@@ -470,18 +469,16 @@ fn sql_row_to_federation_aleph_bft_pending_operation(
 
     let operation_id = FederationOperationId::from_hex(column_as_string!(&operation_id))
         .map_err(|e| Error::Internal(format!("Invalid federation operation ID: {e}")))?;
-    let stored: StoredFederationAlephBftPendingEnvelopeCompat =
+    let stored: StoredFederationAlephBftPendingEnvelope =
         serde_json::from_str(&column_as_string!(&envelope_json)).map_err(|e| {
             Error::Internal(format!(
                 "Invalid federation AlephBFT pending operation envelope JSON: {e}"
             ))
         })?;
-    let (envelope, ordered_group) = match stored {
-        StoredFederationAlephBftPendingEnvelopeCompat::Current(stored) => {
-            (stored.envelope, stored.ordered_group)
-        }
-        StoredFederationAlephBftPendingEnvelopeCompat::Legacy(envelope) => (envelope, None),
-    };
+    let StoredFederationAlephBftPendingEnvelope {
+        envelope,
+        ordered_group,
+    } = stored;
     let computed_operation_id = envelope.operation_id().map_err(|e| {
         Error::Internal(format!(
             "Invalid federation AlephBFT pending operation envelope: {e}"
@@ -935,4 +932,27 @@ fn sql_row_to_federation_checkpoint_frontier(
         latest_materialized_state_digest,
         materialized_state_audit_mismatch: materialized_state_audit_mismatch == 1,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sql_member_ids_reject_truncation() {
+        for raw in [0, -1, 65_536, 65_537, i64::MAX] {
+            assert!(
+                sql_member_id(Column::Integer(raw)).is_err(),
+                "accepted {raw}"
+            );
+        }
+        for raw in [1, 65_535] {
+            assert_eq!(
+                sql_member_id(Column::Integer(raw))
+                    .expect("member ID")
+                    .get(),
+                raw as u16
+            );
+        }
+    }
 }

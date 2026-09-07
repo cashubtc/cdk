@@ -726,22 +726,6 @@ impl DkgCompletionRecords {
     }
 
     #[cfg(feature = "sqlite")]
-    pub(crate) fn finalized_member_config(
-        &self,
-        public_config: &FederationConfig,
-        private_config: &MemberConfigPrivate,
-    ) -> Result<FederationDkgFinalizedMemberConfig> {
-        let current = self.records_for_current_ceremony()?;
-        finalized_member_config(
-            public_config,
-            private_config,
-            &current.keyset_shares,
-            &current.transcript_signatures,
-            &current.activations,
-        )
-    }
-
-    #[cfg(feature = "sqlite")]
     pub(crate) fn frost_roots(&self) -> Result<&[FederationFrostRootPublicConfig]> {
         if self.ceremonies.is_empty() {
             return Ok(&self.frost_roots);
@@ -766,11 +750,14 @@ impl DkgCompletionRecords {
     }
 
     #[cfg(feature = "sqlite")]
-    pub(crate) fn progress(
+    pub(crate) fn finalization_progress(
         &self,
         public_config: &FederationConfig,
         private_config: &MemberConfigPrivate,
-    ) -> FederationSetupDkgProgress {
+    ) -> (
+        FederationSetupDkgProgress,
+        Option<FederationDkgFinalizedMemberConfig>,
+    ) {
         let summary = DkgSetupRecordSummary::from_records(self, public_config, private_config);
         let current = self.records_for_current_ceremony();
         let confirmed_members = current
@@ -799,7 +786,7 @@ impl DkgCompletionRecords {
             1 => confirmation_digests.iter().next().cloned(),
             _ => None,
         };
-        let (finalized_ready, transcript_hash, error) = match current.and_then(|records| {
+        let (finalized, transcript_hash, error) = match current.and_then(|records| {
             let finalized = finalized_member_config(
                 public_config,
                 private_config,
@@ -812,11 +799,11 @@ impl DkgCompletionRecords {
                 .setup_transcript
                 .as_ref()
                 .map(|transcript| transcript.transcript_hash.to_string());
-            Ok(transcript_hash)
+            Ok((finalized, transcript_hash))
         }) {
-            Ok(transcript_hash) => (true, transcript_hash, None),
+            Ok((finalized, transcript_hash)) => (Some(finalized), transcript_hash, None),
             Err(err) => (
-                false,
+                None,
                 None,
                 Some(redact_federation_operator_message(&err.to_string())),
             ),
@@ -833,7 +820,7 @@ impl DkgCompletionRecords {
                 "not_started"
             },
         );
-        FederationSetupDkgProgress {
+        let progress = FederationSetupDkgProgress {
             phase: phase.to_string(),
             participant_states: summary.participant_states,
             commitments: summary.commitments,
@@ -844,12 +831,13 @@ impl DkgCompletionRecords {
             final_config_confirmations: summary.activations,
             frost_root_public_configs: summary.frost_root_public_configs,
             confirmed_members,
-            finalized_ready,
+            finalized_ready: finalized.is_some(),
             dkg_confirmation_digest,
             final_config_digest: None,
             transcript_hash,
             error: summary.driver_error.or(error),
-        }
+        };
+        (progress, finalized)
     }
 }
 

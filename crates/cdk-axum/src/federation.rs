@@ -69,6 +69,7 @@ mod payment_schedule;
 pub(crate) mod peer_client;
 mod private_request;
 pub(crate) mod runtime_components;
+pub(crate) mod services;
 mod setup;
 mod status_routes;
 mod sync_config;
@@ -198,8 +199,6 @@ use cdk::federation::{
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalCatchUpRequest,
     FederationMaterializedStateRow, FederationPeerStatusRequest,
 };
-#[cfg(all(test, not(feature = "iroh")))]
-use cdk_http_client::Transport;
 #[cfg(test)]
 use tokio::time::{self, Duration};
 
@@ -698,10 +697,7 @@ fn usize_to_u64_saturating(value: usize) -> u64 {
 
 #[cfg(feature = "prometheus")]
 fn u64_to_i64_saturating(value: u64) -> i64 {
-    match i64::try_from(value) {
-        Ok(value) => value,
-        Err(_) => i64::MAX,
-    }
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 fn federation_runtime_config(

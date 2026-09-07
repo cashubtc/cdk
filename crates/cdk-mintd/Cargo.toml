@@ -35,7 +35,7 @@ federation-bdk = ["federation", "bdk", "cdk-axum/federation-bdk"]
 # resolve or compile the Bark dependency graph.
 federation-bark = ["federation", "dep:cdk-bark", "dep:cdk-federation-bark", "cdk/federation-bark", "cdk-bark/federation-bark", "cdk-axum/federation-bark", "cdk-sqlite?/federation-bark", "cdk-postgres?/federation-bark"]
 # Local/regtest-only trusted-dealer setup and runtime admission.
-federation-test-utils = ["federation", "fakewallet", "cdk-bark?/federation-test-utils"]
+federation-test-utils = ["cdk-common/test", "federation", "fakewallet", "cdk-bark?/federation-test-utils"]
 
 [dependencies]
 futures.workspace = true
@@ -89,5 +89,6 @@ workspace = true
 [build-dependencies]
 
 [dev-dependencies]
+cdk-common = { workspace = true, features = ["test"] }
 cdk-frost.workspace = true
 tempfile = "3"

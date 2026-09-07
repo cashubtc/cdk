@@ -368,8 +368,6 @@ fn direct_transition_allowed(
     matches!(
         (previous, next),
         (Phase::ReceiveIntent, Phase::ReceivePrepared)
-            | (Phase::ReceivePrepared, Phase::ReceiveHtlcsReady)
-            | (Phase::ReceiveHtlcsReady, Phase::ClaimPlanned)
             | (Phase::ClaimPlanned, Phase::ReceivePreimageDisclosed)
             | (Phase::ReceivePreimageDisclosed, Phase::ReceiveClaimed)
             | (Phase::SendPlanned, Phase::SendHtlcsCosigned)
@@ -445,10 +443,10 @@ where
         r#"
         INSERT INTO federation_bark_derivation_allocations
         (locator_role, locator_index, locator_version, action_id, amount, artifact_hash,
-         vtxo_id, operation_id, operation_index, record_json)
+         operation_id, operation_index, record_json)
         VALUES
         (:locator_role, :locator_index, :locator_version, :action_id, :amount, :artifact_hash,
-         :vtxo_id, :operation_id, :operation_index, :record_json)
+         :operation_id, :operation_index, :record_json)
         ON CONFLICT (locator_role, locator_index, locator_version)
         DO UPDATE SET record_json = EXCLUDED.record_json
         WHERE federation_bark_derivation_allocations.record_json = EXCLUDED.record_json
@@ -465,10 +463,6 @@ where
     .bind(
         "artifact_hash",
         allocation.artifact_hash.map(|hash| hash.to_string()),
-    )
-    .bind(
-        "vtxo_id",
-        allocation.vtxo_id.map(|vtxo_id| vtxo_id.to_string()),
     )
     .bind("operation_id", allocation.operation_id.to_string())
     .bind(
@@ -524,7 +518,6 @@ where
         UPDATE federation_bark_derivation_allocations
         SET amount = :amount,
             artifact_hash = :artifact_hash,
-            vtxo_id = :vtxo_id,
             operation_id = :operation_id,
             operation_index = :operation_index,
             record_json = :record_json
@@ -541,10 +534,6 @@ where
     .bind(
         "artifact_hash",
         updated.artifact_hash.map(|hash| hash.to_string()),
-    )
-    .bind(
-        "vtxo_id",
-        updated.vtxo_id.map(|vtxo_id| vtxo_id.to_string()),
     )
     .bind("operation_id", updated.operation_id.to_string())
     .bind(
@@ -893,7 +882,6 @@ where
             vtxo_ids.push(mutation.vtxo_id);
             vtxo_ids.sort();
             let updated_allocation = FederationBarkDerivationAllocationRecord {
-                vtxo_id: allocation.vtxo_id.or(Some(mutation.vtxo_id)),
                 vtxo_ids,
                 materialized_amount,
                 operation_id: entry.operation_id,
@@ -969,7 +957,7 @@ where
             action_id: intent.action_id,
             amount: intent.minimum_net_amount,
             artifact_hash: None,
-            vtxo_id: None,
+
             vtxo_ids: Vec::new(),
             materialized_amount: cdk_common::Amount::ZERO,
             operation_id: entry.operation_id,
@@ -998,7 +986,7 @@ where
         ));
     };
     prepared
-        .validate_against_intent(&intent)
+        .validate_against_intent(intent)
         .map_err(|_| invalid_projection("Bark receive preparation differs from its intent"))?;
     ensure_same_action_binding(&action, operation)?;
     ensure_predecessor(&action, prepared.intent_operation_id)?;
@@ -1094,7 +1082,6 @@ where
             if previous.action_id != plan.action_id
                 || previous.amount != cdk_common::Amount::ZERO
                 || previous.artifact_hash.is_some()
-                || previous.vtxo_id.is_some()
                 || !previous.vtxo_ids.is_empty()
                 || previous.materialized_amount != cdk_common::Amount::ZERO
             {
@@ -1130,7 +1117,7 @@ where
                     action_id: plan.action_id,
                     amount,
                     artifact_hash: Some(output.artifact_hash),
-                    vtxo_id: None,
+
                     vtxo_ids: Vec::new(),
                     materialized_amount: cdk_common::Amount::ZERO,
                     operation_id: entry.operation_id,
@@ -1148,7 +1135,7 @@ where
                 action_id: plan.action_id,
                 amount: cdk_common::Amount::ZERO,
                 artifact_hash: None,
-                vtxo_id: None,
+
                 vtxo_ids: Vec::new(),
                 materialized_amount: cdk_common::Amount::ZERO,
                 operation_id: entry.operation_id,

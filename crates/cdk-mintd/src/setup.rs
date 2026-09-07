@@ -24,14 +24,6 @@ use cdk::nuts::CurrencyUnit;
 ))]
 use cdk::types::FeeReserve;
 
-#[cfg(any(
-    feature = "cln",
-    feature = "fakewallet",
-    feature = "grpc-processor",
-    feature = "ldk-node",
-    feature = "lnd"
-))]
-use crate::config;
 use crate::config::Settings;
 #[cfg(feature = "cln")]
 use crate::expand_path;
@@ -62,7 +54,7 @@ pub trait OnchainBackendSetup {
 
 #[cfg(feature = "cln")]
 #[async_trait]
-impl PaymentBackendSetup for config::Cln {
+impl PaymentBackendSetup for crate::config::Cln {
     async fn setup(
         &self,
         _settings: &Settings,
@@ -105,7 +97,7 @@ impl PaymentBackendSetup for config::Cln {
 
 #[cfg(feature = "lnd")]
 #[async_trait]
-impl PaymentBackendSetup for config::Lnd {
+impl PaymentBackendSetup for crate::config::Lnd {
     async fn setup(
         &self,
         _settings: &Settings,
@@ -150,7 +142,7 @@ impl PaymentBackendSetup for config::Lnd {
 
 #[cfg(feature = "fakewallet")]
 #[async_trait]
-impl PaymentBackendSetup for config::FakeWallet {
+impl PaymentBackendSetup for crate::config::FakeWallet {
     async fn setup(
         &self,
         _settings: &Settings,
@@ -226,18 +218,18 @@ mod tests {
 
     #[tokio::test]
     async fn fake_wallet_setup_filters_custom_methods_by_unit() {
-        let fake_wallet = config::FakeWallet {
+        let fake_wallet = crate::config::FakeWallet {
             supported_units: vec![CurrencyUnit::Sat, CurrencyUnit::Usd],
             custom_payment_methods: vec![
-                config::FakeWalletCustomPaymentMethod::MethodForUnit {
+                crate::config::FakeWalletCustomPaymentMethod::MethodForUnit {
                     method: "paypal".to_string(),
                     unit: CurrencyUnit::Sat,
                 },
-                config::FakeWalletCustomPaymentMethod::MethodForUnit {
+                crate::config::FakeWalletCustomPaymentMethod::MethodForUnit {
                     method: "venmo".to_string(),
                     unit: CurrencyUnit::Usd,
                 },
-                config::FakeWalletCustomPaymentMethod::Method("cashapp".to_string()),
+                crate::config::FakeWalletCustomPaymentMethod::Method("cashapp".to_string()),
             ],
             min_delay_time: 0,
             max_delay_time: 0,
@@ -288,7 +280,7 @@ mod tests {
 
 #[cfg(feature = "grpc-processor")]
 #[async_trait]
-impl PaymentBackendSetup for config::GrpcProcessor {
+impl PaymentBackendSetup for crate::config::GrpcProcessor {
     async fn setup(
         &self,
         _settings: &Settings,
@@ -308,7 +300,9 @@ impl PaymentBackendSetup for config::GrpcProcessor {
 }
 
 #[cfg(feature = "grpc-processor")]
-fn grpc_processor_tls_dir(processor: &config::GrpcProcessor) -> anyhow::Result<Option<PathBuf>> {
+fn grpc_processor_tls_dir(
+    processor: &crate::config::GrpcProcessor,
+) -> anyhow::Result<Option<PathBuf>> {
     match (&processor.tls_dir, processor.allow_insecure) {
         (Some(tls_dir), _) => Ok(Some(tls_dir.clone())),
         (None, false) => anyhow::bail!(
@@ -356,7 +350,7 @@ mod grpc_processor_tests {
 }
 
 #[cfg(feature = "ldk-node")]
-impl config::LdkNode {
+impl crate::config::LdkNode {
     fn chain_source(&self) -> anyhow::Result<cdk_ldk_node::ChainSource> {
         use anyhow::bail;
 
@@ -414,11 +408,10 @@ impl config::LdkNode {
 
 #[cfg(all(test, feature = "ldk-node"))]
 mod ldk_node_tests {
-    use super::*;
 
     #[test]
     fn parses_electrum_chain_source() {
-        let config = config::LdkNode {
+        let config = crate::config::LdkNode {
             chain_source_type: Some("ElEcTrUm".to_string()),
             electrum_url: Some("ssl://electrum.example.com:50002".to_string()),
             ..Default::default()
@@ -434,7 +427,7 @@ mod ldk_node_tests {
 
     #[test]
     fn esplora_chain_source_requires_url() {
-        let config = config::LdkNode {
+        let config = crate::config::LdkNode {
             chain_source_type: Some("esplora".to_string()),
             ..Default::default()
         };
@@ -448,7 +441,7 @@ mod ldk_node_tests {
 
     #[test]
     fn electrum_chain_source_requires_url() {
-        let config = config::LdkNode {
+        let config = crate::config::LdkNode {
             chain_source_type: Some("electrum".to_string()),
             ..Default::default()
         };
@@ -462,7 +455,7 @@ mod ldk_node_tests {
 
     #[test]
     fn rejects_unknown_chain_source() {
-        let config = config::LdkNode {
+        let config = crate::config::LdkNode {
             chain_source_type: Some("unknown".to_string()),
             ..Default::default()
         };
@@ -480,7 +473,7 @@ mod ldk_node_tests {
 
 #[cfg(feature = "ldk-node")]
 #[async_trait]
-impl PaymentBackendSetup for config::LdkNode {
+impl PaymentBackendSetup for crate::config::LdkNode {
     async fn setup(
         &self,
         settings: &Settings,
@@ -733,11 +726,10 @@ impl crate::config::Bdk {
 
 #[cfg(all(test, feature = "bdk"))]
 mod bdk_tests {
-    use super::*;
 
     #[test]
     fn forwards_bitcoin_rpc_wallet_rescan_height() {
-        let config = config::Bdk {
+        let config = crate::config::Bdk {
             chain_source_type: Some("bitcoinrpc".to_string()),
             wallet_rescan_from_height: Some(850000),
             ..Default::default()
@@ -756,7 +748,7 @@ mod bdk_tests {
 
     #[test]
     fn parses_electrum_chain_source() {
-        let config = config::Bdk {
+        let config = crate::config::Bdk {
             chain_source_type: Some("ElEcTrUm".to_string()),
             electrum_url: Some("ssl://electrum.example.com:50002".to_string()),
             electrum_batch_size: 7,
@@ -774,7 +766,7 @@ mod bdk_tests {
 
     #[test]
     fn electrum_chain_source_requires_url() {
-        let config = config::Bdk {
+        let config = crate::config::Bdk {
             chain_source_type: Some("electrum".to_string()),
             ..Default::default()
         };
@@ -788,7 +780,7 @@ mod bdk_tests {
 
     #[test]
     fn electrum_chain_source_rejects_zero_batch_size() {
-        let config = config::Bdk {
+        let config = crate::config::Bdk {
             chain_source_type: Some("electrum".to_string()),
             electrum_url: Some("tcp://127.0.0.1:50001".to_string()),
             electrum_batch_size: 0,
@@ -806,7 +798,7 @@ mod bdk_tests {
 
     #[test]
     fn esplora_chain_source_requires_url() {
-        let config = config::Bdk {
+        let config = crate::config::Bdk {
             chain_source_type: Some("esplora".to_string()),
             ..Default::default()
         };
@@ -820,7 +812,7 @@ mod bdk_tests {
 
     #[test]
     fn rejects_unknown_chain_source() {
-        let config = config::Bdk {
+        let config = crate::config::Bdk {
             chain_source_type: Some("unknown".to_string()),
             ..Default::default()
         };

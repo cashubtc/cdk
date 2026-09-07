@@ -20,7 +20,9 @@ pub use self::federation::{
     FederatedWalletOutputConfirmation, FederatedWalletReadiness, FederatedWalletScope,
     FederatedWalletSyncHealth, FederatedWalletSyncStatus,
 };
-pub use self::wallet_engine::{BdkWalletEngine, ConfirmedWalletOutput, DescriptorConfig};
+pub use self::wallet_engine::{
+    BdkWalletEngine, ConfirmedWalletOutput, DescriptorConfig, SyncConfig,
+};
 
 /// Backend-neutral name for one isolated threshold descriptor wallet.
 pub type FederatedDescriptorWallet = FederatedBdkWallet;

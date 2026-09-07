@@ -352,14 +352,14 @@ async fn sustained_dkg_member_rate_limit_preserves_fairness_and_retry() {
         &first_peer,
         local_private.member_id,
         1,
-        first_commitment.clone(),
+        first_commitment,
     );
     let limited_retry = signed_dkg_commitment_request(
         &public_config,
         &first_peer,
         local_private.member_id,
         2,
-        first_commitment.clone(),
+        first_commitment,
     );
     let second_request = signed_dkg_commitment_request(
         &public_config,

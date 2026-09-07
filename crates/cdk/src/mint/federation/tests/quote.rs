@@ -170,7 +170,7 @@ fn mint_quote_conversion_preserves_bolt11_accounting() {
         request: bolt11_quote_request(10),
         response: MintQuoteResponse::Bolt11(response.clone()),
     };
-    let converted = super::super::mint_quote_from_federation_operation(&operation)
+    let converted = super::super::helpers::mint_quote_from_federation_operation(&operation)
         .expect("convert mint quote");
 
     assert_eq!(

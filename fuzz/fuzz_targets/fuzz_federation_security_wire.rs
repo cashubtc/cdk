@@ -7,6 +7,7 @@ use cdk_common::federation::{
     FederationConfig, FederationFrostDkgConfirmationRequest, FederationFrostDkgRound1Request,
     FederationFrostDkgRound2Request, FederationFrostSigningPackageRequest,
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationLocalStatusResponse, FederationOperationEnvelope,
 };
 use libfuzzer_sys::fuzz_target;
 use serde::{de::DeserializeOwned, Serialize};
@@ -27,6 +28,19 @@ fuzz_target!(|data: &[u8]| {
             round_trip_value(&request);
         }
         round_trip_json::<FederationJournalCatchUpResponse>(data);
+        round_trip_json::<FederationLocalStatusResponse>(data);
+        if let Ok(envelope) = FederationOperationEnvelope::from_json_slice(data) {
+            round_trip_value(&envelope);
+            let canonical = envelope
+                .canonical_bytes()
+                .expect("current envelope canonical bytes");
+            let decoded = FederationOperationEnvelope::from_json_slice(&canonical)
+                .expect("canonical current envelope");
+            assert_eq!(
+                decoded.canonical_bytes().expect("reencoded envelope"),
+                canonical
+            );
+        }
     }
 
     if let Ok(transaction) = deserialize::<Transaction>(data) {

@@ -77,6 +77,11 @@ jobs:
             cargo fuzz run fuzz_payment_request_bech32 \
               "$corpus_root/payment-request" seeds/fuzz_payment_request_bech32 -- \
               -max_total_time=5 -artifact_prefix="$corpus_root/artifacts/"
+            for target in fuzz_federation_security_wire fuzz_frost_wire; do
+              mkdir -p "$corpus_root/$target"
+              cargo fuzz run "$target" "$corpus_root/$target" "seeds/$target" -- \
+                -runs=1000 -seed=1 -artifact_prefix="$corpus_root/artifacts/"
+            done
           '
 
   # Warm the shared Crane dependency derivation on each physical NixOS runner.

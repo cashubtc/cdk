@@ -22,9 +22,8 @@ use cdk_common::federation::{
     FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
     FederationOperation, FederationOperationEnvelope, FederationOperationId,
     FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationPolicy, FederationPaymentObservationReport,
-    FederationSwapOperation, InMemoryFederationJournal, MemberId, ThresholdParams,
-    TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationPaymentObservationPolicy, FederationSwapOperation, InMemoryFederationJournal,
+    MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::mint::{MeltSagaState, SagaStateEnum};
 use cdk_common::mint_url::MintUrl;
@@ -66,12 +65,13 @@ mod transaction_signing;
 
 use crate::mint::{Mint, MintBuilder, MintInput, MintMeltLimits};
 
-use super::{
+#[cfg(feature = "federation-bark")]
+use super::application::{
     federation_bark_matching_result_observers,
     federation_bark_result_payment_records_from_projection,
     FederationBarkPaymentObservationTemplate, FederationBarkResultObservationKey,
-    FederationRuntimeConfig,
 };
+use super::FederationRuntimeConfig;
 
 fn runtime_configs_with_signature_threshold(
     signature_threshold: u16,
@@ -97,12 +97,11 @@ fn runtime_configs_with_signature_threshold(
             Amount::from(1),
             (0..signature_threshold)
                 .map(|offset| {
-                    BlsSecretKey::from_reduced_bytes(&[
-                        u8::try_from(offset)
+                    BlsSecretKey::from_reduced_bytes(
+                        &[u8::try_from(offset)
                             .expect("test signature threshold fits u8")
-                            .saturating_add(2);
-                        32
-                    ])
+                            .saturating_add(2); 32],
+                    )
                 })
                 .collect(),
         )]),

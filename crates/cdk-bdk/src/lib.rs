@@ -199,8 +199,6 @@ pub struct CdkBdk {
     pub(crate) min_send_amount_sat: u64,
     /// Sync interval in seconds
     pub(crate) sync_interval_secs: u64,
-    /// Blockchain sync configuration
-    pub(crate) sync_config: SyncConfig,
     /// Cache for fee rate estimation: Tier -> (sat_per_vb, timestamp)
     pub(crate) fee_rate_cache: Arc<Mutex<std::collections::HashMap<PaymentTier, (f64, u64)>>>,
 }
@@ -249,7 +247,7 @@ impl CdkBdk {
     ) -> Result<u64, Error> {
         Self::ensure_amount_unit(unit, amount)?;
 
-        if unit == &CurrencyUnit::Msat && amount.value() % MSAT_IN_SAT != 0 {
+        if unit == &CurrencyUnit::Msat && !amount.value().is_multiple_of(MSAT_IN_SAT) {
             return Err(Error::FractionalSatoshiAmount {
                 amount_msat: amount.value(),
             });
@@ -356,7 +354,8 @@ impl CdkBdk {
             chain_source,
             std::path::Path::new(&storage_dir_path).join("bdk_wallet"),
             network,
-        )?;
+        )?
+        .with_sync_config(sync_config.unwrap_or_default())?;
 
         let batch_config = batch_config.unwrap_or_default();
         if batch_config.poll_interval.is_zero() {
@@ -391,7 +390,6 @@ impl CdkBdk {
             min_receive_amount_sat,
             min_send_amount_sat,
             sync_interval_secs,
-            sync_config: sync_config.unwrap_or_default(),
             fee_rate_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }

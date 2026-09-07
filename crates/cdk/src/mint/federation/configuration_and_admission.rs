@@ -1,58 +1,42 @@
-use std::collections::{HashMap, HashSet};
+use super::helpers::{
+    melt_quote_request_string, mint_input_from_federation_request, mint_request_from_input,
+    quote_id_from_federation, validate_payment_method_name,
+};
+use crate::mint::melt::ensure_melt_quote_matches_request;
+use crate::mint::verification::validate_proof_content_bounds;
+use crate::mint::Mint;
+use crate::mint::MintInput;
+use cdk_common::error::Error;
+use cdk_common::federation::{
+    FederationAcceptedSigningRequest, FederationAddressAllocationOperation,
+    FederationAddressKeychain, FederationBlindSignatureShareSet, FederationChainObservation,
+    FederationConfig, FederationConfigDigest, FederationError, FederationFrostApplicationId,
+    FederationId, FederationJournalEntry, FederationKeysetRotationOperation,
+    FederationMeltOperation, FederationMeltQuoteMetadata, FederationMeltQuoteOperation,
+    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
+    FederationPaymentObservationContext, FederationSignedTransaction, FederationSwapOperation,
+    FederationTransactionBroadcastIntent, FederationTransactionBroadcastObservation,
+    FederationTransactionProposal, FederationTransactionScope,
+    FederationTransactionSettlementPolicy, MemberConfigPrivate, MemberId,
+};
+use cdk_common::payment::PaymentIdentifier;
+use cdk_common::SpendingConditionVerification;
+use cdk_common::{
+    Amount, BlindedMessage, CurrencyUnit, MeltQuoteCreateResponse, MeltQuoteRequest, MeltRequest,
+    MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintResponse, PaymentMethod, Proofs,
+    PublicKey, QuoteId, RestoreRequest, SwapRequest, SwapResponse,
+};
+#[cfg(feature = "federation-bark")]
+use cdk_federation_bark::{
+    validate_federation_bark_operation, FederationBarkEvidenceCertificate, FederationBarkOperation,
+};
 use std::str::FromStr;
 #[cfg(feature = "prometheus")]
 use std::time::Instant;
 
-#[cfg(feature = "federation-bark")]
-use cdk_common::bitcoin::hashes::{sha256, Hash};
-use cdk_common::database;
-use cdk_common::error::Error;
-use cdk_common::federation::{
-    FederationAcceptedSigningRequest, FederationAddressAllocationOperation,
-    FederationAddressAllocationScope, FederationAddressKeychain, FederationApplicationState,
-    FederationBlindSignatureShareSet, FederationChainObservation, FederationConfig,
-    FederationConfigDigest, FederationError,
-    FederationFrostApplicationId, FederationId, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMaterializedStateKey, FederationMeltOperation,
-    FederationMeltQuoteMetadata, FederationMeltQuoteOperation,
-    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationMintRequest,
-    FederationOnchainMeltPaymentReceipt, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationSignatureShareRecord,
-    FederationSignedTransaction, FederationSwapOperation, FederationTransactionBroadcastIntent,
-    FederationTransactionBroadcastObservation, FederationTransactionProposal,
-    FederationTransactionScope, FederationTransactionSettlementPolicy, MemberConfigPrivate,
-    MemberId,
-};
-#[cfg(feature = "federation-bark")]
-use cdk_federation_bark::{
-    validate_federation_bark_operation, FederationBarkCpfpPackageSet,
-    FederationBarkCpfpPublication, FederationBarkEvidenceCertificate, FederationBarkOperation,
-    FederationBarkRecoveryState, FederationBarkSemanticPhase,
-};
-use cdk_common::mint::{
-    MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
-};
-use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
-use cdk_common::{
-    Amount, BatchMintRequest, BlindSignature, BlindedMessage, CurrencyUnit,
-    MeltQuoteCreateResponse, MeltQuoteRequest, MeltRequest, MintQuoteBolt11Response,
-    MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteOnchainResponse, MintQuoteRequest,
-    MintQuoteResponse, MintQuoteState, MintRequest, MintResponse, NotificationPayload,
-    PaymentMethod, Proofs, ProofsMethods, PublicKey, QuoteId, RestoreRequest,
-    SpendingConditionVerification, State, SwapRequest, SwapResponse,
-};
-use uuid::Uuid;
-
-use super::melt::ensure_melt_quote_matches_request;
-use super::verification::{validate_proof_content_bounds, Verification};
-use super::Mint;
-use super::MintInput;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum FederationProofVerificationContext {
+pub(in crate::mint) enum FederationProofVerificationContext {
     SwapBuilder,
     SwapAdmission,
     SwapApply,
@@ -99,16 +83,8 @@ impl FederationProofVerificationContext {
         }
     }
 }
-use crate::fees::calculate_fee;
-use crate::types::PaymentProcessorKey;
 
-use self::chain_observation::{
-    CHAIN_OBSERVATION_PRIMARY_NAMESPACE, CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-    CHAIN_OBSERVATION_STATE_KEY,
-};
-use self::transaction_state::persist_pending_onchain_intent;
-
-const FEDERATION_BLS_PROOF_BATCH_MIN: usize = 8;
+pub(super) const FEDERATION_BLS_PROOF_BATCH_MIN: usize = 8;
 
 /// Number of accepted journal items for which the accepted melt author holds
 /// exclusive payment-attempt authority before it rotates to the next roster
@@ -122,33 +98,13 @@ const FEDERATION_BLS_PROOF_BATCH_MIN: usize = 8;
 /// safely continue with the already-durable external identity and recovery state.
 pub(crate) const FEDERATION_EXTERNAL_ACTION_ACTOR_LEASE_ITEMS: u64 = 8;
 
-pub use self::transaction_policy::{
-    FederationCpfpPolicy, FederationFeeRateSource, FederationOnchainTransactionPolicy,
-};
-pub use cdk_common::federation::FederationTransactionPolicyAudit;
-
-struct FederationActiveMeltPayment {
-    active: std::sync::Arc<std::sync::Mutex<HashSet<QuoteId>>>,
-    quote_id: QuoteId,
-}
-
-impl Drop for FederationActiveMeltPayment {
-    fn drop(&mut self) {
-        let mut active = match self.active.lock() {
-            Ok(active) => active,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        active.remove(&self.quote_id);
-    }
-}
-
 /// Defines whether a mint runs as a standalone Cashu mint or as a federation member.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum FederationMode {
     /// Current single-operator mint behavior.
     #[default]
     Standalone,
-    /// Placeholder for consensus-backed federation member behavior.
+    /// Consensus-backed federation member behavior.
     Member,
 }
 
@@ -169,6 +125,16 @@ pub struct FederationRuntimeConfig {
 }
 
 impl FederationRuntimeConfig {
+    #[cfg(test)]
+    pub(super) fn private_config_mut(&mut self) -> &mut MemberConfigPrivate {
+        &mut self.private_config
+    }
+
+    #[cfg(test)]
+    pub(super) fn public_config_mut(&mut self) -> &mut FederationConfig {
+        &mut self.public_config
+    }
+
     /// Create a runtime federation config from public and local private config.
     pub fn new(
         public_config: FederationConfig,
@@ -269,7 +235,7 @@ impl FederationRuntimeConfig {
         .authorize(&self.private_config)?)
     }
 
-    fn validate_federated_address_allocation_submission(
+    pub(super) fn validate_federated_address_allocation_submission(
         &self,
         operation: &FederationAddressAllocationOperation,
     ) -> Result<(), Error> {
@@ -279,13 +245,14 @@ impl FederationRuntimeConfig {
                 reason: "federation has no accepted FROST wallet configuration".to_string(),
             }
         })?;
-        let cdk_application_matches = wallet
-            .cdk_onchain_application
-            .as_ref()
-            .is_some_and(|application| {
-                application.application_id == operation.application_id
-                    && application.application_key_epoch == operation.application_key_epoch
-            });
+        let cdk_application_matches =
+            wallet
+                .cdk_onchain_application
+                .as_ref()
+                .is_some_and(|application| {
+                    application.application_id == operation.application_id
+                        && application.application_key_epoch == operation.application_key_epoch
+                });
         #[cfg(feature = "federation-bark")]
         let bark_recovery_matches =
             cdk_federation_bark::federation_bark_recovery_application(&self.public_config)?
@@ -297,8 +264,7 @@ impl FederationRuntimeConfig {
         let bark_recovery_matches = false;
         if !cdk_application_matches && !bark_recovery_matches {
             return Err(FederationError::AddressAllocationInvalid {
-                reason: "allocation references an unknown descriptor application epoch"
-                    .to_string(),
+                reason: "allocation references an unknown descriptor application epoch".to_string(),
             }
             .into());
         }
@@ -403,6 +369,10 @@ impl FederationRuntimeConfig {
     }
 
     /// Wrap a federation operation in this mint member's federation envelope.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the validated member identity cannot sign the envelope.
     #[must_use]
     pub fn operation_envelope(
         &self,
@@ -477,7 +447,6 @@ impl FederationRuntimeConfig {
                 "federation mint quote response has empty payment request".to_string(),
             ));
         }
-        mint_quote_response_amounts(&operation.response, &operation.request.unit())?;
 
         Ok(())
     }
@@ -603,66 +572,6 @@ impl FederationRuntimeConfig {
         Ok(())
     }
 
-    /// Build the consensus operation for observing an outgoing melt payment state.
-    #[must_use]
-    pub fn melt_quote_payment_observation<Q>(
-        &self,
-        quote: Q,
-        method: PaymentMethod,
-        state: cdk_common::MeltQuoteState,
-        amount: Amount,
-        fee_reserve: Amount,
-        total_spent: Option<Amount>,
-        payment_proof: Option<String>,
-    ) -> FederationOperationEnvelope
-    where
-        Q: ToString,
-    {
-        self.melt_quote_payment_observation_with_metadata(
-            quote,
-            method,
-            state,
-            amount,
-            fee_reserve,
-            total_spent,
-            payment_proof,
-            None,
-        )
-    }
-
-    /// Build the consensus operation for observing an outgoing melt payment
-    /// state with optional backend payment metadata.
-    #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn melt_quote_payment_observation_with_metadata<Q>(
-        &self,
-        quote: Q,
-        method: PaymentMethod,
-        state: cdk_common::MeltQuoteState,
-        amount: Amount,
-        fee_reserve: Amount,
-        total_spent: Option<Amount>,
-        payment_proof: Option<String>,
-        payment_id: Option<PaymentIdentifier>,
-    ) -> FederationOperationEnvelope
-    where
-        Q: ToString,
-    {
-        self.operation_envelope(FederationOperation::MeltQuotePayment(
-            FederationMeltQuotePaymentObservation {
-                quote: quote.to_string(),
-                observer: self.member_id(),
-                method,
-                state,
-                amount,
-                fee_reserve,
-                total_spent,
-                payment_id,
-                payment_proof,
-            },
-        ))
-    }
-
     /// Validate a federated melt quote payment observation before consensus admission.
     ///
     /// This is side-effect free: it verifies structural safety and roster
@@ -764,13 +673,12 @@ impl FederationRuntimeConfig {
                 Ok(())
             }
             #[cfg(not(feature = "federation-bark"))]
-            FederationOperation::Application(_)
-            | FederationOperation::ExternalApplication(_) => Err(
-                FederationError::ApplicationOperationInvalid {
+            FederationOperation::Application(_) | FederationOperation::ExternalApplication(_) => {
+                Err(FederationError::ApplicationOperationInvalid {
                     reason: "federation application support is disabled".to_owned(),
                 }
-                .into(),
-            ),
+                .into())
+            }
         }
     }
 
@@ -901,7 +809,7 @@ impl FederationRuntimeConfig {
         Ok(PublicKey::from(*aggregate_key))
     }
 
-    fn verify_proofs_with_performance_context(
+    pub(in crate::mint) fn verify_proofs_with_performance_context(
         &self,
         proofs: &Proofs,
         context: FederationProofVerificationContext,
@@ -992,7 +900,7 @@ impl FederationRuntimeConfig {
                 .shares
                 .into_iter()
                 .map(|share| {
-                    super::federation_blind_signature_from_share(
+                    crate::mint::federation_blind_signature_from_share(
                         share.amount,
                         share.keyset_id,
                         &share.share,
@@ -1203,7 +1111,7 @@ impl FederationRuntimeConfig {
                 .shares
                 .into_iter()
                 .map(|share| {
-                    super::federation_blind_signature_from_share(
+                    crate::mint::federation_blind_signature_from_share(
                         share.amount,
                         share.keyset_id,
                         &share.share,
@@ -1211,5 +1119,35 @@ impl FederationRuntimeConfig {
                 })
                 .collect(),
         })
+    }
+}
+
+#[cfg(all(test, feature = "prometheus"))]
+mod performance_instrumentation_tests {
+    use std::collections::HashSet;
+
+    use super::FederationProofVerificationContext;
+
+    #[test]
+    fn proof_verification_contexts_have_distinct_fixed_metric_labels() {
+        let contexts = [
+            FederationProofVerificationContext::SwapBuilder,
+            FederationProofVerificationContext::SwapAdmission,
+            FederationProofVerificationContext::SwapApply,
+            FederationProofVerificationContext::MeltBuilder,
+            FederationProofVerificationContext::MeltAdmission,
+            FederationProofVerificationContext::MeltApply,
+        ];
+        let mut work = HashSet::new();
+        let mut operations = HashSet::new();
+
+        for context in contexts {
+            let (context_work, context_operation) = context.performance_labels();
+            assert!(work.insert(context_work));
+            assert!(operations.insert(context_operation));
+        }
+
+        assert_eq!(work.len(), contexts.len());
+        assert_eq!(operations.len(), contexts.len());
     }
 }

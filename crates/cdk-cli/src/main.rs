@@ -23,9 +23,9 @@ use url::Url;
 
 mod nostr_storage;
 mod sub_commands;
+mod terminal;
 #[cfg(all(test, feature = "federation"))]
 mod test_support;
-mod terminal;
 mod token_storage;
 mod utils;
 
@@ -448,17 +448,17 @@ async fn main() -> Result<()> {
 
 #[cfg(feature = "federation")]
 fn command_needs_federation_wallet_activation(command: &Commands) -> bool {
-    match command {
+    !matches!(
+        command,
         Commands::DecodeToken(_)
-        | Commands::MintInfo(_)
-        | Commands::Federation(_)
-        | Commands::DecodeRequest(_)
-        | Commands::UpdateMintUrl(_)
-        | Commands::MintBlindAuth(_)
-        | Commands::CatLogin(_)
-        | Commands::CatDeviceLogin(_) => false,
-        _ => true,
-    }
+            | Commands::MintInfo(_)
+            | Commands::Federation(_)
+            | Commands::DecodeRequest(_)
+            | Commands::UpdateMintUrl(_)
+            | Commands::MintBlindAuth(_)
+            | Commands::CatLogin(_)
+            | Commands::CatDeviceLogin(_)
+    )
 }
 
 fn command_needs_wallet_recovery(command: &Commands) -> bool {

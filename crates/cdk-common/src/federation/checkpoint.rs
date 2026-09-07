@@ -1753,7 +1753,7 @@ mod tests {
     use crate::error::{ErrorCode, ErrorResponse};
     use crate::federation::{
         FederationAlephBftFinalizedItemStatus, FederationAlephBftUnitBodyHash,
-        FederationConsensusDefaultItem, FederationConsensusItem, ThresholdParams,
+        FederationConsensusItem, FederationConsensusModuleFact, ThresholdParams,
     };
     use crate::{mint_url::MintUrl, SecretKey};
 
@@ -1907,7 +1907,8 @@ mod tests {
             operation_id: None,
             status,
             unit_body_hash: FederationAlephBftUnitBodyHash::from_bytes([8; 32]),
-            item: FederationConsensusItem::Default(FederationConsensusDefaultItem::new(
+            item: FederationConsensusItem::ModuleFact(FederationConsensusModuleFact::new(
+                "test",
                 "checkpoint-test",
                 json!({"b": 2, "a": 1}),
             )),
@@ -2048,7 +2049,7 @@ mod tests {
             (
                 "a4c7c40f068a7f7e3eb431237c494e59ebb329167ab6a5a5123c8c70d8115628",
                 "6f98c1caffcb0b8c7970d6b697c821e0f46949fce43c74c4e349a10e38ccfb3d",
-                "d741b5d8863d623672627c1d7fd5ccea7a0420e78b9b68ac89b231ae2be5daa2",
+                "c36c288970f8857e797be007431d5ad82755a9e01b980b4a2b7c4740d322a6c9",
             )
         );
     }
@@ -2243,8 +2244,8 @@ mod tests {
         assert_ne!(digest(&accepted), digest(&other_unit));
 
         let mut reordered_payload = accepted.clone();
-        reordered_payload.item = FederationConsensusItem::Default(
-            FederationConsensusDefaultItem::new("checkpoint-test", json!({"a": 1, "b": 2})),
+        reordered_payload.item = FederationConsensusItem::ModuleFact(
+            FederationConsensusModuleFact::new("test", "checkpoint-test", json!({"a": 1, "b": 2})),
         );
         assert_eq!(digest(&accepted), digest(&reordered_payload));
     }

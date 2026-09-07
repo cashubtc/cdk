@@ -1,21 +1,39 @@
-pub(super) fn federation_operation_uuid(operation_id: FederationOperationId) -> Uuid {
+use crate::mint::MintInput;
+use cdk_common::database;
+use cdk_common::error::Error;
+use cdk_common::federation::{
+    FederationBlindSignatureShareSet, FederationError, FederationJournalEntry,
+    FederationMeltQuotePaymentObservation, FederationMintQuoteOperation, FederationMintRequest,
+    FederationOnchainMeltPaymentReceipt, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservationRecord,
+};
+use cdk_common::mint::{MeltQuote, MintQuote};
+use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
+use cdk_common::{
+    Amount, BatchMintRequest, BlindSignature, CurrencyUnit, MeltQuoteRequest, MintQuoteResponse,
+    MintQuoteState, MintRequest, PaymentMethod, QuoteId,
+};
+use std::str::FromStr;
+use uuid::Uuid;
+
+pub(in crate::mint) fn federation_operation_uuid(operation_id: FederationOperationId) -> Uuid {
     let bytes = operation_id.to_bytes();
     let mut uuid = [0_u8; 16];
     uuid.copy_from_slice(&bytes[..16]);
     Uuid::from_bytes(uuid)
 }
 
-fn payment_observation_record_from_entry(
+pub(super) fn payment_observation_record_from_entry(
     entry: &FederationJournalEntry,
 ) -> Result<FederationPaymentObservationRecord, Error> {
     FederationPaymentObservationRecord::from_journal_entry(entry).ok_or(Error::Internal)
 }
 
-fn federation_payment_identifier_label(payment_id: &PaymentIdentifier) -> String {
+pub(super) fn federation_payment_identifier_label(payment_id: &PaymentIdentifier) -> String {
     format!("{}:{}", payment_id.kind(), payment_id)
 }
 
-fn federation_operation_status_label(status: FederationOperationStatus) -> &'static str {
+pub(super) fn federation_operation_status_label(status: FederationOperationStatus) -> &'static str {
     match status {
         FederationOperationStatus::Accepted => "accepted",
         FederationOperationStatus::Applying => "applying",
@@ -25,7 +43,7 @@ fn federation_operation_status_label(status: FederationOperationStatus) -> &'sta
     }
 }
 
-fn ensure_same_federation_journal_entry_for_retry(
+pub(super) fn ensure_same_federation_journal_entry_for_retry(
     persisted: &FederationJournalEntry,
     accepted: &FederationJournalEntry,
 ) -> Result<(), Error> {
@@ -47,7 +65,7 @@ fn ensure_same_federation_journal_entry_for_retry(
     Ok(())
 }
 
-fn mint_request_from_input(input: MintInput) -> FederationMintRequest {
+pub(super) fn mint_request_from_input(input: MintInput) -> FederationMintRequest {
     match input {
         MintInput::Single(request) => FederationMintRequest::Single(MintRequest {
             quote: request.quote.to_string(),
@@ -67,7 +85,9 @@ fn mint_request_from_input(input: MintInput) -> FederationMintRequest {
     }
 }
 
-fn mint_input_from_federation_request(request: &FederationMintRequest) -> Result<MintInput, Error> {
+pub(super) fn mint_input_from_federation_request(
+    request: &FederationMintRequest,
+) -> Result<MintInput, Error> {
     match request {
         FederationMintRequest::Single(request) => Ok(MintInput::Single(MintRequest {
             quote: quote_id_from_federation(&request.quote)?,
@@ -87,11 +107,11 @@ fn mint_input_from_federation_request(request: &FederationMintRequest) -> Result
     }
 }
 
-fn quote_id_from_federation(quote: &str) -> Result<QuoteId, Error> {
+pub(super) fn quote_id_from_federation(quote: &str) -> Result<QuoteId, Error> {
     Ok(QuoteId::from_str(quote)?)
 }
 
-fn validate_payment_method_name(method: &PaymentMethod) -> Result<(), Error> {
+pub(super) fn validate_payment_method_name(method: &PaymentMethod) -> Result<(), Error> {
     if method.is_valid_method_name() {
         return Ok(());
     }
@@ -99,7 +119,7 @@ fn validate_payment_method_name(method: &PaymentMethod) -> Result<(), Error> {
     Err(Error::InvalidPaymentMethod)
 }
 
-fn mint_quote_from_federation_operation(
+pub(super) fn mint_quote_from_federation_operation(
     operation: &FederationMintQuoteOperation,
 ) -> Result<MintQuote, Error> {
     let quote_id = quote_id_from_federation(&operation.quote)?;
@@ -113,8 +133,11 @@ fn mint_quote_from_federation_operation(
         .request
         .amount()
         .map(|amount| amount.with_unit(unit.clone()));
-    let (amount_paid, amount_issued, extra_json) =
-        mint_quote_response_amounts(&operation.response, &unit)?;
+    let MintQuoteAmounts {
+        amount_paid,
+        amount_issued,
+        extra_json,
+    } = mint_quote_response_amounts(&operation.response, &unit);
     let created_time = mint_quote_response_updated_at(&operation.response);
 
     Ok(MintQuote::new(
@@ -136,7 +159,7 @@ fn mint_quote_from_federation_operation(
     ))
 }
 
-fn federation_accepted_order(entry: &FederationJournalEntry) -> u64 {
+pub(super) fn federation_accepted_order(entry: &FederationJournalEntry) -> u64 {
     // On-chain batching needs only a stable ordering value, not wall-clock time.
     entry.index.saturating_add(1)
 }
@@ -150,42 +173,39 @@ fn mint_quote_response_updated_at(response: &MintQuoteResponse<String>) -> u64 {
     }
 }
 
+struct MintQuoteAmounts {
+    amount_paid: Amount<CurrencyUnit>,
+    amount_issued: Amount<CurrencyUnit>,
+    extra_json: Option<serde_json::Value>,
+}
+
 fn mint_quote_response_amounts(
     response: &MintQuoteResponse<String>,
     unit: &CurrencyUnit,
-) -> Result<
-    (
-        Amount<CurrencyUnit>,
-        Amount<CurrencyUnit>,
-        Option<serde_json::Value>,
-    ),
-    Error,
-> {
-    match response {
-        MintQuoteResponse::Bolt11(response) => Ok((
-            response.amount_paid.with_unit(unit.clone()),
-            response.amount_issued.with_unit(unit.clone()),
-            None,
-        )),
-        MintQuoteResponse::Bolt12(response) => Ok((
-            response.amount_paid.with_unit(unit.clone()),
-            response.amount_issued.with_unit(unit.clone()),
-            None,
-        )),
-        MintQuoteResponse::Onchain(response) => Ok((
-            response.amount_paid.with_unit(unit.clone()),
-            response.amount_issued.with_unit(unit.clone()),
-            None,
-        )),
-        MintQuoteResponse::Custom { response, .. } => Ok((
-            response.amount_paid.with_unit(unit.clone()),
-            response.amount_issued.with_unit(unit.clone()),
+) -> MintQuoteAmounts {
+    let (amount_paid, amount_issued, extra_json) = match response {
+        MintQuoteResponse::Bolt11(response) => (response.amount_paid, response.amount_issued, None),
+        MintQuoteResponse::Bolt12(response) => (response.amount_paid, response.amount_issued, None),
+        MintQuoteResponse::Onchain(response) => {
+            (response.amount_paid, response.amount_issued, None)
+        }
+        MintQuoteResponse::Custom { response, .. } => (
+            response.amount_paid,
+            response.amount_issued,
             Some(response.extra.clone()),
-        )),
+        ),
+    };
+    MintQuoteAmounts {
+        amount_paid: amount_paid.with_unit(unit.clone()),
+        amount_issued: amount_issued.with_unit(unit.clone()),
+        extra_json,
     }
 }
 
-fn ensure_mint_quote_matches(existing: &MintQuote, expected: &MintQuote) -> Result<(), Error> {
+pub(super) fn ensure_mint_quote_matches(
+    existing: &MintQuote,
+    expected: &MintQuote,
+) -> Result<(), Error> {
     if existing.id != expected.id
         || existing.unit != expected.unit
         || existing.request != expected.request
@@ -204,7 +224,7 @@ fn ensure_mint_quote_matches(existing: &MintQuote, expected: &MintQuote) -> Resu
     Ok(())
 }
 
-fn ensure_melt_quote_matches_payment_observation(
+pub(super) fn ensure_melt_quote_matches_payment_observation(
     quote: &MeltQuote,
     observation: &FederationMeltQuotePaymentObservation,
 ) -> Result<(), Error> {
@@ -225,7 +245,7 @@ fn ensure_melt_quote_matches_payment_observation(
     Ok(())
 }
 
-fn ensure_melt_quote_payment_proof_matches(
+pub(super) fn ensure_melt_quote_payment_proof_matches(
     quote: &MeltQuote,
     observation: &FederationMeltQuotePaymentObservation,
 ) -> Result<(), Error> {
@@ -243,7 +263,7 @@ fn ensure_melt_quote_payment_proof_matches(
     Ok(())
 }
 
-fn validate_federation_onchain_melt_receipt(
+pub(super) fn validate_federation_onchain_melt_receipt(
     quote: &MeltQuote,
     melt_operation_id: FederationOperationId,
     receipt: &FederationOnchainMeltPaymentReceipt,
@@ -265,7 +285,7 @@ fn validate_federation_onchain_melt_receipt(
     Ok(())
 }
 
-fn melt_quote_payment_response(
+pub(super) fn melt_quote_payment_response(
     operation_id: FederationOperationId,
     quote: &MeltQuote,
     observation: &FederationMeltQuotePaymentObservation,
@@ -313,7 +333,7 @@ fn melt_quote_payment_response(
     })
 }
 
-fn melt_quote_request_string(request: &MeltQuoteRequest) -> String {
+pub(super) fn melt_quote_request_string(request: &MeltQuoteRequest) -> String {
     match request {
         MeltQuoteRequest::Bolt11(request) => request.request.to_string(),
         MeltQuoteRequest::Bolt12(request) => request.request.clone(),
@@ -322,7 +342,10 @@ fn melt_quote_request_string(request: &MeltQuoteRequest) -> String {
     }
 }
 
-fn federation_melt_quote_immutable_terms_match(existing: &MeltQuote, proposed: &MeltQuote) -> bool {
+pub(super) fn federation_melt_quote_immutable_terms_match(
+    existing: &MeltQuote,
+    proposed: &MeltQuote,
+) -> bool {
     let fee_selection_matches = match existing.selected_fee_index {
         Some(selected)
             if existing.payment_method
@@ -358,7 +381,7 @@ fn federation_melt_quote_immutable_terms_match(existing: &MeltQuote, proposed: &
         && existing.fee_options() == proposed.fee_options()
 }
 
-fn federation_payment_identifier_from_label(payment_id: &str) -> PaymentIdentifier {
+pub(super) fn federation_payment_identifier_from_label(payment_id: &str) -> PaymentIdentifier {
     match payment_id.split_once(':') {
         Some((kind, identifier)) => PaymentIdentifier::new(kind, identifier)
             .unwrap_or_else(|_| PaymentIdentifier::CustomId(payment_id.to_string())),
@@ -366,12 +389,14 @@ fn federation_payment_identifier_from_label(payment_id: &str) -> PaymentIdentifi
     }
 }
 
-fn federation_share_signatures(share_set: FederationBlindSignatureShareSet) -> Vec<BlindSignature> {
+pub(super) fn federation_share_signatures(
+    share_set: FederationBlindSignatureShareSet,
+) -> Vec<BlindSignature> {
     share_set
         .shares
         .into_iter()
         .map(|share| {
-            super::federation_blind_signature_from_share(
+            crate::mint::federation_blind_signature_from_share(
                 share.amount,
                 share.keyset_id,
                 &share.share,
@@ -380,7 +405,7 @@ fn federation_share_signatures(share_set: FederationBlindSignatureShareSet) -> V
         .collect()
 }
 
-fn validate_federation_mint_quotes(
+pub(super) fn validate_federation_mint_quotes(
     quotes: &[database::mint::Acquired<MintQuote>],
 ) -> Result<(PaymentMethod, CurrencyUnit), Error> {
     let first = quotes.first().ok_or(Error::UnknownQuote)?;
@@ -399,7 +424,7 @@ fn validate_federation_mint_quotes(
     Ok((payment_method, unit))
 }
 
-fn validate_federation_mint_quote_signatures(
+pub(super) fn validate_federation_mint_quote_signatures(
     input: &MintInput,
     quotes: &[database::mint::Acquired<MintQuote>],
 ) -> Result<(), Error> {
@@ -443,7 +468,7 @@ fn validate_federation_mint_quote_signatures(
     }
 }
 
-fn validate_federation_mint_quote_states_for_signing(
+pub(super) fn validate_federation_mint_quote_states_for_signing(
     quotes: &[database::mint::Acquired<MintQuote>],
     expected_amounts: &[Amount<CurrencyUnit>],
     signatures_present: usize,
@@ -473,7 +498,7 @@ fn validate_federation_mint_quote_states_for_signing(
     Ok(())
 }
 
-fn expected_federation_mint_amounts(
+pub(super) fn expected_federation_mint_amounts(
     input: &MintInput,
     quotes: &[database::mint::Acquired<MintQuote>],
     outputs_amount: Amount<CurrencyUnit>,
@@ -504,43 +529,10 @@ fn expected_federation_mint_amounts(
     }
 }
 
-fn mint_quote_state_label(state: MintQuoteState) -> &'static str {
+pub(super) fn mint_quote_state_label(state: MintQuoteState) -> &'static str {
     match state {
         MintQuoteState::Unpaid => "unpaid",
         MintQuoteState::Paid => "paid",
         MintQuoteState::Issued => "issued",
     }
 }
-
-#[cfg(all(test, feature = "prometheus"))]
-mod performance_instrumentation_tests {
-    use std::collections::HashSet;
-
-    use super::FederationProofVerificationContext;
-
-    #[test]
-    fn proof_verification_contexts_have_distinct_fixed_metric_labels() {
-        let contexts = [
-            FederationProofVerificationContext::SwapBuilder,
-            FederationProofVerificationContext::SwapAdmission,
-            FederationProofVerificationContext::SwapApply,
-            FederationProofVerificationContext::MeltBuilder,
-            FederationProofVerificationContext::MeltAdmission,
-            FederationProofVerificationContext::MeltApply,
-        ];
-        let mut work = HashSet::new();
-        let mut operations = HashSet::new();
-
-        for context in contexts {
-            let (context_work, context_operation) = context.performance_labels();
-            assert!(work.insert(context_work));
-            assert!(operations.insert(context_operation));
-        }
-
-        assert_eq!(work.len(), contexts.len());
-        assert_eq!(operations.len(), contexts.len());
-    }
-}
-
-#[cfg(test)]
-mod tests;

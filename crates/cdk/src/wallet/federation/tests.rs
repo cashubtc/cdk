@@ -30,7 +30,7 @@ use cdk_fake_wallet::{create_fake_invoice, FakeWallet};
 
 use super::{
     member_websocket_url, FederatedMintConnector, FederatedMintConnectorConfig,
-    FederationWalletConnector, FEDERATION_CATCH_UP_MAX_RETRIES,
+    ShareAmountValidation, FEDERATION_CATCH_UP_MAX_RETRIES,
 };
 use crate::dhke::verify_bls_blind_signature;
 use crate::mint::{FederationRuntimeConfig, Mint, MintBuilder, MintInput, MintMeltLimits};
@@ -1377,12 +1377,10 @@ fn wallet_connector_accepts_matching_v3_aggregate_keysets() {
     let bundle = bundle();
     let advertised = advertised_keyset(&bundle);
 
-    FederationWalletConnector::validate_member_keysets(
-        &bundle.public_config,
-        member_id(1),
-        &[advertised],
-    )
-    .expect("matching member keysets");
+    bundle
+        .public_config
+        .validate_member_advertised_keysets(member_id(1), &[advertised])
+        .expect("matching member keysets");
 }
 
 #[test]
@@ -1398,15 +1396,11 @@ fn wallet_connector_rejects_non_v3_aggregate_keysets() {
     );
 
     assert!(matches!(
-        FederationWalletConnector::validate_member_keysets(
-            &bundle.public_config,
-            member_id(1),
-            &[advertised],
-        ),
-        Err(crate::Error::Federation(
-            FederationError::UnknownFederatedKeyset { .. }
-                | FederationError::InvalidFederatedKeysetVersion { .. }
-        ))
+        bundle
+            .public_config
+            .validate_member_advertised_keysets(member_id(1), &[advertised],),
+        Err(FederationError::UnknownFederatedKeyset { .. }
+            | FederationError::InvalidFederatedKeysetVersion { .. })
     ));
 }
 
@@ -1417,14 +1411,10 @@ fn wallet_connector_rejects_mismatched_aggregate_keysets() {
     advertised.keys = cdk_common::Keys::new(BTreeMap::new());
 
     assert!(matches!(
-        FederationWalletConnector::validate_member_keysets(
-            &bundle.public_config,
-            member_id(1),
-            &[advertised],
-        ),
-        Err(crate::Error::Federation(
-            FederationError::Nut02(_) | FederationError::AdvertisedFederatedKeysetMismatch { .. }
-        ))
+        bundle
+            .public_config
+            .validate_member_advertised_keysets(member_id(1), &[advertised],),
+        Err(FederationError::Nut02(_) | FederationError::AdvertisedFederatedKeysetMismatch { .. })
     ));
 }
 
@@ -1452,11 +1442,11 @@ fn federated_mint_connector_rejects_invalid_member_call_policy() {
             ..FederatedMintConnectorConfig::default()
         },
         FederatedMintConnectorConfig {
-            mint_quote_visibility_attempts: 0,
+            quote_visibility_attempts: 0,
             ..FederatedMintConnectorConfig::default()
         },
         FederatedMintConnectorConfig {
-            mint_quote_visibility_retry_delay: Duration::ZERO,
+            quote_visibility_retry_delay: Duration::ZERO,
             ..FederatedMintConnectorConfig::default()
         },
         FederatedMintConnectorConfig {
@@ -3514,7 +3504,7 @@ async fn federated_mint_connector_requires_threshold_quote_visibility_after_crea
         bundle.public_config.clone(),
         connectors,
         FederatedMintConnectorConfig {
-            mint_quote_visibility_attempts: 1,
+            quote_visibility_attempts: 1,
             ..FederatedMintConnectorConfig::default()
         },
     )
@@ -3571,8 +3561,8 @@ async fn federated_mint_connector_retries_mint_quote_visibility_after_creation()
         bundle.public_config.clone(),
         connectors,
         FederatedMintConnectorConfig {
-            mint_quote_visibility_attempts: 2,
-            mint_quote_visibility_retry_delay: Duration::from_millis(1),
+            quote_visibility_attempts: 2,
+            quote_visibility_retry_delay: Duration::from_millis(1),
             ..FederatedMintConnectorConfig::default()
         },
     )
@@ -5165,7 +5155,7 @@ async fn federated_mint_connector_requires_threshold_melt_quote_visibility_after
         bundle.public_config.clone(),
         connectors,
         FederatedMintConnectorConfig {
-            mint_quote_visibility_attempts: 1,
+            quote_visibility_attempts: 1,
             ..FederatedMintConnectorConfig::default()
         },
     )
@@ -5222,8 +5212,8 @@ async fn federated_mint_connector_retries_melt_quote_visibility_after_creation()
         bundle.public_config.clone(),
         connectors,
         FederatedMintConnectorConfig {
-            mint_quote_visibility_attempts: 2,
-            mint_quote_visibility_retry_delay: Duration::from_millis(1),
+            quote_visibility_attempts: 2,
+            quote_visibility_retry_delay: Duration::from_millis(1),
             ..FederatedMintConnectorConfig::default()
         },
     )
@@ -6331,4 +6321,75 @@ async fn federated_mint_connector_fails_without_threshold_matching_member_advert
         Err(crate::Error::InvalidMintResponse(message))
             if message.contains("insufficient federation keyset advertisements")
     ));
+}
+
+#[tokio::test]
+async fn federated_melt_accepts_partial_change_and_recovers_the_same_signatures() {
+    let bundle = threshold_bundle();
+    let advertised = advertised_keyset(&bundle);
+    let outputs = blinded_change_outputs(&bundle);
+    assert!(outputs.len() > 1);
+    let signed_outputs = &outputs[..1];
+    let mut connectors = BTreeMap::new();
+    for id in [member_id(1), member_id(2), member_id(3)] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, id, advertised.clone());
+        let response = melt_response(&bundle, id, signed_outputs);
+        connector.set_post_melt_response(Ok(response.clone()));
+        let MeltQuoteResponse::Bolt11(status) = response else {
+            panic!("expected bolt11 response");
+        };
+        connector.set_melt_quote_status_response(Ok(status));
+        connectors.insert(
+            id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+        .expect("federation connector");
+    let immediate = connector
+        .post_melt(
+            &PaymentMethod::BOLT11,
+            MeltRequest::new("melt-quote".to_string(), Vec::new(), Some(outputs.clone())),
+        )
+        .await
+        .expect("unused blank change outputs are allowed");
+    let recovered = connector
+        .get_melt_quote_status(PaymentMethod::BOLT11, "melt-quote")
+        .await
+        .expect("status recovery verifies the same output prefix");
+    assert_eq!(immediate, recovered);
+    assert_aggregate_response_valid(
+        &bundle,
+        &signed_change_outputs(signed_outputs),
+        &MintResponse {
+            signatures: recovered.change().cloned().expect("verified change"),
+        },
+    );
+
+    let short = share_response(
+        &bundle,
+        member_id(1),
+        &signed_change_outputs(signed_outputs),
+    );
+    assert!(connector
+        .valid_member_share_set(&outputs, member_id(1), &short, ShareAmountValidation::Exact)
+        .is_err());
+    assert!(connector
+        .valid_member_share_set(
+            &outputs,
+            member_id(1),
+            &short,
+            ShareAmountValidation::Restore
+        )
+        .is_err());
+    let excess = share_response(&bundle, member_id(1), &signed_change_outputs(&outputs));
+    assert!(connector
+        .valid_member_share_set(
+            signed_outputs,
+            member_id(1),
+            &excess,
+            ShareAmountValidation::Change
+        )
+        .is_err());
 }

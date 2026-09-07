@@ -64,10 +64,11 @@ fn confirmed_observation(
 async fn accepted_member_quorum_materializes_and_catches_up_identically() {
     let (mut runtime, application_id) = runtime_with_address_application();
     let mut second_runtime = second_member_runtime_with_address_application();
-    runtime.public_config.payment_observation_policy =
+    runtime.public_config_mut().payment_observation_policy =
         FederationPaymentObservationPolicy::member_quorum(2);
-    second_runtime.public_config.payment_observation_policy =
-        FederationPaymentObservationPolicy::member_quorum(2);
+    second_runtime
+        .public_config_mut()
+        .payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(2);
 
     let mut journal = InMemoryFederationJournal::new();
     let allocation_entry = appended_entry(
@@ -328,10 +329,11 @@ async fn accepted_member_quorum_materializes_and_catches_up_identically() {
 async fn paid_observation_after_pre_liability_reorg_is_definitively_unpaid() {
     let (mut runtime, application_id) = runtime_with_address_application();
     let mut second_runtime = second_member_runtime_with_address_application();
-    runtime.public_config.payment_observation_policy =
+    runtime.public_config_mut().payment_observation_policy =
         FederationPaymentObservationPolicy::member_quorum(2);
-    second_runtime.public_config.payment_observation_policy =
-        FederationPaymentObservationPolicy::member_quorum(2);
+    second_runtime
+        .public_config_mut()
+        .payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(2);
     let (mint, store) = federated_test_mint(runtime.clone()).await;
     let mut journal = InMemoryFederationJournal::new();
     let quote_id = QuoteId::new();
@@ -507,10 +509,11 @@ async fn paid_observation_after_pre_liability_reorg_is_definitively_unpaid() {
 async fn accepted_onchain_outputs_pay_one_quote_and_reuse_existing_mint_flow() {
     let (mut runtime, application_id) = runtime_with_address_application();
     let mut second_runtime = second_member_runtime_with_address_application();
-    runtime.public_config.payment_observation_policy =
+    runtime.public_config_mut().payment_observation_policy =
         FederationPaymentObservationPolicy::member_quorum(2);
-    second_runtime.public_config.payment_observation_policy =
-        FederationPaymentObservationPolicy::member_quorum(2);
+    second_runtime
+        .public_config_mut()
+        .payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(2);
     let (mint, store) = federated_test_mint(runtime.clone()).await;
     let mut journal = InMemoryFederationJournal::new();
     let quote_id = QuoteId::new();

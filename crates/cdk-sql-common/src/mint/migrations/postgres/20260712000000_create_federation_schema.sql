@@ -105,7 +105,7 @@ CREATE TABLE federation_payment_observations (
     observation_json TEXT NOT NULL
 );
 
-CREATE UNIQUE INDEX idx_federation_payment_observations_member_state
+CREATE INDEX idx_federation_payment_observations_member_state
 ON federation_payment_observations (context, quote, observer_member_id, state);
 
 CREATE INDEX idx_federation_payment_observations_quote
@@ -160,8 +160,10 @@ CREATE INDEX idx_federation_aleph_bft_finalized_items_operation_id
 ON federation_aleph_bft_finalized_items (operation_id);
 
 CREATE TABLE federation_aleph_bft_backups (
-    session BIGINT PRIMARY KEY NOT NULL,
-    backup_bytes BYTEA NOT NULL
+    session BIGINT NOT NULL,
+    chunk_index BIGINT NOT NULL CHECK (chunk_index >= 0),
+    backup_bytes BYTEA NOT NULL,
+    PRIMARY KEY (session, chunk_index)
 );
 
 CREATE TABLE federation_aleph_bft_pending_operations (
@@ -371,3 +373,9 @@ CREATE TABLE federation_setup_activations (
     payload_json TEXT NOT NULL,
     PRIMARY KEY (setup_id, member_id)
 );
+
+CREATE INDEX idx_mint_quote_federation_payment_observation
+ON mint_quote (amount_paid, amount_issued, id);
+
+CREATE INDEX idx_melt_quote_federation_payment_observation
+ON melt_quote (state, id);

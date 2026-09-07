@@ -55,10 +55,9 @@ pub struct CLIArgs {
 /// Commands exposed by the `cdk-mintd` binary.
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    #[cfg(feature = "federation")]
     /// Generate or inspect federation setup material.
     #[cfg(feature = "federation")]
-    Federation(FederationArgs),
+    Federation(Box<FederationArgs>),
     /// Manage the database-backed mintd configuration.
     Config(ConfigArgs),
     /// Initialize or inspect the mint Iroh endpoint identity.

@@ -267,6 +267,7 @@ fn digest_comparison_rejects_reported_digest_alert() {
     let materialized_state_digest = FederationMaterializedStateDigest::from_bytes([2; 32]);
     let mut status = local_status(1, 4, order_digest, materialized_state_digest);
     status.sync_state = "halted".to_string();
+    status.checkpoint.frontier.materialized_state_audit_mismatch = true;
     status.sync_message = "peer 2 digest mismatch at operation count 4".to_string();
 
     let report = DigestComparisonReport::from_statuses(&[status]);

@@ -29,7 +29,6 @@ const RECOVERY_BARRIER_PROPOSAL_LEASE: Duration = Duration::from_secs(30);
 #[cfg(feature = "prometheus")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScheduledCheckpointCaptureOutcome {
-    PendingCandidate,
     NoBoundary,
     FrontierBehind,
     Ineligible,
@@ -41,8 +40,7 @@ enum ScheduledCheckpointCaptureOutcome {
 #[cfg(feature = "prometheus")]
 impl ScheduledCheckpointCaptureOutcome {
     #[cfg(test)]
-    const ALL: [Self; 6] = [
-        Self::PendingCandidate,
+    const ALL: [Self; 5] = [
         Self::NoBoundary,
         Self::FrontierBehind,
         Self::Ineligible,
@@ -52,9 +50,6 @@ impl ScheduledCheckpointCaptureOutcome {
 
     const fn work(self) -> cdk_prometheus::FederationPerformanceWork {
         match self {
-            Self::PendingCandidate => {
-                cdk_prometheus::FederationPerformanceWork::ScheduledCaptureSkippedPendingCandidate
-            }
             Self::NoBoundary => {
                 cdk_prometheus::FederationPerformanceWork::ScheduledCaptureSkippedNoBoundary
             }
@@ -120,35 +115,16 @@ impl FederationNodeRuntime {
         let public_config = runtime_config.public_config();
         let db = mint.localstore();
 
-        let latest_scheduled_quorum = db
-            .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
-            .await?;
-        let latest_scheduled = match latest_scheduled_quorum.as_ref() {
-            Some(quorum) => {
-                super::verify_checkpoint_quorum_with_metrics(
-                    quorum,
-                    public_config,
-                    runtime_config.member_id(),
-                    super::CheckpointQuorumVerificationContext::Capture,
-                )?;
-                Some(&quorum.checkpoint)
-            }
-            None => None,
-        };
-        let scheduled_sequence = latest_scheduled
-            .map(|checkpoint| checkpoint.scheduled_checkpoint_sequence)
-            .unwrap_or(0);
-        if let Some(candidate) = db
+        // Candidate boundaries follow the ordered stream, not the arrival of
+        // peer signatures. Waiting for a quorum here makes members choose
+        // different next boundaries when that quorum arrives at different times.
+        let latest_scheduled = db
             .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
-            .await?
-        {
-            candidate.validate_against_validated_config(public_config)?;
-            if candidate.scheduled_checkpoint_sequence > scheduled_sequence {
-                #[cfg(feature = "prometheus")]
-                ScheduledCheckpointCaptureOutcome::PendingCandidate.record();
-                return Ok(());
-            }
+            .await?;
+        if let Some(checkpoint) = &latest_scheduled {
+            checkpoint.validate_against_validated_config(public_config)?;
         }
+        let latest_scheduled = latest_scheduled.as_ref();
 
         let Some(boundary) = self
             .current_checkpoint_boundary_under_application_lock()
@@ -801,9 +777,9 @@ impl FederationNodeRuntime {
             .filter(|item| item.status == FederationAlephBftFinalizedItemStatus::Accepted)
             .filter_map(|item| match &item.item {
                 FederationConsensusItem::RecoveryBarrier(barrier) => Some(barrier),
-                FederationConsensusItem::Operation(_)
-                | FederationConsensusItem::ModuleFact(_)
-                | FederationConsensusItem::Default(_) => None,
+                FederationConsensusItem::Operation(_) | FederationConsensusItem::ModuleFact(_) => {
+                    None
+                }
             })
             .max_by_key(|barrier| barrier.requested_after_finalized_item_index)
         else {
@@ -888,8 +864,7 @@ impl FederationNodeRuntime {
                     }
                     FederationConsensusItem::Operation(_)
                     | FederationConsensusItem::RecoveryBarrier(_)
-                    | FederationConsensusItem::ModuleFact(_)
-                    | FederationConsensusItem::Default(_) => None,
+                    | FederationConsensusItem::ModuleFact(_) => None,
                 })
                 .max_by_key(|barrier| barrier.requested_after_finalized_item_index)
                 .is_some();

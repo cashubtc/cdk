@@ -92,9 +92,9 @@ fn smoke_connector_config_uses_bounded_member_timeouts_independent_from_operatio
         config.quote_status_member_timeout,
         FEDERATION_SMOKE_MEMBER_TIMEOUT
     );
-    assert_eq!(config.mint_quote_visibility_attempts, args.quote_retries);
+    assert_eq!(config.quote_visibility_attempts, args.quote_retries);
     assert_eq!(
-        config.mint_quote_visibility_retry_delay,
+        config.quote_visibility_retry_delay,
         Duration::from_millis(args.quote_sleep_ms)
     );
 }

@@ -999,7 +999,11 @@ where
             latest_federation_checkpoint_id_for_kind(self, checkpoint.kind).await?;
         let checkpoint_id = insert_federation_checkpoint(self, checkpoint).await?;
         if let Some(previous_checkpoint_id) = previous_checkpoint_id {
-            if previous_checkpoint_id != checkpoint_id {
+            // Scheduled candidates form a deterministic lineage even before
+            // their signatures arrive. Retain its ancestors for quorum exchange.
+            if checkpoint.kind == FederationCheckpointKind::Recovery
+                && previous_checkpoint_id != checkpoint_id
+            {
                 prune_unreferenced_nonquorum_checkpoint(self, previous_checkpoint_id).await?;
             }
         }
@@ -1792,9 +1796,7 @@ where
         let mut sequences = std::collections::BTreeMap::new();
         for row in rows {
             unpack_into!(let (member_id, last_sequence) = row);
-            let member_id_raw: u64 = column_as_number!(member_id);
-            let member_id = MemberId::new(member_id_raw as u16)
-                .map_err(|e| Error::Internal(format!("Invalid federation member id: {e}")))?;
+            let member_id = sql_member_id(member_id)?;
             let last_sequence: u64 = column_as_number!(last_sequence);
             sequences.insert(member_id, last_sequence);
         }
@@ -1885,6 +1887,47 @@ where
         .await?
         .map(sql_row_to_federation_checkpoint)
         .transpose()
+    }
+
+    async fn get_next_federation_scheduled_checkpoint(
+        &self,
+        scheduled_checkpoint_sequence: u64,
+    ) -> Result<Option<FederationCheckpoint>, Self::Err> {
+        let Some(sequence) = scheduled_checkpoint_sequence.checked_add(1) else {
+            return Ok(None);
+        };
+        let sequence = i64::try_from(sequence)
+            .map_err(|_| Error::Internal("Checkpoint sequence exceeds SQL range".to_string()))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let checkpoint = query(
+            r#"
+            SELECT checkpoint_id, checkpoint_json
+            FROM federation_checkpoints
+            WHERE checkpoint_kind = 'scheduled'
+                AND scheduled_checkpoint_sequence = :sequence
+            ORDER BY finalized_next_item_index ASC, checkpoint_id ASC
+            LIMIT 1
+            "#,
+        )?
+        .bind("sequence", sequence)
+        .fetch_one(&*conn)
+        .await?
+        .map(sql_row_to_federation_checkpoint)
+        .transpose()?;
+        if checkpoint.as_ref().is_some_and(|checkpoint| {
+            checkpoint.kind != FederationCheckpointKind::Scheduled
+                || checkpoint.scheduled_checkpoint_sequence != sequence as u64
+        }) {
+            return Err(Error::Internal(
+                "Federation scheduled checkpoint index returned an invalid next candidate"
+                    .to_string(),
+            ));
+        }
+        Ok(checkpoint)
     }
 
     async fn get_federation_checkpoints_after(

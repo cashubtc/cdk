@@ -69,7 +69,6 @@ impl CdkAlephBftNetworkActivityMarker for CdkAlephBftNetworkData {
 }
 
 /// Cloneable sink for authenticated inbound AlephBFT network messages.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) trait CdkAlephBftNetworkInboundQueue: fmt::Debug + Send + Sync {
     /// Decode and queue one authenticated private-REST network message.
     fn queue_request(
@@ -80,7 +79,6 @@ pub(crate) trait CdkAlephBftNetworkInboundQueue: fmt::Debug + Send + Sync {
 
 /// Typed inbound handle for a channel-backed AlephBFT network adapter.
 #[derive(Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftNetworkInboundHandle<D> {
     session_id: u64,
     incoming: mpsc::Sender<CdkAlephBftInboundEnvelope<D>>,
@@ -98,9 +96,9 @@ impl<D> fmt::Debug for CdkAlephBftNetworkInboundHandle<D> {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl<D> CdkAlephBftNetworkInboundHandle<D> {
     /// Create an inbound queue handle for a channel-backed network session.
+    #[cfg(test)]
     pub(crate) fn new(session_id: u64, handle: &CdkAlephBftNetworkHandle<D>) -> Self {
         Self::with_activity_hint(session_id, handle, CdkAlephBftActivityHint::default())
     }
@@ -241,7 +239,6 @@ impl CdkAlephBftNetworkActivityMarker for u64 {
 
 /// Bounded work policy for one AlephBFT network-pump tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftNetworkPumpConfig {
     /// AlephBFT session these opaque network messages belong to.
     pub session_id: u64,
@@ -281,7 +278,6 @@ impl CdkAlephBftNetworkPumpConfig {
 
 /// Summary of bounded AlephBFT network-pump work completed during one tick.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftNetworkPumpTickOutcome {
     /// Number of outbound AlephBFT messages drained from the channel bridge.
     pub messages_drained: usize,
@@ -319,12 +315,10 @@ struct CdkAlephBftNetworkRetryPushOutcome {
 
 /// In-memory retry queue for failed private REST AlephBFT network deliveries.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftNetworkRetryQueue {
     pending: VecDeque<CdkAlephBftNetworkRetryDelivery>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl CdkAlephBftNetworkRetryQueue {
     /// Number of failed network messages waiting for retry.
     pub(crate) fn len(&self) -> usize {
@@ -377,7 +371,7 @@ impl CdkAlephBftNetworkRetryQueue {
 /// bridge and are never sent through private REST. Live sessions use
 /// [`run_cdk_aleph_bft_network_pump_tick_with_retry_queue`] to retain failed
 /// deliveries for later ticks.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) async fn run_cdk_aleph_bft_network_pump_tick<T, D>(
     handle: &mut CdkAlephBftNetworkHandle<D>,
     keychain: &CdkAlephBftKeychain,
@@ -436,7 +430,7 @@ where
 ///
 /// Successful new outbound messages stay on the fast path. Failed deliveries
 /// remain only in the bounded queue for this live session.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) async fn run_cdk_aleph_bft_network_pump_tick_with_retry_queue<T, D>(
     handle: &mut CdkAlephBftNetworkHandle<D>,
     keychain: &CdkAlephBftKeychain,
@@ -461,7 +455,6 @@ where
 
 /// Drain failed AlephBFT deliveries and new outbound messages, starting with a
 /// message that was already awaited by the live network task.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn run_cdk_aleph_bft_network_pump_tick_with_retry_queue_and_first_outbound<T, D>(
     handle: &mut CdkAlephBftNetworkHandle<D>,
     keychain: &CdkAlephBftKeychain,
@@ -764,10 +757,10 @@ where
 }
 
 fn is_retryable_aleph_bft_network_delivery_error(err: &anyhow::Error) -> bool {
-    match err.downcast_ref::<HttpError>() {
-        Some(HttpError::Status { status, .. }) if *status == 400 => false,
-        _ => true,
-    }
+    !matches!(
+        err.downcast_ref::<HttpError>(),
+        Some(HttpError::Status { status: 400, .. })
+    )
 }
 
 fn remote_members_for_recipient(

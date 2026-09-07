@@ -31,14 +31,6 @@ use cdk::cdk_database::{self, KVStore, KVStoreCompareAndSwap, MintDatabase, Mint
 use cdk::mint::FederationRuntimeConfig;
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::KnownMethod;
-#[cfg(any(
-    feature = "cln",
-    feature = "lnd",
-    feature = "ldk-node",
-    feature = "fakewallet",
-    feature = "bdk",
-    feature = "grpc-processor"
-))]
 use cdk::nuts::nut17::SupportedMethods;
 use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path};
 use cdk::nuts::{
@@ -72,6 +64,13 @@ use config::{AuthType, DatabaseEngine, PaymentBackendType};
 use env_vars::ENV_WORK_DIR;
 #[cfg(feature = "federation")]
 use serde::de::DeserializeOwned;
+#[cfg(any(
+    feature = "cln",
+    feature = "lnd",
+    feature = "fakewallet",
+    feature = "ldk-node",
+    feature = "grpc-processor"
+))]
 use setup::PaymentBackendSetup;
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
@@ -103,6 +102,11 @@ mod federation_dkg_status;
 mod federation_files;
 #[cfg(feature = "federation")]
 mod federation_inspect;
+#[cfg(all(
+    feature = "federation",
+    any(test, feature = "federation-bdk", feature = "federation-bark")
+))]
+mod federation_operator;
 #[cfg(feature = "federation")]
 mod federation_payment_observations;
 #[cfg(all(feature = "federation", any(test, feature = "federation-test-utils")))]
@@ -2381,9 +2385,13 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
 /// Configures payment backends based on the specified backend types
 async fn configure_payment_backends(
     settings: &config::Settings,
+    #[allow(
+        unused_mut,
+        reason = "Enabled backend features determine whether the builder is mutated."
+    )]
     mut mint_builder: MintBuilder,
     _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
-    work_dir: &Path,
+    _work_dir: &Path,
     _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
 ) -> Result<MintBuilder> {
     if settings.payment_backend.is_empty() {
@@ -2395,6 +2403,14 @@ async fn configure_payment_backends(
     let mut configure_fake_wallet_keyset_rotations = false;
 
     for backend_entry in &settings.payment_backend {
+        #[cfg(any(
+            feature = "cln",
+            feature = "lnd",
+            feature = "ldk-node",
+            feature = "fakewallet",
+            feature = "grpc-processor",
+            feature = "federation-bark"
+        ))]
         let mint_melt_limits = MintMeltLimits {
             mint_min: backend_entry.min_mint,
             mint_max: backend_entry.max_mint,
@@ -2419,7 +2435,7 @@ async fn configure_payment_backends(
                         settings,
                         cdk::nuts::CurrencyUnit::Msat,
                         None,
-                        work_dir,
+                        _work_dir,
                         _kv_store.clone(),
                     )
                     .await?;
@@ -2445,7 +2461,7 @@ async fn configure_payment_backends(
                         settings,
                         cdk::nuts::CurrencyUnit::Msat,
                         None,
-                        work_dir,
+                        _work_dir,
                         _kv_store.clone(),
                     )
                     .await?;
@@ -2475,7 +2491,7 @@ async fn configure_payment_backends(
                         settings,
                         backend_entry.unit.clone(),
                         None,
-                        work_dir,
+                        _work_dir,
                         _kv_store.clone(),
                     )
                     .await?;
@@ -2528,7 +2544,7 @@ async fn configure_payment_backends(
                 );
 
                 let processor = grpc_processor
-                    .setup(settings, backend_entry.unit.clone(), None, work_dir, None)
+                    .setup(settings, backend_entry.unit.clone(), None, _work_dir, None)
                     .await?;
                 #[cfg(feature = "prometheus")]
                 let processor = MetricsMintPayment::new(processor);
@@ -2554,7 +2570,7 @@ async fn configure_payment_backends(
                         settings,
                         backend_entry.unit.clone(),
                         _runtime.clone(),
-                        work_dir,
+                        _work_dir,
                         _kv_store.clone(),
                     )
                     .await?;
@@ -3292,8 +3308,8 @@ struct PreparedMintd {
     http_enabled: bool,
     #[cfg(feature = "iroh")]
     iroh_runtime: Option<iroh_runtime::MintdIrohRuntime>,
-    #[cfg(feature = "federation-bark")]
-    federation_bark_maintenance: Option<cdk_axum::FederatedBarkMaintenanceHandle>,
+    #[cfg(feature = "federation")]
+    federation_services: Option<cdk_axum::FederationServices>,
     activation: Option<ConfigurationActivation>,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
     /// Management RPC server and its TLS directory, when enabled.
@@ -3309,8 +3325,8 @@ struct RunningMintd {
     listener: Option<tokio::net::TcpListener>,
     #[cfg(feature = "iroh")]
     iroh_node: Option<cdk_iroh::IrohNode>,
-    #[cfg(feature = "federation-bark")]
-    federation_bark_maintenance_task: Option<tokio::task::JoinHandle<()>>,
+    #[cfg(feature = "federation")]
+    federation_services: Option<cdk_axum::RunningFederationServices>,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
     #[cfg(feature = "prometheus")]
     prometheus_handle: Option<tokio::task::JoinHandle<()>>,
@@ -3325,7 +3341,7 @@ impl PreparedMintd {
     async fn prepare(
         mint: Arc<cdk::mint::Mint>,
         settings: &config::Settings,
-        work_dir: &Path,
+        _work_dir: &Path,
         _wallet_info_provider: ConfiguredWalletInfoProvider,
         mint_builder_info: cdk::nuts::MintInfo,
         routers: Vec<Router>,
@@ -3333,7 +3349,7 @@ impl PreparedMintd {
         activation: Option<ConfigurationActivation>,
     ) -> Result<Self> {
         #[cfg(feature = "iroh")]
-        let iroh_runtime = iroh_runtime::initialize(settings, work_dir).await?;
+        let iroh_runtime = iroh_runtime::initialize(settings, _work_dir).await?;
         #[cfg(all(feature = "iroh", feature = "federation"))]
         iroh_runtime::validate_federation_roster(settings, iroh_runtime.as_ref())?;
         #[cfg(not(feature = "iroh"))]
@@ -3393,7 +3409,7 @@ impl PreparedMintd {
                         mint_rpc = mint_rpc.with_wallet_info_provider(provider);
                     }
 
-                    let tls_dir = rpc_settings.tls_dir.unwrap_or(work_dir.join("tls"));
+                    let tls_dir = rpc_settings.tls_dir.unwrap_or(_work_dir.join("tls"));
 
                     let tls_dir = if tls_dir.exists() {
                         Some(tls_dir)
@@ -3629,53 +3645,26 @@ impl PreparedMintd {
             }
         }
 
-        #[cfg(all(feature = "federation", feature = "federation-bark"))]
-    let (v1_service, federation_bark_maintenance) = cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg_and_wallets_with_transport_and_bark_lifecycle(
-        Arc::clone(&mint),
-        cache,
-        custom_methods,
-        settings.info.enable_info_page.unwrap_or(true),
-        federation_peer_sync_config(settings),
-        federation_dkg_auto_start_config(settings)?,
-        #[cfg(feature = "federation-bdk")]
-        federation_bdk_local_config(settings, work_dir)?,
-        federation_bark_local_config(
-            settings,
-            work_dir,
-            mint.federation_config()
-                .ok_or_else(|| anyhow!("federated Bark requires active federation runtime"))?,
-        )?,
-        federation_transport,
-    )
-    .await?;
-        #[cfg(all(feature = "federation-bdk", not(feature = "federation-bark")))]
-    let v1_service = cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg_and_wallet_with_transport(
-        Arc::clone(&mint),
-        cache,
-        custom_methods,
-        settings.info.enable_info_page.unwrap_or(true),
-        federation_peer_sync_config(settings),
-        federation_dkg_auto_start_config(settings)?,
-        federation_bdk_local_config(settings, work_dir)?,
-        federation_transport,
-    )
-    .await?;
-        #[cfg(all(
-            feature = "federation",
-            not(feature = "federation-bdk"),
-            not(feature = "federation-bark")
-        ))]
-        let v1_service =
-            cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg_with_transport(
-                Arc::clone(&mint),
-                cache,
-                custom_methods,
-                settings.info.enable_info_page.unwrap_or(true),
-                federation_peer_sync_config(settings),
-                federation_dkg_auto_start_config(settings)?,
-                federation_transport,
-            )
-            .await?;
+        #[cfg(feature = "federation")]
+        let (v1_service, federation_services) = cdk_axum::prepare_federation_router(
+            Arc::clone(&mint),
+            cache,
+            custom_methods,
+            settings.info.enable_info_page.unwrap_or(true),
+            cdk_axum::FederationRouterConfig {
+                peer_sync: federation_peer_sync_config(settings),
+                dkg: federation_dkg_auto_start_config(settings)?,
+                #[cfg(feature = "federation-bdk")]
+                bdk: federation_bdk_local_config(settings, _work_dir)?,
+                #[cfg(feature = "federation-bark")]
+                bark: match mint.federation_config() {
+                    Some(runtime) => federation_bark_local_config(settings, _work_dir, runtime)?,
+                    None => None,
+                },
+                transport: federation_transport,
+            },
+        )
+        .await?;
         #[cfg(not(feature = "federation"))]
         let v1_service = cdk_axum::create_mint_router_with_custom_cache(
             Arc::clone(&mint),
@@ -3712,8 +3701,8 @@ impl PreparedMintd {
             http_enabled: settings.info.http_enabled,
             #[cfg(feature = "iroh")]
             iroh_runtime,
-            #[cfg(feature = "federation-bark")]
-            federation_bark_maintenance,
+            #[cfg(feature = "federation")]
+            federation_services,
             activation,
             shutdown_tx,
             #[cfg(feature = "management-rpc")]
@@ -3782,10 +3771,11 @@ impl PreparedMintd {
         } else {
             None
         };
-        #[cfg(feature = "federation-bark")]
-        let federation_bark_maintenance_task = self
-            .federation_bark_maintenance
-            .and_then(|maintenance| maintenance.spawn_until(self.shutdown_tx.subscribe()));
+        #[cfg(feature = "federation")]
+        let federation_services = match self.federation_services {
+            Some(services) => Some(services.start().await?),
+            None => None,
+        };
 
         // All fallible startup steps have succeeded and the daemon is about to
         // serve with this configuration, so it can be recorded as applied.
@@ -3799,8 +3789,8 @@ impl PreparedMintd {
             listener,
             #[cfg(feature = "iroh")]
             iroh_node: self.iroh_runtime.map(|runtime| runtime.node),
-            #[cfg(feature = "federation-bark")]
-            federation_bark_maintenance_task,
+            #[cfg(feature = "federation")]
+            federation_services,
             shutdown_tx: self.shutdown_tx,
             #[cfg(feature = "prometheus")]
             prometheus_handle,
@@ -3817,6 +3807,22 @@ impl RunningMintd {
         self,
         shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> Result<()> {
+        #[cfg(feature = "federation")]
+        let shutdown_signal = {
+            let stopped = self
+                .federation_services
+                .as_ref()
+                .map(cdk_axum::RunningFederationServices::stopped);
+            async move {
+                let failed = async move {
+                    match stopped {
+                        Some(stopped) => stopped.await,
+                        None => std::future::pending::<()>().await,
+                    }
+                };
+                tokio::select! { () = shutdown_signal => {}, () = failed => {} }
+            }
+        };
         let listener_result = serve_public_listeners(
             self.mint_service,
             self.listener,
@@ -3826,12 +3832,11 @@ impl RunningMintd {
             shutdown_signal,
         )
         .await;
-        #[cfg(feature = "federation-bark")]
-        if let Some(task) = self.federation_bark_maintenance_task {
-            if let Err(error) = task.await {
-                tracing::warn!("Federated Bark maintenance worker failed: {}", error);
-            }
-        }
+        #[cfg(feature = "federation")]
+        let federation_result = match self.federation_services {
+            Some(services) => services.shutdown().await.map_err(anyhow::Error::from),
+            None => Ok(()),
+        };
 
         // Wait for prometheus server to shutdown if it was started
         #[cfg(feature = "prometheus")]
@@ -3850,6 +3855,8 @@ impl RunningMintd {
             }
         }
 
+        #[cfg(feature = "federation")]
+        federation_result?;
         listener_result
     }
 }

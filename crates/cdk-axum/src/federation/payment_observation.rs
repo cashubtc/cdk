@@ -142,6 +142,7 @@ fn advance_bark_melt_quote<'a>(
 
 #[derive(Debug, Clone)]
 pub(crate) struct FederationPaymentObserver {
+    pub(super) tasks: super::services::FederationTaskGroup,
     schedule: FederationPaymentObservationSchedule,
     accepted_operation_wakes:
         tokio::sync::broadcast::Sender<(FederationPaymentQuote, u64, Instant)>,
@@ -153,6 +154,7 @@ impl Default for FederationPaymentObserver {
         let (accepted_operation_wakes, _) =
             tokio::sync::broadcast::channel(FEDERATION_PAYMENT_WAKE_CAPACITY);
         Self {
+            tasks: super::services::FederationTaskGroup::default(),
             schedule: FederationPaymentObservationSchedule::default(),
             accepted_operation_wakes,
             quote_tasks: std::sync::Arc::new(tokio::sync::Semaphore::new(
@@ -512,7 +514,7 @@ impl FederationPaymentObserver {
                     .await?
                     .is_some_and(|quote| quote.payment_method.is_bolt11()),
             };
-            return Ok(uses_bark);
+            Ok(uses_bark)
         }
         #[cfg(not(feature = "federation-bark"))]
         {
@@ -547,7 +549,7 @@ impl FederationPaymentObserver {
                     super::latency::FederationLatencyDirection::Outgoing
                 }
             };
-            tokio::spawn(async move {
+            self.tasks.spawn("payment quote", false, async move {
                 let _permit = permit;
                 super::latency::record_duration(
                     super::latency::FederationLatencyCorrelation::Quote,
@@ -673,9 +675,11 @@ impl FederationPaymentObserver {
                     &db,
                     permit,
                     member_id,
-                    advancement,
-                    made_progress,
-                    last_processed_operation_index,
+                    super::payment_schedule::FederationPaymentObservationProgress {
+                        advancement,
+                        made_progress,
+                        last_processed_operation_index,
+                    },
                     current_unix_time_ms(),
                 )
                 .await?;
@@ -1130,7 +1134,9 @@ impl FederationPaymentObserver {
         let mut payment_events = state.mint.subscribe_federation_payment_events();
         let mut accepted_operation_wakes = self.accepted_operation_wakes.subscribe();
         let mut schedule_changes = self.schedule.subscribe_changes();
-        tokio::spawn(async move {
+        let tasks = self.tasks.clone();
+        let stop = tasks.stop_token();
+        tasks.spawn("payment observer", true, async move {
             let mut repair_interval = tokio::time::interval(FEDERATION_PAYMENT_REPAIR_INTERVAL);
             repair_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut onchain_interval = tokio::time::interval(FEDERATION_ONCHAIN_OBSERVER_INTERVAL);
@@ -1138,6 +1144,9 @@ impl FederationPaymentObserver {
             let mut failure_backoff = FederationPaymentWorkerFailureBackoff::default();
 
             loop {
+                if stop.is_cancelled() {
+                    break;
+                }
                 let schedule_delay = match self.next_schedule_delay(&state).await {
                     Ok(delay) => delay,
                     Err(error) => {
@@ -1153,6 +1162,7 @@ impl FederationPaymentObserver {
                 // continues so remaining quotes keep being repaired.
                 let (result, closed) = match std::panic::AssertUnwindSafe(async {
                     tokio::select! {
+                        _ = stop.cancelled() => (Ok(0), true),
                         _ = tokio::time::sleep(schedule_delay) => {
                             (self.scheduled_quotes(&state).await, false)
                         }
@@ -1229,7 +1239,10 @@ impl FederationPaymentObserver {
                                 .unwrap_or(u64::MAX),
                             "Federation payment observer failed; backing off worker"
                         );
-                        tokio::time::sleep(retry_delay).await;
+                        tokio::select! {
+                            _ = stop.cancelled() => break,
+                            _ = tokio::time::sleep(retry_delay) => {}
+                        }
                     }
                 }
             }
@@ -1363,29 +1376,15 @@ async fn submit_observation(
         }
     }
 
-    let envelope = match candidate {
-        FederationPaymentObservation::MintQuote(observation) => config
-            .mint_quote_payment_observation_with_metadata(
-                observation.quote,
-                observation.method,
-                observation.state,
-                observation.amount_paid,
-                observation.amount_issued,
-                observation.payment_proof,
-                observation.payment_id,
-            ),
-        FederationPaymentObservation::MeltQuote(observation) => config
-            .melt_quote_payment_observation_with_metadata(
-                observation.quote,
-                observation.method,
-                observation.state,
-                observation.amount,
-                observation.fee_reserve,
-                observation.total_spent,
-                observation.payment_proof,
-                observation.payment_id,
-            ),
+    let operation = match candidate {
+        FederationPaymentObservation::MintQuote(observation) => {
+            FederationOperation::MintQuotePayment(observation)
+        }
+        FederationPaymentObservation::MeltQuote(observation) => {
+            FederationOperation::MeltQuotePayment(observation)
+        }
     };
+    let envelope = config.operation_envelope(operation);
     state
         .submit_federation_payment_observation_envelope(envelope)
         .await?;

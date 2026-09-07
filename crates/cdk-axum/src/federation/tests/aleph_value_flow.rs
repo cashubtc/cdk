@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test]
 async fn aleph_bft_wallet_publisher_reduces_five_member_fanout_to_one_data_unit() {
     let pump_config = CdkAlephBftNetworkPumpConfig {
@@ -5,16 +7,19 @@ async fn aleph_bft_wallet_publisher_reduces_five_member_fanout_to_one_data_unit(
         max_messages_per_tick: 256,
         max_peer_deliveries_per_message: 256,
     };
-    let session = start_five_member_aleph_bft_live_session(
-        fast_aleph_bft_live_session_options(pump_config, 500),
-    )
+    let session = start_five_member_aleph_bft_live_session(fast_aleph_bft_live_session_options(
+        pump_config,
+        500,
+    ))
     .await
     .expect("start wallet publisher live session");
 
     let baseline_quote = prepare_live_paid_mint_quote(&session).await;
     let (baseline_template, _) =
         mint_operation_envelope(&session.states[0], &baseline_quote, b"baseline fanout");
-    let baseline_operation_id = baseline_template.operation_id().expect("baseline operation id");
+    let baseline_operation_id = baseline_template
+        .operation_id()
+        .expect("baseline operation id");
     let baseline_envelopes = session
         .states
         .iter()
@@ -27,7 +32,9 @@ async fn aleph_bft_wallet_publisher_reduces_five_member_fanout_to_one_data_unit(
         })
         .collect::<Vec<_>>();
     assert!(baseline_envelopes.iter().all(|envelope| {
-        envelope.operation_id().expect("baseline member operation id")
+        envelope
+            .operation_id()
+            .expect("baseline member operation id")
             == baseline_operation_id
     }));
     let baseline_started = std::time::Instant::now();
@@ -68,7 +75,9 @@ async fn aleph_bft_wallet_publisher_reduces_five_member_fanout_to_one_data_unit(
         })
         .collect::<Vec<_>>();
     assert!(candidate_envelopes.iter().all(|envelope| {
-        envelope.operation_id().expect("candidate member operation id")
+        envelope
+            .operation_id()
+            .expect("candidate member operation id")
             == candidate_operation_id
     }));
     let candidate_started = std::time::Instant::now();
@@ -973,7 +982,7 @@ async fn aleph_bft_live_sessions_finalize_keyset_rotation_with_one_unavailable_m
     for index in [0_usize, 2, 3] {
         let options = fast_aleph_bft_live_session_options(pump_config, 500);
         let handle = start_federation_aleph_bft_live_session_with_options_and_transport(
-            &mut states[index],
+            &states[index],
             sync_config,
             options,
             transport.clone(),
@@ -1161,7 +1170,7 @@ async fn aleph_bft_live_sessions_finalize_multiple_pending_operations_after_long
 
     for index in 0..4 {
         let handle = start_federation_aleph_bft_live_session_with_transport(
-            &mut states[index],
+            &states[index],
             sync_config,
             pump_config,
             transport.clone(),
@@ -1234,7 +1243,7 @@ async fn aleph_bft_live_sessions_finalize_multiple_pending_operations_after_long
     }
 
     let fifth_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut states[4],
+        &states[4],
         FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_secs(10),
             ..sync_config
@@ -1358,7 +1367,7 @@ async fn aleph_bft_live_session_replays_pending_operation_when_restart_precedes_
 
     for index in 0..4 {
         let handle = start_federation_aleph_bft_live_session_with_transport(
-            &mut states[index],
+            &states[index],
             sync_config,
             pump_config,
             transport.clone(),
@@ -1432,7 +1441,7 @@ async fn aleph_bft_live_session_replays_pending_operation_when_restart_precedes_
     restarted_first_state.federation.consensus = replayed_consensus;
     restarted_first_state.federation.sequences = replayed_sequences;
     let restarted_first_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut restarted_first_state,
+        &restarted_first_state,
         FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_secs(10),
             ..sync_config
@@ -1453,7 +1462,7 @@ async fn aleph_bft_live_session_replays_pending_operation_when_restart_precedes_
     live_session_handles.push(restarted_first_handle);
 
     let fifth_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut states[4],
+        &states[4],
         FederationPeerSyncConfig {
             operation_submission_timeout: Duration::from_secs(10),
             ..sync_config
@@ -1566,14 +1575,14 @@ async fn aleph_bft_live_session_restarts_from_persisted_backup_and_continues_fin
     let second_seed = Mnemonic::generate(12)
         .expect("second mnemonic")
         .to_seed_normalized("");
-    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private.clone(),
         Arc::clone(&first_db),
         &first_seed,
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         second_private,
         second_db,
@@ -1594,7 +1603,7 @@ async fn aleph_bft_live_session_restarts_from_persisted_backup_and_continues_fin
     };
 
     let first_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut first_state,
+        &first_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -1609,7 +1618,7 @@ async fn aleph_bft_live_session_restarts_from_persisted_backup_and_continues_fin
             .with_state(first_state.clone()),
     );
     let _second_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut second_state,
+        &second_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -1670,7 +1679,7 @@ async fn aleph_bft_live_session_restarts_from_persisted_backup_and_continues_fin
     restarted_first_state.federation.consensus = replayed_consensus;
     restarted_first_state.federation.sequences = replayed_sequences;
     let _restarted_first_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut restarted_first_state,
+        &restarted_first_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -1748,14 +1757,14 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
     let second_seed = Mnemonic::generate(12)
         .expect("second mnemonic")
         .to_seed_normalized("");
-    let mut first_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let first_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         first_private.clone(),
         first_db,
         &first_seed,
     )
     .await;
-    let mut second_state = federation_route_state_for_private_with_db_and_aleph_bft(
+    let second_state = federation_route_state_for_private_with_db_and_aleph_bft(
         public_config.clone(),
         second_private,
         second_db,
@@ -1776,7 +1785,7 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
     };
 
     let first_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut first_state,
+        &first_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -1791,7 +1800,7 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
             .with_state(first_state.clone()),
     );
     let _second_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut second_state,
+        &second_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -1900,7 +1909,7 @@ async fn aleph_bft_live_session_replays_finalized_operation_from_backup_without_
     assert_eq!(recovered_status.finalized_item_count, 0);
 
     let _recovered_first_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut recovered_first_state,
+        &recovered_first_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -2064,7 +2073,7 @@ async fn aleph_bft_live_five_member_sessions_continue_after_post_backup_restart_
     let mut live_session_handles = Vec::new();
     for index in 0..states.len() {
         let handle = start_federation_aleph_bft_live_session_with_transport(
-            &mut states[index],
+            &states[index],
             sync_config,
             pump_config,
             transport.clone(),
@@ -2130,7 +2139,7 @@ async fn aleph_bft_live_five_member_sessions_continue_after_post_backup_restart_
     assert_eq!(restarted_status.finalized_item_count, 1);
     assert_eq!(restarted_status.next_unit_index, 1);
     let restarted_first_handle = start_federation_aleph_bft_live_session_with_transport(
-        &mut restarted_first_state,
+        &restarted_first_state,
         sync_config,
         pump_config,
         transport.clone(),
@@ -2217,256 +2226,8 @@ async fn aleph_bft_live_five_member_sessions_continue_after_post_backup_restart_
     );
 }
 
-async fn wait_for_applied_operation(state: &MintState, operation_id: FederationOperationId) {
-    assert!(
-        operation_applied_within(state, operation_id, Duration::from_secs(15)).await,
-        "operation applied before timeout"
-    );
-}
-
 async fn wait_for_recorded_operation(state: &MintState, operation_id: FederationOperationId) {
     operation_terminal_within(state, operation_id, Duration::from_secs(15))
         .await
         .expect("operation recorded before timeout");
-}
-
-fn journal_convergence_projection(
-    entries: &[FederationJournalEntry],
-) -> Vec<(
-    u64,
-    FederationOperationId,
-    FederationJournalDigest,
-    FederationJournalDigest,
-    FederationOperationStatus,
-)> {
-    entries
-        .iter()
-        .map(|entry| {
-            (
-                entry.index,
-                entry.operation_id,
-                entry.previous_order_digest,
-                entry.order_digest,
-                entry.status(),
-            )
-        })
-        .collect()
-}
-
-async fn wait_for_terminal_operation(
-    state: &MintState,
-    operation_id: FederationOperationId,
-) -> FederationOperationStatus {
-    operation_terminal_within(state, operation_id, Duration::from_secs(30))
-        .await
-        .expect("operation reached terminal status before timeout")
-}
-
-async fn replay_aleph_bft_runtime_after_test_process_restart(state: &mut MintState) {
-    let (replayed_consensus, replayed_sequences) =
-        crate::create_federation_runtime_state(&state.mint)
-            .await
-            .expect("replay AlephBFT runtime after test process restart");
-    state.federation.consensus = replayed_consensus;
-    state.federation.sequences = replayed_sequences;
-}
-
-async fn submit_live_operation_allowing_pending_timeout(
-    state: &MintState,
-    envelope: FederationOperationEnvelope,
-) -> FederationOperationId {
-    let operation_id = envelope.operation_id().expect("live operation id");
-    match state
-        .submit_federation_envelope_to_consensus(envelope)
-        .await
-    {
-        Ok(response) => assert_eq!(response.operation_id, operation_id),
-        Err(err) => assert_pending_finalization_error(&err, operation_id, 10_000),
-    }
-
-    operation_id
-}
-
-async fn wait_for_applied_operation_with_context(
-    state: &MintState,
-    operation_id: FederationOperationId,
-    context: &str,
-) {
-    if operation_applied_within(state, operation_id, Duration::from_secs(15)).await {
-        return;
-    }
-
-    let member_id = state
-        .mint
-        .federation_config()
-        .expect("contextual apply wait federation config")
-        .member_id();
-    let status = state.federation_aleph_bft_status().await;
-    let journal_operation_ids = state
-        .mint
-        .localstore()
-        .get_federation_journal_entries()
-        .await
-        .expect("contextual apply wait journal")
-        .into_iter()
-        .map(|entry| entry.operation_id)
-        .collect::<Vec<_>>();
-    let pending_operation_ids = state
-        .mint
-        .localstore()
-        .get_federation_aleph_bft_pending_operations(0)
-        .await
-        .expect("contextual apply wait pending operations")
-        .into_iter()
-        .map(|operation| operation.operation_id)
-        .collect::<Vec<_>>();
-    panic!(
-        "{context}: operation {operation_id} did not apply on member {member_id} before timeout; status={status:?}; journal_operation_ids={journal_operation_ids:?}; pending_operation_ids={pending_operation_ids:?}"
-    );
-}
-
-async fn sync_and_certify_partitioned_member(
-    session: &MultiMemberAlephBftLiveSession,
-    partitioned_index: usize,
-    recovery_live_options: FederationAlephBftLiveSessionOptions,
-) {
-    let state = &session.states[partitioned_index];
-    let public_config = &session.public_config;
-    let clients = session
-        .private_configs
-        .iter()
-        .cloned()
-        .map(|private_config| {
-            FederationRestPeerClient::new_with_config(
-                session.transport.clone(),
-                public_config,
-                private_config,
-                session.sync_config,
-            )
-            .expect("partition recovery peer-sync client")
-        })
-        .collect::<Vec<_>>();
-    let peer_sets = session
-        .private_configs
-        .iter()
-        .map(|private_config| {
-            public_config
-                .members
-                .values()
-                .filter(|member| member.member_id != private_config.member_id)
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-
-    let required_remote_quorum =
-        usize::from(public_config.threshold_params.consensus_threshold) - 1;
-    let catch_up_deadline = time::Instant::now() + Duration::from_secs(90);
-    let mut maximum_synced = 0;
-    let mut restarted_with_fast_test_options = false;
-    loop {
-        for index in 0..session.states.len() {
-            let synced = run_federation_peer_sync_round(
-                &session.states[index],
-                &clients[index],
-                &peer_sets[index],
-            )
-            .await;
-            if index == partitioned_index {
-                maximum_synced = maximum_synced.max(synced);
-            }
-        }
-        if !restarted_with_fast_test_options
-            && state.federation.live_session_active().await
-            && matches!(
-                state.federation_sync_status().await,
-                Some(crate::FederationSyncStatus::CatchingUp { .. })
-            )
-        {
-            let local_status = local_peer_status(state)
-                .await
-                .expect("partition recovery local status");
-            let mut peer_statuses = Vec::new();
-            for peer in &peer_sets[partitioned_index] {
-                peer_statuses.push(
-                    clients[partitioned_index]
-                        .peer_status(peer)
-                        .await
-                        .expect("partition recovery peer status"),
-                );
-            }
-            let target_session = sync_loop::quorum_compatible_session(
-                &local_status,
-                &peer_statuses,
-                usize::from(public_config.threshold_params.consensus_threshold),
-            )
-            .expect("partition recovery quorum-compatible session");
-            let replay_target = sync_loop::quorum_supported_replay_target(
-                &local_status,
-                &peer_statuses,
-                target_session,
-                usize::from(public_config.threshold_params.consensus_threshold),
-            );
-            stop_current_federation_aleph_bft_session_for_catch_up(state).await;
-            start_federation_aleph_bft_live_session_with_options_and_transport(
-                state,
-                session.sync_config,
-                recovery_live_options
-                    .clone()
-                    .with_replay_target_next_unit_index_by_member(replay_target),
-                session.transport.clone(),
-            )
-            .await
-            .expect("restart partition recovery with fast local test options")
-            .expect("partition recovery fast live session");
-            restarted_with_fast_test_options = true;
-        }
-        match state.ensure_federation_ready_for_authoritative_read().await {
-            Ok(()) => {
-                assert!(
-                    maximum_synced >= required_remote_quorum,
-                    "catch-up certification must reach a remote BFT quorum"
-                );
-                return;
-            }
-            Err(_) if time::Instant::now() < catch_up_deadline => {
-                time::sleep(Duration::from_millis(20)).await;
-            }
-            Err(err) => {
-                let local_status = local_peer_status(state)
-                    .await
-                    .expect("partition recovery timeout status");
-                let trusted_checkpoint = state
-                    .mint
-                    .localstore()
-                    .get_trusted_federation_checkpoint_quorum()
-                    .await
-                    .expect("partition recovery timeout checkpoint")
-                    .map(|quorum| quorum.checkpoint.id().expect("trusted checkpoint id"));
-                panic!(
-                    "partitioned member did not become ready after ordered recovery; maximum synced peers: {maximum_synced}; required remote quorum: {required_remote_quorum}; readiness error: {err}; local_status={local_status:?}; live_session_active={}; replay_ready={}; trusted_checkpoint={trusted_checkpoint:?}",
-                    state.federation.live_session_active().await,
-                    state.federation.live_session_replay_ready().await,
-                )
-            }
-        }
-    }
-}
-
-const LATENCY_EXPECTED_STAGES: &[CdkAlephBftLatencyStage] = &[
-    CdkAlephBftLatencyStage::SubmitQueued,
-    CdkAlephBftLatencyStage::DataProviderYielded,
-    CdkAlephBftLatencyStage::NetworkMessageDelivered,
-    CdkAlephBftLatencyStage::FinalizedDataReceived,
-    CdkAlephBftLatencyStage::ApplyLoopReceived,
-    CdkAlephBftLatencyStage::ApplyCompleted,
-    CdkAlephBftLatencyStage::OperationNotified,
-    CdkAlephBftLatencyStage::WaiterReturned,
-];
-
-struct TwoMemberAlephBftLiveSession {
-    first_state: MintState,
-    second_state: MintState,
-    _first_handle: Arc<AlephBftSessionSupervisor>,
-    _second_handle: Arc<AlephBftSessionSupervisor>,
 }

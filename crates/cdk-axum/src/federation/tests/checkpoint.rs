@@ -1,12 +1,14 @@
+use super::*;
+
 #[test]
 fn checkpoint_transfer_budget_rejects_oversize_and_overflow() {
     assert_eq!(
-        super::sync_loop::checked_checkpoint_transfer_bytes(40, 2, 42)
+        super::super::sync_loop::checked_checkpoint_transfer_bytes(40, 2, 42)
             .expect("transfer exactly at budget"),
         42
     );
     assert!(matches!(
-        super::sync_loop::checked_checkpoint_transfer_bytes(40, 3, 42),
+        super::super::sync_loop::checked_checkpoint_transfer_bytes(40, 3, 42),
         Err(FederationError::CheckpointCatchUpTooLarge {
             resource: "transfer batch",
             actual: 43,
@@ -14,7 +16,7 @@ fn checkpoint_transfer_budget_rejects_oversize_and_overflow() {
         })
     ));
     assert!(matches!(
-        super::sync_loop::checked_checkpoint_transfer_bytes(u64::MAX, 1, u64::MAX),
+        super::super::sync_loop::checked_checkpoint_transfer_bytes(u64::MAX, 1, u64::MAX),
         Err(FederationError::CheckpointCatchUpTooLarge {
             resource: "transfer batch",
             actual: u64::MAX,
@@ -71,7 +73,7 @@ fn checkpoint_page_byte_limit_trims_only_at_complete_verified_units() {
             > cdk::federation::FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES
     );
 
-    let fitted = super::catch_up_routes::fit_checkpoint_page_to_byte_limit(response)
+    let fitted = super::super::catch_up_routes::fit_checkpoint_page_to_byte_limit(response)
         .expect("fit checkpoint page at complete unit");
     fitted
         .ensure_within_checkpoint_page_limit()
@@ -96,15 +98,15 @@ fn checkpoint_page_byte_limit_trims_only_at_complete_verified_units() {
 #[test]
 fn checkpoint_page_cursor_checks_reject_no_progress_and_overflow() {
     assert!(matches!(
-        super::sync_loop::checked_checkpoint_page_cursors(7, 9, 0, 0),
+        super::super::sync_loop::checked_checkpoint_page_cursors(7, 9, 0, 0),
         Err(FederationError::CatchUpNoProgress { index: 7 })
     ));
     assert!(matches!(
-        super::sync_loop::checked_checkpoint_page_cursors(u64::MAX, 9, 1, 0),
+        super::super::sync_loop::checked_checkpoint_page_cursors(u64::MAX, 9, 1, 0),
         Err(FederationError::CheckpointInvalid { .. })
     ));
     assert!(matches!(
-        super::sync_loop::checked_checkpoint_page_cursors(7, u64::MAX, 0, 1),
+        super::super::sync_loop::checked_checkpoint_page_cursors(7, u64::MAX, 0, 1),
         Err(FederationError::CheckpointInvalid { .. })
     ));
 }
@@ -744,4 +746,3 @@ async fn checkpoint_catch_up_rejects_bad_source_then_uses_second_source() {
         checkpoint_id
     );
 }
-

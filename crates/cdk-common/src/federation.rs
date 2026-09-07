@@ -26,6 +26,7 @@ mod signing;
 mod suffix_verifier;
 mod transaction_proposal;
 mod transport;
+#[cfg(any(test, feature = "test"))]
 mod trusted_dealer;
 
 /// Minimum number of members in a federation.
@@ -91,12 +92,11 @@ pub use self::consensus::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
     FederationAlephBftFinalizedUnitOutcome, FederationAlephBftOrderedOperationGroup,
     FederationAlephBftPendingOperationRecord, FederationAlephBftUnitBodyHash,
-    FederationAlephBftUnitPayload, FederationConsensusDefaultItem, FederationConsensusItem,
-    FederationConsensusItemAdmission, FederationConsensusModuleFact,
-    FederationConsensusRecoveryBase, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
-    FederationPreparedAlephBftFinalization, FederationPreparedAlephBftSubmission,
-    FederationPreparedAlephBftSubmissionGroup, FederationRecoveryBarrier,
-    FederationRecoveryBarrierId, FederationVerifiedOperationAdmission,
+    FederationAlephBftUnitPayload, FederationConsensusItem, FederationConsensusItemAdmission,
+    FederationConsensusModuleFact, FederationConsensusRecoveryBase, FederationConsensusRuntime,
+    FederationConsensusRuntimeStatus, FederationPreparedAlephBftFinalization,
+    FederationPreparedAlephBftSubmission, FederationPreparedAlephBftSubmissionGroup,
+    FederationRecoveryBarrier, FederationRecoveryBarrierId, FederationVerifiedOperationAdmission,
     FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION, FEDERATION_CONSENSUS_ITEM_VERSION,
     FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
     FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
@@ -156,11 +156,11 @@ pub use self::operation::{
     FederationPaymentObservationQuorum, FederationPaymentObservationRecord,
     FederationPaymentObservationReport, FederationPaymentObservationReportAction,
     FederationPaymentObservationReportStatus, FederationPaymentObservationReportSummary,
-    FederationSwapOperation, FEDERATION_APPLICATION_ENVELOPE_VERSION,
-    FEDERATION_APPLICATION_OPERATION_ID_STATE_KEY, FEDERATION_APPLICATION_OPERATION_VERSION,
-    FEDERATION_MAX_APPLICATION_CONFLICT_KEYS, FEDERATION_MAX_APPLICATION_CONFLICT_KEY_BYTES,
-    FEDERATION_MAX_APPLICATION_LABEL_BYTES, FEDERATION_MAX_APPLICATION_OPERATION_PAYLOAD_BYTES,
-    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
+    FederationSwapOperation, FEDERATION_APPLICATION_OPERATION_ID_STATE_KEY,
+    FEDERATION_APPLICATION_OPERATION_VERSION, FEDERATION_MAX_APPLICATION_CONFLICT_KEYS,
+    FEDERATION_MAX_APPLICATION_CONFLICT_KEY_BYTES, FEDERATION_MAX_APPLICATION_LABEL_BYTES,
+    FEDERATION_MAX_APPLICATION_OPERATION_PAYLOAD_BYTES, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
+    FEDERATION_OPERATION_VERSION,
 };
 pub use self::operator_status::{
     FederationWalletBroadcastHealth, FederationWalletOperationPhase,
@@ -253,6 +253,7 @@ pub use self::transport::{
     FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES, FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE,
     FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES, FEDERATION_REST_API_VERSION,
 };
+#[cfg(any(test, feature = "test"))]
 pub use self::trusted_dealer::{
     generate_trusted_dealer_configs, generate_trusted_dealer_configs_with_options,
     TrustedDealerConfigBundle, TrustedDealerGenerationOptions, TrustedDealerKeysetSpec,
@@ -1563,16 +1564,6 @@ pub enum FederationError {
         member_id: MemberId,
         /// Ceremony awaiting that member's activation.
         ceremony_id: FederationDkgCeremonyId,
-    },
-    /// Mint federation mode and runtime configuration disagree.
-    #[error(
-        "Federation runtime mode/config mismatch: member_mode={member_mode}, has_config={has_config}"
-    )]
-    RuntimeModeConfigMismatch {
-        /// Whether member mode was selected.
-        member_mode: bool,
-        /// Whether a federation runtime config was supplied.
-        has_config: bool,
     },
     /// A federation DKG transcript had an invalid member identity signature.
     #[error("Federation DKG transcript signature verification failed for member {member_id}")]

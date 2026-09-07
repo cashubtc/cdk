@@ -17,13 +17,13 @@ pub(super) fn attach_address_application(
         219, 45, 206, 40, 217, 89, 242, 129, 91, 22, 248, 23, 152,
     ];
     let participant_mapping = runtime
-        .public_config
+        .public_config()
         .members
         .keys()
         .map(|member| (*member, member.get()))
         .collect::<BTreeMap<_, _>>();
     let verification_shares = runtime
-        .public_config
+        .public_config()
         .members
         .keys()
         .map(|member| (*member, verification_share))
@@ -34,7 +34,7 @@ pub(super) fn attach_address_application(
     canonical_public_package.extend_from_slice(&1u16.to_be_bytes());
     canonical_public_package.extend_from_slice(
         &runtime
-            .public_config
+            .public_config()
             .threshold_params
             .signature_threshold
             .to_be_bytes(),
@@ -52,13 +52,13 @@ pub(super) fn attach_address_application(
     canonical_public_package.extend_from_slice(&[5; 32]);
     let root = FederationFrostRootPublicConfig {
         version: 2,
-        federation_id: runtime.public_config.federation_id,
-        setup_authorization: runtime.public_config.setup_authorization,
+        federation_id: runtime.public_config().federation_id,
+        setup_authorization: runtime.public_config().setup_authorization,
         ceremony_id: FederationDkgCeremonyId::from_bytes([6; 32]),
         root_key_epoch: 1,
         dkg_protocol_version: 1,
         ciphersuite_version: 1,
-        threshold: runtime.public_config.threshold_params.signature_threshold,
+        threshold: runtime.public_config().threshold_params.signature_threshold,
         participant_mapping,
         verification_shares,
         untweaked_group_key: verification_share,
@@ -66,7 +66,7 @@ pub(super) fn attach_address_application(
         canonical_public_package,
     };
     let application = FederationFrostApplicationConfig::new_cdk_onchain(
-        &runtime.public_config,
+        runtime.public_config(),
         &root,
         3,
         cdk_common::bitcoin::Network::Regtest,
@@ -75,14 +75,14 @@ pub(super) fn attach_address_application(
     )
     .expect("valid test CDK on-chain application");
     let application_id = application.application_id;
-    runtime.public_config.frost_wallet = Some(
+    runtime.public_config_mut().frost_wallet = Some(
         FederationFrostWalletConfig::new(
-            &runtime.public_config,
+            runtime.public_config(),
             root,
             Some(application),
             Default::default(),
         )
-            .expect("valid test FROST wallet"),
+        .expect("valid test FROST wallet"),
     );
     application_id
 }

@@ -812,7 +812,7 @@ impl VtxoCustody for CdkFrostVtxoCustody {
                 &transcript,
             )
             .await
-            .map_err(|error| {
+            .inspect_err(|error| {
                 tracing::warn!(
                     reason = %cdk_common::federation::redact_federation_operator_message(
                         &error.to_string()
@@ -820,7 +820,6 @@ impl VtxoCustody for CdkFrostVtxoCustody {
                     "Federated Bark MuSig2 signature attempt is unavailable"
                 );
                 self.mark_signer_unavailable();
-                error
             })?;
         self.musig_sessions
             .lock()

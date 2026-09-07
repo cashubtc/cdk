@@ -33,25 +33,6 @@ use super::sync_config::FederationPeerSyncConfig;
 
 const FEDERATION_DKG_DELIVERY_CONCURRENCY: usize = 4;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FrostDkgPhase {
-    Round1,
-    Round2,
-    Confirmation,
-    Complete,
-}
-
-impl FrostDkgPhase {
-    fn driver_phase(self) -> FederationDkgDriverPhase {
-        match self {
-            Self::Round1 => FederationDkgDriverPhase::FrostRound1,
-            Self::Round2 => FederationDkgDriverPhase::FrostRound2,
-            Self::Confirmation => FederationDkgDriverPhase::FrostConfirmation,
-            Self::Complete => FederationDkgDriverPhase::Complete,
-        }
-    }
-}
-
 /// Confidentiality policy for dealer-free DKG secret-share delivery.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FederationDkgSecretShareTransportPolicy {
@@ -842,7 +823,7 @@ async fn run_frost_dkg_tick<T>(
     private_config: &cdk::federation::MemberConfigPrivate,
     ceremony_id: FederationDkgCeremonyId,
     root_key_epoch: u64,
-) -> Result<(FrostDkgPhase, DeliverySummary), cdk::Error>
+) -> Result<(FederationDkgDriverPhase, DeliverySummary), cdk::Error>
 where
     T: Transport,
 {
@@ -901,9 +882,9 @@ where
         }
         return Ok((
             if matching.len() == public_config.members.len() {
-                FrostDkgPhase::Complete
+                FederationDkgDriverPhase::Complete
             } else {
-                FrostDkgPhase::Confirmation
+                FederationDkgDriverPhase::FrostConfirmation
             },
             delivery,
         ));
@@ -939,7 +920,7 @@ where
             })
             .await?;
         let _ = package;
-        return Ok((FrostDkgPhase::Round1, delivery));
+        return Ok((FederationDkgDriverPhase::FrostRound1, delivery));
     }
 
     if let Some(state_record) = round1_state.filter(|_| round2_state.is_none()) {
@@ -974,7 +955,7 @@ where
         .await;
         record_delivery_results("FROST round one", results, &mut delivery);
         if delivery.failed != 0 || delivery.successful != public_config.members.len() {
-            return Ok((FrostDkgPhase::Round1, delivery));
+            return Ok((FederationDkgDriverPhase::FrostRound1, delivery));
         }
         let requests = db.get_federation_frost_dkg_round1().await?;
         let received = requests
@@ -983,7 +964,7 @@ where
             .map(|candidate| candidate.decode_package(public_config, candidate.sender))
             .collect::<cdk::federation::Result<Vec<_>>>()?;
         if received.len() + 1 != public_config.members.len() {
-            return Ok((FrostDkgPhase::Round1, delivery));
+            return Ok((FederationDkgDriverPhase::FrostRound1, delivery));
         }
         let (round2_secret, outgoing) =
             advance_dkg(secret, received).map_err(|error| cdk::Error::Custom(error.to_string()))?;
@@ -1011,7 +992,7 @@ where
             .await?;
         }
         tx.commit().await?;
-        return Ok((FrostDkgPhase::Round2, delivery));
+        return Ok((FederationDkgDriverPhase::FrostRound2, delivery));
     }
 
     let state_record = round2_state.ok_or_else(|| {
@@ -1047,7 +1028,7 @@ where
     .await;
     record_delivery_results("FROST round two", results, &mut delivery);
     if delivery.failed != 0 || delivery.successful != outgoing_count {
-        return Ok((FrostDkgPhase::Round2, delivery));
+        return Ok((FederationDkgDriverPhase::FrostRound2, delivery));
     }
     let records = db.get_federation_frost_dkg_round2().await?;
     let incoming = records
@@ -1060,7 +1041,7 @@ where
         .map(|candidate| candidate.open(public_config, &storage_key))
         .collect::<cdk::federation::Result<Vec<_>>>()?;
     if incoming.len() + 1 != public_config.members.len() {
-        return Ok((FrostDkgPhase::Round2, delivery));
+        return Ok((FederationDkgDriverPhase::FrostRound2, delivery));
     }
     let round1 = db
         .get_federation_frost_dkg_round1()
@@ -1088,7 +1069,7 @@ where
             encrypted_root_share: encrypted_root.to_bytes(),
         })
         .await?;
-    Ok((FrostDkgPhase::Confirmation, delivery))
+    Ok((FederationDkgDriverPhase::FrostConfirmation, delivery))
 }
 
 pub(crate) fn frost_storage_key(
@@ -1322,7 +1303,7 @@ where
 
     if let (true, true, Some(request)) = (
         transcript_ready_before_tick,
-        frost_phase == FrostDkgPhase::Complete,
+        frost_phase == FederationDkgDriverPhase::Complete,
         plan.activation.as_ref(),
     ) {
         let targets = pending_broadcast_targets(
@@ -1358,9 +1339,9 @@ where
     )
     .await?;
     let phase_after = if next_plan.phase == FederationDkgDriverPhase::Complete
-        && frost_phase != FrostDkgPhase::Complete
+        && frost_phase != FederationDkgDriverPhase::Complete
     {
-        frost_phase.driver_phase()
+        frost_phase
     } else {
         next_plan.phase
     };
@@ -1514,11 +1495,16 @@ where
         && ticks < driver_config.max_ticks
         && ceremony_started_at.elapsed() < driver_config.ceremony_timeout
     {
-        tokio::time::sleep(driver_config.retry_delay).await;
+        let stop = state.federation.payment_observer.tasks.stop_token();
+        tokio::select! {
+            _ = stop.cancelled() => return Err(cdk::Error::Custom("federation DKG shutdown requested".to_string())),
+            _ = tokio::time::sleep(driver_config.retry_delay) => {}
+        }
+
         last_tick = run_federation_dkg_driver_tick_with_cache(
             state,
-            &client,
-            &participant,
+            client,
+            participant,
             driver_config.secret_share_transport,
             &mut plan_cache,
             &mut delivery_tracker,
@@ -1587,7 +1573,9 @@ pub(crate) fn spawn_federation_dkg_driver(
         .federation_config()
         .expect("validated DKG auto-start has a federation runtime config")
         .member_id();
-    tokio::spawn(async move {
+    let tasks = state.federation.payment_observer.tasks.clone();
+    let failures = tasks.clone();
+    tasks.spawn("DKG", false, async move {
         match run_federation_dkg_driver(
             &state,
             config.ceremony_id,
@@ -1618,6 +1606,7 @@ pub(crate) fn spawn_federation_dkg_driver(
                     failed_deliveries = outcome.failed_deliveries,
                     "Federation DKG driver exhausted its bounded run before completion"
                 );
+                failures.fail("federation DKG driver did not complete".to_string());
             }
             Err(err) => {
                 tracing::error!(
@@ -1626,6 +1615,7 @@ pub(crate) fn spawn_federation_dkg_driver(
                     "Federation DKG driver stopped: {}",
                     redact_federation_operator_message(&err.to_string())
                 );
+                failures.fail("federation DKG driver failed; inspect the ceremony status".to_string());
             }
         }
     });

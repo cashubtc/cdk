@@ -12,7 +12,7 @@ fn runtime_config_keyset_rotation_requires_local_secret_share() {
         .clone();
     next_keyset.active = true;
     runtime_config
-        .private_config
+        .private_config_mut()
         .keyset_secret_shares
         .remove(&next_keyset.id);
 
@@ -47,13 +47,13 @@ fn runtime_config_keyset_rotation_rejects_wrong_local_secret_share() {
         .clone();
     next_keyset.active = true;
     let wrong_shares = runtime_config
-        .private_config
+        .private_config()
         .keyset_secret_shares
         .get(&old_keyset.id)
         .expect("old keyset secret shares")
         .clone();
     runtime_config
-        .private_config
+        .private_config_mut()
         .keyset_secret_shares
         .insert(next_keyset.id, wrong_shares);
 

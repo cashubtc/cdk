@@ -402,32 +402,6 @@ async fn advance_federated_bark_mint_quote_inner(
                 FederationPaymentAdvancement::AwaitingFederationEvidence
             })
         }
-        FederationBarkSemanticPhase::ReceiveHtlcsReady => {
-            if action.actor != federation.member_id() {
-                return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
-            }
-            let plan = runtime
-                .propose_receive_claim(
-                    &intent,
-                    prepared,
-                    action.latest_operation_id,
-                    receive_claim_proposal(
-                        federation.public_config(),
-                        &projection,
-                        federation.member_id(),
-                    )?,
-                )
-                .await
-                .map_err(|_| bark_unavailable())?;
-            let envelope = federation.operation_envelope(super::bark_federation_operation(
-                FederationBarkOperation::ActionPlan(plan),
-            )?);
-            state
-                .submit_federation_envelope(envelope)
-                .await?
-                .ensure_accepted()?;
-            Ok(FederationPaymentAdvancement::Progressed)
-        }
         FederationBarkSemanticPhase::ClaimPlanned
         | FederationBarkSemanticPhase::ReceivePreimageDisclosed
         | FederationBarkSemanticPhase::SigningAttemptAdvanced
@@ -1196,7 +1170,7 @@ async fn apply_accepted_receive_prepared(
         return;
     };
     if runtime
-        .apply_receive_prepared(intent, &prepared)
+        .apply_receive_prepared(intent, prepared)
         .await
         .is_err()
     {

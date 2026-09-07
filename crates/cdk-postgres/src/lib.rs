@@ -1111,10 +1111,7 @@ mod test {
             federation_migrations,
             vec![
                 "20260712000000_create_federation_schema.sql".to_owned(),
-                "20260713000000_allow_federation_payment_observation_revisions.sql".to_owned(),
-                "20260714000000_chunk_federation_aleph_bft_backups.sql".to_owned(),
                 "20260719000000_create_federation_bark_projection.sql".to_owned(),
-                "20260729000000_index_federation_payment_observation_quotes.sql".to_owned(),
             ]
         );
 

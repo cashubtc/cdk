@@ -311,12 +311,7 @@ impl FederationNodeRuntime {
             .as_ref()
             .ok_or_else(|| runtime_unavailable("consensus"))?;
         let mut consensus = consensus.lock().await;
-        let local_entries = consensus
-            .journal()
-            .entries()
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
+        let local_entries = consensus.journal().entries().to_vec();
         let local_finalized_items = consensus.aleph_bft_finalized_items()?.to_vec();
         let status = consensus.aleph_bft_status()?;
         let response_to_apply = crate::catch_up_response_suffix_for_local_journal(

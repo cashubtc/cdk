@@ -191,8 +191,8 @@ impl WalletRuntime {
             member_request_timeout: Duration::from_secs(90),
             quote_status_member_timeout: Duration::from_secs(90),
             fanout_concurrency: stored.public_config.members.len(),
-            mint_quote_visibility_attempts: 120,
-            mint_quote_visibility_retry_delay: Duration::from_millis(100),
+            quote_visibility_attempts: 120,
+            quote_visibility_retry_delay: Duration::from_millis(100),
             ..FederatedMintConnectorConfig::default()
         };
         let connector =

@@ -74,6 +74,7 @@ impl CdkAlephBftReplayReadiness {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn ready() -> Self {
         Self::new(BTreeMap::new())
     }
@@ -119,7 +120,6 @@ impl CdkAlephBftReplayReadiness {
 
 /// SHA-256 hasher used by CDK's AlephBFT session units.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftHasher;
 
 impl AlephHasher for CdkAlephBftHasher {
@@ -131,7 +131,6 @@ impl AlephHasher for CdkAlephBftHasher {
 }
 
 /// Concrete upstream AlephBFT network payload used by CDK federation sessions.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) type CdkAlephBftNetworkData = NetworkData<
     CdkAlephBftHasher,
     CdkAlephBftData,
@@ -141,7 +140,6 @@ pub(crate) type CdkAlephBftNetworkData = NetworkData<
 
 /// Outbound message emitted by the AlephBFT network adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftOutboundMessage<D> {
     /// Opaque AlephBFT payload to deliver.
     pub data: D,
@@ -160,7 +158,6 @@ pub(crate) struct CdkAlephBftInboundEnvelope<D> {
 }
 
 /// Channel-backed AlephBFT network implementation.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftNetwork<D> {
     incoming: mpsc::Receiver<CdkAlephBftInboundEnvelope<D>>,
     outgoing: mpsc::Sender<CdkAlephBftOutboundMessage<D>>,
@@ -174,7 +171,6 @@ impl<D> fmt::Debug for CdkAlephBftNetwork<D> {
 }
 
 /// Test and transport bridge handle for a [`CdkAlephBftNetwork`].
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftNetworkHandle<D> {
     incoming: mpsc::Sender<CdkAlephBftInboundEnvelope<D>>,
     outgoing: mpsc::Receiver<CdkAlephBftOutboundMessage<D>>,
@@ -188,9 +184,9 @@ impl<D> fmt::Debug for CdkAlephBftNetworkHandle<D> {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl<D> CdkAlephBftNetwork<D> {
     /// Create a network plus bridge handle for injecting inbound and draining outbound messages.
+    #[cfg(test)]
     pub(crate) fn new_pair() -> (Self, CdkAlephBftNetworkHandle<D>) {
         Self::new_pair_with_capacity(crate::federation_aleph_bft_channel_capacity())
     }
@@ -215,7 +211,6 @@ impl<D> CdkAlephBftNetwork<D> {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl<D> CdkAlephBftNetworkHandle<D> {
     /// Queue an inbound message as if it arrived from the federation transport.
     pub(crate) fn queue_incoming(&self, data: D) -> Result<(), mpsc::error::SendError<D>> {
@@ -308,7 +303,6 @@ where
 
 /// Schnorr signature bytes used by CDK's AlephBFT keychain adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Encode, Decode)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftSignature([u8; 64]);
 
 impl CdkAlephBftSignature {
@@ -323,7 +317,6 @@ impl CdkAlephBftSignature {
 
 /// AlephBFT keychain backed by the federation secp256k1 identity roster.
 #[derive(Debug, Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftKeychain {
     federation_id: FederationId,
     private_config: MemberConfigPrivate,
@@ -332,9 +325,9 @@ pub(crate) struct CdkAlephBftKeychain {
     node_count: NodeCount,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl CdkAlephBftKeychain {
     /// Build an AlephBFT keychain from the validated federation config and local identity key.
+    #[cfg(test)]
     pub(crate) fn try_new(
         public_config: &FederationConfig,
         private_config: MemberConfigPrivate,
@@ -502,13 +495,11 @@ impl MultiKeychain for CdkAlephBftKeychain {
 
 /// AlephBFT data wrapper that preserves CDK's canonical consensus encoding.
 #[derive(Debug, Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftData {
     canonical: Vec<u8>,
     payload: FederationAlephBftUnitPayload,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl CdkAlephBftData {
     /// Wrap a validated CDK unit payload for AlephBFT ordering.
     pub(crate) fn try_from_payload(
@@ -529,6 +520,7 @@ impl CdkAlephBftData {
     }
 
     /// Return the exact canonical bytes encoded into AlephBFT messages.
+    #[cfg(test)]
     pub(crate) fn canonical_bytes(&self) -> &[u8] {
         &self.canonical
     }
@@ -582,7 +574,7 @@ impl Decode for CdkAlephBftData {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct CdkAlephBftActivityHintState {
     local_pending: bool,
     network_activity: BTreeMap<[u8; 32], Instant>,
@@ -590,22 +582,11 @@ struct CdkAlephBftActivityHintState {
 
 /// In-memory hint used to keep AlephBFT proposal cadence warm only around work.
 #[derive(Debug, Clone, Default)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftActivityHint {
     state: Arc<Mutex<CdkAlephBftActivityHintState>>,
     changed: Arc<tokio::sync::Notify>,
 }
 
-impl Default for CdkAlephBftActivityHintState {
-    fn default() -> Self {
-        Self {
-            local_pending: false,
-            network_activity: BTreeMap::new(),
-        }
-    }
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
 impl CdkAlephBftActivityHint {
     /// Mark this member as having locally queued or pending-finalization work.
     pub(crate) fn mark_local_pending(&self) {
@@ -680,13 +661,11 @@ impl CdkAlephBftActivityHint {
 
 /// Runtime-backed data provider for upstream AlephBFT sessions.
 #[derive(Debug, Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftDataProvider {
     consensus: Arc<tokio::sync::Mutex<FederationConsensusRuntime>>,
     activity_hint: CdkAlephBftActivityHint,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl CdkAlephBftDataProvider {
     /// Create a data provider with a shared AlephBFT activity hint.
     pub(crate) fn with_activity_hint(
@@ -746,17 +725,14 @@ impl DataProvider for CdkAlephBftDataProvider {
 
 /// A finalized CDK payload plus identity and ordering metadata authenticated by AlephBFT.
 #[derive(Debug, Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftFinalizedUnit {
     payload: FederationAlephBftUnitPayload,
     federation_id: FederationId,
     session: u64,
     creator: MemberId,
     round: u16,
-    unit_hash: [u8; 32],
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl CdkAlephBftFinalizedUnit {
     /// Return operation IDs for latency tracking before consuming this unit.
     pub(crate) fn operation_ids(&self) -> &[cdk::federation::FederationOperationId] {
@@ -771,11 +747,6 @@ impl CdkAlephBftFinalizedUnit {
     /// Return the authenticated AlephBFT round used as the member-local unit index.
     pub(crate) fn round(&self) -> u16 {
         self.round
-    }
-
-    /// Return the authenticated AlephBFT unit hash.
-    pub(crate) fn unit_hash(&self) -> [u8; 32] {
-        self.unit_hash
     }
 
     /// Replace untrusted payload metadata with the authenticated AlephBFT context.
@@ -798,7 +769,6 @@ impl CdkAlephBftFinalizedUnit {
 }
 /// Finalization handler that hands ordered CDK units back to the mint runtime.
 #[derive(Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftFinalizationHandler {
     finalized_units: mpsc::Sender<CdkAlephBftFinalizedUnit>,
     activity_hint: CdkAlephBftActivityHint,
@@ -807,9 +777,9 @@ pub(crate) struct CdkAlephBftFinalizationHandler {
     replay_readiness: Arc<CdkAlephBftReplayReadiness>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl CdkAlephBftFinalizationHandler {
     /// Create a handler that forwards finalized unit payloads to an async apply loop.
+    #[cfg(test)]
     pub(crate) fn new(
         finalized_units: mpsc::Sender<CdkAlephBftFinalizedUnit>,
         keychain: CdkAlephBftKeychain,
@@ -823,6 +793,7 @@ impl CdkAlephBftFinalizationHandler {
         )
     }
 
+    #[cfg(test)]
     fn with_activity_hint(
         finalized_units: mpsc::Sender<CdkAlephBftFinalizedUnit>,
         activity_hint: CdkAlephBftActivityHint,
@@ -926,7 +897,6 @@ impl UnitFinalizationHandler for CdkAlephBftFinalizationHandler {
                     session: self.session,
                     creator,
                     round: unit.round,
-                    unit_hash: unit.hash,
                 };
                 self.queue_finalized_unit(finalized_unit);
             }
@@ -934,18 +904,14 @@ impl UnitFinalizationHandler for CdkAlephBftFinalizationHandler {
     }
 }
 
-/// Shared append-only AlephBFT backup bytes for one session.
-///
-/// Upstream AlephBFT owns the encoded unit format. CDK keeps this adapter
-/// byte-preserving so the backing store can later move from memory to mint DB
-/// persistence without changing the `run_session` IO boundary.
+/// In-memory backup fixture for testing the AlephBFT IO contract.
+#[cfg(test)]
 #[derive(Debug, Clone, Default)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftBackup {
     bytes: Arc<Mutex<Vec<u8>>>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 impl CdkAlephBftBackup {
     /// Create an empty backup byte store.
     pub(crate) fn new() -> Self {
@@ -985,7 +951,6 @@ impl CdkAlephBftBackup {
 
 /// Snapshot reader for AlephBFT backup bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftBackupReader {
     bytes: Vec<u8>,
     position: usize,
@@ -1012,13 +977,14 @@ impl AsyncRead for CdkAlephBftBackupReader {
     }
 }
 
-/// Append-only writer for AlephBFT backup bytes.
+/// Append-only writer for the in-memory backup fixture.
+#[cfg(test)]
 #[derive(Debug, Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftBackupWriter {
     bytes: Arc<Mutex<Vec<u8>>>,
 }
 
+#[cfg(test)]
 impl AsyncWrite for CdkAlephBftBackupWriter {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -1047,7 +1013,6 @@ impl AsyncWrite for CdkAlephBftBackupWriter {
 
 /// Mint database backed AlephBFT backup bytes for one local session.
 #[derive(Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftDbBackup {
     db: DynMintDatabase,
     session_id: u64,
@@ -1061,7 +1026,6 @@ impl fmt::Debug for CdkAlephBftDbBackup {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl CdkAlephBftDbBackup {
     /// Create a database backed backup handle for a local AlephBFT session.
     pub(crate) fn new(db: DynMintDatabase, session_id: u64) -> Self {
@@ -1069,6 +1033,7 @@ impl CdkAlephBftDbBackup {
     }
 
     /// Create a reader over the currently persisted backup bytes.
+    #[cfg(test)]
     pub(crate) async fn try_reader(&self) -> Result<CdkAlephBftBackupReader, cdk::Error> {
         let (chunks, _) = load_bounded_aleph_bft_backup_chunks(&self.db, self.session_id).await?;
         let bytes = chunks.concat();
@@ -1077,6 +1042,7 @@ impl CdkAlephBftDbBackup {
     }
 
     /// Create an append-only writer that durably persists on flush or close.
+    #[cfg(test)]
     pub(crate) fn writer(&self) -> CdkAlephBftDbBackupWriter {
         self.writer_with_replayed_bytes(Vec::new(), 0)
     }
@@ -1219,7 +1185,6 @@ struct CdkAlephBftDbBackupWriterState {
 
 /// Append-only AlephBFT backup writer that commits flushed bytes to mint DB.
 #[derive(Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftDbBackupWriter {
     db: DynMintDatabase,
     session_id: u64,
@@ -1234,7 +1199,6 @@ impl fmt::Debug for CdkAlephBftDbBackupWriter {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl CdkAlephBftDbBackupWriter {
     /// Number of backup chunks persisted so far, including the replayed
     /// prefix the writer was initialized with. A session that created units
@@ -1409,7 +1373,7 @@ async fn persist_aleph_bft_backup_bytes(
                         err
                     )));
                 }
-                if attempts == 1 || attempts % 10 == 0 {
+                if attempts == 1 || attempts.is_multiple_of(10) {
                     tracing::warn!(
                         session_id,
                         retry_attempts = attempts,
@@ -1433,7 +1397,7 @@ async fn try_persist_aleph_bft_backup_bytes(
     bytes: &[u8],
 ) -> Result<(), cdk_common::database::Error> {
     let mut tx = db.begin_transaction().await?;
-    tx.append_federation_aleph_bft_backup_bytes(session_id, &bytes)
+    tx.append_federation_aleph_bft_backup_bytes(session_id, bytes)
         .await?;
     tx.commit().await
 }
@@ -1443,7 +1407,6 @@ fn database_io_error(err: cdk_common::database::Error) -> io::Error {
 }
 
 /// Concrete local IO bundle passed into an upstream AlephBFT session.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) type CdkAlephBftLocalIo = LocalIO<
     CdkAlephBftDataProvider,
     CdkAlephBftFinalizationHandler,
@@ -1452,7 +1415,6 @@ pub(crate) type CdkAlephBftLocalIo = LocalIO<
 >;
 
 /// Local AlephBFT session IO plus the receiver used by CDK's apply loop.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftSessionIo {
     local_io: CdkAlephBftLocalIo,
     finalized_units: mpsc::Receiver<CdkAlephBftFinalizedUnit>,
@@ -1468,7 +1430,6 @@ impl fmt::Debug for CdkAlephBftSessionIo {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl CdkAlephBftSessionIo {
     /// Build local IO for a live session from the consensus runtime and mint DB backup.
     pub(crate) async fn from_db(
@@ -1564,7 +1525,6 @@ impl CdkAlephBftSessionIo {
 
 /// Tokio-backed task spawner for upstream AlephBFT.
 #[derive(Debug, Clone, Default)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftTokioSpawnHandle {
     inner: Arc<CdkAlephBftTokioSpawnState>,
 }
@@ -1674,8 +1634,8 @@ mod tests {
         Recipient, SpawnHandle, UnitFinalizationHandler,
     };
     use cdk::federation::{
-        FederationAlephBftUnitPayload, FederationConfig, FederationConsensusDefaultItem,
-        FederationConsensusItem, FederationConsensusRuntime, FederationId,
+        FederationAlephBftUnitPayload, FederationConfig, FederationConsensusItem,
+        FederationConsensusModuleFact, FederationConsensusRuntime, FederationId,
         FederationMintQuoteOperation, FederationOperation, FederationOperationEnvelope,
         MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
     };
@@ -1770,8 +1730,12 @@ mod tests {
             member_id(1),
             0,
             index,
-            vec![FederationConsensusItem::Default(
-                FederationConsensusDefaultItem::new("adapter-test", json!({ "index": index })),
+            vec![FederationConsensusItem::ModuleFact(
+                FederationConsensusModuleFact::new(
+                    "test",
+                    "adapter-test",
+                    json!({ "index": index }),
+                ),
             )],
         )
         .expect("unit payload")
@@ -2173,7 +2137,6 @@ mod tests {
         let finalized_unit = receiver.recv().await.expect("finalized payload");
         assert_eq!(finalized_unit.creator(), member_id(2));
         assert_eq!(finalized_unit.round(), 7);
-        assert_eq!(finalized_unit.unit_hash(), [7; 32]);
         let finalized = finalized_unit
             .into_authenticated_payload()
             .expect("authenticated payload");

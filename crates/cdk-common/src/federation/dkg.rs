@@ -2506,6 +2506,7 @@ impl FederationDkgFinalizedMemberConfig {
         setup_public_config: &FederationConfig,
         activation_records: &[FederationDkgActivationRequest],
     ) -> Result<()> {
+        setup_public_config.validate()?;
         self.public_config.validate()?;
         self.private_config
             .validate_against_public(&self.public_config)?;
@@ -2516,7 +2517,6 @@ impl FederationDkgFinalizedMemberConfig {
             .ok_or_else(|| FederationError::DkgTranscriptMismatch {
                 reason: "DKG activation requires a complete setup transcript".to_string(),
             })?;
-        transcript.validate_setup_lineage_against_config(&self.public_config)?;
         let mut activation_public_config = self.public_config.clone();
         activation_public_config.keysets = transcript
             .payload
@@ -2531,7 +2531,6 @@ impl FederationDkgFinalizedMemberConfig {
         // digest covered by the already-durable BLS activation signatures.
         activation_public_config.frost_wallet = None;
         activation_public_config.validate()?;
-        transcript.validate_against_config(&activation_public_config)?;
         let ceremony_ids = transcript
             .payload
             .ceremonies
@@ -2549,7 +2548,7 @@ impl FederationDkgFinalizedMemberConfig {
             .iter()
             .filter(|activation| ceremony_ids.contains(&activation.ceremony_id))
         {
-            activation.validate_sender(
+            activation.validate_sender_against_validated_configs(
                 setup_public_config,
                 &activation_public_config,
                 activation.signer,

@@ -105,6 +105,24 @@ const WALLET_NAMESPACE_TABLE: &str = "cdk_bdk_wallet_namespace";
 const LOCAL_SIGNING_NAMESPACE: &str = "cdk-bdk/local-signing/v1";
 const WATCH_ONLY_NAMESPACE: &str = "cdk-bdk/watch-only/v1";
 
+/// Configuration for blockchain synchronization
+#[derive(Debug, Clone)]
+pub struct SyncConfig {
+    /// Number of blocks to apply per wallet-lock acquisition (RPC path)
+    pub apply_chunk_size: usize,
+    /// Warn if a single lock acquisition exceeds this duration (milliseconds)
+    pub lock_hold_warn_ms: u64,
+}
+
+impl Default for SyncConfig {
+    fn default() -> Self {
+        Self {
+            apply_chunk_size: 16,
+            lock_hold_warn_ms: 500,
+        }
+    }
+}
+
 /// Reusable persisted BDK engine with an explicit signing boundary.
 #[derive(Clone)]
 pub struct BdkWalletEngine {
@@ -116,6 +134,7 @@ pub struct BdkWalletEngine {
     pub chain_source: ChainSource,
     network: Network,
     signing_mode: SigningMode,
+    pub(crate) sync_config: SyncConfig,
 }
 
 impl core::fmt::Debug for BdkWalletEngine {
@@ -131,6 +150,17 @@ impl core::fmt::Debug for BdkWalletEngine {
 }
 
 impl BdkWalletEngine {
+    /// Configure bounded Bitcoin RPC block application and lock diagnostics.
+    pub fn with_sync_config(mut self, config: SyncConfig) -> Result<Self, Error> {
+        if config.apply_chunk_size == 0 {
+            return Err(Error::InvalidConfig(
+                "sync apply_chunk_size must be greater than zero".to_string(),
+            ));
+        }
+        self.sync_config = config;
+        Ok(self)
+    }
+
     /// Fetch a proposer-local fee estimate from the configured chain source.
     ///
     /// Callers must apply their own timeout, fallback, and consensus ceilings.
@@ -173,10 +203,12 @@ impl BdkWalletEngine {
         };
         if let Some(block_id) = initial_checkpoint {
             let checkpoint = wallet.latest_checkpoint().insert(block_id);
-            wallet.apply_update(bdk_wallet::Update {
-                chain: Some(checkpoint),
-                ..Default::default()
-            }).map_err(|err| Error::Wallet(err.to_string()))?;
+            wallet
+                .apply_update(bdk_wallet::Update {
+                    chain: Some(checkpoint),
+                    ..Default::default()
+                })
+                .map_err(|err| Error::Wallet(err.to_string()))?;
         }
         wallet.persist(&mut db)?;
 
@@ -184,6 +216,7 @@ impl BdkWalletEngine {
             wallet_with_db: Arc::new(Mutex::new(WalletWithDb::new(wallet, db))),
             chain_source,
             network,
+            sync_config: SyncConfig::default(),
             signing_mode: SigningMode::Local,
         })
     }
@@ -204,6 +237,7 @@ impl BdkWalletEngine {
             wallet_with_db: Arc::new(Mutex::new(WalletWithDb::new(wallet, db))),
             chain_source,
             network: config.network,
+            sync_config: SyncConfig::default(),
             signing_mode: SigningMode::ExternalOnly,
         })
     }
@@ -228,6 +262,7 @@ impl BdkWalletEngine {
             wallet_with_db: Arc::new(Mutex::new(WalletWithDb::new(wallet, db))),
             chain_source,
             network: config.network,
+            sync_config: SyncConfig::default(),
             signing_mode: SigningMode::ExternalOnly,
         })
     }
@@ -979,6 +1014,29 @@ mod tests {
             request_timeout_secs: crate::chain::DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS,
             max_retries: crate::chain::DEFAULT_ESPLORA_MAX_RETRIES,
         })
+    }
+
+    #[test]
+    fn rpc_sync_policy_is_applied_and_rejects_zero_chunks() {
+        let dir = tempfile::tempdir().expect("wallet directory");
+        let (config, _) = descriptor_config(1, Network::Regtest);
+        let engine =
+            BdkWalletEngine::open_watch_only(config, chain_source(), dir.path()).expect("wallet");
+        let configured = engine
+            .clone()
+            .with_sync_config(SyncConfig {
+                apply_chunk_size: 7,
+                lock_hold_warn_ms: 42,
+            })
+            .expect("sync policy");
+        assert_eq!(configured.sync_config.apply_chunk_size, 7);
+        assert_eq!(configured.sync_config.lock_hold_warn_ms, 42);
+        assert!(engine
+            .with_sync_config(SyncConfig {
+                apply_chunk_size: 0,
+                ..SyncConfig::default()
+            })
+            .is_err());
     }
 
     async fn funded_psbt(engine: &BdkWalletEngine, amount_sat: u64) -> (Psbt, Transaction) {

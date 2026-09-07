@@ -429,6 +429,10 @@
             commonCraneArgs
             // {
               pname = "cdk-check-${name}";
+              # Large federation debug fixtures contain deeply nested async futures.
+              env = lib.optionalAttrs (lib.hasPrefix "federation-" name) {
+                RUST_MIN_STACK = "16777216";
+              };
               cargoArtifacts = workspaceDeps;
               buildPhaseCargoCommand = builtins.concatStringsSep "\n" (
                 builtins.map
@@ -796,6 +800,34 @@
           "core-sdk-mint" = [
             "-p cdk -p cdk-http-client --no-default-features --features cdk/mint,cdk-http-client/bitreq"
             "-p cdk -p cdk-http-client --no-default-features --features cdk/mint,cdk-http-client/reqwest"
+          ];
+
+          "federation-domain" = [
+            "-p cdk-common --features federation,test"
+            "-p cdk-federation-bark"
+            "-p cdk-sqlite --features federation-bark"
+            "-p cdk --no-default-features --features mint,wallet,federation"
+          ];
+
+          "federation-custody" = [
+            "-p cdk-frost -p cdk-frost-bip32 -p cdk-frost-bark"
+            "-p cdk-bitcoin-wallet --all-features"
+          ];
+
+          "federation-runtime" = [
+            "-p cdk-axum --no-default-features --features federation"
+            "-p cdk-axum --no-default-features --features federation-bdk"
+            "-p cdk-axum --no-default-features --features federation-bark"
+            "-p cdk-axum --no-default-features --features federation-bdk,federation-bark,iroh"
+          ];
+
+          "federation-binaries" = [
+            "-p cdk-mintd --no-default-features --features sqlite,cln,federation"
+            "-p cdk-mintd --no-default-features --features sqlite,federation-bdk,federation-bark"
+            "-p cdk-mintd --no-default-features --features sqlite,federation-test-utils"
+            "-p cdk-cli --no-default-features --features federation,iroh"
+            "-p cdk-ffi --no-default-features"
+            "-p cdk-ffi --no-default-features --features federation"
           ];
 
           "storage-and-cli" = [

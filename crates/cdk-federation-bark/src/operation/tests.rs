@@ -602,11 +602,7 @@ fn maintenance_plans_bind_exact_refresh_and_exit_requests() {
     let mut legacy_exit = exit.clone();
     legacy_exit.version = 1;
     let legacy_exit = FederationBarkOperation::ActionPlan(legacy_exit);
-    legacy_exit.validate().expect("valid legacy exit plan");
-    assert!(legacy_exit
-        .conflict_keys()
-        .iter()
-        .any(|key| matches!(key, FederationBarkConflictKey::VtxoReservation { .. })));
+    assert!(legacy_exit.validate().is_err());
     let request = exit.emergency_exit_request().expect("exit request");
     assert_eq!(
         request.destination.quote,
@@ -792,7 +788,7 @@ fn established_wire_replays_with_stable_conflicts_and_materialized_keys() {
     let wire = serde_json::to_value(&envelope).expect("established envelope wire");
     assert_eq!(
         wire.get("version").and_then(serde_json::Value::as_u64),
-        Some(5)
+        Some(6)
     );
     assert_eq!(
         wire.pointer("/operation/type")
@@ -1483,4 +1479,13 @@ fn action_id_derivation_has_a_fixed_vector() {
     )
     .expect("changed action ID");
     assert_ne!(changed, action_id);
+}
+
+#[test]
+fn incoming_claim_requires_current_certified_evidence() {
+    let mut plan = certified_receive_claim_plan();
+    plan.certified_receive_htlcs = None;
+    assert!(FederationBarkOperation::ActionPlan(plan)
+        .validate()
+        .is_err());
 }

@@ -39,10 +39,11 @@ use uuid::Uuid;
 use crate::mint::{Mint, QuoteId};
 
 #[cfg(feature = "federation-bark")]
-use super::{
-    CHAIN_OBSERVATION_PRIMARY_NAMESPACE, FEDERATION_BARK_RECOVERY_SECONDARY_NAMESPACE,
-    FEDERATION_BARK_RECOVERY_STATE_KEY,
+use super::application::{
+    FEDERATION_BARK_RECOVERY_SECONDARY_NAMESPACE, FEDERATION_BARK_RECOVERY_STATE_KEY,
 };
+#[cfg(feature = "federation-bark")]
+use super::chain_observation::CHAIN_OBSERVATION_PRIMARY_NAMESPACE;
 
 #[cfg(feature = "federation-bark")]
 pub(super) use self::bark_validation::*;
@@ -426,87 +427,9 @@ impl Mint {
             FederationBarkOperation::ActionTransition(transition)
                 if transition.phase == FederationBarkSemanticPhase::ReceiveHtlcsReady =>
             {
-                let action =
-                    action.ok_or_else(|| bark_state_error("HTLC evidence has no action"))?;
-                if action.phase != FederationBarkSemanticPhase::ReceivePrepared {
-                    return Err(bark_state_error(
-                        "HTLC evidence does not follow receive preparation",
-                    ));
-                }
-                let intent = self
-                    .federation_bark_receive_intent(action.origin_operation_id)
-                    .await?
-                    .ok_or_else(|| bark_state_error("receive intent is missing"))?;
-                let amount = transition.vtxo_transitions.iter().try_fold(
-                    Amount::ZERO,
-                    |sum, mutation| {
-                        sum.checked_add(mutation.amount)
-                            .ok_or_else(|| bark_state_error("HTLC evidence amount overflow"))
-                    },
-                )?;
-                let fee = intent
-                    .gross_amount
-                    .checked_sub(amount)
-                    .ok_or_else(|| bark_state_error("HTLC evidence exceeds invoice amount"))?;
-                if amount < intent.minimum_net_amount || fee > intent.receive_fee {
-                    return Err(bark_state_error(
-                        "HTLC evidence does not cover the accepted Cashu liability",
-                    ));
-                }
-                let required = config.public_config().threshold_params.signature_threshold;
-                match &transition.evidence_certificate {
-                    Some(certificate) => {
-                        certificate.verify(config.public_config(), required)?;
-                        let binding = &certificate.binding;
-                        if binding.phase != FederationBarkEvidencePhase::ReceiveHtlcsReady
-                            || binding.action_id != transition.action_id
-                            || transition.actor != action.actor
-                            || transition.quote.as_deref() != Some(binding.quote.as_str())
-                            || binding.evidence_operation_id != transition.predecessor_operation_id
-                            || binding.payment_hash
-                                != transition.payment_hash.ok_or_else(|| {
-                                    bark_state_error("HTLC certificate has no payment hash")
-                                })?
-                            || binding.source_scope
-                                != ark_server_commitment(&application.ark_server_public_key)?
-                            || binding.amount != amount
-                            || binding.fee != fee
-                            || binding.evidence_digest != transition.result_hash
-                            || binding.attempt != transition.attempt
-                        {
-                            return Err(bark_state_error(
-                                "HTLC certificate differs from the accepted transition",
-                            ));
-                        }
-                    }
-                    None => {
-                        let mut observers = BTreeSet::new();
-                        for record in &snapshot.observations {
-                            let FederationBarkOperation::MemberObservation(observation) =
-                                &record.operation
-                            else {
-                                continue;
-                            };
-                            if observation.action_id == transition.action_id
-                                && observation.quote == transition.quote
-                                && observation.payment_hash == transition.payment_hash
-                                && observation.source_scope
-                                    == ark_server_commitment(&application.ark_server_public_key)?
-                                && observation.status == FederationBarkObservationStatus::Accepted
-                                && observation.amount == amount
-                                && observation.fee == fee
-                                && observation.result_hash == transition.result_hash
-                            {
-                                observers.insert(observation.observer);
-                            }
-                        }
-                        if observers.len() < usize::from(required) {
-                            return Err(bark_state_error(
-                                "HTLC evidence has not reached the accepted member threshold",
-                            ));
-                        }
-                    }
-                }
+                return Err(bark_state_error(
+                    "receive readiness must be certified in the claim plan",
+                ));
             }
             FederationBarkOperation::EvidenceCertificate(certificate) => {
                 let required = config
@@ -596,13 +519,11 @@ impl Mint {
                     .federation_bark_receive_intent(action.origin_operation_id)
                     .await?
                     .ok_or_else(|| bark_state_error("receive intent is missing"))?;
-                let combined = plan.certified_receive_htlcs.as_deref();
-                let expected_phase = if combined.is_some() {
-                    FederationBarkSemanticPhase::ReceivePrepared
-                } else {
-                    FederationBarkSemanticPhase::ReceiveHtlcsReady
-                };
-                if action.phase != expected_phase
+                let certified = plan
+                    .certified_receive_htlcs
+                    .as_deref()
+                    .ok_or_else(|| bark_state_error("claim plan lacks certified HTLC evidence"))?;
+                if action.phase != FederationBarkSemanticPhase::ReceivePrepared
                     || plan.predecessor_operation_id != action.latest_operation_id
                     || plan.actor != action.actor
                     || plan.signer_set.len() < usize::from(application.threshold)
@@ -615,7 +536,7 @@ impl Mint {
                         "claim plan is not backed by ready HTLCs and an eligible signer set",
                     ));
                 }
-                if let Some(certified) = combined {
+                {
                     let amount = certified.vtxo_transitions.iter().try_fold(
                         Amount::ZERO,
                         |sum, mutation| {
@@ -653,23 +574,6 @@ impl Mint {
                         return Err(bark_state_error(
                             "certified HTLC evidence differs from the claim plan",
                         ));
-                    }
-                } else {
-                    for input in &plan.inputs {
-                        let vtxo = snapshot
-                            .vtxos
-                            .iter()
-                            .find(|vtxo| vtxo.vtxo_id == input.vtxo_id)
-                            .ok_or_else(|| bark_state_error("claim plan input is unknown"))?;
-                        if vtxo.state != FederationBarkVtxoState::Observed
-                            || vtxo.amount != input.amount
-                            || vtxo.locator != input.locator
-                            || vtxo.locator != intent.destination
-                        {
-                            return Err(bark_state_error(
-                                "claim plan input differs from accepted HTLC evidence",
-                            ));
-                        }
                     }
                 }
             }

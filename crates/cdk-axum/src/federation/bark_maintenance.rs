@@ -21,45 +21,20 @@ const BARK_ROUTINE_MAINTENANCE_PAYMENT_QUIET_PERIOD: std::time::Duration =
     std::time::Duration::from_secs(30);
 const BARK_RECENT_PAYMENT_JOURNAL_LIMIT: usize = 256;
 
-/// Mint-daemon-owned lifecycle handle for the one Bark recovery worker.
-#[derive(Clone)]
-#[allow(missing_debug_implementations)]
-pub struct FederatedBarkMaintenanceHandle {
-    state: MintState,
-}
-
-impl FederatedBarkMaintenanceHandle {
-    pub(crate) fn new(state: MintState) -> Option<Self> {
-        state
-            .federation
-            .bark_runtime()
-            .is_some()
-            .then_some(Self { state })
-    }
-
-    /// Start the worker until the mint daemon broadcasts shutdown.
-    pub fn spawn_until(
-        self,
-        mut shutdown: tokio::sync::broadcast::Receiver<()>,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        let runtime = self.state.federation.bark_runtime().cloned()?;
-        Some(
-            cdk_bark::FederatedBarkRecoveryDriver::new(runtime).spawn_until(
-                Arc::new(AxumBarkRecoveryHost { state: self.state }),
-                async move {
-                    let _ = shutdown.recv().await;
-                },
-            ),
-        )
-    }
-
-    pub(crate) fn spawn_detached(self) {
-        let Some(runtime) = self.state.federation.bark_runtime().cloned() else {
-            return;
-        };
-        let _worker = cdk_bark::FederatedBarkRecoveryDriver::new(runtime)
-            .spawn(Arc::new(AxumBarkRecoveryHost { state: self.state }));
-    }
+pub(crate) fn spawn(state: &MintState) {
+    let Some(runtime) = state.federation.bark_runtime().cloned() else {
+        return;
+    };
+    let tasks = state.federation.payment_observer.tasks.clone();
+    let stop = tasks.stop_token();
+    let host = Arc::new(AxumBarkRecoveryHost {
+        state: state.clone(),
+    });
+    tasks.spawn(
+        "Bark recovery",
+        true,
+        cdk_bark::FederatedBarkRecoveryDriver::new(runtime).run_until(host, stop.cancelled_owned()),
+    );
 }
 
 /// Retry at most one consensus-visible step for one exact accepted action.
@@ -468,6 +443,20 @@ mod tests {
         };
         assert!(runtime_allows_recovery(recovery, 42));
         assert!(!runtime_allows_recovery(recovery, 43));
+        for reason in [
+            None,
+            Some(FederatedBarkDegradedReason::WalletUnavailable),
+            Some(FederatedBarkDegradedReason::ProjectionInvalid),
+            Some(FederatedBarkDegradedReason::ParticipantsUnavailable),
+        ] {
+            assert!(!runtime_allows_recovery(
+                FederatedBarkRuntimeStatus {
+                    degraded_reason: reason,
+                    ..recovery
+                },
+                42,
+            ));
+        }
         assert!(runtime_allows_recovery(
             FederatedBarkRuntimeStatus {
                 degraded_reason: Some(FederatedBarkDegradedReason::RecoveryFeeReserveInsufficient,),

@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test]
 async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows() {
     let (state, public_config, peer_private) = federation_route_state().await;
@@ -804,11 +806,6 @@ async fn scheduled_checkpoint_captures_first_complete_eligible_boundary() {
         &[("work", "scheduled_capture_skipped_ineligible")],
     );
     #[cfg(feature = "prometheus")]
-    let pending_before = prometheus_metric_value(
-        "cdk_federation_performance_work_total",
-        &[("work", "scheduled_capture_skipped_pending_candidate")],
-    );
-    #[cfg(feature = "prometheus")]
     let created_before = prometheus_metric_value(
         "cdk_federation_performance_work_total",
         &[("work", "scheduled_capture_created")],
@@ -902,12 +899,6 @@ async fn scheduled_checkpoint_captures_first_complete_eligible_boundary() {
         assert!(
             prometheus_metric_value(
                 "cdk_federation_performance_work_total",
-                &[("work", "scheduled_capture_skipped_pending_candidate")],
-            ) >= pending_before + 1.0
-        );
-        assert!(
-            prometheus_metric_value(
-                "cdk_federation_performance_work_total",
                 &[("work", "scheduled_capture_created")],
             ) >= created_before + 1.0
         );
@@ -946,42 +937,6 @@ async fn scheduled_checkpoint_preserves_the_canonical_byte_trigger() {
         .expect("byte-triggered scheduled checkpoint");
     assert_eq!(candidate.journal_next_index, 1);
     assert_eq!(candidate.finalized_next_item_index, 1);
-}
-
-async fn apply_identical_finalized_unit(
-    first: &MintState,
-    second: &MintState,
-    items: Vec<FederationConsensusItem>,
-) {
-    let payload = {
-        let consensus = first
-            .federation
-            .consensus
-            .as_ref()
-            .expect("first agreement consensus")
-            .lock()
-            .await;
-        let status = consensus.status();
-        FederationAlephBftUnitPayload::new(
-            status.federation_id,
-            status.local_member,
-            status.session,
-            consensus.next_unit_index(),
-            items,
-        )
-        .expect("agreement payload")
-    };
-
-    first
-        .federation
-        .apply_finalized_unit(payload.clone())
-        .await
-        .expect("apply first agreement unit");
-    second
-        .federation
-        .apply_finalized_unit(payload)
-        .await
-        .expect("apply second agreement unit");
 }
 
 async fn scheduled_checkpoint_agreement_for_payload<F>(
@@ -1663,8 +1618,7 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
     )
     .expect("restart checkpoint client");
     assert_eq!(
-        sync_loop::run_federation_peer_sync_round(&target, &restart_client, &[])
-            .await,
+        sync_loop::run_federation_peer_sync_round(&target, &restart_client, &[]).await,
         0
     );
     assert!(target_db
@@ -1727,7 +1681,7 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         .await
         .expect_err("bad checkpoint signature must fail before application");
     let minority_quorum =
-        FederationCheckpointQuorum::new(checkpoint.clone(), vec![quorum.signatures[0].clone()]);
+        FederationCheckpointQuorum::new(checkpoint.clone(), vec![quorum.signatures[0]]);
     target
         .apply_federation_checkpoint_catch_up_response(&response, &minority_quorum)
         .await
@@ -1773,7 +1727,8 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
             .expect("restart exact staged checkpoint frontier");
     target.federation.consensus = restarted_consensus;
     target.federation.sequences = restarted_sequences;
-    target.mark_federation_awaiting_quorum(checkpoint.journal_next_index)
+    target
+        .mark_federation_awaiting_quorum(checkpoint.journal_next_index)
         .await;
     let resumed_target = sync_loop::next_local_checkpoint_catch_up_target(&target)
         .await
@@ -1787,8 +1742,7 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         checkpoint_id
     );
     assert_eq!(
-        sync_loop::run_federation_peer_sync_round(&target, &restart_client, &[])
-            .await,
+        sync_loop::run_federation_peer_sync_round(&target, &restart_client, &[]).await,
         0
     );
     assert!(target_db
@@ -2210,7 +2164,7 @@ async fn runtime_components_complete_concurrent_checkpoint_and_finality_work_wit
         let state = state.clone();
         tokio::spawn(async move {
             start.wait().await;
-            super::halt_current_federation_aleph_bft_session(
+            super::super::halt_current_federation_aleph_bft_session(
                 &state,
                 "runtime component concurrency test shutdown",
             )
@@ -2308,7 +2262,6 @@ async fn checkpoint_peer_request_does_not_hold_runtime_mutation_locks() {
     assert!(cancellation.is_cancelled());
 }
 
-#[cfg(feature = "prometheus")]
 #[tokio::test]
 async fn long_offline_member_recovers_from_one_quorum_holder_without_signer_work() {
     let federation_api_urls = (1u16..=7)
@@ -2354,26 +2307,38 @@ async fn long_offline_member_recovers_from_one_quorum_holder_without_signer_work
     tx.commit().await.expect("commit source checkpoint");
     seed_synthetic_active_session_backup(&source, checkpoint.aleph_bft_session, 1, 16).await;
 
-    let signer_work_before = signers
-        .iter()
-        .map(|private| {
-            let member = private.member_id.to_string();
-            let work = prometheus_metric_sum(
-                "cdk_federation_checkpoint_work_total",
-                &[("member", member.as_str())],
-            );
-            (member, work)
-        })
-        .collect::<Vec<_>>();
+    let transport = RouterFederationTransportRegistry::default();
+    let signer_requests = Arc::new(AtomicUsize::new(0));
+    for signer in &signers {
+        let requests = Arc::clone(&signer_requests);
+        transport.insert(
+            public_config
+                .member(signer.member_id)
+                .expect("historical signer")
+                .federation_api_url
+                .clone(),
+            Router::new().fallback(move || {
+                let requests = Arc::clone(&requests);
+                async move {
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::SERVICE_UNAVAILABLE
+                }
+            }),
+        );
+    }
     let router = Router::new()
         .nest("/federation/v1", create_federation_router())
         .with_state(source);
-    let client = FederationRestPeerClient::new(
-        RouterFederationTransport::new(router),
-        &public_config,
-        target_private,
-    )
-    .expect("single-source checkpoint client");
+    transport.insert(
+        public_config
+            .member(source_private.member_id)
+            .expect("quorum-holder member")
+            .federation_api_url
+            .clone(),
+        router,
+    );
+    let client = FederationRestPeerClient::new(transport, &public_config, target_private)
+        .expect("single-source checkpoint client");
     let source_member = public_config
         .member(source_private.member_id)
         .expect("quorum-holder member");
@@ -2432,16 +2397,11 @@ async fn long_offline_member_recovers_from_one_quorum_holder_without_signer_work
     assert!(consensus.journal().entries().is_empty());
     assert!(consensus.finalized_items().is_empty());
     drop(consensus);
-    for (member, before) in signer_work_before {
-        assert_eq!(
-            prometheus_metric_sum(
-                "cdk_federation_checkpoint_work_total",
-                &[("member", member.as_str())],
-            ),
-            before,
-            "historical signer performed recovery-time checkpoint work"
-        );
-    }
+    assert_eq!(
+        signer_requests.load(Ordering::SeqCst),
+        0,
+        "offline recovery contacted historical signers instead of using the stored quorum"
+    );
 }
 
 #[tokio::test]
@@ -3019,4 +2979,118 @@ async fn checkpoint_page_streaming_keeps_only_one_bounded_page_in_flight() {
     eprintln!(
         "checkpoint_catch_up_streaming pages={page_count} operations={operation_count} largest_page_bytes={largest_page_bytes} transferred_bytes={transferred_bytes}"
     );
+}
+
+#[tokio::test]
+async fn scheduled_checkpoint_lineage_does_not_depend_on_quorum_arrival() {
+    let (mut public, first_private, second_private) = transport_config();
+    public.checkpoint_policy =
+        FederationCheckpointPolicy::new(1, 100).expect("checkpoint each journal operation");
+    let first = federation_route_state_for_private(public.clone(), first_private.clone()).await;
+    let second = federation_route_state_for_private(public.clone(), second_private.clone()).await;
+    let first_db = first.mint.localstore();
+    let second_db = second.mint.localstore();
+    let mut checkpoints = Vec::new();
+    for sequence in 1..=3 {
+        let items = vec![FederationConsensusItem::operation(mint_quote_envelope(
+            &first,
+            &QuoteId::new(),
+        ))];
+        apply_identical_finalized_unit(&first, &second, items).await;
+        let left = first_db
+            .get_next_federation_scheduled_checkpoint(sequence - 1)
+            .await
+            .expect("first candidate")
+            .expect("first stored candidate");
+        let right = second_db
+            .get_next_federation_scheduled_checkpoint(sequence - 1)
+            .await
+            .expect("second candidate")
+            .expect("second stored candidate");
+        assert_eq!(left, right, "signature delivery cannot select the boundary");
+        assert_eq!(left.scheduled_checkpoint_sequence, sequence);
+        let id = left.id().expect("candidate id");
+        let mut signatures = first_db
+            .get_federation_checkpoint_signatures(id)
+            .await
+            .expect("first stored signature");
+        signatures.extend(
+            second_db
+                .get_federation_checkpoint_signatures(id)
+                .await
+                .expect("second stored signature"),
+        );
+        let quorum = FederationCheckpointQuorum::new(left.clone(), signatures);
+        quorum
+            .verify(&public)
+            .expect("matching independently captured state");
+        if sequence == 1 {
+            // The second member learns the first quorum only after more units
+            // have finalized. It must still capture the same next candidates.
+            first
+                .federation
+                .persist_checkpoint_quorum(&quorum)
+                .await
+                .expect("early quorum");
+        }
+        checkpoints.push(quorum);
+    }
+    for quorum in &checkpoints {
+        let id = quorum.checkpoint.id().expect("checkpoint id");
+        for db in [&first_db, &second_db] {
+            assert_eq!(
+                db.get_federation_checkpoint(id)
+                    .await
+                    .expect("retained ancestor"),
+                Some(quorum.checkpoint.clone())
+            );
+        }
+        first
+            .federation
+            .persist_checkpoint_quorum(quorum)
+            .await
+            .expect("first ordered promotion");
+    }
+    // Quorums can be received out of order before their ancestors are promoted.
+    // Healthy status and equal peer operation counts must not strand local trust.
+    let mut tx = second_db
+        .begin_transaction()
+        .await
+        .expect("delayed delivery");
+    for quorum in checkpoints.iter().rev() {
+        tx.add_federation_checkpoint_quorum(quorum)
+            .await
+            .expect("persist delayed quorum without promotion");
+    }
+    tx.commit().await.expect("commit delayed quorums");
+    second.mark_federation_healthy().await;
+    let client =
+        FederationRestPeerClient::new(MockFederationTransport::default(), &public, second_private)
+            .expect("local promotion client");
+    for expected in &checkpoints {
+        run_federation_peer_sync_round(&second, &client, &[]).await;
+        assert_eq!(
+            second_db
+                .get_trusted_federation_checkpoint_quorum()
+                .await
+                .expect("promoted local quorum"),
+            Some(expected.clone()),
+            "idle peer sync must promote the next stored quorum in sequence"
+        );
+    }
+    assert_eq!(
+        first_db
+            .get_trusted_federation_checkpoint_quorum()
+            .await
+            .expect("first trust"),
+        second_db
+            .get_trusted_federation_checkpoint_quorum()
+            .await
+            .expect("second trust"),
+    );
+    assert!(first_db
+        .get_next_federation_scheduled_checkpoint(3)
+        .await
+        .expect("bounded end")
+        .is_none());
 }

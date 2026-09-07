@@ -175,19 +175,19 @@ impl CdkAlephBftLatencyRecorder {
         stage: CdkAlephBftLatencyStage,
     ) {
         loop {
-            let state = self
-                .inner
-                .lock()
-                .expect("AlephBFT latency recorder state mutex poisoned");
-            let changed = state.changed.clone().notified_owned();
-            if state
-                .events
-                .iter()
-                .any(|event| event.stage == stage && event.operation_ids.contains(&operation_id))
-            {
-                return;
-            }
-            drop(state);
+            let changed = {
+                let state = self
+                    .inner
+                    .lock()
+                    .expect("AlephBFT latency recorder state mutex poisoned");
+                let changed = state.changed.clone().notified_owned();
+                if state.events.iter().any(|event| {
+                    event.stage == stage && event.operation_ids.contains(&operation_id)
+                }) {
+                    return;
+                }
+                changed
+            };
             changed.await;
         }
     }

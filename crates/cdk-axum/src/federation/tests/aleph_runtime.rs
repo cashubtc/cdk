@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test]
 async fn aleph_bft_live_restart_matrix_one_member_continues_finality() {
     run_five_member_restart_case(&[0]).await;
@@ -314,13 +316,15 @@ async fn benchmark_aleph_bft_serial_swaps() {
         default_sync_config.aleph_bft_network_pump_max_messages_per_tick,
     );
     let swap_count = aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_SWAPS", 10);
-    let network_rtt_ms =
-        aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_NETWORK_RTT_MS", 0);
+    let network_rtt_ms = aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_NETWORK_RTT_MS", 0);
     let network_jitter_percent =
         aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_NETWORK_JITTER_PERCENT", 20);
     let network_jitter_seed =
         aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_NETWORK_JITTER_SEED", 1);
-    assert!(member_count >= 4, "benchmark requires at least four members");
+    assert!(
+        member_count >= 4,
+        "benchmark requires at least four members"
+    );
     assert!(
         signature_threshold > 0 && signature_threshold <= member_count,
         "signature threshold must fit the member count"
@@ -363,24 +367,16 @@ async fn benchmark_aleph_bft_serial_swaps() {
         u64::try_from(network_jitter_seed).expect("network jitter seed fits u64"),
     );
 
-    let request_start = session
-        .transport
-        .aleph_bft_network_message_requests()
-        .len();
+    let request_start = session.transport.aleph_bft_network_message_requests().len();
     let latency = latency_reservation.install();
     let mut operation_ids = Vec::with_capacity(swap_count);
     let mut operation_latencies_ms = Vec::with_capacity(swap_count);
     let steady_started = std::time::Instant::now();
     for index in 1..=swap_count {
-        let operation_id =
-            submit_healthy_federation_swap_batch(&session, index, 1, 1).await[0];
+        let operation_id = submit_healthy_federation_swap_batch(&session, index, 1, 1).await[0];
         for state in &session.states {
-            wait_for_applied_operation_with_context(
-                state,
-                operation_id,
-                "serial swap benchmark",
-            )
-            .await;
+            wait_for_applied_operation_with_context(state, operation_id, "serial swap benchmark")
+                .await;
         }
         let events = latency.events_for_operation(operation_id);
         assert_latency_stage_order(&events, LATENCY_EXPECTED_STAGES);
@@ -394,10 +390,7 @@ async fn benchmark_aleph_bft_serial_swaps() {
         operation_latencies_ms.push(elapsed.as_secs_f64() * 1_000.0);
     }
     let steady_state_ms = steady_started.elapsed().as_secs_f64() * 1_000.0;
-    let request_end = session
-        .transport
-        .aleph_bft_network_message_requests()
-        .len();
+    let request_end = session.transport.aleph_bft_network_message_requests().len();
     let network = latency.network_stats();
     drop(latency);
 
@@ -608,375 +601,4 @@ async fn aleph_bft_live_healthy_swaps_do_not_trigger_catch_up() {
         0,
         "healthy stress members must converge without height skew"
     );
-}
-
-async fn submit_latency_probe_mint_quote(state: &MintState) -> FederationOperationId {
-    let quote_id = QuoteId::new();
-    let envelope = mint_quote_envelope(state, &quote_id);
-    let operation_id = envelope.operation_id().expect("operation id");
-    let submit_state = state.clone();
-    let response = tokio::spawn(async move {
-        submit_state
-            .submit_federation_envelope_to_consensus(envelope)
-            .await
-    })
-    .await
-    .expect("submit task")
-    .expect("live AlephBFT operation response");
-
-    assert_eq!(response.operation_id, operation_id);
-    assert_eq!(
-        response.outcome.entry().status(),
-        FederationOperationStatus::Applied
-    );
-
-    operation_id
-}
-
-async fn submit_duplicate_latency_probe_mint_quote(state: &MintState) -> FederationOperationId {
-    let quote_id = QuoteId::new();
-    let envelope = mint_quote_envelope(state, &quote_id);
-    let operation_id = envelope.operation_id().expect("operation id");
-    let first_state = state.clone();
-    let first_envelope = envelope.clone();
-    let first = tokio::spawn(async move {
-        first_state
-            .submit_federation_envelope_to_consensus(first_envelope)
-            .await
-    });
-    let second_state = state.clone();
-    let second = tokio::spawn(async move {
-        second_state
-            .submit_federation_envelope_to_consensus(envelope)
-            .await
-    });
-
-    let (first_response, second_response) = tokio::join!(first, second);
-    let first_response = first_response
-        .expect("first submit task")
-        .expect("first live AlephBFT operation response");
-    let second_response = second_response
-        .expect("second submit task")
-        .expect("second live AlephBFT operation response");
-
-    for response in [first_response, second_response] {
-        assert_eq!(response.operation_id, operation_id);
-        assert_eq!(
-            response.outcome.entry().status(),
-            FederationOperationStatus::Applied
-        );
-    }
-
-    operation_id
-}
-
-async fn wait_for_latency_stage(
-    recorder: &CdkAlephBftLatencyRecorder,
-    operation_id: FederationOperationId,
-    stage: CdkAlephBftLatencyStage,
-) {
-    time::timeout(
-        Duration::from_secs(5),
-        recorder.wait_for_stage(operation_id, stage),
-    )
-    .await
-    .expect("AlephBFT latency stage was not recorded before timeout")
-}
-
-fn assert_latency_stage_order(
-    events: &[CdkAlephBftLatencyEvent],
-    expected: &[CdkAlephBftLatencyStage],
-) {
-    let mut cursor = 0usize;
-    for event in events {
-        if event.stage == expected[cursor] {
-            cursor += 1;
-            if cursor == expected.len() {
-                return;
-            }
-        }
-    }
-
-    panic!(
-        "AlephBFT latency stages were not observed in order; expected {:?}, got {}",
-        expected,
-        format_latency_events(events)
-    );
-}
-
-fn latency_stage_delta(
-    events: &[CdkAlephBftLatencyEvent],
-    start: CdkAlephBftLatencyStage,
-    end: CdkAlephBftLatencyStage,
-) -> Option<Duration> {
-    let start_elapsed = events
-        .iter()
-        .find(|event| event.stage == start)
-        .map(|event| event.elapsed)?;
-    let end_elapsed = events
-        .iter()
-        .find(|event| event.stage == end)
-        .map(|event| event.elapsed)?;
-
-    end_elapsed.checked_sub(start_elapsed)
-}
-
-fn latency_stage_count(
-    events: &[CdkAlephBftLatencyEvent],
-    stage: CdkAlephBftLatencyStage,
-) -> usize {
-    events.iter().filter(|event| event.stage == stage).count()
-}
-
-fn format_latency_events(events: &[CdkAlephBftLatencyEvent]) -> String {
-    events
-        .iter()
-        .map(|event| format!("{:?}@{}ms", event.stage, event.elapsed.as_millis()))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn fast_aleph_bft_live_session_options(
-    pump_config: CdkAlephBftNetworkPumpConfig,
-    max_round: u16,
-) -> FederationAlephBftLiveSessionOptions {
-    let mut delay_config = default_delay_config();
-    delay_config.tick_interval = Duration::from_millis(5);
-    delay_config.unit_rebroadcast_interval_min = Duration::from_millis(20);
-    delay_config.unit_rebroadcast_interval_max = Duration::from_millis(40);
-    delay_config.unit_creation_delay = Arc::new(|_| Duration::from_millis(10));
-    delay_config.coord_request_delay = Arc::new(|_| Duration::from_millis(10));
-    delay_config.parent_request_delay = Arc::new(|_| Duration::from_millis(10));
-    delay_config.newest_request_delay = Arc::new(|_| Duration::from_millis(10));
-
-    FederationAlephBftLiveSessionOptions::new(pump_config)
-        .with_max_round(max_round)
-        .with_delay_config(delay_config)
-}
-
-fn fast_aleph_bft_live_session_options_with_idle_tail(
-    pump_config: CdkAlephBftNetworkPumpConfig,
-    max_round: u16,
-) -> FederationAlephBftLiveSessionOptions {
-    let mut delay_config = default_delay_config();
-    delay_config.tick_interval = Duration::from_millis(5);
-    delay_config.unit_rebroadcast_interval_min = Duration::from_millis(20);
-    delay_config.unit_rebroadcast_interval_max = Duration::from_millis(40);
-    delay_config.unit_creation_delay = Arc::new(|round| {
-        if round > 16 {
-            Duration::from_millis(250)
-        } else {
-            Duration::from_millis(10)
-        }
-    });
-    delay_config.coord_request_delay = Arc::new(|_| Duration::from_millis(10));
-    delay_config.parent_request_delay = Arc::new(|_| Duration::from_millis(10));
-    delay_config.newest_request_delay = Arc::new(|_| Duration::from_millis(10));
-
-    FederationAlephBftLiveSessionOptions::new(pump_config)
-        .with_max_round(max_round)
-        .with_delay_config(delay_config)
-}
-
-async fn wait_for_aleph_bft_session(state: &MintState, session_id: u64) {
-    time::timeout(Duration::from_secs(10), async {
-        loop {
-            let status = state
-                .federation_aleph_bft_status()
-                .await
-                .expect("AlephBFT status");
-            if status.session == session_id {
-                return;
-            }
-            time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("AlephBFT session did not advance before timeout")
-}
-
-async fn operation_applied_within(
-    state: &MintState,
-    operation_id: FederationOperationId,
-    timeout: Duration,
-) -> bool {
-    operation_terminal_within(state, operation_id, timeout).await
-        == Some(FederationOperationStatus::Applied)
-}
-
-async fn operation_terminal_within(
-    state: &MintState,
-    operation_id: FederationOperationId,
-    timeout: Duration,
-) -> Option<FederationOperationStatus> {
-    if let Some(entry) = state
-        .mint
-        .localstore()
-        .get_federation_journal_entry_by_operation_id(operation_id)
-        .await
-        .expect("operation status lookup")
-    {
-        if matches!(
-            entry.status(),
-            FederationOperationStatus::Applied | FederationOperationStatus::Rejected
-        ) {
-            return Some(entry.status());
-        }
-    }
-
-    let response = time::timeout(
-        timeout,
-        state.wait_for_federation_operation_acceptance(operation_id),
-    )
-    .await
-    .ok()
-    .flatten()?;
-    let status = response.outcome.entry().status();
-    matches!(
-        status,
-        FederationOperationStatus::Applied | FederationOperationStatus::Rejected
-    )
-    .then_some(status)
-}
-
-async fn wait_for_aleph_bft_pending_operations(
-    state: &MintState,
-    session_id: u64,
-) -> Vec<FederationAlephBftPendingOperationRecord> {
-    time::timeout(Duration::from_secs(5), async {
-        loop {
-            let pending = state
-                .mint
-                .localstore()
-                .get_federation_aleph_bft_pending_operations(session_id)
-                .await
-                .expect("AlephBFT pending operation lookup");
-            if !pending.is_empty() {
-                return pending;
-            }
-            time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("AlephBFT pending operations were not persisted")
-}
-
-async fn wait_for_aleph_bft_network_message_request(
-    transport: &RouterFederationTransportRegistry,
-    sender: MemberId,
-    receiver: MemberId,
-) -> FederationSignedRequest<FederationAlephBftNetworkMessageRequest> {
-    time::timeout(
-        Duration::from_secs(5),
-        transport.wait_for_aleph_bft_network_message_request_matching(|request| {
-            request.sender == sender && request.receiver == receiver
-        }),
-    )
-    .await
-    .expect("AlephBFT network message request was not captured")
-}
-
-async fn wait_for_aleph_bft_unit_with_operation(
-    transport: &RouterFederationTransportRegistry,
-    sender: MemberId,
-    operation_id: FederationOperationId,
-) -> Option<u64> {
-    let request = time::timeout(
-        Duration::from_secs(10),
-        transport.wait_for_aleph_bft_network_message_request_matching(|request| {
-            request.sender == sender
-                && aleph_bft_network_request_contains_operation(request, operation_id)
-        }),
-    )
-    .await
-    .ok()?;
-    aleph_bft_network_request_operation_unit_index(&request, operation_id)
-}
-
-fn aleph_bft_network_request_contains_operation(
-    request: &FederationSignedRequest<FederationAlephBftNetworkMessageRequest>,
-    operation_id: FederationOperationId,
-) -> bool {
-    aleph_bft_network_request_operation_unit_index(request, operation_id).is_some()
-}
-
-fn aleph_bft_network_request_operation_unit_index(
-    request: &FederationSignedRequest<FederationAlephBftNetworkMessageRequest>,
-    operation_id: FederationOperationId,
-) -> Option<u64> {
-    let bytes = request.payload.message_bytes().ok()?;
-    let mut input = &bytes[..];
-    let message = CdkAlephBftNetworkData::decode(&mut input).ok()?;
-    if !input.is_empty() {
-        return None;
-    }
-    message.included_data().iter().find_map(|data| {
-        let payload = data.payload();
-        payload
-            .operation_ids
-            .contains(&operation_id)
-            .then_some(payload.unit_index)
-    })
-}
-
-async fn wait_for_aleph_bft_backup_bytes(state: &MintState, session_id: u64) -> Vec<u8> {
-    time::timeout(Duration::from_secs(5), async {
-        loop {
-            let backup_bytes = state
-                .mint
-                .localstore()
-                .get_federation_aleph_bft_backup_bytes(session_id)
-                .await
-                .expect("AlephBFT backup byte lookup")
-                .unwrap_or_default();
-            if !backup_bytes.is_empty() {
-                return backup_bytes;
-            }
-            time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("AlephBFT backup bytes were not persisted")
-}
-
-async fn seed_aleph_bft_backup(state: &MintState, session_id: u64, backup_bytes: &[u8]) {
-    let mut tx = state
-        .mint
-        .localstore()
-        .begin_transaction()
-        .await
-        .expect("begin AlephBFT backup seed transaction");
-    tx.append_federation_aleph_bft_backup_bytes(session_id, backup_bytes)
-        .await
-        .expect("seed AlephBFT backup bytes");
-    tx.set_federation_aleph_bft_active_session(session_id)
-        .await
-        .expect("seed AlephBFT active session");
-    tx.commit()
-        .await
-        .expect("commit AlephBFT backup seed transaction");
-}
-
-async fn wait_for_aleph_bft_backup_bytes_longer_than(
-    state: &MintState,
-    session_id: u64,
-    previous_len: usize,
-) -> Vec<u8> {
-    time::timeout(Duration::from_secs(5), async {
-        loop {
-            let backup_bytes = state
-                .mint
-                .localstore()
-                .get_federation_aleph_bft_backup_bytes(session_id)
-                .await
-                .expect("AlephBFT backup byte lookup")
-                .unwrap_or_default();
-            if backup_bytes.len() > previous_len {
-                return backup_bytes;
-            }
-            time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("AlephBFT backup bytes did not grow")
 }

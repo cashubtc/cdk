@@ -125,23 +125,7 @@ impl BatchConfig {
     }
 }
 
-/// Configuration for blockchain synchronization
-#[derive(Debug, Clone)]
-pub struct SyncConfig {
-    /// Number of blocks to apply per wallet-lock acquisition (RPC path)
-    pub apply_chunk_size: usize,
-    /// Warn if a single lock acquisition exceeds this duration (milliseconds)
-    pub lock_hold_warn_ms: u64,
-}
-
-impl Default for SyncConfig {
-    fn default() -> Self {
-        Self {
-            apply_chunk_size: 16,
-            lock_hold_warn_ms: 500,
-        }
-    }
-}
+pub use cdk_bitcoin_wallet::SyncConfig;
 
 /// Batching tier for on-chain send intents
 ///

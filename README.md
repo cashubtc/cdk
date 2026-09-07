@@ -23,6 +23,8 @@ nix develop .#regtest
 
 For more details on available environments, see the [Development Guide](DEVELOPMENT.md).
 
+For the BLS federation branch, see the [federation architecture and operator guide](docs/federation.md).
+
 ## Project structure
 
 The project is split up into several crates in the `crates/` directory:

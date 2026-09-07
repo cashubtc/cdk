@@ -83,6 +83,13 @@ impl From<CdkError> for FfiError {
     }
 }
 
+#[cfg(feature = "federation")]
+impl From<cdk::federation::FederationError> for FfiError {
+    fn from(error: cdk::federation::FederationError) -> Self {
+        Self::internal(error.to_string())
+    }
+}
+
 impl From<cdk::amount::Error> for FfiError {
     fn from(err: cdk::amount::Error) -> Self {
         FfiError::internal(err)

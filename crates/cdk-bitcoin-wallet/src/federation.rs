@@ -331,7 +331,7 @@ pub struct FederatedBdkWallet {
     scope: FederatedWalletScope,
     status: Arc<RwLock<FederatedWalletSyncStatus>>,
     observation_source: FederatedChainSourceDescriptor,
-    #[allow(dead_code)]
+    #[cfg(test)]
     database_dir: Arc<PathBuf>,
 }
 
@@ -390,6 +390,7 @@ impl FederatedBdkWallet {
                 consecutive_failures: 0,
             })),
             observation_source,
+            #[cfg(test)]
             database_dir: Arc::new(database_dir),
         })
     }

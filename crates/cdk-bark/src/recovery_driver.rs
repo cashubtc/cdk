@@ -193,47 +193,25 @@ impl FederatedBarkRecoveryDriver {
                 FederationBarkOperation::ActionTransition(transition)
                     if matches!(
                         transition.phase,
-                        FederationBarkSemanticPhase::ReceiveHtlcsReady
-                            | FederationBarkSemanticPhase::ReceivePreimageDisclosed
+                        FederationBarkSemanticPhase::ReceivePreimageDisclosed
                             | FederationBarkSemanticPhase::ReceiveClaimed
                     ) =>
                 {
                     let projection = source.replay_projection().await?;
-                    let Some((intent, prepared_operation_id, prepared)) = self
+                    let Some((intent, _, prepared)) = self
                         .receive_replay_context(source, &projection, transition.action_id)
                         .await?
                     else {
                         continue;
                     };
-                    let replay = match transition.phase {
-                        FederationBarkSemanticPhase::ReceiveHtlcsReady => {
-                            self.runtime
-                                .apply_receive_htlcs_ready(
-                                    &intent,
-                                    prepared_operation_id,
-                                    &prepared,
-                                    entry,
-                                )
-                                .await
-                        }
-                        FederationBarkSemanticPhase::ReceivePreimageDisclosed
-                        | FederationBarkSemanticPhase::ReceiveClaimed => {
-                            let plan_entry =
-                                source.replay_entry(transition.plan_operation_id).await?;
-                            self.runtime
-                                .apply_receive_claim_plan(&intent, &prepared, &plan_entry)
-                                .await?;
-                            self.runtime
-                                .apply_receive_claim_transition(
-                                    &intent,
-                                    &prepared,
-                                    &plan_entry,
-                                    entry,
-                                )
-                                .await
-                        }
-                        _ => unreachable!("receive replay phase was matched above"),
-                    };
+                    let plan_entry = source.replay_entry(transition.plan_operation_id).await?;
+                    self.runtime
+                        .apply_receive_claim_plan(&intent, &prepared, &plan_entry)
+                        .await?;
+                    let replay = self
+                        .runtime
+                        .apply_receive_claim_transition(&intent, &prepared, &plan_entry, entry)
+                        .await;
                     if replay.is_err() {
                         return self
                             .replay_failed(
@@ -596,37 +574,44 @@ impl FederatedBarkRecoveryDriver {
         H: FederatedBarkRecoveryHost,
         S: Future<Output = ()> + Send + 'static,
     {
-        tokio::spawn(async move {
-            let mut consecutive_no_progress = 0_u32;
-            let mut next_delay = DRIVER_INTERVAL;
-            tokio::pin!(shutdown);
-            loop {
-                tokio::select! {
-                    () = &mut shutdown => break,
-                    () = tokio::time::sleep(next_delay) => {}
+        tokio::spawn(self.run_until(host, shutdown))
+    }
+
+    /// Run the bounded recovery loop until its owning service shuts down.
+    pub async fn run_until<H, S>(self, host: Arc<H>, shutdown: S)
+    where
+        H: FederatedBarkRecoveryHost,
+        S: Future<Output = ()> + Send + 'static,
+    {
+        let mut consecutive_no_progress = 0_u32;
+        let mut next_delay = DRIVER_INTERVAL;
+        tokio::pin!(shutdown);
+        loop {
+            tokio::select! {
+                () = &mut shutdown => break,
+                () = tokio::time::sleep(next_delay) => {}
+            }
+            match self.advance(host.as_ref(), None).await {
+                Ok(advanced) if advanced > 0 => {
+                    consecutive_no_progress = 0;
+                    next_delay = DRIVER_INTERVAL;
+                    tracing::debug!(advanced, "advanced federated Bark recovery driver");
                 }
-                match self.advance(host.as_ref(), None).await {
-                    Ok(advanced) if advanced > 0 => {
-                        consecutive_no_progress = 0;
-                        next_delay = DRIVER_INTERVAL;
-                        tracing::debug!(advanced, "advanced federated Bark recovery driver");
-                    }
-                    Ok(_) => {
-                        consecutive_no_progress = consecutive_no_progress.saturating_add(1);
-                        next_delay = recovery_retry_delay(consecutive_no_progress);
-                    }
-                    Err(_) => {
-                        consecutive_no_progress = consecutive_no_progress.saturating_add(1);
-                        next_delay = recovery_retry_delay(consecutive_no_progress);
-                        tracing::warn!(
-                            consecutive_no_progress,
-                            retry_delay_secs = next_delay.as_secs(),
-                            "federated Bark recovery driver step failed"
-                        );
-                    }
+                Ok(_) => {
+                    consecutive_no_progress = consecutive_no_progress.saturating_add(1);
+                    next_delay = recovery_retry_delay(consecutive_no_progress);
+                }
+                Err(_) => {
+                    consecutive_no_progress = consecutive_no_progress.saturating_add(1);
+                    next_delay = recovery_retry_delay(consecutive_no_progress);
+                    tracing::warn!(
+                        consecutive_no_progress,
+                        retry_delay_secs = next_delay.as_secs(),
+                        "federated Bark recovery driver step failed"
+                    );
                 }
             }
-        })
+        }
     }
 }
 

@@ -38,19 +38,8 @@ const FEDERATION_OPERATION_HASH_VERSION: &[u8] = b"cdk-federation-operation-v1";
 const FEDERATION_OPERATION_AUTHORIZATION_VERSION: &[u8] =
     b"cdk-federation-operation-authorization-v1";
 
-fn is_zero(value: &u64) -> bool {
-    *value == 0
-}
-
-/// Version of the original federation operation envelope format.
-///
-/// Existing operation variants keep this version so persisted journals and
-/// mixed-version rolling upgrades remain compatible. Application-owned
-/// operations use [`FEDERATION_APPLICATION_ENVELOPE_VERSION`] because older
-/// binaries cannot decode that extension point.
-pub const FEDERATION_OPERATION_VERSION: u16 = 5;
-/// Envelope version reserved for application-owned federation operations.
-pub const FEDERATION_APPLICATION_ENVELOPE_VERSION: u16 = 6;
+/// Current federation operation envelope format, shared by every operation kind.
+pub const FEDERATION_OPERATION_VERSION: u16 = 6;
 
 /// Maximum canonical operation envelope size admitted into federation consensus.
 ///
@@ -884,13 +873,11 @@ enum FederationKnownOperationConflictKey {
     DepositObservation {
         outpoint: bitcoin::OutPoint,
         confirmation_depth: u32,
-        #[serde(default, skip_serializing_if = "is_zero")]
         observation_epoch: u64,
         observer: MemberId,
     },
     DepositReorgObservation {
         outpoint: bitcoin::OutPoint,
-        #[serde(default, skip_serializing_if = "is_zero")]
         observation_epoch: u64,
         observer: MemberId,
     },
@@ -1541,9 +1528,8 @@ pub struct FederationMeltQuotePaymentObservation {
     pub fee_reserve: Amount,
     /// Exact amount spent by a paid backend, including its final fee.
     ///
-    /// This is omitted for non-terminal observations. The optional encoding
-    /// preserves decoding of historical journal entries, while admission of
-    /// new paid observations requires an exact value.
+    /// Non-terminal observations omit this value. Paid observations must
+    /// contain the exact amount spent by the backend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_spent: Option<Amount>,
     /// Optional stable backend payment identifier observed by this member.
@@ -2486,27 +2472,6 @@ impl<'de> Deserialize<'de> for FederationOperation {
 }
 
 impl FederationOperation {
-    const fn envelope_version(&self) -> u16 {
-        match self {
-            Self::Application(_) => FEDERATION_APPLICATION_ENVELOPE_VERSION,
-            Self::ExternalApplication(_) => FEDERATION_OPERATION_VERSION,
-            Self::AddressAllocation(_)
-            | Self::ChainObservation(_)
-            | Self::MintQuote(_)
-            | Self::MintQuotePayment(_)
-            | Self::Mint(_)
-            | Self::MeltQuote(_)
-            | Self::MeltQuotePayment(_)
-            | Self::Melt(_)
-            | Self::Swap(_)
-            | Self::KeysetRotation(_)
-            | Self::TransactionProposal(_)
-            | Self::TransactionSigned(_)
-            | Self::TransactionBroadcastIntent(_)
-            | Self::TransactionBroadcastObservation(_) => FEDERATION_OPERATION_VERSION,
-        }
-    }
-
     /// Return the operation kind.
     #[must_use]
     pub fn kind(&self) -> FederationOperationKind {
@@ -2643,6 +2608,12 @@ impl FederationOperation {
                 })
                 .collect(),
             Self::ExternalApplication(operation) => operation.conflict_keys(),
+            // Proof Ys are deliberately not journal conflict keys. The journal
+            // finalizer validates envelope authority and operation-local rules;
+            // proof signatures are checked against ordered keyset state during
+            // application. Reserving a Y earlier would let a malicious member
+            // order an invalid proof first and permanently exclude its valid
+            // owner. The transactional proof store remains spend authority.
             Self::Swap(_)
             | Self::TransactionSigned(_)
             | Self::TransactionBroadcastIntent(_)
@@ -2922,7 +2893,7 @@ impl FederationOperationEnvelope {
     /// Create a new operation envelope for the current operation format.
     #[must_use]
     pub fn new(federation_id: FederationId, operation: FederationOperation) -> Self {
-        let version = operation.envelope_version();
+        let version = FEDERATION_OPERATION_VERSION;
         Self {
             version,
             federation_id,
@@ -3022,7 +2993,7 @@ impl FederationOperationEnvelope {
 
     /// Reject this operation if its envelope version is unsupported.
     pub fn ensure_supported_version(&self) -> Result<()> {
-        let expected = self.operation.envelope_version();
+        let expected = FEDERATION_OPERATION_VERSION;
         if self.version != expected {
             return Err(FederationError::OperationVersionMismatch {
                 expected,
@@ -3511,7 +3482,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_operation_encoding_matches_v5_golden_vector() {
+    fn canonical_operation_encoding_matches_v6_golden_vector() {
         let envelope = envelope(mint_operation(
             "quote-golden",
             vec![output(
@@ -3527,17 +3498,17 @@ mod tests {
             concat!(
                 r#"{"federation_id":"0707070707070707070707070707070707070707070707070707070707070707","#,
                 r#""operation":{"data":{"request":{"data":{"outputs":[{"B_":"0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41","#,
-                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":5}"#
+                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":6}"#
             )
         );
         assert_eq!(
             envelope.operation_id().expect("operation id").to_hex(),
-            "3eb834c8a11c4dcba92dd021b66eeedbd4ef18ca6ff7a658f9d6da416fbfb1c8"
+            "5ea20e90a36ab5621c7c8310f47d836bf5fc0398b743ccd4b6b94ae0e0d9c354"
         );
     }
 
     #[test]
-    fn chain_observation_epoch_zero_is_legacy_compatible_and_later_epochs_are_unique() {
+    fn chain_observation_epochs_are_explicit_and_unique() {
         let reorg = |observation_epoch| {
             envelope(FederationOperation::ChainObservation(
                 FederationChainObservation::Reorg(FederationDepositReorgObservation {
@@ -3554,12 +3525,12 @@ mod tests {
                 }),
             ))
         };
-        let legacy = reorg(0);
+        let initial = reorg(0);
         let repeated = reorg(1);
-        let legacy_json = String::from_utf8(legacy.canonical_bytes().expect("legacy bytes"))
-            .expect("legacy JSON");
-        let legacy_key_json =
-            serde_json::to_string(&legacy.operation.conflict_keys()).expect("legacy keys");
+        let initial_json = String::from_utf8(initial.canonical_bytes().expect("initial bytes"))
+            .expect("initial JSON");
+        let initial_key_json =
+            serde_json::to_string(&initial.operation.conflict_keys()).expect("initial keys");
         let deposit_key = |observation_epoch| FederationOperationConflictKey::DepositObservation {
             outpoint: OutPoint::new(Txid::from_byte_array([8; 32]), 1),
             confirmation_depth: 1,
@@ -3567,15 +3538,15 @@ mod tests {
             observer: member_id(1),
         };
 
-        assert!(!legacy_json.contains("observation_epoch"));
-        assert!(!legacy_key_json.contains("observation_epoch"));
+        assert!(initial_json.contains("observation_epoch"));
+        assert!(initial_key_json.contains("observation_epoch"));
         assert_ne!(deposit_key(0), deposit_key(1));
         assert_ne!(
-            legacy.operation.conflict_keys(),
+            initial.operation.conflict_keys(),
             repeated.operation.conflict_keys()
         );
         assert_ne!(
-            legacy.operation_id().expect("legacy operation ID"),
+            initial.operation_id().expect("initial operation ID"),
             repeated.operation_id().expect("repeated operation ID")
         );
     }
@@ -3664,7 +3635,7 @@ mod tests {
     }
 
     #[test]
-    fn application_operations_use_the_extension_envelope_version() {
+    fn application_operations_use_the_current_envelope_version() {
         let application = FederationApplicationOperation::new(
             FederationFrostApplicationId::from_bytes([9; 32]).expect("application ID"),
             "test_operation",
@@ -3680,7 +3651,7 @@ mod tests {
             FederationOperation::Application(application),
         );
 
-        assert_eq!(envelope.version, FEDERATION_APPLICATION_ENVELOPE_VERSION);
+        assert_eq!(envelope.version, FEDERATION_OPERATION_VERSION);
         envelope
             .ensure_supported_version()
             .expect("application envelope version");
@@ -3700,15 +3671,15 @@ mod tests {
             "156807cc736360f993d838e8769ac08146fc1d65fe54dd321c458b3d411068c5"
         );
 
-        envelope.version = FEDERATION_OPERATION_VERSION;
+        envelope.version = 5;
         let err = envelope
             .ensure_supported_version()
             .expect_err("legacy envelope version must not carry an application operation");
         assert!(matches!(
             err,
             FederationError::OperationVersionMismatch {
-                expected: FEDERATION_APPLICATION_ENVELOPE_VERSION,
-                found: FEDERATION_OPERATION_VERSION,
+                expected: FEDERATION_OPERATION_VERSION,
+                found: 5,
             }
         ));
     }
@@ -3788,10 +3759,10 @@ mod tests {
     }
 
     #[test]
-    fn legacy_paid_melt_observation_decodes_but_cannot_be_admitted_without_exact_spend() {
-        let legacy = envelope(FederationOperation::MeltQuotePayment(
+    fn paid_melt_observation_requires_exact_spend() {
+        let invalid = envelope(FederationOperation::MeltQuotePayment(
             FederationMeltQuotePaymentObservation {
-                quote: "legacy-melt".to_string(),
+                quote: "invalid-melt".to_string(),
                 observer: member_id(1),
                 method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Bolt11),
                 state: MeltQuoteState::Paid,
@@ -3802,12 +3773,12 @@ mod tests {
                 payment_proof: Some("preimage".to_string()),
             },
         ));
-        let bytes = legacy.canonical_bytes().expect("legacy-compatible bytes");
-        let encoded = std::str::from_utf8(&bytes).expect("legacy-compatible utf8");
+        let bytes = invalid.canonical_bytes().expect("current bytes");
+        let encoded = std::str::from_utf8(&bytes).expect("current utf8");
         assert!(!encoded.contains("total_spent"));
 
         let decoded =
-            FederationOperationEnvelope::from_json_slice(&bytes).expect("legacy observation");
+            FederationOperationEnvelope::from_json_slice(&bytes).expect("invalid observation");
         let FederationOperation::MeltQuotePayment(observation) = &decoded.operation else {
             panic!("expected melt observation");
         };

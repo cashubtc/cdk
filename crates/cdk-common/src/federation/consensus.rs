@@ -663,8 +663,6 @@ pub enum FederationConsensusItem {
     RecoveryBarrier(FederationRecoveryBarrier),
     /// A module-defined fact that must be ordered with operations.
     ModuleFact(FederationConsensusModuleFact),
-    /// A generic consensus item for future compatibility tests.
-    Default(FederationConsensusDefaultItem),
 }
 
 impl FederationConsensusItem {
@@ -718,7 +716,7 @@ impl FederationConsensusItem {
     pub fn operation_id(&self) -> Result<Option<FederationOperationId>> {
         match self {
             Self::Operation(envelope) => Ok(Some(envelope.operation_id()?)),
-            Self::RecoveryBarrier(_) | Self::ModuleFact(_) | Self::Default(_) => Ok(None),
+            Self::RecoveryBarrier(_) | Self::ModuleFact(_) => Ok(None),
         }
     }
 
@@ -728,7 +726,6 @@ impl FederationConsensusItem {
             Self::Operation(envelope) => envelope.ensure_supported_version(),
             Self::RecoveryBarrier(barrier) => barrier.ensure_supported_version(),
             Self::ModuleFact(item) => item.ensure_supported_version(),
-            Self::Default(item) => item.ensure_supported_version(),
         }
     }
 
@@ -740,10 +737,7 @@ impl FederationConsensusItem {
                         .to_string(),
                 })
             }
-            Self::Operation(_)
-            | Self::RecoveryBarrier(_)
-            | Self::ModuleFact(_)
-            | Self::Default(_) => Ok(()),
+            Self::Operation(_) | Self::RecoveryBarrier(_) | Self::ModuleFact(_) => Ok(()),
         }
     }
 }
@@ -795,8 +789,7 @@ impl FederationVerifiedOperationAdmission {
         match &self.item {
             FederationConsensusItem::Operation(envelope) => envelope,
             FederationConsensusItem::RecoveryBarrier(_)
-            | FederationConsensusItem::ModuleFact(_)
-            | FederationConsensusItem::Default(_) => {
+            | FederationConsensusItem::ModuleFact(_) => {
                 unreachable!("verified operation admissions always carry operation items")
             }
         }
@@ -840,38 +833,6 @@ impl FederationConsensusModuleFact {
     }
 
     /// Reject module facts from unsupported consensus-item encodings.
-    pub fn ensure_supported_version(&self) -> Result<()> {
-        ensure_consensus_item_version(self.version)
-    }
-}
-
-/// Generic consensus item for forward-compatible item classes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FederationConsensusDefaultItem {
-    /// Item format version.
-    pub version: u16,
-    /// Item kind.
-    pub kind: String,
-    /// Canonical JSON payload.
-    pub payload: serde_json::Value,
-}
-
-impl FederationConsensusDefaultItem {
-    /// Create a default consensus item.
-    #[must_use]
-    pub fn new<K>(kind: K, payload: serde_json::Value) -> Self
-    where
-        K: Into<String>,
-    {
-        Self {
-            version: FEDERATION_CONSENSUS_ITEM_VERSION,
-            kind: kind.into(),
-            payload,
-        }
-    }
-
-    /// Reject default items from unsupported consensus-item encodings.
     pub fn ensure_supported_version(&self) -> Result<()> {
         ensure_consensus_item_version(self.version)
     }
@@ -1059,9 +1020,7 @@ impl FederationConsensusItemQueue {
             FederationConsensusItem::RecoveryBarrier(pending) => {
                 recovery_barrier_covers(pending, requested)
             }
-            FederationConsensusItem::Operation(_)
-            | FederationConsensusItem::ModuleFact(_)
-            | FederationConsensusItem::Default(_) => false,
+            FederationConsensusItem::Operation(_) | FederationConsensusItem::ModuleFact(_) => false,
         })
     }
 
@@ -1319,9 +1278,9 @@ fn pending_consensus_item_operation_metadata(
         FederationConsensusItem::Operation(envelope) => {
             Ok(Some(pending_operation_metadata_from_envelope(envelope)?))
         }
-        FederationConsensusItem::RecoveryBarrier(_)
-        | FederationConsensusItem::ModuleFact(_)
-        | FederationConsensusItem::Default(_) => Ok(None),
+        FederationConsensusItem::RecoveryBarrier(_) | FederationConsensusItem::ModuleFact(_) => {
+            Ok(None)
+        }
     }
 }
 
@@ -2854,8 +2813,7 @@ impl FederationConsensusRuntime {
                         recovery_barrier_covers(pending, &barrier)
                     }
                     FederationConsensusItem::Operation(_)
-                    | FederationConsensusItem::ModuleFact(_)
-                    | FederationConsensusItem::Default(_) => false,
+                    | FederationConsensusItem::ModuleFact(_) => false,
                 })
             });
         if pending_covers_request

@@ -1,11 +1,10 @@
 //! Authenticated, redacted operator commands for federated Bark.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::federation_operator::{load_configs, operator_sequence, target_member};
 
 use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
-    FederationConfig, FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate,
-    MemberConfigPublic, MemberId, FEDERATION_REST_API_VERSION,
+    FederationRestMessageKind, FederationSignedRequest, FEDERATION_REST_API_VERSION,
 };
 use cdk_federation_bark::{
     FederationBarkActionId, FederationBarkReconcileRequest, FederationBarkReconcileResponse,
@@ -34,7 +33,7 @@ pub(crate) async fn run_reconcile_command(
     let request = FederationSignedRequest::new_signed(
         public.federation_id,
         member.member_id,
-        operator_sequence(),
+        operator_sequence()?,
         FederationRestMessageKind::ApplicationReconcile,
         FederationBarkReconcileRequest::default(),
         &private,
@@ -81,7 +80,7 @@ pub(crate) async fn run_retry_command(
     let request = FederationSignedRequest::new_signed(
         public.federation_id,
         member.member_id,
-        operator_sequence(),
+        operator_sequence()?,
         FederationRestMessageKind::ApplicationActionRetry,
         FederationBarkRetryRequest::new(action_id, true),
         &private,
@@ -125,7 +124,7 @@ pub(crate) async fn run_recovery_address_command(
     let request = FederationSignedRequest::new_signed(
         public.federation_id,
         member.member_id,
-        operator_sequence(),
+        operator_sequence()?,
         FederationRestMessageKind::ApplicationWalletAddress,
         payload,
         &private,
@@ -155,48 +154,6 @@ pub(crate) async fn run_recovery_address_command(
         response.derivation_index,
     );
     Ok(())
-}
-
-async fn load_configs(
-    cli_args: &CLIArgs,
-    public_config: &Option<std::path::PathBuf>,
-    private_config: &Option<std::path::PathBuf>,
-    action: &str,
-) -> Result<(FederationConfig, MemberConfigPrivate)> {
-    let (public_path, private_path) =
-        crate::federation_config_paths(cli_args, public_config, private_config, action).await?;
-    let public: FederationConfig =
-        crate::read_federation_json(&public_path, "public federation config")?;
-    let private: MemberConfigPrivate =
-        crate::read_federation_json(&private_path, "private federation config")?;
-    private
-        .validate_against_public(&public)
-        .context("private federation config does not match public federation config")?;
-    Ok((public, private))
-}
-
-fn target_member(
-    public: &FederationConfig,
-    private: &MemberConfigPrivate,
-    requested: Option<u16>,
-) -> Result<MemberConfigPublic> {
-    let member_id = match requested {
-        Some(member_id) => MemberId::new(member_id)?,
-        None => private.member_id,
-    };
-    public
-        .member(member_id)
-        .cloned()
-        .with_context(|| format!("federation public config has no member {member_id}"))
-}
-
-fn operator_sequence() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .ok()
-        .and_then(|millis| u64::try_from(millis).ok())
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

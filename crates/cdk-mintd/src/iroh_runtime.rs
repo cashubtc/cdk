@@ -675,8 +675,10 @@ mod tests {
     #[tokio::test]
     async fn operator_client_does_not_claim_the_protected_endpoint_identity() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let mut settings = Settings::default();
-        settings.iroh = Some(enabled_static());
+        let settings = Settings {
+            iroh: Some(enabled_static()),
+            ..Default::default()
+        };
         let protected = protected_endpoint_id(&settings, directory.path())
             .expect("protected endpoint ID")
             .expect("enabled endpoint");

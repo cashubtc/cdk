@@ -757,7 +757,8 @@ fn consensus_item_queue_rejects_pending_conflicting_melt_quote() {
 #[test]
 fn consensus_item_queue_rejects_oversized_items() {
     let mut queue = FederationConsensusItemQueue::with_max_item_bytes(128);
-    let item = FederationConsensusItem::Default(FederationConsensusDefaultItem::new(
+    let item = FederationConsensusItem::ModuleFact(FederationConsensusModuleFact::new(
+        "test",
         "large",
         json!({"body": "x".repeat(256)}),
     ));
@@ -785,22 +786,6 @@ fn consensus_item_queue_rejects_future_module_fact_versions() {
     ));
     assert!(matches!(
         queue.submit(item),
-        Err(FederationError::ConsensusItemVersionMismatch {
-            expected: FEDERATION_CONSENSUS_ITEM_VERSION,
-            found,
-        }) if found == FEDERATION_CONSENSUS_ITEM_VERSION + 1
-    ));
-    assert!(queue.is_empty());
-}
-
-#[test]
-fn consensus_item_queue_rejects_future_default_item_versions() {
-    let mut queue = FederationConsensusItemQueue::new();
-    let mut item = FederationConsensusDefaultItem::new("future", json!({"ok": true}));
-    item.version = FEDERATION_CONSENSUS_ITEM_VERSION + 1;
-
-    assert!(matches!(
-        queue.submit(FederationConsensusItem::Default(item)),
         Err(FederationError::ConsensusItemVersionMismatch {
             expected: FEDERATION_CONSENSUS_ITEM_VERSION,
             found,
@@ -1263,8 +1248,8 @@ fn aleph_bft_data_provider_empty_queue_repeated_polls_do_not_advance() {
     }
 
     provider
-        .submit_item(FederationConsensusItem::Default(
-            FederationConsensusDefaultItem::new("after-empty-polls", json!({"ready": true})),
+        .submit_item(FederationConsensusItem::ModuleFact(
+            FederationConsensusModuleFact::new("test", "after-empty-polls", json!({"ready": true})),
         ))
         .expect("submit item after empty polls");
     let payload = provider
@@ -1335,11 +1320,13 @@ fn aleph_bft_data_provider_rejects_pending_conflicting_quote_operations() {
 #[test]
 fn aleph_bft_data_provider_enforces_body_byte_limit_without_spinning_or_dropping() {
     let federation_id = federation_id(13);
-    let first = FederationConsensusItem::Default(FederationConsensusDefaultItem::new(
+    let first = FederationConsensusItem::ModuleFact(FederationConsensusModuleFact::new(
+        "test",
         "small",
         json!({"body": "a"}),
     ));
-    let second = FederationConsensusItem::Default(FederationConsensusDefaultItem::new(
+    let second = FederationConsensusItem::ModuleFact(FederationConsensusModuleFact::new(
+        "test",
         "small",
         json!({"body": "b"}),
     ));
@@ -1364,7 +1351,8 @@ fn aleph_bft_data_provider_enforces_body_byte_limit_without_spinning_or_dropping
     assert_eq!(payload.items.len(), 1);
     assert_eq!(provider.queued_len(), 1);
 
-    let oversized = FederationConsensusItem::Default(FederationConsensusDefaultItem::new(
+    let oversized = FederationConsensusItem::ModuleFact(FederationConsensusModuleFact::new(
+        "test",
         "too-large-for-unit",
         json!({"body": "x".repeat(64)}),
     ));
