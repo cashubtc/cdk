@@ -160,9 +160,17 @@ Preserve federation wire formats and canonical encodings unless a package requir
 | PostgreSQL | 256 | 512 | 1 | 1,638,454 | 146,651 |
 
 - PostgreSQL statement logs confirm 60 SELECTs for each of the six projection tables (360 total), compared with 60 action-keyed SELECTs for the paired reads: six queries versus one per read. Fixture setup and rollback queries were excluded. Raw logs contain local fixture data and are not committed.
-- Added canonical materialized-state digest output to the conformance test for the final cross-backend comparison; that rerun is pending. Full payment and restart verification remain pending.
+- Final Bark-filter rerun: SQLite 3 passed (including sustained workload), PostgreSQL 2 passed. Canonical materialized-state digests match across both backends at all three history sizes. At 256 intents both produce `fcb7003dfd459b573eb0ef7f90d4b94b793bedaaae326696e7a6ae0f27b1df1d`. Full payment and restart verification remain pending.
 
 ### Lifecycle follow-up
 
 - The final worker inventory found a detached BDK sync loop still starting during wallet construction. It now starts explicitly with active member services, uses the runtime task group, observes cancellation between syncs, and retains bounded in-flight shutdown. Existing retry timing and latency events are preserved.
 - Combined Axum/daemon all-target compilation passed with BDK and Bark enabled. The complete runtime suite and live restart validation are pending below.
+
+### Package 5: quote fallback and verified aggregation
+
+- Mint/melt quote creation shares ordering, timeout, failure accumulation, and definitive-error handling. Each operation retains its own validation and threshold-visibility step. Visibility failure never initiates another quote.
+- Mint, melt, and restore collection return the successful aggregate directly. Verified shares are retained only within one request, bound to the immutable connector configuration, member identity, exact blinded outputs, response content, and validation mode. Ready responses drained after a rejection retain their chance to produce a valid result.
+- Pinned Nix stable: `RUST_MIN_STACK=16777216 cargo test --offline -p cdk --lib --no-default-features --features mint,wallet,federation-bark wallet::federation::tests -- --nocapture --test-threads=1`: 103 passed. This covers malicious shares, incompatible groups, insufficient quorum, partial change, fallback, restore, and catch-up.
+- The repeated-pass comparison verifies the same aggregate with 12 individual share verifications using three fresh passes versus 4 with request-local retention. Changed outputs, member signatures, and amount metadata are rejected. This measures cryptographic work for that workload, not end-to-end latency.
+- The final ready-response preservation adjustment will also run through the complete CDK suite. No wallet public methods changed, and no tests were deleted.

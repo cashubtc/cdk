@@ -57,10 +57,182 @@ fn member_websocket_url(mint_url: &crate::mint_url::MintUrl) -> Option<url::Url>
 
 type MemberConnectors = BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct VerifiedMemberShares {
     metadata: Vec<(Amount, Id)>,
     shares: Vec<BlsBlindSignatureShare>,
+}
+
+/// A single request's verified shares. The borrowed connector fixes the configuration and
+/// member roster; exact inputs and responses guard reuse when restore groups differ.
+struct RequestShareVerification<'a> {
+    connector: &'a FederatedMintConnector,
+    amount_validation: ShareAmountValidation,
+    entries: BTreeMap<MemberId, VerifiedShareResponse>,
+    #[cfg(test)]
+    shares_verified: usize,
+}
+
+struct VerifiedShareResponse {
+    outputs: Vec<BlindedMessage>,
+    response: MintResponse,
+    result: Result<VerifiedMemberShares, String>,
+}
+
+impl<'a> RequestShareVerification<'a> {
+    fn new(
+        connector: &'a FederatedMintConnector,
+        amount_validation: ShareAmountValidation,
+    ) -> Self {
+        Self {
+            connector,
+            amount_validation,
+            entries: BTreeMap::new(),
+            #[cfg(test)]
+            shares_verified: 0,
+        }
+    }
+
+    fn verify(
+        &mut self,
+        outputs: &[BlindedMessage],
+        member: MemberId,
+        response: &MintResponse,
+    ) -> Result<VerifiedMemberShares, String> {
+        if let Some(cached) = self.entries.get(&member) {
+            if cached.outputs == outputs && cached.response == *response {
+                return cached.result.clone();
+            }
+        }
+        #[cfg(test)]
+        {
+            self.shares_verified += response.signatures.len();
+        }
+        let result = self
+            .connector
+            .valid_member_share_set(outputs, member, response, self.amount_validation)
+            .map_err(|error| error.to_string());
+        self.entries.insert(
+            member,
+            VerifiedShareResponse {
+                outputs: outputs.to_vec(),
+                response: response.clone(),
+                result: result.clone(),
+            },
+        );
+        result
+    }
+
+    fn aggregate(
+        &mut self,
+        outputs: &[BlindedMessage],
+        member_responses: &[(MemberId, MintResponse)],
+    ) -> Result<MintResponse, Error> {
+        let amount_validation = self.amount_validation;
+        match amount_validation {
+            ShareAmountValidation::Exact => self
+                .connector
+                .public_config
+                .validate_blinded_outputs(outputs)?,
+            ShareAmountValidation::Change => self
+                .connector
+                .public_config
+                .validate_blinded_change_outputs(outputs)?,
+            ShareAmountValidation::Restore => self
+                .connector
+                .public_config
+                .validate_blinded_restore_outputs(outputs)?,
+        }
+
+        let threshold = usize::from(
+            self.connector
+                .public_config
+                .threshold_params
+                .signature_threshold,
+        );
+        if member_responses.len() < threshold {
+            return Err(Error::InvalidMintResponse(format!(
+                "insufficient federation signature shares: required {}, received {}",
+                threshold,
+                member_responses.len()
+            )));
+        }
+
+        let mut matching_share_sets = Vec::<(
+            Vec<(Amount, Id)>,
+            Vec<(MemberId, Vec<BlsBlindSignatureShare>)>,
+        )>::new();
+        let mut invalid_members = Vec::new();
+
+        for (member_id, response) in member_responses {
+            match self.verify(outputs, *member_id, response) {
+                Ok(VerifiedMemberShares { metadata, shares }) => match matching_share_sets
+                    .iter_mut()
+                    .find(|(candidate, _)| candidate == &metadata)
+                {
+                    Some((_, members)) => members.push((*member_id, shares)),
+                    None => matching_share_sets.push((metadata, vec![(*member_id, shares)])),
+                },
+                Err(err) => invalid_members.push(format!("member {} ignored: {}", member_id, err)),
+            }
+        }
+
+        let max_valid_group = matching_share_sets
+            .iter()
+            .map(|(_, members)| members.len())
+            .max()
+            .unwrap_or(0);
+        let (metadata, selected_members) = matching_share_sets
+            .into_iter()
+            .find_map(|(metadata, members)| {
+                if members.len() >= threshold {
+                    Some((metadata, members.into_iter().take(threshold).collect::<Vec<_>>()))
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                let invalid = if invalid_members.is_empty() {
+                    "none".to_string()
+                } else {
+                    invalid_members.join("; ")
+                };
+                Error::InvalidMintResponse(format!(
+                    "insufficient valid federation signature shares: required {}, largest compatible set {}, invalid responses: {}",
+                    threshold, max_valid_group, invalid
+                ))
+            })?;
+
+        let aggregation_started_at = Instant::now();
+        let aggregate_signatures = metadata
+            .into_iter()
+            .enumerate()
+            .map(|(index, (amount, keyset_id))| {
+                let shares = selected_members
+                    .iter()
+                    .map(|(_, shares)| shares[index])
+                    .collect::<Vec<_>>();
+                let aggregate_signature = aggregate_blind_signature_shares(threshold, &shares)?;
+                Ok(BlindSignature {
+                    amount,
+                    keyset_id,
+                    c: aggregate_signature.into(),
+                    dleq: None,
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>();
+        record_wallet_performance_stage(
+            WalletPerformanceStage::ShareAggregation,
+            aggregation_started_at,
+            outputs.len(),
+            aggregate_signatures.is_ok(),
+        );
+        let aggregate_signatures = aggregate_signatures?;
+
+        Ok(MintResponse {
+            signatures: aggregate_signatures,
+        })
+    }
 }
 
 /// Wallet mint connector that fans out signing requests to federation members.
@@ -952,12 +1124,14 @@ impl FederatedMintConnector {
         outputs: &[BlindedMessage],
         amount_validation: ShareAmountValidation,
         mut call_member: F,
-    ) -> Result<Vec<(MemberId, MintResponse)>, Error>
+    ) -> Result<MintResponse, Error>
     where
         F: FnMut(Arc<dyn MintConnector + Send + Sync>) -> Fut,
         Fut: Future<Output = Result<MintResponse, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        let mut aggregate = None;
+        let mut verifier = RequestShareVerification::new(self, amount_validation);
         let results = self
             .collect_member_results_from(
                 member_connectors,
@@ -966,21 +1140,21 @@ impl FederatedMintConnector {
                 self.config.member_request_max_retries,
                 "mint request",
                 |responses, failures| {
-                    (responses.len() >= threshold
-                        && self
-                            .aggregate_member_responses(outputs, responses, amount_validation)
-                            .is_ok())
-                        || threshold_rejection(failures, threshold).is_some()
+                    if responses.len() >= threshold {
+                        aggregate = verifier.aggregate(outputs, responses).ok();
+                    }
+                    aggregate.is_some() || threshold_rejection(failures, threshold).is_some()
                 },
             )
             .await;
 
-        if results.responses.len() >= threshold
-            && self
-                .aggregate_member_responses(outputs, &results.responses, amount_validation)
-                .is_ok()
-        {
-            return Ok(results.responses);
+        // Rejection may stop collection before the final ready responses are drained.
+        // Only try those responses when collection did not already produce an aggregate.
+        if aggregate.is_none() && results.responses.len() >= threshold {
+            aggregate = verifier.aggregate(outputs, &results.responses).ok();
+        }
+        if let Some(response) = aggregate {
+            return Ok(response);
         }
 
         if let Some(rejection) = results.threshold_rejection(threshold) {
@@ -1004,12 +1178,14 @@ impl FederatedMintConnector {
         member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
         outputs: Option<&[BlindedMessage]>,
         mut call_member: F,
-    ) -> Result<Vec<(MemberId, MeltQuoteResponse<String>)>, Error>
+    ) -> Result<MeltQuoteResponse<String>, Error>
     where
         F: FnMut(Arc<dyn MintConnector + Send + Sync>) -> Fut,
         Fut: Future<Output = Result<MeltQuoteResponse<String>, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        let mut aggregate = None;
+        let mut verifier = RequestShareVerification::new(self, ShareAmountValidation::Change);
         let results = self
             .collect_member_results_from(
                 member_connectors,
@@ -1022,20 +1198,32 @@ impl FederatedMintConnector {
                     else {
                         return threshold_rejection(failures, threshold).is_some();
                     };
-                    (self.aggregate_melt_response(outputs, &group).is_ok())
+                    aggregate = Some(self.aggregate_melt_response_with_verifier(
+                        outputs,
+                        &group,
+                        &mut verifier,
+                    ));
+                    aggregate.as_ref().is_some_and(Result::is_ok)
                         || threshold_rejection(failures, threshold).is_some()
                 },
             )
             .await;
 
-        let aggregation_failure =
-            match owned_matching_melt_response_group(&results.responses, threshold) {
-                Some(group) => match self.aggregate_melt_response(outputs, &group) {
-                    Ok(_) => return Ok(group),
-                    Err(err) => Some(err.to_string()),
-                },
-                None => None,
-            };
+        // Ready responses drained after a rejection may still provide a valid result.
+        if !aggregate.as_ref().is_some_and(Result::is_ok) {
+            if let Some(group) = owned_matching_melt_response_group(&results.responses, threshold) {
+                aggregate = Some(self.aggregate_melt_response_with_verifier(
+                    outputs,
+                    &group,
+                    &mut verifier,
+                ));
+            }
+        }
+        let aggregation_failure = match aggregate {
+            Some(Ok(response)) => return Ok(response),
+            Some(Err(error)) => Some(error.to_string()),
+            None => None,
+        };
 
         if let Some(rejection) = results.threshold_rejection(threshold) {
             return Err(Error::from(rejection));
@@ -1055,12 +1243,14 @@ impl FederatedMintConnector {
         member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
         requested_outputs: &[BlindedMessage],
         mut call_member: F,
-    ) -> Result<Vec<(MemberId, RestoreResponse)>, Error>
+    ) -> Result<RestoreResponse, Error>
     where
         F: FnMut(Arc<dyn MintConnector + Send + Sync>) -> Fut,
         Fut: Future<Output = Result<RestoreResponse, Error>>,
     {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        let mut aggregate = None;
+        let mut verifier = RequestShareVerification::new(self, ShareAmountValidation::Restore);
         let results = self
             .collect_member_results_from(
                 member_connectors,
@@ -1069,17 +1259,20 @@ impl FederatedMintConnector {
                 self.config.member_request_max_retries,
                 "restore request",
                 |responses, _failures| {
-                    responses.len() >= threshold
-                        && self
-                            .aggregate_restore_response(requested_outputs, responses)
-                            .is_ok()
+                    if responses.len() >= threshold {
+                        aggregate = Some(self.aggregate_restore_response_with_verifier(
+                            requested_outputs,
+                            responses,
+                            &mut verifier,
+                        ));
+                    }
+                    aggregate.as_ref().is_some_and(Result::is_ok)
                 },
             )
             .await;
 
-        if results.responses.len() >= threshold {
-            self.aggregate_restore_response(requested_outputs, &results.responses)?;
-            return Ok(results.responses);
+        if let Some(response) = aggregate {
+            return response;
         }
 
         Err(Error::InvalidMintResponse(format!(
@@ -1269,94 +1462,84 @@ impl FederatedMintConnector {
         .await
     }
 
+    async fn create_quote_with_fallback<R, F, Fut, Validate>(
+        &self,
+        kind: &'static str,
+        mut call_member: F,
+        validate: Validate,
+    ) -> Result<R, Error>
+    where
+        F: FnMut(Arc<dyn MintConnector + Send + Sync>) -> Fut,
+        Fut: Future<Output = Result<R, Error>>,
+        Validate: Fn(&R) -> Result<(), Error>,
+    {
+        let mut failures = Vec::new();
+        for (member_id, connector) in
+            self.ordered_quote_creation_connectors(&self.member_connectors)
+        {
+            match tokio::time::timeout(
+                self.config.member_fallback_timeout,
+                call_member(connector.clone()),
+            )
+            .await
+            {
+                Ok(Ok(response)) => match validate(&response) {
+                    Ok(()) => return Ok(response),
+                    Err(error) => failures.push(format!("member {member_id}: {error}")),
+                },
+                Ok(Err(error)) if error.is_definitive_failure() => {
+                    return Err(into_wallet_error(error))
+                }
+                Ok(Err(error)) => failures.push(format!("member {member_id}: {error}")),
+                Err(_) => failures.push(format!(
+                    "member {member_id}: timed out after {}s",
+                    self.config.member_fallback_timeout.as_secs()
+                )),
+            }
+        }
+        Err(Error::InvalidMintResponse(format!(
+            "no healthy federation member accepted {kind} quote creation: {}",
+            failures.join("; ")
+        )))
+    }
+
     async fn create_mint_quote(
         &self,
         request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error> {
-        let mut failures = Vec::new();
-
-        for (member_id, connector) in
-            self.ordered_quote_creation_connectors(&self.member_connectors)
-        {
-            let result = tokio::time::timeout(
-                self.config.member_fallback_timeout,
-                connector.post_mint_quote(request.clone()),
-            )
-            .await;
-            match result {
-                Ok(Ok(response)) => match validate_mint_quote_response(&request, &response) {
-                    Ok(()) => {
-                        self.verify_mint_quote_visible_to_threshold(&response)
-                            .await?;
-                        return Ok(response);
-                    }
-                    Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+        let response = self
+            .create_quote_with_fallback(
+                "mint",
+                |connector| {
+                    let request = request.clone();
+                    async move { connector.post_mint_quote(request).await }
                 },
-                Ok(Err(err)) if err.is_definitive_failure() => {
-                    return Err(into_wallet_error(err));
-                }
-                Ok(Err(err)) => {
-                    failures.push(format!("member {}: {}", member_id, err));
-                }
-                Err(_) => {
-                    failures.push(format!(
-                        "member {}: timed out after {}s",
-                        member_id,
-                        self.config.member_fallback_timeout.as_secs()
-                    ));
-                }
-            }
-        }
-
-        Err(Error::InvalidMintResponse(format!(
-            "no healthy federation member accepted mint quote creation: {}",
-            failures.join("; ")
-        )))
+                |response| validate_mint_quote_response(&request, response),
+            )
+            .await?;
+        // A valid created quote must become visible; visibility failure must not create another quote.
+        self.verify_mint_quote_visible_to_threshold(&response)
+            .await?;
+        Ok(response)
     }
 
     async fn create_melt_quote(
         &self,
         request: MeltQuoteRequest,
     ) -> Result<MeltQuoteCreateResponse<String>, Error> {
-        let mut failures = Vec::new();
-
-        for (member_id, connector) in
-            self.ordered_quote_creation_connectors(&self.member_connectors)
-        {
-            let result = tokio::time::timeout(
-                self.config.member_fallback_timeout,
-                connector.post_melt_quote(request.clone()),
-            )
-            .await;
-            match result {
-                Ok(Ok(response)) => match validate_melt_quote_response(&request, &response) {
-                    Ok(()) => {
-                        self.verify_melt_quote_visible_to_threshold(&response)
-                            .await?;
-                        return Ok(response);
-                    }
-                    Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+        let response = self
+            .create_quote_with_fallback(
+                "melt",
+                |connector| {
+                    let request = request.clone();
+                    async move { connector.post_melt_quote(request).await }
                 },
-                Ok(Err(err)) if err.is_definitive_failure() => {
-                    return Err(into_wallet_error(err));
-                }
-                Ok(Err(err)) => {
-                    failures.push(format!("member {}: {}", member_id, err));
-                }
-                Err(_) => {
-                    failures.push(format!(
-                        "member {}: timed out after {}s",
-                        member_id,
-                        self.config.member_fallback_timeout.as_secs()
-                    ));
-                }
-            }
-        }
-
-        Err(Error::InvalidMintResponse(format!(
-            "no healthy federation member accepted melt quote creation: {}",
-            failures.join("; ")
-        )))
+                |response| validate_melt_quote_response(&request, response),
+            )
+            .await?;
+        self.verify_melt_quote_visible_to_threshold(&response)
+            .await?;
+        Ok(response)
     }
 
     async fn mint_quote_visibility_check(
@@ -1429,99 +1612,7 @@ impl FederatedMintConnector {
         member_responses: &[(MemberId, MintResponse)],
         amount_validation: ShareAmountValidation,
     ) -> Result<MintResponse, Error> {
-        match amount_validation {
-            ShareAmountValidation::Exact => self.public_config.validate_blinded_outputs(outputs)?,
-            ShareAmountValidation::Change => self
-                .public_config
-                .validate_blinded_change_outputs(outputs)?,
-            ShareAmountValidation::Restore => self
-                .public_config
-                .validate_blinded_restore_outputs(outputs)?,
-        }
-
-        let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        if member_responses.len() < threshold {
-            return Err(Error::InvalidMintResponse(format!(
-                "insufficient federation signature shares: required {}, received {}",
-                threshold,
-                member_responses.len()
-            )));
-        }
-
-        let mut matching_share_sets = Vec::<(
-            Vec<(Amount, Id)>,
-            Vec<(MemberId, Vec<BlsBlindSignatureShare>)>,
-        )>::new();
-        let mut invalid_members = Vec::new();
-
-        for (member_id, response) in member_responses {
-            match self.valid_member_share_set(outputs, *member_id, response, amount_validation) {
-                Ok(VerifiedMemberShares { metadata, shares }) => match matching_share_sets
-                    .iter_mut()
-                    .find(|(candidate, _)| candidate == &metadata)
-                {
-                    Some((_, members)) => members.push((*member_id, shares)),
-                    None => matching_share_sets.push((metadata, vec![(*member_id, shares)])),
-                },
-                Err(err) => invalid_members.push(format!("member {} ignored: {}", member_id, err)),
-            }
-        }
-
-        let max_valid_group = matching_share_sets
-            .iter()
-            .map(|(_, members)| members.len())
-            .max()
-            .unwrap_or(0);
-        let (metadata, selected_members) = matching_share_sets
-            .into_iter()
-            .find_map(|(metadata, members)| {
-                if members.len() >= threshold {
-                    Some((metadata, members.into_iter().take(threshold).collect::<Vec<_>>()))
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| {
-                let invalid = if invalid_members.is_empty() {
-                    "none".to_string()
-                } else {
-                    invalid_members.join("; ")
-                };
-                Error::InvalidMintResponse(format!(
-                    "insufficient valid federation signature shares: required {}, largest compatible set {}, invalid responses: {}",
-                    threshold, max_valid_group, invalid
-                ))
-            })?;
-
-        let aggregation_started_at = Instant::now();
-        let aggregate_signatures = metadata
-            .into_iter()
-            .enumerate()
-            .map(|(index, (amount, keyset_id))| {
-                let shares = selected_members
-                    .iter()
-                    .map(|(_, shares)| shares[index])
-                    .collect::<Vec<_>>();
-                let aggregate_signature = aggregate_blind_signature_shares(threshold, &shares)?;
-                Ok(BlindSignature {
-                    amount,
-                    keyset_id,
-                    c: aggregate_signature.into(),
-                    dleq: None,
-                })
-            })
-            .collect::<Result<Vec<_>, Error>>();
-        record_wallet_performance_stage(
-            WalletPerformanceStage::ShareAggregation,
-            aggregation_started_at,
-            outputs.len(),
-            aggregate_signatures.is_ok(),
-        );
-        let aggregate_signatures = aggregate_signatures?;
-
-        Ok(MintResponse {
-            signatures: aggregate_signatures,
-        })
+        RequestShareVerification::new(self, amount_validation).aggregate(outputs, member_responses)
     }
 
     fn valid_member_share_set(
@@ -1633,10 +1724,11 @@ impl FederatedMintConnector {
         Ok(VerifiedMemberShares { metadata, shares })
     }
 
-    fn aggregate_melt_response(
+    fn aggregate_melt_response_with_verifier(
         &self,
         outputs: Option<&[BlindedMessage]>,
         member_responses: &[(MemberId, MeltQuoteResponse<String>)],
+        verifier: &mut RequestShareVerification<'_>,
     ) -> Result<MeltQuoteResponse<String>, Error> {
         let (_, first_response) = member_responses.first().ok_or_else(|| {
             Error::InvalidMintResponse("missing federation melt responses".to_string())
@@ -1692,11 +1784,7 @@ impl FederatedMintConnector {
             change_responses.push((*member_id, MintResponse { signatures: change }));
         }
 
-        let aggregate_change = self.aggregate_member_responses(
-            outputs,
-            &change_responses,
-            ShareAmountValidation::Change,
-        )?;
+        let aggregate_change = verifier.aggregate(outputs, &change_responses)?;
         let mut response = first_response.clone();
         set_melt_response_change(&mut response, Some(aggregate_change.signatures));
 
@@ -1898,10 +1986,11 @@ impl FederatedMintConnector {
         Ok(response)
     }
 
-    fn aggregate_restore_response(
+    fn aggregate_restore_response_with_verifier(
         &self,
         requested_outputs: &[BlindedMessage],
         member_responses: &[(MemberId, RestoreResponse)],
+        verifier: &mut RequestShareVerification<'_>,
     ) -> Result<RestoreResponse, Error> {
         self.public_config
             .validate_blinded_restore_outputs(requested_outputs)?;
@@ -1926,11 +2015,7 @@ impl FederatedMintConnector {
                 )
             })
             .collect::<Vec<_>>();
-        let aggregate = self.aggregate_member_responses(
-            &first_response.outputs,
-            &restore_share_responses,
-            ShareAmountValidation::Restore,
-        )?;
+        let aggregate = verifier.aggregate(&first_response.outputs, &restore_share_responses)?;
 
         Ok(RestoreResponse {
             outputs: first_response.outputs.clone(),
@@ -2164,7 +2249,7 @@ impl MintConnector for FederatedMintConnector {
             .map_err(map_federation_validation_error)?;
         self.validate_member_active_keysets().await?;
 
-        let member_responses = self
+        let result = self
             .collect_mint_responses(
                 &self.member_connectors,
                 &request.outputs,
@@ -2175,12 +2260,7 @@ impl MintConnector for FederatedMintConnector {
                     async move { connector.post_mint(&method, request).await }
                 },
             )
-            .await?;
-        let result = self.aggregate_member_responses(
-            &request.outputs,
-            &member_responses,
-            ShareAmountValidation::Exact,
-        );
+            .await;
         #[cfg(feature = "prometheus")]
         if result.is_err() {
             self.record_aggregation_failure("mint");
@@ -2219,7 +2299,7 @@ impl MintConnector for FederatedMintConnector {
             .map_err(map_federation_validation_error)?;
         self.validate_member_active_keysets().await?;
 
-        let member_responses = self
+        let result = self
             .collect_mint_responses(
                 &self.member_connectors,
                 &request.outputs,
@@ -2230,12 +2310,7 @@ impl MintConnector for FederatedMintConnector {
                     async move { connector.post_batch_mint(&method, request).await }
                 },
             )
-            .await?;
-        let result = self.aggregate_member_responses(
-            &request.outputs,
-            &member_responses,
-            ShareAmountValidation::Exact,
-        );
+            .await;
         #[cfg(feature = "prometheus")]
         if result.is_err() {
             self.record_aggregation_failure("mint");
@@ -2307,14 +2382,13 @@ impl MintConnector for FederatedMintConnector {
         }
         self.validate_member_active_keysets().await?;
 
-        let member_responses = self
+        let result = self
             .collect_melt_responses(&self.member_connectors, outputs.as_deref(), |connector| {
                 let method = method.clone();
                 let request = request.clone();
                 async move { connector.post_melt(&method, request).await }
             })
-            .await?;
-        let result = self.aggregate_melt_response(outputs.as_deref(), &member_responses);
+            .await;
         #[cfg(feature = "prometheus")]
         if result.is_err() {
             self.record_aggregation_failure("melt");
@@ -2328,7 +2402,7 @@ impl MintConnector for FederatedMintConnector {
             .map_err(map_federation_validation_error)?;
         self.validate_member_active_keysets().await?;
 
-        let member_responses = self
+        let result = self
             .collect_mint_responses(
                 &self.member_connectors,
                 request.outputs(),
@@ -2345,17 +2419,12 @@ impl MintConnector for FederatedMintConnector {
                     }
                 },
             )
-            .await?;
-        let response = self.aggregate_member_responses(
-            request.outputs(),
-            &member_responses,
-            ShareAmountValidation::Exact,
-        );
+            .await;
         #[cfg(feature = "prometheus")]
-        if response.is_err() {
+        if result.is_err() {
             self.record_aggregation_failure("swap");
         }
-        let response = response?;
+        let response = result?;
 
         Ok(SwapResponse {
             signatures: response.signatures,
@@ -2426,14 +2495,12 @@ impl MintConnector for FederatedMintConnector {
             .map_err(map_federation_validation_error)?;
         self.validate_member_active_keysets().await?;
 
-        let member_responses = self
+        let result = self
             .collect_restore_responses(&self.member_connectors, &request.outputs, |connector| {
                 let request = request.clone();
                 async move { connector.post_restore(request).await }
             })
-            .await?;
-
-        let result = self.aggregate_restore_response(&request.outputs, &member_responses);
+            .await;
         #[cfg(feature = "prometheus")]
         if result.is_err() {
             self.record_aggregation_failure("restore");

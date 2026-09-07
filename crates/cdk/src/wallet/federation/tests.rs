@@ -6393,3 +6393,55 @@ async fn federated_melt_accepts_partial_change_and_recovers_the_same_signatures(
         )
         .is_err());
 }
+
+#[test]
+fn request_share_reuse_is_bound_to_outputs_members_and_responses() {
+    let bundle = threshold_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        member_connectors(&bundle, &outputs),
+        FederatedMintConnectorConfig::default(),
+    )
+    .expect("connector");
+    let responses = [member_id(1), member_id(2)]
+        .into_iter()
+        .map(|id| (id, share_response(&bundle, id, &outputs)))
+        .collect::<Vec<_>>();
+    let mut uncached_work = 0;
+    let mut retained =
+        super::RequestShareVerification::new(&connector, super::ShareAmountValidation::Exact);
+    // Reproduce the old collector/collector-final/caller verification passes and
+    // compare the same request using retained, input-bound verified shares.
+    for _ in 0..3 {
+        let mut fresh =
+            super::RequestShareVerification::new(&connector, super::ShareAmountValidation::Exact);
+        let expected = fresh
+            .aggregate(&outputs, &responses)
+            .expect("fresh aggregate");
+        uncached_work += fresh.shares_verified;
+        let actual = retained
+            .aggregate(&outputs, &responses)
+            .expect("retained aggregate");
+        assert_eq!(actual, expected);
+        assert_aggregate_response_valid(&bundle, &outputs, &actual);
+    }
+    assert_eq!(uncached_work, retained.shares_verified * 3);
+    eprintln!("Wallet repeated-pass comparison: old_shares_verified={uncached_work}, retained_shares_verified={}", retained.shares_verified);
+
+    let other_outputs = blinded_outputs_for_keyset(&active_keyset(&bundle), b"different request");
+    assert!(retained.aggregate(&other_outputs, &responses).is_err());
+    assert!(retained.aggregate(&outputs, &responses).is_ok());
+    let mut changed = responses.clone();
+    changed[0].1 = share_response(&bundle, member_id(3), &outputs);
+    assert!(
+        retained.aggregate(&outputs, &changed).is_err(),
+        "wrong member share must not reuse the old verification"
+    );
+    changed[0].1 = responses[0].1.clone();
+    changed[0].1.signatures[0].amount = Amount::from(2);
+    assert!(
+        retained.aggregate(&outputs, &changed).is_err(),
+        "changed metadata must be revalidated"
+    );
+}
