@@ -391,7 +391,7 @@ impl CdkBdk {
 
         let wallet_exists = match fs::metadata(&wallet_path) {
             Ok(metadata) if metadata.is_file() => true,
-            Ok(_) => return Err(Error::ExistingWalletNotInitialized { path: wallet_path }),
+            Ok(_) => true,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(error) => return Err(Error::Io(error)),
         };
@@ -399,14 +399,6 @@ impl CdkBdk {
         let (db, wallet) = match wallet_exists {
             true => {
                 let mut db = Connection::open(&wallet_path)?;
-                let has_wallet_table = db.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bdk_wallet')",
-                    [],
-                    |row| row.get::<_, bool>(0),
-                )?;
-                if !has_wallet_table {
-                    return Err(Error::ExistingWalletNotInitialized { path: wallet_path });
-                }
 
                 let wallet_opt = Wallet::load()
                     .descriptor(KeychainKind::External, Some(descriptor.clone()))
@@ -416,9 +408,32 @@ impl CdkBdk {
                     .load_wallet(&mut db)
                     .map_err(|e| Error::Wallet(e.to_string()))?;
 
-                let mut wallet = wallet_opt.ok_or_else(|| Error::ExistingWalletNotInitialized {
-                    path: wallet_path.clone(),
-                })?;
+                let initial_checkpoint = match wallet_opt.is_none() {
+                    true => chain_source.initial_checkpoint()?,
+                    false => None,
+                };
+
+                let mut wallet = match wallet_opt {
+                    Some(wallet) => wallet,
+                    None => {
+                        let mut wallet = Wallet::create(descriptor, change_descriptor)
+                            .network(network)
+                            .create_wallet(&mut db)
+                            .map_err(|e| Error::Wallet(e.to_string()))?;
+
+                        if let Some(block_id) = initial_checkpoint {
+                            let checkpoint = wallet.latest_checkpoint().insert(block_id);
+                            wallet
+                                .apply_update(Update {
+                                    chain: Some(checkpoint),
+                                    ..Default::default()
+                                })
+                                .map_err(|e| Error::Wallet(e.to_string()))?;
+                        }
+
+                        wallet
+                    }
+                };
 
                 wallet.persist(&mut db)?;
 
@@ -436,7 +451,6 @@ impl CdkBdk {
 
                 fs::create_dir_all(&storage_dir_path)?;
 
-                // Atomically create the wallet database file to avoid TOCTOU or accidental overwrite.
                 let _file = std::fs::OpenOptions::new()
                     .read(true)
                     .write(true)
@@ -453,38 +467,37 @@ impl CdkBdk {
                     })?;
                 drop(_file);
 
-                let mut db = Connection::open(&wallet_path)?;
+                let init_fresh_wallet =
+                    || -> Result<(Connection, PersistedWallet<Connection>), Error> {
+                        let mut db = Connection::open(&wallet_path)?;
 
-                let init_res = (|| -> Result<PersistedWallet<Connection>, Error> {
-                    let mut wallet = Wallet::create(descriptor, change_descriptor)
-                        .network(network)
-                        .create_wallet(&mut db)
-                        .map_err(|e| Error::Wallet(e.to_string()))?;
-
-                    if let Some(block_id) = initial_checkpoint {
-                        let checkpoint = wallet.latest_checkpoint().insert(block_id);
-                        wallet
-                            .apply_update(Update {
-                                chain: Some(checkpoint),
-                                ..Default::default()
-                            })
+                        let mut wallet = Wallet::create(descriptor, change_descriptor)
+                            .network(network)
+                            .create_wallet(&mut db)
                             .map_err(|e| Error::Wallet(e.to_string()))?;
-                    }
 
-                    wallet.persist(&mut db)?;
-                    Ok(wallet)
-                })();
+                        if let Some(block_id) = initial_checkpoint {
+                            let checkpoint = wallet.latest_checkpoint().insert(block_id);
+                            wallet
+                                .apply_update(Update {
+                                    chain: Some(checkpoint),
+                                    ..Default::default()
+                                })
+                                .map_err(|e| Error::Wallet(e.to_string()))?;
+                        }
 
-                let wallet = match init_res {
-                    Ok(wallet) => wallet,
+                        wallet.persist(&mut db)?;
+
+                        Ok((db, wallet))
+                    };
+
+                match init_fresh_wallet() {
+                    Ok((db, wallet)) => (db, wallet),
                     Err(e) => {
-                        drop(db);
                         let _ = fs::remove_file(&wallet_path);
                         return Err(e);
                     }
-                };
-
-                (db, wallet)
+                }
             }
         };
 
@@ -1254,15 +1267,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn existing_uninitialized_database_fails_closed_and_is_not_modified() {
+    async fn pre_existing_empty_database_retains_constructor_behavior_from_main() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let mnemonic = Mnemonic::from_str(TEST_MNEMONIC).expect("mnemonic");
         let wallet_path = tempdir.path().join("bdk_wallet/bdk_wallet.sqlite");
         fs::create_dir_all(wallet_path.parent().expect("wallet dir")).expect("create dir");
 
-        // Create an empty (uninitialized) SQLite file
+        // Pre-create an empty SQLite file before CdkBdk::new
         drop(Connection::open(&wallet_path).expect("create empty sqlite file"));
-        let initial_bytes = fs::read(&wallet_path).expect("read initial bytes");
+        assert!(wallet_path.exists());
 
         let kv = cdk_sqlite::mint::memory::empty()
             .await
@@ -1278,8 +1291,8 @@ mod tests {
             parallel_requests: 1,
         });
 
-        // Calling CdkBdk::new on a pre-existing uninitialized database must fail closed
-        let result = CdkBdk::new(
+        // On upstream main, CdkBdk::new opens the existing DB and initializes the wallet
+        let backend = CdkBdk::new(
             mnemonic.clone(),
             Network::Regtest,
             chain_source,
@@ -1293,34 +1306,25 @@ mod tests {
             60,
             Some(1),
             None,
-        );
+        )
+        .expect("pre-existing empty database initializes normally as on main");
 
-        assert!(matches!(
-            result,
-            Err(Error::ExistingWalletNotInitialized { .. })
-        ));
+        drop(backend);
 
-        // The file must still exist and must NOT be deleted, replaced, truncated, or initialized
         assert!(wallet_path.exists());
-        let current_bytes = fs::read(&wallet_path).expect("read current bytes");
-        assert_eq!(initial_bytes, current_bytes);
-
-        // Preflight validation also continues to fail closed
-        assert!(matches!(
-            validate_existing_wallet(mnemonic, Network::Regtest, tempdir.path()),
-            Err(Error::ExistingWalletNotInitialized { .. })
-        ));
+        assert!(validate_existing_wallet(mnemonic, Network::Regtest, tempdir.path()).is_ok());
     }
 
+    #[cfg(feature = "bitcoin-rpc")]
     #[tokio::test]
-    async fn existing_corrupted_database_fails_closed_and_is_not_modified() {
+    async fn pre_existing_database_is_never_removed_on_failure() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let mnemonic = Mnemonic::from_str(TEST_MNEMONIC).expect("mnemonic");
         let wallet_path = tempdir.path().join("bdk_wallet/bdk_wallet.sqlite");
         fs::create_dir_all(wallet_path.parent().expect("wallet dir")).expect("create dir");
 
-        let corrupt_payload = b"not a valid sqlite file";
-        fs::write(&wallet_path, corrupt_payload).expect("write corrupt payload");
+        // Case A: Pre-existing empty database with failing checkpoint (unreachable node)
+        drop(Connection::open(&wallet_path).expect("create empty sqlite file"));
 
         let kv = cdk_sqlite::mint::memory::empty()
             .await
@@ -1331,17 +1335,20 @@ mod tests {
             percent_fee_reserve: 0.02,
         };
 
-        let chain_source = ChainSource::Esplora(EsploraConfig {
-            url: "http://127.0.0.1:1".to_string(),
-            parallel_requests: 1,
+        let unreachable_chain_source = ChainSource::BitcoinRpc(crate::chain::BitcoinRpcConfig {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            user: "user".to_string(),
+            password: "password".to_string(),
+            wallet_rescan_from_height: None,
         });
 
         let result = CdkBdk::new(
             mnemonic.clone(),
             Network::Regtest,
-            chain_source,
+            unreachable_chain_source,
             tempdir.path().to_string_lossy().into_owned(),
-            fee_reserve,
+            fee_reserve.clone(),
             Arc::new(kv),
             None,
             1,
@@ -1352,16 +1359,133 @@ mod tests {
             None,
         );
 
-        assert!(matches!(result, Err(Error::Database(_))));
+        assert!(result.is_err());
+        assert!(
+            wallet_path.exists(),
+            "pre-existing DB must not be removed on checkpoint failure"
+        );
+
+        // Case B: Pre-existing corrupted file
+        let corrupt_payload = b"pre-existing corrupt database file";
+        fs::write(&wallet_path, corrupt_payload).expect("write corrupt payload");
+
+        let corrupt_kv = cdk_sqlite::mint::memory::empty()
+            .await
+            .expect("in-memory kv store");
+
+        let esplora_chain_source = ChainSource::Esplora(EsploraConfig {
+            url: "http://127.0.0.1:1".to_string(),
+            parallel_requests: 1,
+        });
+
+        let corrupt_result = CdkBdk::new(
+            mnemonic,
+            Network::Regtest,
+            esplora_chain_source,
+            tempdir.path().to_string_lossy().into_owned(),
+            fee_reserve,
+            Arc::new(corrupt_kv),
+            None,
+            1,
+            0,
+            546,
+            60,
+            Some(1),
+            None,
+        );
+
+        assert!(corrupt_result.is_err());
+        assert!(
+            wallet_path.exists(),
+            "pre-existing corrupted DB must not be removed"
+        );
         assert_eq!(
             fs::read(&wallet_path).expect("read payload"),
             corrupt_payload
         );
+    }
 
-        assert!(matches!(
-            validate_existing_wallet(mnemonic, Network::Regtest, tempdir.path()),
-            Err(Error::Database(_))
-        ));
+    #[cfg(feature = "bitcoin-rpc")]
+    #[tokio::test]
+    async fn cleanup_only_targets_file_created_by_current_invocation() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let mnemonic = Mnemonic::from_str(TEST_MNEMONIC).expect("mnemonic");
+
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: Amount::new(1, CurrencyUnit::Sat).into(),
+            percent_fee_reserve: 0.02,
+        };
+
+        // Subcase 1: Fresh wallet path (file does not exist initially)
+        // If initial checkpoint fails, nothing is left behind
+        let fresh_dir = tempdir.path().join("fresh");
+        let fresh_wallet_path = fresh_dir.join("bdk_wallet/bdk_wallet.sqlite");
+
+        let unreachable_chain_source = ChainSource::BitcoinRpc(crate::chain::BitcoinRpcConfig {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            user: "user".to_string(),
+            password: "password".to_string(),
+            wallet_rescan_from_height: None,
+        });
+
+        let fresh_kv = cdk_sqlite::mint::memory::empty()
+            .await
+            .expect("in-memory kv store");
+
+        let fresh_res = CdkBdk::new(
+            mnemonic.clone(),
+            Network::Regtest,
+            unreachable_chain_source.clone(),
+            fresh_dir.to_string_lossy().into_owned(),
+            fee_reserve.clone(),
+            Arc::new(fresh_kv),
+            None,
+            1,
+            0,
+            546,
+            60,
+            Some(1),
+            None,
+        );
+        assert!(fresh_res.is_err());
+        assert!(
+            !fresh_wallet_path.exists(),
+            "fresh wallet failure leaves no file"
+        );
+
+        // Subcase 2: Existing file (created prior to invocation)
+        // Under the exact same failure condition, the pre-existing file MUST NOT be removed
+        let existing_dir = tempdir.path().join("existing");
+        let existing_wallet_path = existing_dir.join("bdk_wallet/bdk_wallet.sqlite");
+        fs::create_dir_all(existing_wallet_path.parent().expect("wallet dir")).expect("create dir");
+        drop(Connection::open(&existing_wallet_path).expect("create empty sqlite file"));
+        assert!(existing_wallet_path.exists());
+
+        let existing_kv = cdk_sqlite::mint::memory::empty()
+            .await
+            .expect("in-memory kv store");
+
+        let existing_res = CdkBdk::new(
+            mnemonic,
+            Network::Regtest,
+            unreachable_chain_source,
+            existing_dir.to_string_lossy().into_owned(),
+            fee_reserve,
+            Arc::new(existing_kv),
+            None,
+            1,
+            0,
+            546,
+            60,
+            Some(1),
+            None,
+        );
+        assert!(existing_res.is_err());
+        assert!(
+            existing_wallet_path.exists(),
+            "pre-existing file must never be removed on failure"
+        );
     }
 
     /// Build a `CdkBdk` instance pointed at a bogus Esplora URL so the sync
