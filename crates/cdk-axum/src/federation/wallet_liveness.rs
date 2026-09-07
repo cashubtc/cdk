@@ -35,7 +35,7 @@ const RETRY_DELAY: Duration = Duration::from_secs(2);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct FederationWalletLivenessConfig {
+struct FederationWalletLivenessConfig {
     round_interval: Duration,
     proposer_lease: Duration,
     signing_attempt_lease: Duration,
@@ -1047,6 +1047,79 @@ fn observed_activity(
         FederationWalletLivenessActivity::WaitingForLease
     } else {
         FederationWalletLivenessActivity::Idle
+    }
+}
+
+/// Start chain synchronization only after service construction has succeeded.
+/// Reads in flight retain the task group's bounded shutdown grace period.
+pub(super) fn spawn_federation_onchain_sync(state: &MintState) {
+    let Some(sync_interval) = state.federation.onchain_sync_interval else {
+        return;
+    };
+    for sync_wallet in state.federation.onchain_wallets().iter().cloned() {
+        let sync_correlation_id = cdk::federation::FederationOperationId::from_bytes(
+            sync_wallet.scope().application_id(),
+        )
+        .to_string();
+        tracing::trace!(
+            target: "cdk_axum::federation::transaction_latency",
+            event = "configuration",
+            correlation = "wallet",
+            correlation_id = %sync_correlation_id,
+            backend = "bdk",
+            phase = "onchain_wallet_sync",
+            sync_interval_ms = u64::try_from(sync_interval.as_millis()).unwrap_or(u64::MAX),
+            "Federated wallet latency configuration"
+        );
+        let tasks = state.federation.tasks.clone();
+        let stop = tasks.stop_token();
+        tasks.spawn("on-chain wallet sync", true, async move {
+                const MAX_SYNC_RETRY_BACKOFF: std::time::Duration =
+                    std::time::Duration::from_secs(300);
+                let initial_backoff = sync_interval.max(std::time::Duration::from_secs(5));
+                let mut retry_backoff = initial_backoff;
+                let mut delay = std::time::Duration::ZERO;
+                loop {
+                    tokio::select! {
+                        _ = stop.cancelled() => break,
+                        _ = tokio::time::sleep(delay) => {},
+                    }
+                    let sync_timer = crate::federation::latency::FederationLatencyTimer::start(
+                        crate::federation::latency::FederationLatencyCorrelation::Wallet,
+                        sync_correlation_id.clone(),
+                        crate::federation::latency::FederationLatencyBackend::Bdk,
+                        crate::federation::latency::FederationLatencyDirection::Internal,
+                        crate::federation::latency::FederationLatencyPhase::OnchainWalletSync,
+                    );
+                    let sync_result = sync_wallet.sync_once().await;
+                    sync_timer.finish(
+                        crate::federation::latency::FederationLatencyOutcome::from_success(
+                            sync_result.is_ok(),
+                        ),
+                    );
+                    match sync_result {
+                        Ok(()) => {
+                            delay = sync_interval;
+                            retry_backoff = initial_backoff;
+                        }
+                        Err(_) => {
+                            let status = sync_wallet.sync_status().await;
+                            if status.consecutive_failures == 1
+                                || status.consecutive_failures.is_power_of_two()
+                            {
+                                tracing::warn!(
+                                    source = ?status.source,
+                                    consecutive_failures = status.consecutive_failures,
+                                    retry_delay_secs = retry_backoff.as_secs(),
+                                    "Federated BDK synchronization did not complete; wallet remains unavailable for consensus-dependent actions"
+                                );
+                            }
+                            delay = retry_backoff;
+                            retry_backoff = (retry_backoff * 2).min(MAX_SYNC_RETRY_BACKOFF);
+                        }
+                    }
+                }
+        });
     }
 }
 

@@ -753,6 +753,8 @@ async fn create_federated_test_state_with_backend_db_seed_and_finality(
             transaction_broadcaster: crate::federation::FederationTransactionBroadcaster::default(),
             #[cfg(feature = "federation-bdk")]
             wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
+            #[cfg(feature = "federation-bdk")]
+            onchain_sync_interval: None,
             components: crate::federation::runtime_components::FederationRuntimeComponents::new(
                 Some(Arc::new(tokio::sync::Mutex::new(if local_finality_test {
                     crate::FederationSyncState::default()
@@ -1584,6 +1586,8 @@ async fn threshold_member_state(mint: Arc<Mint>) -> MintState {
             transaction_broadcaster: crate::federation::FederationTransactionBroadcaster::default(),
             #[cfg(feature = "federation-bdk")]
             wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
+            #[cfg(feature = "federation-bdk")]
+            onchain_sync_interval: None,
             components: crate::federation::runtime_components::FederationRuntimeComponents::new(
                 is_federated.then(|| {
                     Arc::new(tokio::sync::Mutex::new(

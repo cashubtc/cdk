@@ -359,6 +359,8 @@ async fn create_mint_router_with_custom_cache_inner(
             transaction_broadcaster: federation::FederationTransactionBroadcaster::default(),
             #[cfg(feature = "federation-bdk")]
             wallet_liveness: federation::FederationWalletLivenessWorker::default(),
+            #[cfg(feature = "federation-bdk")]
+            onchain_sync_interval: federation_runtime_state.onchain_sync_interval,
             components: federation::runtime_components::FederationRuntimeComponents::new(
                 federation_sync,
                 None,

@@ -181,6 +181,8 @@ pub(crate) struct FederationRuntimeState {
     pub(crate) member: Option<federation::FederationMemberContext>,
     #[cfg(feature = "federation-bdk")]
     pub(crate) onchain_wallets: Vec<FederatedBdkWallet>,
+    #[cfg(feature = "federation-bdk")]
+    pub(crate) onchain_sync_interval: Option<std::time::Duration>,
     pub(crate) frost_signing: Option<federation::frost_signing::FederationFrostSigningRuntime>,
     #[cfg(feature = "federation-bark")]
     pub(crate) bark: Option<Arc<cdk_bark::FederatedBarkRuntime>>,
@@ -214,6 +216,8 @@ pub(crate) async fn create_federation_runtime_state_with_wallet(
             member: None,
             #[cfg(feature = "federation-bdk")]
             onchain_wallets: Vec::new(),
+            #[cfg(feature = "federation-bdk")]
+            onchain_sync_interval: None,
             frost_signing: None,
             #[cfg(feature = "federation-bark")]
             bark: None,
@@ -242,6 +246,10 @@ pub(crate) async fn create_federation_runtime_state_with_wallet(
         }
         None => None,
     };
+    #[cfg(feature = "federation-bdk")]
+    let onchain_sync_interval = local_wallet_config
+        .as_ref()
+        .map(|config| config.sync_interval);
     #[cfg(feature = "federation-bdk")]
     let onchain_wallets = initialize_federation_onchain_wallets(config, local_wallet_config)?;
     #[cfg(feature = "federation-bark")]
@@ -625,6 +633,8 @@ pub(crate) async fn create_federation_runtime_state_with_wallet(
         )),
         #[cfg(feature = "federation-bdk")]
         onchain_wallets,
+        #[cfg(feature = "federation-bdk")]
+        onchain_sync_interval,
         frost_signing,
         #[cfg(feature = "federation-bark")]
         bark,
@@ -878,66 +888,6 @@ pub(crate) fn initialize_accepted_federation_onchain_wallets(
                     "Federated BDK chain source is intentionally shared; member quorum does not provide independent upstream observations"
                 );
             }
-            let sync_wallet = wallet.clone();
-            let sync_interval = local_config.sync_interval;
-            let sync_correlation_id = cdk::federation::FederationOperationId::from_bytes(
-                application.application_id.to_bytes(),
-            )
-            .to_string();
-            tracing::trace!(
-                target: "cdk_axum::federation::transaction_latency",
-                event = "configuration",
-                correlation = "wallet",
-                correlation_id = %sync_correlation_id,
-                backend = "bdk",
-                phase = "onchain_wallet_sync",
-                sync_interval_ms = u64::try_from(sync_interval.as_millis()).unwrap_or(u64::MAX),
-                "Federated wallet latency configuration"
-            );
-            tokio::spawn(async move {
-                const MAX_SYNC_RETRY_BACKOFF: std::time::Duration =
-                    std::time::Duration::from_secs(300);
-                let initial_backoff = sync_interval.max(std::time::Duration::from_secs(5));
-                let mut retry_backoff = initial_backoff;
-                let mut delay = std::time::Duration::ZERO;
-                loop {
-                    tokio::time::sleep(delay).await;
-                    let sync_timer = crate::federation::latency::FederationLatencyTimer::start(
-                        crate::federation::latency::FederationLatencyCorrelation::Wallet,
-                        sync_correlation_id.clone(),
-                        crate::federation::latency::FederationLatencyBackend::Bdk,
-                        crate::federation::latency::FederationLatencyDirection::Internal,
-                        crate::federation::latency::FederationLatencyPhase::OnchainWalletSync,
-                    );
-                    let sync_result = sync_wallet.sync_once().await;
-                    sync_timer.finish(
-                        crate::federation::latency::FederationLatencyOutcome::from_success(
-                            sync_result.is_ok(),
-                        ),
-                    );
-                    match sync_result {
-                        Ok(()) => {
-                            delay = sync_interval;
-                            retry_backoff = initial_backoff;
-                        }
-                        Err(_) => {
-                            let status = sync_wallet.sync_status().await;
-                            if status.consecutive_failures == 1
-                                || status.consecutive_failures.is_power_of_two()
-                            {
-                                tracing::warn!(
-                                    source = ?status.source,
-                                    consecutive_failures = status.consecutive_failures,
-                                    retry_delay_secs = retry_backoff.as_secs(),
-                                    "Federated BDK synchronization did not complete; wallet remains unavailable for consensus-dependent actions"
-                                );
-                            }
-                            delay = retry_backoff;
-                            retry_backoff = (retry_backoff * 2).min(MAX_SYNC_RETRY_BACKOFF);
-                        }
-                    }
-                }
-            });
             Ok(wallet)
         })
         .collect()

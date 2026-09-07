@@ -104,6 +104,8 @@ pub(crate) struct FederationNodeRuntime {
     pub(crate) transaction_broadcaster: super::FederationTransactionBroadcaster,
     #[cfg(feature = "federation-bdk")]
     pub(crate) wallet_liveness: super::FederationWalletLivenessWorker,
+    #[cfg(feature = "federation-bdk")]
+    pub(crate) onchain_sync_interval: Option<std::time::Duration>,
     pub(crate) components: FederationRuntimeComponents,
     pub(crate) aleph_bft_network_inbound: FederationAlephBftNetworkInboundState,
     pub(crate) aleph_bft_live_session: FederationAlephBftLiveSessionState,
@@ -456,6 +458,8 @@ impl FederationNodeRuntime {
             transaction_broadcaster: super::FederationTransactionBroadcaster::default(),
             #[cfg(feature = "federation-bdk")]
             wallet_liveness: super::FederationWalletLivenessWorker::default(),
+            #[cfg(feature = "federation-bdk")]
+            onchain_sync_interval: None,
             components: FederationRuntimeComponents::default(),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),

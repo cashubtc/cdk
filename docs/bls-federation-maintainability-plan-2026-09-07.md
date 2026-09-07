@@ -161,3 +161,8 @@ Preserve federation wire formats and canonical encodings unless a package requir
 
 - PostgreSQL statement logs confirm 60 SELECTs for each of the six projection tables (360 total), compared with 60 action-keyed SELECTs for the paired reads: six queries versus one per read. Fixture setup and rollback queries were excluded. Raw logs contain local fixture data and are not committed.
 - Added canonical materialized-state digest output to the conformance test for the final cross-backend comparison; that rerun is pending. Full payment and restart verification remain pending.
+
+### Lifecycle follow-up
+
+- The final worker inventory found a detached BDK sync loop still starting during wallet construction. It now starts explicitly with active member services, uses the runtime task group, observes cancellation between syncs, and retains bounded in-flight shutdown. Existing retry timing and latency events are preserved.
+- Combined Axum/daemon all-target compilation passed with BDK and Bark enabled. The complete runtime suite and live restart validation are pending below.

@@ -3408,6 +3408,8 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
             transaction_broadcaster: crate::federation::FederationTransactionBroadcaster::default(),
             #[cfg(feature = "federation-bdk")]
             wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
+            #[cfg(feature = "federation-bdk")]
+            onchain_sync_interval: None,
             components: crate::federation::runtime_components::FederationRuntimeComponents::new(
                 Some(Arc::new(tokio::sync::Mutex::new(if local_finality_test {
                     crate::FederationSyncState::default()

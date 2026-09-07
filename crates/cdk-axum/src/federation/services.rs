@@ -137,6 +137,8 @@ impl FederationServices {
                 .wallet_liveness
                 .clone()
                 .spawn(self.state.clone())?;
+            #[cfg(feature = "federation-bdk")]
+            super::wallet_liveness::spawn_federation_onchain_sync(&self.state);
             self.state
                 .federation
                 .payment_observer
