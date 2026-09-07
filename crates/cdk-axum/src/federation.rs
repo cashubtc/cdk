@@ -50,6 +50,7 @@ mod bark_observer;
 pub(crate) mod bark_outgoing;
 #[cfg(feature = "federation-bark")]
 mod bark_secret;
+pub(crate) mod bootstrap;
 #[cfg(feature = "federation-bdk")]
 mod broadcast;
 mod catch_up_routes;
@@ -61,6 +62,7 @@ mod dkg_persistence;
 mod dkg_routes;
 pub(crate) mod frost_signing;
 pub(crate) mod latency;
+pub(crate) mod mint_state;
 mod node_runtime;
 mod operation_pipeline;
 mod operator_routes;
@@ -71,6 +73,7 @@ mod private_request;
 pub(crate) mod runtime_components;
 pub(crate) mod services;
 mod setup;
+pub(crate) mod state;
 mod status_routes;
 mod sync_config;
 mod sync_loop;

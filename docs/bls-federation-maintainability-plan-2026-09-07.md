@@ -123,3 +123,11 @@ Preserve federation wire formats and canonical encodings unless a package requir
 - `cargo clippy --offline -p cashu -p cdk --lib --no-default-features --features cdk/mint,cdk/wallet,cdk/federation -- -D warnings`: passed. Keyset signature-family dispatch is centralized so callers remain valid under Cargo dependency-feature unification.
 - Initial local checks used the available Cargo/Rust 1.95 tools. The project Nix stable shell is available and reports Cargo 1.98; final checks will use it. An all-target Cashu lint run exposed the existing ordinary NUT-16 test's `manual_is_multiple_of` warning; that unrelated test was left unchanged.
 - Remaining: final pinned-toolchain matrix, FFI, full integration and payment verification, and packages 2–7. These interim results do not establish overall completion.
+
+### Package 2: mechanical module extraction
+
+- Moved admission, notification, synchronization state, mint integration methods, and startup/wallet reconciliation into Axum federation modules. Shared entrypoints retain construction, routing, and lifecycle wiring.
+- Moved daemon federation configuration into its own module and federation database contracts into `database/mint/federation.rs`, preserving public re-exports and transaction composition.
+- Retained all existing tests. Removed imports and redundant feature gates made unnecessary by the gated module boundaries.
+- `cargo fix --offline --allow-dirty --lib -p cdk-axum -p cdk-mintd -p cdk-common --no-default-features --features cdk-axum/federation-bdk,cdk-axum/federation-bark,cdk-mintd/federation-bdk,cdk-mintd/federation-bark,cdk-mintd/sqlite`: library compilation passed while pruning relocation imports.
+- Pinned-toolchain all-target compilation is in progress; final test results will be recorded below. This commit is mechanical and does not claim runtime or payment verification.
