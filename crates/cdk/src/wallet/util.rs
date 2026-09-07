@@ -101,7 +101,7 @@ pub(crate) fn sign_proofs(
     let key_map: HashMap<XOnlyPublicKey, &SecretKey> = p2pk_signing_keys
         .iter()
         .map(|s| {
-            s.x_only_public_key(&SECP256K1)
+            s.try_x_only_public_key(&SECP256K1)
                 .map(|(x_only, _)| (x_only, s))
         })
         .collect::<Result<_, _>>()?;
@@ -164,7 +164,7 @@ pub(crate) fn sign_proofs(
                         }
                     }
                 }
-            } else if let Some(signing) = key_map.get(&pubkey.x_only_public_key()?) {
+            } else if let Some(signing) = key_map.get(&pubkey.try_x_only_public_key()?) {
                 proof.sign_p2pk((*signing).clone())?;
             }
         }

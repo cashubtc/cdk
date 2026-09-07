@@ -2656,17 +2656,31 @@ fn configure_fake_wallet_keyset_rotations_once(
         let keyset_id_type = match rotation_cfg.version.as_str() {
             "v1" => KeySetVersion::Version00,
             "v2" => KeySetVersion::Version01,
+            #[cfg(feature = "federation")]
             "v3" => KeySetVersion::Version02,
             version => {
                 bail!("Unsupported fake wallet keyset rotation version: {version}");
             }
         };
 
+        #[cfg(feature = "federation")]
+        if keyset_id_type == KeySetVersion::Version02 {
+            mint_builder = mint_builder.with_federation_keyset_rotation(
+                cdk_signatory::signatory::RotateKeyArguments {
+                    unit: rotation_cfg.unit.clone(),
+                    amounts,
+                    input_fee_ppk: rotation_cfg.input_fee_ppk,
+                    keyset_id_type,
+                    final_expiry,
+                },
+            );
+            continue;
+        }
         mint_builder = mint_builder.with_keyset_rotation(KeysetRotation {
             unit: rotation_cfg.unit.clone(),
             amounts,
             input_fee_ppk: rotation_cfg.input_fee_ppk,
-            keyset_id_type,
+            use_keyset_v2: keyset_id_type == KeySetVersion::Version01,
             final_expiry,
         });
     }

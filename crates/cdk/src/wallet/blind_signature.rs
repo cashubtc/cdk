@@ -1,7 +1,9 @@
+#[cfg(feature = "federation")]
 use std::time::Instant;
 
+#[cfg(feature = "federation")]
 use crate::dhke::batch_verify_bls_blind_signatures;
-use crate::nuts::{nut12, BlindSignature, BlindedMessage, KeySetVersion};
+use crate::nuts::{nut12, BlindSignature, BlindedMessage};
 use crate::wallet::Wallet;
 use crate::{Amount, Error};
 
@@ -44,8 +46,11 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
         )));
     }
 
+    #[cfg(feature = "federation")]
     let mut bls_mint_pubkeys = Vec::new();
+    #[cfg(feature = "federation")]
     let mut bls_signatures = Vec::new();
+    #[cfg(feature = "federation")]
     let mut bls_blinded_messages = Vec::new();
 
     for (sig, blinded_message) in signatures.iter().zip(blinded_messages) {
@@ -73,38 +78,44 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
         let keys = wallet.keyset(sig.keyset_id).await?.keys;
         let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
 
-        match sig.keyset_id.get_version() {
-            KeySetVersion::Version00 | KeySetVersion::Version01 => {
-                match sig.verify_dleq(key, blinded_message.blinded_secret) {
-                    Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
-                    Err(_) => return Err(Error::CouldNotVerifyDleq),
+        match sig.keyset_id.get_version().is_bls() {
+            false => match sig.verify_dleq(key, blinded_message.blinded_secret) {
+                Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
+                Err(_) => return Err(Error::CouldNotVerifyDleq),
+            },
+            true => {
+                #[cfg(not(feature = "federation"))]
+                return Err(Error::UnknownKeySet);
+                #[cfg(feature = "federation")]
+                {
+                    if sig.dleq.is_some() {
+                        return Err(Error::CouldNotVerifyDleq);
+                    }
+                    bls_mint_pubkeys.push(key);
+                    bls_signatures.push(sig.c);
+                    bls_blinded_messages.push(blinded_message.blinded_secret);
                 }
-            }
-            KeySetVersion::Version02 => {
-                if sig.dleq.is_some() {
-                    return Err(Error::CouldNotVerifyDleq);
-                }
-                bls_mint_pubkeys.push(key);
-                bls_signatures.push(sig.c);
-                bls_blinded_messages.push(blinded_message.blinded_secret);
             }
         }
     }
 
-    let verification_started_at = Instant::now();
-    let verification = batch_verify_bls_blind_signatures(
-        &bls_mint_pubkeys,
-        &bls_signatures,
-        &bls_blinded_messages,
-    )
-    .map_err(|_| Error::CouldNotVerifyDleq);
-    super::performance::record_wallet_performance_stage(
-        super::performance::WalletPerformanceStage::FinalBlindSignatureVerification,
-        verification_started_at,
-        bls_signatures.len(),
-        verification.is_ok(),
-    );
-    verification?;
+    #[cfg(feature = "federation")]
+    {
+        let verification_started_at = Instant::now();
+        let verification = batch_verify_bls_blind_signatures(
+            &bls_mint_pubkeys,
+            &bls_signatures,
+            &bls_blinded_messages,
+        )
+        .map_err(|_| Error::CouldNotVerifyDleq);
+        super::performance::record_wallet_performance_stage(
+            super::performance::WalletPerformanceStage::FinalBlindSignatureVerification,
+            verification_started_at,
+            bls_signatures.len(),
+            verification.is_ok(),
+        );
+        verification?;
+    }
 
     Ok(())
 }

@@ -12,7 +12,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
+#[cfg_attr(feature = "federation", path = "federation_public_key.rs")]
 mod public_key;
+#[cfg_attr(feature = "federation", path = "federation_secret_key.rs")]
 mod secret_key;
 
 #[cfg(feature = "federation")]
@@ -23,12 +25,14 @@ pub use self::bls::{
     verify_blind_signature_share, BlsAggregatePublicKey, BlsBlindSignatureShare, BlsPublicKeyShare,
     BlsSecretKeyShare, BlsSignerId, BlsThresholdKeySet,
 };
+#[cfg(feature = "federation")]
 pub use self::bls::{BlsG1PublicKey, BlsG2PublicKey, BlsSecretKey};
 pub use self::public_key::PublicKey;
 pub use self::secret_key::SecretKey;
 use super::nut02::KeySet;
 use crate::amount::Amount;
 
+#[cfg(feature = "federation")]
 pub(crate) mod bls;
 
 /// Nut01 Error

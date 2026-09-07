@@ -17,8 +17,11 @@ use arc_swap::ArcSwap;
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
 use cdk_common::database::MintKeyDatabaseTransaction;
-use cdk_common::dhke::{sign_message, verify_bls_message, verify_message};
+#[cfg(feature = "federation")]
+use cdk_common::dhke::verify_bls_message;
+use cdk_common::dhke::{sign_message, verify_message};
 use cdk_common::mint::MintKeySetInfo;
+#[cfg(feature = "federation")]
 use cdk_common::nut02::KeySetVersion;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
 use cdk_common::{database, Error, PublicKey};
@@ -394,17 +397,15 @@ impl Signatory for DbSignatory {
                 .get(&proof.keyset_id)
                 .ok_or(Error::UnknownKeySet)?;
             let key_pair = key.keys.get(&proof.amount).ok_or(Error::UnknownKeySet)?;
-            match proof.keyset_id.get_version() {
-                KeySetVersion::Version00 | KeySetVersion::Version01 => {
-                    verify_message(&key_pair.secret_key, proof.c, proof.secret.as_bytes())?;
+            #[cfg(feature = "federation")]
+            if proof.keyset_id.get_version() == KeySetVersion::Version02 {
+                if proof.dleq.is_some() {
+                    return Err(Error::DHKE(cdk_common::dhke::Error::TokenNotVerified));
                 }
-                KeySetVersion::Version02 => {
-                    if proof.dleq.is_some() {
-                        return Err(Error::DHKE(cdk_common::dhke::Error::TokenNotVerified));
-                    }
-                    verify_bls_message(key_pair.public_key, proof.c, proof.secret.as_bytes())?;
-                }
+                verify_bls_message(key_pair.public_key, proof.c, proof.secret.as_bytes())?;
+                return Ok(());
             }
+            verify_message(&key_pair.secret_key, proof.c, proof.secret.as_bytes())?;
             Ok(())
         })
     }

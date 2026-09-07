@@ -41,7 +41,7 @@ log = "0.4"
 
 
 [features]
-default = ["npubcash", "nwc", "bip353", "federation"]
+default = ["npubcash", "nwc", "bip353"]
 bip353 = ["cdk/bip353"]
 federation = [
     "dep:cdk-iroh",

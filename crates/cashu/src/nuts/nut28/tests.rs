@@ -63,7 +63,7 @@ fn test_blind_public_key() {
     let r_pubkey = blinding_scalar.public_key();
 
     // Compute P + r*G
-    let combined = pubkey.combine(&r_pubkey).unwrap();
+    let combined = pubkey.try_combine(&r_pubkey).unwrap();
 
     assert_eq!(blinded_pubkey.to_string(), combined.to_string());
 }
@@ -86,10 +86,10 @@ fn test_signing_key_derivation() {
     let signing_pubkey_bip340 = signing_key_bip340.public_key();
     assert_eq!(
         signing_pubkey_bip340
-            .x_only_public_key()
+            .try_x_only_public_key()
             .expect("secp signing key"),
         blinded_pubkey
-            .x_only_public_key()
+            .try_x_only_public_key()
             .expect("secp blinded key")
     );
 }

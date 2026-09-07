@@ -35,7 +35,7 @@ iroh = [
     "dep:cdk-iroh",
 ]
 prometheus = ["dep:cdk-prometheus"]
-federation = ["cdk-common/federation"]
+federation = ["cdk-common/federation", "cdk-signatory?/federation"]
 federation-bark = ["federation", "dep:cdk-federation-bark"]
 
 [dependencies]

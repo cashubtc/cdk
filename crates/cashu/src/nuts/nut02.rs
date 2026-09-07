@@ -21,8 +21,10 @@ use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
 use super::nut01::Keys;
+#[cfg(feature = "federation")]
+use super::nut01::SecretKey;
 #[cfg(feature = "mint")]
-use super::nut01::{MintKeyPair, MintKeys, SecretKey};
+use super::nut01::{MintKeyPair, MintKeys};
 use crate::nuts::nut00::CurrencyUnit;
 use crate::util::hex;
 use crate::{ensure_cdk, Amount};
@@ -61,15 +63,26 @@ pub enum KeySetVersion {
     /// Version 01
     Version01,
     /// Version 02
+    #[cfg(feature = "federation")]
     Version02,
 }
 
 impl KeySetVersion {
+    /// Whether this keyset uses BLS signatures rather than secp256k1 DLEQ proofs.
+    pub const fn is_bls(self) -> bool {
+        match self {
+            Self::Version00 | Self::Version01 => false,
+            #[cfg(feature = "federation")]
+            Self::Version02 => true,
+        }
+    }
+
     /// [`KeySetVersion`] to byte
     pub fn to_byte(&self) -> u8 {
         match self {
             Self::Version00 => 0,
             Self::Version01 => 1,
+            #[cfg(feature = "federation")]
             Self::Version02 => 2,
         }
     }
@@ -79,6 +92,7 @@ impl KeySetVersion {
         match byte {
             0 => Ok(Self::Version00),
             1 => Ok(Self::Version01),
+            #[cfg(feature = "federation")]
             2 => Ok(Self::Version02),
             _ => Err(Error::UnknownVersion),
         }
@@ -89,6 +103,7 @@ impl KeySetVersion {
         match value {
             1 => Ok(Self::Version00),
             2 => Ok(Self::Version01),
+            #[cfg(feature = "federation")]
             3 => Ok(Self::Version02),
             _ => Err(Error::UnknownVersion),
         }
@@ -99,6 +114,7 @@ impl KeySetVersion {
         match self {
             Self::Version00 => 1,
             Self::Version01 => 2,
+            #[cfg(feature = "federation")]
             Self::Version02 => 3,
         }
     }
@@ -109,6 +125,7 @@ impl fmt::Display for KeySetVersion {
         match self {
             KeySetVersion::Version00 => f.write_str("00"),
             KeySetVersion::Version01 => f.write_str("01"),
+            #[cfg(feature = "federation")]
             KeySetVersion::Version02 => f.write_str("02"),
         }
     }
@@ -164,9 +181,7 @@ impl Id {
         let version = KeySetVersion::from_byte(&bytes[0])?;
         let id = match version {
             KeySetVersion::Version00 => IdBytes::V1(bytes[1..].try_into()?),
-            KeySetVersion::Version01 | KeySetVersion::Version02 => {
-                IdBytes::V2(bytes[1..].try_into()?)
-            }
+            _ => IdBytes::V2(bytes[1..].try_into()?),
         };
         Ok(Self { version, id })
     }
@@ -233,6 +248,7 @@ impl Id {
 
     /// *** V3 KEYSET ***
     /// Create [`Id`] v3 using the v2 data string shape over BLS G2 compressed keys.
+    #[cfg(feature = "federation")]
     pub fn v3_from_data(
         map: &Keys,
         unit: &CurrencyUnit,
@@ -262,7 +278,7 @@ impl Id {
 
         let pubkeys_concat: Vec<u8> = keys
             .iter()
-            .map(|(_, pubkey)| pubkey.to_bytes())
+            .map(|(_, pubkey)| pubkey.to_bytes().to_vec())
             .collect::<Vec<Vec<u8>>>()
             .concat();
 
@@ -300,7 +316,7 @@ impl Id {
                     id: IdBytes::V1(idbytes),
                 })
             }
-            KeySetVersion::Version01 | KeySetVersion::Version02 => {
+            _ => {
                 // We return the first match or error
                 for keyset_info in keysets_info.iter() {
                     if keyset_info.id.version == short_id.version
@@ -380,6 +396,7 @@ impl TryFrom<String> for Id {
                     .try_into()
                     .map_err(|_| Error::Length)?,
             ),
+            #[cfg(feature = "federation")]
             KeySetVersion::Version02 => IdBytes::V2(
                 hex::decode(&s[2..])?
                     .try_into()
@@ -442,7 +459,7 @@ impl From<Id> for ShortKeysetId {
                 IdBytes::V1(idbytes) => Vec::from(&idbytes),
                 _ => panic!("Unexpected IdBytes length"),
             },
-            KeySetVersion::Version01 | KeySetVersion::Version02 => match id.id {
+            _ => match id.id {
                 IdBytes::V2(idbytes) => Vec::from(&idbytes[..7]),
                 _ => panic!("Unexpected IdBytes length"),
             },
@@ -541,6 +558,7 @@ impl KeySet {
                 self.input_fee_ppk,
                 self.final_expiry,
             ),
+            #[cfg(feature = "federation")]
             KeySetVersion::Version02 => Id::v3_from_data(
                 &self.keys,
                 &self.unit,
@@ -676,6 +694,7 @@ impl MintKeySet {
                         public_key: public_key.into(),
                     }
                 }
+                #[cfg(feature = "federation")]
                 KeySetVersion::Version02 => {
                     let mut attempt = 0;
                     loop {
@@ -715,6 +734,7 @@ impl MintKeySet {
             KeySetVersion::Version01 => {
                 Id::v2_from_data(&keys.clone().into(), &unit, input_fee_ppk, final_expiry)
             }
+            #[cfg(feature = "federation")]
             KeySetVersion::Version02 => {
                 Id::v3_from_data(&keys.clone().into(), &unit, input_fee_ppk, final_expiry)
             }
@@ -802,6 +822,7 @@ impl From<MintKeySet> for Id {
                 keyset.input_fee_ppk,
                 keyset.final_expiry,
             ),
+            #[cfg(feature = "federation")]
             KeySetVersion::Version02 => Id::v3_from_data(
                 &keys,
                 &keyset.unit,
@@ -964,6 +985,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "federation")]
     fn test_v3_deserialization_and_id_generation() {
         let unit = CurrencyUnit::Sat;
         let vector_1 = format!(
@@ -993,6 +1015,7 @@ mod test {
 
     #[cfg(feature = "mint")]
     #[test]
+    #[cfg(feature = "federation")]
     fn test_v3_mint_key_derivation_uses_rejection_sampled_bip32_child_bytes() {
         use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 
@@ -1155,7 +1178,7 @@ mod test {
                     panic!("Failed to create Id from {}: {e}", hex::encode(rand_bytes))
                 })
             }
-            KeySetVersion::Version01 | KeySetVersion::Version02 => {
+            _ => {
                 let mut rand_bytes = vec![version.to_byte(); 33];
                 rand::thread_rng().fill_bytes(&mut rand_bytes[1..]);
                 Id::from_bytes(&rand_bytes).unwrap_or_else(|e| {

@@ -32,6 +32,7 @@
 //! | `[skipped]` | Recovery deferred (mint unreachable), will retry on next recovery |
 
 use std::collections::HashMap;
+#[cfg(feature = "federation")]
 use std::time::Instant;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -47,10 +48,14 @@ use tracing::instrument;
 use self::compensation::RemovePendingProofs;
 use self::state::{Finalized, Initial, Prepared};
 use super::ReceiveOptions;
-use crate::dhke::{batch_verify_bls_messages, construct_proofs};
+#[cfg(feature = "federation")]
+use crate::dhke::batch_verify_bls_messages;
+use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
-use crate::nuts::{Conditions, KeySetVersion, Proofs, PublicKey, SecretKey, SigFlag, State};
+#[cfg(feature = "federation")]
+use crate::nuts::KeySetVersion;
+use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey, SigFlag, State};
 use crate::util::hex;
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
@@ -137,17 +142,19 @@ impl<'a> ReceiveSaga<'a, Initial> {
             .p2pk_signing_keys
             .iter()
             .map(|s| {
-                s.x_only_public_key(&SECP256K1)
+                s.try_x_only_public_key(&SECP256K1)
                     .map(|(x_only, _)| (x_only, s.clone()))
             })
             .collect::<Result<_, _>>()?;
+        #[cfg(feature = "federation")]
         let mut bls_mint_pubkeys = Vec::new();
+        #[cfg(feature = "federation")]
         let mut bls_signatures = Vec::new();
 
         // Process each proof: verify mint signature, handle P2PK/HTLC
         for proof in &mut proofs {
-            match proof.keyset_id.get_version() {
-                KeySetVersion::Version00 | KeySetVersion::Version01 => {
+            match proof.keyset_id.get_version().is_bls() {
+                false => {
                     if proof.dleq.is_some() {
                         let keys = self
                             .wallet
@@ -158,18 +165,23 @@ impl<'a> ReceiveSaga<'a, Initial> {
                         proof.verify_dleq(key)?;
                     }
                 }
-                KeySetVersion::Version02 => {
-                    if proof.dleq.is_some() {
-                        return Err(Error::CouldNotVerifyDleq);
+                true => {
+                    #[cfg(not(feature = "federation"))]
+                    return Err(Error::UnknownKeySet);
+                    #[cfg(feature = "federation")]
+                    {
+                        if proof.dleq.is_some() {
+                            return Err(Error::CouldNotVerifyDleq);
+                        }
+                        let keys = self
+                            .wallet
+                            .keyset_with_policy(proof.keyset_id, keyset_policy)
+                            .await?
+                            .keys;
+                        let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
+                        bls_mint_pubkeys.push(key);
+                        bls_signatures.push(proof.c);
                     }
-                    let keys = self
-                        .wallet
-                        .keyset_with_policy(proof.keyset_id, keyset_policy)
-                        .await?
-                        .keys;
-                    let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
-                    bls_mint_pubkeys.push(key);
-                    bls_signatures.push(proof.c);
                 }
             }
 
@@ -216,7 +228,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
                             Kind::P2PK => i as u8,
                             _ => (i + 1) as u8, // HTLC skips slot 0 since it's a hash, not a pubkey
                         };
-                        let x_only_pubkey = pubkey.x_only_public_key()?;
+                        let x_only_pubkey = pubkey.try_x_only_public_key()?;
 
                         if let std::collections::hash_map::Entry::Vacant(entry) =
                             p2pk_signing_keys.entry(x_only_pubkey)
@@ -260,22 +272,25 @@ impl<'a> ReceiveSaga<'a, Initial> {
             }
         }
 
-        let bls_messages = proofs
-            .iter()
-            .filter(|proof| proof.keyset_id.get_version() == KeySetVersion::Version02)
-            .map(|proof| proof.secret.as_bytes())
-            .collect::<Vec<_>>();
-        let proof_verification_started_at = Instant::now();
-        let proof_verification =
-            batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
-                .map_err(|_| Error::CouldNotVerifyDleq);
-        crate::wallet::performance::record_wallet_performance_stage(
-            crate::wallet::performance::WalletPerformanceStage::FinalProofVerification,
-            proof_verification_started_at,
-            bls_signatures.len(),
-            proof_verification.is_ok(),
-        );
-        proof_verification?;
+        #[cfg(feature = "federation")]
+        {
+            let bls_messages = proofs
+                .iter()
+                .filter(|proof| proof.keyset_id.get_version() == KeySetVersion::Version02)
+                .map(|proof| proof.secret.as_bytes())
+                .collect::<Vec<_>>();
+            let proof_verification_started_at = Instant::now();
+            let proof_verification =
+                batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
+                    .map_err(|_| Error::CouldNotVerifyDleq);
+            crate::wallet::performance::record_wallet_performance_stage(
+                crate::wallet::performance::WalletPerformanceStage::FinalProofVerification,
+                proof_verification_started_at,
+                bls_signatures.len(),
+                proof_verification.is_ok(),
+            );
+            proof_verification?;
+        }
 
         Ok(ReceiveSaga {
             wallet: self.wallet,

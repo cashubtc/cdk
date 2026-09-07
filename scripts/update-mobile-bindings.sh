@@ -41,8 +41,8 @@ usage() {
 #   BARK_REPO_ROOT
 #
 # The script copies the current working tree, including uncommitted changes,
-# into a temporary directory. The federation FFI adapter is applied only to
-# that copy; no files under crates/ or bindings/ in the live CDK tree change.
+# into a temporary directory. The binding manifests explicitly enable federation;
+# no files under crates/ or bindings/ in the live CDK tree change.
 
 log() {
     printf '\n==> %s\n' "$*"

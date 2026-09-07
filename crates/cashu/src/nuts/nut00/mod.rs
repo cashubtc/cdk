@@ -455,7 +455,11 @@ pub struct ProofV4 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<Witness>,
     /// DLEQ Proof
-    #[serde(rename = "d", default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "federation",
+        serde(rename = "d", default, skip_serializing_if = "Option::is_none")
+    )]
+    #[cfg_attr(not(feature = "federation"), serde(rename = "d"))]
     pub dleq: Option<ProofDleq>,
     /// P2BK Ephemeral Public Key (NUT-28)
     #[serde(rename = "pe", default, skip_serializing_if = "Option::is_none")]
@@ -597,7 +601,7 @@ where
     PublicKey::from_slice(&bytes).map_err(serde::de::Error::custom)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "federation"))]
 mod proof_y_tests {
     use super::*;
     use crate::nuts::nut02::KeySetVersion;
@@ -607,9 +611,7 @@ mod proof_y_tests {
             KeySetVersion::Version00 => {
                 Id::from_bytes(&[vec![version.to_byte()], vec![1; 7]].concat())
             }
-            KeySetVersion::Version01 | KeySetVersion::Version02 => {
-                Id::from_bytes(&[vec![version.to_byte()], vec![1; 32]].concat())
-            }
+            _ => Id::from_bytes(&[vec![version.to_byte()], vec![1; 32]].concat()),
         }
         .expect("valid keyset id")
     }

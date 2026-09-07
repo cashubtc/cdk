@@ -152,14 +152,14 @@ async fn merge_keyring_keys(
     let covered: HashSet<XOnlyPublicKey> = keys
         .iter()
         .map(|k| {
-            k.x_only_public_key(&crate::SECP256K1)
+            k.try_x_only_public_key(&crate::SECP256K1)
                 .map(|(x_only, _)| x_only)
         })
         .collect::<Result<_, _>>()?;
 
     let pubkeys = crate::wallet::util::collect_p2pk_pubkeys(proofs)?;
     for pubkey in pubkeys {
-        let x_only = pubkey.x_only_public_key()?;
+        let x_only = pubkey.try_x_only_public_key()?;
         if !covered.contains(&x_only) {
             if let Some(secret_key) = wallet.get_signing_key(&pubkey).await? {
                 keys.push(secret_key);

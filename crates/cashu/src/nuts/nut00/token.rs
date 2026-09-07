@@ -631,7 +631,9 @@ mod tests {
     use super::*;
     use crate::dhke::hash_to_curve;
     use crate::mint_url::MintUrl;
+    #[cfg(feature = "federation")]
     use crate::nuts::nut01::BlsG1PublicKey;
+    #[cfg(feature = "federation")]
     use crate::nuts::nut02::KeySetVersion;
     use crate::nuts::nut10::{Conditions, SpendingConditions};
     use crate::nuts::nut11::SigFlag;
@@ -792,11 +794,15 @@ mod tests {
         let token_v3 =
             TokenV3::from_str(token_v3_str).expect("TokenV3 should be created from string");
         let token_v4 = TokenV4::try_from(token_v3).expect("TokenV3 should be converted to TokenV4");
+        #[cfg(not(feature = "federation"))]
+        let token_v4_expected = "cashuBpGFtd2h0dHBzOi8vODMzMy5zcGFjZTozMzM4YXVjc2F0YWRqVGhhbmsgeW91LmF0gaJhaUgAmh8pMlPkHmFwgqRhYQJhc3hANDA3OTE1YmMyMTJiZTYxYTc3ZTNlNmQyYWViNGM3Mjc5ODBiZGE1MWNkMDZhNmFmYzI5ZTI4NjE3NjhhNzgzN2FjWCECvJCXmX2Br7LMc0a15DRak0a9KlBut5WFmKcvDPhRY-phZPakYWEIYXN4QGZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmVhY1ghAp6OUFC4kKfWwJaNsWvB1dX6BA6h3ihPbsadYSmfZxBZYWT2";
+        #[cfg(feature = "federation")]
         let token_v4_expected = "cashuBpGFtd2h0dHBzOi8vODMzMy5zcGFjZTozMzM4YXVjc2F0YWRqVGhhbmsgeW91LmF0gaJhaUgAmh8pMlPkHmFwgqNhYQJhc3hANDA3OTE1YmMyMTJiZTYxYTc3ZTNlNmQyYWViNGM3Mjc5ODBiZGE1MWNkMDZhNmFmYzI5ZTI4NjE3NjhhNzgzN2FjWCECvJCXmX2Br7LMc0a15DRak0a9KlBut5WFmKcvDPhRY-qjYWEIYXN4QGZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmVhY1ghAp6OUFC4kKfWwJaNsWvB1dX6BA6h3ihPbsadYSmfZxBZ";
         assert_eq!(token_v4.to_string(), token_v4_expected);
     }
 
     #[test]
+    #[cfg(feature = "federation")]
     fn test_token_v4_omits_empty_dleq() {
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
         let keyset_id =

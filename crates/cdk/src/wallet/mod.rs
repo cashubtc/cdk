@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
+#[cfg(feature = "federation")]
 use std::time::Instant;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
@@ -23,14 +24,16 @@ use tracing::instrument;
 use zeroize::Zeroize;
 
 use crate::amount::SplitTarget;
-use crate::dhke::{batch_verify_bls_messages, construct_proofs};
+#[cfg(feature = "federation")]
+use crate::dhke::batch_verify_bls_messages;
+use crate::dhke::construct_proofs;
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::nut17::Kind;
 use crate::nuts::{
-    nut10, CurrencyUnit, Id, KeySetVersion, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
+    nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
     RestoreRequest, SpendingConditions, State,
 };
 use crate::wallet::blind_signature::{
@@ -64,6 +67,7 @@ mod npubcash;
 pub mod nwc;
 mod p2pk;
 pub mod payment_request;
+#[cfg(feature = "federation")]
 mod performance;
 mod proofs;
 mod receive;
@@ -1041,8 +1045,11 @@ impl Wallet {
         // We need the keysets information to properly convert from token proof to proof
         let proofs = self.token_proofs(token).await?;
         let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
+        #[cfg(feature = "federation")]
         let mut bls_mint_pubkeys = Vec::new();
+        #[cfg(feature = "federation")]
         let mut bls_signatures = Vec::new();
+        #[cfg(feature = "federation")]
         let mut bls_messages = Vec::new();
 
         for proof in &proofs {
@@ -1059,32 +1066,40 @@ impl Wallet {
             }
             .ok_or(Error::AmountKey)?;
 
-            match proof.keyset_id.get_version() {
-                KeySetVersion::Version00 | KeySetVersion::Version01 => proof
+            match proof.keyset_id.get_version().is_bls() {
+                false => proof
                     .verify_dleq(mint_pubkey)
                     .map_err(|_| Error::CouldNotVerifyDleq)?,
-                KeySetVersion::Version02 => {
-                    if proof.dleq.is_some() {
-                        return Err(Error::CouldNotVerifyDleq);
+                true => {
+                    #[cfg(not(feature = "federation"))]
+                    return Err(Error::UnknownKeySet);
+                    #[cfg(feature = "federation")]
+                    {
+                        if proof.dleq.is_some() {
+                            return Err(Error::CouldNotVerifyDleq);
+                        }
+                        bls_mint_pubkeys.push(mint_pubkey);
+                        bls_signatures.push(proof.c);
+                        bls_messages.push(proof.secret.as_bytes());
                     }
-                    bls_mint_pubkeys.push(mint_pubkey);
-                    bls_signatures.push(proof.c);
-                    bls_messages.push(proof.secret.as_bytes());
                 }
             }
         }
 
-        let proof_verification_started_at = Instant::now();
-        let proof_verification =
-            batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
-                .map_err(|_| Error::CouldNotVerifyDleq);
-        self::performance::record_wallet_performance_stage(
-            self::performance::WalletPerformanceStage::FinalProofVerification,
-            proof_verification_started_at,
-            bls_signatures.len(),
-            proof_verification.is_ok(),
-        );
-        proof_verification?;
+        #[cfg(feature = "federation")]
+        {
+            let proof_verification_started_at = Instant::now();
+            let proof_verification =
+                batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
+                    .map_err(|_| Error::CouldNotVerifyDleq);
+            self::performance::record_wallet_performance_stage(
+                self::performance::WalletPerformanceStage::FinalProofVerification,
+                proof_verification_started_at,
+                bls_signatures.len(),
+                proof_verification.is_ok(),
+            );
+            proof_verification?;
+        }
 
         Ok(())
     }

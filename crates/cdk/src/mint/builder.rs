@@ -64,8 +64,8 @@ pub struct KeysetRotation {
     pub amounts: Vec<u64>,
     /// Input fee
     pub input_fee_ppk: u64,
-    /// Keyset version to create.
-    pub keyset_id_type: KeySetVersion,
+    /// Whether to use keyset V2 (Version01) or V1 (Version00).
+    pub use_keyset_v2: bool,
     /// Optional expiry timestamp (unix seconds)
     pub final_expiry: Option<u64>,
 }
@@ -81,8 +81,8 @@ pub struct MintBuilder {
     payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
     supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
-    use_keyset_v2: Option<bool>,
-    keyset_rotations: Vec<KeysetRotation>,
+    keyset_version: Option<KeySetVersion>,
+    keyset_rotations: Vec<RotateKeyArguments>,
     max_inputs: usize,
     max_outputs: usize,
     max_batch_size: Option<u64>,
@@ -131,7 +131,7 @@ impl MintBuilder {
             payment_processors: HashMap::new(),
             supported_units: HashMap::new(),
             custom_paths: HashMap::new(),
-            use_keyset_v2: None,
+            keyset_version: None,
             keyset_rotations: Vec::new(),
             max_inputs: 1000,
             max_outputs: 1000,
@@ -298,16 +298,22 @@ impl MintBuilder {
 
     /// Set use keyset v2
     pub fn with_keyset_v2(mut self, use_keyset_v2: Option<bool>) -> Self {
-        self.use_keyset_v2 = use_keyset_v2;
+        self.keyset_version = use_keyset_v2.map(|v2| match v2 {
+            true => KeySetVersion::Version01,
+            false => KeySetVersion::Version00,
+        });
+        self
+    }
+
+    /// Explicitly select a keyset version for a federation-capable build.
+    #[cfg(feature = "federation")]
+    pub fn with_keyset_version(mut self, version: KeySetVersion) -> Self {
+        self.keyset_version = Some(version);
         self
     }
 
     fn preferred_keyset_version(&self) -> KeySetVersion {
-        match self.use_keyset_v2 {
-            Some(false) => KeySetVersion::Version00,
-            Some(true) => KeySetVersion::Version01,
-            None => KeySetVersion::Version02,
-        }
+        self.keyset_version.unwrap_or(KeySetVersion::Version01)
     }
 
     /// Set how often the built signatory reloads keysets from the shared
@@ -323,6 +329,22 @@ impl MintBuilder {
     /// Add a keyset rotation to execute during build.
     /// Used to create inactive/expired keysets for testing.
     pub fn with_keyset_rotation(mut self, rotation: KeysetRotation) -> Self {
+        self.keyset_rotations.push(RotateKeyArguments {
+            unit: rotation.unit,
+            amounts: rotation.amounts,
+            input_fee_ppk: rotation.input_fee_ppk,
+            keyset_id_type: match rotation.use_keyset_v2 {
+                true => KeySetVersion::Version01,
+                false => KeySetVersion::Version00,
+            },
+            final_expiry: rotation.final_expiry,
+        });
+        self
+    }
+
+    /// Add an explicitly versioned rotation for federation test and setup tooling.
+    #[cfg(feature = "federation")]
+    pub fn with_federation_keyset_rotation(mut self, rotation: RotateKeyArguments) -> Self {
         self.keyset_rotations.push(rotation);
         self
     }
@@ -842,12 +864,7 @@ impl MintBuilder {
                 }
 
                 // Check if version matches explicit preference
-                if let Some(want_v2) = self.use_keyset_v2 {
-                    let desired_version = if want_v2 {
-                        KeySetVersion::Version01
-                    } else {
-                        KeySetVersion::Version00
-                    };
+                if let Some(desired_version) = self.keyset_version {
                     if keyset.id.get_version() != desired_version {
                         tracing::info!(
                             "Rotating keyset for unit {} due to explicit {} preference (current is {})",
@@ -1526,6 +1543,7 @@ mod tests {
         for (use_keyset_v2, expected_version) in [
             (Some(false), KeySetVersion::Version00),
             (Some(true), KeySetVersion::Version01),
+            (None, KeySetVersion::Version01),
         ] {
             let (builder, localstore) = builder_with_bolt11_processor().await;
             let mint = builder

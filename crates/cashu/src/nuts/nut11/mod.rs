@@ -363,7 +363,7 @@ pub(crate) fn valid_signatures(
             if pubkey.verify(msg, signature).is_ok() {
                 // Insert the x-only coordinate to prevent double counting
                 let x_only = pubkey
-                    .x_only_public_key()
+                    .try_x_only_public_key()
                     .map_err(|_| Error::NonSecp256k1Pubkey)?;
                 // If the pubkey's x-coordinate is already verified, return a duplicate signature error
                 if !verified_pubkeys.insert(x_only) {
@@ -413,7 +413,7 @@ impl BlindedMessage {
 
                     if v.verify(msg, &sig).is_ok() {
                         let x_only = v
-                            .x_only_public_key()
+                            .try_x_only_public_key()
                             .map_err(|_| Error::NonSecp256k1Pubkey)?;
                         if !verified_pubkeys.insert(x_only) {
                             return Err(Error::DuplicateSignature);
@@ -757,7 +757,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "federation")]
     fn test_verify_p2pk_with_bls_pubkey_data_is_rejected_not_panic() {
+        #[cfg(feature = "federation")]
         use crate::nuts::nut01::BlsG1PublicKey;
 
         // An attacker-crafted P2PK secret whose `data` is a valid compressed BLS G1

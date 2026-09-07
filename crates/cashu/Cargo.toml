@@ -16,16 +16,16 @@ mint = []
 wallet = []
 nostr = ["dep:nostr-sdk"]
 bench = []
-federation = []
+federation = ["dep:bls12_381", "dep:ff", "dep:group", "dep:sha2_09"]
 
 [dependencies]
 uuid.workspace = true
 bitcoin.workspace = true
-bls12_381.workspace = true
+bls12_381 = { workspace = true, optional = true }
 cbor-diag.workspace = true
 ciborium.workspace = true
-ff.workspace = true
-group.workspace = true
+ff = { workspace = true, optional = true }
+group = { workspace = true, optional = true }
 serde.workspace = true
 serde_bytes.workspace = true
 ur.workspace = true
@@ -36,7 +36,7 @@ tracing.workspace = true
 url.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
-sha2_09.workspace = true
+sha2_09 = { workspace = true, optional = true }
 nostr-sdk = { workspace = true, optional = true }
 zeroize = "1"
 web-time.workspace = true

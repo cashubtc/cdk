@@ -10,7 +10,7 @@ use thiserror::Error;
 use super::nut00::{BlindSignature, Proof};
 use super::nut01::{PublicKey, SecretKey};
 use super::nut02::{Id, KeySetVersion};
-use crate::dhke::{hash_e, hash_to_curve};
+use crate::dhke::{hash_to_curve, try_hash_e as hash_e};
 use crate::{Amount, SECP256K1};
 
 /// NUT12 Error
@@ -79,25 +79,25 @@ fn verify_dleq(
     mint_pubkey: PublicKey, // A
 ) -> Result<(), Error> {
     let e_bytes: [u8; 32] = e.to_secret_bytes();
-    let e: Scalar = e.as_scalar()?;
+    let e: Scalar = e.try_as_scalar()?;
 
     // a = e*A
-    let a = mint_pubkey.mul_tweak(&SECP256K1, &e)?;
+    let a = mint_pubkey.try_mul_tweak(&SECP256K1, &e)?;
 
     // R1 = s*G - a
-    let a = a.negate(&SECP256K1)?;
-    let r1 = s.public_key().combine(&a)?; // s*G + (-a)
+    let a = a.try_negate(&SECP256K1)?;
+    let r1 = s.public_key().try_combine(&a)?; // s*G + (-a)
 
     // b = s*B'
     let s: Scalar = Scalar::from(*s.as_secp256k1()?);
-    let b = blinded_message.mul_tweak(&SECP256K1, &s)?;
+    let b = blinded_message.try_mul_tweak(&SECP256K1, &s)?;
 
     // c = e*C'
-    let c = blinded_signature.mul_tweak(&SECP256K1, &e)?;
+    let c = blinded_signature.try_mul_tweak(&SECP256K1, &e)?;
 
     // R2 = b - c
-    let c = c.negate(&SECP256K1)?;
-    let r2 = b.combine(&c)?;
+    let c = c.try_negate(&SECP256K1)?;
+    let r2 = b.try_combine(&c)?;
 
     // hash(R1,R2,A,C')
     let hash_e: [u8; 32] = hash_e([r1, r2, mint_pubkey, blinded_signature])?;
@@ -119,9 +119,9 @@ fn derive_deterministic_nonce(
     for counter in u8::MIN..=u8::MAX {
         let mut message = Vec::with_capacity(16 + (3 * 65) + 1);
         message.extend_from_slice(b"Cashu_DLEQ_R_v1");
-        message.extend_from_slice(&mint_secret_key.public_key().to_uncompressed_bytes()?);
-        message.extend_from_slice(&blinded_message.to_uncompressed_bytes()?);
-        message.extend_from_slice(&blinded_signature.to_uncompressed_bytes()?);
+        message.extend_from_slice(&mint_secret_key.public_key().try_to_uncompressed_bytes()?);
+        message.extend_from_slice(&blinded_message.try_to_uncompressed_bytes()?);
+        message.extend_from_slice(&blinded_signature.try_to_uncompressed_bytes()?);
         message.push(counter);
 
         let secret_bytes = mint_secret_key.to_secret_bytes();
@@ -151,18 +151,18 @@ fn calculate_dleq(
     let r1 = r.public_key();
 
     // R2 = r*B'
-    let r_scal: Scalar = r.as_scalar()?;
-    let r2 = blinded_message.mul_tweak(&SECP256K1, &r_scal)?;
+    let r_scal: Scalar = r.try_as_scalar()?;
+    let r2 = blinded_message.try_mul_tweak(&SECP256K1, &r_scal)?;
 
     // e = hash(R1,R2,A,C')
     let e: [u8; 32] = hash_e([r1, r2, mint_secret_key.public_key(), blinded_signature])?;
     let e_sk: SecretKey = SecretKey::from_slice(&e)?;
 
     // s1 = e*a
-    let s1 = e_sk.mul_tweak(&mint_secret_key.as_scalar()?)?;
+    let s1 = e_sk.try_mul_tweak(&mint_secret_key.try_as_scalar()?)?;
 
     // s = r + s1
-    let s = r.add_tweak(&s1.to_scalar()?)?;
+    let s = r.try_add_tweak(&s1.try_to_scalar()?)?;
 
     Ok(BlindSignatureDleq { e: e_sk, s })
 }
@@ -174,11 +174,11 @@ impl Proof {
             Some(dleq) => {
                 let y = hash_to_curve(self.secret.as_bytes())?;
 
-                let r: Scalar = dleq.r.as_scalar()?;
-                let bs1 = mint_pubkey.mul_tweak(&SECP256K1, &r)?;
+                let r: Scalar = dleq.r.try_as_scalar()?;
+                let bs1 = mint_pubkey.try_mul_tweak(&SECP256K1, &r)?;
 
-                let blinded_signature = self.c.combine(&bs1)?;
-                let blinded_message = y.combine(&dleq.r.public_key())?;
+                let blinded_signature = self.c.try_combine(&bs1)?;
+                let blinded_message = y.try_combine(&dleq.r.public_key())?;
 
                 verify_dleq(
                     blinded_message,
@@ -209,6 +209,7 @@ impl BlindSignature {
                 blinded_message,
                 mint_secretkey,
             )?),
+            #[cfg(feature = "federation")]
             KeySetVersion::Version02 => None,
         };
 
@@ -490,6 +491,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "federation")]
     fn test_v3_blind_signature_omits_dleq() {
         use crate::nuts::nut02::{Id, KeySetVersion};
 
