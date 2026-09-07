@@ -893,6 +893,16 @@ pub trait FederationApplicationDatabase {
         application_id: crate::federation::FederationFrostApplicationId,
     ) -> Result<serde_json::Value, Self::Err>;
 
+    /// Get one application-owned action without loading unrelated projection history.
+    ///
+    /// The application defines the canonical 32-byte action identifier and JSON record.
+    /// Unsupported applications and missing actions return `None`.
+    async fn get_federation_application_action(
+        &self,
+        application_id: crate::federation::FederationFrostApplicationId,
+        action_id: [u8; 32],
+    ) -> Result<Option<serde_json::Value>, Self::Err>;
+
     /// Get minimal mint-quote state for convergence projection in input order.
     async fn get_federation_mint_quote_states(
         &self,

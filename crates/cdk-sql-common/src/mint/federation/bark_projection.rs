@@ -63,7 +63,7 @@ fn vtxo_state_label(state: FederationBarkVtxoState) -> &'static str {
     }
 }
 
-async fn get_action<C>(
+pub(super) async fn get_action<C>(
     connection: &C,
     action_id: cdk_federation_bark::FederationBarkActionId,
 ) -> Result<Option<FederationBarkActionRecord>, Error>

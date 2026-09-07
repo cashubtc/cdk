@@ -596,6 +596,15 @@ mod test {
 
     #[cfg(feature = "federation-bark")]
     #[tokio::test]
+    async fn federation_bark_action_reads() {
+        cdk_federation_bark::test_support::federation_bark_action_reads(
+            provide_db("federation_bark_action_reads".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation-bark")]
+    #[tokio::test]
     async fn federation_bark_projection_sustained_workload() {
         const LIFECYCLES_PER_MODE: usize = 20;
 

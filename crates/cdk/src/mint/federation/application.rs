@@ -475,14 +475,12 @@ impl Mint {
             .map(|attestation| attestation.signer)
             .ok_or(Error::Internal)?;
         let observation = certificate.observation_for(observer);
-        let projection = self.federation_bark_projection_snapshot().await?;
-        let action = projection
-            .actions
-            .iter()
-            .find(|action| action.action_id == certificate.binding.action_id)
+        let action = self
+            .federation_bark_action(certificate.binding.action_id)
+            .await?
             .ok_or(Error::Internal)?;
         let template = self
-            .federation_bark_payment_observation_template(action, &observation)
+            .federation_bark_payment_observation_template(&action, &observation)
             .await?
             .ok_or(Error::Internal)?;
         Ok(certificate
@@ -514,11 +512,9 @@ impl Mint {
             .map(|attestation| attestation.signer)
             .ok_or(Error::Internal)?;
         let observation = certificate.observation_for(observer);
-        let projection = self.federation_bark_projection_snapshot().await?;
-        let current = projection
-            .actions
-            .iter()
-            .find(|action| action.action_id == transition.action_id)
+        let current = self
+            .federation_bark_action(transition.action_id)
+            .await?
             .ok_or(Error::Internal)?;
         let operation = FederationBarkOperation::ActionTransition(transition.clone());
         let action = current.advanced(entry, &operation)?;

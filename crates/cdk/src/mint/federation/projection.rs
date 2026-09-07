@@ -73,6 +73,23 @@ impl Mint {
         serde_json::from_value(snapshot).map_err(|_| Error::Internal)
     }
 
+    /// Load one canonical Bark action without scanning projection history.
+    #[instrument(skip_all)]
+    pub async fn federation_bark_action(
+        &self,
+        action_id: cdk_federation_bark::FederationBarkActionId,
+    ) -> Result<Option<FederationBarkActionRecord>, Error> {
+        self.localstore()
+            .get_federation_application_action(
+                federation_bark_application_id()?,
+                action_id.to_bytes(),
+            )
+            .await?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| Error::Internal)
+    }
+
     /// Load one applied receive intent by its accepted operation ID.
     #[instrument(skip_all)]
     pub async fn federation_bark_receive_intent(

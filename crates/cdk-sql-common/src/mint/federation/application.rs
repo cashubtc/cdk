@@ -236,6 +236,35 @@ where
         }
     }
 
+    async fn get_federation_application_action(
+        &self,
+        application_id: cdk_common::federation::FederationFrostApplicationId,
+        action_id: [u8; 32],
+    ) -> Result<Option<serde_json::Value>, Self::Err> {
+        #[cfg(feature = "federation-bark")]
+        {
+            if application_id != cdk_federation_bark::federation_bark_application_id()? {
+                return Ok(None);
+            }
+            let action_id = cdk_federation_bark::FederationBarkActionId::from_bytes(action_id)?;
+            let conn = self
+                .pool
+                .get()
+                .await
+                .map_err(|e| Error::Database(Box::new(e)))?;
+            super::bark_projection::get_action(&*conn, action_id)
+                .await?
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(Error::from)
+        }
+        #[cfg(not(feature = "federation-bark"))]
+        {
+            let _ = (application_id, action_id);
+            Ok(None)
+        }
+    }
+
     async fn get_federation_mint_quote_states(
         &self,
         quote_ids: &[QuoteId],

@@ -731,6 +731,15 @@ mod test {
         .await;
     }
 
+    #[cfg(feature = "federation-bark")]
+    #[tokio::test]
+    async fn federation_bark_action_reads() {
+        cdk_federation_bark::test_support::federation_bark_action_reads(
+            provide_mint_db(unique_federation_test_id("federation_bark_action_reads")).await,
+        )
+        .await;
+    }
+
     #[cfg(feature = "federation")]
     #[tokio::test]
     async fn federation_signature_share_persistence() {

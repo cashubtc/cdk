@@ -139,3 +139,129 @@ where
     .expect("decode replayed Bark projection snapshot");
     assert_eq!(second, first);
 }
+
+/// Compare focused action reads with complete snapshots at increasing history sizes.
+///
+/// Reports elapsed read time and returned row counts without timing assertions.
+/// Both storage backends run the same absence, rollback, replay, and equality checks.
+pub async fn federation_bark_action_reads<DB>(db: DB)
+where
+    DB: Database<DatabaseError>,
+{
+    let application_id = federation_bark_application_id().expect("Bark application ID");
+    let selected_id = FederationBarkActionId::from_bytes([1; 32]).expect("selected action ID");
+    assert!(db
+        .get_federation_application_action(application_id, selected_id.to_bytes())
+        .await
+        .expect("absent action read")
+        .is_none());
+    let mut journal = InMemoryFederationJournal::new();
+    for index in 1_u64..=256 {
+        let mut intent = receive_intent();
+        let mut bytes = [0_u8; 32];
+        bytes[..8].copy_from_slice(&index.to_be_bytes());
+        intent.action_id = match index {
+            1 => selected_id,
+            _ => FederationBarkActionId::from_bytes(bytes).expect("action ID"),
+        };
+        intent.quote = format!("bark-action-read-{index}");
+        intent.payment_hash = FederationBarkDigest::from_bytes(bytes).expect("payment hash");
+        intent.destination = FederationBarkVtxoLocator::vtxo_custody(
+            u32::try_from(index).expect("bounded history index"),
+        );
+        let envelope = FederationOperationEnvelope::new(
+            federation_id(),
+            federation_bark_application_operation(crate::FederationBarkOperation::ReceiveIntent(
+                intent,
+            ))
+            .expect("Bark application operation"),
+        )
+        .authorize(&private_member())
+        .expect("authorize Bark operation");
+        let entry = match journal.append(envelope).expect("append action") {
+            FederationJournalAppendOutcome::Appended(entry) => entry,
+            FederationJournalAppendOutcome::Duplicate(_) => panic!("unique action"),
+        };
+        let application = match &entry.envelope.operation {
+            FederationOperation::Application(application) => application,
+            FederationOperation::ExternalApplication(application) => application.application(),
+            _ => panic!("application operation"),
+        };
+        let mut transaction = Database::begin_transaction(&db)
+            .await
+            .expect("begin action");
+        transaction
+            .apply_federation_application_operation(&entry, application)
+            .await
+            .expect("apply action");
+        transaction.rollback().await.expect("rollback action");
+        let action_id = crate::validate_federation_bark_operation(&entry.envelope.operation)
+            .expect("Bark operation")
+            .action_id();
+        assert!(db
+            .get_federation_application_action(application_id, action_id.to_bytes())
+            .await
+            .expect("rolled back action read")
+            .is_none());
+        let mut transaction = Database::begin_transaction(&db)
+            .await
+            .expect("begin action");
+        transaction
+            .apply_federation_application_operation(&entry, application)
+            .await
+            .expect("apply action");
+        transaction
+            .apply_federation_application_operation(&entry, application)
+            .await
+            .expect("idempotent replay");
+        transaction.commit().await.expect("commit action");
+        if ![1, 64, 256].contains(&index) {
+            continue;
+        }
+        let mut snapshot_elapsed = std::time::Duration::ZERO;
+        let mut action_elapsed = std::time::Duration::ZERO;
+        let mut rows = 0;
+        let mut last_snapshot = None;
+        for _ in 0..20 {
+            let started = std::time::Instant::now();
+            let snapshot: FederationBarkProjectionSnapshot = serde_json::from_value(
+                db.get_federation_application_projection_snapshot(application_id)
+                    .await
+                    .expect("snapshot"),
+            )
+            .expect("typed snapshot");
+            snapshot_elapsed += started.elapsed();
+            rows = snapshot.actions.len()
+                + snapshot.vtxos.len()
+                + snapshot.derivation_allocations.len()
+                + snapshot.reservations.len()
+                + snapshot.transitions.len()
+                + snapshot.observations.len();
+            let started = std::time::Instant::now();
+            let action: crate::FederationBarkActionRecord = serde_json::from_value(
+                db.get_federation_application_action(application_id, selected_id.to_bytes())
+                    .await
+                    .expect("focused action")
+                    .expect("present action"),
+            )
+            .expect("typed action");
+            action_elapsed += started.elapsed();
+            assert_eq!(snapshot.actions.len(), index as usize);
+            assert_eq!(
+                Some(&action),
+                snapshot.actions.iter().find(|a| a.action_id == selected_id)
+            );
+            last_snapshot = Some(snapshot);
+        }
+        let digest = cdk_common::federation::FederationMaterializedStateSnapshot::from_rows(
+            last_snapshot
+                .expect("measured snapshot")
+                .materialized_rows()
+                .expect("canonical rows"),
+        )
+        .digest()
+        .expect("materialized digest");
+        eprintln!("Bark read digest: history={index}, digest={digest}");
+        eprintln!("Bark read comparison: history={index}, repetitions=20, snapshot_rows={rows}, focused_rows=1, snapshot_us={}, focused_us={}", snapshot_elapsed.as_micros(), action_elapsed.as_micros());
+    }
+}

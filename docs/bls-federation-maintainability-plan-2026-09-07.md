@@ -142,3 +142,22 @@ Preserve federation wire formats and canonical encodings unless a package requir
 - Same configuration with filter `service_startup_failure_cancels_workers_already_started`: 1 passed.
 - The test build also verified the module extraction. Moved test imports were made explicit. Two federation test helpers used outside metrics tests had an unnecessary metrics feature gate; removing those gates restores the no-metrics test combination. No tests were deleted.
 - Full setup/restart/catch-up and payment verification remain part of final validation.
+
+### Package 4: focused Bark action reads
+
+- Added an action-scoped read to the federation storage interface and a typed mint accessor. Certificate-to-payment lookup and transition-certificate lookup now fetch one action. Validation, audits, and recovery retain complete snapshots. No migrations or canonical encodings changed.
+- Both SQL implementations share the same keyed query. The shared test checks absence, rollback, repeated application, and exact equality with the complete snapshot at 1, 64, and 256 accepted receive intents.
+- Pinned Nix stable: `cargo test --offline -p cdk-sqlite --lib --features federation-bark federation_bark_action_reads -- --nocapture --test-threads=1`: 1 passed. The corresponding `cdk-postgres` command with `CDK_MINTD_DATABASE_URL` set to the local fixture: 1 passed.
+- Measurements below are elapsed microseconds for 20 paired reads per history size, including decoding. These are local workload measurements, not production latency predictions. PostgreSQL statement logging was enabled equally for both reads.
+
+| Backend | History | Snapshot rows/read | Focused rows/read | Snapshot µs/20 reads | Focused µs/20 reads |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| SQLite | 1 | 2 | 1 | 6,061 | 3,711 |
+| SQLite | 64 | 128 | 1 | 184,727 | 6,445 |
+| SQLite | 256 | 512 | 1 | 696,368 | 10,672 |
+| PostgreSQL | 1 | 2 | 1 | 88,261 | 18,175 |
+| PostgreSQL | 64 | 128 | 1 | 360,561 | 39,598 |
+| PostgreSQL | 256 | 512 | 1 | 1,638,454 | 146,651 |
+
+- PostgreSQL statement logs confirm 60 SELECTs for each of the six projection tables (360 total), compared with 60 action-keyed SELECTs for the paired reads: six queries versus one per read. Fixture setup and rollback queries were excluded. Raw logs contain local fixture data and are not committed.
+- Added canonical materialized-state digest output to the conformance test for the final cross-backend comparison; that rerun is pending. Full payment and restart verification remain pending.
