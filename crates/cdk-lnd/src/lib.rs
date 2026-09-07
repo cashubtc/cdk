@@ -239,6 +239,29 @@ fn outgoing_payment_failure_response(
     }
 }
 
+/// Preserve an existing payment, or reject an expired invoice before dispatch.
+fn bolt11_pre_dispatch_response(
+    unit: &CurrencyUnit,
+    bolt11: &Bolt11Invoice,
+    pay_state: MakePaymentResponse,
+) -> Option<MakePaymentResponse> {
+    let payment_lookup_id = PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref());
+    match pay_state.status {
+        MeltQuoteState::Paid | MeltQuoteState::Pending => Some(MakePaymentResponse {
+            payment_lookup_id,
+            ..pay_state
+        }),
+        MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => {
+            // LND rejects expired invoices before recording a payment, so a
+            // later lookup cannot resolve that rejection. Return an authoritative
+            // failure locally while we know no dispatch has been attempted.
+            bolt11
+                .is_expired()
+                .then(|| outgoing_payment_failure_response(unit, payment_lookup_id))
+        }
+    }
+}
+
 #[async_trait]
 impl MintPayment for Lnd {
     type Err = payment::Error;
@@ -482,22 +505,8 @@ impl MintPayment for Lnd {
                 // as an ambiguous dispatch failure.
                 let pay_state = self.check_outgoing_payment(&payment_lookup_id).await?;
 
-                match pay_state.status {
-                    MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => (),
-                    MeltQuoteState::Paid => {
-                        tracing::debug!("Melt attempted on invoice already paid");
-                        return Ok(MakePaymentResponse {
-                            payment_lookup_id: payment_lookup_id.clone(),
-                            ..pay_state
-                        });
-                    }
-                    MeltQuoteState::Pending => {
-                        tracing::debug!("Melt attempted on invoice already pending");
-                        return Ok(MakePaymentResponse {
-                            payment_lookup_id: payment_lookup_id.clone(),
-                            ..pay_state
-                        });
-                    }
+                if let Some(response) = bolt11_pre_dispatch_response(unit, &bolt11, pay_state) {
+                    return Ok(response);
                 }
 
                 // Detect partial payments
@@ -911,7 +920,92 @@ impl MintPayment for Lnd {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use cdk_common::bitcoin::hashes::sha256;
+    use cdk_common::bitcoin::secp256k1::{Secp256k1, SecretKey};
+    use cdk_common::lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
+
     use super::*;
+
+    fn invoice_with_timestamp(timestamp: Duration) -> Bolt11Invoice {
+        let key = SecretKey::from_slice(&[1; 32]).unwrap();
+        InvoiceBuilder::new(Currency::Regtest)
+            .description("expiry test".to_owned())
+            .payment_hash(sha256::Hash::from_byte_array([42; 32]))
+            .payment_secret(PaymentSecret([43; 32]))
+            .duration_since_epoch(timestamp)
+            .expiry_time(Duration::from_secs(3600))
+            .min_final_cltv_expiry_delta(144)
+            .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &key))
+            .unwrap()
+    }
+
+    #[test]
+    fn expired_invoice_without_active_payment_fails_before_dispatch() {
+        let invoice = invoice_with_timestamp(Duration::from_secs(1));
+        let payment_lookup_id = PaymentIdentifier::PaymentHash(*invoice.payment_hash().as_ref());
+
+        for status in [
+            MeltQuoteState::Unknown,
+            MeltQuoteState::Unpaid,
+            MeltQuoteState::Failed,
+        ] {
+            let pay_state = MakePaymentResponse {
+                status,
+                ..outgoing_payment_failure_response(&CurrencyUnit::Msat, payment_lookup_id.clone())
+            };
+            let response =
+                bolt11_pre_dispatch_response(&CurrencyUnit::Sat, &invoice, pay_state).unwrap();
+
+            assert_eq!(response.status, MeltQuoteState::Failed);
+            assert_eq!(response.payment_lookup_id, payment_lookup_id);
+            assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Sat));
+            assert!(response.payment_proof.is_none());
+        }
+    }
+
+    #[test]
+    fn expired_invoice_preserves_existing_paid_or_pending_payment() {
+        let invoice = invoice_with_timestamp(Duration::from_secs(1));
+        let payment_lookup_id = PaymentIdentifier::PaymentHash(*invoice.payment_hash().as_ref());
+
+        for status in [MeltQuoteState::Paid, MeltQuoteState::Pending] {
+            let pay_state = MakePaymentResponse {
+                payment_lookup_id: payment_lookup_id.clone(),
+                payment_proof: Some("existing preimage".to_owned()),
+                status,
+                total_spent: Amount::new(1234, CurrencyUnit::Msat),
+            };
+            let response =
+                bolt11_pre_dispatch_response(&CurrencyUnit::Sat, &invoice, pay_state).unwrap();
+
+            assert_eq!(response.status, status);
+            assert_eq!(response.payment_lookup_id, payment_lookup_id);
+            assert_eq!(response.total_spent, Amount::new(1234, CurrencyUnit::Msat));
+            assert_eq!(response.payment_proof.as_deref(), Some("existing preimage"));
+        }
+    }
+
+    #[test]
+    fn unexpired_invoice_without_active_payment_can_dispatch() {
+        let invoice = invoice_with_timestamp(Duration::from_secs(unix_time()));
+        let payment_lookup_id = PaymentIdentifier::PaymentHash(*invoice.payment_hash().as_ref());
+
+        for status in [
+            MeltQuoteState::Unknown,
+            MeltQuoteState::Unpaid,
+            MeltQuoteState::Failed,
+        ] {
+            let pay_state = MakePaymentResponse {
+                status,
+                ..outgoing_payment_failure_response(&CurrencyUnit::Msat, payment_lookup_id.clone())
+            };
+            assert!(
+                bolt11_pre_dispatch_response(&CurrencyUnit::Sat, &invoice, pay_state).is_none()
+            );
+        }
+    }
 
     #[test]
     fn lnrpc_payment_total_spent_uses_msat_fields() {
