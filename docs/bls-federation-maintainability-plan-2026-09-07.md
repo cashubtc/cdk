@@ -1,6 +1,6 @@
 # Federation maintainability implementation plan
 
-Status: implementation in progress. See the execution ledger below.
+Status: completed on 2026-09-08. All seven work packages are implemented; ordinary-CDK isolation and fresh local federation payments/restart verification passed. See the execution ledger and limitations below.
 
 Baseline: `bls-federation` at `d2a5b9965`, compared with main base `bb139eff2`.
 
@@ -109,7 +109,7 @@ Preserve federation wire formats and canonical encodings unless a package requir
 
 ## Execution ledger
 
-- Implementation started from the clean baseline. No completion or new payment verification is claimed yet.
+- Implementation started from the clean baseline. The ledger records intermediate failures, their corrections, and final verification. Final tested implementation: `5b20429b1`; the subsequent delivery commit contains documentation and evidence only.
 
 ### Package 1: feature boundary
 
@@ -121,8 +121,8 @@ Preserve federation wire formats and canonical encodings unless a package requir
 - `cargo test --offline -p cashu --lib --features federation`: 640 passed, 2 ignored.
 - Library checks passed for standalone CDK mint/wallet and combined federation/BDK/Bark Axum.
 - `cargo clippy --offline -p cashu -p cdk --lib --no-default-features --features cdk/mint,cdk/wallet,cdk/federation -- -D warnings`: passed. Keyset signature-family dispatch is centralized so callers remain valid under Cargo dependency-feature unification.
-- Initial local checks used the available Cargo/Rust 1.95 tools. The project Nix stable shell is available and reports Cargo 1.98; final checks will use it. An all-target Cashu lint run exposed the existing ordinary NUT-16 test's `manual_is_multiple_of` warning; that unrelated test was left unchanged.
-- Remaining: final pinned-toolchain matrix, FFI, full integration and payment verification, and packages 2–7. These interim results do not establish overall completion.
+- Initial local checks used the available Cargo/Rust 1.95 tools. Final checks used the project Nix stable shell with Rust/Cargo 1.98. An all-target Cashu lint run exposed the existing ordinary NUT-16 test's `manual_is_multiple_of` warning; that unrelated test was left unchanged.
+- The final pinned-toolchain matrix, FFI, runtime/storage suites, and payment verification are recorded below; they supersede these initial checks.
 
 ### Package 2: mechanical module extraction
 
@@ -130,7 +130,7 @@ Preserve federation wire formats and canonical encodings unless a package requir
 - Moved daemon federation configuration into its own module and federation database contracts into `database/mint/federation.rs`, preserving public re-exports and transaction composition.
 - Retained all existing tests. Removed imports and redundant feature gates made unnecessary by the gated module boundaries.
 - `cargo fix --offline --allow-dirty --lib -p cdk-axum -p cdk-mintd -p cdk-common --no-default-features --features cdk-axum/federation-bdk,cdk-axum/federation-bark,cdk-mintd/federation-bdk,cdk-mintd/federation-bark,cdk-mintd/sqlite`: library compilation passed while pruning relocation imports.
-- Pinned-toolchain all-target compilation is in progress; final test results will be recorded below. This commit is mechanical and does not claim runtime or payment verification.
+- Pinned-toolchain all-target compilation and the final runtime tests passed as recorded below. This extraction was committed separately from semantic changes.
 
 ### Package 3: member context and lifecycle
 
@@ -141,7 +141,7 @@ Preserve federation wire formats and canonical encodings unless a package requir
 - `RUST_MIN_STACK=16777216 cargo test --offline -p cdk-axum --lib --no-default-features --features federation-bdk,federation-bark federation::services::tests -- --test-threads=1`: 4 passed, including drain, timeout/abort, explicit failure, and panic propagation.
 - Same configuration with filter `service_startup_failure_cancels_workers_already_started`: 1 passed.
 - The test build also verified the module extraction. Moved test imports were made explicit. Two federation test helpers used outside metrics tests had an unnecessary metrics feature gate; removing those gates restores the no-metrics test combination. No tests were deleted.
-- Full setup/restart/catch-up and payment verification remain part of final validation.
+- Full setup/restart/catch-up tests and fresh local payment verification passed as recorded below.
 
 ### Package 4: focused Bark action reads
 
@@ -160,12 +160,12 @@ Preserve federation wire formats and canonical encodings unless a package requir
 | PostgreSQL | 256 | 512 | 1 | 1,638,454 | 146,651 |
 
 - PostgreSQL statement logs confirm 60 SELECTs for each of the six projection tables (360 total), compared with 60 action-keyed SELECTs for the paired reads: six queries versus one per read. Fixture setup and rollback queries were excluded. Raw logs contain local fixture data and are not committed.
-- Final Bark-filter rerun: SQLite 3 passed (including sustained workload), PostgreSQL 2 passed. Canonical materialized-state digests match across both backends at all three history sizes. At 256 intents both produce `fcb7003dfd459b573eb0ef7f90d4b94b793bedaaae326696e7a6ae0f27b1df1d`. Full payment and restart verification remain pending.
+- Final Bark-filter rerun: SQLite 3 passed (including sustained workload), PostgreSQL 2 passed. Canonical materialized-state digests match across both backends at all three history sizes. At 256 intents both produce `fcb7003dfd459b573eb0ef7f90d4b94b793bedaaae326696e7a6ae0f27b1df1d`. Fresh payment and restart verification passed below.
 
 ### Lifecycle follow-up
 
 - The final worker inventory found a detached BDK sync loop still starting during wallet construction. It now starts explicitly with active member services, uses the runtime task group, observes cancellation between syncs, and retains bounded in-flight shutdown. Existing retry timing and latency events are preserved.
-- Combined Axum/daemon all-target compilation passed with BDK and Bark enabled. The complete runtime suite and live restart validation are pending below.
+- Combined Axum/daemon all-target compilation passed with BDK and Bark enabled. The complete runtime suite and live restart validation passed below.
 
 ### Package 5: quote fallback and verified aggregation
 
@@ -173,14 +173,14 @@ Preserve federation wire formats and canonical encodings unless a package requir
 - Mint, melt, and restore collection return the successful aggregate directly. Verified shares are retained only within one request, bound to the immutable connector configuration, member identity, exact blinded outputs, response content, and validation mode. Ready responses drained after a rejection retain their chance to produce a valid result.
 - Pinned Nix stable: `RUST_MIN_STACK=16777216 cargo test --offline -p cdk --lib --no-default-features --features mint,wallet,federation-bark wallet::federation::tests -- --nocapture --test-threads=1`: 103 passed. This covers malicious shares, incompatible groups, insufficient quorum, partial change, fallback, restore, and catch-up.
 - The repeated-pass comparison verifies the same aggregate with 12 individual share verifications using three fresh passes versus 4 with request-local retention. Changed outputs, member signatures, and amount metadata are rejected. This measures cryptographic work for that workload, not end-to-end latency.
-- The final ready-response preservation adjustment will also run through the complete CDK suite. No wallet public methods changed, and no tests were deleted.
+- The final ready-response preservation adjustment passed the complete CDK suite. No wallet public methods changed, and no tests were deleted.
 
 ### Package 6: diagnostics and internal interfaces
 
 - Bark execution/reconciliation errors retain their typed, redacted backend reason with phase and accepted-operation context. Database/host projection failures retain a redacted reason while preserving their prior ambiguous classification. Public Cashu and private HTTP responses remain generic internal failures.
 - Special custody-signer recovery, uncertain external outcomes, degraded-state decisions, and evidence requirements remain unchanged. Diagnostic conversion never authorizes initiation or retry.
 - Removed the maintenance wrapper whose only caller always supplied one action. Reduced visibility of maintenance startup and the local wallet-liveness configuration; retained the configuration's timing invariants and explicit consensus signing lease.
-- `cargo test --offline -p cdk-common --lib --features federation federation_backend_failure -- --test-threads=1`: 1 passed, verifying public redaction and ambiguous failure classification before/after wire conversion. The existing private HTTP diagnostic test now also covers backend errors; the full Axum run is pending.
+- `cargo test --offline -p cdk-common --lib --features federation federation_backend_failure -- --test-threads=1`: 1 passed, verifying public redaction and ambiguous failure classification before/after wire conversion. The existing private HTTP diagnostic test now also covers backend errors; it passed in the full Axum run.
 - Fixture consolidation uses the complete member-context constructor and shared cross-backend Bark conformance helper. No existing tests were deleted: admission, application, SQL, network, restart, and cryptographic scenarios remain separate. The old-to-retained coverage mapping is identity for every existing test.
 
 ### Final verification: runtime
@@ -219,7 +219,7 @@ All final commands use the repository's Nix stable shell (Rust/Cargo 1.98). Fede
 | `cargo test --offline -p cdk-postgres --lib --features federation-bark federation -- --test-threads=1` | 30 passed |
 | `cargo test --offline -p cdk-mintd --lib --features federation-bdk,federation-bark,federation-test-utils,iroh -- --test-threads=1` | 365 passed, no ignored |
 
-The SDK run took 927.01 seconds and the daemon tests took 152.59 seconds, excluding compilation. Storage runs cover federation transactions, rollback, checkpoints, replay, and materialized-state agreement. The focused-read call-site and narrow feature corrections are being verified separately below; these results do not yet establish fresh live payment verification.
+The SDK run took 927.01 seconds and the daemon tests took 152.59 seconds, excluding compilation. Storage runs cover federation transactions, rollback, checkpoints, replay, and materialized-state agreement. The focused-read call-site and narrow feature corrections passed their follow-up checks below. Fresh live payment verification is recorded separately.
 
 - Backend fixture follow-up: SQLite and PostgreSQL each passed both BLS storage tests (`cargo test --offline -p <backend> --lib --features federation-bark bls -- --test-threads=1`). A Redb-only run exposed that canonical federation operations already require shared mint quote/payment types but `cdk-common/federation` did not declare that dependency. The feature now explicitly enables `cdk-common/mint`; this selects shared types, not the SDK mint feature, and has no effect when federation is disabled. `cargo check --offline -p cdk --no-default-features --features wallet,federation` passed; `cargo test --offline -p cdk-redb --lib --features cdk-common/federation bls -- --test-threads=1` passed its existing BLS transaction test.
 
@@ -229,3 +229,59 @@ The SDK run took 927.01 seconds and the daemon tests took 152.59 seconds, exclud
 
 - Final expanded isolated check (`python3 scripts/check_standalone_api.py`) passed both API/serialization tests with ordinary SQLite in the dependency graph; the graph excludes BLS/FROST/Bark and FFI defaults remain ordinary.
 - `cargo build --offline -p cdk-mintd -p cdk-cli --features cdk-mintd/federation-bdk,cdk-mintd/federation-bark,cdk-mintd/iroh,cdk-cli/federation` passed. The live-test binaries retain ordinary defaults and explicitly enable federation; `federation-test-utils` is not enabled. `cargo fmt --all -- --check` passed.
+
+### Final local regtest: new binaries and preserved state
+
+The existing three-member Docker regtest fixture supplies Bitcoin Core, two Core Lightning nodes, an Ark server, and PostgreSQL. The mint runs with joint BDK on-chain custody and the real federated Bark payment backend. The Nix regtest shell's macOS Core Lightning build was unavailable; the working local Docker fixture was used instead. No databases were deleted or services deployed.
+
+The newly built daemon and CLI were copied into the fixture's dedicated binary directory. Graceful shutdown of the previous binaries completed in 1.03 seconds; startup and status checks completed in 182.08 seconds. All three new processes recovered operation 110, reported healthy/ready, and agreed on materialized-state digest `c9d27e12cc0ef653095ac3d31ffb516dc9673878d951f86bdc0a8beb3e54a1a0`. Unresolved payments, conflicts, and audit mismatches were zero. Fresh payments and the subsequent restart audit passed as detailed below.
+
+The fresh on-chain deposit issued 20,000 sat. During the incoming Lightning test, the local harness encountered notification text before the payer CLI's JSON response. Read-only inspection confirmed the original payment was complete and its existing quote was paid with zero issued amount. The harness now uses `lightning-cli --notifications=none -J`; issuance resumed with `cdk-cli mint "$MINT_URL" --quote-id "$EXISTING_QUOTE_ID" --wait-duration 600` and issued exactly 20,000 sat. No second Lightning payment or replacement quote was created. This was a local harness parsing failure, not a federation payment failure.
+
+The on-chain withdrawal reached Bitcoin's mempool while the CLI awaited confirmation. The harness had scheduled mining after CLI completion; mining three regtest blocks released that wait, and the accepted quote settled as paid. The same recipient then had 10,000 sat with confirmations. The delayed mining interval is not a product latency measurement.
+
+| Fresh flow | Amount | Verified result |
+| --- | ---: | --- |
+| Incoming on-chain | 20,000 sat | Confirmed deposit and issued ecash |
+| Incoming Lightning | 20,000 sat | Payer completed; original quote issued after resumption |
+| Outgoing on-chain | 10,000 sat | Paid quote; confirmed recipient receipt; 425 sat fee |
+| Outgoing Lightning | 10,000 sat | Paid quote and recipient invoice; 120 sat fee |
+| Ecash wallet A → B | 700 sat | Send and receive completed |
+| Ecash wallet B → A | 300 sat | Send and receive completed |
+
+The CLI commands used the newly built executable, `-n`, each fixture wallet directory via `-w`, and the fixture mint URL. Local paths, endpoint values, invoices, tokens, and credentials are intentionally omitted from this ledger. With those values represented by shell variables, the exercised commands were:
+
+```sh
+cdk-cli -w "$WALLET_A" -n mint "$MINT_URL" 20000 --method onchain --wait-duration 600
+cdk-cli -w "$WALLET_A" -n mint "$MINT_URL" 20000 --method bolt11 --wait-duration 600
+cdk-cli -w "$WALLET_A" -n mint "$MINT_URL" --quote-id "$EXISTING_QUOTE_ID" --wait-duration 600
+cdk-cli -w "$WALLET_A" -n melt --mint-url "$MINT_URL" --method onchain --address "$RECIPIENT_ADDRESS" --amount 10000 --onchain-quote-index 0
+cdk-cli -w "$WALLET_A" -n melt --mint-url "$MINT_URL" --invoice "$RECIPIENT_INVOICE"
+cdk-cli -w "$WALLET_A" -n send --mint-url "$MINT_URL" --amount 700
+cdk-cli -w "$WALLET_B" -n receive "$TOKEN_A_TO_B"
+cdk-cli -w "$WALLET_B" -n send --mint-url "$MINT_URL" --amount 300
+cdk-cli -w "$WALLET_A" -n receive "$TOKEN_B_TO_A"
+cdk-cli -w "$WALLET_A" -n check-state --mint-url "$MINT_URL"
+cdk-cli -w "$WALLET_B" -n check-state --mint-url "$MINT_URL"
+cdk-cli -w "$WALLET_A" -n balance
+cdk-cli -w "$WALLET_B" -n balance
+```
+
+Bitcoin Core `sendtoaddress`, `generatetoaddress`, and `getreceivedbyaddress` funded/confirmed the on-chain flows. Core Lightning `pay`, `listpays`, `invoice`, and `listinvoices`, with JSON output and notifications disabled, funded and independently verified the Lightning flows. Every payment command completed successfully; local JSON receipts and logs remain outside Git.
+
+Before the final member restart, wallet A held 353,621 sat and wallet B held 2,800 sat. Their 76 and 33 local proofs were all unspent, with no pending or spent proofs. Conservation passed exactly: **336,966 + 40,000 − 20,000 − 545 = 356,421 sat**. Graceful shutdown of all three new member processes completed in 1.04 seconds. Post-restart member-state and custody-backing validation passed.
+
+
+### Final restart audit and delivery
+
+Startup plus post-payment status checks completed in 366.55 seconds. `federation status` required readiness, convergence, zero operation lag, and no digest/payment/invalid-operation alerts; `federation wallet-status` required readiness. All three members agreed at operation **162**, with identical order, application, and materialized-state digests. The materialized-state digest was `ab61e251ec5bd94b9e81de962d5628f079b18e8853e36a8284533bad6ad40502`.
+
+Each member independently reported **128,841 sat on-chain + 227,580 sat Bark = 356,421 sat** of spendable backing. All eight on-chain transaction records were terminal; proposal, signing, broadcast, and confirmation work counts were zero. Bark was ready with no degraded reason, ambiguous/recovery actions, or pending FROST/MuSig2/threshold-DH work. Payment conflicts, unresolved payments, and materialized audit mismatches were zero.
+
+After restart, the CLI rechecked both balances and every local proof. Wallet A still held 353,621 sat in 76 unspent proofs; wallet B held 2,800 sat in 33 unspent proofs. No pending/spent local proofs remained. The total exactly matched both the conservation equation and each member's custody backing. No additional payment was initiated during recovery.
+
+The [maintainer walkthroughs](federation-maintainer-walkthroughs.md), linked from the federation guide, map ordinary CDK concepts to federation ownership and explain mint, swap, outgoing-payment, and recovery flows. Relative documentation links and `git diff --check` passed.
+
+Implementation was delivered in separate commits for feature isolation, module relocation, lifecycle ownership, focused reads, wallet aggregation, diagnostics, and verification-driven corrections. No foundational prerequisite remains unresolved for this plan.
+
+**Verification limits:** the existing ignored Cashu tests and Axum manual benchmarks/process stress regression were not run. The unrelated ordinary NUT-16 test lint warning was left unchanged; scoped strict library/daemon lint checks passed. The live run used three members sharing local regtest infrastructure and does not establish independent-provider fault tolerance or production throughput. Storage and share-verification measurements above support only their specified workloads. No deployment, published-history rewrite, or database reset was performed.

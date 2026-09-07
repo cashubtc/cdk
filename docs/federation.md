@@ -24,6 +24,10 @@ Transaction construction and independent signer validation remain separate trust
 
 Swaps still use transactional proof-state checks for overlapping inputs. Adding proof-Y journal reservations before verifying the referenced proof could let a malicious member reserve an honest user's proofs. The finalizer currently checks envelope authorization and pure payload validity; it does not perform that proof verification. See the implementation ledger for this retained decision.
 
+## Maintainer reading path
+
+Start with the [ordinary-CDK concept map and operation walkthroughs](federation-maintainer-walkthroughs.md): [mint](federation-maintainer-walkthroughs.md#incoming-payment-and-mint-issuance), [swap and ecash](federation-maintainer-walkthroughs.md#swap-and-ecash-transfer), [outgoing payment](federation-maintainer-walkthroughs.md#outgoing-payment-and-change), and [restart/catch-up](federation-maintainer-walkthroughs.md#startup-failure-restart-and-catch-up). Each identifies authoritative state, transaction boundaries, external effects, and recovery ownership.
+
 ## Current records
 
 All operation kinds use envelope version 6. Bark payloads use their current version 2. Incoming Bark claims require certified receive evidence in the claim plan; replay applies that evidence from the accepted plan. The earlier standalone HTLC-ready transition cannot authorize a claim.
