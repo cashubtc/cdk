@@ -54,6 +54,10 @@ pub enum ConversionError {
     #[error("Value {1} does not fit in signed 64-bit column {0}")]
     ValueOutOfRange(String, u64),
 
+    /// Column that should hold an amount does not hold the bytes one is stored as
+    #[error("Column {0} does not hold an 8 byte amount")]
+    InvalidAmount(String),
+
     /// Mint Url Error
     #[error(transparent)]
     MintUrl(#[from] crate::mint_url::Error),

@@ -3,11 +3,14 @@ use std::fmt::Debug;
 use cdk_sql_common::value::Value;
 use tokio_postgres::types::{self, FromSql, ToSql};
 
+use crate::numeric;
+
 #[derive(Debug)]
 pub enum PgValue<'a> {
     Null,
     Integer(i64),
     Unsigned(u64),
+    Amount(u64),
     Real(f64),
     Text(&'a str),
     Blob(&'a [u8]),
@@ -28,6 +31,10 @@ pub enum Error {
     /// The column type has no mapping onto a [`Value`]
     #[error("Unsupported postgres type {0}")]
     UnsupportedType(types::Type),
+
+    /// The numeric value read back is not an amount
+    #[error("Invalid amount: {0}")]
+    InvalidAmount(#[from] numeric::Error),
 }
 
 /// Encodes an integer into `ty`, refusing a value the column cannot hold.
@@ -58,15 +65,21 @@ fn integer_to_sql(
     }
 }
 
-/// Narrows an unsigned integer onto the signed column it is written to.
+/// Encodes an unsigned integer into `ty`.
 ///
-/// Statements narrow unsigned values before they reach a driver, so this
-/// refuses rather than truncates one that arrives another way.
+/// Amount columns are `numeric`, which holds the whole `u64` range. Every other
+/// column is signed, and statements narrow unsigned values before they reach a
+/// driver, so this refuses rather than truncates one that arrives another way.
 fn unsigned_to_sql(
     value: u64,
     ty: &types::Type,
     out: &mut types::private::BytesMut,
 ) -> Result<types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+    if *ty == types::Type::NUMERIC {
+        numeric::encode(value, out);
+        return Ok(types::IsNull::No);
+    }
+
     let value = i64::try_from(value).map_err(|_| Error::ValueOutOfRange {
         value: value.into(),
         ty: ty.clone(),
@@ -83,6 +96,7 @@ impl<'a> From<&'a Value> for PgValue<'a> {
             Value::Null => PgValue::Null,
             Value::Integer(i) => PgValue::Integer(*i),
             Value::Unsigned(n) => PgValue::Unsigned(*n),
+            Value::Amount(n) => PgValue::Amount(*n),
             Value::Real(r) => PgValue::Real(*r),
         }
     }
@@ -96,6 +110,7 @@ impl<'a> From<PgValue<'a>> for Value {
             PgValue::Null => Value::Null,
             PgValue::Integer(n) => Value::Integer(n),
             PgValue::Unsigned(n) => Value::Unsigned(n),
+            PgValue::Amount(n) => Value::Amount(n),
             PgValue::Real(r) => Value::Real(r),
         }
     }
@@ -122,6 +137,7 @@ impl<'a> FromSql<'a> for PgValue<'a> {
             types::Type::INT2 => PgValue::Integer(<i16 as FromSql>::from_sql(ty, raw)?.into()),
             types::Type::INT4 => PgValue::Integer(<i32 as FromSql>::from_sql(ty, raw)?.into()),
             types::Type::INT8 => PgValue::Integer(<i64 as FromSql>::from_sql(ty, raw)?),
+            types::Type::NUMERIC => PgValue::Amount(numeric::decode(raw).map_err(Error::from)?),
             types::Type::BIT_ARRAY | types::Type::BYTEA | types::Type::UNKNOWN => {
                 PgValue::Blob(<&[u8] as FromSql>::from_sql(ty, raw)?)
             }
@@ -150,6 +166,7 @@ impl ToSql for PgValue<'_> {
             PgValue::Real(r) => r.to_sql(ty, out),
             PgValue::Integer(i) => integer_to_sql(*i, ty, out),
             PgValue::Unsigned(n) => unsigned_to_sql(*n, ty, out),
+            PgValue::Amount(n) => unsigned_to_sql(*n, ty, out),
         }
     }
 
@@ -167,7 +184,7 @@ impl ToSql for PgValue<'_> {
             PgValue::Null => types::Format::Text,
             PgValue::Real(r) => r.encode_format(ty),
             PgValue::Integer(i) => i.encode_format(ty),
-            PgValue::Unsigned(_) => 0i64.encode_format(ty),
+            PgValue::Unsigned(_) | PgValue::Amount(_) => 0i64.encode_format(ty),
         }
     }
 
@@ -183,6 +200,7 @@ impl ToSql for PgValue<'_> {
             PgValue::Real(r) => r.to_sql_checked(ty, out),
             PgValue::Integer(i) => integer_to_sql(*i, ty, out),
             PgValue::Unsigned(n) => unsigned_to_sql(*n, ty, out),
+            PgValue::Amount(n) => unsigned_to_sql(*n, ty, out),
         }
     }
 }
@@ -264,7 +282,36 @@ mod test {
     }
 
     #[test]
+    fn amount_round_trips_the_whole_u64_range() {
+        for value in [0, 1, u64::from(u32::MAX), i64::MAX as u64, u64::MAX] {
+            let mut out = types::private::BytesMut::new();
+            PgValue::Amount(value)
+                .to_sql_checked(&types::Type::NUMERIC, &mut out)
+                .expect("encodes");
+
+            let read = PgValue::from_sql(&types::Type::NUMERIC, &out).expect("decodes");
+            assert!(
+                matches!(read, PgValue::Amount(n) if n == value),
+                "for {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_amount_narrows_when_the_column_is_an_integer() {
+        let mut out = types::private::BytesMut::new();
+        assert!(PgValue::Amount(7)
+            .to_sql_checked(&types::Type::INT8, &mut out)
+            .is_ok());
+
+        let mut out = types::private::BytesMut::new();
+        assert!(PgValue::Amount(u64::MAX)
+            .to_sql_checked(&types::Type::INT8, &mut out)
+            .is_err());
+    }
+
+    #[test]
     fn unsupported_type_is_an_error() {
-        assert!(PgValue::from_sql(&types::Type::NUMERIC, &[0, 0]).is_err());
+        assert!(PgValue::from_sql(&types::Type::JSON, &[0, 0]).is_err());
     }
 }

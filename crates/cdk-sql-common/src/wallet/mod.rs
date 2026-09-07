@@ -28,7 +28,8 @@ use crate::pool::{DatabasePool, Pool, PooledResource};
 use crate::stmt::{query, Column};
 use crate::{
     column_as_binary, column_as_nullable_binary, column_as_nullable_number,
-    column_as_nullable_string, column_as_number, column_as_string, unpack_into,
+    column_as_nullable_string, column_as_nullable_u64, column_as_number, column_as_string,
+    column_as_u64, unpack_into,
 };
 
 #[rustfmt::skip]
@@ -428,11 +429,12 @@ where
             FROM
                 mint_quote
             WHERE
-                amount_issued = 0
+                amount_issued = :zero
                 OR
                 payment_method = 'bolt12'
             "#,
         )?
+        .bind("zero", Amount::ZERO)
         .fetch_all(&*conn)
         .await?
         .into_iter()
@@ -610,8 +612,7 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
 
-        let mut query_str =
-            "SELECT CAST(COALESCE(SUM(amount), 0) AS BIGINT) as total FROM proof".to_string();
+        let mut query_str = "SELECT u64_sum(amount) as total FROM proof".to_string();
         let mut where_clauses = Vec::new();
         let states = states
             .unwrap_or_default()
@@ -650,16 +651,7 @@ where
         let balance = q
             .pluck(&*conn)
             .await?
-            .map(|n| match n {
-                Column::Integer(i) => u64::try_from(i).map_err(|_| {
-                    ConversionError::InvalidConversion("balance".to_owned(), "Number".to_owned())
-                        .into()
-                }),
-                _ => Err(Error::Database(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Invalid balance type",
-                )))),
-            })
+            .map(|total| Ok::<_, database::Error>(column_as_u64!(total)))
             .transpose()?
             .unwrap_or(0);
 
@@ -806,7 +798,7 @@ where
                     .map(|s| serde_json::to_string(&s).ok()),
             )
             .bind("unit", proof.unit.to_string())
-            .bind("amount", u64::from(proof.proof.amount))
+            .bind("amount", proof.proof.amount)
             .bind("keyset_id", proof.proof.keyset_id.to_string())
             .bind("secret", proof.proof.secret.to_string())
             .bind("c", proof.proof.c.to_bytes().to_vec())
@@ -900,8 +892,8 @@ where
         let mint_url = transaction.mint_url.to_string();
         let direction = transaction.direction.to_string();
         let unit = transaction.unit.to_string();
-        let amount = u64::from(transaction.amount);
-        let fee = u64::from(transaction.fee);
+        let amount = transaction.amount;
+        let fee = transaction.fee;
         let ys = transaction
             .ys
             .iter()
@@ -1262,7 +1254,7 @@ where
             )?
             .bind("id", quote.id.to_string())
             .bind("mint_url", quote.mint_url.to_string())
-            .bind("amount", quote.amount.map(|a| a.to_u64()))
+            .bind("amount", quote.amount)
             .bind("unit", quote.unit.to_string())
             .bind("request", quote.request)
             .bind("state", quote.state.to_string())
@@ -1272,8 +1264,8 @@ where
                 quote.secret_key.map(|key| key.to_secret_hex()),
             )
             .bind("payment_method", quote.payment_method.to_string())
-            .bind("amount_issued", quote.amount_issued.to_u64())
-            .bind("amount_paid", quote.amount_paid.to_u64())
+            .bind("amount_issued", quote.amount_issued)
+            .bind("amount_paid", quote.amount_paid)
             .bind("updated_at", quote.updated_at)
             .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
             .bind("version", quote.version)
@@ -1342,9 +1334,9 @@ where
         )?
         .bind("id", quote.id.to_string())
         .bind("unit", quote.unit.to_string())
-        .bind("amount", u64::from(quote.amount))
+        .bind("amount", quote.amount)
         .bind("request", quote.request)
-        .bind("fee_reserve", u64::from(quote.fee_reserve))
+        .bind("fee_reserve", quote.fee_reserve)
         .bind("state", quote.state.to_string())
         .bind("expiry", quote.expiry)
         .bind("payment_proof", quote.payment_proof)
@@ -1480,7 +1472,7 @@ where
         .bind("id", saga.id.to_string())
         .bind("kind", saga.kind.to_string())
         .bind("state", state_json)
-        .bind("amount", u64::from(saga.amount))
+        .bind("amount", saga.amount)
         .bind("mint_url", saga.mint_url.to_string())
         .bind("unit", saga.unit.to_string())
         .bind("quote_id", saga.quote_id)
@@ -1561,7 +1553,7 @@ where
         .bind("id", saga.id.to_string())
         .bind("kind", saga.kind.to_string())
         .bind("state", state_json)
-        .bind("amount", u64::from(saga.amount))
+        .bind("amount", saga.amount)
         .bind("mint_url", saga.mint_url.to_string())
         .bind("unit", saga.unit.to_string())
         .bind("quote_id", saga.quote_id)
@@ -2082,10 +2074,10 @@ fn sql_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
         ) = row
     );
 
-    let amount: Option<i64> = column_as_nullable_number!(amount);
+    let amount: Option<u64> = column_as_nullable_u64!(amount);
 
-    let amount_paid: u64 = column_as_number!(row_amount_paid);
-    let amount_minted: u64 = column_as_number!(row_amount_minted);
+    let amount_paid: u64 = column_as_u64!(row_amount_paid);
+    let amount_minted: u64 = column_as_u64!(row_amount_minted);
     let expiry_val: u64 = column_as_number!(expiry);
     let updated_at: u64 = column_as_number!(updated_at);
     let version_val: u32 = column_as_number!(version);
@@ -2095,7 +2087,7 @@ fn sql_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
     Ok(MintQuote {
         id: column_as_string!(id),
         mint_url: column_as_string!(mint_url, MintUrl::from_str),
-        amount: amount.and_then(Amount::from_i64),
+        amount: amount.map(Amount::from),
         unit: column_as_string!(unit, CurrencyUnit::from_str),
         request: column_as_string!(request),
         state: column_as_string!(state, MintQuoteState::from_str),
@@ -2134,8 +2126,8 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<wallet::MeltQuote, Error> {
     let payment_method =
         PaymentMethod::from_str(&column_as_string!(row_method)).map_err(Error::from)?;
 
-    let amount_val: u64 = column_as_number!(amount);
-    let fee_reserve_val: u64 = column_as_number!(fee_reserve);
+    let amount_val: u64 = column_as_u64!(amount);
+    let fee_reserve_val: u64 = column_as_u64!(fee_reserve);
     let expiry_val: u64 = column_as_number!(expiry);
     let version_val: u32 = column_as_number!(version);
 
@@ -2195,7 +2187,7 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
         _ => None,
     };
 
-    let amount: u64 = column_as_number!(amount);
+    let amount: u64 = column_as_u64!(amount);
     let proof = Proof {
         amount: Amount::from(amount),
         keyset_id: column_as_string!(keyset_id, Id::from_str),
@@ -2259,7 +2251,7 @@ fn sql_row_to_wallet_saga(row: Vec<Column>) -> Result<wallet::WalletSaga, Error>
     })?;
     let kind_str: String = column_as_string!(kind);
     let state_json: String = column_as_string!(state);
-    let amount: u64 = column_as_number!(amount);
+    let amount: u64 = column_as_u64!(amount);
     let mint_url: MintUrl = column_as_string!(mint_url, MintUrl::from_str);
     let unit: CurrencyUnit = column_as_string!(unit, CurrencyUnit::from_str);
     let quote_id: Option<String> = column_as_nullable_string!(quote_id);
@@ -2323,8 +2315,8 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
         ) = row
     );
 
-    let amount: u64 = column_as_number!(amount);
-    let fee: u64 = column_as_number!(fee);
+    let amount: u64 = column_as_u64!(amount);
+    let fee: u64 = column_as_u64!(fee);
 
     let saga_id: Option<Uuid> = column_as_nullable_string!(saga_id)
         .map(|id| Uuid::from_str(&id).ok())

@@ -789,6 +789,36 @@ where
     assert_eq!(balance, 300);
 }
 
+/// The balance is a `u64` totalled in SQL, and neither backend can add amounts
+/// natively: SQLite's only integer is signed and it promotes an overflow to a
+/// float, while the column on both sides is wide enough to hold operands whose
+/// sum leaves the signed range. This is the only wallet query that totals
+/// amounts, so it is the only place the two `u64_sum` implementations meet.
+pub async fn get_balance_past_the_signed_range<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let half = i64::MAX as u64;
+
+    db.update_proofs(
+        vec![
+            test_proof_info(keyset_id, half, mint_url.clone()),
+            test_proof_info(keyset_id, half + 1, mint_url.clone()),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(db.get_balance(None, None, None).await.unwrap(), u64::MAX);
+    assert_eq!(
+        db.get_balance(Some(mint_url), None, None).await.unwrap(),
+        u64::MAX
+    );
+}
+
 /// Test getting balance by state
 pub async fn get_balance_by_state<DB>(db: DB)
 where
@@ -1773,6 +1803,7 @@ macro_rules! wallet_db_test {
             filter_proofs_by_unit,
             filter_proofs_by_state,
             get_balance,
+            get_balance_past_the_signed_range,
             get_balance_by_state,
             increment_keyset_counter,
             keyset_counter_isolation,

@@ -11,7 +11,9 @@ use cdk_common::{mint, Amount, PaymentMethod};
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
-use crate::{column_as_nullable_string, column_as_number, column_as_string, unpack_into};
+use crate::{
+    column_as_nullable_string, column_as_number, column_as_string, column_as_u64, unpack_into,
+};
 
 fn sql_row_to_completed_operation(row: Vec<Column>) -> Result<mint::Operation, Error> {
     unpack_into!(
@@ -35,9 +37,9 @@ fn sql_row_to_completed_operation(row: Vec<Column>) -> Result<mint::Operation, E
         .map_err(|e| Error::Internal(format!("Invalid operation kind: {e}")))?;
 
     let completed_at: u64 = column_as_number!(completed_at);
-    let total_issued_u64: u64 = column_as_number!(total_issued);
-    let total_redeemed_u64: u64 = column_as_number!(total_redeemed);
-    let fee_collected_u64: u64 = column_as_number!(fee_collected);
+    let total_issued_u64: u64 = column_as_u64!(total_issued);
+    let total_redeemed_u64: u64 = column_as_u64!(total_redeemed);
+    let fee_collected_u64: u64 = column_as_u64!(fee_collected);
 
     let total_issued = Amount::from(total_issued_u64);
     let total_redeemed = Amount::from(total_redeemed_u64);
@@ -82,11 +84,11 @@ where
         .bind("operation_id", operation.id().to_string())
         .bind("operation_kind", operation.kind().to_string())
         .bind("completed_at", operation.completed_at().unwrap_or(unix_time()))
-        .bind("total_issued", operation.total_issued().to_u64())
-        .bind("total_redeemed", operation.total_redeemed().to_u64())
-        .bind("fee_collected", operation.fee_collected().to_u64())
-        .bind("payment_amount", operation.payment_amount().map(|a| a.to_u64()))
-        .bind("payment_fee", operation.payment_fee().map(|a| a.to_u64()))
+        .bind("total_issued", operation.total_issued())
+        .bind("total_redeemed", operation.total_redeemed())
+        .bind("fee_collected", operation.fee_collected())
+        .bind("payment_amount", operation.payment_amount())
+        .bind("payment_fee", operation.payment_fee())
         .bind("payment_method", operation.payment_method().map(|m| m.to_string()))
         .execute(&self.inner)
         .await?;
@@ -97,13 +99,14 @@ where
                 query(
                     r#"
                     INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed, fee_collected)
-                    VALUES (:keyset_id, 0, 0, :fee)
+                    VALUES (:keyset_id, :zero, :zero, :fee)
                     ON CONFLICT (keyset_id)
-                    DO UPDATE SET fee_collected = keyset_amounts.fee_collected + EXCLUDED.fee_collected
+                    DO UPDATE SET fee_collected = u64_add(keyset_amounts.fee_collected, EXCLUDED.fee_collected)
                     "#,
                 )?
                 .bind("keyset_id", keyset_id.to_string())
-                .bind("fee", fee.to_u64())
+                .bind("zero", Amount::ZERO)
+                .bind("fee", *fee)
                 .execute(&self.inner)
                 .await?;
             }

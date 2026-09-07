@@ -432,6 +432,7 @@ pub fn query(sql: &str) -> Result<Statement, Error> {
 #[cfg(test)]
 mod tests {
     use cdk_common::database::ConversionError;
+    use cdk_common::Amount;
 
     use super::*;
 
@@ -494,6 +495,20 @@ mod tests {
                 Value::Integer(7)
             ]
         );
+    }
+
+    /// An amount is not narrowed on the way to a driver: its column holds the
+    /// whole `u64` range, and only the driver knows how.
+    #[test]
+    fn amounts_reach_the_driver_unnarrowed() {
+        let (_, values) = query("SELECT :a, :b")
+            .unwrap()
+            .bind("a", Amount::from(u64::MAX))
+            .bind("b", None::<Amount>)
+            .to_sql()
+            .unwrap();
+
+        assert_eq!(values, vec![Value::Amount(u64::MAX), Value::Null]);
     }
 
     #[test]

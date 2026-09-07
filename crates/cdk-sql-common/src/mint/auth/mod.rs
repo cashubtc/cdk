@@ -185,7 +185,7 @@ where
                    "#,
             )?
             .bind("blinded_message", message.to_bytes().to_vec())
-            .bind("amount", u64::from(signature.amount))
+            .bind("amount", signature.amount)
             .bind("keyset_id", signature.keyset_id.to_string())
             .bind("c", signature.c.to_bytes().to_vec())
             .execute(&self.inner)

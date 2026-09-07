@@ -17,7 +17,7 @@ use super::{SQLMintDatabase, SQLTransaction};
 use crate::database::DatabaseExecutor;
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
-use crate::{column_as_nullable_string, column_as_number, column_as_string, unpack_into};
+use crate::{column_as_nullable_string, column_as_string, column_as_u64, unpack_into};
 
 pub(super) async fn get_current_states<C>(
     conn: &C,
@@ -57,7 +57,7 @@ pub(super) fn sql_row_to_proof(row: Vec<Column>) -> Result<Proof, Error> {
         ) = row
     );
 
-    let amount: u64 = column_as_number!(amount);
+    let amount: u64 = column_as_u64!(amount);
     Ok(Proof {
         amount: Amount::from(amount),
         keyset_id: column_as_string!(keyset_id, Id::from_str),
@@ -76,7 +76,7 @@ pub(super) fn sql_row_to_proof_with_state(row: Vec<Column>) -> Result<(Proof, St
         ) = row
     );
 
-    let amount: u64 = column_as_number!(amount);
+    let amount: u64 = column_as_u64!(amount);
     let state = column_as_nullable_string!(state)
         .and_then(|s| State::from_str(&s).ok())
         .unwrap_or(State::Pending);
@@ -103,7 +103,7 @@ pub(super) fn sql_row_to_hashmap_amount(row: Vec<Column>) -> Result<(Id, Amount)
         ) = row
     );
 
-    let amount: u64 = column_as_number!(amount);
+    let amount: u64 = column_as_u64!(amount);
     Ok((
         column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
         Amount::from(amount),
@@ -167,7 +167,7 @@ where
                   "#,
             )?
             .bind("y", y)
-            .bind("amount", proof.amount.to_u64())
+            .bind("amount", proof.amount)
             .bind("keyset_id", proof.keyset_id.to_string())
             .bind("secret", proof.secret.to_string())
             .bind("c", proof.c.to_bytes().to_vec())
@@ -216,15 +216,16 @@ where
             query(
                     r#"
                     INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                    SELECT keyset_id, 0, COALESCE(SUM(amount), 0)
+                    SELECT keyset_id, :zero, u64_sum(amount)
                     FROM proof
                     WHERE y IN (:ys)
                     GROUP BY keyset_id
                     ORDER BY keyset_id
                     ON CONFLICT (keyset_id)
-                    DO UPDATE SET total_redeemed = keyset_amounts.total_redeemed + EXCLUDED.total_redeemed
+                    DO UPDATE SET total_redeemed = u64_add(keyset_amounts.total_redeemed, EXCLUDED.total_redeemed)
                     "#,
                 )?
+                .bind("zero", Amount::ZERO)
                 .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
                 .execute(&self.inner)
                 .await?;

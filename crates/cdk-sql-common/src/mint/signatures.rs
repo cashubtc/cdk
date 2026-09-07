@@ -13,7 +13,7 @@ use super::proofs::sql_row_to_hashmap_amount;
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
-use crate::{column_as_nullable_string, column_as_number, column_as_string, unpack_into};
+use crate::{column_as_nullable_string, column_as_string, column_as_u64, unpack_into};
 
 pub(crate) fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Error> {
     unpack_into!(
@@ -33,7 +33,7 @@ pub(crate) fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignat
         _ => None,
     };
 
-    let amount: u64 = column_as_number!(amount);
+    let amount: u64 = column_as_u64!(amount);
 
     Ok(BlindSignature {
         amount: Amount::from(amount),
@@ -115,7 +115,7 @@ where
                         "#,
                     )?
                     .bind("blinded_message", message.to_bytes().to_vec())
-                    .bind("amount", u64::from(signature.amount))
+                    .bind("amount", signature.amount)
                     .bind("keyset_id", signature.keyset_id.to_string())
                     .bind("c", signature.c.to_bytes().to_vec())
                     .bind("quote_id", quote_id.as_ref().map(|q| q.to_string()))
@@ -136,12 +136,13 @@ where
                     query(
                         r#"
                         INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                        VALUES (:keyset_id, :amount, 0)
+                        VALUES (:keyset_id, :amount, :zero)
                         ON CONFLICT (keyset_id)
-                        DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
+                        DO UPDATE SET total_issued = u64_add(keyset_amounts.total_issued, EXCLUDED.total_issued)
                         "#,
                     )?
-                    .bind("amount", u64::from(signature.amount))
+                    .bind("amount", signature.amount)
+                    .bind("zero", Amount::ZERO)
                     .bind("keyset_id", signature.keyset_id.to_string())
                     .execute(&self.inner)
                     .await?;
@@ -169,19 +170,20 @@ where
                             )
                             .bind("blinded_message", message.to_bytes().to_vec())
                             .bind("signed_time", current_time)
-                            .bind("amount", u64::from(signature.amount))
+                            .bind("amount", signature.amount)
                             .execute(&self.inner)
                             .await?;
 
                             query(
                                 r#"
                                 INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                                VALUES (:keyset_id, :amount, 0)
+                                VALUES (:keyset_id, :amount, :zero)
                                 ON CONFLICT (keyset_id)
-                                DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
+                                DO UPDATE SET total_issued = u64_add(keyset_amounts.total_issued, EXCLUDED.total_issued)
                                 "#,
                             )?
-                            .bind("amount", u64::from(signature.amount))
+                            .bind("amount", signature.amount)
+                            .bind("zero", Amount::ZERO)
                             .bind("keyset_id", signature.keyset_id.to_string())
                             .execute(&self.inner)
                             .await?;

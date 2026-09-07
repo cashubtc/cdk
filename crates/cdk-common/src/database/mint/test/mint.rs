@@ -812,6 +812,49 @@ where
     );
 }
 
+/// Amounts are `u64` on the wire, and every amount column is wide enough to
+/// hold one. `i64::MAX` used to be the ceiling, so a peer could name an amount
+/// the mint had to refuse rather than store.
+///
+/// The accounting columns are left to their default on insert, which the wide
+/// representation has to spell out rather than write a bare zero, so they are
+/// asserted here too.
+pub async fn mint_quote_amounts_hold_the_whole_u64_range<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let mint_quote = MintQuote::new(
+        None,
+        unique_string(),
+        CurrencyUnit::Sat,
+        Some(Amount::new(u64::MAX, CurrencyUnit::Sat)),
+        0,
+        PaymentIdentifier::CustomId(unique_string()),
+        None,
+        Amount::new(0, CurrencyUnit::Sat),
+        Amount::new(0, CurrencyUnit::Sat),
+        cashu::PaymentMethod::Known(KnownMethod::Bolt12),
+        0,
+        0,
+        vec![],
+        vec![],
+        None,
+    );
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_mint_quote(mint_quote.clone()).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let retrieved = db.get_mint_quote(&mint_quote.id).await.unwrap().unwrap();
+    assert_eq!(
+        retrieved.amount.as_ref().map(|amount| amount.value()),
+        Some(u64::MAX)
+    );
+
+    assert_eq!(retrieved.amount_paid().to_u64(), 0);
+    assert_eq!(retrieved.amount_issued().to_u64(), 0);
+}
+
 /// Test adding duplicate melt quotes fails
 pub async fn add_melt_quote_only_once<DB>(db: DB)
 where
