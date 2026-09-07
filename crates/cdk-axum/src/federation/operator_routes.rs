@@ -199,15 +199,11 @@ pub(super) async fn post_bark_action_retry(
         })?;
     let phase_before = action.phase;
     let advanced = retry_bark_action(&state, &action).await?;
-    let refreshed = state
+    let phase_after = state
         .mint
-        .federation_bark_projection_snapshot()
+        .federation_bark_action(action.action_id)
         .await
-        .map_err(cdk_error_response)?;
-    let phase_after = refreshed
-        .actions
-        .iter()
-        .find(|current| current.action_id == action.action_id)
+        .map_err(cdk_error_response)?
         .map(|current| current.phase)
         .ok_or_else(|| cdk_error_response(cdk::Error::Internal))?;
     state

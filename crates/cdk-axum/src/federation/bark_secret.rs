@@ -178,15 +178,11 @@ pub(super) async fn post_bark_evidence_attestation(
         .payload
         .validate_relayed(&public_config, verified.sender())
         .map_err(federation_error_response)?;
-    let projection = state
+    let action = state
         .mint
-        .federation_bark_projection_snapshot()
+        .federation_bark_action(payload.payload.binding.action_id)
         .await
-        .map_err(bark_secret_unavailable_response)?;
-    let action = projection
-        .actions
-        .iter()
-        .find(|action| action.action_id == payload.payload.binding.action_id)
+        .map_err(bark_secret_unavailable_response)?
         .ok_or_else(|| {
             (
                 StatusCode::BAD_REQUEST,

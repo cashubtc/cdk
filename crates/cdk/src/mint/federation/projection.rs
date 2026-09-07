@@ -79,7 +79,8 @@ impl Mint {
         &self,
         action_id: cdk_federation_bark::FederationBarkActionId,
     ) -> Result<Option<FederationBarkActionRecord>, Error> {
-        self.localstore()
+        let action: Option<FederationBarkActionRecord> = self
+            .localstore()
             .get_federation_application_action(
                 federation_bark_application_id()?,
                 action_id.to_bytes(),
@@ -87,7 +88,8 @@ impl Mint {
             .await?
             .map(serde_json::from_value)
             .transpose()
-            .map_err(|_| Error::Internal)
+            .map_err(|_| Error::Internal)?;
+        Ok(action.filter(|record| record.action_id == action_id))
     }
 
     /// Load one applied receive intent by its accepted operation ID.

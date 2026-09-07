@@ -840,16 +840,16 @@ pub(super) async fn advance_federated_bark_melt_quote(
         .ensure_accepted()?;
 
     let accepted_projection = state.mint.federation_bark_projection_snapshot().await?;
-    if runtime
+    if let Err(error) = runtime
         .apply_lightning_send_plan(&quote, &accepted_projection, &plan)
         .await
-        .is_err()
     {
         runtime
             .mark_degraded(cdk_bark::FederatedBarkDegradedReason::ProjectionInvalid)
             .await;
         tracing::error!(
             action_id = %plan.action_id,
+            error = %error,
             "accepted Bark send plan could not be materialized locally"
         );
     }
