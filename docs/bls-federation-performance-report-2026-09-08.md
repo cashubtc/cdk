@@ -1,6 +1,7 @@
 # Federation performance optimization report
 
-Status: in progress. No campaign performance improvement accepted yet.
+Status: in progress. Two DKG arithmetic changes are measured; final campaign
+acceptance and payment-performance comparisons remain pending.
 
 Baseline: CDK `8e507cdf8`, Bark `8d1eda643dd11e9eb600ec44e36622c8f77b6322`.
 Method and acceptance rules: [approved plan](bls-federation-performance-plan-2026-09-08.md).
@@ -40,6 +41,37 @@ activation; they do not establish payment throughput or full-service DKG gains.
 Scaling correctness passed at five/full-denomination, eleven and twenty members.
 Final runtime/payment gates are still pending. See the journal and
 [all numeric samples](benchmarks/2026-09-08-dkg-horner.csv), including outliers.
+
+### Combined DKG arithmetic result
+
+Five additional matched pairs against the original baseline measured the combined
+Horner and public-signer-ID multiplication changes:
+
+| Metric | Original baseline | Combined candidate | Change |
+|---|---:|---:|---:|
+| Full in-memory BLS ceremony p50 | 3.672 s | 1.406 s | 61.7% lower |
+| Full in-memory BLS ceremony p95 | 3.738 s | 1.429 s | 61.8% lower |
+| Whole-harness CPU, including fixtures | 23.641 s | 8.819 s | 62.7% lower |
+| Retired instructions, including fixtures | 680.304 billion | 245.536 billion | 63.9% fewer |
+
+The journal contains paired confidence intervals and the
+[complete combined samples](benchmarks/2026-09-08-dkg-combined.csv).
+An independent five-pair ablation establishes the second change's incremental
+benefit. No memory reduction or p99 claim is supported. These results cover five
+members/eight denominations and exclude FROST, transport, database work and service
+readiness. Private-scalar arithmetic and all validation requirements are unchanged.
+
+### Payment fixture validation
+
+The original release server passed fresh five-member HTTP Bark Lightning incoming
+and outgoing, BDK on-chain incoming and outgoing, and independent/shared-wallet
+ecash receives. Outgoing recipients independently confirmed 1,000 sat each.
+The fixed-schedule miner ran separately from on-chain calls. The SDK open-loop
+pilot correctly rejected overload before initiation. Exact value conservation:
+54,096 deposited − 2,000 external payments − 315 recorded fees = 51,781 sat,
+comprising 51,269 sender balance, 288 recipient balances and 224 in unsubmitted
+tokens. These are functional pilots, not a final candidate payment gate or a
+baseline/final latency or throughput comparison.
 
 ## Initial inspection
 

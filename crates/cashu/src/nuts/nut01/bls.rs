@@ -843,19 +843,34 @@ pub fn evaluate_public_key_commitments(
     signer_id: BlsSignerId,
     commitments: &[BlsAggregatePublicKey],
 ) -> Result<BlsPublicKeyShare, Error> {
-    let x = signer_id.scalar();
     // Horner evaluation needs one fewer group multiplication and no scalar powers.
     let public_share = commitments
         .iter()
         .rev()
         .map(|commitment| G2Projective::from(commitment.point()))
-        .reduce(|value, coefficient| value * x + coefficient)
+        .reduce(|value, coefficient| multiply_by_public_signer_id(value, signer_id) + coefficient)
         .unwrap_or_else(G2Projective::identity);
 
     Ok(BlsPublicKeyShare::new(
         signer_id,
         g2_from_projective(public_share)?,
     ))
+}
+
+// Variable-time multiplication is safe here because both the point and signer ID
+// are public. Keep the typed ID boundary: secret scalars must use the group library.
+#[cfg(feature = "federation")]
+fn multiply_by_public_signer_id(point: G2Projective, signer_id: BlsSignerId) -> G2Projective {
+    let id = signer_id.get();
+    // BlsSignerId excludes zero, so the leading set bit initializes the result.
+    let mut result = point;
+    for bit in (0..u16::BITS - id.leading_zeros() - 1).rev() {
+        result = result.double();
+        if (id >> bit) & 1 != 0 {
+            result += point;
+        }
+    }
+    result
 }
 
 #[cfg(feature = "federation")]
@@ -1340,6 +1355,30 @@ mod tests {
                         *signer_id,
                         g2_from_projective(reference).expect("power-sum reference"),
                     )
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn test_public_signer_multiplication_matches_scalar_multiplication() {
+        let mut ids = vec![1, u16::MAX];
+        for bit in 1..u16::BITS {
+            let power = 1_u16 << bit;
+            ids.extend([power - 1, power, power + 1]);
+        }
+        for point in [
+            G2Projective::identity(),
+            G2Projective::generator(),
+            -G2Projective::from(bls_key(7).public_key_g2().point()),
+        ] {
+            for id in &ids {
+                let signer = BlsSignerId::new(*id).expect("nonzero boundary ID");
+                assert_eq!(
+                    multiply_by_public_signer_id(point, signer),
+                    point * signer.scalar(),
+                    "public ID {id}"
                 );
             }
         }

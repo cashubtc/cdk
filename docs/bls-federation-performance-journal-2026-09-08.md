@@ -239,7 +239,8 @@ requested concurrency; open-loop arrivals reject excess work with zero queued
 requests. Arrival, scheduler-start and finish offsets share one monotonic clock.
 Late completions and drain-time pending operations remain separate. Client
 errors never authorize a payment retry; private seeds/databases remain for
-reconciliation. Driver build and real-payment validation are pending.
+reconciliation. Driver build and serial/shared/open-loop real-payment validation passed;
+acceptance workload and instrumentation-overhead measurements remain pending.
 
 ## Candidate queue after inspection
 
@@ -297,3 +298,141 @@ cargo fmt --all -- --check
 The SDK driver build, isolated ordinary API/serialization/dependency checks, FFI
 default-feature assertion and formatting check passed. Full FFI compilation and
 the remaining campaign gates are still pending.
+
+## E02b — Public signer-ID multiplication
+
+Registered before production editing. Owning layer: federation-only Cashu BLS
+public-polynomial evaluation, after E02a (`ceaf02216`). An eight-second sampling
+profile of 150 local-keyset derivations (five members/eight denominations) placed
+3,886 of 6,279 worker stack samples, 61.9%, inside public-polynomial evaluation.
+The run median was 131,094 µs; this attribution run is not acceptance evidence.
+The pinned `bls12_381` 0.8.0 source implements general scalar multiplication with
+255 doubling/addition iterations even when the multiplier is a small public
+signer ID. IDs are explicitly nonzero `u16` values; no secret scalar is involved
+in this operation.
+
+Hypothesis: retain Horner evaluation but use the existing group addition/doubling
+operations over the significant bits of the public ID. This removes leading-zero
+work and additions for unset public bits. The helper must accept `BlsSignerId`,
+remain private, and explicitly document variable-time behavior on public data.
+All private-scalar operations retain the existing constant-time implementation.
+No cryptographic construction, group, encoding, membership rule or validation
+changes. Empty/final identity rejection and intermediate identity handling remain.
+
+Expected work: at IDs 1–5, each multiplication requires 0–2 doublings and 0–1
+additions instead of 255 of each. Confirm actual invocation/operation counts with
+bounded temporary counters, then remove probes. Primary metrics are full in-memory
+BLS ceremony p50 and process CPU, with p95/RSS guardrails. Compare five alternating
+pairs against E02a using the same eight-denomination/five-iteration workload;
+extend to ten if inconclusive. Then compare the combined change to the original
+baseline and use E02a as the ablation. Arithmetic boundary/reference tests precede
+measurement. No keep decision has been made.
+
+E02b work counters confirmed 3,200 public-ID multiplications per full BLS
+ceremony. Those calls used 3,840 group doublings and 1,280 group additions, versus
+816,000 of each in the pinned general-scalar algorithm for the same 3,200 calls.
+The single-local-keyset phase used 160 calls, 96 doublings and 32 additions.
+Temporary per-call diagnostic records and phase markers were removed before the
+paired run; the acceptance binary was built without them. Nine arithmetic/public
+key tests passed, including power-of-two boundaries through the maximum `u16`
+ID, identity/negative points, and independent secret/power-sum references.
+
+The SDK pilot also passed serial independent-wallet, concurrent shared-wallet
+and bounded open-loop behavior against the original release server:
+
+| Case | Offered | Completed | Rejected before initiation | Recipient balances |
+|---|---:|---:|---:|---|
+| Serial, four independent wallets | 4 | 4 | 0 | Four × 32 sat |
+| Concurrency four, shared wallet | 4 | 4 | 0 | 128 sat |
+| Concurrency one, 10 ms arrivals | 8 | 1 | 7 | 32 sat; seven empty wallets |
+
+Every offered token contained one proof. There were no failed, late or unresolved
+receives. Serial client latency was p50 901.34 ms / p95 1,034.26 ms, with 1,090.65 ms
+of separate preparation. These small, deliberately exhausted fixtures validate
+accounting and scheduling only; their window throughput is not sustainable TPS.
+The rejected tokens were never submitted and remain private for later use.
+
+E02b's five alternating ablation pairs completed with all-member consistency in
+all ten runs. [All numeric samples](benchmarks/2026-09-08-dkg-public-id-ablation.csv)
+are retained. Against E02a, candidate/baseline paired 95% intervals were:
+
+| Metric | Ratio | 95% interval |
+|---|---:|---|
+| Full in-memory BLS ceremony p50 | 0.4729 | 0.4685–0.4774 |
+| Full in-memory BLS ceremony p95 | 0.5005 | 0.4237–0.5914 |
+| Whole-harness CPU | 0.4673 | 0.4580–0.4767 |
+| Whole-harness instructions | 0.4591 | 0.4591–0.4592 |
+| Whole-harness maximum RSS | 0.9909 | 0.9667–1.0156 |
+
+Secret-request, public-keyset and local-keyset p50/p95 intervals also showed
+improvement. p99 remains unavailable. The RSS interval does not establish a memory
+reduction, but its upper bound remains below the 5% regression threshold. The
+combined comparison against the original baseline and broader correctness gates
+are pending; these numbers are incremental DKG microbenchmark results only.
+
+### E02 combined comparison against the original baseline
+
+Five new alternating matched pairs used the preserved original production code
+with the identical version-8 harness versus probe-free E02a+E02b. Every run passed
+all-member BLS consistency. [All samples](benchmarks/2026-09-08-dkg-combined.csv)
+include every iteration and process observation. Same primary workload, compiler,
+features and release profile as the ablation; no compilation overlapped timings.
+
+| Metric | Baseline geometric mean | Combined geometric mean | Ratio 95% interval |
+|---|---:|---:|---|
+| Full in-memory BLS ceremony p50 | 3,671.88 ms | 1,406.38 ms | 0.3723–0.3940 |
+| Full in-memory BLS ceremony p95 | 3,738.41 ms | 1,429.50 ms | 0.3640–0.4017 |
+| Whole-harness CPU | 23.6410 s | 8.8187 s | 0.3628–0.3836 |
+| Whole-harness instructions | 680.304 billion | 245.536 billion | 0.3608–0.3610 |
+| Whole-harness maximum RSS | 6.848 MB | 6.746 MB | 0.9657–1.0047 |
+
+This supports 61.7% lower BLS ceremony median, 61.8% lower p95, 62.7% lower harness
+CPU and 63.9% fewer instructions. It does not establish a memory improvement.
+Secret-request/public-keyset/local-keyset p50 ratios are 0.2747/0.2749/0.3092,
+respectively, with all p50 and p95 confidence intervals below one. p99 is unavailable.
+Process resource totals include fixture preparation. Transport, FROST, durable
+storage, readiness, idle behavior and payment throughput are outside this result.
+The original E02a runs and their outlier remain retained; they were not replaced
+by this separately declared combined comparison.
+
+E02b correctness follow-up: 642 Cashu release tests passed (two existing ignored),
+40 DKG-filtered common release tests passed, strict Cashu federation library Clippy
+passed, federation-enabled FFI compilation passed, SDK receiver release build and
+workspace formatting passed. Five/full-denomination, eleven/one-denomination and
+twenty/one-denomination full in-memory BLS consistency cases also passed. Commands
+match E02a, with `cargo check --locked -p cdk-ffi --features federation` added.
+
+Disposition: keep E02b for its measured work reduction and repeatable incremental
+and combined latency/CPU gains. No confirmed metric exceeds the regression bound;
+RSS intervals include no change. Neither arithmetic edit runs on the ordinary
+non-federation path. Final full-service DKG, transport, runtime/recovery and
+candidate payment gates remain required before campaign completion.
+
+### Payment directions and baseline restart preparation
+
+Fresh original-release pilots independently confirmed outgoing Bark Lightning
+(1,000 sat; recorded fee 30 sat), incoming BDK on-chain (50,000 sat issued), and
+outgoing BDK on-chain (1,000 sat received with the required confirmation; recorded
+fee 285 sat). The miner used a fixed five-second schedule, independently of the
+blocking CLI calls; its observations and transaction/receipt identities are private.
+Pilot CLI durations were 6,101.51 / 12,393.75 / 36,918.10 ms respectively. These
+single samples include process costs and block waiting and are not acceptance
+comparisons. Signed status subsequently showed all five members ready and converged
+at operation 68 with no alerts.
+
+Conservation: 4,096 + 50,000 − 1,000 − 30 − 1,000 − 285 = 51,781 sat.
+Observed balances were 51,269 sat in the sender, 288 sat in SDK recipients, and
+224 sat in seven never-submitted token fixtures. No failed or uncertain external
+payment was retried. [All ecash pilot attempts](benchmarks/2026-09-08-ecash-driver-pilots.csv)
+are retained without token data.
+
+Existing Prometheus phase totals suggest waiting dominates the BDK outgoing pilot:
+fee estimation and PSBT construction took about 2 ms and 1 ms; FROST commitment
+and signature rounds about 56 ms and 37 ms. These nested aggregate spans must not
+be summed as wall time. Existing phase traces were hidden by the default file
+writer level despite the target filter. Five campaign members shut down gracefully
+in 210 ms to enable diagnostic file tracing. An initial config document used the
+wrong logging section and was rejected before storage mutation; the corrected
+`info.logging` document was accepted and the same member state restarted. The
+first status request was premature; readiness is being rechecked. No original
+fixture data or unrelated service was removed.
