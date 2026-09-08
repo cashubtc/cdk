@@ -546,3 +546,21 @@ intervals. The long confirm calls need further causal attribution before any new
 scheduling experiment. These five-payment serial runs establish neither
 sustainable throughput nor p99. Broader campaign and final correctness gates
 remain open.
+
+### Cross-session recovery: startup regression verified; candidate provisional
+
+E07 prevents old-session unit cursors from becoming a replay floor or quorum vote
+in a later session. A new five-member AlephBFT/SQLite scenario fails against the
+original helper at replay readiness and passes with the candidate, preserving the
+journal/materialized state and then finalizing another operation on every member.
+Same-session replay floors and quorum requirements remain covered by neighboring
+tests. Scoped quorum, restart and recovery checks passed 85 test executions across
+full and core feature configurations, plus strict lint, ordinary compilation and
+formatting.
+
+This verifies the caller's session-transition boundary beyond the earlier pure
+helper regression. It uses controlled test scheduling and the existing router
+transport; it establishes no production recovery latency or payment-throughput
+gain. The candidate remains uncommitted pending runtime regtest and performance
+acceptance. Its original-binary recovery timeout remains censored failure evidence,
+not a numeric baseline from which to calculate a speedup.

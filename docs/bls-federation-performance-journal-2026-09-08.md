@@ -3956,3 +3956,72 @@ Only `sync_loop.rs` and its existing test addition remain provisional. No E07
 production runtime has been started. Next validation must exercise the original
 cross-session failure and candidate recovery with durable frontier/digest checks;
 repeating a same-session restart cannot substitute for that boundary.
+
+### E07 actual startup-path regression under development
+
+The helper-only regression leaves a coverage gap at the caller: startup captures
+local status before advancing the consensus session, then passes that status to
+the replay-target calculation. Add a five-member AlephBFT/SQLite scenario using
+the existing router transport fixture. First finalize an operation in session
+zero, then persist four peers in a later empty session. Hold their new unit
+creation with test-only delay configuration while reconciling the remaining
+member through `reconcile_federation_startup_with_quorum`. Require its persisted
+session, replay readiness and unchanged journal/materialized state, then resume
+normal fixture scheduling and require another operation to finalize on all five.
+
+This is a correctness scenario, not a production latency benchmark or a regtest
+payment. No new production API or instrumentation is introduced. The test must
+fail against the original replay-target helper and pass with the candidate;
+compile/runtime failures and revisions will be retained privately. Performance
+acceptance and real cross-session payment recovery remain open.
+
+### E07 startup-path regression and scoped verification results
+
+The new five-runtime scenario passed with the candidate. Against the original
+helper it failed exactly at `a later empty session must not wait for old-session
+units`, after the later session had been durably selected. The guarded original
+comparison restored the candidate source automatically. The initial fixture's
+first-operation wait was then tightened to wait for all five members before
+stopping any member; this avoids making fixture shutdown order part of the test.
+The candidate now normalizes local cursors lazily rather than allocating an
+intermediate map before constructing the result. This is refinement of the
+unaccepted candidate, not an independently claimed optimization.
+
+The final source passed the serial scoped validator:
+
+| Check | Result |
+| --- | --- |
+| Full-feature `quorum_` tests | 19 passed |
+| One/quorum/all-member live restart matrix | 3 passed |
+| Recovery tests | 46 passed; one manual benchmark ignored |
+| Strict full-feature Axum library Clippy | passed |
+| Core `federation`-only `quorum_` tests | 17 passed |
+| Ordinary Axum without default features | compiled |
+| Workspace formatting check | passed |
+
+These are 85 passing test executions across configurations, not 85 distinct
+scenarios. The new scenario uses real AlephBFT and SQLite with the existing router
+transport and test key fixtures. Its delayed initial unit creation only controls
+the later-session observation boundary. It is not an HTTP/Iroh regtest payment,
+a production timeout measurement, or a performance acceptance result.
+
+```sh
+python3 "$RUN_ROOT/run_e07_cross_session_baseline.py"
+python3 "$RUN_ROOT/validate_e07_cross_session.py"
+```
+
+The validator's private command manifest and logs retain every command, exact
+source hashes and result. Test commands use `RUST_MIN_STACK=16777216`, the pinned
+Nix stable shell, `cargo test --locked -p cdk-axum --lib`, the documented full
+feature set or explicit core-only features, and `--test-threads 1`. Source bytes
+remained unchanged throughout validation. Full core/FFI/correctness and campaign
+payment gates remain separate from these scoped checks.
+
+The original-helper comparison was repeated against the final tightened fixture:
+`run_e07_cross_session_baseline_final.py` again exited through the expected
+obsolete-watermark assertion, then restored the exact validated candidate bytes.
+This confirms the final test detects the original defect; it is not another
+performance sample. An uninstrumented release build is now in progress using
+`build_e07_runtime.py`. It checks the validated source hashes, isolates the E07
+production diff, and reuses the unchanged retained E03a baseline artifact. No
+candidate production runtime or payment has been started by that build.
