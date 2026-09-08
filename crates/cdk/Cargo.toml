@@ -177,6 +177,10 @@ name = "federation_receive_performance"
 required-features = ["wallet", "federation"]
 
 [[example]]
+name = "federation_melt_performance"
+required-features = ["wallet", "federation"]
+
+[[example]]
 name = "multi-mint-wallet"
 required-features = ["wallet"]
 

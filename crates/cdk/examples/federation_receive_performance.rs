@@ -1,4 +1,4 @@
-//! Persistent SDK receiver for token fixtures prepared by the federation harness.
+//! Persistent SDK receiver for tokens and externally funded mint quotes.
 //!
 //! Pass one private JSON manifest. This driver never funds, retries failed
 //! payments, or replaces state. Keep its directory for recovery and audit.
@@ -11,20 +11,49 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{ensure, Context, Result};
-use cdk::nuts::{CurrencyUnit, Token};
+use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
+use cdk::nuts::{CurrencyUnit, PaymentMethod, Token};
 use cdk::wallet::{FederatedMintConnector, ReceiveOptions, Wallet, WalletBuilder};
 use cdk_common::federation::FederationConfig;
 use cdk_sqlite::WalletSqliteDatabase;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use tokio::time::{sleep_until, timeout_at, Instant};
+
+#[derive(Debug, thiserror::Error)]
+enum Error {
+    #[error("{0}")]
+    Input(&'static str),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Wallet(#[from] cdk::Error),
+    #[error(transparent)]
+    Join(#[from] tokio::task::JoinError),
+    #[error(transparent)]
+    Duration(#[from] std::num::TryFromIntError),
+}
+
+type Result<T> = std::result::Result<T, Error>;
+
+fn check(condition: bool, reason: &'static str) -> Result<()> {
+    if !condition {
+        return Err(Error::Input(reason));
+    }
+    Ok(())
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
     public_config: PathBuf,
+    #[serde(default)]
     token_files: Vec<PathBuf>,
+    #[serde(default)]
+    mint_requests: Vec<MintRequest>,
     state_dir: PathBuf,
     concurrency: usize,
     window_ms: u64,
@@ -36,6 +65,25 @@ struct Manifest {
     warm_connections: bool,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MintRequest {
+    method: MintMethod,
+    amount_sat: u64,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum MintMethod {
+    Bolt11,
+    Onchain,
+}
+
+enum Input {
+    Token(String),
+    Mint(MintRequest),
+}
+
 #[derive(Serialize)]
 struct Attempt {
     id: usize,
@@ -44,6 +92,8 @@ struct Attempt {
     finished_ns: Option<u64>,
     outcome: &'static str,
     received_sat: Option<u64>,
+    quote_ready_ns: Option<u64>,
+    issued_proofs: Option<usize>,
     // A client error or drain cancellation is not a terminal federation outcome.
     requires_reconciliation: bool,
 }
@@ -55,14 +105,57 @@ fn offset(origin: Instant) -> u64 {
 async fn receive(
     id: usize,
     wallet: Arc<Wallet>,
-    token: String,
+    input: Input,
     scheduled_ns: u64,
     started: Arc<AtomicU64>,
     origin: Instant,
+    state_dir: PathBuf,
 ) -> Attempt {
     let started_ns = offset(origin);
     started.store(started_ns + 1, Ordering::Relaxed);
-    let result = wallet.receive(&token, ReceiveOptions::default()).await;
+    let mut quote_ready_ns = None;
+    let mut issued_proofs = None;
+    let operation = async {
+        match input {
+            Input::Token(token) => Ok(wallet.receive(&token, ReceiveOptions::default()).await?),
+            Input::Mint(request) => {
+                let method = PaymentMethod::Known(match request.method {
+                    MintMethod::Bolt11 => KnownMethod::Bolt11,
+                    MintMethod::Onchain => KnownMethod::Onchain,
+                });
+                let quote = wallet
+                    .mint_quote(method, Some(request.amount_sat.into()), None, None)
+                    .await?;
+                quote_ready_ns = Some(offset(origin));
+                // The external payer/miner observes this private file. The SDK
+                // has already persisted the quote and its recovery identity.
+                fs::write(
+                    state_dir.join(format!("request-{id}.json")),
+                    serde_json::to_vec_pretty(&serde_json::json!({
+                        "id": id, "quote_id": quote.id, "request": quote.request,
+                        "method": request.method,
+                        "amount_sat": request.amount_sat, "quote_ready_ns": quote_ready_ns,
+                    }))?,
+                )?;
+                // The shared scheduler owns the bounded drain deadline.
+                let mut stream = wallet.proof_stream(quote, Default::default(), None);
+                let proofs = stream
+                    .next()
+                    .await
+                    .ok_or(Error::Input("mint proof stream ended"))??;
+                issued_proofs = Some(proofs.len());
+                Ok(proofs.total_amount().map_err(cdk::Error::from)?)
+            }
+        }
+    };
+    let result: Result<cdk::Amount> = operation.await;
+    if let Err(error) = &result {
+        // Keep diagnostics beside durable wallet state, never in public output.
+        let _ = fs::write(
+            state_dir.join(format!("request-{id}-error.txt")),
+            error.to_string(),
+        );
+    }
     Attempt {
         id,
         scheduled_ns,
@@ -75,6 +168,8 @@ async fn receive(
         },
         requires_reconciliation: result.is_err(),
         received_sat: result.ok().map(u64::from),
+        quote_ready_ns,
+        issued_proofs,
     }
 }
 
@@ -82,25 +177,35 @@ async fn receive(
 async fn main() -> Result<()> {
     let path = std::env::args()
         .nth(1)
-        .context("private manifest path required")?;
-    let manifest: Manifest = serde_json::from_slice(&fs::read(path)?)?;
-    ensure!(
+        .ok_or(Error::Input("private manifest path required"))?;
+    let manifest: Manifest = serde_json::from_slice(&fs::read(&path)?)?;
+    check(
         (1..=64).contains(&manifest.concurrency),
-        "concurrency must be 1–64"
-    );
-    ensure!(
+        "concurrency must be 1–64",
+    )?;
+    check(
         manifest.window_ms > 0 && manifest.drain_ms > 0,
-        "window/drain must be positive"
-    );
-    ensure!(
+        "window/drain must be positive",
+    )?;
+    check(
         manifest.arrival_interval_ms != Some(0),
-        "arrival interval must be positive"
-    );
-    ensure!(!manifest.token_files.is_empty(), "token fixtures required");
-    ensure!(
+        "arrival interval must be positive",
+    )?;
+    check(
+        manifest.token_files.is_empty() != manifest.mint_requests.is_empty(),
+        "provide either token fixtures or mint requests",
+    )?;
+    check(
+        manifest
+            .mint_requests
+            .iter()
+            .all(|request| request.amount_sat > 0),
+        "mint amounts must be positive",
+    )?;
+    check(
         manifest.window_ms <= 3_600_000 && manifest.drain_ms <= 3_600_000,
-        "window/drain must not exceed one hour"
-    );
+        "window/drain must not exceed one hour",
+    )?;
     let preparation_started = Instant::now();
     // create_dir deliberately fails for existing state, including an earlier run.
     fs::create_dir(&manifest.state_dir)?;
@@ -109,6 +214,7 @@ async fn main() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&manifest.state_dir, fs::Permissions::from_mode(0o700))?;
     }
+    fs::copy(path, manifest.state_dir.join("manifest.json"))?;
     let config: FederationConfig = serde_json::from_slice(&fs::read(&manifest.public_config)?)?;
     fs::copy(
         &manifest.public_config,
@@ -118,21 +224,21 @@ async fn main() -> Result<()> {
         .members
         .values()
         .next()
-        .context("empty roster")?
+        .ok_or(Error::Input("empty roster"))?
         .public_mint_url
         .clone();
     let connector = Arc::new(FederatedMintConnector::from_public_config_urls(config)?);
     let mut input_proof_counts = Vec::with_capacity(manifest.token_files.len());
-    let tokens = manifest
+    let mut inputs = manifest
         .token_files
         .iter()
         .map(|path| {
             let encoded = fs::read_to_string(path)?;
-            let parsed: Token = encoded.trim().parse()?;
-            ensure!(
-                parsed.mint_url()? == mint_url,
-                "fixture mint differs from roster entrypoint"
-            );
+            let parsed: Token = encoded.trim().parse().map_err(cdk::Error::from)?;
+            check(
+                parsed.mint_url().map_err(cdk::Error::from)? == mint_url,
+                "fixture mint differs from roster entrypoint",
+            )?;
             input_proof_counts.push(match parsed {
                 Token::TokenV3(token) => token
                     .token
@@ -145,14 +251,15 @@ async fn main() -> Result<()> {
                     .map(|entry| entry.proofs.len())
                     .sum::<usize>(),
             });
-            Ok(encoded.trim().to_owned())
+            Ok(Input::Token(encoded.trim().to_owned()))
         })
         .collect::<Result<Vec<_>>>()?;
+    inputs.extend(manifest.mint_requests.iter().cloned().map(Input::Mint));
 
     let wallet_count = if manifest.shared_wallet {
         1
     } else {
-        tokens.len()
+        inputs.len()
     };
     let mut wallets = Vec::with_capacity(wallet_count);
     for index in 0..wallet_count {
@@ -163,7 +270,8 @@ async fn main() -> Result<()> {
         )?;
         let store =
             WalletSqliteDatabase::new(manifest.state_dir.join(format!("wallet-{index}.sqlite")))
-                .await?;
+                .await
+                .map_err(cdk::Error::from)?;
         let wallet = WalletBuilder::new()
             .mint_url(mint_url.clone())
             .unit(CurrencyUnit::Sat)
@@ -182,16 +290,16 @@ async fn main() -> Result<()> {
     let drain_end = window_end + Duration::from_millis(manifest.drain_ms);
     let mut tasks = JoinSet::<Attempt>::new();
     let mut pending = BTreeMap::new();
-    let mut attempts = Vec::with_capacity(tokens.len());
-    let token_count = tokens.len();
-    for (id, token) in tokens.into_iter().enumerate() {
+    let mut attempts = Vec::with_capacity(inputs.len());
+    let request_count = inputs.len();
+    for (id, input) in inputs.into_iter().enumerate() {
         let scheduled_ns = match manifest.arrival_interval_ms {
             Some(interval) => {
                 let arrival = origin
                     + Duration::from_millis(
                         interval
                             .checked_mul(id as u64)
-                            .context("arrival overflow")?,
+                            .ok_or(Error::Input("arrival overflow"))?,
                     );
                 if arrival >= window_end {
                     break;
@@ -230,6 +338,8 @@ async fn main() -> Result<()> {
                 finished_ns: Some(offset(origin)),
                 outcome: "rejected",
                 received_sat: None,
+                quote_ready_ns: None,
+                issued_proofs: None,
                 requires_reconciliation: false,
             });
             continue;
@@ -237,7 +347,15 @@ async fn main() -> Result<()> {
         let started = Arc::new(AtomicU64::new(0));
         pending.insert(id, (scheduled_ns, started.clone()));
         let wallet = wallets[if manifest.shared_wallet { 0 } else { id }].clone();
-        tasks.spawn(receive(id, wallet, token, scheduled_ns, started, origin));
+        tasks.spawn(receive(
+            id,
+            wallet,
+            input,
+            scheduled_ns,
+            started,
+            origin,
+            manifest.state_dir.clone(),
+        ));
     }
     while !tasks.is_empty() {
         match timeout_at(drain_end, tasks.join_next()).await {
@@ -259,6 +377,8 @@ async fn main() -> Result<()> {
             finished_ns: None,
             outcome: "pending",
             received_sat: None,
+            quote_ready_ns: None,
+            issued_proofs: None,
             requires_reconciliation: true,
         });
     }
@@ -275,24 +395,25 @@ async fn main() -> Result<()> {
         .iter()
         .all(|attempt| !attempt.requires_reconciliation)
     {
-        ensure!(
+        check(
             wallet_balances_sat.iter().sum::<u64>()
                 == attempts
                     .iter()
                     .filter_map(|attempt| attempt.received_sat)
                     .sum::<u64>(),
-            "recipient balances differ from confirmed receipts"
-        );
+            "recipient balances differ from confirmed receipts",
+        )?;
     }
     let report = serde_json::json!({
-        "driver_version": 1, "window_ns": manifest.window_ms * 1_000_000,
+        "driver_version": 2, "window_ns": manifest.window_ms * 1_000_000,
         "preparation_ns": preparation_ns, "actual_observation_ns": actual_observation_ns,
         "concurrency": manifest.concurrency, "arrival_interval_ms": manifest.arrival_interval_ms,
         "queue_capacity": 0, "shared_wallet": manifest.shared_wallet,
         "warm_connections": manifest.warm_connections,
+        "mint_requests": manifest.mint_requests,
         "input_proof_counts": input_proof_counts, "wallet_balances_sat": wallet_balances_sat,
         "wallet_proof_counts": wallet_proof_counts,
-        "tokens_not_offered": token_count - attempts.len(), "attempts": attempts,
+        "requests_not_offered": request_count - attempts.len(), "attempts": attempts,
     });
     fs::write(
         manifest.state_dir.join("results.json"),

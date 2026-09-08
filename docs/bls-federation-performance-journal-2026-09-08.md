@@ -436,3 +436,273 @@ wrong logging section and was rejected before storage mutation; the corrected
 `info.logging` document was accepted and the same member state restarted. The
 first status request was premature; readiness is being rechecked. No original
 fixture data or unrelated service was removed.
+
+## E03a — Measure broadcaster scheduling waits
+
+Registered before the next production experiment. Owning layer: federation BDK
+transaction broadcaster and terminal application publication. A fresh traced
+outgoing payment after restart took 37,926 ms and was independently received.
+The selected signer spent 63 ms in the commitment round and 43 ms in the signature
+round; exact transaction broadcast RPCs took 0.8–7.2 ms across members. Proposal
+preparation was 1,491 ms and transaction finalization 1,189 ms, including their
+nested consensus waits. These observations do not justify changing cryptography,
+confirmations or durability. The sampling profile contains many parked runtime
+workers; parked-thread samples are not summed as CPU utilization.
+
+Code inspection shows the broadcaster checks at a five-second interval, including
+between accepted signed bytes and accepted broadcast authorization. Hypothesis:
+notify its existing worker only after applied `TransactionSigned` and
+`TransactionBroadcastIntent` entries. Coalesce notifications, preserve periodic
+repair, exact-byte checks, independent validation and every retry deadline. Do not
+wake it for unrelated ecash or Lightning operations. No timeout/queue/consensus
+policy changes are proposed. First use one bounded member-local monotonic probe
+from terminal application publication to the next broadcaster round. This will
+measure the suspected queue wait before implementing a wakeup. The probe and its
+logs remain temporary and outside acceptance runs.
+
+The temporary monotonic probe measured **4,111.06 ms** from signed-state
+publication to the next broadcaster round and **4,235.53 ms** from authorization
+publication to the following round on the instrumented member. Each sample is a
+single process's `Instant` duration; no cross-machine or wall-clock subtraction
+was used. They cover successive causal stages, not overlapping work. The diagnostic
+member differed from the original release only by the retained DKG arithmetic
+(which is outside the warm payment path) and this probe. No performance acceptance
+claim uses the instrumented run.
+
+This supports testing one focused change: an `Arc<Notify>` owned by the existing
+broadcaster, signaled by terminal publication only for applied signed/authorization
+entries. One stored permit coalesces bursts and survives publication during an
+in-flight round. The five-second periodic repair timer and all local retry gates
+remain. Primary metric: SDK end-to-end outgoing on-chain latency, with broadcast
+and post-confirmation phases separated from an independent fixed block schedule.
+Predicted counter change: publication-to-round waiting falls without increasing
+initiations, accepted transaction identities, external broadcasts per required
+observation, or idle wakeups. Matched latency/CPU/memory and adversarial/recovery
+checks must pass before keeping the change. No keep decision yet.
+
+The diagnostic payment completed in 33,259.65 ms with an independent receipt.
+The diagnostic-only executable was removed from the live fixture, all original
+baseline binaries and logging settings were restored, and signed readiness/
+convergence passed again. Temporary probe fields and callbacks are absent from
+production source. The current unaccepted candidate adds only the coalesced
+broadcaster notification and its terminal-publication call.
+
+A separate serial persistent SDK melt example now reads an existing prepared
+private wallet, performs recovery/connection preparation outside its window,
+records quote and saga identities before confirmation, and stops initiating work
+after any uncertain result. Its on-chain pilot confirmed an independent 1,000-sat
+receipt and exact 1,285-sat wallet debit. The measured operation used ten proofs,
+no preparatory swap, 916 ms to quote readiness and 35,644 ms to completion, with
+779 ms of separately recorded setup. This is driver validation, not acceptance
+performance; independent fixture construction overlapped the pilot.
+
+For E03a's real comparison, both arms will use fresh independent federations and
+matched funding/holdings rather than the earlier diagnostic fixture's history.
+The new candidate completed five-member, full-denomination HTTP DKG. The fresh
+comparison baseline is starting. Funding and all builds remain outside measured
+payment windows. No nonce or custody state is copied between arms.
+
+### E03a matched-run manifest
+
+Both fresh five-member HTTP federations completed full-denomination setup and
+started with 13 accepted operations per member. Each received 131,072 sat from the
+same two-output Bitcoin transaction, issued as 2,048-sat target proofs. The driver
+binary is identical across arms and retains a client/wallet across five sequential
+1,000-sat on-chain payments per run. Five pairs alternate baseline/candidate and
+candidate/baseline order. Actual proof selection, fee, history and receipt records
+are retained for every run. The window is a bounded fixed-work sequence: it ends
+when work completes, with a five-minute maximum and separately classified drain.
+Observed fixed-work throughput is not automatically sustainable throughput.
+
+Compilation and funding finished before the pairs. Temporary diagnostic traces
+and binaries are absent. Existing Prometheus snapshots bracket each run; process
+CPU/RSS is sampled once per second. A separate miner follows a five-second fixed
+schedule. An external observer records mempool, confirmation and private completion
+file observations on its own monotonic clock (500 ms mempool / 100 ms file polling).
+Those observation bounds must accompany external phase conclusions; they are not
+subtracted from unrelated SDK timestamps. A 30-second post-run idle sample follows
+receipt, metrics and convergence checks. Every run checks independent 1,000-sat receipts,
+exact wallet debit, and within-run signed member digest agreement. The harness
+stops before further initiation on any failure, ambiguous outcome, monitor failure
+or history mismatch. Raw manifests and source/binary fingerprints are private.
+An automatic permission-review timeout occurred before execution; the explicitly
+permitted single retry succeeded and did not duplicate any payment.
+
+### E03a first pair and fixture correction
+
+The first pair completed all ten payments with independent receipts, exact wallet
+debits and within-run member agreement. Per-payment milliseconds, in request order:
+
+- Baseline: 37,330.43; 34,243.47; 37,082.62; 36,557.75; 34,341.38.
+- Candidate: 21,041.18; 19,181.92; 37,067.23; 18,352.53; 19,679.12.
+
+Aggregate member CPU/payment was 5.384 versus 4.192 seconds; post-run 30-second
+idle CPU was 1.48 versus 1.44 seconds. These are one pair, not an acceptance result.
+The candidate's long observation remains included. Selected proof counts matched
+exactly: 0, 9, 9, 9, 11, with three proofs requiring a preparatory swap on the first
+request and no preparatory swap on subsequent requests.
+
+The harness stopped before pair two because histories ended at 169 versus 159
+entries. A read-only journal audit found identical counts for every operation type
+except chain observations of wallet change. Both arms recorded all five members'
+confirmed observations for every change output. Baseline additionally recorded 25
+unconfirmed observations; candidate recorded 15, because some observations first
+saw an already-confirmed output. No confirmation or payment evidence was omitted.
+
+Subsequent pairs therefore use fresh independent federations, matched funding and
+13 accepted entries before each arm. The first pair already meets that policy and
+is retained. Completed comparison fixtures are stopped with bounded graceful
+shutdown and their complete databases/keys are preserved. Each new pair generates
+its own custody and nonce state. Only the active comparison pair and the same
+diagnostic federation remain running, keeping background service count matched.
+No production/build change is made during comparisons. The initial result schema's
+missing `higher_is_better: []` field was corrected without changing numeric samples.
+
+External polling missed mempool visibility for two fast candidate transactions;
+their broadcast-to-confirmation durations are unavailable, not zero. All five
+confirmations and completions were observed. Preliminary external observations
+also show substantial post-confirmation waiting, so the broadcaster notification
+does not explain the complete outgoing path. Further attribution remains required.
+
+The second pair reversed execution order and again confirmed all ten payments and
+exact balances. Candidate milliseconds: 40,361.46; 35,013.60; 18,761.41; 19,589.72;
+20,489.95. Baseline: 36,941.98; 35,681.14; 38,679.11; 34,111.72; 33,302.31.
+Member CPU/payment was 4.524 versus 5.298 seconds; idle CPU was 1.59 versus 1.49
+seconds. No latency or idle acceptance conclusion is drawn from two pairs.
+
+Resource-accounting limitation: process samples bracket the complete SDK process,
+including its separately timed wallet opening/recovery/connection preparation.
+Thus CPU/payment is whole-driver member CPU, not a measurement restricted exactly
+to the steady-state SDK window. DKG, fixture creation, funding and compilation are
+outside both CPU and latency measurements. The same frozen SDK executable serves
+both arms; later benchmark-source improvements do not change that executable.
+
+### E03a fee-estimator drift invalidates the initial acceptance series
+
+The actual-shape audit found an uncontrolled fixture input. Bitcoin's estimate
+changed during pair three: baseline paid four 285-sat fees and one 428-sat fee;
+candidate paid five 428-sat fees. The reserve changed from 3,478 to 4,967 sat,
+causing additional preparatory swaps and different proof selections. Matching
+configuration and initial funding alone did not keep fee-dependent work matched.
+Pair five also crossed a fee-estimate boundary (428 to 569 sat). Pair four matched
+the higher fee in both arms, but its candidate post-run CPU
+sample was also anomalous: 3.97 aggregate CPU seconds in 30 seconds versus 1.38
+for baseline, distributed across all five members. Thermal telemetry was
+unavailable, so no environmental explanation is established.
+
+The initial five-pair series is retained as investigative evidence, not accepted
+performance evidence. In particular, pair three cannot enter a matched-workload
+confidence interval. No sample is deleted or relabeled as successful acceptance.
+The candidate remains uncommitted. Before repeating the series:
+
+- Use a private regtest RPC fixture that supplies a fixed 2 sat/vB smart-fee
+  estimate and forwards all other Bitcoin RPCs unchanged. This controls an
+  external test input; it changes no production fee calculation, signer check,
+  confirmation policy, durability or transaction construction.
+- Persist and check the expected 3,478-sat quote reserve before initiating each
+  payment. Verify actual fees, proof counts and preparatory swaps across arms.
+- Measure settled idle CPU after a full minute of quiescence, separately from the
+  initial series' immediate post-payment CPU. Retain both kinds of evidence.
+- Keep fresh independent state per pair, fixed mining cadence, alternating order,
+  release server artifacts and independent receipt/value checks.
+
+Fee-estimation service latency through this controlled fixture is not a measurement
+of real external fee-estimator performance. The experiment targets waiting after
+accepted signing/authorization; fee-estimation optimization is not claimed.
+
+All 50 initial payments have independent receipts, matching wallet debits and
+within-run member agreement. The
+[complete numeric ledger](benchmarks/2026-09-08-bdk-broadcast-uncontrolled.csv)
+includes every request, actual fees/reserves, proof shape, CPU, sampled RSS and
+history. The raw unchecked interval output is preserved privately and explicitly
+marked invalid for acceptance. The analyzer now rejects this actual series because
+observed inputs differ within pairs three and five. Its two new guard tests plus
+the existing seven evidence tests pass.
+
+### Persistent driver validation and controlled-series start
+
+Pinned Nix release commands completed successfully:
+
+```sh
+cargo fmt --all
+cargo build --locked --release -p cdk --no-default-features \
+  --features wallet,federation,iroh \
+  --example federation_receive_performance --example federation_melt_performance
+cargo clippy --locked --release -p cdk --no-default-features \
+  --features wallet,federation,iroh \
+  --example federation_receive_performance --example federation_melt_performance \
+  -- -D warnings
+python3 -m unittest discover -s scripts -p test_analyze_federation_performance.py
+```
+
+The expanded incoming SDK driver completed two serial Lightning receives and two
+serial on-chain receives against the original five-member HTTP runtime. Each
+direction issued 4,096 sat into independent fresh wallets, matching independent
+payer/deposit receipts exactly. Functional-pilot client milliseconds were
+7,705.83 / 7,330.06 for Lightning and 11,785.26 / 10,600.98 for on-chain. These
+validate the driver, not a baseline/candidate improvement. The on-chain miner ran
+independently every five seconds. No payment identity was retried.
+
+The private controlled-fee fixture was checked against real regtest chain data and
+two fee-estimate targets. The replacement five-pair series has started with the
+same frozen server artifacts, a newly frozen common SDK driver and fresh custody
+state for every arm. It records matching observed inputs, checks quote reserves
+before confirmation, and waits 60 seconds before a separate 30-second idle sample.
+
+## E03b — Prospective Bark incoming contention investigation
+
+No production change. Inspection found a member-wide incoming lock held across
+`advance_federated_bark_mint_quote_inner`, invoice preparation/recovery and backend
+HTLC waits. Existing projection timers start after lock acquisition, so they do
+not attribute time waiting for this lock. The same paths also load a complete
+Bark projection to find one quote/action. A parallel incoming workload must first
+measure lock acquisition/hold durations and decoded rows at matched history.
+
+If measured, consider the existing CDK per-quote weak-lock-map pattern and existing
+action-scoped storage interfaces. Before narrowing ownership, audit whether the
+backend requires cross-action serialization for derivation, custody state,
+evidence binding or recovery. Per-quote observer claims alone do not prove that
+RPC evidence-delivery and quote-creation callers share the same exclusion boundary.
+No lock removal, cache or concurrent backend mutation is authorized by this
+inspection alone; acceptance requires the campaign's measurements and safety gates.
+
+Further ownership inspection found that `fresh_intent` and incoming claim planning
+select the next custody locator from consensus derivation allocations under that
+same lock. A blanket per-quote-lock replacement is therefore not an acceptable
+first experiment. Any narrowed critical section must preserve allocation and
+accepted-plan serialization while measuring whether backend waits can safely sit
+outside it. The existing backend wait is bounded at four seconds; that bound alone
+is not evidence that a particular request waited four seconds for the lock.
+
+The existing `federation_receive_performance` driver is being extended to accept
+either token fixtures or `mint_requests` (method `bolt11`/`onchain`, `amount_sat`).
+It reuses the same persistent connectors, independent/shared wallets, scheduler,
+bounded drain and completion accounting. Mint quotes are durably stored before
+their requests are exposed in private files to an independent payer. It records
+quote-readiness offsets and actual issued proof counts. No funding is performed
+inside the SDK driver. A separate private payer records its own causal timestamps
+and initiates each invoice/deposit only once. Compilation and pilot validation are
+deferred until the active paired payment measurements finish, avoiding build load
+in acceptance windows. This support change is not a production optimization.
+
+## E03c — Prospective post-confirmation notification investigation
+
+No production change. The first two E03a pairs place the long candidate observations
+after independent Bitcoin confirmation: about 21–26 seconds versus roughly 5–7
+seconds on their faster requests. These are external observation durations, not
+an attribution to a specific internal worker.
+
+Inspection found that `payment_wakes_for_entry` does not map transaction broadcast
+observations to their melt quotes. The payment scheduler retains exponential
+external-evidence backoff, while the broadcaster independently publishes confirmed
+observations. Hypothesis: accepted confirmation evidence can arrive between probes
+without waking the associated pending quote. Next diagnostic: correlate the
+required accepted confirmation state with the next quote probe and its durable
+schedule on one member clock. Keep the existing timeouts, leases and repair timers.
+Only if that gap is measured should a narrowly scoped notification be tested.
+
+A transaction observation contains a proposal ID, not quote IDs. Resolving affected
+quotes must preserve existing ownership, avoid database I/O in terminal publication
+and avoid an unrelated-history read for each notification. An extra generic event
+framework or speculative cache would not be justified. Delayed/lost notification,
+duplicate request and restart tests remain mandatory for any candidate here.

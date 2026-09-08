@@ -73,6 +73,22 @@ comprising 51,269 sender balance, 288 recipient balances and 224 in unsubmitted
 tokens. These are functional pilots, not a final candidate payment gate or a
 baseline/final latency or throughput comparison.
 
+### Outgoing on-chain investigation
+
+Temporary probes measured 4.11 and 4.24 seconds of waiting for the broadcaster
+after successive accepted signing/authorization stages. A small event-driven
+wakeup candidate preserves the existing periodic repair and exact-transaction
+checks. It remains provisional.
+
+All 50 payments in the initial comparison series completed with independent
+receipts and exact wallet debits. However, fee-estimator drift changed payment
+shapes in two pairs, and one candidate post-payment CPU sample was anomalous.
+The series therefore supports **no accepted combined performance claim**.
+[All numeric samples](benchmarks/2026-09-08-bdk-broadcast-uncontrolled.csv) are retained.
+Controlled fee inputs, pre-initiation reserve checks and settled idle measurements
+are being used for the replacement series. The analyzer now rejects mismatched
+observed inputs rather than relying only on matching configuration.
+
 ## Initial inspection
 
 The baseline already caches validated DKG state/plans, retains verified wallet

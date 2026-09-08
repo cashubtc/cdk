@@ -182,6 +182,15 @@ def compare(records):
             if set(pair) != {"baseline", "candidate"}:
                 raise ValueError("unmatched run or mismatched workload")
             baseline, candidate = pair["baseline"], pair["candidate"]
+            # Configuration alone cannot detect changing external inputs such
+            # as fee estimates, which also change wallet proof selection.
+            inputs = [record.get("matched_inputs") for record in (baseline, candidate)]
+            if baseline["workload"].get("require_matched_inputs") or any(
+                    value is not None for value in inputs):
+                if any(not isinstance(value, dict) or not value for value in inputs):
+                    raise ValueError("matched input observations are required for both arms")
+                if inputs[0] != inputs[1]:
+                    raise ValueError("observed inputs differ within a matched pair")
             if {baseline["order"], candidate["order"]} != {1, 2}:
                 raise ValueError("each pair must record execution order 1 and 2")
             first = "baseline" if baseline["order"] == 1 else "candidate"

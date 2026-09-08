@@ -72,6 +72,28 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             compare(data)
 
+    def test_observed_fee_and_proof_shape_must_match_within_each_pair(self):
+        data = records()
+        for record in data:
+            record["workload"]["require_matched_inputs"] = True
+            record["matched_inputs"] = {"fee_sat": 200 + record["pair"],
+                                        "selected_proofs": [3, 9]}
+        self.assertEqual(compare(data)[0]["pair_count"], 5)
+        data[1]["matched_inputs"]["fee_sat"] += 1
+        with self.assertRaisesRegex(ValueError, "observed inputs differ"):
+            compare(data)
+
+    def test_required_input_observations_cannot_be_omitted(self):
+        data = records()
+        for record in data:
+            record["workload"]["require_matched_inputs"] = True
+        with self.assertRaisesRegex(ValueError, "input observations are required"):
+            compare(data)
+        data = records()
+        data[0]["matched_inputs"] = {"fee_sat": 200}
+        with self.assertRaisesRegex(ValueError, "input observations are required"):
+            compare(data)
+
     def test_noise_is_inconclusive_and_regression_is_detected(self):
         data = records()
         for index, record in enumerate(data[1::2]):
