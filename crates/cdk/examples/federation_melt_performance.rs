@@ -47,6 +47,8 @@ struct Manifest {
     requests: Vec<Request>,
     window_ms: u64,
     drain_ms: u64,
+    #[serde(default)]
+    wait_for_start: bool,
 }
 
 #[derive(Deserialize)]
@@ -126,6 +128,26 @@ async fn main() -> Result<()> {
     let initial_balance_sat = u64::from(wallet.total_balance().await?);
     let initial_proofs = wallet.get_unspent_proofs().await?.len();
     let preparation_ns = offset(preparation);
+    if manifest.wait_for_start {
+        // Match the receive benchmark's bounded setup/measurement handshake.
+        fs::write(
+            manifest.output_dir.join("measurement-ready.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "preparation_ns": preparation_ns,
+                "initial_balance_sat": initial_balance_sat,
+                "initial_wallet_proofs": initial_proofs,
+            }))?,
+        )?;
+        let start_signal = manifest.output_dir.join("measurement-start");
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while !start_signal.try_exists()? {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok::<_, std::io::Error>(())
+        })
+        .await
+        .map_err(|_| Error::Input("measurement start signal timed out"))??;
+    }
     let origin = Instant::now();
     let window_end = origin + Duration::from_millis(manifest.window_ms);
     let drain_end = window_end + Duration::from_millis(manifest.drain_ms);
@@ -228,6 +250,7 @@ async fn main() -> Result<()> {
     let final_balance_sat = u64::from(wallet.total_balance().await?);
     let report = serde_json::json!({
         "driver_version": 1, "concurrency": 1, "shared_wallet": true,
+        "wait_for_start": manifest.wait_for_start,
         "workload": "bounded serial fixed-work sequence",
         "window_ns": active_observation_ns.min(manifest.window_ms * 1_000_000),
         "maximum_window_ns": manifest.window_ms * 1_000_000, "preparation_ns": preparation_ns,

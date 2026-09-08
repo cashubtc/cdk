@@ -2787,3 +2787,100 @@ before millisecond-scale broadcast RPCs, not an accepted improvement. Preserve
 periodic repair, exact-byte broadcast, durable authorization and confirmation
 policy. Five matched alternating pairs with state/input guards are still required;
 expand to ten if inconclusive. No production optimization is accepted here.
+
+
+#### E03a fresh comparison preparation
+
+The renewed retained-code probe supports measuring the existing E03a candidate.
+Hypothesis: notifying the existing broadcaster after applied signed/intent
+publication removes periodic scheduling waits without changing transaction work,
+retry policy, authorization or confirmation requirements. Owning layer: Axum
+federation publication and broadcaster lifecycle. Primary metric: uninstrumented
+SDK payment latency with matched fee/proof/UTXO shapes and an independent miner;
+CPU/payment, memory, idle work and queue stability remain acceptance guards.
+
+Freeze the candidate with
+`python3 "$RUN_ROOT/build_e03a_retained_runtime.py"`. Its release features and
+retained source base match the uninstrumented baseline. The only source changes
+are the two existing broadcaster/publication files; exclude E07 and all rejected
+changes, and include no temporary probe. Save the exact patch, build command and
+artifact hashes; restore all four original provisional source files in `finally`.
+Building an executable does not accept the optimization. Before running the new
+five-pair series, prepare independent original fixtures and verify empty startup
+queues, matching fees and actual payment shapes. Do not reuse invalid historical
+pair series or their already-paid identities.
+
+
+The E03a candidate build completed with SHA-256
+`bf9e434e3bcc94c52b91548d289caa3f8c41afd8c9f591b0241db9fc13468e34`;
+its two-file patch hash is
+`7ba3a68f31f80e3c6e52b16ffde43e61925daf5a76ac88ddc33bbc6f79e1f941`.
+All four original provisional files were verified against their saved bytes after
+restoration. Baseline remains the uninstrumented retained executable, SHA-256
+`3d94b694a1606af60a408d26bee454e5d418ae9472454e0e3900fc91f6ac2008`.
+
+Add the receive example's optional, bounded measurement-start handshake to
+`federation_melt_performance`: write preparation time/balance/proof-count readiness,
+wait at most 60 seconds for the private controller signal, then start the existing
+monotonic transaction window. The default remains immediate execution. This is
+reusable benchmark support, not a production fast path. It separates resource
+sampling from wallet recovery/opening and connection warmup. Both arms use one
+frozen SDK artifact; pinned release build and scoped strict Clippy passed.
+
+Fresh serial comparison workload, declared before running: five 1,000-sat outgoing
+BDK payments per arm; independent five-member HTTP/SQLite/full-denomination
+ceremonies and backend custody; 131,072-sat confirmed deposits issued as 64 proofs
+of 2,048 sat; 60-second fixed warmup and a separate 30-second idle observation;
+empty queued/pending-finalization state with 13 accepted funding operations;
+unchanged configured confirmation/checkpoint policies; independent five-second
+miner. The existing private fee fixture supplies 2 sat/vB to fee-estimate calls
+only, forwarding all other RPCs unchanged. The SDK checks the 3,478-sat quote
+reserve before initiation. Actual proof selections, swaps, input/output counts,
+fees and image/resource settings must match within each pair; independent Bitcoin
+previous outputs must verify each 285-sat fee and exact destination value.
+
+Run one fresh arm using
+`python3 "$RUN_ROOT/run_e03a_retained_arm.py" --pair 1 --arm baseline --order 1`,
+then its candidate arm; alternate order in successive pairs. This extends the
+existing local payment driver, fixed-fee proxy, independent backend/ceremony
+helpers, native process sampler and common analyzer. It never invokes the old
+pair controllers or reuses their payment identities. Preserve each arm's complete
+private inputs, results, native samples, independent receipts and cleanup result.
+Use empirical per-run p50/p95; five payments do not establish p99 or sustainable
+throughput. No candidate is accepted from an initial arm or partial pair.
+
+
+#### First retained baseline arm and benchmark handshake validation
+
+The first baseline arm completed without retries. All five SDK attempts completed
+inside the measurement window, with zero failures, unfinished operations or late
+completions. Original destination outputs and previous Bitcoin outputs verified
+five 1,000-sat receipts and five 285-sat fees; the funded wallet decreased from
+131,072 to 124,647 sat. All members agreed within the live run, beginning at 13
+operations with empty queues and ending at 169 operations with empty queues.
+Owned members/backends and the private fee proxy stopped with state preserved.
+
+The SDK preparation marker recorded 779.638 ms, 131,072 sat and 64 proofs; the
+controller released the handshake afterward, before the existing monotonic
+payment window began. This validates the reusable optional gate on a real
+five-payment run. It changes no ordinary wallet API or production runtime.
+Pinned release build, scoped strict Clippy and `cargo fmt --all -- --check` passed.
+Retain and commit the benchmark support separately from the provisional E03a
+optimization; no production speedup is accepted by this support change.
+
+All five baseline request latencies, milliseconds: 37,092.678542; 36,928.043292;
+32,509.791209; 36,376.258792; 35,618.214666. Empirical median 36,376.258792 ms;
+empirical p95 37,092.678542 ms; p99 unavailable. Aggregate member CPU per payment
+4.9050518832 seconds; instructions per payment 43,185,791,095.4; sampled aggregate
+peak RSS 442,384,384 bytes and physical footprint 166,236,696 bytes. The separate
+30-second idle observation used 1.203483084 aggregate member CPU-seconds. These
+are one baseline arm's observations, not a confidence interval, accepted gain,
+or sustainable-throughput conclusion.
+
+The full request records, actual shapes, native samples, independent receipts,
+readiness and cleanup results remain private. The resource envelope starts after
+SDK preparation and includes up to one 500-ms controller observation interval
+at completion; transaction latency comes from the SDK's own monotonic clock.
+The comparison runner reuses only an arm with complete receipts/results and
+verified stopped backends. An existing partial arm fails closed and requires
+identity reconciliation; it is never automatically rerun.
