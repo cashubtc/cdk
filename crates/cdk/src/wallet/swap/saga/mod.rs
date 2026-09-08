@@ -48,7 +48,7 @@ use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
     RevertProofReservation as RevertSwapProofReservation,
 };
-use crate::wallet::swap::ProofReservation;
+use crate::wallet::swap::{ProofReservation, SendSwapPlan};
 use crate::{Amount, Error, Wallet};
 
 pub(crate) mod resume;
@@ -102,6 +102,7 @@ impl<'a> SwapSaga<'a, Initial> {
         use_p2bk: bool,
         include_fees: bool,
         proof_reservation: ProofReservation,
+        send_plan: Option<SendSwapPlan>,
     ) -> Result<SwapSaga<'a, Prepared>, Error> {
         tracing::info!(
             "Preparing swap with operation {}",
@@ -109,11 +110,25 @@ impl<'a> SwapSaga<'a, Initial> {
         );
 
         let keyset_policy = self.state_data.keyset_policy;
-        let active_keyset_id = self
-            .wallet
-            .active_keyset_with_policy(keyset_policy)
-            .await?
-            .id;
+        let (active_keyset_id, send_split_target) = match send_plan {
+            Some(plan) => {
+                let keyset = self
+                    .wallet
+                    .keyset_with_policy(plan.keyset_id, keyset_policy)
+                    .await?;
+                if keyset.active != Some(true) {
+                    return Err(Error::InactiveKeyset);
+                }
+                (plan.keyset_id, Some(plan.split_target))
+            }
+            None => (
+                self.wallet
+                    .active_keyset_with_policy(keyset_policy)
+                    .await?
+                    .id,
+                None,
+            ),
+        };
         let fee_and_amounts = self
             .wallet
             .get_keyset_fees_and_amounts_by_id_with_policy(active_keyset_id, keyset_policy)
@@ -137,6 +152,7 @@ impl<'a> SwapSaga<'a, Initial> {
                 use_p2bk,
                 &fee_breakdown,
                 proof_reservation,
+                send_split_target.as_ref(),
             )
             .await?;
 
@@ -199,6 +215,7 @@ impl<'a> SwapSaga<'a, Initial> {
             state_data: Prepared {
                 operation_id: self.state_data.operation_id,
                 send_amount,
+                send_split_target: send_split_target.unwrap_or_default(),
                 input_ys,
                 spending_conditions,
                 pre_swap,
@@ -245,6 +262,7 @@ impl<'a> SwapSaga<'a, Prepared> {
                 if err.is_definitive_failure() {
                     tracing::error!("Failed to post swap request (definitive): {}", err);
                     execute_compensations(&mut self.compensations).await?;
+                    self.wallet.localstore.delete_saga(&operation_id).await?;
                 } else {
                     tracing::warn!("Failed to post swap request (ambiguous): {}.", err,);
                 }
@@ -287,34 +305,35 @@ impl<'a> SwapSaga<'a, Prepared> {
                         nut10_secret.is_ok()
                     });
 
-                let (mut proofs_to_send, proofs_to_keep) =
-                    match &self.state_data.spending_conditions {
-                        Some(_) => (proofs_with_condition, proofs_without_condition),
-                        None => {
-                            let mut all_proofs = proofs_without_condition;
-                            all_proofs.reverse();
+                let (mut proofs_to_send, proofs_to_keep) = match &self
+                    .state_data
+                    .spending_conditions
+                {
+                    Some(_) => (proofs_with_condition, proofs_without_condition),
+                    None => {
+                        let mut all_proofs = proofs_without_condition;
+                        all_proofs.reverse();
 
-                            let mut proofs_to_send = Proofs::new();
-                            let mut proofs_to_keep = Proofs::new();
-                            // Match the denominations `create_swap` used for the
-                            // send outputs, not the change split target.
-                            let mut amount_split =
-                                amount.split_targeted(&SplitTarget::default(), &fee_and_amounts)?;
+                        let mut proofs_to_send = Proofs::new();
+                        let mut proofs_to_keep = Proofs::new();
+                        // Match the denominations `create_swap` used for the
+                        // send outputs, not the change split target.
+                        let mut amount_split = amount
+                            .split_targeted(&self.state_data.send_split_target, &fee_and_amounts)?;
 
-                            for proof in all_proofs {
-                                if let Some(idx) =
-                                    amount_split.iter().position(|&a| a == proof.amount)
-                                {
-                                    proofs_to_send.push(proof);
-                                    amount_split.remove(idx);
-                                } else {
-                                    proofs_to_keep.push(proof);
-                                }
+                        for proof in all_proofs {
+                            if let Some(idx) = amount_split.iter().position(|&a| a == proof.amount)
+                            {
+                                proofs_to_send.push(proof);
+                                amount_split.remove(idx);
+                            } else {
+                                proofs_to_keep.push(proof);
                             }
-
-                            (proofs_to_send, proofs_to_keep)
                         }
-                    };
+
+                        (proofs_to_send, proofs_to_keep)
+                    }
+                };
 
                 if let Some(ephemeral_keys) = &self.state_data.pre_swap.p2bk_secret_keys {
                     for (i, proof) in proofs_to_send.iter_mut().enumerate() {
@@ -414,7 +433,7 @@ mod tests {
     use crate::amount::SplitTarget;
     use crate::nuts::nut00::ProofsMethods;
     use crate::nuts::{BlindSignature, Proofs, SecretKey as Nut01SecretKey, SwapResponse};
-    use crate::wallet::swap::ProofReservation;
+    use crate::wallet::swap::{ProofReservation, SendSwapPlan};
     use crate::wallet::test_utils::{
         create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url,
         test_proof_info, MockMintConnector,
@@ -444,6 +463,7 @@ mod tests {
                 false,
                 false,
                 ProofReservation::Reserve,
+                None,
             )
             .await
             .unwrap();
@@ -507,6 +527,7 @@ mod tests {
                 false,
                 false,
                 ProofReservation::Reserve,
+                None,
             )
             .await;
 
@@ -563,6 +584,7 @@ mod tests {
                 false,
                 false,
                 ProofReservation::Skip,
+                None,
             )
             .await
             .unwrap();
@@ -608,6 +630,7 @@ mod tests {
                 false,
                 false,
                 ProofReservation::Reserve,
+                None,
             )
             .await
             .expect("prepare swap saga");
@@ -657,6 +680,7 @@ mod tests {
         amount_split_target: SplitTarget,
         input_fee_ppk: u64,
         include_fees: bool,
+        send_split_target: Option<SplitTarget>,
     ) -> Proofs {
         let (wallet, mock_client) = wallet_with_16_sat_proof(input_fee_ppk).await;
 
@@ -665,11 +689,15 @@ mod tests {
             .prepare(
                 Some(Amount::from(amount)),
                 amount_split_target,
-                input_proofs,
+                input_proofs.clone(),
                 None,
                 false,
                 include_fees,
                 ProofReservation::Reserve,
+                send_split_target.map(|split_target| SendSwapPlan {
+                    keyset_id: input_proofs[0].keyset_id,
+                    split_target,
+                }),
             )
             .await
             .expect("prepare swap saga");
@@ -708,7 +736,7 @@ mod tests {
     #[tokio::test]
     async fn test_swap_with_split_target_sends_requested_amount() {
         let send_proofs =
-            swap_16_sat_proof(10, SplitTarget::Value(Amount::from(1)), 0, false).await;
+            swap_16_sat_proof(10, SplitTarget::Value(Amount::from(1)), 0, false, None).await;
 
         assert_eq!(send_proofs.total_amount().unwrap(), Amount::from(10));
     }
@@ -717,10 +745,28 @@ mod tests {
     async fn test_swap_with_include_fees_sends_redemption_fee() {
         // 1 sat per input: 10 sat splits into [8, 2], so the receiver needs 2 sat
         // on top of the amount to redeem the send proofs.
-        let send_proofs = swap_16_sat_proof(10, SplitTarget::default(), 1000, true).await;
+        let send_proofs = swap_16_sat_proof(10, SplitTarget::default(), 1000, true, None).await;
 
         assert_eq!(send_proofs.total_amount().unwrap(), Amount::from(12));
         assert_eq!(send_proofs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_swap_with_send_plan_preserves_requested_denominations() {
+        let send_proofs = swap_16_sat_proof(
+            10,
+            SplitTarget::default(),
+            0,
+            false,
+            Some(SplitTarget::Values(vec![Amount::from(2); 5])),
+        )
+        .await;
+
+        assert_eq!(send_proofs.total_amount().unwrap(), Amount::from(10));
+        assert_eq!(send_proofs.len(), 5);
+        assert!(send_proofs
+            .iter()
+            .all(|proof| proof.amount == Amount::from(2)));
     }
 
     #[tokio::test]
@@ -744,6 +790,7 @@ mod tests {
                     false,
                     include_fees,
                     ProofReservation::Reserve,
+                    None,
                 )
                 .await
                 .expect("prepare swap saga");
