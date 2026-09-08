@@ -555,3 +555,12 @@ sample. E10 remains provisional; remove its production change if the comparison
 is still inconclusive at ten. See the journal and complete numeric ledgers for
 all observations. Correctness/restart acceptance and the broader campaign remain
 open; these short serial runs do not establish sustainable throughput or p99.
+
+Offline extraction of the same fifty payments shows that all five observations
+over 30 seconds spend 34.3–35.8 seconds in the SDK confirm call. Their separately
+observed Bitcoin receipt-to-confirmation intervals are roughly 1–4.6 seconds.
+These observations narrow further profiling to work inside that call but do not
+identify the cause of its delay. The
+[phase ledger](benchmarks/2026-09-08-e10-bdk-payment-phases.csv) keeps the clocks
+separate and leaves two missed unconfirmed observations empty. Its intervals
+must not be added to each other or treated as exact block-wait measurements.

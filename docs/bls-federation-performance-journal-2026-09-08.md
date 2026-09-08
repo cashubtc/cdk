@@ -3719,3 +3719,35 @@ Two deterministic notification regression tests were drafted privately while
 waiting, using normal protocol/journal constructors. They are not installed,
 compiled or claimed passing. The measured production patch remains byte-for-byte
 identical to the frozen artifact patch; E07 remains excluded from the comparison.
+
+### E10 offline phase attribution during the extension
+
+Without adding probes or load to the running extension, extract the existing SDK
+phase timestamps and independent Bitcoin observations from the five completed
+pairs. Private transaction/output identities correlate each request; the public
+ledger contains only numeric request indexes and clock-local durations:
+
+```sh
+python3 "$RUN_ROOT/extract_e10_payment_phases.py" --through-pair 5
+```
+
+All fifty SDK quote/preparation/confirm phase sums agree with their total request
+duration. Here `sdk_confirm_ms` is the SDK confirm call, including federation and
+external-payment work; it is not Bitcoin confirmation time. The maximum quote
+phase is 1,215.456667 ms and maximum preparation phase is 37.775792 ms.
+
+The five requests above 30 seconds spend 34,299.811875–35,758.879875 ms in the
+SDK confirm phase. Each has an observed unconfirmed receipt followed by a
+confirmed receipt; their independent RPC-observation intervals range from
+1,013.135083 to 4,588.540167 ms. This prioritizes further attribution within the
+confirm call, including work before broadcast and after confirmation; it does
+not isolate a signing retry, lease delay, notification gap or backend bottleneck.
+
+The [phase ledger](benchmarks/2026-09-08-e10-bdk-payment-phases.csv) records the
+observer interval endpoints as bounds between RPC observations, not exact block
+waiting times. Two baseline requests in pair two were first observed already
+confirmed; their unconfirmed-to-confirmed intervals remain missing, never zero.
+SDK and observer origins are separate. Do not subtract their timestamps or add
+these potentially overlapping intervals as a wall-time breakdown. No new
+instrumentation, performance acceptance or change to the extension follows from
+this descriptive extraction.
