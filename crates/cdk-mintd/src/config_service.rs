@@ -247,13 +247,9 @@ impl ConfigurationService {
         if database_pubkey.is_some_and(|pubkey| pubkey != signing_identity.pubkey) {
             return Err(ConfigurationServiceError::SigningIdentityChange);
         }
-        if let Some(seed) = resolved
-            .settings
-            .info
-            .seed
-            .as_ref()
-            .filter(|seed| seed.len() < MIN_NEW_MINT_SEED_BYTES)
-        {
+        if let Some(seed) = resolved.settings.info.seed.as_ref().filter(|seed| {
+            resolved.settings.enabled_signatory().is_none() && seed.len() < MIN_NEW_MINT_SEED_BYTES
+        }) {
             match mode {
                 MintInitializationMode::New => {
                     return Err(ConfigurationServiceError::NewMintSeedTooShort {
