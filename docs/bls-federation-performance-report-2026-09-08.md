@@ -21,6 +21,26 @@ Latency breakdowns, throughput curves, active/idle CPU, history scaling and
 combined gains remain pending. Existing historical and debug-build results are
 not release baselines for this campaign.
 
+### First candidate: DKG public-polynomial arithmetic
+
+Ten alternating release A/B pairs at five members/eight denominations show:
+
+- Full in-memory BLS ceremony median: **18.1% lower**, from 3.881 s to 3.178 s
+  (geometric means of run medians; ratio 95% interval 0.7720–0.8685).
+- Whole-harness CPU: **18.8% lower**; retired instructions: **21.4% fewer**.
+  These process totals include fixture preparation.
+- Temporary counters confirmed 4,800 → 3,200 public-polynomial scalar
+  multiplications per full BLS ceremony. All temporary probes were removed.
+- Full-ceremony p95 remains inconclusive. RSS ratio interval is 0.9918–1.0254.
+
+The change uses Horner polynomial evaluation with the same group library and
+validation. Independent arithmetic/identity checks, 641 Cashu tests and 40 DKG
+tests passed. These measurements exclude FROST, transport, storage and service
+activation; they do not establish payment throughput or full-service DKG gains.
+Scaling correctness passed at five/full-denomination, eleven and twenty members.
+Final runtime/payment gates are still pending. See the journal and
+[all numeric samples](benchmarks/2026-09-08-dkg-horner.csv), including outliers.
+
 ## Initial inspection
 
 The baseline already caches validated DKG state/plans, retains verified wallet

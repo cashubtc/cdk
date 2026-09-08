@@ -844,12 +844,13 @@ pub fn evaluate_public_key_commitments(
     commitments: &[BlsAggregatePublicKey],
 ) -> Result<BlsPublicKeyShare, Error> {
     let x = signer_id.scalar();
-    let mut x_power = Scalar::one();
-    let mut public_share = G2Projective::identity();
-    for commitment in commitments {
-        public_share += G2Projective::from(commitment.point()) * x_power;
-        x_power *= x;
-    }
+    // Horner evaluation needs one fewer group multiplication and no scalar powers.
+    let public_share = commitments
+        .iter()
+        .rev()
+        .map(|commitment| G2Projective::from(commitment.point()))
+        .reduce(|value, coefficient| value * x + coefficient)
+        .unwrap_or_else(G2Projective::identity);
 
     Ok(BlsPublicKeyShare::new(
         signer_id,
@@ -1310,23 +1311,60 @@ mod tests {
     #[cfg(feature = "federation")]
     #[test]
     fn test_public_polynomial_commitments_match_trusted_dealer_shares() {
-        let coefficients = vec![bls_key(3), bls_key(5), bls_key(9)];
-        let signer_ids = signer_ids(&[1, 2, 3, 4, 5]);
-        let keyset = trusted_dealer_keygen(&coefficients, &signer_ids).expect("keyset");
-        let commitments = coefficients
-            .iter()
-            .map(BlsSecretKey::public_key_g2)
-            .collect::<Vec<_>>();
+        let signer_ids = signer_ids(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 20, u16::MAX]);
+        for threshold in [1, 3, 8, 14] {
+            let coefficients = (1..=threshold).map(bls_key).collect::<Vec<_>>();
+            let keyset = trusted_dealer_keygen(&coefficients, &signer_ids).expect("keyset");
+            let commitments = coefficients
+                .iter()
+                .map(BlsSecretKey::public_key_g2)
+                .collect::<Vec<_>>();
 
-        assert_eq!(
-            aggregate_public_key_commitments(&[commitments[0]]).expect("aggregate commitment"),
-            keyset.aggregate_public_key()
-        );
-        for (signer_id, trusted_share) in signer_ids.iter().zip(keyset.public_shares()) {
-            let derived = evaluate_public_key_commitments(*signer_id, &commitments)
-                .expect("derived public share");
-            assert_eq!(derived, *trusted_share);
+            assert_eq!(
+                aggregate_public_key_commitments(&[commitments[0]]).expect("aggregate commitment"),
+                keyset.aggregate_public_key()
+            );
+            for (signer_id, trusted_share) in signer_ids.iter().zip(keyset.public_shares()) {
+                let derived = evaluate_public_key_commitments(*signer_id, &commitments)
+                    .expect("derived public share");
+                assert_eq!(derived, *trusted_share);
+                let mut power = Scalar::one();
+                let mut reference = G2Projective::identity();
+                for commitment in &commitments {
+                    reference += G2Projective::from(commitment.point()) * power;
+                    power *= signer_id.scalar();
+                }
+                assert_eq!(
+                    derived,
+                    BlsPublicKeyShare::new(
+                        *signer_id,
+                        g2_from_projective(reference).expect("power-sum reference"),
+                    )
+                );
+            }
         }
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn test_public_polynomial_rejects_only_final_identity() {
+        let signer = BlsSignerId::new(1).expect("signer");
+        let positive = bls_key(7).public_key_g2();
+        let negative = BlsG2PublicKey {
+            point: -positive.point(),
+        };
+        assert!(matches!(
+            evaluate_public_key_commitments(signer, &[]),
+            Err(Error::InvalidPublicKey)
+        ));
+        assert!(matches!(
+            evaluate_public_key_commitments(signer, &[positive, negative]),
+            Err(Error::InvalidPublicKey)
+        ));
+        // A zero intermediate sum is valid if the final polynomial is nonzero.
+        let share = evaluate_public_key_commitments(signer, &[positive, negative, positive])
+            .expect("nonzero final polynomial");
+        assert_eq!(share, BlsPublicKeyShare::new(signer, positive));
     }
 
     #[cfg(feature = "federation")]
