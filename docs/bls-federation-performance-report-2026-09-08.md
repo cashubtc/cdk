@@ -561,6 +561,24 @@ formatting.
 This verifies the caller's session-transition boundary beyond the earlier pure
 helper regression. It uses controlled test scheduling and the existing router
 transport; it establishes no production recovery latency or payment-throughput
-gain. The candidate remains uncommitted pending runtime regtest and performance
-acceptance. Its original-binary recovery timeout remains censored failure evidence,
+gain. The candidate remains uncommitted pending performance acceptance. Its original-binary recovery timeout remains censored failure evidence,
 not a numeric baseline from which to calculate a speedup.
+
+A subsequent independent real regtest fixture exercised the intended boundary:
+one funded member retained session zero/cursor 35 while four peers were ready in
+session one with zero cursors and the same 13-operation frontier. With its backend
+available, the original member recovered in an observed 7.355 seconds, preserving
+all financial state and 131,072 sat. This includes launch/polling and is unpaired;
+it is not a speedup claim. Harness extraction/environment failures and an initial
+startup with a missing fee proxy are excluded and preserved in the journal.
+Five subsequent real outgoing on-chain payments passed independent receipt,
+accepted-proof and member-state checks. Exact conservation is
+131,072 = 124,647 remaining + 5,000 received + 1,425 fees, in satoshis. Members
+converged at 169 operations in session one with empty queues. All five requests
+completed inside the 163.642-second SDK window; the
+[request ledger](benchmarks/2026-09-08-e07-regtest-post-recovery-requests.csv)
+records every sample. Execution CPU was 23.08635 member-seconds, with a separately
+measured 0.06204 seconds during receipt audit and convergence. This unpaired
+five-payment run establishes neither a speedup, sustainable throughput nor p99.
+All owned services are stopped and original state preserved. E07 performance
+acceptance and the broader campaign gates remain open.

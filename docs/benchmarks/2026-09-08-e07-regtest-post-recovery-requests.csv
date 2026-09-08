@@ -1,0 +1,6 @@
+scenario,request,outcome,latency_ms,quote_ms,prepare_ms,confirm_ms,accepted_proof_inputs,accepted_input_sat,requested_outputs,actual_change_outputs,actual_change_sat,fee_reserve_sat,fee_paid_sat,bitcoin_inputs,bitcoin_outputs,recipient_sat
+E07_functional_post_recovery,0,completed,37110.176209,1025.984459,19.096333,36065.095417,8,4478,12,7,3193,3478,285,1,2,1000
+E07_functional_post_recovery,1,completed,18088.520125,1124.25175,36.430334,16927.838041,9,4478,12,7,3193,3478,285,1,2,1000
+E07_functional_post_recovery,2,completed,37119.508,923.755,33.283667,36162.469333,9,4478,12,7,3193,3478,285,1,2,1000
+E07_functional_post_recovery,3,completed,36158.942584,943.722917,32.674583,35182.545084,9,4478,12,7,3193,3478,285,1,2,1000
+E07_functional_post_recovery,4,completed,35164.088166,914.453208,29.485042,34220.149916,11,4478,12,7,3193,3478,285,1,2,1000

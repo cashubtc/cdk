@@ -4084,3 +4084,102 @@ attempt's funded members had unit cursors 28–43. This changes only the control
 rotation schedule, not a production performance setting or a comparison sample.
 The recovery observation limit remains 180 seconds. Preserve the invalid attempt
 and its full funding/cleanup evidence; do not mix it into future comparisons.
+
+### E07 second fixture: observer takeover, idle activity and original-member recovery
+
+The second independent fixture completed its deposit and stopped member one in
+session zero. The direct four-peer observer omitted the RPC environment variable
+supplied by the ordinary fixture wrapper, so it failed before querying peers.
+Corrected read-only queries confirmed all four members healthy with the original
+13-operation frontier. Stop only the faulty observer controller and preserve the
+running members, backends and original funded state; no new deposit or custody
+copy is involved in this continuation.
+
+Inspection also showed why a passive rotation wait was insufficient: the existing
+AlephBFT data provider intentionally waits for activity while quiescent. Build a
+temporary, bounded client using the existing `FederationSignedRequest` and
+`AlephBftActivity` API to mark the original accepted operation as peer activity.
+This uses normal identity/receiver/session/sequence validation, submits no payment
+operation, and changes no database directly. Its source was removed after the
+release build. Compilation and hints are fixture preparation, excluded from timing.
+The build emitted a missing crate-documentation warning for the temporary example;
+it is not retained production or benchmark support.
+
+The activity client received 68 acknowledgements, followed by four rejected calls.
+A signed status query then confirmed all four peers ready in session one with zero
+unit cursors, empty queues and the unchanged 13-operation order/application
+frontier. The stopped original member still had session zero and unit cursor 35.
+This establishes the intended boundary without creating more financial operations.
+
+The first original-member start failed before consensus startup because the fee
+proxy had exited with the old controller's process group. Bark wallet opening
+reported connection refusal. Exclude this timing from candidate recovery evidence.
+The original member remained in session zero, the four peers in session one, and
+all issued value unchanged. Automatic approval review timed out while starting a
+separately tracked replacement proxy; its explicitly permitted retry succeeded.
+The restored proxy was verified to return the same 2-sat/vB estimate before another
+start of the original member. No invoice, deposit or payment was repeated.
+
+With the proxy available, the original member adopted session one and all five
+became ready with matching digests and empty queues. Readiness was observed after
+**7.354839750 seconds**, including process launch and controller polling. The
+financial-state hashes and original 131,072-sat wallet value are unchanged. This
+is one successful real regtest recovery observation, not a matched speedup or an
+uncensored replacement for the historical original-binary failure. Preserve both
+invalid harness/startup attempts separately. Five subsequent real outgoing
+on-chain payments from this original recovered wallet passed the audit below.
+
+Commands and exact private source snapshots include:
+
+```sh
+python3 "$RUN_ROOT/run_e07_regtest_recovery_arm.py" --pair 2 --arm candidate --order 1
+python3 "$RUN_ROOT/build_e07_activity_preparation.py"
+python3 "$RUN_ROOT/resume_e07_original_member_after_proxy.py"
+python3 "$RUN_ROOT/verify_e07_post_recovery_payments.py"
+```
+
+Do not rerun these one-shot scripts against their advanced state. The observer was
+explicitly stopped, its original runtime was retained, and the signed activity
+client and proxy were controlled separately. Further continuation must inspect the
+current result and original identities first. The second fixture's payment driver
+also records member CPU through the post-execution receipt audit/convergence
+interval separately, addressing the previously identified resource-scope gap.
+
+### E07 post-recovery payment audit: passed; performance acceptance still open
+
+All five original SDK requests completed and every member records the same paid
+melts, accepted proof shapes and application/order digests. The independent
+Bitcoin audit confirms five 1,000-sat recipient outputs and five actual 285-sat
+fees. Exact conservation is **131,072 = 124,647 + 5,000 + 1,425 sat**. The original
+funding quote remains paid and issued for 131,072 sat. All members converge at
+169 accepted operations in session one with empty queues.
+
+The [five-request ledger](benchmarks/2026-09-08-e07-regtest-post-recovery-requests.csv)
+retains all observations. Melt input counts are 8/9/9/9/11; each spends 4,478 sat,
+requests 12 outputs and returns seven change proofs worth 3,193 sat. One preceding
+swap consumes three proofs worth 6,144 sat and requests 38 outputs. Each Bitcoin
+transaction has one input and two outputs. These shapes agree across all five
+original databases and with the SDK receipts.
+
+The five serial latencies are 37,110.176209 / 18,088.520125 / 37,119.508000 /
+36,158.942584 / 35,164.088166 ms. The actual SDK window is 163.641854208 seconds:
+five offered and completed, zero failures, timeouts, unfinished or late payments.
+There are too few samples for p99 and no stable-load throughput claim. Aggregate
+member CPU is 23.086349665 seconds in the execution envelope; the subsequent
+receipt-audit/convergence interval consumes another 0.062041709 seconds, measured
+separately. This is an unpaired functional run, not a retained performance win.
+
+The read-only audit command was:
+
+```sh
+python3 "$RUN_ROOT/audit_e07_regtest_payments.py"
+```
+
+It reads the original SDK receipts, journal rows and wallet/payment records;
+it does not alter custody or reinitiate payment. Original private manifests,
+source snapshots, receipts and native counters are preserved. All owned members,
+backends and the separately tracked fee proxy are stopped, and all fixture state
+is preserved. The temporary activity client source is absent from the worktree;
+no production probes remain. E07 remains provisional pending its performance
+acceptance decision. Broader transport/load/history and final campaign gates
+remain open.
