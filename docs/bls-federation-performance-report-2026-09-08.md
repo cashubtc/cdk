@@ -569,3 +569,14 @@ Pair six adds ten audited payments and two long candidate observations. Its
 candidate p95 is 37.282 versus 20.984 seconds and CPU/payment 4.2735 versus
 3.6468 seconds, despite equal signing-coordination counts. Preserve these results;
 the final E10 comparison remains scheduled at ten pairs.
+
+CPU/payment measures the SDK execution envelope through the controller's
+completion observation, including its polling/RPC overhead. Phase-count scrapes
+extend through the subsequent receipt audit and member convergence; they are not
+CPU measurements. Native CPU for that later interval was not captured in E10.
+Final resource verification must account for post-window/drain work separately;
+the current figures do not establish full lifecycle CPU cost.
+
+Pair seven favors the candidate: median latency is 20.391 versus 34.175 seconds
+and CPU/payment 3.9141 versus 4.4708 seconds. All seventy payments are audited;
+both favorable and unfavorable pairs remain in the unchanged ten-pair comparison.

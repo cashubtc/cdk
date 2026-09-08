@@ -2880,7 +2880,9 @@ or sustainable-throughput conclusion.
 The full request records, actual shapes, native samples, independent receipts,
 readiness and cleanup results remain private. The resource envelope starts after
 SDK preparation and includes up to one 500-ms controller observation interval
-at completion; transaction latency comes from the SDK's own monotonic clock.
+at completion, plus RPC/sampling overhead; transaction latency comes from the
+SDK's own monotonic clock. The nominal polling interval alone is not a strict
+upper bound on completion-observation overhead.
 The comparison runner reuses only an arm with complete receipts/results and
 verified stopped backends. An existing partial arm fails closed and requires
 identity reconciliation; it is never automatically rerun.
@@ -3118,7 +3120,9 @@ passes at five pairs under the recorded rules. This is not sustainable throughpu
 not an original-`8e507cdf8` combined comparison, and not a p99 result. Five completed
 samples per arm are insufficient for p99. The process resource envelope extends
 through the controller's completion observation (at most one 0.5-second polling
-period after completion), while SDK latencies use its own monotonic clock.
+period plus RPC/sampling overhead after completion), while SDK latencies use its
+own monotonic clock. The 0.5-second interval is the nominal polling cadence, not
+a hard bound on the complete observation loop.
 
 Two evidence-helper issues did not affect payment measurements. First, recomputed
 analyzer output used Python tuples where saved JSON used lists; exact comparison
@@ -3778,3 +3782,51 @@ the SDK confirm call. Their separately observed receipt-to-confirmation interval
 are roughly 3.55–3.56 seconds. The same clock restrictions apply, and the two
 previously missing unconfirmed observations remain missing. These observations
 do not authorize a production change or establish a cause for the long calls.
+
+### Resource-envelope scope clarification (September 9)
+
+Read-only inspection confirms that native CPU samples and before/after phase
+scrape envelopes use the same controller's `time.monotonic_ns()` clock. For the
+first six completed E10 pairs, post-payment receipt audits and converged status
+checks finish before the final counter scrape, whose end is
+1,157.585917–1,203.995334 ms after the last native CPU sample. Preserve the exact
+twelve observations privately in `resource-envelope-scope-through-6.json`.
+
+The CPU/payment result covers SDK execution through the controller's completion
+observation; it does not include that subsequent audit/convergence interval.
+The broader phase counts therefore cannot be converted into CPU costs. The
+existing `process_cpu_usage_percent` gauge does not supply the missing cumulative
+native CPU endpoint, and elapsed time alone cannot reconstruct it. No CPU value
+or comparison sample has been changed or filled in.
+
+Earlier descriptions of the completion observation as bounded by one 500-ms
+poll were too precise: the loop also performs RPC and resource-sampling work.
+Clarify those descriptions to include that overhead. Actual native sample
+endpoints and SDK request durations remain unchanged. The frozen E10 extension
+continues with its original method; final resource verification must distinguish
+the execution window from post-window/drain work so a reduction cannot merely
+shift cost outside the measured interval. This is a measurement-scope correction,
+not a measured regression or a new optimization.
+
+### E10 extension: seventh pair audited
+
+Pair seven completed baseline first, then candidate. All ten independent receipts,
+exact fee/value checks, member digests, empty queues and actual-input comparisons
+passed. Both original fixtures are stopped with state preserved. The read-only
+audit and phase extraction now cover seventy payments:
+
+```sh
+python3 "$RUN_ROOT/audit_e10_completed_pairs.py" --through-pair 7
+python3 "$RUN_ROOT/export_e10_completed_runs.py"
+python3 "$RUN_ROOT/extract_e10_payment_phases.py" --through-pair 7
+```
+
+Public ledgers retain seventy request/phase rows, fourteen runs and 1,989
+phase-count deltas; no earlier row changed. Baseline/candidate p50 is
+34,175.454708/20,391.443083 ms, p95 is 37,636.737125/20,584.644167 ms, and
+CPU/payment is 4.4707737252/3.9140983582 seconds. Keep the three baseline requests
+above 30 seconds, just as the long candidate observations in other pairs remain.
+Both histories end at 169 accepted operations. Successful FROST coordinations
+are 13/17 and skipped liveness rounds are 137/108. This pair favors the candidate
+despite more signing coordinations; counts alone are not CPU attribution.
+The comparison continues to ten with unchanged methods and no interim acceptance.
