@@ -22,6 +22,7 @@ Evidence and decisions: [experiment journal](bls-federation-performance-journal-
 | Dispatched and queued recovery barriers | Retained: `d880c9703`, `1d1669db4` | Separate reproduced orderings, component comparisons and recovery tests; percentages cannot be added |
 | Disclosed Bark claim recovery | Retained: `bacc0f971` | Authorization work reduction, original-payment recovery and further restart; no payment TPS claim |
 | Broadcaster notifications | Retained | Renewed five-pair retained-code comparison: lower serial BDK latency/CPU, 50 receipts, scoped correctness and candidate restart; earlier invalid series remain excluded |
+| Proposal wakeup (E10) | Provisional | Diagnostic worker-wait removal; uninstrumented matched comparison underway, no accepted gain |
 | Session-scoped replay cursor | Provisional | Quorum/recovery tests; live performance and payment gates outstanding |
 | Stable incoming evidence collector | Reverted | Ten-pair CPU/receipt guard remained inconclusive despite more window completions |
 | Cached checkpoint digest in summaries | Reverted | Component work reduction and ten-pair idle CPU benefit; memory guard remained inconclusive |
@@ -504,3 +505,13 @@ payment-speed claim. The uninstrumented comparison must establish net latency
 and CPU benefit before retention. See the
 [retained](benchmarks/2026-09-08-bdk-scheduling-boundaries.csv) and
 [candidate](benchmarks/2026-09-08-e10-scheduling-boundaries.csv) boundary ledgers.
+
+The first complete E10 pair passed all ten receipt/value checks and matched-input
+checks. Median latency was 20.424 versus 19.899 seconds, with almost equal
+CPU/payment (4.1964 versus 4.1951 seconds). Successful signing coordinations were
+21 baseline versus 17 candidate, but candidate instructions/payment were higher.
+These are preliminary observations; five pairs and all guards remain necessary.
+The slower baseline payment is retained in the
+[request ledger](benchmarks/2026-09-08-e10-bdk-requests.csv), with
+[run metrics](benchmarks/2026-09-08-e10-bdk-runs.csv) and
+[work counts](benchmarks/2026-09-08-e10-bdk-phase-counts.csv).

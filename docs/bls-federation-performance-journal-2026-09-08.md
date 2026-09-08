@@ -3458,3 +3458,74 @@ outside the CPU/latency measurement envelope; their counts bracket a wider
 interval and are not CPU seconds. No operational metric or production fast path
 was added. Keep all independent fixtures, initial inputs, failure accounting and
 five/ten-pair acceptance rules unchanged. E10 is still provisional.
+
+#### E10 first matched pair: complete, no retention decision
+
+The prior goal turn made progress by measuring the scheduling boundary, building
+isolated artifacts and starting the comparison. Continuation verified the same
+live controller and preparation child; no fixture or payment was restarted.
+
+Uninstrumented baseline SHA-256:
+`bf9e434e3bcc94c52b91548d289caa3f8c41afd8c9f591b0241db9fc13468e34`;
+candidate SHA-256:
+`162f71bc9f4ba5b57d0a01fc4d1c5cd075e6ac354bde12fc8e1549a09241329b`.
+Both use the recorded pinned release flags and the same persistent SDK artifact.
+The candidate contains only the E10 patch on retained E03a; E07 and temporary
+probes are excluded. The serial comparison was launched with:
+
+```sh
+python3 "$RUN_ROOT/run_e10_pairs.py" --first 1 --last 5
+```
+
+Pair one completed baseline then candidate. Both arms started with independent
+ceremonies/custody, 13 accepted operations, empty queues and matched funded proof
+state. All ten payments completed inside their measurement windows, with no
+failure, unfinished, late or pending result. Every recipient received 1,000 sat;
+the independently audited fee was 285 sat and the final bank balance was 124,647
+sat per arm. The controller verified matching actual inputs and stopped both
+owned fixtures. Pair two proceeds in candidate-first order with fresh state.
+
+A read-only audit of the original stopped databases verified all five members'
+paid quotes and exact receipt identities, then all accepted input/change shapes.
+Each arm had one three-input/38-output swap, followed by melt input counts
+8, 9, 9, 9 and 11. Every melt consumed 4,478 sat with 12 requested outputs and
+seven actual change signatures totaling 3,193 sat. All Bitcoin transactions had
+one input and two outputs. The commands were:
+
+```sh
+python3 "$RUN_ROOT/audit_e10_completed_pairs.py" --through-pair 1
+python3 "$RUN_ROOT/export_e10_completed_runs.py"
+```
+
+Preserve all [request observations](benchmarks/2026-09-08-e10-bdk-requests.csv),
+[run metrics](benchmarks/2026-09-08-e10-bdk-runs.csv) and
+[phase-count deltas](benchmarks/2026-09-08-e10-bdk-phase-counts.csv). Run and count
+rows follow execution order; request rows group baseline/candidate within each
+complete pair. Counters come from the existing metrics family, confirmed present
+on every member before SDK execution. The wider scrape interval is labelled;
+phase counts are not CPU seconds and do not form a wall-time breakdown.
+
+| First-pair observation | Baseline | Candidate |
+| --- | ---: | ---: |
+| Empirical p50 | 20,424.465584 ms | 19,899.255417 ms |
+| Empirical p95 | 36,356.135208 ms | 20,212.671417 ms |
+| Member CPU/payment | 4.1964433082 s | 4.1951285998 s |
+| Instructions/payment | 37,493,214,182.6 | 38,308,597,751.2 |
+| Peak aggregate RSS | 491,454,464 bytes | 493,617,152 bytes |
+| Peak aggregate footprint | 204,510,776 bytes | 201,250,336 bytes |
+| Idle CPU per 30 seconds | 1.418483334 s | 1.23742625 s |
+| Successful FROST coordinations for five payments | 21 | 17 |
+
+The slower baseline fifth payment (36,356.135208 ms) is retained. Candidate
+request latencies were 19,899.255417; 17,750.192750; 20,212.671417;
+20,000.982917; 19,783.327375 ms. One pair establishes neither repeatability nor
+a confidence interval. There is no p99 or sustainable-throughput conclusion.
+
+Repeated FROST work occurs in retained code too: four baseline members completed
+four coordinations and one completed five. Candidate totals were lower in this
+pair, but instructions/payment were higher and CPU/payment almost equal. Accepted
+history ended at 156 versus 169 operations; the difference was twelve additional
+chain observations and one additional broadcast observation, with the same five
+user payments. These are workload outcomes, not initial-state mismatches or extra
+confirmed payments. Keep the five/ten-pair decision protocol; do not infer a net
+system gain solely from the earlier millisecond wakeup result.
