@@ -534,3 +534,24 @@ unchanged (20.070 versus 20.382 seconds), while CPU/payment was 4.1804 versus
 3.7315 seconds. Both arms completed 17 signing coordinations. Preserve this
 higher-CPU observation in the full comparison; no E10 gain is established by
 the forty audited payments so far.
+
+### Proposal wakeup: five pairs remain inconclusive
+
+All fifty payments in the five-pair E10 comparison passed independent receipt,
+fee, value and member-state audits. Mean per-run p50 was 20.942 seconds baseline
+versus 19.994 seconds candidate, but the paired ratio interval is
+**0.85408–1.06979**. CPU/payment was 4.0587 versus 4.1337 seconds, with ratio
+interval **0.95120–1.09274**. These results establish neither an improvement nor
+a confirmed regression. The p95 interval is also inconclusive (0.55103–1.16015).
+
+Memory guards pass; p95 and CPU guards remain unresolved. Idle CPU differs
+inconclusively, with no reproducible increase detected. Existing counts show
+87 versus 85 signing coordinations but more skipped liveness rounds and pending
+confirmation probes for the candidate. The earlier removal of a three-second
+worker wait has not established a repeatable payment-level benefit.
+
+Extend to ten pairs with unchanged artifacts and workloads, preserving every
+sample. E10 remains provisional; remove its production change if the comparison
+is still inconclusive at ten. See the journal and complete numeric ledgers for
+all observations. Correctness/restart acceptance and the broader campaign remain
+open; these short serial runs do not establish sustainable throughput or p99.

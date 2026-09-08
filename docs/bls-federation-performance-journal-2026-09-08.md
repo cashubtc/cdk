@@ -3653,3 +3653,69 @@ at 162/169 accepted operations. The aggregate CPU difference cannot be explained
 by coordination counts alone. A single pair does not establish a reproducible
 regression; the fifth pair proceeds baseline first under the existing protocol.
 E10 remains uncommitted and no correctness or final acceptance gate is claimed.
+
+### E10 five-pair decision: inconclusive, extend to ten
+
+The original controller exited successfully after five alternating pairs.
+All fifty payments completed inside their windows, with no failed, unfinished,
+late or pending result. Every original member's accepted proof/change shapes,
+independent recipient receipt and exact Bitcoin fee passed the read-only audit.
+Each arm ends with 124,647 sat after 131,072 sat funding, 5,000 sat delivered and
+1,425 sat in independently checked fees. All ten owned fixtures are stopped with
+their original state preserved. No custody or nonce state was copied.
+
+```sh
+python3 "$RUN_ROOT/audit_e10_completed_pairs.py" --through-pair 5
+python3 "$RUN_ROOT/export_e10_completed_runs.py"
+python3 "$RUN_ROOT/summarize_e10_comparison.py" --pairs 5
+python3 "$RUN_ROOT/decide_e10_next_gate.py" --pairs 5
+```
+
+The review recomputed the existing analyzer output and required exact agreement
+with the controller's saved comparison. The public ledgers retain all fifty
+requests, ten runs and 1,425 phase-count deltas, including every long observation.
+The intervals below are paired log-ratio Student-t intervals over independent
+runs; mean columns are arithmetic means of run metrics.
+
+| Metric | Baseline mean | Candidate mean | Candidate/baseline ratio (95% interval) |
+| --- | ---: | ---: | --- |
+| Per-run p50 | 20,942.237 ms | 19,994.222 ms | 0.95587 (0.85408–1.06979) |
+| Per-run p95 | 30,199.779 ms | 23,853.484 ms | 0.79954 (0.55103–1.16015) |
+| Member CPU/payment | 4.05873 s | 4.13367 s | 1.01951 (0.95120–1.09274) |
+| Instructions/payment | 37,435,605,420.12 | 38,354,130,637.44 | 1.02471 (0.99815–1.05198) |
+| Peak aggregate RSS | 489,724,313.6 bytes | 491,808,358.4 bytes | 1.00427 (0.99751–1.01107) |
+| Peak aggregate footprint | 202,554,516.8 bytes | 203,406,480 bytes | 1.00422 (0.97966–1.02939) |
+| Idle CPU per 30 seconds | 1.26219 s | 1.24513 s | 0.98820 (0.86721–1.12606) |
+
+There is no repeatable primary latency or CPU improvement. The p95 and CPU
+intervals still allow regressions above 5%; these guards are inconclusive, not
+passing and not confirmed regressions. Both sampled memory guards exclude an
+increase over 5%. Idle CPU shows no reproducible increase, but its difference
+remains inconclusive. Package wakeup variability is large and retained; interrupt
+wakeups have a small upward ratio interval of 1.00019–1.00527. No idle improvement,
+p99 or sustainable-throughput conclusion is supported.
+
+Existing wider-interval counts total 87/85 successful FROST coordinations,
+112/110 successful liveness rounds, 473/540 skipped liveness rounds,
+1,435/1,290 wallet syncs and 271/375 pending confirmation probes for
+baseline/candidate. Thus the observed notification boundary improvement has not
+established lower aggregate CPU or payment latency. Counts are work observations,
+not a causal CPU decomposition or a sum of wall-time phases.
+
+Decision: extend to ten matched pairs, as prescribed before the first run:
+
+```sh
+python3 "$RUN_ROOT/run_e10_pairs.py" --first 6 --last 10
+```
+
+Retain the exact same artifact hashes, candidate patch, SDK, workload, independent
+fixture preparation and alternating order. Existing pairs are only read and
+verified; their payments are never repeated. No source changes, builds, tests or
+profiles overlap the extension. If ten pairs remain inconclusive, remove E10's
+production change and retain the investigation. Correctness testing and candidate
+restart are still conditional on a supported performance result.
+
+Two deterministic notification regression tests were drafted privately while
+waiting, using normal protocol/journal constructors. They are not installed,
+compiled or claimed passing. The measured production patch remains byte-for-byte
+identical to the frozen artifact patch; E07 remains excluded from the comparison.
