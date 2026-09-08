@@ -50,8 +50,8 @@ arrivals. Include client queueing in latency. Report offered load, completed loa
 failures, timeouts, unfinished work, and late completions. Sustainable throughput
 requires a stable queue; completions after the window do not enter window TPS.
 
-Record p50/p95 and p99 only for at least 1,000 completed samples. Record member and
-aggregate CPU seconds, CPU/payment, RSS, allocation samples, SQL reads/writes and
+Record p50/p95; report p99 only with at least 1,000 completed samples. Record member
+and aggregate CPU seconds, CPU/payment, RSS, allocation samples, SQL reads/writes and
 rows decoded, network bytes, retries, idle CPU/wakeups, and load-related queue,
 lock, scheduler, semaphore, and external I/O waits. Distinguish user-confirmed
 payments/s, consensus operations/s, and Bitcoin transactions/s. Batched outputs

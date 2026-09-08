@@ -1,8 +1,10 @@
 # Federation performance optimization report
 
-Status: in progress. Two DKG arithmetic changes are measured. One isolated incoming
-Lightning pair is recorded; its optimization is not accepted. Recovery-barrier
-cleanup is accepted for dispatched and queued ordering cases after five component
+Status: in progress. Two DKG arithmetic changes are measured. A fresh five-pair
+incoming Lightning comparison is running with both accepted recovery fixes in
+each arm; the collector optimization is not accepted. Earlier partial series
+remain separate. Recovery-barrier cleanup is accepted for dispatched and queued
+ordering cases after five component
 comparisons per case, fresh-runtime validation and scoped regression/lint checks.
 Final campaign acceptance remains pending.
 
@@ -15,7 +17,7 @@ Evidence and decisions: [experiment journal](bls-federation-performance-journal-
 | Operation | Release baseline | Final candidate | Disposition |
 |---|---|---|---|
 | Full BLS/FROST DKG and readiness | Pending | Pending | Unmeasured |
-| Bark Lightning receive | One isolated pair | One isolated pair | Provisional; five pairs incomplete |
+| Bark Lightning receive | New five-pair comparison running | New five-pair comparison running | Collector provisional; final comparison pending |
 | Bark Lightning send | Pending | Pending | Unmeasured |
 | BDK on-chain receive | Pending | Pending | Unmeasured |
 | BDK on-chain send | Pending | Pending | Unmeasured |
@@ -230,3 +232,21 @@ benchmark remained ignored. A fresh isolated five-member runtime reached healthy
 empty-queue readiness and retained stable state through a 60-second idle sample.
 That unpaired sample used 1.805 aggregate CPU seconds; it establishes no idle gain.
 Temporary probes/examples are removed. Full combined campaign gates remain pending.
+
+### Current incoming-Lightning comparison and recovery finding
+
+The first three pairs on both accepted recovery cleanups have baseline window
+receipts of 6/8 in each run, versus candidate 8/8, 6/8 and 8/8. These are finite bursts,
+not sustainable throughput. The second candidate run has one pending claim after
+independent payer settlement and one quote-creation failure. All member state
+remained converged. Failed and pending requests remain in the comparison; no
+collector performance conclusion is supported yet.
+
+Read-only inspection found that the pending claim's exact input remains reserved
+to its original action but has advanced to `PendingSpend` at accepted preimage
+disclosure. Custody validation recognizes the action's current attempt, then
+rejects that input state in a repeatedly polled projection check. This identifies
+a recovery-path defect and avoidable repeated work, separate from collector
+ownership. A narrowly scoped correction and its validation are planned in E09
+in the journal; no fix or gain is claimed. The initial backend failure that led
+to disclosure recovery has not yet been attributed.

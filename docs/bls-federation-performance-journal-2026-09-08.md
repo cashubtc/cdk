@@ -1503,3 +1503,133 @@ cursor changes. The temporary diagnostic probe and component example are absent
 from production source. Next payment comparisons must include both recovery
 cleanups in each arm and use fresh cases; the earlier partial series cannot be
 pooled with those new binaries. The full campaign remains incomplete.
+
+### Goal continuation: E08b on both accepted recovery cleanups
+
+Current source is `1d1669db4`. The frozen uninstrumented recovery candidate's
+consensus source equals this commit, and its recorded executable fingerprint was
+verified. Its original pre-commit build metadata is retained; it is now the
+E08b ablation baseline. The new candidate adds only the existing stable-collector
+change. Broadcaster and replay-cursor experiments remain excluded. No previous
+benchmark controller/member was running at inspection; the unpaid diagnostic
+backend was stopped with all volumes retained to release its test ports.
+
+Resume the same predeclared five-pair protocol with new independent cases: five
+members, HTTP/SQLite, eight incoming 2,048-sat requests, concurrency four,
+60-second window, 120-second drain, persistent SDK, warmed connections and
+controlled timing start. Alternate arm order, baseline first in the first pair.
+Both arms include E06 and E06b and require healthy empty-queue startup without a
+preparation restart. Keep the earlier partial series separate. The older campaign
+backend remains unchanged as background infrastructure; only one comparison
+backend and federation runs at a time. No build, funding or fixture preparation
+runs during a payment window. Preserve every unfinished identity and never
+reinitiate an uncertain payment.
+
+Interpret the current federation guide alongside the development requirements,
+implementation contract and RFC: historical fakewallet-only/REST-only scope does
+not override this approved campaign's real BDK/Bark and HTTP/Iroh requirements.
+Their safety, standalone-compatibility and architecture contracts remain binding.
+The plan's percentile sentence was clarified to match the approved request:
+p50/p95 are reported normally; only p99 requires 1,000 completed samples.
+
+The collector hypothesis and acceptance rules are unchanged: reduce incomplete
+collections caused by worker rotation, retain preparation authority and fallback,
+and measure the possible extra observer's CPU/backend cost. Do not accept from
+completion counts alone or treat finite bursts as sustainable throughput. Expand
+to ten pairs if the five-pair comparison remains inconclusive.
+
+The first new baseline arm passed initial health with empty queues. All eight
+requests were offered: six completed inside the 60-second window, one completed
+during drain, and one remained unfinished. Seven independent receipts total
+14,336 sat. Aggregate member CPU over the full observation was 25.210901 seconds;
+this includes drain and is not the fixed-window CPU comparison. The unpaid/pending
+identity is retained and has not been reinitiated. The baseline members/backend
+were stopped with state preserved; the matching candidate's independent fixture
+preparation then began. The five-pair controller remains live. These are baseline
+outcomes only, not evidence of an accepted collector improvement.
+
+#### New-series observations and custody-recovery investigation
+
+The next continuation revalidated the original controller through its live
+process session; no fixture or payment was restarted. The preceding measurement
+turn made progress by producing matched samples. The intervening prompt-writing
+turn made no campaign progress. Two pairs are now recorded; the third is running.
+
+| Pair | Arm | Window receipts | Late receipts | Not completed | Receipt value (sat) | Whole-observation member CPU (s) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 16 | Baseline | 6 | 1 | 1 | 14,336 | 25.210901 |
+| 16 | Collector candidate | 8 | 0 | 0 | 16,384 | 25.307528 |
+| 17 | Collector candidate | 6 | 0 | 2 | 12,288 | 39.246003 |
+| 17 | Baseline | 6 | 1 | 1 | 14,336 | 24.973609 |
+
+Every arm offered eight requests. These CPU totals include each arm's drain;
+they are not matched fixed-window costs. For pair 16, fixed-window CPU was
+18.500413 versus 25.306602 seconds, or 3.083402 versus 3.163325 CPU seconds per
+window receipt (candidate approximately 2.6% higher). Peak aggregate RSS was
+528,089,088 versus 530,907,136 bytes. Whole-observation pending backend waits
+were 190 versus 318 and pending evidence collections 59 versus 58; differing
+drain lengths prevent treating these as fixed-window counter comparisons.
+Neither the completion improvement nor these costs establish acceptance from
+one pair. No p99 or sustainable-throughput claim is made.
+
+The second candidate arm had seven independently settled payer receipts but only
+six SDK receipts. One settled payment remained at `receive_preimage_disclosed`;
+a separate request failed during quote creation before an invoice was returned.
+All five member projections converged and remained healthy with empty consensus
+queues. Both failures count against this candidate. Original identities and
+state are preserved; there was no repayment or replacement quote.
+
+Read-only SQLite inspection of the stopped candidate members and their saved
+post-measurement logs identified a custody-recovery mismatch. Every member has
+the same accepted claim plan at operation 14 and disclosure at operation 19,
+attempt one. The input ID, locator, amount and reservation action all match the
+accepted plan. Its state is `PendingSpend`, as disclosure validation explicitly
+requires. `wait_for_bark_custody_projection` recognizes the current disclosed
+claim attempt but its input predicate accepts only `Reserved` or emergency-exit
+`Exiting`. Consequently the same authorized claim cannot resume custody signing
+after the durable disclosure checkpoint. Three selected signers logged the
+reservation error repeatedly (17, 34 and 34 string occurrences; these include
+propagated errors and are not distinct-request counts). Each rejected wait loops
+for up to two seconds and repeatedly loads a complete projection. This is a
+separate hypothesis from collector ownership, not evidence that the collector
+caused the failure. Private structured inspection records contain the equality
+checks without publishing payment material.
+
+**E09 hypothesis, before editing:** the Axum custody projection boundary rejects
+the exact pending-spend input of an already accepted, preimage-disclosed incoming
+claim. Recognize that durable phase explicitly, retaining current-attempt checks,
+exact input/locator/amount/action binding and all cryptographic validation. Do not
+permit pending-spend inputs for another action kind, a pre-disclosure phase, a
+terminal action, or a stale attempt. This must resume the same claim only; it
+must never authorize a new Lightning payment, nonce reuse, or another input.
+Expected savings: remove deterministic failed projection waits, redundant full
+reads and repeated signing requests on this recovery path. Primary measurements
+are authorization latency/read count and time to recover the original settled
+receipt, with member CPU and idle costs retained.
+
+Before retaining E09, reproduce the rejection in a regression test, obtain a
+bounded profile of the existing wait path after the matched collector series
+stops, and compare five alternating baseline/candidate pairs using the same
+public projection workload. Verify the original preserved live claim can recover
+without payment initiation, then run adversarial state/attempt/reservation and
+restart checks. The component workload is not an end-to-end throughput baseline;
+a fresh matched payment comparison remains necessary. No E09 production change
+or acceptance has occurred. Heavy builds and profiles remain deferred until the
+active comparison controller finishes, to avoid contaminating payment samples.
+
+The private offline analyzer now uses the existing `payment_window` classification
+for pending, failed, timed-out and rejected requests separately. The driver
+summary's `unfinished` field counts every non-completed request, including a
+terminal client failure; it must not be relabeled as pending. The table above
+therefore says "not completed." Requests requiring reconciliation are counted
+separately even when the client operation has failed. Pair 17 candidate has one
+pending request and one failed request, both requiring reconciliation. This
+analysis correction preserves all raw samples and changes no acceptance rule.
+
+Pair 18 also completed: baseline six window receipts, one late and one pending
+(14,336 sat; 28.492993 seconds whole-observation CPU); candidate eight window
+receipts (16,384 sat; 23.967487 seconds whole-observation CPU). Both arms offered
+eight requests. Their original state was preserved on shutdown. The controller
+then began pair 19. These additional samples do not yet meet the five-pair gate.
+The report and journal update records progress only; it accepts no production
+optimization. Documentation whitespace verification passed.
