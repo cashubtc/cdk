@@ -2275,3 +2275,152 @@ experiments and restores them afterward. It covers checkpoint bindings and route
 recovery, minimal federation and standalone-common compilation, formatting and
 scoped strict lint. These checks are running, not yet passing evidence. No E05
 performance acceptance or commit has occurred.
+
+The ten-pair ledger and collector reversion decision were committed separately as
+`6a722ef73` (`docs: record ten-pair collector results and reversion`). All original
+first-block CSV rows were compared field-for-field and are unchanged. The export
+contains twenty runs and 160 requests, with numeric/bounded-label and identifying
+content checks passing; staged whitespace checks also passed.
+
+E05 validation progress: fifteen common checkpoint tests, 43 full-feature Axum
+checkpoint tests and 46 recovery tests passed. The Axum checkpoint filter skips
+two explicitly manual benchmarks; the recovery filter skips one of those same
+benchmarks. They are not claimed as executed correctness coverage. The first
+Axum build identified an unused `FederationConfig` import after moving the private
+helpers to the runtime owner; that import was removed before strict lint. The
+minimal-feature checks and lint are still running. No benchmark or E05 retention
+claim follows from these passing tests alone.
+
+E05 scoped correctness validation is complete: the minimal-federation checkpoint
+filter passed 39 tests with none ignored, both common/Axum strict lib-and-test
+Clippy checks passed, and standalone `cdk-common` compilation passed. These filter
+counts overlap the earlier full-feature suites; they are not additive distinct
+coverage. The final format check initially failed only because removal of the
+unused import required regrouping lines. Pinned `cargo fmt --all` followed by
+`cargo fmt --all -- --check` passed; no behavioral change was needed. All other
+provisional experiments were restored after the isolated validation checkout.
+
+Exact command lists and individual outputs are retained in the private E05
+scoped-validation directory, including the failed formatting check and successful
+repair. Validation uses pinned Nix stable Rust with `RUST_MIN_STACK=16777216`.
+A bounded test-only digest counter build is now in progress via
+`python3 "$RUN_ROOT/build_e05_summary_bench.py" --probe`. Its purpose is to confirm
+configuration-digest call elimination, not to supply acceptance timings. Source
+restoration is enforced by the builder's finalization block. No live service or
+other heavy measurement overlaps this build.
+
+The first E05 probe build failed because its temporary test harness referenced
+`FederationCheckpointSummary` without importing that type. Production validation
+is unaffected. No benchmark executable or measurement was produced; the builder
+restored all source and the failed build directory is preserved separately.
+The private harness now uses the existing fully qualified public re-export.
+Rebuild the probe from the same production revisions; do not count compilation
+failures as measurement samples.
+
+E05 bounded work probe passed on the same five-member/full-denomination public
+configuration and checkpoint at operation frontier 58. One hundred summary
+validations performed 100 full configuration-digest computations in baseline and
+zero in candidate: 37,268,400 versus zero configuration bytes serialized through
+that method. Public fixture and summary hashes agree between arms. Config
+validation, reference preparation and digest creation occur before the counter
+reset; these counts specifically cover repeated summary validation. Probe
+measurements are attribution only, not timing acceptance. The test harness and
+atomic counter were removed from production source by the builder, and a source
+scan confirms their absence. Commands:
+`python3 "$RUN_ROOT/build_e05_summary_bench.py" --probe` and
+`python3 "$RUN_ROOT/run_e05_summary_pairs.py" --probe`.
+
+Proceed to separately built uninstrumented component binaries and five alternating
+pairs. Fresh independent idle measurements and active-payment/resource guards
+remain required before retaining E05.
+
+### E05 uninstrumented component comparison: work savings confirmed, retention pending
+
+Five alternating baseline/candidate release pairs completed, with 2,000 summary
+validations and constructions per run. Both arms use the same five-member,
+64-denomination public fixture, 372,684-byte serialized configuration and
+checkpoint frontier 58. Configuration validation and reference preparation occur
+outside the timed loop but inside the process resource totals. Each batch has
+one monotonic timer; do not infer per-operation tails from its mean. All ten runs
+are retained in the [component ledger](benchmarks/2026-09-08-checkpoint-summary-component.csv).
+
+| Metric | Baseline run mean | Candidate run mean | Paired ratio and 95% CI |
+| --- | ---: | ---: | --- |
+| Mean summary validation/construction, μs | 1,107.688025 | 4.070675 | 0.003676; 0.003528–0.003830 |
+| Whole-process CPU, including fixture validation, seconds | 2.926 | 0.754 | 0.257660; 0.249775–0.265793 |
+| Whole-process retired instructions | 65,498,848,446 | 20,092,540,886 | 0.306762; 0.306380–0.307144 |
+| Maximum process RSS, bytes | 13,094,093 | 11,832,525 | 0.903636; 0.896253–0.911080 |
+
+These are approximately 99.63% lower component mean duration, 74.23% lower
+whole-harness CPU, 69.32% fewer instructions and 9.64% lower peak RSS. They are
+not payment latency, CPU/payment, sustained throughput or settled-service idle
+results. The bounded probe independently confirms the predicted digest work
+removal. Summary hashes match, scoped correctness passes, and the uninstrumented
+binaries contain no counter. The temporary harness is removed from source after
+build. No p99 conclusion applies; the measured durations are batch means.
+
+Commands: `python3 "$RUN_ROOT/build_e05_summary_bench.py"` and
+`python3 "$RUN_ROOT/run_e05_summary_pairs.py"`. Builds and runs were serial.
+**E05 remains provisional:** fresh independent idle pairs, active-payment/resource
+guards and recovery validation remain required for its keep decision. Runtime
+artifact preparation now asserts the baseline production diff is empty and the
+candidate contains exactly the three E05 source files, excluding all other
+provisional implementation and test changes.
+
+Isolated E05 service builds are now running with
+`python3 "$RUN_ROOT/build_e05_summary_runtimes.py"`. The completed uninstrumented
+component controller exited successfully before this build started. No service
+idle or payment measurement has started yet. Keep the running build handle and
+wait for source restoration before editing its three candidate files or starting
+another heavy command; its baseline and candidate artifacts must use one unchanged
+production base. E05 implementation and component evidence remain uncommitted
+pending the primary idle and payment guards.
+
+E05 service builds completed with restored worktree state. Both artifacts use
+production base `6a722ef73`; baseline has an empty production diff and candidate
+has only the three E05 files. Artifact fingerprints and probe-free manifests were
+verified before starting the fresh idle series. Automatic approval review timed
+out before the first launch executed. Absence of controller/fixture state was
+verified, then the permitted retry succeeded. No preparation or payment sample
+was created by the timed-out launch.
+
+Five fresh idle pairs are now running via
+`python3 "$RUN_ROOT/run_e05_fresh_idle_pairs.py"`. Pair 1 baseline passed all
+unchanged-history/queue/checkpoint-state guards and used 2.603001 aggregate member
+CPU seconds in 60 seconds; collector CPU was 0.008217 seconds. Its candidate arm
+is running. One arm is not acceptance evidence. No build, test or profile will
+overlap these observations.
+
+Active-guard preparation reuses the existing persistent receiver/melt SDK drivers
+and offline ecash token fixture recipe. The intended ecash guard is a bounded
+64-token, concurrency-four receive burst with one 32-sat input per token,
+independent recipient wallets and warm connections; funding, token packaging and
+wallet setup are outside timing. Record completion/failure/late outcomes, latency,
+CPU/window and CPU/receipt with explicit observation scope, actual proof shapes
+and value reconciliation. Functional incoming/outgoing on-chain and Lightning
+checks and restart must still follow. No sustainable throughput or full matrix
+claim follows from this guard. A private restart helper for the existing stopped
+idle fixtures is syntax-checked but unexecuted; it verifies the exact artifact,
+empty original state and absence of concurrent campaign work and never copies
+custody or creates a payment.
+
+E05 payment-guard helpers are prepared but unexecuted while idle pairs run. They
+reuse each original stopped idle fixture and the existing immutable SDK, fund a
+new wallet through an actual 8,192-sat on-chain deposit with an independent
+five-second miner, and package 64 unique 32-sat tokens offline. Deposit identity
+is written before the sole funding call; unknown outcomes prohibit re-creation.
+The token receiver uses four concurrent independent wallets, a 60-second window
+and 120-second drain, with every sample preserved. Pair inputs are checked before
+second-arm token submission. A differing initial queue/history or proof shape
+invalidates acceptance; no state is reset to force a match.
+
+The guard will bracket its SDK origin causally between the controller's start
+signal and the post-exit native sample minus the SDK's recorded observation
+duration. Native reads record their own start/end bounds. CPU is reported as
+lower/upper bounds for the fixed window and, if all requests finish, the active
+interval ending at the last receipt. The nominal ten-millisecond start-file poll
+is not treated as a guaranteed scheduler bound. Collector CPU is recorded at a
+fixed ten-Hz sample rate. Funding, wallet preparation, token packaging and a fixed
+settling period remain outside transaction time; they are not hidden in faster
+payment results. This is guarded measurement support, not a new production fast
+path or a claim of sustainable throughput.

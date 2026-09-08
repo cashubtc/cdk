@@ -4,7 +4,9 @@ Status: in progress. Two DKG arithmetic changes, dispatched/queued recovery-barr
 cleanup, and the disclosed-claim recovery correction are retained. The incoming
 collector experiment was **reverted after ten matched pairs**: it improved window
 completion counts but did not establish the CPU/receipt guard. Checkpoint-summary
-digest reuse is undergoing isolated correctness validation. Final campaign and
+digest reuse has passed scoped correctness, minimal-feature, standalone-common
+and strict lint checks. Its component comparison confirms work savings; service
+idle and payment acceptance remain pending. Final campaign and
 combined-candidate payment/performance acceptance remain pending.
 
 Baseline: CDK `8e507cdf8`, Bark `8d1eda643dd11e9eb600ec44e36622c8f77b6322`.
@@ -152,8 +154,8 @@ stopped at its pre-payment gate when a fresh baseline retained a startup consens
 item. No payment was initiated in that fixture. A subsequent idle sample found
 similar CPU use across members, including the member with that item; a bounded
 probe is investigating whether it is stale recovery-barrier bookkeeping.
-The collector optimization remains provisional; the required five matched pairs
-have not been completed.
+That pilot did not meet the five-pair acceptance requirement. The subsequent
+ten-pair result and reversion are recorded below.
 
 One replacement isolated pair subsequently completed with matching funding, a
 single warm restart in each arm, and empty pre-payment queues. Candidate: eight
@@ -317,3 +319,29 @@ hypothesis requires new profiling before another candidate. The journal records
 confidence intervals, the preparation-only network repair, and
 [all runs](benchmarks/2026-09-08-bark-incoming-with-recovery-runs.csv) and
 [requests](benchmarks/2026-09-08-bark-incoming-with-recovery-requests.csv).
+
+### Checkpoint-summary digest reuse: component result, not yet retained
+
+The owning runtime already caches the digest of its immutable validated public
+configuration. Reusing it for stored checkpoint summary validation removes
+repeated full-configuration hashing while preserving shape, federation binding,
+digest equality and roster checks. Full proof, admission and startup validation
+retain their existing paths.
+
+A bounded probe confirmed 100 → 0 configuration-digest calls with identical
+summary output. Five alternating uninstrumented component pairs then measured:
+
+| Metric | Baseline | Candidate |
+| --- | ---: | ---: |
+| Mean validation and summary construction | 1,107.688 μs | 4.071 μs |
+| Process CPU per 2,000-check run, including setup | 2.926 s | 0.754 s |
+| Retired instructions, including setup | 65.499 billion | 20.093 billion |
+| Maximum process RSS | 13.094 MB | 11.833 MB |
+
+Paired CPU reduction is 74.23% (ratio interval 0.2498–0.2658). This demonstrates
+component work savings, not service idle CPU or payment throughput. Scoped
+checkpoint/recovery, minimal-feature, standalone-common and strict lint checks
+pass; temporary counters and harness code are removed from source. See the
+[ten component runs](benchmarks/2026-09-08-checkpoint-summary-component.csv) and
+journal for all intervals and the harness-only failed build. Fresh independent
+idle comparisons and active-payment/recovery guards still gate retention.
