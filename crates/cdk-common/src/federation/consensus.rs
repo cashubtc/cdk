@@ -2897,6 +2897,8 @@ impl FederationConsensusRuntime {
         self.data_provider
             .advance_next_unit_index_after_finalized_local_unit(&payload);
         self.journal.commit_prepared_finalized_appends(journal);
+        self.release_pending_finalization_unit(&payload);
+        self.release_pending_finalization_decisions(&outcome.items);
         self.finalized_items.extend(outcome.items);
         for item_bytes in finalized_item_canonical_bytes {
             self.retained_finalized_canonical_bytes = self
@@ -2905,9 +2907,6 @@ impl FederationConsensusRuntime {
             self.retained_finalized_canonical_byte_prefix_sums
                 .push(self.retained_finalized_canonical_bytes);
         }
-        self.release_pending_finalization_unit(&payload);
-        self.release_pending_finalization_decisions(&payload.items);
-
         responses
     }
 
@@ -2965,19 +2964,28 @@ impl FederationConsensusRuntime {
         }
     }
 
-    fn release_pending_finalization_decisions(&mut self, items: &[FederationConsensusItem]) {
+    fn release_pending_finalization_decisions(
+        &mut self,
+        items: &[FederationAlephBftFinalizedItem],
+    ) {
         let mut operation_ids = BTreeSet::new();
         let mut conflict_keys = HashSet::new();
-        for item in items {
+        let mut accepted_barriers = BTreeSet::new();
+        for finalized in items {
+            if let FederationConsensusItem::RecoveryBarrier(barrier) = &finalized.item {
+                if finalized.status == FederationAlephBftFinalizedItemStatus::Accepted {
+                    accepted_barriers.insert(barrier.generation);
+                }
+            }
             let Ok(Some((operation_id, item_conflict_keys))) =
-                pending_consensus_item_operation_metadata(item)
+                pending_consensus_item_operation_metadata(&finalized.item)
             else {
                 continue;
             };
             operation_ids.insert(operation_id);
             conflict_keys.extend(item_conflict_keys);
         }
-        if operation_ids.is_empty() && conflict_keys.is_empty() {
+        if operation_ids.is_empty() && conflict_keys.is_empty() && accepted_barriers.is_empty() {
             return;
         }
 
@@ -2992,8 +3000,12 @@ impl FederationConsensusRuntime {
             };
             let mut retained_items = Vec::new();
             for item in unit_items {
-                if pending_finalization_item_matches_decision(&item, &operation_ids, &conflict_keys)
-                {
+                if pending_finalization_item_matches_decision(
+                    &item,
+                    &operation_ids,
+                    &conflict_keys,
+                    &accepted_barriers,
+                ) {
                     self.release_pending_finalization_item_metadata(&item);
                 } else {
                     retained_items.push(item);
@@ -3041,7 +3053,13 @@ fn pending_finalization_item_matches_decision(
     item: &FederationConsensusItem,
     operation_ids: &BTreeSet<FederationOperationId>,
     conflict_keys: &HashSet<FederationOperationConflictKey>,
+    accepted_barriers: &BTreeSet<FederationRecoveryBarrierId>,
 ) -> bool {
+    // An identical peer barrier already fulfilled this request. This only
+    // releases local activity bookkeeping; late units still validate normally.
+    if let FederationConsensusItem::RecoveryBarrier(barrier) = item {
+        return accepted_barriers.contains(&barrier.generation);
+    }
     let Ok(Some((operation_id, item_conflict_keys))) =
         pending_consensus_item_operation_metadata(item)
     else {

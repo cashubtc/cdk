@@ -1,7 +1,9 @@
 # Federation performance optimization report
 
-Status: in progress. Two DKG arithmetic changes are measured; final campaign
-acceptance and payment-performance comparisons remain pending.
+Status: in progress. Two DKG arithmetic changes are measured. One isolated incoming
+Lightning pair is recorded; its optimization is not accepted. Recovery-barrier
+cleanup is accepted after five component comparisons, fresh-runtime validation
+and scoped regression/lint checks. Final campaign acceptance remains pending.
 
 Baseline: CDK `8e507cdf8`, Bark `8d1eda643dd11e9eb600ec44e36622c8f77b6322`.
 Method and acceptance rules: [approved plan](bls-federation-performance-plan-2026-09-08.md).
@@ -12,7 +14,7 @@ Evidence and decisions: [experiment journal](bls-federation-performance-journal-
 | Operation | Release baseline | Final candidate | Disposition |
 |---|---|---|---|
 | Full BLS/FROST DKG and readiness | Pending | Pending | Unmeasured |
-| Bark Lightning receive | Pending | Pending | Unmeasured |
+| Bark Lightning receive | One isolated pair | One isolated pair | Provisional; five pairs incomplete |
 | Bark Lightning send | Pending | Pending | Unmeasured |
 | BDK on-chain receive | Pending | Pending | Unmeasured |
 | BDK on-chain send | Pending | Pending | Unmeasured |
@@ -148,5 +150,52 @@ stopped at its pre-payment gate when a fresh baseline retained a startup consens
 item. No payment was initiated in that fixture. A subsequent idle sample found
 similar CPU use across members, including the member with that item; a bounded
 probe is investigating whether it is stale recovery-barrier bookkeeping.
-The collector optimization remains provisional, and the five matched pairs have
-not yet been completed.
+The collector optimization remains provisional; the required five matched pairs
+have not been completed.
+
+One replacement isolated pair subsequently completed with matching funding, a
+single warm restart in each arm, and empty pre-payment queues. Candidate: eight
+window completions. Baseline: six window completions, one drain completion and
+one pending attempt. The [complete partial ledger](benchmarks/2026-09-08-bark-incoming-isolated-partial.csv)
+contains all 16 outcomes; one pair cannot establish the required confidence or
+acceptance. The next baseline again retained a startup item after its warm restart,
+so preparation is held before invoices. A normal warm restart is not a reliable
+remedy. Fresh-start attribution subsequently confirmed an identical already accepted
+recovery barrier remained pending for more than two minutes.
+
+Local process control resumed after explicit continuation. Earlier approval-review
+timeouts prevented two controller-stop attempts; those controllers later exited.
+No new performance improvement is accepted from these partial results. Temporary
+probes are absent from source; the production collector, broadcaster and replay
+cursor candidates remain provisional. Recovery-barrier cleanup is accepted below.
+
+
+### Recovery-barrier cleanup
+
+A local recovery barrier remained pending after a peer finalized the identical
+generation. That stale entry blocked empty-session rotation and was unnecessarily
+requeued during session recovery. The candidate releases the satisfied local
+entry while preserving unrelated facts, different generations, rejected barriers,
+and independent validation of late units.
+
+Five alternating release component pairs replayed the same public peer prefix,
+then recovered the session and drained its resulting payloads:
+
+| Metric | Baseline | Candidate | Change |
+|---|---:|---:|---:|
+| Mean recovery cycle | 43.843 µs | 23.826 µs | 45.7% lower |
+| Whole-harness CPU, including preparation | 1.769 s | 1.378 s | 22.1% lower |
+| Redundant recovery payloads per cycle | 1 | 0 | Removed |
+
+The component harness excludes network, SQL and payments. Its held batch of
+20,000 runtimes is not representative of live-service RSS. The journal contains
+paired confidence intervals and [all ten samples](benchmarks/2026-09-08-recovery-barrier-cleanup.csv).
+A fresh five-member HTTP runtime reached healthy, converged state with empty
+queues without a second startup. Its 60-second idle sample used 2.207 aggregate
+CPU seconds versus 2.223 in an earlier baseline diagnostic; those unpaired samples
+support no idle reduction claim. All 55 consensus, 46 runtime recovery, 10 session
+and 20 Bark tests passed, as did formatting and scoped strict common-crate lint.
+The manual ten-minute checkpoint benchmark was ignored by the recovery test run.
+**Keep:** the cleanup eliminates reproduced redundant recovery work and improves
+the measured component without changing validation or consensus policy. Full
+campaign payment and recovery gates remain pending.

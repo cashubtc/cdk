@@ -1213,3 +1213,138 @@ fix in either arm. The interrupted second fixture is retained as a diagnostic;
 new independent fixtures will supply the five alternating pairs. Initial and
 post-restart signed status are both retained. No additional restart is attempted
 if this preparation protocol fails its gate.
+
+The first revised isolated pair passed both pre-payment gates after one matched
+warm restart. Candidate: eight window completions, no late or pending attempts,
+16,384 sat in recipients. Baseline: six window completions, one drain completion,
+one pending attempt, 14,336 sat in recipients. Full observation CPU was 25.609199
+seconds for the candidate and 28.555962 seconds for the baseline; observation
+lengths differ because the baseline exhausted drain. These are individual samples,
+not accepted gains. The remaining pairs continue with alternating execution order.
+
+Analysis retains fixed-window native CPU separately from whole-burst/drain CPU,
+with the actual native endpoint error recorded. Unconditional burst percentiles
+are omitted if any planned request was not offered or did not complete; conditional
+completed-only percentiles remain explicitly labelled. Zero-valued count metrics
+now retain paired absolute confidence intervals without inventing a percentage
+ratio or passing a percentage regression gate. All ten analyzer tests pass.
+
+The next baseline retained one pending-finalization item on member 4 after its
+single warm restart, again with zero accepted operations and all other members'
+queues empty. No invoice was initiated in this arm. A warm restart is therefore
+not a reliable general preparation remedy. The series is held at its gate while
+fresh-start attribution is prepared; the completed pair remains recorded, without
+acceptance from a one-pair sample. The new probe will observe a fresh ceremony's
+runtime directly rather than attempting to reconstruct its pending bookkeeping
+by restarting it. Source inspection also confirms that nonzero pending items block
+explicit consensus-session rotation; a recovery effect is a hypothesis to verify,
+not an inferred CPU gain.
+
+Local automatic approval review timed out on a read-only pane inspection; existing
+readiness logs provided that information instead. It also timed out before executing
+the controller-stop request. The explicitly allowed single retry is pending. No
+permission timeout is classified as an unsafe action or as a completed command.
+
+The allowed controller-stop retry also timed out in automatic approval review;
+no process-control command ran. Explicit approval to retry was requested. The
+benchmark's pre-payment gate continues to hold the next arm; completed artifacts
+and all pending invoice identities remain preserved. All outcomes from the one
+completed isolated pair are exported to the partial numeric ledger. The fresh-start
+probe and isolated E06 candidate are built; the fresh-start probe has not launched.
+The observer-selection test was extended to include a wrapping roster anchored at
+member 4; that test-only extension awaits the next scoped Rust test run.
+
+### Continuation after process-control approval
+
+The continuation authorized retrying local process control. Inspection found the
+benchmark controllers had already exited; the five members of the unmeasured
+startup fixture remained running. They were gracefully stopped with all databases
+and backend state preserved. A fresh independent federation is now being created
+with the bounded startup probe, sharing only the prepared test backend with the
+stopped, unpaid diagnostic fixture. No live custody state is cloned.
+
+Delivery policy: commit each successful optimization immediately after its
+measurement/correctness gates pass and the keep decision is recorded. Provisional
+production experiments remain uncommitted.
+
+Fresh-start attribution confirmed E06: member 4 retained one recovery barrier with
+an identical already accepted generation at finalized cursor 4. Reports at roughly
+31, 61, 91 and 122 seconds retained the same classification; operations and module
+facts were zero. This is now a reproduced live bookkeeping defect, not an inferred
+explanation from a status count.
+
+Before the next experiment: replay the corresponding public consensus trace in an
+isolated release component harness. Dispatch the local barrier, finalize matching
+barriers from the four peers, then perform the existing session-recovery/requeue
+path and drain its resulting local payload. Predicted work reduction: one redundant
+barrier, its new-session payload, serialization and finalization disappear per
+recovery cycle. Include peer-finalization/cleanup cost in the measured phase.
+Measure five alternating independent process pairs, expanding to ten if needed.
+Check the identical recorded peer prefix across revisions, and record empty-session
+rotation eligibility separately. This measures consensus recovery component CPU
+and latency, not payment throughput or full network restart latency. It uses public
+configuration only and creates no custody state or external payments. The temporary
+harness will be removed after the investigation; no production fast path is added.
+
+E06 component results: five alternating release pairs, 20,000 prepared recovery
+cycles per process. Every pair used the identical public peer-prefix digest.
+Baseline requeued 20,000 redundant barriers and encoded 10,800,000 extra payload
+bytes per process; candidate requeued none. Empty-session rotation was blocked
+on the baseline trace and permitted on the candidate trace. All cycles drained
+without pending mempool entries; the additional baseline finalized records were
+exactly its redundant recovery payloads. This intentionally compares generated
+recovery work; the identical recorded peer prefix agrees across revisions.
+
+Geometric means and candidate/baseline 95% paired intervals:
+
+- Measured recovery-cycle mean: 43.842914 → 23.826455 microseconds, 45.7% lower;
+  ratio 0.54345, interval [0.51905, 0.56900].
+- Whole-process CPU including preparation: 1.769237 → 1.377693 seconds, 22.1%
+  lower; ratio 0.77869, interval [0.75807, 0.79987].
+- Retired instructions including preparation: 42.340 → 34.048 billion, 19.6%
+  fewer; ratio 0.80415, interval [0.80357, 0.80474].
+- Batch-harness peak RSS ratio 0.63704, interval [0.63670, 0.63738]. The harness
+  retains 20,000 independent in-memory runtimes: this is not a live-service RSS
+  reduction claim. No p95/p99 claim follows from aggregated cycle durations.
+
+Commands: build the temporary `cdk-common` recovery example with `cargo build
+--locked --release -p cdk-common --no-default-features --features federation,bench
+--example e06_recovery_performance`, then run each frozen binary with the same
+public configuration and 20,000 cycles under `/usr/bin/time -l`. Pinned Nix/Rust
+and release settings match earlier measurements. All ten numeric results are in
+[the E06 ledger](benchmarks/2026-09-08-recovery-barrier-cleanup.csv); raw traces,
+source snapshots, fingerprints and the temporary example are retained privately.
+The temporary example was removed from the workspace after both builds.
+
+A fresh five-member HTTP runtime using the isolated E06 candidate reached healthy,
+converged state with zero operations, session zero and empty queues without an
+extra restart. No payment was initiated. Its 60-second idle follow-up used
+2.206824 aggregate CPU seconds; the earlier baseline diagnostic used 2.223203.
+These are unpaired diagnostic samples, not evidence of an idle CPU reduction.
+
+Final scoped checks completed:
+
+```sh
+cargo fmt --all
+cargo test --locked -p cdk-common --no-default-features --features federation --lib federation::consensus::tests
+cargo clippy --locked -p cdk-common --no-default-features --features federation --lib --tests -- -D warnings
+cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib recovery
+cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib aleph_bft_session::tests
+cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib bark_
+```
+
+Results: 55 consensus, 46 runtime recovery, 10 session and 20 Bark tests passed;
+formatting and strict common-crate lint passed. The recovery filter also selected
+`benchmark_unchanged_checkpoint_idle_rounds`, an ignored manual ten-minute
+long-history benchmark; it was not executed. The wrapping-roster observer test
+extension passed in the Bark suite. Full-feature runtime checks include the
+provisional working-tree changes; E06's performance binaries and fresh-runtime
+validation isolate its production change from those experiments.
+
+**E06 decision: keep.** Five matched pairs confirm the predicted removal of a
+redundant barrier and its serialization/finalization work, with repeatable recovery
+component latency and CPU improvements. Live attribution reproduced the defect,
+and the isolated candidate reached empty-queue readiness. No end-to-end payment,
+sustainable-throughput, service-memory or idle-speedup claim follows. The temporary
+probe and component example are removed from source. Commit this focused cleanup
+and its evidence now; final combined campaign gates remain pending.

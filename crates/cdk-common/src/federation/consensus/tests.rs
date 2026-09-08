@@ -665,6 +665,151 @@ fn consensus_runtime_allows_current_barrier_to_supersede_stale_pending_work() {
 }
 
 #[test]
+fn peer_finalization_releases_equivalent_local_recovery_barrier() {
+    for recover_session in [false, true] {
+        let federation_id = federation_id(36);
+        let mut runtime = FederationConsensusRuntime::new(federation_id, member_id(), 0);
+        let barrier = recovery_barrier(federation_id, 0);
+        runtime
+            .submit_recovery_barrier(barrier.clone())
+            .expect("submit local barrier");
+        let local_unit = runtime
+            .next_unit_payload()
+            .expect("next local unit")
+            .expect("local barrier unit");
+        assert_eq!(runtime.pending_finalization_len(), 1);
+
+        let peer_unit = FederationAlephBftUnitPayload::new(
+            federation_id,
+            member_id_value(2),
+            0,
+            0,
+            vec![FederationConsensusItem::recovery_barrier(barrier)],
+        )
+        .expect("equivalent peer barrier");
+        runtime
+            .finalize_unit(peer_unit)
+            .expect("finalize peer barrier");
+        assert_eq!(
+            runtime.pending_finalization_len(),
+            0,
+            "the local recovery request already has its consensus decision"
+        );
+        assert!(!runtime.has_pending_recovery_barrier());
+
+        if recover_session {
+            assert_eq!(
+                runtime
+                    .begin_session_requeue_pending_finalization(1)
+                    .expect("recover next session"),
+                0,
+                "an accepted peer barrier must not be requeued"
+            );
+            assert!(runtime
+                .next_unit_payload()
+                .expect("recovery payload")
+                .is_none());
+            runtime.begin_session(2).expect("empty session can rotate");
+        } else {
+            runtime
+                .finalize_unit(local_unit)
+                .expect("late local unit still validates independently");
+            assert_eq!(runtime.pending_finalization_len(), 0);
+            assert_eq!(runtime.next_item_index(), 2);
+        }
+    }
+}
+
+#[test]
+fn peer_barrier_cleanup_preserves_other_pending_items_and_generations() {
+    for (peer_requested_after, expected_pending) in [(0, 1), (1, 2)] {
+        let federation_id = federation_id(37);
+        let mut runtime = FederationConsensusRuntime::new(federation_id, member_id(), 0);
+        runtime
+            .finalize_unit(
+                FederationAlephBftUnitPayload::new(
+                    federation_id,
+                    member_id_value(2),
+                    0,
+                    0,
+                    vec![module_fact_item("advance-before-barriers")],
+                )
+                .expect("advancing peer unit"),
+            )
+            .expect("advance finalized cursor");
+        runtime
+            .submit_recovery_barrier(recovery_barrier(federation_id, 0))
+            .expect("submit local barrier");
+        runtime
+            .data_provider
+            .submit_item(module_fact_item("independent-local-fact"))
+            .expect("submit unrelated fact");
+        let local_unit = runtime
+            .next_unit_payload()
+            .expect("next local unit")
+            .expect("mixed local unit");
+        assert_eq!(runtime.pending_finalization_len(), 2);
+
+        runtime
+            .finalize_unit(
+                FederationAlephBftUnitPayload::new(
+                    federation_id,
+                    member_id_value(2),
+                    0,
+                    1,
+                    vec![FederationConsensusItem::recovery_barrier(recovery_barrier(
+                        federation_id,
+                        peer_requested_after,
+                    ))],
+                )
+                .expect("peer barrier unit"),
+            )
+            .expect("finalize peer barrier");
+        assert_eq!(runtime.pending_finalization_len(), expected_pending);
+        runtime
+            .finalize_unit(local_unit)
+            .expect("finalize local unit");
+        assert_eq!(runtime.pending_finalization_len(), 0);
+        assert_eq!(runtime.next_item_index(), 4);
+    }
+}
+
+#[test]
+fn rejected_peer_barrier_does_not_release_local_request() {
+    let federation_id = federation_id(38);
+    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id(), 0);
+    let barrier = recovery_barrier(federation_id, 5);
+    runtime
+        .submit_recovery_barrier(barrier.clone())
+        .expect("queue barrier before its requested cursor");
+    let local_unit = runtime
+        .next_unit_payload()
+        .expect("next local unit")
+        .expect("local barrier unit");
+    runtime
+        .finalize_unit(
+            FederationAlephBftUnitPayload::new(
+                federation_id,
+                member_id_value(2),
+                0,
+                0,
+                vec![FederationConsensusItem::recovery_barrier(barrier)],
+            )
+            .expect("premature peer barrier"),
+        )
+        .expect("record rejected peer item");
+    assert_ne!(
+        runtime.finalized_items()[0].status,
+        FederationAlephBftFinalizedItemStatus::Accepted
+    );
+    assert_eq!(runtime.pending_finalization_len(), 1);
+    runtime
+        .finalize_unit(local_unit)
+        .expect("record local decision");
+    assert_eq!(runtime.pending_finalization_len(), 0);
+}
+
+#[test]
 fn future_recovery_cursor_is_rejected_without_rejecting_its_unit() {
     let federation_id = federation_id(35);
     let mut runtime = FederationConsensusRuntime::new(federation_id, member_id(), 0);
