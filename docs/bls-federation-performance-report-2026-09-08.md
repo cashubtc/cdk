@@ -1,13 +1,11 @@
 # Federation performance optimization report
 
-Status: in progress. Two DKG arithmetic changes are measured. Five fresh incoming
-Lightning pairs with both accepted recovery fixes in each arm show more window
-completions but inconclusive CPU efficiency; the comparison will extend to ten
-pairs. The collector optimization is not accepted. Earlier partial series
-remain separate. Recovery-barrier cleanup is accepted for dispatched and queued
-ordering cases after five component
-comparisons per case, fresh-runtime validation and scoped regression/lint checks.
-Final campaign acceptance remains pending.
+Status: in progress. Two DKG arithmetic changes, dispatched/queued recovery-barrier
+cleanup, and the disclosed-claim recovery correction are retained. The incoming
+collector experiment was **reverted after ten matched pairs**: it improved window
+completion counts but did not establish the CPU/receipt guard. Checkpoint-summary
+digest reuse is undergoing isolated correctness validation. Final campaign and
+combined-candidate payment/performance acceptance remain pending.
 
 Baseline: CDK `8e507cdf8`, Bark `8d1eda643dd11e9eb600ec44e36622c8f77b6322`.
 Method and acceptance rules: [approved plan](bls-federation-performance-plan-2026-09-08.md).
@@ -15,10 +13,10 @@ Evidence and decisions: [experiment journal](bls-federation-performance-journal-
 
 ## Results
 
-| Operation | Release baseline | Final candidate | Disposition |
+| Operation | Release baseline | Measured candidate | Disposition |
 |---|---|---|---|
 | Full BLS/FROST DKG and readiness | Pending | Pending | Unmeasured |
-| Bark Lightning receive | 30/40 window completions in five pairs | 38/40 window completions in five pairs | Extend to ten; collector provisional |
+| Bark Lightning receive | 60/80 window receipts; 69 including drain | 78/80 window receipts | Collector reverted; CPU/receipt guard inconclusive |
 | Bark Lightning send | Pending | Pending | Unmeasured |
 | BDK on-chain receive | Pending | Pending | Unmeasured |
 | BDK on-chain send | Pending | Pending | Unmeasured |
@@ -254,10 +252,9 @@ are censored by unfinished/failed requests. There is no p99 or sustainable
 throughput conclusion. See [every run](benchmarks/2026-09-08-bark-incoming-with-recovery-runs.csv)
 and [every request](benchmarks/2026-09-08-bark-incoming-with-recovery-requests.csv).
 
-**Decision: inconclusive; extend to ten matched pairs.** The collector remains
-uncommitted. Investigating the preserved recovery failure between the two blocks
-will not change either frozen comparison binary; profiling and builds will stop
-before the next payment window.
+**First-block decision: extend to ten matched pairs.** This historical decision
+is superseded by the ten-pair reversion below. Neither frozen comparison binary
+was changed during the intervening recovery investigation.
 
 ### Pending incoming claim recovery
 
@@ -295,3 +292,28 @@ latency or throughput claims. A further restart preserved all receipts and
 convergence, issued no additional value, and retained principal reconciliation.
 **Keep E09 as one complete recovery correction.** The remaining campaign matrix
 and combined performance/idle-resource acceptance are still outstanding.
+
+### Ten-pair incoming collector result: reverted
+
+The complete comparison retained all twenty runs and 160 requests. Baseline
+received 60/80 payments within the fixed windows and 69/80 including drain;
+candidate received 78/80 within the windows. Eleven baseline requests remained
+pending; candidate retained one pending request and one client failure. Later
+recovery does not alter these measurement outcomes.
+
+The paired window-completion ratio was 1.2955 (95% interval 1.2139–1.3826), but
+CPU per in-window receipt remained inconclusive: 0.9801 (0.8704–1.1037). That
+interval permits a regression above the plan's 5% guard. Peak RSS stayed within
+the guard, with ratio interval 1.0040–1.0173. Unconditional p50/p95 are censored;
+there is no p99 or sustainable-throughput result.
+
+Pending evidence collections fell from 634 to 541 over the observations, while
+backend waits rose from 1,679 to 2,868 and projection readiness checks from 3,493
+to 4,487. Different drain lengths and completed-work counts prevent treating
+these totals as matched-load work savings. The collector change and its added
+test were reverted to accepted HEAD; E09's recovery correction remains intact.
+All data and the rejected patch are preserved. A narrower redundant-observation
+hypothesis requires new profiling before another candidate. The journal records
+confidence intervals, the preparation-only network repair, and
+[all runs](benchmarks/2026-09-08-bark-incoming-with-recovery-runs.csv) and
+[requests](benchmarks/2026-09-08-bark-incoming-with-recovery-requests.csv).

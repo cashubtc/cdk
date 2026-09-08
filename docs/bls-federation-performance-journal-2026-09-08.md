@@ -2040,7 +2040,7 @@ The original wallet issued exactly 2,048 sat and retained its quote/invoice
 identity. The already-issued control wallet stayed at 2,048 sat without issuing
 again. Payer records were unchanged and no new Lightning payment was initiated.
 
-All five members passed ready/converged, zero-lag and digest-alert checks before
+All five members passed ready/converged and digest-alert checks before
 and after. Every member ended with seven claimed receives: six at attempt one
 and the recovered claim at attempt two. Read-only journal inspection verifies
 the original disclosure, accepted retry, and terminal claim form consecutive
@@ -2095,7 +2095,7 @@ are retained as numeric evidence. No p99 conclusion applies.
 The original recovered fixture then passed a second uninstrumented restart.
 Both checked wallets retained 2,048 sat and issued zero additional value; payer
 records were unchanged. All five members again passed readiness/convergence and
-zero-lag/digest-alert checks. The 14,336-sat incoming-principal reconciliation
+digest-alert checks. The 14,336-sat incoming-principal reconciliation
 still holds across all wallets and all members. The helper completed in
 0.852713 seconds, an unpaired recovery diagnostic only. Owned processes were
 stopped with state preserved.
@@ -2110,3 +2110,168 @@ they do not independently claim a performance percentage. Commit this step
 separately from E08b, E03a and E07. Final combined payment throughput, idle CPU,
 history scaling, remaining transports/backends and the full campaign gates are
 still outstanding; no campaign-wide performance acceptance is claimed.
+
+E09 was committed separately as `bacc0f971` (`fix: recover disclosed federation
+Bark claims without repeated scans`). Final formatting and staged whitespace
+checks passed; the numeric CSV was normalized to LF before commit. The collector,
+broadcaster and replay-cursor experiments remain uncommitted.
+
+#### E08b extension resumed after E09
+
+The additional five pairs (21–25) are running serially using the unchanged frozen
+E08b baseline/candidate and persistent SDK. All three executable fingerprints were
+verified against pair 16 before starting. The first five pairs' analysis was
+preserved in a separate private snapshot. No E09 code enters either comparison
+binary. Every extension case is a fresh independent fixture; old databases and
+uncertain identities remain preserved. The command is
+`python3 "$RUN_ROOT/run_e08b_with_recovery_pairs.py" --first 21 --last 25`.
+No build or profiling work will run during these payment measurements. The
+extension is in progress; do not infer results or restart an observed-timeout job
+without checking its process handle.
+
+### E05 scoped candidate prepared during the frozen E08b extension
+
+The recorded profile and bounded digest probe support a narrow first experiment:
+checkpoint-summary construction currently recomputes the full configuration
+digest for each stored candidate/quorum slot. The owning immutable runtime already
+stores that digest. Pass the runtime object to the existing private summary
+helpers so config and digest come from the same trusted owner. Add a focused
+checkpoint validation entrypoint accepting this already-computed expected digest;
+share the existing shape, federation binding, digest equality and roster checks.
+Preserve their error order through lazy digest computation on the original path.
+Never take the expected digest from the checkpoint or peer response.
+
+Scope is summary construction only. Full proof verification, admission, startup,
+checkpoint capture and all other validation callers retain their existing paths.
+No new cache, timer, wire format, dependency or standalone change is planned.
+The predicted work reduction is zero configuration reserializations caused by
+these summary validations after runtime construction. A public-only fixed-config
+component comparison will attribute work; matched settled-member CPU measurements
+remain the primary gate. Require tampered-binding/roster and summary-route checks,
+five alternating pairs (ten if inconclusive), guarded memory/active-payment checks
+and restart coverage before retention. The candidate may be edited while frozen
+E08b binaries run, but no build, test or profiling workload will overlap their
+payment windows. This is preparation, not a measured E05 win.
+
+#### E08b extension: preparation failure and verified continuation
+
+The controller exited during pair 23 baseline preparation because Docker had
+exhausted its predefined network address pools. Pairs 21 and 22 and pair 23's
+candidate arm completed and were stopped with state preserved. Authoritative
+process inspection confirmed the controller was terminal and no comparison
+members or payment driver remained live. The failed baseline directory contained
+only the allocation error; no named network, container, volume, federation
+fixture or measurement existed. This is a preparation failure, not a payment
+sample. Its private error directory was archived without deleting state.
+
+Resume only pair 23 baseline and pairs 24–25. Their independent fixtures use
+explicit unused private subnets checked against existing Docker allocations.
+No existing networks, services, databases or payment identities are removed or
+reused. The bridge topology, images, limits, liquidity checks, frozen binaries,
+SDK, payment shape, windows and alternating arm order remain unchanged. Record
+this infrastructure change as a comparison limitation; preserve every original
+sample, including the pair 17 failure. The command is
+`python3 "$RUN_ROOT/run_e08b_with_recovery_pairs.py" --first 23 --last 25 --resume-pair-23-baseline`.
+The ten-pair keep/revert decision still awaits completion; no new performance
+acceptance is claimed. Builds, tests and profiles remain serialized after this
+comparison.
+
+Evidence clarification for E09: the status command confirms readiness and
+agreement of accepted operation/order/application state, not necessarily zero
+checkpoint lag. The post-recovery restart status recorded a one-operation
+checkpoint lag on four members and zero on one, with all members ready and no
+audit mismatch. The earlier wording claiming zero lag was too broad and has been
+corrected. This does not alter the original receipt, accepted-lineage or
+principal-reconciliation results.
+
+E05 measurement preparation now includes a private sequential idle controller.
+It restarts baseline and candidate on the same original settled fixture without
+cloning or restoring custody state, alternates order, separates a fixed 60-second
+warmup from each 60-second observation, and rejects changed accepted history,
+principal, checkpoint frontiers or pending queues. It measures per-member native
+CPU/instructions/wakeups, aggregate sampled RSS/footprint and collector CPU, with
+before/after readiness and payer-identity checks. It creates no invoice and runs
+no payment or issuance helper. All records remain private pending numeric export.
+The controller is syntax-checked but unexecuted; no E05 runtime or component
+benchmark has been built or measured yet. It cannot run while the E08b comparison
+or any campaign member is live. Component builders enforce the same exclusion.
+
+The resumed pair 23 baseline completed normally: six of eight receipts in the
+60-second window, one during drain, and one pending at drain; 14,336 sat was
+received, with 28.236539 member CPU seconds over the whole observation. Its
+candidate had completed eight in-window, receiving 16,384 sat. Both arms are
+stopped and all state remains preserved. Eight complete pairs (16–23) now exist;
+pairs 24–25 are still running. These additional results remain raw/private until
+the planned ten-pair analysis and numeric export; there is no interim keep
+decision or sample exclusion.
+
+E05 workload refinement before execution: sequential restarts of the original
+settled fixture preserve safety, but accumulated Aleph session backups can carry
+state between runs. Keep that controller for recovery/history diagnostics only.
+Primary idle acceptance will instead use fresh independent baseline/candidate
+fixtures through the existing matched Bark backend and dealer-free DKG recipes.
+A read-only check of a preserved fresh-start fixture confirms it has zero accepted
+operations and a recovery candidate/quorum, so summary validation is exercised
+without needing payment traffic. The new one-arm measurement requires those
+checkpoints, zero quotes/actions/operations/queues, matching policies and economic
+inputs, and unchanged status/SQL state during the fixed warmup/idle protocol.
+Five alternating pairs can extend to ten with the same binaries. Fresh-state idle
+evidence will not replace later 1,000/10,000-operation history or active-payment
+gates. These adapters are private, syntax-checked and still unexecuted.
+
+### E08b ten-pair disposition: revert the collector experiment
+
+All pairs 16–25 completed with the unchanged frozen baseline, candidate and SDK.
+The controller exited successfully and authoritative process/container inspection
+confirmed the final arms were stopped before analysis or builds. All twenty runs
+and 160 requests are retained in the numeric run/request ledgers; no failure,
+late completion or pending identity was excluded. The pair 23 preparation-only
+network allocation failure and explicit-subnet continuation remain documented.
+
+| Metric | Baseline | Candidate | Paired result |
+| --- | ---: | ---: | --- |
+| Receipts inside ten 60-second windows | 60/80 | 78/80 | Ratio 1.295522; 95% CI 1.213897–1.382636 |
+| Receipts including drain | 69/80 | 78/80 | Ratio 1.127698; CI 1.043945–1.218170 |
+| Pending requests at drain | 11 | 1 | Mean difference −1/run; CI −1.337222 to −0.662778 |
+| Client failures | 0 | 1 | The original pair 17 quote-creation failure is retained |
+| Aggregate fixed-window member CPU seconds | 194.907605 | 247.734711 | More work completed; this total is not CPU/payment |
+| CPU per in-window receipt | — | — | Ratio 0.980127; CI 0.870394–1.103694: inconclusive |
+| CPU per receipt over the whole observation | — | — | Ratio 0.852655; CI 0.692839–1.049336: inconclusive |
+| Peak aggregate RSS | — | — | Ratio 1.010621; CI 1.004011–1.017274, within the 5% guard |
+| Pending evidence collections, whole observation | 634 | 541 | Ratio 0.852706; CI 0.779496–0.932791 |
+| Pending backend waits, whole observation | 1,679 | 2,868 | Ratio 1.710357; CI 1.419523–2.060778 |
+| Projection readiness checks, whole observation | 3,493 | 4,487 | Ratio 1.279793; CI 1.171130–1.398539 |
+
+Ratios are geometric means of paired run ratios, not ratios of the pooled totals.
+Unconditional run p50/p95 remain censored by incomplete/failed requests. No p99
+or sustainable-throughput conclusion is available. Whole-observation counters
+span different drain lengths and completed-work populations: they cannot prove
+fixed-load work savings. The analyzer labels the raw fixed-window CPU increase a
+regression; interpretation must account for its larger completed population.
+The relevant in-window CPU/receipt interval still permits a regression above 5%,
+so it does not pass the guard. Lower evidence-collection counts do not resolve
+that uncertainty or the increased backend work.
+
+**Revert E08b under the ten-pair inconclusive rule.** Its two production files and
+one regression test were restored exactly to the accepted HEAD versions, keeping
+the complete E09 recovery correction. The rejected diff, frozen binaries and all
+fixture state remain private for investigation. No temporary probe is introduced
+or retained by the reversion. A future hypothesis may examine whether allowing
+the preparation worker outside the stable observer prefix creates redundant
+backend observations, but it requires fresh attribution and a new narrow
+comparison against the accepted recovery code. This is not permission to recycle
+the same inconclusive series or discard its outlier.
+
+Commands: `python3 "$RUN_ROOT/analyze_e08b_with_recovery_pairs.py" --first 16 --last 25`
+and `python3 "$RUN_ROOT/export_e08b_with_recovery_evidence.py"`. CSVs were normalized
+to LF and export is restricted to numeric fields and bounded outcome labels.
+[All twenty runs](benchmarks/2026-09-08-bark-incoming-with-recovery-runs.csv) and
+[all 160 requests](benchmarks/2026-09-08-bark-incoming-with-recovery-requests.csv)
+include the original pair 17 outcomes; later E09 recovery does not change them.
+
+E05 isolated correctness validation has now started after all payment measurements
+ended. Its temporary validation checkout excludes the broadcaster and replay
+experiments and restores them afterward. It covers checkpoint bindings and routes,
+recovery, minimal federation and standalone-common compilation, formatting and
+scoped strict lint. These checks are running, not yet passing evidence. No E05
+performance acceptance or commit has occurred.
