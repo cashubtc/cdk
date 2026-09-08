@@ -463,7 +463,10 @@ pub struct SendOptions {
     pub memo: Option<SendMemo>,
     /// Spending conditions
     pub conditions: Option<SpendingConditions>,
-    /// Amount split target
+    /// Amount split target.
+    ///
+    /// Preparation replaces this with the complete outgoing denomination plan
+    /// for fee-inclusive exact sends; confirmation preserves that plan.
     pub amount_split_target: SplitTarget,
     /// Send kind
     pub send_kind: SendKind,

@@ -125,7 +125,7 @@ impl PreparedPaymentRequest {
         self.swap_fee
     }
 
-    /// Mint input fee added so the receiver obtains the full payment amount.
+    /// Mint input fee added so the receiver obtains exactly the full payment amount.
     pub fn send_fee(&self) -> Amount {
         self.send_fee
     }
