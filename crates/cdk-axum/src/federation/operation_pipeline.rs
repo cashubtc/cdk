@@ -292,6 +292,9 @@ impl FederationNodeRuntime {
             return Ok(responses);
         }
         for response in &responses {
+            #[cfg(feature = "federation-bdk")]
+            self.transaction_broadcaster
+                .notify_accepted_operation(response.outcome.entry());
             self.payment_observer
                 .notify_accepted_operation(response.outcome.entry());
             self.notify_operation(response.clone());

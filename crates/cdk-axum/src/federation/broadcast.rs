@@ -28,9 +28,26 @@ struct LocalRetryState {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FederationTransactionBroadcaster {
     retries: Arc<tokio::sync::Mutex<BTreeMap<FederationTransactionProposalId, LocalRetryState>>>,
+    state_changed: Arc<tokio::sync::Notify>,
 }
 
 impl FederationTransactionBroadcaster {
+    pub(crate) fn notify_accepted_operation(
+        &self,
+        entry: &cdk::federation::FederationJournalEntry,
+    ) {
+        if entry.status() == cdk::federation::FederationOperationStatus::Applied
+            && matches!(
+                entry.envelope.operation,
+                cdk::federation::FederationOperation::TransactionSigned(_)
+                    | cdk::federation::FederationOperation::TransactionBroadcastIntent(_)
+            )
+        {
+            // One permit coalesces state changes, including publication during a round.
+            self.state_changed.notify_one();
+        }
+    }
+
     pub(crate) async fn run_round(&self, state: &MintState) -> Result<usize, cdk::Error> {
         self.run_matching(state, None, false).await
     }
@@ -259,7 +276,8 @@ impl FederationTransactionBroadcaster {
             loop {
                 tokio::select! {
                     _ = stop.cancelled() => break,
-                    _ = interval.tick() => {}
+                    _ = interval.tick() => {},
+                    _ = self.state_changed.notified() => {},
                 }
                 match self.run_round(&state).await {
                     Ok(submitted) if submitted > 0 => tracing::debug!(

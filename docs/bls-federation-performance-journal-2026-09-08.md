@@ -3049,3 +3049,148 @@ values mean insufficient samples, not zero latency. Raw identifiers, bearer
 material, original transactions, process samples and environment details remain
 outside Git. Update these ledgers with every later completed arm; do not select
 only favorable observations. Correctness gates and final acceptance remain open.
+
+#### Five complete retained-code pairs: performance gate passed
+
+The prescribed five pairs finished in alternating AB/BA order, with no failed,
+unfinished, late or pending payments. All fifty independent recipient receipts
+and every member's accepted input/change records pass the read-only audit. The
+[request ledger](benchmarks/2026-09-08-bdk-retained-broadcast-requests.csv) now has
+all fifty requests; the [run ledger](benchmarks/2026-09-08-bdk-retained-broadcast-runs.csv)
+has all ten arms, including the slower first-pair candidate request. Existing
+ledger rows are unchanged. The `order` column records execution order; rows are
+presented baseline/candidate within each pair.
+
+Commands completing the series and recomputing the decision:
+
+```sh
+python3 "$RUN_ROOT/run_e03a_retained_pairs.py" --first 1 --last 5
+python3 "$RUN_ROOT/audit_e03a_retained_completed_pairs.py" --through-pair 5
+python3 "$RUN_ROOT/summarize_e03a_retained_comparison.py" --pairs 5
+```
+
+The pair controller exited successfully and stopped every owned fixture. Both
+artifacts are uninstrumented, built with the same pinned release settings from
+retained production base `6a722ef7305ba941ac8d5267d95413a89c45247c`. Baseline
+SHA-256 is `3d94b694a1606af60a408d26bee454e5d418ae9472454e0e3900fc91f6ac2008`;
+candidate is `bf9e434e3bcc94c52b91548d289caa3f8c41afd8c9f591b0241db9fc13468e34`.
+The candidate contains only E03a's accepted-state broadcaster notification,
+patch SHA-256 `7ba3a68f31f80e3c6e52b16ffde43e61925daf5a76ac88ddc33bbc6f79e1f941`.
+E07, reverted E05/E08b and diagnostic probes are excluded. The persistent SDK
+artifact is identical across arms, SHA-256
+`e68f38ff26b411c44126a05ffd7460d44540be91f6e3c58cbae7832776c4358f`.
+
+Five independent five-member HTTP/SQLite ceremonies per arm each began payment
+measurement with 13 accepted operations, empty queues, identical policies,
+131,072 sat in 64 proofs, and the SDK preparation handshake completed. Five
+serial 1,000-sat payments per arm used the fixed five-second miner and matched
+2-sat/vB fee estimate. Actual per-payment fee was 285 sat; final bank balance was
+124,647 sat. Accepted melt input counts were 8, 9, 9, 9, 11; each consumed 4,478
+sat and returned seven change signatures totaling 3,193 sat. Bitcoin transactions
+had one input and two outputs. Histories and digests agree within each live arm;
+independently generated ceremony digests are not compared across revisions.
+
+The common analyzer uses paired log ratios and a Student-t interval over five
+runs (four degrees of freedom). Ratios below are candidate/baseline, not ratios
+of the displayed arithmetic means.
+
+| Metric | Mean baseline | Mean candidate | Paired ratio, 95% interval |
+| --- | ---: | ---: | --- |
+| Per-run p50 | 36,572.242 ms | 19,909.262 ms | 0.54442 [0.52053, 0.56942] |
+| Per-run p95 | 38,096.401 ms | 23,764.280 ms | 0.60859 [0.44516, 0.83203] |
+| Member CPU/payment | 4.79509 s | 3.80769 s | 0.79426 [0.76670, 0.82280] |
+| Instructions/payment | 42.883 billion | 36.740 billion | 0.85667 [0.83033, 0.88386] |
+| Peak aggregate RSS | 439,730,176 bytes | 440,270,848 bytes | 1.00123 [0.99370, 1.00883] |
+| Peak aggregate footprint | 161,658,982.4 bytes | 162,927,123.2 bytes | 1.00794 [0.97494, 1.04206] |
+| Idle CPU per 30 seconds | 1.14967 s | 1.18969 s | 1.03330 [0.92013, 1.16038] |
+| Idle interrupt wakeups | 6,384.2 | 6,398.6 | 1.00226 [0.99782, 1.00672] |
+
+Idle package wakeups contain zero values, so use the absolute paired difference:
++457.2, interval [-460.19, 1,374.59], rather than a log ratio. Neither idle metric
+establishes a saving. The idle CPU interval is broad: it detects no reproducible
+increase but does not prove unchanged CPU. Retain this uncertainty and the final
+idle/stress coverage obligation. The prespecified idle guard tests a reproducible
+increase; it is not the active-load 5% non-regression guard.
+
+The primary latency/CPU improvements are repeatable; p95, CPU/payment and both
+memory upper bounds exclude regressions over 5%. The performance gate therefore
+passes at five pairs under the recorded rules. This is not sustainable throughput,
+not an original-`8e507cdf8` combined comparison, and not a p99 result. Five completed
+samples per arm are insufficient for p99. The process resource envelope extends
+through the controller's completion observation (at most one 0.5-second polling
+period after completion), while SDK latencies use its own monotonic clock.
+
+Two evidence-helper issues did not affect payment measurements. First, recomputed
+analyzer output used Python tuples where saved JSON used lists; exact comparison
+failed despite identical numbers. JSON normalization fixed the helper, retaining
+the failed version and all data. Second, a ledger extension initially emitted
+execution-order rows, while existing CSV rows use baseline/candidate presentation.
+The prefix-preservation assertion rejected the run-file write. Re-export in the
+existing presentation order preserved every old row; no numeric data changed.
+
+Disposition: proceed with the recorded focused correctness commands, scoped
+strict lint, ordinary/core federation feature checks and a real candidate restart.
+E03a remains uncommitted until those gates pass. The broader campaign remains open.
+
+#### E03a correctness, original candidate restart and retention
+
+`python3 "$RUN_ROOT/validate_e03a_retained_candidate.py" --pairs 5` completed
+successfully. It first checked the exact measured two-file patch and temporarily
+excluded E07, then restored every original provisional source file with a
+concurrent-edit guard. No unexpected concurrent edit occurred. Commands ran
+serially in the pinned Nix stable shell with `RUST_MIN_STACK=16777216`.
+The six test commands listed above used `-- --test-threads 1`:
+
+| Check | Passed | Ignored |
+| --- | ---: | ---: |
+| CDK transaction signing | 2 | 0 |
+| Broadcast classification/redaction | 2 | 0 |
+| Service lifecycle | 4 | 0 |
+| FROST signing and lost-response recovery | 11 | 0 |
+| Finalization and terminal publication | 9 | 0 |
+| Recovery/checkpoint/replay | 46 | 1 |
+
+The ignored test is `benchmark_unchanged_checkpoint_idle_rounds`, explicitly a
+manual ten-minute release benchmark; no correctness test was skipped. These
+74 passed tests cover the existing independent authorization, exact unknown-result
+retry, restoration, failure propagation and lost-publication boundaries. Strict
+lint and feature checks also passed:
+
+```sh
+cargo clippy --locked -p cdk-axum --no-default-features --features federation-bdk,federation-bark,prometheus,iroh --lib -- -D warnings
+cargo check --locked -p cdk-axum --no-default-features --features federation,iroh
+cargo check --locked -p cdk-axum --no-default-features
+cargo fmt --all -- --check
+```
+
+Next, `python3 "$RUN_ROOT/restart_e03a_retained_candidate.py"` restarted only
+pair five's stopped original candidate federation and original backends using
+the exact measured candidate binary. It created no payment, copied no custody,
+and performed no mining. All five members reached certified readiness and empty
+queues at the same 163-operation history and session, with matching order and
+application digests. Per-member logical hashes before/after restart matched for
+mint/melt quotes, proof state, signatures, ordered journal and Bark actions.
+The original wallet's proofs and transaction records also matched.
+
+All five previously confirmed Bitcoin transaction bytes, the tip and mempool
+were unchanged. The wallet retained 124,647 sat; exact value reconciliation is
+131,072 funding = 124,647 spendable + 5,000 independently received + 1,425 fees.
+The helper exited successfully and stopped every owned service, preserving all
+state. This is a post-payment restart check, not active-payment crash injection
+or completion of the full campaign recovery matrix.
+
+**Keep E03a and commit it separately with the complete measured evidence.**
+The retained implementation is a coalescing notification to the existing
+broadcaster from the common terminal publication path, only for applied signed
+transactions and broadcast intents. The periodic repair round, readiness gate,
+consensus authority, exact bytes, independent checks and all retry delays are
+unchanged. There is no new wire format, public API, dependency or temporary
+production probe. E07 remains separate and unaccepted. The prior two invalid
+E03 series and their withdrawn claims remain historical evidence, not inputs to
+this accepted comparison. CSV line endings were normalized to LF for whitespace
+validation; every cell and prior row value is unchanged.
+
+Continue next with the documented BDK phase-attribution queue on retained code.
+The five-pair serial result does not close Iroh, parallel/open-loop load,
+long-history, PostgreSQL, all-direction final payments, original-baseline combined
+comparison or the two final profiling passes.

@@ -1,7 +1,8 @@
 # Federation performance optimization report
 
 Status: in progress. Two DKG arithmetic changes, dispatched/queued recovery-barrier
-cleanup, and the disclosed-claim recovery correction are retained. The incoming
+cleanup, the disclosed-claim recovery correction, and accepted-state broadcaster
+notifications are retained. The incoming
 collector was reverted after ten matched pairs because its CPU/receipt guard
 remained inconclusive. Checkpoint-summary digest reuse was also reverted after
 ten idle pairs: CPU and instruction savings were clear, but memory intervals
@@ -20,7 +21,7 @@ Evidence and decisions: [experiment journal](bls-federation-performance-journal-
 | DKG polynomial evaluation and public signer IDs | Retained: `ceaf02216`, `fffa9d688` | Matched in-memory BLS measurements and scaling correctness; full service DKG remains unmeasured |
 | Dispatched and queued recovery barriers | Retained: `d880c9703`, `1d1669db4` | Separate reproduced orderings, component comparisons and recovery tests; percentages cannot be added |
 | Disclosed Bark claim recovery | Retained: `bacc0f971` | Authorization work reduction, original-payment recovery and further restart; no payment TPS claim |
-| Broadcaster notifications | Provisional | Two payment series failed matched-input/state requirements; no accepted speedup |
+| Broadcaster notifications | Retained | Renewed five-pair retained-code comparison: lower serial BDK latency/CPU, 50 receipts, scoped correctness and candidate restart; earlier invalid series remain excluded |
 | Session-scoped replay cursor | Provisional | Quorum/recovery tests; live performance and payment gates outstanding |
 | Stable incoming evidence collector | Reverted | Ten-pair CPU/receipt guard remained inconclusive despite more window completions |
 | Cached checkpoint digest in summaries | Reverted | Component work reduction and ten-pair idle CPU benefit; memory guard remained inconclusive |
@@ -38,7 +39,7 @@ remain outstanding.
 | Bark Lightning receive | 60/80 window receipts; 69 including drain | 78/80 window receipts | Collector reverted; CPU/receipt guard inconclusive |
 | Bark Lightning send | Pending | Pending | Unmeasured |
 | BDK on-chain receive | Pending | Pending | Unmeasured |
-| BDK on-chain send | Pending | Pending | Unmeasured |
+| BDK on-chain send, five-member HTTP/SQLite serial | Mean per-run p50 36.572 s; CPU/payment 4.795 s | Mean per-run p50 19.909 s; CPU/payment 3.808 s | Broadcaster notification retained; scaling, sustainable throughput and original-baseline comparison pending |
 | Ecash send/receive | Pending | Pending | Unmeasured |
 
 Final operation latency breakdowns, sustainable-throughput curves, active/idle
@@ -452,3 +453,34 @@ regression, and the measured CPU savings remain recorded. The three production
 files were restored to retained HEAD; all binaries, rejected patch and raw
 observations remain private. Prepared active-payment helpers were not run against
 this rejected candidate. No payment-latency or throughput gain is claimed.
+
+### BDK broadcaster notification: five-pair performance result
+
+On five-member HTTP/SQLite federations, notifying the existing broadcaster after
+accepted signing and broadcast-intent operations removes waiting for its next
+periodic round. The unchanged periodic repair, authorization, exact-transaction
+checks and retry delays remain. Earlier bounded profiling observed about four
+seconds of waiting at each transition, compared with millisecond backend calls.
+
+Five alternating pairs with independent state completed all fifty serial
+1,000-sat payments. The uninstrumented candidate reduced per-run median latency
+by **45.56%** (paired ratio 0.54442, 95% interval 0.52053–0.56942), p95 by
+**39.14%** (0.60859, 0.44516–0.83203), and member CPU/payment by **20.57%**
+(0.79426, 0.76670–0.82280). Instructions/payment fell **14.33%**. Arithmetic
+mean per-run medians were 36.572 versus 19.909 seconds; CPU/payment was 4.795
+versus 3.808 seconds. Keep the longer candidate observation in pair one.
+
+Both sampled memory intervals exclude increases over 5%: RSS 0.99370–1.00883,
+physical footprint 0.97494–1.04206. Idle CPU remains inconclusive (ratio interval
+0.92013–1.16038), with no reproducible increase detected; no idle saving or proof
+of unchanged idle CPU is claimed. Independent receipts, all members' accepted
+proof/change shapes and exact wallet debits agree. Each payment cost 1,000 sat
+plus an independently audited 285-sat Bitcoin fee.
+
+See all [requests](benchmarks/2026-09-08-bdk-retained-broadcast-requests.csv),
+[runs](benchmarks/2026-09-08-bdk-retained-broadcast-runs.csv), and the journal for
+artifact identities, matched workload, intervals and evidence-helper failures.
+The performance gate, 74 scoped tests, strict lint, ordinary/core feature checks
+and real candidate restart pass. Retain E03a. These short serial runs do not
+establish sustainable throughput or p99 and do not replace the final comparison
+against the original campaign baseline.
