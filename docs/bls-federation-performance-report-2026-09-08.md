@@ -528,3 +528,9 @@ The third pair passed its ten payment checks, but candidate median latency was
 signing coordinations did not produce lower total CPU in this pair. Thirty
 payments are now independently audited; the full comparison and a focused
 notification regression remain required before any E10 retention decision.
+
+The fourth pair passed all ten payment checks. Its candidate median was nearly
+unchanged (20.070 versus 20.382 seconds), while CPU/payment was 4.1804 versus
+3.7315 seconds. Both arms completed 17 signing coordinations. Preserve this
+higher-CPU observation in the full comparison; no E10 gain is established by
+the forty audited payments so far.

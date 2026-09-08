@@ -3626,3 +3626,30 @@ identities without creating a new payment or copying custody. Performance
 acceptance, the notification regression, scoped checks and the actual restart
 remain pending. No production source or running benchmark was changed during
 this review.
+
+### E10 fourth pair: higher candidate CPU retained in evidence
+
+Pair four completed candidate first, then baseline. All ten payments passed
+independent receipts, exact fees/value, member digest and empty-queue checks.
+Both fixtures are stopped with state preserved. The read-only audit through
+pair four passed for forty original payments and all five members per arm:
+
+```sh
+python3 "$RUN_ROOT/audit_e10_completed_pairs.py" --through-pair 4
+python3 "$RUN_ROOT/export_e10_completed_runs.py"
+```
+
+The ledgers now contain forty requests, eight runs and 1,136 phase-count deltas,
+preserving earlier rows. Baseline/candidate p50 was 20,381.788375/20,069.583208 ms;
+p95 was 20,483.653291/21,125.974959 ms. CPU/payment was
+3.7315482418/4.1803923670 seconds, a 12.03% increase in this pair, and
+instructions/payment were 36,239,028,970.6/38,413,276,085.0. Idle CPU was
+1.136397957/1.322913582 seconds per 30 seconds. These observations remain in the
+comparison; no outlier is dropped and no guard is relaxed.
+
+Both arms completed 17 FROST coordinations and 22 successful liveness rounds;
+skipped liveness rounds were 83 baseline versus 108 candidate. Histories ended
+at 162/169 accepted operations. The aggregate CPU difference cannot be explained
+by coordination counts alone. A single pair does not establish a reproducible
+regression; the fifth pair proceeds baseline first under the existing protocol.
+E10 remains uncommitted and no correctness or final acceptance gate is claimed.
