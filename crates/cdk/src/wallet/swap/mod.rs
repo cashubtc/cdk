@@ -30,6 +30,16 @@ pub(crate) enum ProofReservation {
     Skip,
 }
 
+/// A prepared swap together with the exact deterministic counter reservation.
+pub(crate) struct PreSwapWithCounterRange {
+    /// Prepared swap request and secrets.
+    pub pre_swap: PreSwap,
+    /// First reserved counter.
+    pub counter_start: u32,
+    /// Exclusive end of the reserved range.
+    pub counter_end: u32,
+}
+
 impl Wallet {
     /// Swap proofs using the saga pattern.
     ///
@@ -118,10 +128,10 @@ impl Wallet {
         .await
     }
 
-    /// Create Swap Payload
+    /// Create a swap payload and retain its exact counter reservation.
     #[instrument(skip(self, proofs))]
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn create_swap(
+    pub(crate) async fn create_swap_with_counter_range(
         &self,
         operation_id: &uuid::Uuid,
         active_keyset_id: Id,
@@ -134,16 +144,11 @@ impl Wallet {
         use_p2bk: bool,
         proofs_fee_breakdown: &ProofsFeeBreakdown,
         proof_reservation: ProofReservation,
-    ) -> Result<PreSwap, Error> {
+    ) -> Result<PreSwapWithCounterRange, Error> {
         tracing::info!("Creating swap");
 
         // Desired amount is either amount passed or value of all proof
         let proofs_total = proofs.total_amount()?;
-
-        if proof_reservation == ProofReservation::Reserve {
-            let ys: Vec<PublicKey> = proofs.ys()?;
-            self.localstore.reserve_proofs(ys, operation_id).await?;
-        }
 
         let total_to_subtract = amount
             .unwrap_or(Amount::ZERO)
@@ -187,26 +192,34 @@ impl Wallet {
             s => s,
         };
 
+        let send_output_count = send_amount
+            .unwrap_or(Amount::ZERO)
+            .split_targeted(&SplitTarget::default(), fee_and_amounts)?
+            .len();
+        let change_output_count = change_amount
+            .split_targeted(&change_split_target, fee_and_amounts)?
+            .len();
+        let aggregate_output_count = send_output_count
+            .checked_add(change_output_count)
+            .ok_or(Error::AmountOverflow)?;
+        crate::wallet::validate_generated_output_count(aggregate_output_count)?;
+
+        if proof_reservation == ProofReservation::Reserve {
+            let ys: Vec<PublicKey> = proofs.ys()?;
+            self.localstore.reserve_proofs(ys, operation_id).await?;
+        }
+
         let derived_secret_count;
 
         // Calculate total secrets needed and atomically reserve counter range
         let total_secrets_needed = match spending_conditions {
             Some(_) => {
                 // For spending conditions, we only need to count change secrets
-                change_amount
-                    .split_targeted(&change_split_target, fee_and_amounts)?
-                    .len() as u32
+                u32::try_from(change_output_count).map_err(|_| Error::AmountOverflow)?
             }
             None => {
                 // For no spending conditions, count both send and change secrets
-                let send_count = send_amount
-                    .unwrap_or(Amount::ZERO)
-                    .split_targeted(&SplitTarget::default(), fee_and_amounts)?
-                    .len() as u32;
-                let change_count = change_amount
-                    .split_targeted(&change_split_target, fee_and_amounts)?
-                    .len() as u32;
-                send_count + change_count
+                u32::try_from(aggregate_output_count).map_err(|_| Error::AmountOverflow)?
             }
         };
 
@@ -227,6 +240,9 @@ impl Wallet {
         } else {
             0
         };
+        let counter_end = starting_counter
+            .checked_add(total_secrets_needed)
+            .ok_or(Error::AmountOverflow)?;
 
         let mut count = starting_counter;
 
@@ -316,17 +332,22 @@ impl Wallet {
 
         // Combine the BlindedMessages totaling the desired amount with change
         desired_messages.combine(change_messages);
+        crate::wallet::validate_generated_output_count(desired_messages.len())?;
         // Sort the premint secrets to avoid finger printing
         desired_messages.sort_secrets();
 
         let swap_request = SwapRequest::new(proofs, desired_messages.blinded_messages());
 
-        Ok(PreSwap {
-            pre_mint_secrets: desired_messages,
-            swap_request,
-            derived_secret_count: derived_secret_count as u32,
-            fee: proofs_fee_breakdown.total,
-            p2bk_secret_keys: p2bk_ephemeral_key,
+        Ok(PreSwapWithCounterRange {
+            pre_swap: PreSwap {
+                pre_mint_secrets: desired_messages,
+                swap_request,
+                derived_secret_count: derived_secret_count as u32,
+                fee: proofs_fee_breakdown.total,
+                p2bk_secret_keys: p2bk_ephemeral_key,
+            },
+            counter_start: starting_counter,
+            counter_end,
         })
     }
 }
@@ -345,6 +366,124 @@ mod tests {
         test_keyset_id, test_mint_url, test_proof, MockMintConnector,
     };
     use crate::Error;
+
+    #[tokio::test]
+    async fn create_swap_rejects_aggregate_outputs_before_counter_reservation() {
+        use cdk_common::amount::{FeeAndAmounts, MAX_SPLIT_OUTPUTS};
+
+        use crate::fees::ProofsFeeBreakdown;
+        use crate::wallet::swap::ProofReservation;
+        use crate::Amount;
+
+        let db = create_test_db().await;
+        let mock = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock).await;
+        let keyset_id = test_keyset_id();
+        let fee_and_amounts = FeeAndAmounts::from((0, vec![1]));
+        let initial_counter = db
+            .increment_keyset_counter(&keyset_id, 0)
+            .await
+            .expect("read counter");
+
+        let proof = test_proof(keyset_id, (MAX_SPLIT_OUTPUTS * 2) as u64);
+        let proof_info = ProofInfo::new(
+            proof.clone(),
+            test_mint_url(),
+            State::Unspent,
+            CurrencyUnit::Sat,
+        )
+        .expect("proof info");
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![])
+            .await
+            .expect("store proof");
+
+        let result = wallet
+            .create_swap_with_counter_range(
+                &uuid::Uuid::new_v4(),
+                keyset_id,
+                &fee_and_amounts,
+                Some(Amount::from(MAX_SPLIT_OUTPUTS as u64)),
+                SplitTarget::Value(Amount::ONE),
+                vec![proof],
+                None,
+                false,
+                false,
+                &ProofsFeeBreakdown {
+                    total: Amount::ZERO,
+                    per_keyset: std::collections::HashMap::new(),
+                },
+                ProofReservation::Reserve,
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(Error::MaxOutputsExceeded {
+                actual,
+                max: MAX_SPLIT_OUTPUTS,
+            }) if actual == MAX_SPLIT_OUTPUTS * 2
+        ));
+        assert_eq!(
+            db.increment_keyset_counter(&keyset_id, 0)
+                .await
+                .expect("read counter"),
+            initial_counter
+        );
+        assert_eq!(
+            db.get_proofs_by_ys(vec![proof_y])
+                .await
+                .expect("read proof")[0]
+                .state,
+            State::Unspent
+        );
+    }
+
+    #[tokio::test]
+    async fn create_swap_keeps_exact_reserved_range_after_concurrent_advance() {
+        use cdk_common::amount::FeeAndAmounts;
+
+        use crate::fees::ProofsFeeBreakdown;
+        use crate::wallet::swap::ProofReservation;
+        use crate::Amount;
+
+        let db = create_test_db().await;
+        let wallet =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        let keyset_id = test_keyset_id();
+        let initial_counter = db
+            .increment_keyset_counter(&keyset_id, 0)
+            .await
+            .expect("read counter");
+
+        let reserved = wallet
+            .create_swap_with_counter_range(
+                &uuid::Uuid::new_v4(),
+                keyset_id,
+                &FeeAndAmounts::from((0, vec![1])),
+                Some(Amount::ONE),
+                SplitTarget::Value(Amount::ONE),
+                vec![test_proof(keyset_id, 2)],
+                None,
+                false,
+                false,
+                &ProofsFeeBreakdown {
+                    total: Amount::ZERO,
+                    per_keyset: std::collections::HashMap::new(),
+                },
+                ProofReservation::Skip,
+            )
+            .await
+            .expect("prepare swap");
+
+        db.increment_keyset_counter(&keyset_id, 7)
+            .await
+            .expect("concurrent reservation");
+
+        assert_eq!(reserved.counter_start, initial_counter);
+        assert_eq!(reserved.counter_end, initial_counter + 2);
+        assert_eq!(reserved.pre_swap.derived_secret_count, 2);
+    }
 
     /// When the mint returns InactiveKeyset on a swap and the active keyset
     /// has rotated, the wallet should retry the swap with the new keyset.

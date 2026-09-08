@@ -69,7 +69,7 @@ impl HttpClient {
     ) -> Response<R> {
         let response = request.send().await.map_err(map_reqwest_error)?;
         let status = response.status().as_u16();
-        let body = response.bytes().await.map_err(map_reqwest_error)?.to_vec();
+        let body = read_bounded_body(response).await?;
 
         RawResponse::new(status, body).json_or_status_error()
     }
@@ -118,7 +118,7 @@ impl HttpClient {
             .await
             .map_err(map_reqwest_error)?;
         let status = response.status().as_u16();
-        let body = response.bytes().await.map_err(map_reqwest_error)?.to_vec();
+        let body = read_bounded_body(response).await?;
         Ok(RawResponse::new(status, body))
     }
 
@@ -151,6 +151,28 @@ fn map_reqwest_error(err: reqwest::Error) -> HttpError {
     } else {
         HttpError::Other(err.to_string())
     }
+}
+
+/// Read a response body, rejecting it as soon as it grows past
+/// [`crate::MAX_RESPONSE_BYTES`].
+///
+/// Responses come from untrusted mints; reading chunk by chunk with a running
+/// total prevents a malicious server from exhausting wallet memory with an
+/// oversized body.
+async fn read_bounded_body(mut response: reqwest::Response) -> Result<Vec<u8>, HttpError> {
+    let mut bytes = Vec::new();
+
+    while let Some(chunk) = response.chunk().await.map_err(map_reqwest_error)? {
+        if chunk.len() > crate::MAX_RESPONSE_BYTES.saturating_sub(bytes.len()) {
+            return Err(HttpError::Other(format!(
+                "HTTP response body exceeds the {}-byte limit",
+                crate::MAX_RESPONSE_BYTES
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    Ok(bytes)
 }
 
 /// reqwest-based RequestBuilder wrapper.
@@ -247,7 +269,7 @@ impl ReqwestRequestBuilder {
 
         let response = inner.send().await.map_err(map_reqwest_error)?;
         let status = response.status().as_u16();
-        let body = response.bytes().await.map_err(map_reqwest_error)?.to_vec();
+        let body = read_bounded_body(response).await?;
         Ok(RawResponse::new(status, body))
     }
 
@@ -263,6 +285,7 @@ pub struct HttpClientBuilder {
     proxy: Option<ProxyConfig>,
     accept_invalid_certs: bool,
     no_redirects: bool,
+    timeout: Option<std::time::Duration>,
 }
 
 impl HttpClientBuilder {
@@ -275,6 +298,15 @@ impl HttpClientBuilder {
     /// Disable automatic HTTP redirect following.
     pub fn no_redirects(mut self) -> Self {
         self.no_redirects = true;
+        self
+    }
+
+    /// Set a per-request timeout covering the whole request, including
+    /// reading the response body.
+    ///
+    /// Defaults to [`crate::DEFAULT_REQUEST_TIMEOUT`] when not set.
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = Some(timeout);
         self
     }
 
@@ -304,8 +336,9 @@ impl HttpClientBuilder {
     /// Build the HTTP client.
     pub fn build(self) -> Response<HttpClient> {
         super::install_rustls_crypto_provider();
-        let mut builder =
-            reqwest::Client::builder().danger_accept_invalid_certs(self.accept_invalid_certs);
+        let mut builder = reqwest::Client::builder()
+            .danger_accept_invalid_certs(self.accept_invalid_certs)
+            .timeout(self.timeout.unwrap_or(crate::DEFAULT_REQUEST_TIMEOUT));
         if self.no_redirects {
             builder = builder.redirect(reqwest::redirect::Policy::none());
         }

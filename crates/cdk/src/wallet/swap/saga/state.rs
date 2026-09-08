@@ -41,6 +41,10 @@ pub struct Prepared {
     pub spending_conditions: Option<SpendingConditions>,
     /// Pre-swap data (request and secrets)
     pub pre_swap: PreSwap,
+    /// Exact first deterministic counter reserved by swap preparation
+    pub counter_start: u32,
+    /// Exact exclusive end of the deterministic counter reservation
+    pub counter_end: u32,
     /// Ephemeral key if P2BK was used
     /// The persisted saga for optimistic locking (contains recovery data)
     pub saga: WalletSaga,
@@ -86,6 +90,8 @@ impl fmt::Debug for Prepared {
                     .collect::<Vec<_>>(),
             )
             .field("derived_secret_count", &self.pre_swap.derived_secret_count)
+            .field("counter_start", &self.counter_start)
+            .field("counter_end", &self.counter_end)
             .field("fee", &self.pre_swap.fee)
             .field(
                 "p2bk_secret_key_count",
@@ -187,6 +193,8 @@ mod tests {
                 fee: Amount::from(0),
                 p2bk_secret_keys: None,
             },
+            counter_start: 0,
+            counter_end: 1,
             saga: swap_saga(operation_id),
         };
         let finalized = Finalized {

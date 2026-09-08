@@ -41,6 +41,19 @@ pub use types::*;
 pub use wallet::*;
 pub use wallet_repository::*;
 
+/// Reject proof-count targets that could cause excessive wallet work.
+fn validate_target_proof_count(target_proof_count: Option<u32>) -> Result<Option<u32>, FfiError> {
+    match target_proof_count {
+        Some(count) if count as usize > cdk::wallet::MAX_TARGET_PROOF_COUNT => {
+            Err(FfiError::internal(format!(
+                "target_proof_count must be at most {}",
+                cdk::wallet::MAX_TARGET_PROOF_COUNT
+            )))
+        }
+        count => Ok(count),
+    }
+}
+
 uniffi::setup_scaffolding!();
 
 #[cfg(test)]
@@ -57,6 +70,13 @@ mod tests {
 
         let zero = Amount::zero();
         assert!(zero.is_zero());
+    }
+
+    #[test]
+    fn target_proof_count_is_bounded() {
+        let max = cdk::wallet::MAX_TARGET_PROOF_COUNT as u32;
+        assert!(validate_target_proof_count(Some(max)).is_ok());
+        assert!(validate_target_proof_count(Some(u32::MAX)).is_err());
     }
 
     #[test]

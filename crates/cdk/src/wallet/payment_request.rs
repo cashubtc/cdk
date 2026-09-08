@@ -33,6 +33,23 @@ use crate::wallet::ReceiveOptions;
 use crate::wallet::{SendOptions, WalletRepository};
 use crate::Wallet;
 
+/// Maximum size of a decrypted Nostr NUT-18 payment payload.
+pub const MAX_DECRYPTED_PAYMENT_PAYLOAD_BYTES: usize = 64 * 1024;
+
+/// Parse a decrypted Nostr NUT-18 payment payload after enforcing its size limit.
+///
+/// Nostr event contents are untrusted and must be bounded before JSON parsing.
+pub fn parse_nostr_payment_payload(content: &str) -> Result<PaymentRequestPayload, Error> {
+    if content.len() > MAX_DECRYPTED_PAYMENT_PAYLOAD_BYTES {
+        return Err(Error::Custom(format!(
+            "Payment payload exceeds {MAX_DECRYPTED_PAYMENT_PAYLOAD_BYTES} bytes"
+        )));
+    }
+
+    serde_json::from_str(content)
+        .map_err(|e| Error::Custom(format!("Invalid payment payload JSON: {e}")))
+}
+
 /// Optional limits that callers can check before confirming a prepared NUT-18
 /// payment request.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -465,6 +482,30 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
+
+    #[test]
+    fn nostr_payment_payload_rejects_oversized_content_before_json_parsing() {
+        let content = " ".repeat(MAX_DECRYPTED_PAYMENT_PAYLOAD_BYTES + 1);
+
+        let error = parse_nostr_payment_payload(&content).expect_err("payload must be rejected");
+
+        assert!(matches!(
+            error,
+            Error::Custom(message) if message.contains("exceeds 65536 bytes")
+        ));
+    }
+
+    #[test]
+    fn nostr_payment_payload_allows_content_at_size_limit() {
+        let content = " ".repeat(MAX_DECRYPTED_PAYMENT_PAYLOAD_BYTES);
+
+        let error = parse_nostr_payment_payload(&content).expect_err("payload is not valid JSON");
+
+        assert!(matches!(
+            error,
+            Error::Custom(message) if message.starts_with("Invalid payment payload JSON:")
+        ));
+    }
 
     async fn test_repository() -> WalletRepository {
         use cdk_common::database::{Error as DatabaseError, WalletDatabase};
@@ -1836,7 +1877,7 @@ impl WalletRepository {
                 match client.unwrap_gift_wrap(&event).await {
                     Ok(unwrapped) => {
                         let rumor = unwrapped.rumor;
-                        match serde_json::from_str::<PaymentRequestPayload>(&rumor.content) {
+                        match parse_nostr_payment_payload(&rumor.content) {
                             Ok(payload) => {
                                 if !payment_request_mint_policy_accepts_mint(
                                     &mints,

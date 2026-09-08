@@ -20,6 +20,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{Error, Result};
+use crate::MAX_DECRYPTED_CONTENT_BYTES;
 
 /// A gift wrap that was addressed to the inbox identity and successfully
 /// unwrapped
@@ -169,12 +170,23 @@ impl NostrInbox {
                             continue;
                         }
                         match client.unwrap_gift_wrap(&event).await {
-                            Ok(unwrapped) => listener.on_event(Nip17Event {
-                                wrap_id: event.id,
-                                wrap_created_at: event.created_at,
-                                sender: unwrapped.sender,
-                                rumor: unwrapped.rumor,
-                            }),
+                            Ok(unwrapped)
+                                if unwrapped.rumor.content.len() <= MAX_DECRYPTED_CONTENT_BYTES =>
+                            {
+                                listener.on_event(Nip17Event {
+                                    wrap_id: event.id,
+                                    wrap_created_at: event.created_at,
+                                    sender: unwrapped.sender,
+                                    rumor: unwrapped.rumor,
+                                });
+                            }
+                            Ok(unwrapped) => {
+                                tracing::warn!(
+                                    "inbox: dropping gift wrap {} with {}-byte decrypted content",
+                                    event.id,
+                                    unwrapped.rumor.content.len()
+                                );
+                            }
                             Err(e) => {
                                 // Not encrypted for us or malformed — log and keep going
                                 tracing::debug!("inbox: unwrap gift wrap {} failed: {e}", event.id);

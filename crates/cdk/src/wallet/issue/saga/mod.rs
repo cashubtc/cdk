@@ -406,14 +406,18 @@ impl<'a> MintSaga<'a, Initial> {
             s => s,
         };
 
-        let premint_secrets = match &spending_conditions {
-            Some(spending_conditions) => PreMintSecrets::with_conditions(
-                active_keyset_id,
-                amount,
-                &split_target,
-                spending_conditions,
-                fee_and_amounts,
-            )?,
+        let (premint_secrets, counter_start, counter_end) = match &spending_conditions {
+            Some(spending_conditions) => (
+                PreMintSecrets::with_conditions(
+                    active_keyset_id,
+                    amount,
+                    &split_target,
+                    spending_conditions,
+                    fee_and_amounts,
+                )?,
+                None,
+                None,
+            ),
             None => {
                 let amount_split = amount.split_targeted(&split_target, fee_and_amounts)?;
                 let num_secrets = amount_split.len() as u32;
@@ -432,16 +436,21 @@ impl<'a> MintSaga<'a, Initial> {
 
                 let count = new_counter - num_secrets;
 
-                PreMintSecrets::from_seed(
-                    active_keyset_id,
-                    count,
-                    &self.wallet.seed,
-                    amount,
-                    &split_target,
-                    fee_and_amounts,
-                )?
+                (
+                    PreMintSecrets::from_seed(
+                        active_keyset_id,
+                        count,
+                        &self.wallet.seed,
+                        amount,
+                        &split_target,
+                        fee_and_amounts,
+                    )?,
+                    Some(count),
+                    Some(new_counter),
+                )
             }
         };
+        crate::wallet::validate_generated_output_count(premint_secrets.len())?;
 
         let mut request = MintRequest {
             quote: quote_id.to_string(),
@@ -469,14 +478,6 @@ impl<'a> MintSaga<'a, Initial> {
 
         let operation_id = self.state_data.operation_id;
 
-        // Get counter range for recovery
-        let counter_end = self
-            .wallet
-            .localstore
-            .increment_keyset_counter(&active_keyset_id, 0)
-            .await?;
-        let counter_start = counter_end.saturating_sub(premint_secrets.secrets.len() as u32);
-
         // Persist saga state for crash recovery
         let saga = WalletSaga::new(
             operation_id,
@@ -487,8 +488,8 @@ impl<'a> MintSaga<'a, Initial> {
             OperationData::Mint(MintOperationData::new_single(
                 quote_id.to_string(),
                 amount,
-                Some(counter_start),
-                Some(counter_end),
+                counter_start,
+                counter_end,
                 Some(request.outputs.clone()),
             )),
         );
@@ -510,6 +511,8 @@ impl<'a> MintSaga<'a, Initial> {
             operation_id: self.state_data.operation_id,
             active_keyset_id,
             premint_secrets,
+            counter_start,
+            counter_end,
             mint_request: PreparedMintRequest::Single {
                 quote_id: quote_id.to_string(),
                 quote_info: quote_info.clone(),
@@ -668,24 +671,6 @@ impl<'a> MintSaga<'a, Initial> {
             return Err(Error::AmountUndefined);
         }
 
-        // Reserve all quotes (with rollback on failure)
-        for quote_id in quote_ids {
-            self.wallet
-                .localstore
-                .reserve_mint_quote(quote_id, &self.state_data.operation_id)
-                .await?;
-        }
-
-        // Register compensation to release all quotes on failure
-        add_compensation(
-            &mut self.compensations,
-            Box::new(ReleaseMintQuote {
-                localstore: self.wallet.localstore.clone(),
-                operation_id: self.state_data.operation_id,
-            }),
-        )
-        .await;
-
         // Get active keyset
         let keyset_policy = self.state_data.keyset_policy;
         let active_keyset_id = self
@@ -698,11 +683,11 @@ impl<'a> MintSaga<'a, Initial> {
             .get_keyset_fees_and_amounts_by_id_with_policy(active_keyset_id, keyset_policy)
             .await?;
 
-        // Generate a consecutive output segment for each quote. NUT-29 sends
-        // one shared output list, so retaining these boundaries is what lets
-        // transaction history and crash recovery attribute proofs correctly.
-        let mut premint_secrets = PreMintSecrets::new(active_keyset_id);
-        let mut output_counts = Vec::with_capacity(quote_amounts.len());
+        // Determine the full NUT-29 output size before reserving any derivation
+        // counters. Each quote split is independently bounded by Amount, but the
+        // shared request and persisted saga must honor the same aggregate bound.
+        let mut split_targets = Vec::with_capacity(quote_amounts.len());
+        let mut aggregate_output_count = 0usize;
         for quote_amount in &quote_amounts {
             let split_target = match &amount_split_target {
                 SplitTarget::None => {
@@ -712,137 +697,175 @@ impl<'a> MintSaga<'a, Initial> {
                 }
                 split_target => split_target.clone(),
             };
-
-            let quote_secrets = match &spending_conditions {
-                Some(sc) => PreMintSecrets::with_conditions(
-                    active_keyset_id,
-                    *quote_amount,
-                    &split_target,
-                    sc,
-                    &fee_and_amounts,
-                )?,
-                None => {
-                    let amount_split =
-                        quote_amount.split_targeted(&split_target, &fee_and_amounts)?;
-                    let num_secrets =
-                        u32::try_from(amount_split.len()).map_err(|_| Error::AmountOverflow)?;
-                    let new_counter = self
-                        .wallet
-                        .localstore
-                        .increment_keyset_counter(&active_keyset_id, num_secrets)
-                        .await?;
-                    let count = new_counter - num_secrets;
-
-                    PreMintSecrets::from_seed(
-                        active_keyset_id,
-                        count,
-                        &self.wallet.seed,
-                        *quote_amount,
-                        &split_target,
-                        &fee_and_amounts,
-                    )?
-                }
-            };
-
-            output_counts.push(quote_secrets.len());
-            premint_secrets.secrets.extend(quote_secrets.secrets);
+            let output_count = quote_amount
+                .split_targeted(&split_target, &fee_and_amounts)?
+                .len();
+            aggregate_output_count = aggregate_output_count
+                .checked_add(output_count)
+                .ok_or(Error::AmountOverflow)?;
+            crate::wallet::validate_generated_output_count(aggregate_output_count)?;
+            split_targets.push(split_target);
         }
 
-        let outputs = premint_secrets.blinded_messages();
-
-        // Create batch mint request
-        let mut batch_request = BatchMintRequest {
-            quotes: quote_ids.iter().map(|s| s.to_string()).collect(),
-            quote_amounts: Some(quote_amounts.clone()),
-            outputs: outputs.clone(),
-            signatures: None,
-        };
-
-        // Build signatures for each quote (NUT-20)
-        let mut signatures: Vec<Option<String>> = Vec::new();
-
-        for quote in &quote_infos {
-            let secret_key = match self.wallet.mint_quote_signing_key(quote).await? {
-                Some(secret_key) => Some(secret_key),
-                None => external_keys.and_then(|keys| keys.get(&quote.id)).cloned(),
-            };
-
-            let requires_signature = secret_key.is_some() || quote.payment_method.is_bolt12();
-
-            if requires_signature {
-                let sk = secret_key.ok_or(Error::SignatureMissingOrInvalid)?;
-                let sig = batch_request
-                    .sign_quote(&quote.id, &sk)
-                    .map_err(|e| Error::Custom(format!("NUT-20 signing failed: {}", e)))?;
-                signatures.push(Some(sig));
-            } else {
-                // Quote is unlocked
-                signatures.push(None);
-            }
-        }
-
-        // Refresh every snapshot after signing-key resolution so later
-        // versioned writes use the latest persisted versions.
-        for quote in &mut quote_infos {
-            *quote = self
-                .wallet
-                .localstore
-                .get_mint_quote(&quote.id)
-                .await?
-                .ok_or(Error::UnknownQuote)?;
-        }
-
-        // Check if any quote requires a signature.
-        let has_locked = signatures.iter().any(Option::is_some);
-        let signatures_to_send = if has_locked { Some(signatures) } else { None };
-        batch_request.signatures = signatures_to_send;
-
-        // Get counter range for recovery
-        let counter_end = self
-            .wallet
-            .localstore
-            .increment_keyset_counter(&active_keyset_id, 0)
-            .await?;
-        let counter_start = counter_end.saturating_sub(premint_secrets.secrets.len() as u32);
-
-        // Persist saga state
-        let saga = WalletSaga::new(
-            self.state_data.operation_id,
-            WalletSagaState::Issue(IssueSagaState::SecretsPrepared),
-            total_amount,
-            self.wallet.mint_url.clone(),
-            self.wallet.unit.clone(),
-            OperationData::Mint(MintOperationData::new_partitioned_batch(
-                quote_ids.iter().map(|s| s.to_string()).collect(),
-                total_amount,
-                Some(counter_start),
-                Some(counter_end),
-                Some(outputs),
-                output_counts.clone(),
-                quote_amounts,
-            )),
-        );
-
-        self.wallet.localstore.add_saga(saga.clone()).await?;
-
-        // Register compensation
+        // Only persist reservations after the complete shared output list has
+        // passed validation.
+        // Register compensation before the first write so a failure partway
+        // through the loop releases every quote already linked to this operation.
         add_compensation(
             &mut self.compensations,
-            Box::new(MintCompensation {
+            Box::new(ReleaseMintQuote {
                 localstore: self.wallet.localstore.clone(),
-                quote_id: quote_ids.first().cloned().unwrap_or_default().to_string(),
-                saga_id: self.state_data.operation_id,
+                operation_id: self.state_data.operation_id,
             }),
         )
         .await;
 
-        Ok(MintSaga {
-            wallet: self.wallet,
-            compensations: self.compensations,
-            state_data: Prepared {
+        for quote_id in quote_ids {
+            if let Err(error) = self
+                .wallet
+                .localstore
+                .reserve_mint_quote(quote_id, &self.state_data.operation_id)
+                .await
+            {
+                self.wallet
+                    .localstore
+                    .release_mint_quote(&self.state_data.operation_id)
+                    .await?;
+                clear_compensations(&mut self.compensations).await;
+                return Err(error.into());
+            }
+        }
+
+        let prepare_result: Result<Prepared, Error> = async {
+            let (mut counter, counter_start, counter_end) = match spending_conditions {
+                None if aggregate_output_count > 0 => {
+                    let counter_count =
+                        u32::try_from(aggregate_output_count).map_err(|_| Error::AmountOverflow)?;
+                    let counter_end = self
+                        .wallet
+                        .localstore
+                        .increment_keyset_counter(&active_keyset_id, counter_count)
+                        .await?;
+                    let counter_start = counter_end - counter_count;
+                    (counter_start, Some(counter_start), Some(counter_end))
+                }
+                _ => (0, None, None),
+            };
+
+            // Generate a consecutive output segment for each quote. NUT-29 sends
+            // one shared output list, so retaining these boundaries is what lets
+            // transaction history and crash recovery attribute proofs correctly.
+            let mut premint_secrets = PreMintSecrets::new(active_keyset_id);
+            let mut output_counts = Vec::with_capacity(quote_amounts.len());
+            for (quote_amount, split_target) in quote_amounts.iter().zip(split_targets) {
+                let quote_secrets = match &spending_conditions {
+                    Some(sc) => PreMintSecrets::with_conditions(
+                        active_keyset_id,
+                        *quote_amount,
+                        &split_target,
+                        sc,
+                        &fee_and_amounts,
+                    )?,
+                    None => {
+                        let quote_secrets = PreMintSecrets::from_seed(
+                            active_keyset_id,
+                            counter,
+                            &self.wallet.seed,
+                            *quote_amount,
+                            &split_target,
+                            &fee_and_amounts,
+                        )?;
+                        counter = counter
+                            .checked_add(
+                                u32::try_from(quote_secrets.len())
+                                    .map_err(|_| Error::AmountOverflow)?,
+                            )
+                            .ok_or(Error::AmountOverflow)?;
+                        quote_secrets
+                    }
+                };
+
+                output_counts.push(quote_secrets.len());
+                premint_secrets.secrets.extend(quote_secrets.secrets);
+            }
+            crate::wallet::validate_generated_output_count(premint_secrets.len())?;
+
+            let outputs = premint_secrets.blinded_messages();
+
+            // Create batch mint request
+            let mut batch_request = BatchMintRequest {
+                quotes: quote_ids.iter().map(|s| s.to_string()).collect(),
+                quote_amounts: Some(quote_amounts.clone()),
+                outputs: outputs.clone(),
+                signatures: None,
+            };
+
+            // Build signatures for each quote (NUT-20)
+            let mut signatures: Vec<Option<String>> = Vec::new();
+
+            for quote in &quote_infos {
+                let secret_key = match self.wallet.mint_quote_signing_key(quote).await? {
+                    Some(secret_key) => Some(secret_key),
+                    None => external_keys.and_then(|keys| keys.get(&quote.id)).cloned(),
+                };
+
+                let requires_signature = secret_key.is_some() || quote.payment_method.is_bolt12();
+
+                if requires_signature {
+                    let sk = secret_key.ok_or(Error::SignatureMissingOrInvalid)?;
+                    let sig = batch_request
+                        .sign_quote(&quote.id, &sk)
+                        .map_err(|e| Error::Custom(format!("NUT-20 signing failed: {}", e)))?;
+                    signatures.push(Some(sig));
+                } else {
+                    // Quote is unlocked
+                    signatures.push(None);
+                }
+            }
+
+            // Refresh every snapshot after signing-key resolution so later
+            // versioned writes use the latest persisted versions.
+            for quote in &mut quote_infos {
+                *quote = self
+                    .wallet
+                    .localstore
+                    .get_mint_quote(&quote.id)
+                    .await?
+                    .ok_or(Error::UnknownQuote)?;
+            }
+
+            // Check if any quote requires a signature.
+            let has_locked = signatures.iter().any(Option::is_some);
+            let signatures_to_send = if has_locked { Some(signatures) } else { None };
+            batch_request.signatures = signatures_to_send;
+
+            // Persist saga state
+            let saga = WalletSaga::new(
+                self.state_data.operation_id,
+                WalletSagaState::Issue(IssueSagaState::SecretsPrepared),
+                total_amount,
+                self.wallet.mint_url.clone(),
+                self.wallet.unit.clone(),
+                OperationData::Mint(MintOperationData::new_partitioned_batch(
+                    quote_ids.iter().map(|s| s.to_string()).collect(),
+                    total_amount,
+                    counter_start,
+                    counter_end,
+                    Some(outputs),
+                    output_counts.clone(),
+                    quote_amounts,
+                )),
+            );
+
+            self.wallet.localstore.add_saga(saga.clone()).await?;
+
+            // Register compensation
+            Ok(Prepared {
                 operation_id: self.state_data.operation_id,
                 active_keyset_id,
                 premint_secrets,
+                counter_start,
+                counter_end,
                 mint_request: PreparedMintRequest::Batch {
                     quote_ids: quote_ids.iter().map(|s| s.to_string()).collect(),
                     quote_infos,
@@ -852,8 +875,37 @@ impl<'a> MintSaga<'a, Initial> {
                 payment_method,
                 keyset_policy,
                 saga,
-            },
-        })
+            })
+        }
+        .await;
+
+        match prepare_result {
+            Ok(state_data) => {
+                add_compensation(
+                    &mut self.compensations,
+                    Box::new(MintCompensation {
+                        localstore: self.wallet.localstore.clone(),
+                        quote_id: quote_ids.first().cloned().unwrap_or_default().to_string(),
+                        saga_id: self.state_data.operation_id,
+                    }),
+                )
+                .await;
+
+                Ok(MintSaga {
+                    wallet: self.wallet,
+                    compensations: self.compensations,
+                    state_data,
+                })
+            }
+            Err(error) => {
+                self.wallet
+                    .localstore
+                    .release_mint_quote(&self.state_data.operation_id)
+                    .await?;
+                clear_compensations(&mut self.compensations).await;
+                Err(error)
+            }
+        }
     }
 }
 
@@ -875,6 +927,8 @@ impl<'a> MintSaga<'a, Prepared> {
             operation_id,
             active_keyset_id,
             premint_secrets,
+            counter_start,
+            counter_end,
             mint_request,
             payment_method,
             keyset_policy,
@@ -912,14 +966,6 @@ impl<'a> MintSaga<'a, Prepared> {
         );
 
         let logic_res = async {
-            // Get counter range for recovery
-            let counter_end = wallet
-                .localstore
-                .increment_keyset_counter(&active_keyset_id, 0)
-                .await?;
-            let counter_start =
-                counter_end.saturating_sub(premint_secrets.secrets.len() as u32);
-
             // Get outputs for saga update and for mint call
             let outputs = premint_secrets.blinded_messages();
 
@@ -929,8 +975,8 @@ impl<'a> MintSaga<'a, Prepared> {
             let mut updated_saga = saga.clone();
             updated_saga.update_state(WalletSagaState::Issue(IssueSagaState::MintRequested));
             if let OperationData::Mint(ref mut data) = updated_saga.data {
-                data.counter_start = Some(counter_start);
-                data.counter_end = Some(counter_end);
+                data.counter_start = counter_start;
+                data.counter_end = counter_end;
                 data.blinded_messages = Some(outputs.clone());
             }
 
@@ -1206,6 +1252,228 @@ mod tests {
         mint_quote.amount_paid = amount;
         mint_quote.secret_key = Some(signing_key);
         mint_quote
+    }
+
+    #[tokio::test]
+    async fn batch_prepare_rejects_aggregate_outputs_before_counter_reservation() {
+        use cdk_common::amount::MAX_SPLIT_OUTPUTS;
+
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let amount = Amount::from(MAX_SPLIT_OUTPUTS as u64);
+
+        let mut first = test_mint_quote(mint_url.clone());
+        first.id = "aggregate-limit-first".to_owned();
+        first.state = MintQuoteState::Paid;
+        first.amount = Some(amount);
+        first.amount_paid = amount;
+        let mut second = test_mint_quote(mint_url);
+        second.id = "aggregate-limit-second".to_owned();
+        second.state = MintQuoteState::Paid;
+        second.amount = Some(amount);
+        second.amount_paid = amount;
+        db.add_mint_quote(first.clone()).await.expect("first quote");
+        db.add_mint_quote(second.clone())
+            .await
+            .expect("second quote");
+
+        let keyset_id = wallet.active_keyset().await.expect("active keyset").id;
+        let initial_counter = db
+            .increment_keyset_counter(&keyset_id, 0)
+            .await
+            .expect("read counter");
+        let result = MintSaga::new(&wallet)
+            .prepare_batch(
+                &[first.id.as_str(), second.id.as_str()],
+                SplitTarget::Value(Amount::ONE),
+                None,
+                None,
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(Error::MaxOutputsExceeded {
+                actual,
+                max: MAX_SPLIT_OUTPUTS,
+            }) if actual == MAX_SPLIT_OUTPUTS * 2
+        ));
+        assert_eq!(
+            db.increment_keyset_counter(&keyset_id, 0)
+                .await
+                .expect("read counter"),
+            initial_counter
+        );
+        assert!(db
+            .get_incomplete_sagas()
+            .await
+            .expect("list sagas")
+            .is_empty());
+        assert!(db
+            .get_mint_quote(&first.id)
+            .await
+            .expect("read first quote")
+            .expect("first quote exists")
+            .used_by_operation
+            .is_none());
+        assert!(db
+            .get_mint_quote(&second.id)
+            .await
+            .expect("read second quote")
+            .expect("second quote exists")
+            .used_by_operation
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn batch_prepare_releases_partial_quote_reservations() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let wallet =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+
+        let mut first = test_mint_quote(mint_url.clone());
+        first.id = "partial-reservation-first".to_owned();
+        first.state = MintQuoteState::Paid;
+        first.amount = Some(Amount::ONE);
+        first.amount_paid = Amount::ONE;
+        let mut second = test_mint_quote(mint_url);
+        second.id = "partial-reservation-second".to_owned();
+        second.state = MintQuoteState::Paid;
+        second.amount = Some(Amount::ONE);
+        second.amount_paid = Amount::ONE;
+        db.add_mint_quote(first.clone()).await.expect("first quote");
+        db.add_mint_quote(second.clone())
+            .await
+            .expect("second quote");
+
+        let other_operation = uuid::Uuid::new_v4();
+        db.reserve_mint_quote(&second.id, &other_operation)
+            .await
+            .expect("reserve second quote elsewhere");
+
+        let result = MintSaga::new(&wallet)
+            .prepare_batch(
+                &[first.id.as_str(), second.id.as_str()],
+                SplitTarget::Values(vec![Amount::ONE]),
+                None,
+                None,
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(db
+            .get_mint_quote(&first.id)
+            .await
+            .expect("read first")
+            .expect("first exists")
+            .used_by_operation
+            .is_none());
+        assert_eq!(
+            db.get_mint_quote(&second.id)
+                .await
+                .expect("read second")
+                .expect("second exists")
+                .used_by_operation,
+            Some(other_operation.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_execute_persists_exact_reserved_range_after_concurrent_advance() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
+
+        let mut first = test_mint_quote(mint_url.clone());
+        first.id = "counter-race-first".to_owned();
+        first.state = MintQuoteState::Paid;
+        first.amount = Some(Amount::ONE);
+        first.amount_paid = Amount::ONE;
+        let mut second = test_mint_quote(mint_url);
+        second.id = "counter-race-second".to_owned();
+        second.state = MintQuoteState::Paid;
+        second.amount = Some(Amount::ONE);
+        second.amount_paid = Amount::ONE;
+        db.add_mint_quote(first.clone()).await.expect("first quote");
+        db.add_mint_quote(second.clone())
+            .await
+            .expect("second quote");
+
+        let prepared = MintSaga::new(&wallet)
+            .prepare_batch(
+                &[first.id.as_str(), second.id.as_str()],
+                SplitTarget::Values(vec![Amount::ONE]),
+                None,
+                None,
+            )
+            .await
+            .expect("prepare batch");
+        let saga_id = prepared.state_data.operation_id;
+        let counter_start = prepared.state_data.counter_start;
+        let counter_end = prepared.state_data.counter_end;
+        let keyset_id = prepared.state_data.active_keyset_id;
+        assert_eq!(
+            counter_end
+                .expect("deterministic end")
+                .checked_sub(counter_start.expect("deterministic start")),
+            Some(2)
+        );
+
+        db.increment_keyset_counter(&keyset_id, 7)
+            .await
+            .expect("concurrent reservation");
+        mock_client.push_post_batch_mint_response(Err(Error::Custom(
+            "stop after write-ahead update".to_owned(),
+        )));
+        assert!(prepared.execute().await.is_err());
+
+        let saga = db
+            .get_saga(&saga_id)
+            .await
+            .expect("read saga")
+            .expect("ambiguous failure keeps saga");
+        let OperationData::Mint(data) = saga.data else {
+            panic!("expected mint saga data");
+        };
+        assert_eq!(data.counter_start, counter_start);
+        assert_eq!(data.counter_end, counter_end);
+    }
+
+    #[tokio::test]
+    async fn conditioned_batch_persists_no_seed_counter_range() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let wallet =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        let mut quote = test_mint_quote(mint_url);
+        quote.id = "conditioned-no-counter".to_owned();
+        quote.state = MintQuoteState::Paid;
+        quote.amount = Some(Amount::ONE);
+        quote.amount_paid = Amount::ONE;
+        db.add_mint_quote(quote.clone()).await.expect("quote");
+        let conditions = SpendingConditions::new_p2pk(SecretKey::generate().public_key(), None);
+
+        let prepared = MintSaga::new(&wallet)
+            .prepare_batch(
+                &[quote.id.as_str()],
+                SplitTarget::Values(vec![Amount::ONE]),
+                Some(conditions),
+                None,
+            )
+            .await
+            .expect("prepare conditioned batch");
+
+        assert_eq!(prepared.state_data.counter_start, None);
+        assert_eq!(prepared.state_data.counter_end, None);
+        let OperationData::Mint(data) = &prepared.state_data.saga.data else {
+            panic!("expected mint saga data");
+        };
+        assert_eq!(data.counter_start, None);
+        assert_eq!(data.counter_end, None);
     }
 
     #[cfg(feature = "npubcash")]

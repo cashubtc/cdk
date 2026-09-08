@@ -14,6 +14,13 @@ use thiserror::Error;
 use crate::nuts::CurrencyUnit;
 use crate::Id;
 
+/// Maximum number of outputs produced by a local amount split.
+///
+/// This protocol-independent ceiling applies to both wallet and mint code to
+/// bound allocations. Mints may configure a lower request limit, but cannot
+/// configure a higher limit than this local ceiling.
+pub const MAX_SPLIT_OUTPUTS: usize = 4096;
+
 /// Amount Error
 #[derive(Debug, Error)]
 pub enum Error {
@@ -41,6 +48,14 @@ pub enum Error {
     /// Cannot represent amount with available denominations
     #[error("Cannot represent amount {0} with available denominations (got {1})")]
     CannotSplitAmount(u64, u64),
+    /// Splitting the amount would create too many outputs
+    #[error("Amount split would create {actual} outputs, maximum is {max}")]
+    SplitOutputLimitExceeded {
+        /// Number of outputs the split would create
+        actual: u64,
+        /// Maximum number of outputs allowed in one split
+        max: usize,
+    },
 }
 
 /// Amount can be any unit
@@ -209,18 +224,25 @@ impl Amount<()> {
             ));
         }
 
-        let parts: Vec<Self> = fee_and_amounts
-            .amounts
-            .iter()
-            .rev()
-            .fold((Vec::new(), self.value), |(mut acc, total), &amount| {
-                let count = total / amount;
-                for _ in 0..count {
-                    acc.push(Self::from(amount));
-                }
-                (acc, total % amount)
-            })
-            .0;
+        let mut parts = Vec::new();
+        let mut total = self.value;
+
+        for &amount in fee_and_amounts.amounts.iter().rev() {
+            let count = total / amount;
+            let output_count = u64::try_from(parts.len())
+                .ok()
+                .and_then(|len| len.checked_add(count))
+                .ok_or(Error::AmountOverflow)?;
+            if output_count > MAX_SPLIT_OUTPUTS as u64 {
+                return Err(Error::SplitOutputLimitExceeded {
+                    actual: output_count,
+                    max: MAX_SPLIT_OUTPUTS,
+                });
+            }
+
+            parts.extend((0..count).map(|_| Self::from(amount)));
+            total %= amount;
+        }
 
         let sum: u64 = parts.iter().map(|a| a.value).sum();
         if sum != self.value {
@@ -258,14 +280,32 @@ impl Amount<()> {
                 while parts_total.lt(self) {
                     for part in parts_of_value.iter().copied() {
                         if (part.checked_add(parts_total).ok_or(Error::AmountOverflow)?).le(self) {
+                            if parts.len() == MAX_SPLIT_OUTPUTS {
+                                return Err(Error::SplitOutputLimitExceeded {
+                                    actual: MAX_SPLIT_OUTPUTS as u64 + 1,
+                                    max: MAX_SPLIT_OUTPUTS,
+                                });
+                            }
                             parts.push(part);
+                            parts_total =
+                                parts_total.checked_add(part).ok_or(Error::AmountOverflow)?;
                         } else {
                             let amount_left =
                                 self.checked_sub(parts_total).ok_or(Error::AmountOverflow)?;
-                            parts.extend(amount_left.split(fee_and_amounts)?);
+                            let remainder = amount_left.split(fee_and_amounts)?;
+                            let output_count = parts
+                                .len()
+                                .checked_add(remainder.len())
+                                .ok_or(Error::AmountOverflow)?;
+                            if output_count > MAX_SPLIT_OUTPUTS {
+                                return Err(Error::SplitOutputLimitExceeded {
+                                    actual: output_count as u64,
+                                    max: MAX_SPLIT_OUTPUTS,
+                                });
+                            }
+                            parts.extend(remainder);
+                            parts_total = *self;
                         }
-
-                        parts_total = Amount::try_sum(parts.clone().iter().copied())?;
 
                         if parts_total.eq(self) {
                             break;
@@ -276,6 +316,12 @@ impl Amount<()> {
                 parts
             }
             SplitTarget::Values(values) => {
+                if values.len() > MAX_SPLIT_OUTPUTS {
+                    return Err(Error::SplitOutputLimitExceeded {
+                        actual: values.len() as u64,
+                        max: MAX_SPLIT_OUTPUTS,
+                    });
+                }
                 let values_total: Amount = Amount::try_sum(values.clone())?;
 
                 match self.cmp(&values_total) {
@@ -288,6 +334,18 @@ impl Amount<()> {
                             .checked_sub(values_total)
                             .ok_or(Error::AmountOverflow)?;
                         let mut extra_amount = extra.split(fee_and_amounts)?;
+
+                        let output_count = values
+                            .len()
+                            .checked_add(extra_amount.len())
+                            .ok_or(Error::AmountOverflow)?;
+                        if output_count > MAX_SPLIT_OUTPUTS {
+                            return Err(Error::SplitOutputLimitExceeded {
+                                actual: output_count as u64,
+                                max: MAX_SPLIT_OUTPUTS,
+                            });
+                        }
+
                         let mut values = values.clone();
 
                         values.append(&mut extra_amount);
@@ -753,6 +811,77 @@ mod tests {
             .map(|a| Amount::from(*a))
             .collect();
         assert_eq!(Amount::from(255).split(&fee_and_amounts).unwrap(), amounts);
+    }
+
+    #[test]
+    fn test_split_enforces_output_budget() {
+        let fee_and_amounts = (0, vec![1]).into();
+
+        let at_limit = Amount::from(MAX_SPLIT_OUTPUTS as u64)
+            .split(&fee_and_amounts)
+            .unwrap();
+        assert_eq!(at_limit.len(), MAX_SPLIT_OUTPUTS);
+
+        assert!(matches!(
+            Amount::from(MAX_SPLIT_OUTPUTS as u64 + 1).split(&fee_and_amounts),
+            Err(Error::SplitOutputLimitExceeded {
+                actual,
+                max: MAX_SPLIT_OUTPUTS,
+            }) if actual == MAX_SPLIT_OUTPUTS as u64 + 1
+        ));
+    }
+
+    #[test]
+    fn test_split_rejects_large_output_count_before_allocation() {
+        let fee_and_amounts = (0, vec![1]).into();
+
+        assert!(matches!(
+            Amount::from(u64::MAX).split(&fee_and_amounts),
+            Err(Error::SplitOutputLimitExceeded {
+                actual: u64::MAX,
+                max: MAX_SPLIT_OUTPUTS,
+            })
+        ));
+    }
+
+    #[test]
+    fn test_targeted_split_enforces_output_budget() {
+        let fee_and_amounts = (0, vec![1]).into();
+
+        assert!(matches!(
+            Amount::from(MAX_SPLIT_OUTPUTS as u64 + 1)
+                .split_targeted(&SplitTarget::Value(Amount::ONE), &fee_and_amounts),
+            Err(Error::SplitOutputLimitExceeded {
+                max: MAX_SPLIT_OUTPUTS,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_values_split_with_change_enforces_output_budget() {
+        let fee_and_amounts = (0, vec![1]).into();
+
+        // MAX - 1 requested values plus one change output hits the limit.
+        let at_limit = Amount::from(MAX_SPLIT_OUTPUTS as u64)
+            .split_targeted(
+                &SplitTarget::Values(vec![Amount::ONE; MAX_SPLIT_OUTPUTS - 1]),
+                &fee_and_amounts,
+            )
+            .expect("combined outputs at the limit");
+        assert_eq!(at_limit.len(), MAX_SPLIT_OUTPUTS);
+
+        // MAX requested values plus one change output exceeds the limit.
+        assert!(matches!(
+            Amount::from(MAX_SPLIT_OUTPUTS as u64 + 1).split_targeted(
+                &SplitTarget::Values(vec![Amount::ONE; MAX_SPLIT_OUTPUTS]),
+                &fee_and_amounts
+            ),
+            Err(Error::SplitOutputLimitExceeded {
+                max: MAX_SPLIT_OUTPUTS,
+                ..
+            })
+        ));
     }
 
     #[test]

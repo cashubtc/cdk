@@ -62,6 +62,8 @@ impl Wallet {
         store: crate::database::WalletStore,
         config: WalletConfig,
     ) -> Result<Self, FfiError> {
+        let target_proof_count =
+            crate::validate_target_proof_count(config.target_proof_count)?.unwrap_or(3);
         let db = crate::database::resolve_wallet_store(store)?;
         let localstore = crate::database::create_cdk_database_from_ffi(db);
 
@@ -84,7 +86,7 @@ impl Wallet {
             .unit(unit.into())
             .localstore(localstore)
             .seed(seed)
-            .target_proof_count(config.target_proof_count.unwrap_or(3) as usize);
+            .target_proof_count(target_proof_count as usize);
 
         if let Some(config) = pace_with {
             builder = builder.with_rate_limiting_config(config);

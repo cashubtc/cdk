@@ -24,7 +24,7 @@
 //! let fresh = manager.load_from_mint(&storage, &client).await?;
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,6 +43,126 @@ use crate::wallet::util::escape_log_value;
 use crate::wallet::{AuthMintConnector, AuthWallet, MintConnector};
 use crate::{Error, Wallet};
 
+/// Maximum number of unreferenced keyset descriptions retained in persistence.
+///
+/// HTTP response bodies are already bounded by the transport. This separate,
+/// larger bound prevents a mint that rotates otherwise-valid snapshots from
+/// growing an append-only wallet database indefinitely.
+const MAX_PERSISTED_KEYSET_DESCRIPTIONS: usize = 1_000;
+
+/// Maximum number of per-ID keyset requests made during one metadata refresh.
+///
+/// Cached keys do not count towards this limit.
+const MAX_UNCACHED_KEYSET_FETCHES_PER_REFRESH: usize = 32;
+
+fn keyset_ids_in_use(
+    proofs: impl IntoIterator<Item = cdk_common::wallet::ProofInfo>,
+) -> HashSet<Id> {
+    proofs
+        .into_iter()
+        .map(|proof| proof.proof.keyset_id)
+        .collect()
+}
+
+fn prioritize_keysets(keysets: &mut [KeySetInfo]) {
+    // A stable sort preserves the mint's order within each class, while ensuring
+    // inactive history cannot consume the fetch budget before active keysets.
+    keysets.sort_by_key(|keyset| !keyset.active);
+}
+
+fn prioritize_refresh_keysets(keysets: &mut [KeySetInfo], protected: &HashSet<Id>) {
+    // Proof-bearing keysets are as important as active keysets: both must be
+    // fetched before optional history regardless of response ordering.
+    keysets.sort_by_key(|keyset| !(keyset.active || protected.contains(&keyset.id)));
+}
+
+fn required_uncached_keysets(
+    keysets: &[KeySetInfo],
+    keys: &HashMap<Id, Arc<Keys>>,
+    protected: &HashSet<Id>,
+) -> usize {
+    keysets
+        .iter()
+        .filter(|keyset| {
+            (keyset.active || protected.contains(&keyset.id)) && !keys.contains_key(&keyset.id)
+        })
+        .count()
+}
+
+fn retain_refreshed_domain(
+    metadata: &mut MintMetadata,
+    auth: bool,
+    advertised: &HashSet<Id>,
+    protected: &HashSet<Id>,
+) {
+    metadata.keysets.retain(|id, keyset| {
+        let is_auth = keyset.unit == CurrencyUnit::Auth;
+        is_auth != auth || advertised.contains(id) || protected.contains(id)
+    });
+    metadata
+        .keys
+        .retain(|id, _| metadata.keysets.contains_key(id));
+}
+
+fn select_persisted_keysets(
+    mut keysets: Vec<KeySetInfo>,
+    protected: &HashSet<Id>,
+) -> Vec<KeySetInfo> {
+    prioritize_keysets(&mut keysets);
+
+    let mut regular_optional = 0;
+    let mut auth_optional = 0;
+    keysets
+        .into_iter()
+        .filter(|keyset| {
+            if keyset.active || protected.contains(&keyset.id) {
+                true
+            } else {
+                let optional = if keyset.unit == CurrencyUnit::Auth {
+                    &mut auth_optional
+                } else {
+                    &mut regular_optional
+                };
+                if *optional < MAX_PERSISTED_KEYSET_DESCRIPTIONS {
+                    *optional += 1;
+                    true
+                } else {
+                    false
+                }
+            }
+        })
+        .collect()
+}
+
+fn select_keysets_to_persist(
+    mut keysets: Vec<KeySetInfo>,
+    existing: &HashSet<Id>,
+    protected: &HashSet<Id>,
+) -> Vec<KeySetInfo> {
+    // Update existing rows and always save proof-bearing descriptions. Fill any
+    // remaining slots with active descriptions before inactive history.
+    keysets.sort_by_key(|keyset| {
+        (
+            !(existing.contains(&keyset.id) || protected.contains(&keyset.id)),
+            !keyset.active,
+        )
+    });
+
+    let mut persisted_ids = existing.clone();
+    keysets
+        .into_iter()
+        .filter(|keyset| {
+            let should_persist = persisted_ids.contains(&keyset.id)
+                || protected.contains(&keyset.id)
+                || persisted_ids.len() < MAX_PERSISTED_KEYSET_DESCRIPTIONS;
+            if should_persist {
+                persisted_ids.insert(keyset.id);
+            }
+            should_persist
+        })
+        .collect()
+}
+
 /// Metadata freshness and versioning information
 ///
 /// Tracks when data was last fetched and which version is currently cached.
@@ -55,7 +175,7 @@ pub struct FreshnessStatus {
     /// A future time when the cache would be considered as staled.
     pub updated_at: Instant,
 
-    /// Monotonically increasing version number (for database sync tracking)
+    /// Monotonically increasing generation for this freshness domain.
     version: usize,
 }
 
@@ -67,6 +187,29 @@ impl Default for FreshnessStatus {
             version: 0,
         }
     }
+}
+
+fn mark_refreshed(status: &mut FreshnessStatus, complete: bool) {
+    if complete {
+        status.is_populated = true;
+        status.updated_at = Instant::now();
+    }
+}
+
+fn record_successful_refresh(metadata: &mut MintMetadata, regular: bool, auth: bool) {
+    if regular {
+        mark_refreshed(&mut metadata.status, true);
+        metadata.status.version += 1;
+    }
+    if auth {
+        mark_refreshed(&mut metadata.auth_status, true);
+        metadata.auth_status.version += 1;
+    }
+    metadata.persistence_version += 1;
+}
+
+fn should_persist_mint_info(metadata: &MintMetadata) -> bool {
+    metadata.status.is_populated
 }
 
 /// Complete metadata snapshot for a single mint
@@ -95,6 +238,9 @@ pub struct MintMetadata {
 
     /// Freshness tracking for blind auth keysets
     auth_status: FreshnessStatus,
+
+    /// Generation of any mutation that needs database persistence.
+    persistence_version: usize,
 }
 
 /// On-demand mint metadata cache with database persistence
@@ -128,6 +274,10 @@ pub struct MintMetadataCache {
     /// Tracks which database instances have been synced to which cache version.
     /// Key: pointer identity of storage Arc, Value: last synced cache version
     db_sync_versions: Arc<RwLock<HashMap<usize, usize>>>,
+
+    /// Serializes persistence attempts so an older snapshot cannot finish after
+    /// and overwrite a newer successfully persisted snapshot.
+    db_sync_lock: Arc<Mutex<()>>,
 
     /// Mutex to ensure only one fetch operation runs at a time
     /// Other callers wait for the lock, then re-read the updated cache
@@ -198,6 +348,7 @@ impl MintMetadataCache {
             metadata: Arc::new(ArcSwap::default()),
             ttl: Arc::new(RwLock::new(Some(Duration::from_secs(3600)))),
             db_sync_versions: Arc::new(Default::default()),
+            db_sync_lock: Arc::new(Mutex::new(())),
             fetch_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -294,10 +445,27 @@ impl MintMetadataCache {
             let _ = self.load_from_db(storage).await;
         }
 
+        let protected_keysets = match storage
+            .get_proofs(Some(self.mint_url.clone()), None, None, None)
+            .await
+        {
+            Ok(proofs) => keyset_ids_in_use(proofs),
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to inspect proof keysets for {}; preserving all cached keysets: {}",
+                    self.mint_url,
+                    err
+                );
+                self.metadata.load().keysets.keys().copied().collect()
+            }
+        };
+
         // Perform the fetch
         // Note: keys already in cache (e.g. from load_from_db at boot) are
         // skipped by fetch_from_http's Vacant entry check.
-        let metadata = self.fetch_from_http(Some(client), None).await?;
+        let metadata = self
+            .fetch_from_http(Some(client), None, &protected_keysets)
+            .await?;
 
         // Persist to database
         self.database_sync(storage.clone(), metadata.clone()).await;
@@ -342,8 +510,17 @@ impl MintMetadataCache {
 
         // Load keysets and their keys
         if let Some(keysets) = storage.get_mint_keysets(self.mint_url.clone()).await? {
+            let protected_keysets = keyset_ids_in_use(
+                storage
+                    .get_proofs(Some(self.mint_url.clone()), None, None, None)
+                    .await?,
+            );
+            let selected_keysets = select_persisted_keysets(keysets, &protected_keysets);
+            let selected_ids = selected_keysets.iter().map(|keyset| keyset.id).collect();
+            retain_refreshed_domain(&mut new_metadata, false, &selected_ids, &protected_keysets);
+            retain_refreshed_domain(&mut new_metadata, true, &selected_ids, &protected_keysets);
             new_metadata.active_keysets.clear();
-            for keyset_info in keysets {
+            for keyset_info in selected_keysets {
                 let keyset_arc = Arc::new(keyset_info.clone());
                 new_metadata
                     .keysets
@@ -363,8 +540,17 @@ impl MintMetadataCache {
         // Only mark as populated if we actually loaded keysets.
         // Don't update `updated_at` — the TTL should reflect when we last
         // fetched from the mint, not when we read from the local DB.
-        new_metadata.status.is_populated = !new_metadata.keysets.is_empty();
+        new_metadata.status.is_populated = new_metadata
+            .keysets
+            .values()
+            .any(|keyset| keyset.unit != CurrencyUnit::Auth);
+        new_metadata.auth_status.is_populated = new_metadata
+            .keysets
+            .values()
+            .any(|keyset| keyset.unit == CurrencyUnit::Auth);
         new_metadata.status.version += 1;
+        new_metadata.auth_status.version += 1;
+        new_metadata.persistence_version += 1;
 
         tracing::info!(
             "Loaded cache from database for {} with {} keysets (version {})",
@@ -381,7 +567,7 @@ impl MintMetadataCache {
         let storage_id = Self::arc_pointer_id(storage);
         self.db_sync_versions
             .write()
-            .insert(storage_id, metadata_arc.status.version);
+            .insert(storage_id, metadata_arc.persistence_version);
 
         Ok(metadata_arc)
     }
@@ -433,7 +619,7 @@ impl MintMetadataCache {
                 .unwrap_or(true)
         {
             // Cache is ready - check if database needs updating
-            if db_synced_version != cached_metadata.status.version {
+            if db_synced_version != cached_metadata.persistence_version {
                 // Database is stale - sync before returning
                 self.database_sync(storage.clone(), cached_metadata.clone())
                     .await;
@@ -504,7 +690,7 @@ impl MintMetadataCache {
                 .map(|ttl| cached_metadata.auth_status.updated_at + ttl > Instant::now())
                 .unwrap_or(true)
         {
-            if db_synced_version != cached_metadata.status.version {
+            if db_synced_version != cached_metadata.persistence_version {
                 // Database needs updating - sync before returning
                 self.database_sync(storage.clone(), cached_metadata.clone())
                     .await;
@@ -516,7 +702,7 @@ impl MintMetadataCache {
         let _guard = self.fetch_lock.lock().await;
 
         // Re-check if auth data was updated while waiting for lock
-        let current_metadata = self.metadata.load().clone();
+        let mut current_metadata = self.metadata.load().clone();
         if current_metadata.auth_status.is_populated
             && ttl
                 .map(|ttl| current_metadata.auth_status.updated_at + ttl > Instant::now())
@@ -528,8 +714,50 @@ impl MintMetadataCache {
             return Ok(current_metadata);
         }
 
+        // An auth-only refresh must start from the persisted regular snapshot.
+        // Otherwise its default MintInfo could overwrite valid regular metadata.
+        if !current_metadata.status.is_populated {
+            match self.load_from_db(storage).await {
+                Ok(metadata) => {
+                    current_metadata = metadata;
+                    if current_metadata.auth_status.is_populated
+                        && ttl
+                            .map(|ttl| {
+                                current_metadata.auth_status.updated_at + ttl > Instant::now()
+                            })
+                            .unwrap_or(true)
+                    {
+                        return Ok(current_metadata);
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Failed to load regular metadata before auth refresh for {}: {}",
+                        self.mint_url,
+                        err
+                    );
+                }
+            }
+        }
+
         // Auth data not in cache - fetch from mint
-        let metadata = self.fetch_from_http(None, Some(auth_client)).await?;
+        let protected_keysets = match storage
+            .get_proofs(Some(self.mint_url.clone()), None, None, None)
+            .await
+        {
+            Ok(proofs) => keyset_ids_in_use(proofs),
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to inspect proof keysets for {}; preserving all cached keysets: {}",
+                    self.mint_url,
+                    err
+                );
+                self.metadata.load().keysets.keys().copied().collect()
+            }
+        };
+        let metadata = self
+            .fetch_from_http(None, Some(auth_client), &protected_keysets)
+            .await?;
 
         // Persist to database
         self.database_sync(storage.clone(), metadata.clone()).await;
@@ -548,10 +776,15 @@ impl MintMetadataCache {
         storage: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         metadata: Arc<MintMetadata>,
     ) {
+        let _guard = self.db_sync_lock.lock().await;
         let mint_url = self.mint_url.clone();
         let db_sync_versions = self.db_sync_versions.clone();
 
-        Self::persist_to_database(mint_url, storage, metadata, db_sync_versions).await
+        if let Err(err) =
+            Self::persist_to_database(mint_url.clone(), storage, metadata, db_sync_versions).await
+        {
+            tracing::warn!("Failed to persist metadata for {}: {}", mint_url, err);
+        }
     }
 
     /// Persist metadata to database
@@ -571,47 +804,66 @@ impl MintMetadataCache {
         storage: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         metadata: Arc<MintMetadata>,
         db_sync_versions: Arc<RwLock<HashMap<usize, usize>>>,
-    ) {
+    ) -> Result<(), database::Error> {
         let storage_id = Self::arc_pointer_id(&storage);
 
         // Check if this write is still needed
         {
-            let mut versions = db_sync_versions.write();
-
+            let versions = db_sync_versions.read();
             let current_synced_version = versions.get(&storage_id).cloned().unwrap_or_default();
 
-            if metadata.status.version <= current_synced_version {
+            if metadata.persistence_version <= current_synced_version {
                 // A newer version has already been persisted - skip this write
-                return;
+                return Ok(());
             }
-
-            // Mark this version as being synced
-            versions.insert(storage_id, metadata.status.version);
         }
 
         // Save mint info
-        storage
-            .add_mint(mint_url.clone(), Some(metadata.mint_info.clone()))
-            .await
-            .inspect_err(|e| tracing::warn!("Failed to save mint info for {}: {}", mint_url, e))
-            .ok();
+        if should_persist_mint_info(&metadata) {
+            storage
+                .add_mint(mint_url.clone(), Some(metadata.mint_info.clone()))
+                .await?;
+        }
 
-        // Save all keysets
-        let keysets: Vec<_> = metadata.keysets.values().map(|ks| (**ks).clone()).collect();
+        // The database API can add or update descriptions but cannot remove
+        // them. Refuse new, unreferenced IDs after the cumulative cap while
+        // continuing to update existing rows and preserve proof keysets.
+        let existing_keysets = storage
+            .get_mint_keysets(mint_url.clone())
+            .await?
+            .unwrap_or_default();
+        let protected_keysets = keyset_ids_in_use(
+            storage
+                .get_proofs(Some(mint_url.clone()), None, None, None)
+                .await?,
+        );
+        let existing_ids = existing_keysets
+            .into_iter()
+            .map(|keyset| keyset.id)
+            .collect();
+        let keysets = select_keysets_to_persist(
+            metadata
+                .keysets
+                .values()
+                .map(|keyset| (**keyset).clone())
+                .collect(),
+            &existing_ids,
+            &protected_keysets,
+        );
+        let persisted_keyset_ids: HashSet<_> = keysets.iter().map(|keyset| keyset.id).collect();
 
         if !keysets.is_empty() {
-            storage
-                .add_mint_keysets(mint_url.clone(), keysets)
-                .await
-                .inspect_err(|e| tracing::warn!("Failed to save keysets for {}: {}", mint_url, e))
-                .ok();
+            storage.add_mint_keysets(mint_url.clone(), keysets).await?;
         }
 
         // Save keys for each keyset
         for (keyset_id, keys) in &metadata.keys {
+            if !persisted_keyset_ids.contains(keyset_id) {
+                continue;
+            }
             if let Some(keyset_info) = metadata.keysets.get(keyset_id) {
                 // Check if keys already exist in database to avoid duplicate insertion
-                if storage.get_keys(keyset_id).await.ok().flatten().is_some() {
+                if storage.get_keys(keyset_id).await?.is_some() {
                     tracing::trace!(
                         "Keys for keyset {} already in database, skipping insert",
                         keyset_id
@@ -628,20 +880,20 @@ impl MintMetadataCache {
                     keys: (**keys).clone(),
                 };
 
-                storage
-                    .add_keys(keyset)
-                    .await
-                    .inspect_err(|e| {
-                        tracing::warn!(
-                            "Failed to save keys for keyset {} at {}: {}",
-                            keyset_id,
-                            mint_url,
-                            e
-                        )
-                    })
-                    .ok();
+                storage.add_keys(keyset).await?;
             }
         }
+
+        // Only a fully successful attempt is considered synced. Concurrent
+        // older writes must not lower a newer completed generation.
+        db_sync_versions
+            .write()
+            .entry(storage_id)
+            .and_modify(|version| {
+                *version = (*version).max(metadata.persistence_version);
+            })
+            .or_insert(metadata.persistence_version);
+        Ok(())
     }
 
     /// Fetch fresh metadata from mint HTTP API and update cache
@@ -665,6 +917,7 @@ impl MintMetadataCache {
         &self,
         client: Option<&Arc<dyn MintConnector + Send + Sync>>,
         auth_client: Option<&Arc<dyn AuthMintConnector + Send + Sync>>,
+        protected_keysets: &HashSet<Id>,
     ) -> Result<Arc<MintMetadata>, Error> {
         tracing::debug!(
             "Fetching mint metadata from HTTP for {}",
@@ -673,7 +926,8 @@ impl MintMetadataCache {
 
         // Start with current cache to preserve data from other sources
         let mut new_metadata = (*self.metadata.load().clone()).clone();
-        let mut keysets_to_fetch = Vec::new();
+        let mut regular_keysets = Vec::new();
+        let mut auth_keysets = Vec::new();
 
         // Fetch regular mint data
         if let Some(client) = client.as_ref() {
@@ -687,82 +941,151 @@ impl MintMetadataCache {
             })?;
 
             // Get list of keysets
-            keysets_to_fetch.extend(
-                client
-                    .get_mint_keysets()
-                    .await
-                    .inspect_err(|err| {
-                        tracing::error!(
-                            "Failed to fetch keysets for {}: {}",
-                            escape_log_value(&self.mint_url),
-                            escape_log_value(err)
-                        );
-                    })?
-                    .keysets,
-            );
+            regular_keysets = client
+                .get_mint_keysets()
+                .await
+                .inspect_err(|err| {
+                    tracing::error!(
+                        "Failed to fetch keysets for {}: {}",
+                        escape_log_value(&self.mint_url),
+                        escape_log_value(err)
+                    );
+                })?
+                .keysets;
         }
 
         // Fetch auth keysets if auth client provided
         if let Some(auth_client) = auth_client.as_ref() {
-            keysets_to_fetch.extend(auth_client.get_mint_blind_auth_keysets().await?.keysets);
+            auth_keysets = auth_client.get_mint_blind_auth_keysets().await?.keysets;
         }
+
+        if regular_keysets
+            .iter()
+            .any(|keyset| keyset.unit == CurrencyUnit::Auth)
+            || auth_keysets
+                .iter()
+                .any(|keyset| keyset.unit != CurrencyUnit::Auth)
+        {
+            return Err(Error::Custom(
+                "Mint returned a keyset in the wrong metadata endpoint".to_string(),
+            ));
+        }
+
+        prioritize_refresh_keysets(&mut regular_keysets, protected_keysets);
+        prioritize_refresh_keysets(&mut auth_keysets, protected_keysets);
 
         tracing::debug!(
             "Fetched {} keysets for {}",
-            keysets_to_fetch.len(),
+            regular_keysets.len() + auth_keysets.len(),
             escape_log_value(&self.mint_url)
         );
 
+        if client.is_some() {
+            let advertised = regular_keysets.iter().map(|keyset| keyset.id).collect();
+            retain_refreshed_domain(&mut new_metadata, false, &advertised, protected_keysets);
+        }
+        if auth_client.is_some() {
+            let advertised = auth_keysets.iter().map(|keyset| keyset.id).collect();
+            retain_refreshed_domain(&mut new_metadata, true, &advertised, protected_keysets);
+        }
+
+        let required_regular =
+            required_uncached_keysets(&regular_keysets, &new_metadata.keys, protected_keysets);
+        let required_auth =
+            required_uncached_keysets(&auth_keysets, &new_metadata.keys, protected_keysets);
+        if required_regular > MAX_UNCACHED_KEYSET_FETCHES_PER_REFRESH
+            || required_auth > MAX_UNCACHED_KEYSET_FETCHES_PER_REFRESH
+        {
+            tracing::warn!(
+                mint_url = %self.mint_url,
+                required_regular,
+                required_auth,
+                limit = MAX_UNCACHED_KEYSET_FETCHES_PER_REFRESH,
+                "Required key material exceeds per-domain refresh limit; preserving previous cache"
+            );
+            return Err(Error::Custom(
+                "Mint metadata requires too many uncached active or proof keysets".to_string(),
+            ));
+        }
+
         // Fetch keys for each keyset
-        new_metadata.active_keysets.clear();
-        for keyset_info in keysets_to_fetch {
+        let mut regular_uncached_fetches = 0;
+        let mut auth_uncached_fetches = 0;
+        let mut skipped_regular_keys = 0;
+        let mut skipped_auth_keys = 0;
+        for keyset_info in regular_keysets.into_iter().chain(auth_keysets) {
+            let is_auth = keyset_info.unit == CurrencyUnit::Auth;
             let keyset_arc = Arc::new(keyset_info.clone());
             new_metadata
                 .keysets
                 .insert(keyset_info.id, keyset_arc.clone());
 
-            // Track active keysets separately for quick access
-            if keyset_info.active {
-                new_metadata.active_keysets.push(keyset_arc);
-            }
-
             // Only fetch keys if we don't already have them cached
-            if let std::collections::hash_map::Entry::Vacant(e) =
-                new_metadata.keys.entry(keyset_info.id)
-            {
-                let keyset = if keyset_info.unit == CurrencyUnit::Auth {
-                    auth_client
-                        .as_ref()
-                        .ok_or(Error::Internal)?
-                        .get_mint_blind_auth_keyset(keyset_info.id)
-                        .await?
-                } else {
-                    client
-                        .as_ref()
-                        .ok_or(Error::Internal)?
-                        .get_mint_keyset(keyset_info.id)
-                        .await?
-                };
+            let _has_keys = match new_metadata.keys.entry(keyset_info.id) {
+                std::collections::hash_map::Entry::Occupied(_) => true,
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    let fetches = if is_auth {
+                        &mut auth_uncached_fetches
+                    } else {
+                        &mut regular_uncached_fetches
+                    };
+                    if *fetches >= MAX_UNCACHED_KEYSET_FETCHES_PER_REFRESH {
+                        if is_auth {
+                            skipped_auth_keys += 1;
+                        } else {
+                            skipped_regular_keys += 1;
+                        }
+                        false
+                    } else {
+                        *fetches += 1;
 
-                // Verify the keyset ID matches the keys
-                keyset.verify_id()?;
+                        let keyset = if keyset_info.unit == CurrencyUnit::Auth {
+                            auth_client
+                                .as_ref()
+                                .ok_or(Error::Internal)?
+                                .get_mint_blind_auth_keyset(keyset_info.id)
+                                .await?
+                        } else {
+                            client
+                                .as_ref()
+                                .ok_or(Error::Internal)?
+                                .get_mint_keyset(keyset_info.id)
+                                .await?
+                        };
 
-                e.insert(Arc::new(keyset.keys));
-            }
+                        // Verify the keyset ID matches the keys
+                        keyset.verify_id()?;
+
+                        e.insert(Arc::new(keyset.keys));
+                        true
+                    }
+                }
+            };
+
+            // Descriptions are useful independently of cached key material
+            // (notably when resolving token proofs), so skipped optional keys do
+            // not remove their successfully fetched descriptions.
         }
+
+        if skipped_regular_keys > 0 || skipped_auth_keys > 0 {
+            tracing::warn!(
+                mint_url = %self.mint_url,
+                skipped_regular = skipped_regular_keys,
+                skipped_auth = skipped_auth_keys,
+                limit = MAX_UNCACHED_KEYSET_FETCHES_PER_REFRESH,
+                "Skipped optional inactive key material after reaching the fetch limit"
+            );
+        }
+
+        new_metadata.active_keysets = new_metadata
+            .keysets
+            .values()
+            .filter(|keyset| keyset.active && new_metadata.keys.contains_key(&keyset.id))
+            .cloned()
+            .collect();
 
         // Update freshness status based on what was fetched
-        if client.is_some() {
-            new_metadata.status.is_populated = true;
-            new_metadata.status.updated_at = Instant::now();
-            new_metadata.status.version += 1;
-        }
-
-        if auth_client.is_some() {
-            new_metadata.auth_status.is_populated = true;
-            new_metadata.auth_status.updated_at = Instant::now();
-            new_metadata.auth_status.version += 1;
-        }
+        record_successful_refresh(&mut new_metadata, client.is_some(), auth_client.is_some());
 
         tracing::info!(
             "Updated cache for {} with {} keysets (version {})",
@@ -780,5 +1103,189 @@ impl MintMetadataCache {
     /// Get the mint URL this cache manages
     pub fn mint_url(&self) -> &MintUrl {
         &self.mint_url
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(index: u64) -> Id {
+        Id::from_bytes(&index.to_be_bytes()).expect("eight-byte keyset id")
+    }
+
+    fn keyset(index: u64, unit: CurrencyUnit, active: bool) -> KeySetInfo {
+        KeySetInfo {
+            id: id(index),
+            unit,
+            active,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        }
+    }
+
+    fn insert_keyset(metadata: &mut MintMetadata, keyset: KeySetInfo) {
+        metadata.keysets.insert(keyset.id, Arc::new(keyset));
+    }
+
+    #[test]
+    fn active_keysets_are_prioritized_beyond_inactive_fetch_limit() {
+        let mut keysets: Vec<_> = (0..MAX_UNCACHED_KEYSET_FETCHES_PER_REFRESH as u64 + 10)
+            .map(|index| keyset(index, CurrencyUnit::Sat, false))
+            .collect();
+        let active_id = id(1_000);
+        keysets.push(keyset(1_000, CurrencyUnit::Sat, true));
+
+        prioritize_refresh_keysets(&mut keysets, &HashSet::new());
+
+        assert_eq!(keysets.first().map(|keyset| keyset.id), Some(active_id));
+    }
+
+    #[test]
+    fn refreshing_auth_does_not_evict_or_compete_with_regular_keysets() {
+        let mut metadata = MintMetadata::default();
+        let regular_id = id(1);
+        let old_auth_id = id(2);
+        let current_auth_id = id(3);
+        insert_keyset(&mut metadata, keyset(1, CurrencyUnit::Sat, true));
+        insert_keyset(&mut metadata, keyset(2, CurrencyUnit::Auth, false));
+        insert_keyset(&mut metadata, keyset(3, CurrencyUnit::Auth, true));
+
+        retain_refreshed_domain(
+            &mut metadata,
+            true,
+            &HashSet::from([current_auth_id]),
+            &HashSet::new(),
+        );
+
+        assert!(metadata.keysets.contains_key(&regular_id));
+        assert!(metadata.keysets.contains_key(&current_auth_id));
+        assert!(!metadata.keysets.contains_key(&old_auth_id));
+    }
+
+    #[test]
+    fn rotating_snapshots_do_not_grow_cache_and_proof_keysets_are_retained() {
+        let mut metadata = MintMetadata::default();
+        let proof_keyset_id = id(10_000);
+        insert_keyset(&mut metadata, keyset(10_000, CurrencyUnit::Sat, false));
+        let protected = HashSet::from([proof_keyset_id]);
+        // This deliberately exceeds the former 100-description rejection limit.
+        const SNAPSHOT_SIZE: u64 = 150;
+
+        for generation in 0..20 {
+            let first = generation * SNAPSHOT_SIZE;
+            let advertised: HashSet<_> = (first..first + SNAPSHOT_SIZE).map(id).collect();
+            retain_refreshed_domain(&mut metadata, false, &advertised, &protected);
+            for index in first..first + SNAPSHOT_SIZE {
+                insert_keyset(&mut metadata, keyset(index, CurrencyUnit::Sat, false));
+            }
+
+            assert!(metadata.keysets.contains_key(&proof_keyset_id));
+            assert_eq!(metadata.keysets.len(), SNAPSHOT_SIZE as usize + 1);
+        }
+    }
+
+    #[test]
+    fn persisted_selection_keeps_active_and_proof_keysets_past_limit() {
+        let proof_keyset_id = id(20_000);
+        let active_keyset_id = id(20_001);
+        let mut keysets: Vec<_> = (0..MAX_PERSISTED_KEYSET_DESCRIPTIONS as u64 + 20)
+            .map(|index| keyset(index, CurrencyUnit::Sat, false))
+            .collect();
+        keysets.push(keyset(20_000, CurrencyUnit::Sat, false));
+        keysets.push(keyset(20_001, CurrencyUnit::Sat, true));
+
+        let selected = select_persisted_keysets(keysets, &HashSet::from([proof_keyset_id]));
+
+        assert!(selected.iter().any(|keyset| keyset.id == proof_keyset_id));
+        assert!(selected.iter().any(|keyset| keyset.id == active_keyset_id));
+        assert_eq!(selected.len(), MAX_PERSISTED_KEYSET_DESCRIPTIONS + 2);
+    }
+
+    #[test]
+    fn successful_description_refresh_is_fresh_without_optional_keys() {
+        let mut status = FreshnessStatus::default();
+
+        mark_refreshed(&mut status, true);
+
+        assert!(status.is_populated);
+    }
+
+    #[test]
+    fn skipped_optional_key_material_keeps_its_description() {
+        let mut metadata = MintMetadata::default();
+        let description = keyset(30_000, CurrencyUnit::Sat, false);
+        insert_keyset(&mut metadata, description.clone());
+
+        assert_eq!(
+            required_uncached_keysets(
+                std::slice::from_ref(&description),
+                &metadata.keys,
+                &HashSet::new(),
+            ),
+            0
+        );
+        assert!(metadata.keysets.contains_key(&description.id));
+        assert!(!metadata.keys.contains_key(&description.id));
+    }
+
+    #[test]
+    fn too_many_required_uncached_keys_exceeds_hard_fetch_cap() {
+        let keysets: Vec<_> = (0..=MAX_UNCACHED_KEYSET_FETCHES_PER_REFRESH as u64)
+            .map(|index| keyset(index, CurrencyUnit::Sat, true))
+            .collect();
+
+        assert!(
+            required_uncached_keysets(&keysets, &HashMap::new(), &HashSet::new(),)
+                > MAX_UNCACHED_KEYSET_FETCHES_PER_REFRESH
+        );
+    }
+
+    #[test]
+    fn auth_refresh_does_not_advance_regular_waiter_generation() {
+        let mut metadata = MintMetadata::default();
+        let regular_version = metadata.status.version;
+
+        record_successful_refresh(&mut metadata, false, true);
+
+        assert_eq!(metadata.status.version, regular_version);
+        assert_eq!(metadata.auth_status.version, 1);
+        assert_eq!(metadata.persistence_version, 1);
+        assert!(!should_persist_mint_info(&metadata));
+    }
+
+    #[test]
+    fn proof_key_material_counts_toward_hard_fetch_cap() {
+        let keysets: Vec<_> = (0..=MAX_UNCACHED_KEYSET_FETCHES_PER_REFRESH as u64)
+            .map(|index| keyset(index, CurrencyUnit::Sat, false))
+            .collect();
+        let protected = keysets.iter().map(|keyset| keyset.id).collect();
+
+        assert!(
+            required_uncached_keysets(&keysets, &HashMap::new(), &protected,)
+                > MAX_UNCACHED_KEYSET_FETCHES_PER_REFRESH
+        );
+    }
+
+    #[test]
+    fn persistence_cap_updates_existing_and_allows_proof_keysets_only() {
+        let existing: HashSet<_> = (0..MAX_PERSISTED_KEYSET_DESCRIPTIONS as u64)
+            .map(id)
+            .collect();
+        let attacker_id = id(20_000);
+        let proof_id = id(20_001);
+        let selected = select_keysets_to_persist(
+            vec![
+                keyset(0, CurrencyUnit::Sat, false),
+                keyset(20_000, CurrencyUnit::Sat, true),
+                keyset(20_001, CurrencyUnit::Sat, false),
+            ],
+            &existing,
+            &HashSet::from([proof_id]),
+        );
+
+        assert!(selected.iter().any(|keyset| keyset.id == id(0)));
+        assert!(selected.iter().any(|keyset| keyset.id == proof_id));
+        assert!(!selected.iter().any(|keyset| keyset.id == attacker_id));
     }
 }

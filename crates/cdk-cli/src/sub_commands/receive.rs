@@ -16,6 +16,9 @@ use crate::nostr_storage;
 use crate::terminal::escape_control;
 use crate::utils::get_or_create_wallet;
 
+/// Default query window when no explicit or persisted cursor is available.
+const NOSTR_LOOKBACK_SECS: u64 = 7 * 24 * 60 * 60;
+
 #[derive(Args)]
 pub struct ReceiveSubCommand {
     /// Cashu Token
@@ -94,8 +97,11 @@ pub async fn receive(
             signing_keys.push(nostr_key.clone());
 
             let relays = sub_command_args.relay.clone();
-            let since =
+            let stored_since =
                 nostr_storage::get_nostr_last_checked(work_dir, &nostr_key.public_key()).await?;
+            let since = sub_command_args
+                .since
+                .or_else(|| stored_since.map(u64::from));
 
             let tokens = nostr_receive(relays, nostr_key.clone(), since).await?;
 
@@ -182,7 +188,7 @@ async fn receive_token(
 async fn nostr_receive(
     relays: Vec<String>,
     nostr_signing_key: SecretKey,
-    since: Option<u32>,
+    since: Option<u64>,
 ) -> Result<HashSet<String>> {
     let verifying_key = nostr_signing_key.public_key();
 
@@ -190,17 +196,16 @@ async fn nostr_receive(
 
     let nostr_pubkey = nostr_sdk::PublicKey::from_hex(&x_only_pubkey.to_string())?;
 
-    let since = since.map(|s| Timestamp::from(s as u64));
+    let since = since.unwrap_or_else(|| {
+        Timestamp::now()
+            .as_secs()
+            .saturating_sub(NOSTR_LOOKBACK_SECS)
+    });
 
-    let filter = match since {
-        Some(since) => Filter::new()
-            .pubkey(nostr_pubkey)
-            .kind(Kind::EncryptedDirectMessage)
-            .since(since),
-        None => Filter::new()
-            .pubkey(nostr_pubkey)
-            .kind(Kind::EncryptedDirectMessage),
-    };
+    let filter = Filter::new()
+        .pubkey(nostr_pubkey)
+        .kind(Kind::EncryptedDirectMessage)
+        .since(Timestamp::from(since));
 
     let client = nostr_sdk::Client::default();
 

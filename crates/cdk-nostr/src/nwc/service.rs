@@ -31,6 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::nwc::error::{Error, Result};
 use crate::nwc::handler::NwcRequestHandler;
+use crate::MAX_DECRYPTED_CONTENT_BYTES;
 
 /// Commands advertised in the info event and reported by `get_info`.
 ///
@@ -313,6 +314,12 @@ fn decrypt_request(
             (plaintext, Encryption::Nip04)
         }
     };
+
+    if plaintext.len() > MAX_DECRYPTED_CONTENT_BYTES {
+        return Err(Error::Protocol(format!(
+            "decrypted request exceeds {MAX_DECRYPTED_CONTENT_BYTES} bytes"
+        )));
+    }
 
     let request: Request =
         serde_json::from_str(&plaintext).map_err(|e| Error::Protocol(e.to_string()))?;

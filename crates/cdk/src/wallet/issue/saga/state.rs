@@ -111,6 +111,10 @@ pub struct Prepared {
     pub active_keyset_id: Id,
     /// Premint secrets
     pub premint_secrets: PreMintSecrets,
+    /// Exact first derivation counter reserved for these outputs, if seed-derived
+    pub counter_start: Option<u32>,
+    /// Exact exclusive end of the reserved range, or `None` for conditioned outputs
+    pub counter_end: Option<u32>,
     /// Mint request (single or batch)
     pub mint_request: PreparedMintRequest,
     /// Payment method (Bolt11 or Bolt12)
@@ -135,6 +139,8 @@ impl fmt::Debug for Prepared {
                     .map(|secret| secret.amount)
                     .collect::<Vec<_>>(),
             )
+            .field("counter_start", &self.counter_start)
+            .field("counter_end", &self.counter_end)
             .field("mint_request", &self.mint_request)
             .field("payment_method", &self.payment_method)
             .field("keyset_policy", &self.keyset_policy)
@@ -249,6 +255,8 @@ mod tests {
             operation_id,
             active_keyset_id: keyset_id,
             premint_secrets,
+            counter_start: Some(0),
+            counter_end: Some(1),
             mint_request,
             payment_method: PaymentMethod::BOLT11,
             keyset_policy: KeysetLoadPolicy::default(),

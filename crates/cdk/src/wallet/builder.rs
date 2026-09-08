@@ -19,6 +19,12 @@ use crate::wallet::{
     SubscriptionManager, Wallet,
 };
 
+/// Maximum target proof count accepted by [`WalletBuilder`].
+///
+/// The wallet tops up every denomination to this count during swaps, so an
+/// excessive target creates outsized swap requests and database load.
+pub const MAX_TARGET_PROOF_COUNT: usize = 100;
+
 /// Builder for creating a new [`Wallet`]
 ///
 /// Rate limiting: unless a limiter is injected with
@@ -258,6 +264,14 @@ impl WalletBuilder {
 
     /// Build the wallet
     pub fn build(mut self) -> Result<Wallet, Error> {
+        if let Some(count) = self.target_proof_count {
+            if count > MAX_TARGET_PROOF_COUNT {
+                return Err(Error::Custom(format!(
+                    "target_proof_count must be at most {MAX_TARGET_PROOF_COUNT}"
+                )));
+            }
+        }
+
         let mint_url = self
             .mint_url
             .take()
