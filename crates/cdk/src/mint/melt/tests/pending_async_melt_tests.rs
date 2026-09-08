@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,6 +30,7 @@ struct NoEventPendingBackend {
     final_status: Option<MeltQuoteState>,
     strip_quote_lookup_id: bool,
     amount_mismatch_dispatch_error: bool,
+    stall_status_checks: AtomicBool,
 }
 
 impl NoEventPendingBackend {
@@ -53,6 +54,7 @@ impl NoEventPendingBackend {
             final_status,
             strip_quote_lookup_id: false,
             amount_mismatch_dispatch_error: false,
+            stall_status_checks: AtomicBool::new(false),
         }
     }
 
@@ -144,6 +146,9 @@ impl MintPayment for NoEventPendingBackend {
         &self,
         payment_identifier: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err> {
+        if self.stall_status_checks.load(Ordering::SeqCst) {
+            return futures::future::pending().await;
+        }
         let mut response = self
             .inner
             .check_outgoing_payment(payment_identifier)
@@ -854,4 +859,136 @@ async fn payment_attempt_without_lookup_id_compensates_at_startup() {
         .await
         .unwrap();
     assert!(saga.is_none());
+}
+
+/// A silent backend must not block startup or release proofs whose payment
+/// may still settle. A later recovery must still apply the terminal outcome.
+#[tokio::test]
+async fn startup_defers_stalled_payment_checks_and_recovers_later() {
+    for final_status in [MeltQuoteState::Paid, MeltQuoteState::Failed] {
+        let backend = Arc::new(NoEventPendingBackend::new(1, Some(final_status)));
+        let mint = create_pending_test_mint(backend.clone()).await.unwrap();
+        let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+        let input_ys = proofs.ys().unwrap();
+        let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+        let melt_request = create_test_melt_request(&proofs, &quote);
+        let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+        let saga = crate::mint::melt::melt_saga::MeltSaga::new(
+            Arc::new(mint.clone()),
+            mint.localstore(),
+            mint.pubsub_manager(),
+        );
+        let setup = saga
+            .setup_melt(
+                &melt_request,
+                verification,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+            )
+            .await
+            .unwrap();
+        drop(setup);
+
+        // Simulate a crash after the write-ahead marker but before recording
+        // the dispatch outcome. No live payment task survives the restart.
+        let operation_id = mint
+            .localstore()
+            .get_incomplete_sagas(cdk_common::mint::OperationKind::Melt)
+            .await
+            .unwrap()[0]
+            .operation_id;
+        {
+            let mut tx = mint.localstore().begin_transaction().await.unwrap();
+            let mut saga = tx
+                .get_saga_for_update(&operation_id)
+                .await
+                .unwrap()
+                .unwrap();
+            tx.update_acquired_saga(
+                &mut saga,
+                cdk_common::mint::SagaStateEnum::Melt(
+                    cdk_common::mint::MeltSagaState::PaymentAttempted,
+                ),
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+        }
+        // Record the backend payment, including its amount, without recording
+        // the response in the mint's database.
+        backend
+            .make_payment(
+                &quote.unit,
+                OutgoingPaymentOptions::from_melt_quote_with_fee(quote.clone()).unwrap(),
+            )
+            .await
+            .unwrap();
+        mint.stop().await.unwrap();
+        backend.stall_status_checks.store(true, Ordering::SeqCst);
+
+        tokio::time::timeout(Duration::from_secs(20), mint.start())
+            .await
+            .expect("startup must not wait for payment settlement")
+            .unwrap();
+
+        let states = mint
+            .localstore()
+            .get_proofs_states(&input_ys)
+            .await
+            .unwrap();
+        assert!(states
+            .iter()
+            .all(|state| *state == Some(cdk_common::State::Pending)));
+        assert!(mint
+            .localstore()
+            .get_melt_saga_by_quote_id(&quote.id)
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            mint.localstore()
+                .get_melt_quote(&quote.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            MeltQuoteState::Pending,
+        );
+
+        backend.stall_status_checks.store(false, Ordering::SeqCst);
+        mint.recover_from_incomplete_melt_sagas().await.unwrap();
+
+        let states = mint
+            .localstore()
+            .get_proofs_states(&input_ys)
+            .await
+            .unwrap();
+        let expected_quote_state = match final_status {
+            MeltQuoteState::Paid => {
+                assert!(states
+                    .iter()
+                    .all(|state| *state == Some(cdk_common::State::Spent)));
+                MeltQuoteState::Paid
+            }
+            _ => {
+                assert!(states.iter().all(Option::is_none));
+                MeltQuoteState::Unpaid
+            }
+        };
+        assert_eq!(
+            mint.localstore()
+                .get_melt_quote(&quote.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            expected_quote_state,
+        );
+        assert!(mint
+            .localstore()
+            .get_melt_saga_by_quote_id(&quote.id)
+            .await
+            .unwrap()
+            .is_none());
+        mint.stop().await.unwrap();
+    }
 }
