@@ -1054,3 +1054,68 @@ stopped at an insertion assertion before compilation and restored source; the
 corrected build passed and also restored source. No probe is retained in source.
 The two completed on-chain comparison federations were stopped without removing
 databases before this profile. Its four-receive workload is diagnostic only.
+
+### E08b — Stable evidence collection across preparation-worker leases
+
+The routing probe reproduced two long receives: 69,294.707 and 67,258.415 ms;
+the other two completed in 13,465.573 and 10,187.869 ms. All four independently
+settled and delivered 8,192 sat. The long requests completed after the window.
+On one request, members 2 and 3 retained attestations and scheduled federation
+repair for 60,000 ms; meanwhile the preparation lease moved from member 1 to
+member 2. Member 1 then became unselected despite already holding evidence.
+On another request the lease moved again while the previous collector waited for
+a third attestation. Quote-specific notifications do not wake every unrelated
+pending quote when other journal operations move its worker lease. Merely routing
+to the current worker fixes the permanent mismatch but leaves this waiting cost.
+
+Next hypothesis, before editing: keep the evidence collector and observer ordering
+anchored to the immutable intent actor and the existing explicit fallback round.
+Continue deriving the sole preparation worker from its replaceable lease, and
+always allow that worker to observe/prepare even if it falls outside the selected
+observer prefix. This separates external preparation ownership from evidence
+collection using the existing mechanisms. No new cache, wake-all scan, channel,
+timeout, queue or protocol field is required. The original actor may be unavailable;
+the existing collector fallback must retain its recovery coverage.
+
+Predicted counter change: retained attestation delivery remains useful after lease
+changes, so collection no longer waits for unrelated members' 60-second repair
+cycles. There may be one additional worker observer outside the threshold prefix;
+measure that cost and reject a confirmed CPU regression. Independent validation,
+thresholds, action identity and claim authorization remain unchanged. E08's first
+routing candidate is superseded provisionally, with its samples retained; neither
+version is accepted without the remaining comparative/correctness gates.
+
+The revised observer-selection test covers every worker lease in the five-member
+roster: the original threshold prefix remains selected, the current worker is
+included even outside it, and existing fallback expands to the complete roster.
+All 20 Bark tests pass. An isolated E08b release build is in progress. The original,
+E08 and instrumented E08 request-level outcomes are retained in the
+[diagnostic ledger](benchmarks/2026-09-08-bark-incoming-routing-diagnostics.csv).
+Empty completion fields denote pending attempts, not zero latency.
+
+The isolated E08b release build passed. All five members restarted ready and
+converged, with diagnostic binaries replaced and custody state preserved. Its
+first fresh concurrent batch completed all four requests inside the 60-second
+window: 18,144.912, 27,913.224, 15,901.946 and 17,130.339 ms. Independent payer
+intervals were 7,276.49, 18,843.79, 2,623.89 and 7,602.00 ms. Every wallet received
+2,048 sat, and the post-run member state converged. No one-minute delay appeared
+in this single run. Different starting histories and the lack of paired CPU
+measurements preclude an accepted speedup claim. E08b remains provisional.
+
+## Verification support — Minimal federation test feature combination
+
+The earlier minimal-feature compilation failure had two test-only causes: two
+BDK chain-anchor tests were not gated with `federation-bdk`, and generic FROST
+signing fixtures imported the BIP32 registration crate without declaring it as a
+development dependency. The two tests now use the implementation's feature gate,
+and the existing fixture dependency is declared under `dev-dependencies`.
+No test was deleted, no production feature was enabled, and the full-feature tests
+retain their existing coverage. The minimal-feature quorum test command is being
+rerun; this is verification support, not a performance optimization or gain claim.
+
+The minimal-feature quorum command passes all 16 applicable tests. Strict lint
+then found a Bark-only latency wrapper compiled without any caller in the minimal
+configuration; its method now uses its sole caller's `federation-bark` gate.
+Strict Clippy passes for minimal federation, the full BDK/Bark/HTTP/Iroh feature
+combination, and both persistent SDK benchmark examples. The receiver's optional
+phase-tracing switch defaults to disabled and affects only benchmark support.

@@ -1,0 +1,17 @@
+case,members,transport,concurrency,request,amount_sat,outcome_at_drain,completed_in_window,completion_ms,quote_ready_ms,payer_interval_ms,issued_proofs,received_at_drain_sat,later_reconciled_sat,matched_acceptance
+original_with_lock_probe,5,HTTP,4,0,2048,pending,False,,,,,,2048,False
+original_with_lock_probe,5,HTTP,4,1,2048,pending,False,,,,,,2048,False
+original_with_lock_probe,5,HTTP,4,2,2048,completed,True,12763.793666,5411.579833,3816.726291,30,2048,,False
+original_with_lock_probe,5,HTTP,4,3,2048,completed,True,9496.706,4172.187083,1648.27925,30,2048,,False
+E08_without_probes,5,HTTP,4,0,2048,completed,False,70180.627834,2233.35425,64337.408459,30,2048,,False
+E08_without_probes,5,HTTP,4,1,2048,completed,True,12731.815916,3313.057417,4182.6655,30,2048,,False
+E08_without_probes,5,HTTP,4,2,2048,completed,True,13955.633709,4539.283167,4514.567666,30,2048,,False
+E08_without_probes,5,HTTP,4,3,2048,completed,True,21914.253,5774.743917,12385.458167,30,2048,,False
+E08_with_routing_probes,5,HTTP,4,0,2048,completed,False,69294.707292,4618.880292,61407.314875,30,2048,,False
+E08_with_routing_probes,5,HTTP,4,1,2048,completed,True,13465.57325,5841.076875,4486.779667,30,2048,,False
+E08_with_routing_probes,5,HTTP,4,2,2048,completed,False,67258.414958,2169.104917,61398.081916,30,2048,,False
+E08_with_routing_probes,5,HTTP,4,3,2048,completed,True,10187.869041,3189.8805,3179.350208,30,2048,,False
+E08b_without_probes,5,HTTP,4,0,2048,completed,True,18144.911917,4673.130084,7276.4885,30,2048,,False
+E08b_without_probes,5,HTTP,4,1,2048,completed,True,27913.223958,5883.114167,18843.78875,30,2048,,False
+E08b_without_probes,5,HTTP,4,2,2048,completed,True,15901.9455,3472.610875,2623.892917,30,2048,,False
+E08b_without_probes,5,HTTP,4,3,2048,completed,True,17130.338541,2457.16825,7601.995083,30,2048,,False

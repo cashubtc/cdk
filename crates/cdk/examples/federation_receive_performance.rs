@@ -63,6 +63,8 @@ struct Manifest {
     arrival_interval_ms: Option<u64>,
     shared_wallet: bool,
     warm_connections: bool,
+    #[serde(default)]
+    trace_performance: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -206,6 +208,14 @@ async fn main() -> Result<()> {
         manifest.window_ms <= 3_600_000 && manifest.drain_ms <= 3_600_000,
         "window/drain must not exceed one hour",
     )?;
+    if manifest.trace_performance {
+        tracing_subscriber::fmt()
+            .with_env_filter("cdk::wallet::federation_performance=debug")
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .try_init()
+            .map_err(|_| Error::Input("could not initialize performance tracing"))?;
+    }
     let preparation_started = Instant::now();
     // create_dir deliberately fails for existing state, including an earlier run.
     fs::create_dir(&manifest.state_dir)?;
@@ -410,6 +420,7 @@ async fn main() -> Result<()> {
         "concurrency": manifest.concurrency, "arrival_interval_ms": manifest.arrival_interval_ms,
         "queue_capacity": 0, "shared_wallet": manifest.shared_wallet,
         "warm_connections": manifest.warm_connections,
+        "trace_performance": manifest.trace_performance,
         "mint_requests": manifest.mint_requests,
         "input_proof_counts": input_proof_counts, "wallet_balances_sat": wallet_balances_sat,
         "wallet_proof_counts": wallet_proof_counts,
