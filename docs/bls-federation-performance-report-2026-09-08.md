@@ -13,6 +13,23 @@ Baseline: CDK `8e507cdf8`, Bark `8d1eda643dd11e9eb600ec44e36622c8f77b6322`.
 Method and acceptance rules: [approved plan](bls-federation-performance-plan-2026-09-08.md).
 Evidence and decisions: [experiment journal](bls-federation-performance-journal-2026-09-08.md).
 
+## Current dispositions
+
+| Change | Implementation status | Evidence scope |
+| --- | --- | --- |
+| DKG polynomial evaluation and public signer IDs | Retained: `ceaf02216`, `fffa9d688` | Matched in-memory BLS measurements and scaling correctness; full service DKG remains unmeasured |
+| Dispatched and queued recovery barriers | Retained: `d880c9703`, `1d1669db4` | Separate reproduced orderings, component comparisons and recovery tests; percentages cannot be added |
+| Disclosed Bark claim recovery | Retained: `bacc0f971` | Authorization work reduction, original-payment recovery and further restart; no payment TPS claim |
+| Broadcaster notifications | Provisional | Two payment series failed matched-input/state requirements; no accepted speedup |
+| Session-scoped replay cursor | Provisional | Quorum/recovery tests; live performance and payment gates outstanding |
+| Stable incoming evidence collector | Reverted | Ten-pair CPU/receipt guard remained inconclusive despite more window completions |
+| Cached checkpoint digest in summaries | Provisional | Component work reduction and five-pair idle CPU benefit; ten-pair resource comparison and payment guards pending |
+
+These retained changes have their documented local gates; they do not constitute
+final campaign acceptance. The full workload matrix, combined comparison against
+the original baseline, final payment/recovery checks and two concluding profiles
+remain outstanding.
+
 ## Results
 
 | Operation | Release baseline | Measured candidate | Disposition |
@@ -24,8 +41,9 @@ Evidence and decisions: [experiment journal](bls-federation-performance-journal-
 | BDK on-chain send | Pending | Pending | Unmeasured |
 | Ecash send/receive | Pending | Pending | Unmeasured |
 
-Latency breakdowns, throughput curves, active/idle CPU, history scaling and
-combined gains remain pending. Existing historical and debug-build results are
+Final operation latency breakdowns, sustainable-throughput curves, active/idle
+resource comparisons, history scaling and combined gains remain pending.
+Component and provisional idle results below have narrower scopes. Existing historical and debug-build results are
 not release baselines for this campaign.
 
 ### First candidate: DKG public-polynomial arithmetic
@@ -91,8 +109,8 @@ receipts and exact wallet debits. However, fee-estimator drift changed payment
 shapes in two pairs, and one candidate post-payment CPU sample was anomalous.
 The series therefore supports **no accepted combined performance claim**.
 [All numeric samples](benchmarks/2026-09-08-bdk-broadcast-uncontrolled.csv) are retained.
-Controlled fee inputs, pre-initiation reserve checks and settled idle measurements
-are being used for the replacement series. The analyzer now rejects mismatched
+A replacement series used controlled fee inputs and pre-initiation reserve
+checks, but subsequently failed the runtime-state audit described below. The analyzer now rejects mismatched
 observed inputs rather than relying only on matching configuration.
 
 ### Controlled-fee series: starting-state mismatch found
@@ -107,7 +125,8 @@ The analyzer now rejects this series with the observed runtime state included.
 The same pending work explains why some post-payment CPU samples were not
 quiescent. Four restart measurement pairs preserve diagnostic evidence, but they
 also contain pending finalization work and support no idle improvement claim.
-Investigation is focused on that work before more acceptance runs. All 50
+The recovery-barrier corrections below address the subsequently reproduced
+startup orderings. They do not retroactively validate these samples. All 50
 controlled-fee requests, phase observations, fees, proof shapes and starting/pending
 counts remain in the [numeric ledger](benchmarks/2026-09-08-bdk-broadcast-controlled.csv).
 The broadcaster candidate remains unaccepted.
@@ -122,20 +141,22 @@ DKG driver as a candidate to measure, not an established dominant bottleneck.
 
 ## Completion gates
 
-The four-concurrent incoming Lightning diagnostic completed two payments and left
-two pending after drain. An isolated correction to evidence routing after worker
-lease rotation recovered both original payments: independent payer settlement,
-matching member states, and 2,048 sat in each original SDK wallet. These late
-recoveries do not count toward the earlier window. Fresh concurrent validation
-and matched performance acceptance remain pending.
+Earlier incoming Lightning diagnostics recovered original pending invoices after
+worker-lease routing corrections. Those late recoveries remain documented in the
+journal and do not enter the original measurement windows. The subsequent stable
+collector was reverted after its ten-pair comparison. The separately retained
+E09 correction below recovers disclosed claims without repeated full scans;
+neither result establishes final incoming Lightning performance.
 
-A separate restart reproducer exposed old-session replay cursors being retained
-when joining a later session. Its provisional fix passes 18 quorum/recovery
-tests. Neither correction has yet passed real-payment or performance acceptance.
+The old-session replay-cursor candidate passes 18 quorum/recovery tests but still
+requires live performance and payment validation. Checkpoint-summary digest reuse
+has scoped correctness and component evidence; its resource and payment gates
+remain incomplete.
 
-All campaign matrix, regression, adversarial, real-payment, restart, conservation,
-combined-comparison and two-final-profile gates remain pending. No final
-performance or correctness claim is made by this report yet.
+Final campaign-level matrix, feature/FFI, adversarial, SQL/replay, real-payment,
+restart, full value-conservation, original-baseline combined comparison and
+two-profile gates remain outstanding. Individual completed checks below must not
+be treated as that final combined validation.
 
 ### Incoming Lightning collector investigation
 
@@ -169,9 +190,10 @@ recovery barrier remained pending for more than two minutes.
 
 Local process control resumed after explicit continuation. Earlier approval-review
 timeouts prevented two controller-stop attempts; those controllers later exited.
-No new performance improvement is accepted from these partial results. Temporary
-probes are absent from source; the production collector, broadcaster and replay
-cursor candidates remain provisional. Recovery-barrier cleanup is accepted below.
+These partial results established no accepted performance improvement. Temporary
+probes are absent from source. The collector was subsequently reverted; broadcaster
+and replay-cursor candidates remain provisional. Recovery-barrier cleanup is
+accepted below.
 
 
 ### Recovery-barrier cleanup

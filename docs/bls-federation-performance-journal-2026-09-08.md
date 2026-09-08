@@ -2476,3 +2476,27 @@ is changed. Following the five-to-ten-pair rule, the next command is
 same binaries and unchanged fixtures recipe. It adds independent fixtures and
 preserves the first five pairs. Active-payment checks remain deferred until the
 idle series ends; their unexecuted support is not correctness evidence.
+
+The ten-pair extension is live and has completed pair 6 candidate with its
+original state preserved and services stopped; pair 6 baseline is preparing.
+No intermediate extension sample changes the keep decision.
+
+Restart-guard preparation now captures hashes of each original member's payment
+identities, quote amounts/states, proof states, journal order/application digests
+and Bark action lineage before and after restart. Post-payment checks also compare
+all 65 original wallets' proof/transaction state and balances. Operational
+checkpoint/backup timestamps are excluded from these logical-state comparisons.
+The snapshot queries were executed read-only twice against the five stopped
+members of the first baseline fixture: all expected SQL columns exist and both
+captures agree. This validates the helper's empty-state SQL path only; funded
+wallet snapshots and actual restarts remain unexecuted correctness gates. The
+CLI token-state checks use each original token explicitly because ordinary CLI
+recovery may remove spent local records before the subsequent local-state read.
+
+The report's current-status pass corrected stale historical statements that still
+called the rejected collector provisional and described earlier startup
+investigations as current work. A disposition table now identifies each retained
+commit, provisional candidate and reverted experiment with its actual evidence
+scope. Historical samples remain in this journal and their numeric ledgers;
+none were reclassified or removed. This is a reporting correction, not another
+accepted implementation or completion of any final gate.
