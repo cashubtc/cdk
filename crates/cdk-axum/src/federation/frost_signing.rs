@@ -187,6 +187,7 @@ where
     }
 
     /// Run both rounds while attributing their latency to the calling backend.
+    #[cfg(feature = "federation-bark")]
     pub(crate) async fn sign_with_latency(
         &self,
         public_config: &cdk::federation::FederationConfig,

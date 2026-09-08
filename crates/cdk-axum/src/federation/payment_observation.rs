@@ -1476,12 +1476,13 @@ mod tests {
     };
     use cdk::nuts::PaymentMethod;
     use cdk::Amount;
-    use cdk_common::bitcoin::hashes::Hash;
-    use cdk_common::bitcoin::BlockHash;
+    #[cfg(feature = "federation-bdk")]
+    use cdk_common::bitcoin::{hashes::Hash, BlockHash};
 
     use super::*;
 
     #[test]
+    #[cfg(feature = "federation-bdk")]
     fn automatic_recovery_rejects_a_different_block_anchor() {
         let original_block = (BlockHash::from_byte_array([1; 32]), 100);
         let same_block = FederationDepositConfirmation {
@@ -1505,6 +1506,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "federation-bdk")]
     fn reorg_requires_positive_local_chain_disconnection_evidence() {
         for membership in [
             cdk_bitcoin_wallet::FederatedBlockMembership::Connected,
