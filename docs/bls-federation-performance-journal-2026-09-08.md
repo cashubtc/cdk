@@ -3574,3 +3574,55 @@ this count nor the single-pair CPU difference establishes a repeatable net gain.
 E10 remains provisional pending the full five/ten-pair protocol and correctness
 gates. Pair three continues baseline first; no concurrent build or test load is
 introduced during its measurement.
+
+### E10 third matched pair and remaining notification coverage
+
+Pair three completed baseline first, then candidate. All ten receipts, exact
+value checks, matched inputs, member digests and empty queues passed. A read-only
+audit now covers thirty original payments and all five members in every arm:
+
+```sh
+python3 "$RUN_ROOT/audit_e10_completed_pairs.py" --through-pair 3
+python3 "$RUN_ROOT/export_e10_completed_runs.py"
+```
+
+The public ledgers retain thirty requests, six runs and 853 phase-count deltas.
+No earlier rows changed. Both owned fixtures are stopped and their state is
+preserved; pair four starts candidate first.
+
+| Third-pair observation | Baseline | Candidate |
+| --- | ---: | ---: |
+| Empirical p50 | 20,000.668709 ms | 20,573.092333 ms |
+| Empirical p95 | 21,115.458625 ms | 21,031.351042 ms |
+| Member CPU/payment | 3.9934188502 s | 4.0849083748 s |
+| Instructions/payment | 37,861,072,611.4 | 38,253,926,720.6 |
+| Peak aggregate RSS | 490,717,184 bytes | 491,536,384 bytes |
+| Peak aggregate footprint | 202,167,840 bytes | 201,135,672 bytes |
+| Idle CPU per 30 seconds | 1.278884833 s | 1.251032665 s |
+| Successful FROST coordinations for five payments | 21 | 17 |
+
+This pair's candidate median and CPU/payment are higher, despite fewer successful
+signing coordinations. Liveness round counts are 26 successful/79 skipped for
+baseline and 22 successful/108 skipped for candidate. Both report 255 wallet
+syncs; pending confirmation probes are 50 versus 75. Counts bracket the labelled
+wider scrape interval and are descriptive, not a causal CPU attribution. The
+five-pair comparison remains necessary; no acceptance or regression conclusion
+is drawn from this pair alone.
+
+Static coverage review found that existing wallet-liveness tests cover lease,
+fee and scheduling rules, but do not directly exercise the new notification.
+Before retaining E10, add focused coverage for applied-proposal filtering and a
+stored/coalesced wake during an active round, using deterministic barriers or
+polling. Preserve lost-publication repair and bounded shutdown coverage. A private
+acceptance checklist records this prerequisite; do not equate the existing broad
+test filters with coverage of the new boundary.
+
+The private original-candidate restart helper is prepared and syntax-checked,
+but has not run. Its terminal-manifest guard was corrected against the observed
+schema before execution. It requires the completed comparison and scoped
+correctness, refuses concurrent campaign members, checks the measured artifact,
+and compares original durable payment/wallet state and external transaction
+identities without creating a new payment or copying custody. Performance
+acceptance, the notification regression, scoped checks and the actual restart
+remain pending. No production source or running benchmark was changed during
+this review.

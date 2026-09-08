@@ -522,3 +522,9 @@ included a 35.253-second payment; both revisions exhibit long observations and
 variable signing work. All samples remain in the ledgers. Two pairs do not
 establish acceptance; E10 remains provisional while the alternating comparison
 continues.
+
+The third pair passed its ten payment checks, but candidate median latency was
+20.573 versus 20.001 seconds and CPU/payment 4.0849 versus 3.9934 seconds. Fewer
+signing coordinations did not produce lower total CPU in this pair. Thirty
+payments are now independently audited; the full comparison and a focused
+notification regression remain required before any E10 retention decision.
