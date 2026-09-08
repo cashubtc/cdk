@@ -496,97 +496,53 @@ notification gap or establish another improvement. See the
 journal for scope, preparation failures, sampling limitations and receipt audit.
 All diagnostic services are stopped and original logging settings restored.
 
-A bounded monotonic follow-up isolated roughly three seconds between accepted
-proposal publication and the next liveness/signing round. Provisional E10 wakes
-the existing worker on that accepted proposal; a diagnostic reduced this boundary
-to 1.3–1.5 ms. It also exercised five coordinations under the existing grace rule,
-versus one previously. Different holdings and lease positions prevent a paired
-payment-speed claim. The uninstrumented comparison must establish net latency
-and CPU benefit before retention. See the
-[retained](benchmarks/2026-09-08-bdk-scheduling-boundaries.csv) and
-[candidate](benchmarks/2026-09-08-e10-scheduling-boundaries.csv) boundary ledgers.
+### Proposal wakeup: median benefit, inconclusive overall; reverted
 
-The first complete E10 pair passed all ten receipt/value checks and matched-input
-checks. Median latency was 20.424 versus 19.899 seconds, with almost equal
-CPU/payment (4.1964 versus 4.1951 seconds). Successful signing coordinations were
-21 baseline versus 17 candidate, but candidate instructions/payment were higher.
-These are preliminary observations; five pairs and all guards remain necessary.
-The slower baseline payment is retained in the
-[request ledger](benchmarks/2026-09-08-e10-bdk-requests.csv), with
-[run metrics](benchmarks/2026-09-08-e10-bdk-runs.csv) and
-[work counts](benchmarks/2026-09-08-e10-bdk-phase-counts.csv).
+E10 notified the existing BDK liveness worker after an applied transaction
+proposal. A bounded diagnostic reduced the proposal-publication-to-next-round
+wait from roughly three seconds to 1.3–1.5 ms. It preserved periodic repair,
+leases, backoff and signing validation. Different diagnostic holdings and lease
+positions prevented a paired payment-speed claim; the subsequent uninstrumented
+series used matched actual inputs and independent original custody for each arm.
 
-The second pair also passed all ten payment checks. Median latency was 23.308
-versus 19.022 seconds and CPU/payment 4.2855 versus 4.1642 seconds. Its candidate
-included a 35.253-second payment; both revisions exhibit long observations and
-variable signing work. All samples remain in the ledgers. Two pairs do not
-establish acceptance; E10 remains provisional while the alternating comparison
-continues.
+Five pairs were inconclusive, so the prescribed extension retained all samples
+and completed ten alternating pairs. All 100 payments passed independent receipt,
+exact fee/value, proof-shape and member-state audits. The final comparison is:
 
-The third pair passed its ten payment checks, but candidate median latency was
-20.573 versus 20.001 seconds and CPU/payment 4.0849 versus 3.9934 seconds. Fewer
-signing coordinations did not produce lower total CPU in this pair. Thirty
-payments are now independently audited; the full comparison and a focused
-notification regression remain required before any E10 retention decision.
+| Metric | Baseline mean | Candidate mean | Paired candidate/baseline ratio (95% CI) |
+| --- | ---: | ---: | ---: |
+| Per-run p50 | 24.985 s | 20.021 s | 0.82728 (0.68990–0.99202) |
+| Per-run p95 | 30.705 s | 24.123 s | 0.79541 (0.59438–1.06444) |
+| Execution-envelope CPU/payment | 4.19957 s | 4.10178 s | 0.98117 (0.89776–1.07232) |
+| Peak aggregate RSS | 491.623 MB | 491.993 MB | 1.00078 (0.99543–1.00615) |
+| Peak aggregate physical footprint | 203.089 MB | 203.341 MB | 1.00125 (0.99018–1.01245) |
+| Idle CPU over 30 s | 1.22784 s | 1.23093 s | 1.00463 (0.94003–1.07368) |
 
-The fourth pair passed all ten payment checks. Its candidate median was nearly
-unchanged (20.070 versus 20.382 seconds), while CPU/payment was 4.1804 versus
-3.7315 seconds. Both arms completed 17 signing coordinations. Preserve this
-higher-CPU observation in the full comparison; no E10 gain is established by
-the forty audited payments so far.
+The paired median estimate improves 17.27%, but p95 and CPU intervals do not
+exclude regressions above 5%. Memory guards pass and no reproducible idle CPU
+increase is detected. The overall result remains inconclusive, not a confirmed
+regression. **Revert E10 under the ten-pair rule; do not count its median benefit
+as a retained gain.** The measured patch and all observations remain preserved.
+No additional E10 comparison or candidate acceptance tests were run after this
+decision. The unchanged retained source passed the pinned formatting check.
 
-### Proposal wakeup: five pairs remain inconclusive
+Existing counters show fewer wallet synchronizations (3,160/2,640), but more
+successful FROST signature rounds (168/178), skipped liveness rounds
+(1,057/1,097) and pending confirmation probes (580/750). These overlapping counts
+are not CPU attribution. CPU/payment covers SDK execution through the
+controller's completion observation, including polling/RPC overhead; counter
+scrapes extend through the later receipt audit and member convergence. Native
+CPU for that later interval was not captured. Final resource verification must
+measure post-window/drain work separately.
 
-All fifty payments in the five-pair E10 comparison passed independent receipt,
-fee, value and member-state audits. Mean per-run p50 was 20.942 seconds baseline
-versus 19.994 seconds candidate, but the paired ratio interval is
-**0.85408–1.06979**. CPU/payment was 4.0587 versus 4.1337 seconds, with ratio
-interval **0.95120–1.09274**. These results establish neither an improvement nor
-a confirmed regression. The p95 interval is also inconclusive (0.55103–1.16015).
-
-Memory guards pass; p95 and CPU guards remain unresolved. Idle CPU differs
-inconclusively, with no reproducible increase detected. Existing counts show
-87 versus 85 signing coordinations but more skipped liveness rounds and pending
-confirmation probes for the candidate. The earlier removal of a three-second
-worker wait has not established a repeatable payment-level benefit.
-
-Extend to ten pairs with unchanged artifacts and workloads, preserving every
-sample. E10 remains provisional; remove its production change if the comparison
-is still inconclusive at ten. See the journal and complete numeric ledgers for
-all observations. Correctness/restart acceptance and the broader campaign remain
-open; these short serial runs do not establish sustainable throughput or p99.
-
-Offline extraction of the same fifty payments shows that all five observations
-over 30 seconds spend 34.3–35.8 seconds in the SDK confirm call. Their separately
-observed Bitcoin receipt-to-confirmation intervals are roughly 1–4.6 seconds.
-These observations narrow further profiling to work inside that call but do not
-identify the cause of its delay. The
-[phase ledger](benchmarks/2026-09-08-e10-bdk-payment-phases.csv) keeps the clocks
-separate and leaves two missed unconfirmed observations empty. Its intervals
-must not be added to each other or treated as exact block-wait measurements.
-
-Pair six adds ten audited payments and two long candidate observations. Its
-candidate p95 is 37.282 versus 20.984 seconds and CPU/payment 4.2735 versus
-3.6468 seconds, despite equal signing-coordination counts. Preserve these results;
-the final E10 comparison remains scheduled at ten pairs.
-
-CPU/payment measures the SDK execution envelope through the controller's
-completion observation, including its polling/RPC overhead. Phase-count scrapes
-extend through the subsequent receipt audit and member convergence; they are not
-CPU measurements. Native CPU for that later interval was not captured in E10.
-Final resource verification must account for post-window/drain work separately;
-the current figures do not establish full lifecycle CPU cost.
-
-Pair seven favors the candidate: median latency is 20.391 versus 34.175 seconds
-and CPU/payment 3.9141 versus 4.4708 seconds. All seventy payments are audited;
-both favorable and unfavorable pairs remain in the unchanged ten-pair comparison.
-
-Pair eight also favors the candidate: median latency is 20.153 versus 35.722
-seconds and execution-envelope CPU/payment 3.9520 versus 4.8575 seconds. All
-eighty payments are audited. Two pairs remain before the prescribed final
-comparison; no E10 optimization has been accepted.
-
-Pair nine favors the candidate, with median latency 20.375 versus 35.280 seconds
-and execution-envelope CPU/payment 4.0688 versus 4.9161 seconds. All ninety
-payments are audited. The final pair remains necessary; favorable later pairs
-do not replace unfavorable earlier observations or establish acceptance alone.
+The [request ledger](benchmarks/2026-09-08-e10-bdk-requests.csv),
+[run metrics](benchmarks/2026-09-08-e10-bdk-runs.csv),
+[work counts](benchmarks/2026-09-08-e10-bdk-phase-counts.csv) and
+[payment phases](benchmarks/2026-09-08-e10-bdk-payment-phases.csv) retain every
+sample, including unfavorable pairs and missed unconfirmed observations.
+SDK confirm-call durations and independently observed Bitcoin confirmation
+intervals use separate clocks; do not subtract their timestamps or add overlapping
+intervals. The long confirm calls need further causal attribution before any new
+scheduling experiment. These five-payment serial runs establish neither
+sustainable throughput nor p99. Broader campaign and final correctness gates
+remain open.

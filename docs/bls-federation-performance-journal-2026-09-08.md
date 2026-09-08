@@ -3870,3 +3870,71 @@ Baseline/candidate p50 is 35,280.223833/20,375.456333 ms and p95 is
 30 seconds alongside the long candidate observations in earlier pairs. Both
 histories end at 169 accepted operations. These are descriptive observations;
 the unchanged ten-pair protocol supplies the next acceptance decision.
+
+### E10 ten-pair decision: inconclusive overall; production change reverted
+
+The original extension controller completed successfully. Pair ten ran candidate
+first: p50 20,409.745375 ms, p95 21,835.879125 ms, CPU/payment 4.1410867332 s.
+Baseline followed: p50 20,561.496667 ms, p95 20,790.420167 ms, CPU/payment
+3.8109448584 s. Every request completed inside its measurement window with no
+failed, unfinished or late payment. Histories end at 169/158 operations; each
+arm's five members agree. Independent ceremonies are not expected to share keys
+or history digests. Original custody and all terminal identities are preserved.
+
+```sh
+python3 "$RUN_ROOT/audit_e10_completed_pairs.py" --through-pair 10
+python3 "$RUN_ROOT/export_e10_completed_runs.py"
+python3 "$RUN_ROOT/extract_e10_payment_phases.py" --through-pair 10
+python3 "$RUN_ROOT/summarize_e10_comparison.py" --pairs 10
+python3 "$RUN_ROOT/decide_e10_next_gate.py" --pairs 10
+```
+
+All 100 original receipts passed exact fee/value and actual proof/change-shape
+audits. The four public ledgers now contain 100 request/phase rows, twenty runs
+and 2,848 phase-counter observations, preserving every previous row. Each arm's
+131,072-sat issuance reconciles to 124,647 sat remaining, 5,000 sat independently
+received and 1,425 sat actual Bitcoin fees.
+
+The common analyzer reproduces the controller's final comparison exactly.
+Mean per-run p50 is 24,984.5934585/20,021.3767915 ms with paired ratio
+0.827282 (95% CI 0.689904–0.992017): a supported median benefit. P95 is
+30,705.287125/24,122.557621 ms with ratio 0.795415 (0.594381–1.064444).
+Execution-envelope CPU/payment is 4.19956836592/4.10178430666 s with ratio
+0.981166 (0.897759–1.072322). The latter two guards do not exclude more than
+5% regression. Neither establishes a confirmed regression. Peak RSS and physical
+footprint guards pass; idle CPU ratio 1.004633 (0.940028–1.073679) is inconclusive
+with no reproducible increase. No sustainable-throughput or p99 conclusion applies.
+
+Work counters across the broader convergence envelope show baseline/candidate
+wallet syncs 3,160/2,640, successful FROST signature rounds 168/178, successful
+liveness rounds 218/228, skipped liveness rounds 1,057/1,097 and pending
+confirmation probes 580/750. Preserve the baseline's one commitment-round error
+and two signature-round errors as well as all long observations. Counts overlap
+and do not explain execution-envelope CPU by themselves. Earlier diagnostic
+removal of the three-second wait cannot overrule the final acceptance guards.
+
+Decision: **revert E10 as inconclusive overall after ten pairs**, preserving the
+median finding and all evidence. No extra pairs were added. After verifying the
+controller and owned members had stopped, the guarded revert helper checked the
+exact frozen patch, saved it privately, and restored only `operation_pipeline.rs`
+and `wallet_liveness.rs` to retained HEAD. Its patch SHA-256 remains
+`2c230ece887cf2219aa7306d78e93724359a663dfcf15ae6053eb3bc50dab968`.
+E07's separate provisional source is byte-for-byte unchanged. No database,
+nonce/custody state or external payment was changed by the revert.
+
+```sh
+python3 "$RUN_ROOT/revert_e10_after_comparison.py"
+nix --extra-experimental-features 'nix-command flakes' develop .#stable --command cargo fmt --all -- --check
+```
+
+Both commands passed. Temporary production probes were already absent from the
+matched binaries and source. Draft notification regressions and candidate
+validation/restart helpers remain private, unexecuted investigation artifacts;
+they are not passing correctness evidence. Because E10 is removed, those
+candidate acceptance steps are not prerequisites for this revert. The report now
+consolidates the earlier interim pair commentary into this final disposition.
+
+Next work remains the separate cross-session recovery finding and the missing
+primary payment measurements. Original-baseline combined comparison, full
+resource/drain accounting, scaling matrix, real payments in every direction,
+restart/catch-up/value conservation and two final profiling passes remain open.
