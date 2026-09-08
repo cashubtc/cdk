@@ -2500,3 +2500,51 @@ commit, provisional candidate and reverted experiment with its actual evidence
 scope. Historical samples remain in this journal and their numeric ledgers;
 none were reclassified or removed. This is a reporting correction, not another
 accepted implementation or completion of any final gate.
+
+### E05 ten-pair idle result: revert after inconclusive memory guard
+
+The unchanged extension completed successfully. The process handle returned a
+terminal exit code, process inspection found no running campaign members or
+controller, and direct inspection confirmed all one hundred owned backend
+containers were stopped. All twenty independently generated fixtures and their
+original databases remain preserved. No build, payment or profile overlapped the
+idle observations. The command was
+`python3 "$RUN_ROOT/run_e05_fresh_idle_pairs.py" --first 6 --last 10`.
+
+Both arms retain production base `6a722ef73`. Immutable baseline executable SHA-256
+is `3d94b694a1606af60a408d26bee454e5d418ae9472454e0e3900fc91f6ac2008`;
+candidate is `61d5e9c56e48b128a0867196b8c884df978c4b2d302b65a43b7a21458d252f5e`.
+No temporary probes, flags, source changes or measurement settings were added
+between the first five and final five pairs. The shared analyzer checks paired
+inputs, alternating order and unchanged executable fingerprints. All twenty
+state-stability guards passed. The first ten rows remain byte-for-byte unchanged
+in [the complete numeric ledger](benchmarks/2026-09-08-checkpoint-fresh-idle.csv).
+
+| Metric | Baseline mean | Candidate mean | Paired ratio; 95% interval |
+| --- | ---: | ---: | --- |
+| Aggregate member idle CPU, seconds | 2.340848 | 1.306259 | 0.559169; 0.535238–0.584171 |
+| Retired instructions | 13,936,112,314 | 3,076,173,087 | 0.220722; 0.218899–0.222560 |
+| Package wakeups | 870.7 | 848.7 | 0.952776; 0.743647–1.220717 |
+| Interrupt wakeups | 14,111.5 | 14,075.5 | 0.997320; 0.984441–1.010368 |
+| Peak sampled aggregate RSS, bytes | 331,766,170 | 334,692,352 | 1.010453; 0.965873–1.057091 |
+| Peak sampled aggregate physical footprint, bytes | 120,351,548 | 123,366,211 | 1.025454; 0.997116–1.054598 |
+
+CPU improves 44.08% and instructions 77.93%, consistent with removed hashing.
+However, both memory intervals still permit increases above 5%. Package wakeups
+remain inconclusive. There is no confirmed memory regression, but uncertainty is
+not a passing guard. **Revert E05 after ten pairs**, retaining every observation
+and the lower-RSS baseline in pair 3. No eleventh pair or altered observation
+recipe is used to obtain a passing result. Reconsideration requires new profiling
+and a newly justified experiment; the component or idle savings alone do not
+establish payment gains or override the agreed decision rule.
+
+The 8,800-byte rejected patch is preserved privately with SHA-256
+`d9de0ac2e6435aa58683b73b84bb24cdd90b489bd23442a2911eec7acfea6828`.
+Only `checkpoint.rs` in cdk-common and `node_runtime.rs`/`checkpoint_manager.rs`
+in cdk-axum were restored to retained HEAD. The first restore attempt was denied
+by the filesystem sandbox before mutation; the authorized retry succeeded.
+Broadcaster/replay candidates remain separate. Existing scoped correctness and
+component evidence are historical results for the rejected implementation;
+prepared payment guards have not been run against it. The next live work resumes
+fresh payment validation on the retained executable, followed by supported
+payment-path profiling. No final campaign gate is claimed complete.

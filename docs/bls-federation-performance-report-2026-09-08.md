@@ -2,12 +2,12 @@
 
 Status: in progress. Two DKG arithmetic changes, dispatched/queued recovery-barrier
 cleanup, and the disclosed-claim recovery correction are retained. The incoming
-collector experiment was **reverted after ten matched pairs**: it improved window
-completion counts but did not establish the CPU/receipt guard. Checkpoint-summary
-digest reuse has passed scoped correctness, minimal-feature, standalone-common
-and strict lint checks. Its component comparison confirms work savings; service
-idle and payment acceptance remain pending. Final campaign and
-combined-candidate payment/performance acceptance remain pending.
+collector was reverted after ten matched pairs because its CPU/receipt guard
+remained inconclusive. Checkpoint-summary digest reuse was also reverted after
+ten idle pairs: CPU and instruction savings were clear, but memory intervals
+still permitted regressions above 5%. These are inconclusive guard results,
+not confirmed regressions. Final campaign and combined-candidate
+payment/performance acceptance remain pending.
 
 Baseline: CDK `8e507cdf8`, Bark `8d1eda643dd11e9eb600ec44e36622c8f77b6322`.
 Method and acceptance rules: [approved plan](bls-federation-performance-plan-2026-09-08.md).
@@ -23,7 +23,7 @@ Evidence and decisions: [experiment journal](bls-federation-performance-journal-
 | Broadcaster notifications | Provisional | Two payment series failed matched-input/state requirements; no accepted speedup |
 | Session-scoped replay cursor | Provisional | Quorum/recovery tests; live performance and payment gates outstanding |
 | Stable incoming evidence collector | Reverted | Ten-pair CPU/receipt guard remained inconclusive despite more window completions |
-| Cached checkpoint digest in summaries | Provisional | Component work reduction and five-pair idle CPU benefit; ten-pair resource comparison and payment guards pending |
+| Cached checkpoint digest in summaries | Reverted | Component work reduction and ten-pair idle CPU benefit; memory guard remained inconclusive |
 
 These retained changes have their documented local gates; they do not constitute
 final campaign acceptance. The full workload matrix, combined comparison against
@@ -150,8 +150,8 @@ neither result establishes final incoming Lightning performance.
 
 The old-session replay-cursor candidate passes 18 quorum/recovery tests but still
 requires live performance and payment validation. Checkpoint-summary digest reuse
-has scoped correctness and component evidence; its resource and payment gates
-remain incomplete.
+was removed after its ten-pair resource decision; its prepared payment helpers
+were not run against the rejected candidate.
 
 Final campaign-level matrix, feature/FFI, adversarial, SQL/replay, real-payment,
 restart, full value-conservation, original-baseline combined comparison and
@@ -342,7 +342,7 @@ confidence intervals, the preparation-only network repair, and
 [all runs](benchmarks/2026-09-08-bark-incoming-with-recovery-runs.csv) and
 [requests](benchmarks/2026-09-08-bark-incoming-with-recovery-requests.csv).
 
-### Checkpoint-summary digest reuse: component result, not yet retained
+### Checkpoint-summary digest reuse: measured savings, reverted
 
 The owning runtime already caches the digest of its immutable validated public
 configuration. Reusing it for stored checkpoint summary validation removes
@@ -365,17 +365,23 @@ component work savings, not service idle CPU or payment throughput. Scoped
 checkpoint/recovery, minimal-feature, standalone-common and strict lint checks
 pass; temporary counters and harness code are removed from source. See the
 [ten component runs](benchmarks/2026-09-08-checkpoint-summary-component.csv) and
-journal for all intervals and the harness-only failed build. Fresh independent
-idle comparisons and active-payment/recovery guards still gate retention.
+journal for all intervals and the harness-only failed build. The subsequent
+service comparison did not establish its memory guard, as detailed below.
 
-Five fresh, independently prepared service idle pairs now show 43.57% less
-aggregate member CPU (paired ratio 0.5643, 95% interval 0.5244–0.6071) and 78.02%
-fewer instructions (0.21985, 0.21847–0.22123). Mean CPU per 60-second observation
-is 2.4141 seconds baseline versus 1.3601 candidate across five members.
+Ten fresh, independently prepared service idle pairs show **44.08% less aggregate
+member CPU** (paired ratio 0.55917, 95% interval 0.53524–0.58417) and **77.93% fewer
+instructions** (0.22072, 0.21890–0.22256). Mean CPU per 60-second observation is
+2.34085 seconds baseline versus 1.30626 candidate across five members. All arms
+kept accepted history and queues unchanged.
 
-Retention is still pending. Peak sampled RSS has ratio interval 0.9269–1.1521,
-physical footprint 0.9462–1.0761, and package wakeups 0.9566–1.4849. These do not
-establish acceptable resource behavior. The unchanged comparison is being
-extended to ten pairs, retaining every observation. See [all initial idle runs](benchmarks/2026-09-08-checkpoint-fresh-idle.csv).
-There is no new payment-latency or throughput claim, and active-payment/restart
-guards remain outstanding.
+The memory guard remains inconclusive: peak sampled RSS ratio interval
+0.96587–1.05709 and physical footprint 0.99712–1.05460 still permit increases
+above 5%. Package wakeups are also inconclusive (0.74365–1.22072); interrupt
+wakeups have interval 0.98444–1.01037. No sample was excluded, including the
+lower-RSS baseline in pair 3. See [all twenty idle runs](benchmarks/2026-09-08-checkpoint-fresh-idle.csv).
+
+**Revert E05 under the ten-pair inconclusive rule.** This does not prove a memory
+regression, and the measured CPU savings remain recorded. The three production
+files were restored to retained HEAD; all binaries, rejected patch and raw
+observations remain private. Prepared active-payment helpers were not run against
+this rejected candidate. No payment-latency or throughput gain is claimed.
