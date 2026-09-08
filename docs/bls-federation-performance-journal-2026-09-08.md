@@ -1633,3 +1633,260 @@ eight requests. Their original state was preserved on shutdown. The controller
 then began pair 19. These additional samples do not yet meet the five-pair gate.
 The report and journal update records progress only; it accepts no production
 optimization. Documentation whitespace verification passed.
+
+### Continuation: preparation for E09 and rejected quote attribution
+
+The preceding goal turn made progress: committed comparison evidence and the
+custody-recovery hypothesis. This continuation revalidated the same live
+controller. Pair 19 candidate completed all eight requests inside the window
+(16,384 sat; 23.905522 whole-observation CPU seconds); baseline completed six
+inside the window, one late, and retained one pending (14,336 sat; 26.632125 CPU
+seconds including drain). The fifth pair is preparing. No measurement was
+restarted or excluded.
+
+A test-only reproduction for the pending-spend input predicate is prepared in the
+existing custody authorization test module; it has not yet been compiled or run.
+Production authorization is unchanged. A private, one-shot profiling script is
+also prepared. It refuses to run alongside the comparison controller or another
+member fixture, starts only the original stopped backend containers, and resumes
+the existing member work directories without copying custody state. It performs
+no creation, funding, mining, payment or replacement-quote commands. It records
+bounded sampling profiles and preserves state on shutdown. Profiling overhead
+is diagnostic only and cannot enter performance acceptance measurements.
+
+Read-only inspection also narrows the candidate's failed quote request. All five
+members have eight receive-intent journal entries but only seven mint quotes.
+An applied intent at operation 28 (member two) and a rejected intent at operation
+30 (member one) selected the same destination locator, index eight, for different
+actions, quotes and payment hashes. Each carried five secret acknowledgements.
+This explains why a client failure cannot simply be described as an absent
+request: a rejected durable proposal exists. Local `bark_incoming_lock` guards
+construction on one member; `fresh_intent` chooses the maximum accepted allocation
+index plus one, which does not reserve a locator across different members while
+both proposals are in flight. The exact timing that admitted the two proposals
+still needs a bounded trace/reproduction before an implementation decision.
+
+Source inspection ruled out a separate suspected missing acceptance check:
+`submit_federation_envelope_inner` calls `validate_federation_submit_response`,
+which calls `ensure_accepted` before returning. The invoice path therefore cannot
+mark this rejected intent accepted through that call. No redundant guard was
+added. The failed request's secret binding and original proposal remain intact;
+no retry or binding replacement is authorized by a client timeout. The measured
+locator collision is retained as a follow-up correctness/performance hypothesis,
+not attributed to the collector change without comparative evidence.
+
+
+#### Five-pair E08b result: extend, do not accept yet
+
+The original controller terminated successfully after all ten arms were recorded
+and stopped with state preserved. Pair 20 baseline recorded six window/one late/
+one pending (14,336 sat; 27.131335 whole-observation CPU seconds); candidate
+recorded eight window receipts (16,384 sat; 24.020901 CPU seconds).
+
+Offline commands (private campaign directory, source-independent analysis):
+
+```sh
+python3 target/federation-performance-20260908/analyze_e08b_with_recovery_pairs.py
+python3 target/federation-performance-20260908/export_e08b_with_recovery_evidence.py
+```
+
+Both completed successfully: five pairs, ten run rows and eighty request rows.
+The wrapper uses the committed `analyze_federation_performance` module; it checks
+matched workloads/inputs, alternating order, binary fingerprints and the shared
+SDK fingerprint. All native fixed-window endpoints met the predeclared 100-ms
+sampling tolerance. The published numeric CSVs contain explicitly selected
+fields only; private artifacts retain manifests, individual profiles, identities,
+quotes and original request/outcome records.
+
+| Metric | Candidate / baseline | Run-level 95% interval | Interpretation |
+| --- | ---: | --- | --- |
+| Completed inside window | 1.258783 | 1.072936–1.476822 | More confirmed window receipts |
+| Completed including drain | 1.078957 | 0.919660–1.265847 | Inconclusive |
+| CPU per window receipt | 1.003307 | 0.769970–1.307357 | Inconclusive |
+| CPU per receipt, whole observation | 0.936720 | 0.583721–1.503191 | Inconclusive; differing drain work |
+| Peak aggregate RSS | 1.011514 | 1.005117–1.017952 | Small measured increase, below 5% |
+| Pending evidence collections | 0.852474 | 0.704031–1.032215 | Predicted work saving inconclusive |
+| Pending backend waits | 1.595985 | 1.169496–2.178004 | More whole-observation waits |
+
+Totals: baseline thirty window receipts, five late and five pending; candidate
+thirty-eight window receipts, one pending and one failed client request. The
+pending and failed candidate requests both require reconciliation. The absolute
+paired pending-count difference is -0.8 per run (95% interval -1.355289 to
+-0.244711); the failed-client count difference is +0.2 (-0.355289 to 0.755289).
+No client timeout/rejection outcome was recorded, though the failed request
+includes a member timeout in its error chain. Full-population p50/p95 are not
+reported from selected successes. There are too few samples for p99, and finite
+bursts do not measure sustainable throughput.
+
+Fixed-window CPU totals are 97.482459 baseline and 122.897347 candidate seconds;
+the raw CPU ratio is 1.262947 (1.109667–1.437399). The generic analyzer labels this
+raw cost an increase over 5%; the campaign's efficiency gate is CPU per completed
+payment, which remains inconclusive because completed work differs. This does
+not make the efficiency gate pass. Likewise, whole-observation wait counters
+cannot substitute for matched fixed-window or per-payment work counters.
+
+**Decision: expand to ten pairs, retaining both frozen binaries and all existing
+samples.** No E08b optimization is accepted. Before starting the additional five
+pairs, profile the preserved claim on the original artifact; any builds/profiles
+must finish and the diagnostic fixture must stop before further comparison
+payments. This separates diagnostic overhead from measurements and does not
+change the ablation. The original fixture resumed from its existing containers
+and work directories without creation, funding, mining or payment commands.
+Initial read-only backend connection refusals during startup resolved; they did
+not trigger any repeated mutation or fixture initialization.
+
+#### E09 baseline profile completed
+
+The one-shot preserved-state profile completed successfully. All five members
+became healthy after restart, and all three 20-second sampling commands exited
+successfully. The original pending claim remained `receive_preimage_disclosed`
+with its pending-spend input on all five members. No payer command ran and no
+state was cloned. The diagnostic members and existing backend containers then
+stopped with all durable state preserved.
+
+Sampling captured full Bark projection reads and JSON decoding directly beneath
+`FederationFrostSigningRuntime::validate_bark` in signing commitment/abort
+requests. This supports the attribution from source and rejected-request logs;
+sampling frame counts are not SQL query counts or sums of wall time. The three
+selected signers logged two, three and three reservation-error string occurrences
+during this diagnostic restart/profile. Aggregate member CPU over the sampled
+interval was 3.981545 seconds, including profiling overhead; it is not an
+acceptance sample or an idle-efficiency claim. Additional projection reads under
+application/checkpoint work were also visible and are not attributed to this
+custody check.
+
+After the profiler terminated and stopped its fixture, the pinned Nix command
+started the failing-before regression:
+
+```sh
+cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib bark_custody_pending_claim_input_retains_its_reservation -- --nocapture
+```
+
+Compilation and its eventual result remain separate from the frozen payment
+measurements. No production E09 correction has been applied yet.
+
+
+#### E09 correction and scoped checks
+
+The new regression compiled and failed at the expected pending-input assertion
+on the original validator (one failing test, not a build failure). The correction
+then passes the current accepted action's effective phase into the existing input
+check. It permits `PendingSpend` only for an incoming claim at
+`ReceivePreimageDisclosed`. Current-attempt validation, exact ID/locator/amount/
+reservation binding, ordinary reserved inputs and emergency-exit rules remain in
+place. No timeout, quorum, wire format, signature check or external identity was
+changed. Tests reject unrelated action kinds/phases, missing inputs, spent inputs,
+and mismatched IDs, locators, values and owners.
+
+Commands in the pinned Nix shell, after the diagnostic fixture stopped:
+
+```sh
+cargo fmt --all
+cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib frost_signing
+cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib bark_
+cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib recovery
+cargo clippy --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib --tests -- -D warnings
+```
+
+FROST signing: 16 passed, including remote signing, exact retries, lost-response
+recovery and the new boundary cases. Bark: 24 passed. Recovery: 46 passed; its existing manual
+long-duration checkpoint benchmark remained ignored. Formatting and strict
+scoped lint passed. The candidate is still provisional: component comparisons
+and recovery of the original settled payment remain required before retention.
+These test commands include the other provisional worktree changes; the isolated
+component comparison varies only the custody validator.
+
+The component fixture contains only the preserved public Bark projection: seven
+actions, thirteen VTXOs, fourteen allocations, seven reservations, twenty-seven
+transitions and six observations (74 rows total). The fixture's canonical JSON
+hash is `32db203b4c27941d67ab0121be2346da68a2887041d7e602a97a9cd3ff6987a7`.
+A fresh test database receives these public records after migrations. It contains
+no copied keys, nonces or live wallet state; no federation services start. Three
+calls per run invoke the real `wait_for_bark_custody_projection` with the same
+accepted plan. Preparation occurs before the stage timer. Whole-process CPU/RSS
+includes test initialization and is labeled accordingly.
+
+Build temporary read-count probes first to confirm eliminated projection scans,
+then remove that counter and build both final component artifacts without it.
+Use five alternating matched pairs of the unprobed artifacts. The baseline is
+expected to time out on this valid checkpoint and the candidate to authorize it;
+report both outcomes explicitly. Timing that defective check is not the latency
+of a successful baseline payment and must not be presented as such. Before/after
+live recovery and the broader payment gates remain distinct requirements.
+
+
+The first temporary component probe exposed a harness feature mismatch: Axum's
+SQLite dev dependency enables federation but does not automatically enable its
+Bark projection implementation. The unsupported application read returned null,
+so the baseline failed immediately (about 65 microseconds, one read per check)
+and the candidate assertion failed. These are **invalid harness observations**,
+not a performance result. Both artifacts, logs and fixture cases are preserved.
+Production source was restored and no temporary probe remains there.
+
+The corrected build explicitly enables `cdk-sqlite/federation-bark` in both arms.
+The harness now reads and checks the expected projection before timing and
+requires the baseline error to be the specific custody timeout, not just any
+error. This prevents the previous false baseline result from passing silently.
+New probe directories preserve the original attempt rather than overwriting it.
+No dependency manifest or standalone default was changed to fix this test harness.
+
+The corrected probe completed successfully with the expected public projection
+and error classification. Across three checks, baseline performed 244 complete
+projection reads (18,056 SQL rows decoded) and authorized none; candidate performed
+three reads (222 rows) and authorized all three. Mean check duration was
+2,003,915 microseconds versus 958 microseconds. Whole-process CPU including test
+preparation was 0.67 versus 0.06 seconds; retired instructions were 4,768,731,481
+versus 371,818,431. These are **one instrumented diagnostic pair**, not final
+performance acceptance. The baseline duration is a failed timeout, not successful
+payment latency. The predicted removal of redundant reads is now observed.
+
+The temporary benchmark/counter were removed from production source after both
+probe builds. An isolated uninstrumented runtime build has started for recovery
+of the original claim. It includes the existing E08b collector used by that
+fixture and E09, but excludes the unrelated broadcaster and replay-cursor changes.
+Before acceptance, the unprobed five-pair component comparison and the original
+claim's recovery still remain required. The frozen E08b comparison artifacts
+remain unchanged for the additional five payment pairs.
+
+#### E09 live recovery remains incomplete
+
+The isolated uninstrumented candidate runtime built successfully and replaced
+only the stopped fixture's executable link. Original containers, member work
+directories, custody identities, existing SDK wallet and original quote were
+reused; no state was cloned or initialized. The existing recovery helper creates
+no invoices and sends no Lightning payments. Its attempt to obtain proofs for
+the original quote timed out after 120.797022 seconds and produced no receipt.
+All payer records (identities, statuses and amounts) were unchanged. All five
+members were healthy before and after; the action remained
+`receive_preimage_disclosed`, attempt one. State was preserved on shutdown.
+
+The corrected runtime emitted no reservation-mismatch error in this attempt.
+It emitted one signer-unavailable error while peers were still validating startup
+state, then did not recover within the bounded observation. This disproves the
+assumption that the projection correction alone suffices for this saved claim.
+It is **not an accepted E09 win**. Do not reinterpret the timeout as permission to
+repay, replace a quote, reuse a nonce or advance an attempt without consensus.
+The SDK recovery output directory and its failed attempt remain intact; do not
+rerun that one-shot helper blindly.
+
+Read-only Bark storage inspection still finds a `PreimageRevealed` checkpoint
+with a custody session and no new settled receipt. The original signing attempt
+may require further recovery, but that cause is not yet established. Before
+editing the next recovery boundary, add a temporary local-only bounded probe to
+record whether a failed `execute_receive_claim` was after disclosure, whether
+custody reported signer unavailability, and the underlying backend error chain.
+Today those errors become `RecoveryRequired`, which correctly preserves uncertainty
+but hides the failure phase from this investigation. Capture the error without
+changing outcomes, authorization, retry decisions or external identities; remove
+the probe afterward. Its raw logs remain private and cannot enter acceptance
+measurements. A guarded build wrapper has been prepared but not run.
+
+The dependency checkout used for this inspection must match Cargo's pinned
+`8d1eda643dd11e9eb600ec44e36622c8f77b6322`. An initially inspected sibling checkout
+was a different revision and did not contain that Git object; subsequent source
+inspection uses Cargo's existing pinned checkout. No dependency or external
+repository was modified, and no conclusion relies on the stale source.
+
+Unprobed E09 paired measurements are deferred until the remaining live recovery
+failure is understood. E08b still requires its additional five unchanged-binary
+pairs. The full campaign and final correctness/payment matrix remain incomplete.

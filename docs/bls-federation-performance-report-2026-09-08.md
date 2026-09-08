@@ -1,8 +1,9 @@
 # Federation performance optimization report
 
-Status: in progress. Two DKG arithmetic changes are measured. A fresh five-pair
-incoming Lightning comparison is running with both accepted recovery fixes in
-each arm; the collector optimization is not accepted. Earlier partial series
+Status: in progress. Two DKG arithmetic changes are measured. Five fresh incoming
+Lightning pairs with both accepted recovery fixes in each arm show more window
+completions but inconclusive CPU efficiency; the comparison will extend to ten
+pairs. The collector optimization is not accepted. Earlier partial series
 remain separate. Recovery-barrier cleanup is accepted for dispatched and queued
 ordering cases after five component
 comparisons per case, fresh-runtime validation and scoped regression/lint checks.
@@ -17,7 +18,7 @@ Evidence and decisions: [experiment journal](bls-federation-performance-journal-
 | Operation | Release baseline | Final candidate | Disposition |
 |---|---|---|---|
 | Full BLS/FROST DKG and readiness | Pending | Pending | Unmeasured |
-| Bark Lightning receive | New five-pair comparison running | New five-pair comparison running | Collector provisional; final comparison pending |
+| Bark Lightning receive | 30/40 window completions in five pairs | 38/40 window completions in five pairs | Extend to ten; collector provisional |
 | Bark Lightning send | Pending | Pending | Unmeasured |
 | BDK on-chain receive | Pending | Pending | Unmeasured |
 | BDK on-chain send | Pending | Pending | Unmeasured |
@@ -235,18 +236,42 @@ Temporary probes/examples are removed. Full combined campaign gates remain pendi
 
 ### Current incoming-Lightning comparison and recovery finding
 
-The first three pairs on both accepted recovery cleanups have baseline window
-receipts of 6/8 in each run, versus candidate 8/8, 6/8 and 8/8. These are finite bursts,
-not sustainable throughput. The second candidate run has one pending claim after
-independent payer settlement and one quote-creation failure. All member state
-remained converged. Failed and pending requests remain in the comparison; no
-collector performance conclusion is supported yet.
+Five matched pairs, each offering eight independent 2,048-sat payments at
+concurrency four, produced 30/40 baseline window receipts versus 38/40 candidate
+receipts. Including drain, receipts were 35/40 versus 38/40. Baseline retained five
+pending requests; candidate retained one pending request and one client failure
+requiring reconciliation. All states and identities are preserved.
+
+The geometric mean window-completion ratio is 1.2588 (paired 95% interval
+1.0729–1.4768). CPU per window receipt is inconclusive: ratio 1.0033, interval
+0.7700–1.3074. Aggregate fixed-window CPU was 97.482459 versus 122.897347 seconds
+across the five runs; more payments completed in those windows, so the raw CPU
+increase is not itself a CPU-per-payment regression. Peak aggregate RSS ratio was
+1.0115, interval 1.0051–1.0180. Whole-observation backend waits increased, while
+the predicted reduction in pending evidence collections is not yet conclusive;
+these counters span differing drain lengths. Unconditional p50/p95 comparisons
+are censored by unfinished/failed requests. There is no p99 or sustainable
+throughput conclusion. See [every run](benchmarks/2026-09-08-bark-incoming-with-recovery-runs.csv)
+and [every request](benchmarks/2026-09-08-bark-incoming-with-recovery-requests.csv).
+
+**Decision: inconclusive; extend to ten matched pairs.** The collector remains
+uncommitted. Investigating the preserved recovery failure between the two blocks
+will not change either frozen comparison binary; profiling and builds will stop
+before the next payment window.
 
 Read-only inspection found that the pending claim's exact input remains reserved
 to its original action but has advanced to `PendingSpend` at accepted preimage
 disclosure. Custody validation recognizes the action's current attempt, then
 rejects that input state in a repeatedly polled projection check. This identifies
 a recovery-path defect and avoidable repeated work, separate from collector
-ownership. A narrowly scoped correction and its validation are planned in E09
-in the journal; no fix or gain is claimed. The initial backend failure that led
-to disclosure recovery has not yet been attributed.
+ownership. A phase-specific correction passes 16 FROST, 24 Bark and 46 recovery tests plus
+strict scoped lint. A corrected diagnostic probe reduced projection reads from
+244 to three across three checks, while restoring successful authorization.
+Those instrumented observations are not final performance acceptance.
+
+The original paid quote still failed to issue proofs within a two-minute recovery
+check using the uninstrumented candidate. Payer records were unchanged, member
+state remained healthy, and the reservation error disappeared. The remaining
+backend/custody recovery failure needs attribution. E09 is therefore provisional;
+no accepted optimization or recovered payment is claimed. The journal retains
+both the invalid first harness attempt and this unsuccessful recovery.
