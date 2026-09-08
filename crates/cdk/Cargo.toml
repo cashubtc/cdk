@@ -173,6 +173,10 @@ name = "receive-token"
 required-features = ["wallet"]
 
 [[example]]
+name = "federation_receive_performance"
+required-features = ["wallet", "federation"]
+
+[[example]]
 name = "multi-mint-wallet"
 required-features = ["wallet"]
 

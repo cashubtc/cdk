@@ -53,6 +53,9 @@ receive interval and are timed separately. The receive interval includes
 cdk-cli process startup, wallet DB access, network latency, and the federated
 receive/swap operation.
 
+Latency uses nearest-rank percentiles. p99 is N/A below 1,000 successful receives;
+all latency fields are N/A when no receive succeeds.
+
 The report distinguishes wallet-confirmed TPS, operations committed by the end
 of the receive window, and operations that commit later during quiescence. The
 committed TPS numerator is always the immediate window-end delta.
@@ -103,6 +106,19 @@ require_command() {
 
 is_positive_integer() {
     [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+latency_stats_from_sorted_samples() {
+    awk '
+        { values[NR] = $1 }
+        END {
+            if (NR == 0) { print "N/A,N/A,N/A,N/A"; exit }
+            p50 = values[int((NR * 50 + 99) / 100)]
+            p95 = values[int((NR * 95 + 99) / 100)]
+            p99 = NR >= 1000 ? sprintf("%.3f", values[int((NR * 99 + 99) / 100)]) : "N/A"
+            printf "%.3f,%.3f,%s,%.3f", p50, p95, p99, values[NR]
+        }
+    '
 }
 
 operation_count_from_status() {
@@ -519,6 +535,13 @@ database_window_counts() {
 }
 
 run_self_test() {
+    [[ "$(printf '1\n2\n' | latency_stats_from_sorted_samples)" == '1.000,2.000,N/A,2.000' ]] \
+        || die "small-sample latency self-test failed"
+    [[ "$(latency_stats_from_sorted_samples </dev/null)" == 'N/A,N/A,N/A,N/A' ]] \
+        || die "empty-sample latency self-test failed"
+    [[ "$(awk 'BEGIN { for (i = 1; i <= 1000; i++) print i }' | latency_stats_from_sorted_samples)" \
+        == '500.000,950.000,990.000,1000.000' ]] \
+        || die "p99 sample threshold self-test failed"
     local temp_dir start_snapshot end_snapshot member_output summary
     local parsed_metrics performance_start performance_end performance_window
     local database_summary database_keys_before database_keys_after database_counts
@@ -1206,20 +1229,9 @@ for benchmark_case in $CASES; do
             cat "$CASE_DIR/durations/$id.seconds"
         done | sort -n >"$CASE_DIR/success-durations.sorted"
 
-        latency_stats="$(awk '
-            {
-                values[NR] = $1
-                sum += $1
-            }
-            END {
-                p50 = values[int((NR - 1) * 0.50) + 1]
-                p95 = values[int((NR - 1) * 0.95) + 1]
-                p99 = values[int((NR - 1) * 0.99) + 1]
-                printf "%.3f,%.3f,%.3f,%.3f", p50, p95, p99, values[NR]
-            }
-        ' "$CASE_DIR/success-durations.sorted")"
+        latency_stats="$(latency_stats_from_sorted_samples <"$CASE_DIR/success-durations.sorted")"
     else
-        latency_stats="0.000,0.000,0.000,0.000"
+        latency_stats="N/A,N/A,N/A,N/A"
     fi
     IFS=',' read -r p50 p95 p99 max_latency <<<"$latency_stats"
     successful_tps="$(awk -v successes="$successes" -v elapsed="$elapsed_seconds" \

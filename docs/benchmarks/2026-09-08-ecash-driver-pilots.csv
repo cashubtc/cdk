@@ -1,0 +1,17 @@
+case,attempt,scheduled_ns,started_ns,finished_ns,outcome,received_sat,input_proofs
+receive-serial,0,22667,62542,901364833,completed,32,1
+receive-serial,1,901399833,901409417,1935655875,completed,32,1
+receive-serial,2,1935671500,1935681542,2950481792,completed,32,1
+receive-serial,3,2950501583,2950511417,3780809083,completed,32,1
+receive-shared,0,2583,22958,1429092750,completed,32,1
+receive-shared,1,10333,23042,1134229667,completed,32,1
+receive-shared,2,11833,27875,1394602625,completed,32,1
+receive-shared,3,13042,34208,1429683583,completed,32,1
+receive-open,0,0,1350917,1111331125,completed,32,1
+receive-open,1,10000000,,12388500,rejected,,1
+receive-open,2,20000000,,23434209,rejected,,1
+receive-open,3,30000000,,33458625,rejected,,1
+receive-open,4,40000000,,41765334,rejected,,1
+receive-open,5,50000000,,52816584,rejected,,1
+receive-open,6,60000000,,62856042,rejected,,1
+receive-open,7,70000000,,72898250,rejected,,1
