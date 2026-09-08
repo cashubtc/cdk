@@ -2548,3 +2548,121 @@ component evidence are historical results for the rejected implementation;
 prepared payment guards have not been run against it. The next live work resumes
 fresh payment validation on the retained executable, followed by supported
 payment-path profiling. No final campaign gate is claimed complete.
+
+### Retained-lineage fresh payment refresh after E05 disposition
+
+Before the next payment optimization, exercise the retained implementation on an
+original, independently generated and still-unfunded five-member HTTP/SQLite
+fixture. The immutable executable is the E05 baseline artifact above, whose
+production tree matches current retained HEAD: the intervening commits contain
+only evidence/documentation. It excludes every remaining provisional candidate
+and the rejected checkpoint/collector changes. This is fresh functional and
+profiling preparation, not an E05 candidate comparison or final combined matrix.
+
+Reuse the prepared one-shot helpers via
+`python3 "$RUN_ROOT/run_retained_ecash_refresh.py"`. Resume only the original
+fixture and backend, verify unchanged empty journal/payment state, and open the
+original funding wallet if Bitcoin did not autoload it; never create a replacement
+wallet. Fund 8,192 sat on-chain with an independent five-second miner and preserve
+the deposit intent before its sole submission. Require 256 proofs of 32 sat, then
+package 64 unique tokens offline. The persistent SDK receives them at concurrency
+four into independent wallets with warm connections, a 60-second window and
+120-second drain. Keep all failures, pending outcomes, proof shapes and causal
+resource bounds. Require 2,048 sat in recipients and empty member queues before
+stopping owned services. A failure preserves original identities for diagnosis;
+the helper refuses re-execution against an existing case.
+
+Post-payment restart and incoming/outgoing Lightning plus outgoing on-chain
+checks remain subsequent gates. The refresh does not replace comparisons against
+the original campaign baseline and cannot establish a new speedup by itself.
+
+The retained-code refresh completed all 64 receives inside the window, but its
+wrapper then failed an incorrect assumption that every recipient would have one
+output proof. The ordinary SDK uses `ReceiveOptions::default()` and produced
+12 proofs per fresh wallet: four 1-sat, four 2-sat, three 4-sat and one 8-sat proof.
+All recipients hold exactly 32 sat. The wrapper stopped owned services on failure;
+its original error, native samples, SDK receipts and wallet state are preserved.
+No token was resubmitted and no payment was recreated.
+
+A read-only reconciliation checked every original recipient database: 2,048 sat
+in 64 wallets plus 6,144 sat remaining in the bank equals the 8,192-sat confirmed
+deposit. All five members have 77 journal operations in session zero and matching
+last order/application digests; each records exactly 8,192 paid and issued. The
+one-run diagnostic p50/p95 were 1,014.466/1,213.608 ms; all 64 completed before the
+60-second window ended, with no late, failed or pending requests. This finite
+burst does not establish sustainable throughput or a new performance gain.
+Historical post-window health and collector CPU were not saved before the wrapper
+assertion; they remain unavailable and are not reconstructed as passing values.
+
+The guard now validates receipt value and records actual output counts for paired
+input checks, preserving ordinary denomination behavior. The restart helper
+reads original SDK receipts and stopped durable member state rather than depending
+on a wrapper summary or fabricating a historical health check. The next one-shot
+command, `python3 "$RUN_ROOT/run_retained_payment_directions.py"`, restarts those
+same members and verifies original state and all 65 wallets, checks original token
+spent states, then exercises incoming/outgoing Bark Lightning and outgoing BDK
+on-chain with independent receipts and the fixed miner. A further restart compares
+payment identities, quote amounts, journal/application evidence, action lineage
+and wallet state. All outcomes remain pending until those commands finish.
+
+The first post-ecash restart attempt stopped at a guard error before any new
+payment direction began. All five members had the same 77-operation history,
+session zero, unchanged paid/issued amounts and no audit mismatch, but each still
+reported one queued recovery item at the first all-ready status response. The
+helper incorrectly asserted empty queues immediately instead of waiting for its
+full readiness predicate. This short attempt does not demonstrate a persistent
+production queue failure or successful bounded recovery.
+
+Its original logs, logical-state snapshot and helper source are preserved in a
+separate attempt directory. The corrected predicate keeps the original
+180-second deadline, records every status observation, and requires converged
+ready members, empty queues and unchanged payment history. Legitimate monotonic
+session advancement is permitted; session regression is rejected. Payment-state
+and wallet snapshots still must match exactly. The same stopped member/backend
+state is resumed with a separate controller log; no deposit, token or invoice is
+recreated. New Lightning/on-chain directions remain unstarted until this gate
+passes.
+
+### Retained-code fresh directions and restart refresh passed
+
+The corrected restart continuation exited successfully. It first reached ready,
+converged members with empty queues, then verified all original ecash tokens were
+spent. Incoming Bark Lightning completed with independent payer evidence and
+4,096 sat issued. The independent outgoing Lightning recipient received 1,000
+sat. Outgoing BDK on-chain delivered 1,000 sat to the saved destination. No
+original deposit, token or invoice was resubmitted.
+
+Functional CLI observations, including process startup (not matched performance
+baselines): incoming Lightning invoice preparation 2,308.112 ms, payer completion
+1,261.460 ms and subsequent CLI exit 4,189.050 ms; outgoing Lightning 5,854.660 ms;
+outgoing on-chain 39,132.475 ms including required block waiting under the
+independent five-second miner. These do not isolate confirmed-state notification
+latency or establish an optimization gain. The on-chain observation warrants
+new phase attribution before evaluating the existing broadcaster candidate.
+
+Both the post-ecash and final post-payment restart snapshots compare identically
+across each original member and all 65 wallets. The respective preserved journal
+histories contain 77 and 123 operations. Final pre-restart status showed all five
+members in session zero, ready and converged with zero queued/pending-finalization
+items; each held two mint quotes totaling 12,288 sat paid and issued and two Bark
+actions. Post-restart readiness and exact logical-state checks passed as well.
+The wrapper then stopped all owned members and backends.
+
+Wallet accounting: 12,288 sat deposited minus 2,000 sat external recipients and
+315 sat reported melt fees equals 9,973 sat (7,925 bank plus 2,048 recipients).
+The Lightning wallet reports 30 sat fees; the BDK wallet reports 285 sat. The
+additional one-shot read-only command
+`python3 "$RUN_ROOT/audit_retained_onchain_receipt.py"` opened only the original
+stopped Bitcoin backend and queried the saved transaction and previous outputs.
+It independently verified one input totaling 8,192 sat, two outputs totaling
+7,907 sat, the exact 1,000-sat destination outpoint, a 285-sat transaction fee and
+three confirmations. It submitted no payment, mined no block and stopped the
+backend afterward. This is not a full Bark custody/fee audit.
+
+All 64 original ecash request timings, outcomes and actual input/output proof
+counts are retained in
+[the numeric refresh ledger](benchmarks/2026-09-08-retained-ecash-refresh.csv).
+Raw native samples, CLI logs, token/quote identities, payer/recipient receipts,
+failed helper attempts and restart snapshots remain private. No temporary probe
+or new production optimization was introduced. This closes this retained-build
+functional refresh only, not the campaign matrix or final combined acceptance.

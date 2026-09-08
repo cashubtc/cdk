@@ -97,6 +97,41 @@ comprising 51,269 sender balance, 288 recipient balances and 224 in unsubmitted
 tokens. These are functional pilots, not a final candidate payment gate or a
 baseline/final latency or throughput comparison.
 
+### Fresh payment refresh on retained code
+
+The retained production tree at `6a722ef73` (unchanged by subsequent documentation
+commits) passed a fresh five-member HTTP/SQLite payment sequence. This build
+excludes the broadcaster/replay candidates and the reverted collector/checkpoint
+changes. An 8,192-sat on-chain deposit and 4,096-sat incoming Lightning payment
+were issued; independent recipients confirmed 1,000 sat each for outgoing
+Lightning and on-chain. Sixty-four unique offline tokens were received into
+independent SDK wallets at concurrency four, for 2,048 sat total.
+
+Each 32-sat recipient received 12 proofs under the ordinary default denomination
+policy. All 64 completed in the window; diagnostic p50/p95 were 1,014.466/1,213.608
+ms. The [complete request ledger](benchmarks/2026-09-08-retained-ecash-refresh.csv)
+records actual proof counts. This single finite burst establishes neither a
+speedup nor sustainable throughput. A wrapper's incorrect one-proof assertion
+failed after the SDK completed; original receipts were reconciled without
+resubmission. Its missing post-window health/collector measurement is not filled
+in as successful data.
+
+Both subsequent restart checks preserved the original members' logical payment
+state and all 65 wallets, with converged ready members and empty queues. Journal
+histories were 77 operations after ecash and 123 after all directions, with member
+order/application agreement and unchanged quote/receipt amounts. An initial
+restart guard stopped too early at ready-but-queued state; its preserved failure
+and corrected bounded predicate are recorded in the journal.
+
+Wallet accounting reconciles exactly: 12,288 deposited minus 2,000 external
+payments and 315 reported melt fees leaves 9,973 sat, comprising 7,925 in the
+sender and 2,048 in recipients. Direct Bitcoin RPC independently verified the
+original outgoing transaction's 1,000-sat recipient output and 285-sat fee from
+its previous outputs; the remaining 30 sat is the wallet-reported Lightning fee.
+This is wallet principal/fee reconciliation, not a complete Bark custody audit.
+All owned services were stopped with original state preserved. The wider matrix,
+original-baseline performance comparison and final combined gates remain pending.
+
 ### Outgoing on-chain investigation
 
 Temporary probes measured 4.11 and 4.24 seconds of waiting for the broadcaster
