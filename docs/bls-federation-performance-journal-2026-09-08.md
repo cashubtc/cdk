@@ -1982,3 +1982,131 @@ remove private helper source after building. The runtime excludes E03a/E07 and
 includes E08b, matching the original preserved fixture except for the E09
 corrections. No final payment, performance, ordinary-CDK or campaign acceptance
 is inferred from these scoped tests.
+
+Both release builds completed successfully and the private example source was
+removed. The new runtime has not been started: source inspection before the live
+run found another incomplete post-disclosure retry boundary. Claim finalization
+always uses the original disclosure as its predecessor, while deterministic
+application requires the current action head and the literal disclosure phase.
+An accepted `SigningAttemptAdvanced` changes both the head and literal phase,
+preserving disclosure only in `signing_retry_phase`. Consequently the newly
+reachable result would be rejected even after successful custody recovery.
+
+Hold the live run until this binding is corrected and tested. Preserve the
+original disclosure evidence and exact payment bindings; retain the accepted
+custody operation with the private verified claim result, use it as predecessor
+when signing advanced after disclosure, and independently require the effective
+disclosure phase, latest accepted head, current attempt and exact signer set at
+application. Do not bypass application checks, replay disclosure, change value
+transitions, or accept a stale result. The frozen incomplete candidate remains
+available as an investigative artifact, not an accepted implementation.
+
+The private verified claim result now retains its accepted custody-operation ID.
+Claim construction follows that ID only when its attempt is newer than the
+original disclosure; otherwise it follows the disclosure directly. The original
+disclosure still binds evidence and external-result identity. Older results are
+rejected. Deterministic application checks the effective disclosed phase and
+requires the current head, attempt, signer set, actor, plan, quote and payment
+hash. Its existing input/value validation remains in place. SQL already interprets
+the effective phase for allowed transitions, so no SQL/schema change is needed.
+
+The new `receive_claim_retry_requires_the_current_disclosed_lineage` regression
+passed. It checks the accepted retry path, rejects a fork from the old disclosure,
+stale/future attempts, mixed signers, another payment or actor, and an undisclosed
+retry, and retains the ordinary first-attempt claim path. This covers the header
+boundary, not full payment validation. The existing projection, Axum Bark and Bark
+runtime suites and strict lint are being rerun before building a new isolated
+release artifact. No live recovery was run with the known incomplete artifact.
+
+The complete correction passed three projection tests, 24 Axum Bark tests,
+19 Bark runtime tests and strict library/test lint across CDK, Axum and Bark.
+The new isolated release artifact built successfully and restored unrelated
+experiments. The original-state recovery is now running with this artifact and
+the explicit-output client. It observes the existing durable retry deadline
+before requesting proofs and preserves the prior failed recovery directory.
+The payer audit brackets the operation. In addition to the original quote's
+receipt, the check reconciles all seven paid incoming invoices (14,336 sat of
+principal) with the eight SDK wallets and each member's paid/issued totals.
+That is an incoming-principal check, not the campaign's full custody/fee
+conservation gate. Its result and the unprobed paired comparisons remain pending.
+
+#### E09 original claim recovered; paired acceptance still pending
+
+The new uninstrumented runtime recovered the original accepted claim. The local
+quote was paid at the first five-second observation; the existing-quote SDK
+helper then completed in 2.779932 seconds. These are separate unpaired diagnostic
+durations, excluding restart/readiness, not an end-to-end performance comparison.
+The original wallet issued exactly 2,048 sat and retained its quote/invoice
+identity. The already-issued control wallet stayed at 2,048 sat without issuing
+again. Payer records were unchanged and no new Lightning payment was initiated.
+
+All five members passed ready/converged, zero-lag and digest-alert checks before
+and after. Every member ended with seven claimed receives: six at attempt one
+and the recovered claim at attempt two. Read-only journal inspection verifies
+the original disclosure, accepted retry, and terminal claim form consecutive
+predecessor links with attempts one, two, and two. The original seven completed
+invoices total 14,336 sat of principal; all eight SDK wallets together hold
+14,336 spendable sat, matching each member's paid and issued totals. The failed
+quote-creation request still holds no proofs and was not recreated. This is
+principal reconciliation, not a claim of full custody/fee conservation.
+
+The recovery controller exited successfully and stopped only its owned members
+and backend, preserving every database. Its private command was
+`python3 "$RUN_ROOT/recover_e09_preserved_claim_finalization.py"`; prior failed
+recovery outputs remain intact. The instrumented error binary was not used.
+
+Five uninstrumented alternating component pairs are now being built and run with
+the previously documented public-only projection fixture. No payment service or
+live custody state runs in those cases. Both arms preserve the same surrounding
+source; only the projection authorization implementation differs. Production
+patches and binary fingerprints are captured privately, and the wrapper removes
+the temporary harness after building. These pairs must pass acceptance before
+the complete E09 correction is retained and committed. E08b's frozen-binary
+extension and the campaign's final gates remain outstanding.
+
+#### E09 accepted component result and restart confirmation
+
+All five alternating uninstrumented pairs completed. Each used three checks on
+the same 74-row public SQLite projection, with fixture setup outside check
+timing. Whole-process CPU includes setup. Both arms used identical surrounding
+source and release features; only the projection validator differed. Frozen
+binary/source fingerprints and production patches are retained privately under
+base `3d2c08d0a` plus the recorded worktree changes. The temporary harness and
+all probes were removed after building.
+
+| Metric, mean per three-check run unless specified | Baseline | Candidate | Paired candidate/baseline, 95% interval |
+|---|---:|---:|---:|
+| Process CPU seconds | 0.370 | 0.042 | 0.113269 [0.095994, 0.133653] |
+| Retired instructions | 5,130,356,197 | 355,017,083 | 0.069175 [0.066697, 0.071745] |
+| Peak RSS bytes | 19,988,480 | 19,988,480 | 0.999982 [0.991817, 1.008214] |
+| Mean authorization-check microseconds | 2,008,936.561 | 902.722 | 0.000449 [0.000429, 0.000470] |
+| Successful authorizations | 0/3 | 3/3 | Absolute increase three in every pair |
+
+Every baseline check reached the specific known custody timeout; every candidate
+check authorized the exact input. The roughly 88.7% CPU and 93.1% instruction
+reductions are component work savings, **not CPU/payment or payment-throughput
+claims**. The timeout-to-authorization duration change is not successful-payment
+latency. RSS shows no measurable change and its interval lies within the 5%
+regression boundary. The earlier bounded counter probe confirms the predicted
+work removal: 244 versus three full projection reads across three checks.
+[All ten runs and thirty durations](benchmarks/2026-09-08-pending-claim-authorization.csv)
+are retained as numeric evidence. No p99 conclusion applies.
+
+The original recovered fixture then passed a second uninstrumented restart.
+Both checked wallets retained 2,048 sat and issued zero additional value; payer
+records were unchanged. All five members again passed readiness/convergence and
+zero-lag/digest-alert checks. The 14,336-sat incoming-principal reconciliation
+still holds across all wallets and all members. The helper completed in
+0.852713 seconds, an unpaired recovery diagnostic only. Owned processes were
+stopped with state preserved.
+
+Commands: `python3 "$RUN_ROOT/build_e09_projection_bench.py"`,
+`python3 "$RUN_ROOT/run_e09_projection_pairs.py"`, and
+`python3 "$RUN_ROOT/confirm_e09_preserved_claim_restart.py"`. All builds,
+measurements and live diagnostics were serial. **Keep E09** as one complete
+disclosed-claim recovery correction with measured removal of wasted projection
+work. Its two follow-up fixes are necessary for the original claim to complete;
+they do not independently claim a performance percentage. Commit this step
+separately from E08b, E03a and E07. Final combined payment throughput, idle CPU,
+history scaling, remaining transports/backends and the full campaign gates are
+still outstanding; no campaign-wide performance acceptance is claimed.

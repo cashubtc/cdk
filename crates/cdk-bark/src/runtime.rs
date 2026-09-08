@@ -149,6 +149,9 @@ pub enum FederatedBarkReceiveClaimOutcome {
     RecoveryRequired {
         /// Transition that prevents the receive from reverting to unpaid.
         preimage_disclosed: FederationBarkActionTransition,
+        /// Custody requires a new consensus-authorized signing attempt.
+        /// Disclosure must be accepted before advancing that attempt.
+        signer_unavailable: bool,
     },
 }
 
@@ -218,6 +221,7 @@ pub enum FederatedBarkExitOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederatedBarkReceiveClaimResult {
     plan_operation_id: FederationOperationId,
+    custody_operation_id: FederationOperationId,
     action_id: FederationBarkActionId,
     quote: String,
     payment_hash: FederationBarkDigest,
@@ -2697,6 +2701,7 @@ fn receive_claim_result(
     output_transitions.sort();
     Ok(FederatedBarkReceiveClaimResult {
         plan_operation_id: accepted_plan.operation_id,
+        custody_operation_id: custody_attempt.entry.operation_id,
         action_id: plan.action_id,
         quote: intent.quote.clone(),
         payment_hash: intent.payment_hash,

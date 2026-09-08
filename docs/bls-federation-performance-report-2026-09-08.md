@@ -259,29 +259,39 @@ uncommitted. Investigating the preserved recovery failure between the two blocks
 will not change either frozen comparison binary; profiling and builds will stop
 before the next payment window.
 
-Read-only inspection found that the pending claim's exact input remains reserved
-to its original action but has advanced to `PendingSpend` at accepted preimage
-disclosure. Custody validation recognizes the action's current attempt, then
-rejects that input state in a repeatedly polled projection check. This identifies
-a recovery-path defect and avoidable repeated work, separate from collector
-ownership. A phase-specific correction passes 16 FROST, 24 Bark and 46 recovery tests plus
-strict scoped lint. A corrected diagnostic probe reduced projection reads from
-244 to three across three checks, while restoring successful authorization.
-Those instrumented observations are not final performance acceptance.
+### Pending incoming claim recovery
 
-The original paid quote still failed to issue proofs within a two-minute recovery
-check using the uninstrumented candidate. Payer records were unchanged, member
-state remained healthy, and the reservation error disappeared. The remaining
-backend/custody recovery failure needs attribution. E09 is therefore provisional;
-no accepted optimization or recovered payment is claimed. The journal retains
-both the invalid first harness attempt and this unsuccessful recovery.
+The preserved claim exposed three connected recovery defects: custody rejected
+its exact reserved input after accepted disclosure changed it to `PendingSpend`;
+post-disclosure handling discarded signer unavailability; and terminal claim
+application could not follow an accepted signing retry. The accepted correction
+preserves exact input ownership, carries the custody failure to the existing
+consensus-authorized retry, and binds finalization to the latest accepted attempt
+while retaining original disclosure evidence. Generic ambiguous outcomes remain
+pending; nonce safety, external payment identity and value checks remain enforced.
 
-A longer same-identity diagnostic reached the persisted retry deadline and found
-that the original virtual MuSig2 session was non-retryable. Custody reported
-signer unavailability, but post-disclosure handling discarded that distinction
-and continued waiting for external evidence. A provisional follow-up carries the
-signal to the existing consensus-authorized signing-attempt transition, after
-accepted disclosure. It preserves generic ambiguous-outcome waiting and does not
-reset nonces or change the payment identity. The 24 scoped Axum Bark tests,
-19 Bark runtime tests, 36 Bark protocol tests and scoped strict lint pass;
-live recovery and performance acceptance of this follow-up are still pending.
+**Original claim recovery now passes.** The existing quote issued 2,048 sat with
+unchanged payer records and no new payment. All five members converged on the
+accepted disclosure → attempt-two retry → claim sequence. The seven paid invoices
+reconcile to 14,336 spendable sat across all eight SDK wallets and equal paid/issued
+totals on every member. This checks incoming principal, not complete custody/fee
+conservation. The fixture was stopped with all state preserved.
+
+Three projection tests, 24 Axum Bark tests, 19 Bark runtime tests and strict scoped
+lint pass for the complete correction. The new regression covers stale attempts,
+mixed signers, old-predecessor forks and the first-attempt path. Earlier incomplete
+candidates and failed recovery attempts remain documented in the journal.
+
+A diagnostic probe reduced projection reads from 244 to three across three
+checks (18,056 versus 222 decoded SQL rows), restoring successful authorization.
+Five alternating uninstrumented pairs then reduced mean process CPU from 0.370
+to 0.042 seconds per three-check run (88.7% paired reduction; ratio interval
+0.0960–0.1337), and instructions by 93.1%. Peak RSS was unchanged within measurement
+uncertainty (ratio interval 0.9918–1.0082). See [all measured runs and durations](benchmarks/2026-09-08-pending-claim-authorization.csv).
+
+Every baseline check hit the known timeout; every candidate check authorized the
+input. These are component work savings, not CPU/payment, successful-payment
+latency or throughput claims. A further restart preserved all receipts and
+convergence, issued no additional value, and retained principal reconciliation.
+**Keep E09 as one complete recovery correction.** The remaining campaign matrix
+and combined performance/idle-resource acceptance are still outstanding.

@@ -69,7 +69,181 @@ const fn bark_action_authorizes_output_locator(kind: FederationBarkActionKind) -
 mod bark_custody_authorization_tests {
     use cdk::federation::FederationBarkActionKind;
 
-    use super::bark_action_authorizes_output_locator;
+    use super::{bark_action_authorizes_output_locator, bark_custody_inputs_are_authorized};
+
+    fn pending_claim_input() -> (
+        cdk::federation::FederationBarkActionPlan,
+        cdk::federation::FederationBarkProjectionSnapshot,
+    ) {
+        use cdk::federation::{
+            FederationBarkActionId, FederationBarkActionPlan, FederationBarkArtifact,
+            FederationBarkArtifactKind, FederationBarkDigest, FederationBarkExternalId,
+            FederationBarkProjectionSnapshot, FederationBarkVtxoId, FederationBarkVtxoInput,
+            FederationBarkVtxoLocator, FederationBarkVtxoRecord, FederationBarkVtxoState,
+            FederationOperationId, MemberId, FEDERATION_BARK_OPERATION_VERSION,
+        };
+
+        // Only projection authorization is under test. Plan/artifact validation
+        // and cryptographic authorization are separate, earlier boundaries.
+        let action_id = FederationBarkActionId::from_bytes([1; 32]).expect("action");
+        let operation_id = FederationOperationId::from_bytes([2; 32]);
+        let member = MemberId::new(1).expect("member");
+        let input = FederationBarkVtxoInput {
+            vtxo_id: FederationBarkVtxoId::from_bytes([3; 36]).expect("VTXO"),
+            locator: FederationBarkVtxoLocator::vtxo_custody(7),
+            amount: 2_048.into(),
+        };
+        let plan = FederationBarkActionPlan {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: Some("projection-claim".to_string()),
+            kind: FederationBarkActionKind::IncomingClaim,
+            actor: member,
+            predecessor_operation_id: operation_id,
+            payment_hash: Some(FederationBarkDigest::from_bytes([4; 32]).expect("payment hash")),
+            inputs: vec![input],
+            outputs: Vec::new(),
+            revocation_locator: None,
+            external_amount: 0.into(),
+            fee_amount: 0.into(),
+            fee_bound: 0.into(),
+            artifacts: Vec::new(),
+            certified_receive_htlcs: None,
+            external_id: FederationBarkExternalId::from_bytes([5; 32]).expect("external ID"),
+            signer_set: vec![member],
+            attempt: 1,
+            expires_at: 1_000,
+        };
+        let projection = FederationBarkProjectionSnapshot {
+            vtxos: vec![FederationBarkVtxoRecord {
+                vtxo_id: input.vtxo_id,
+                locator: input.locator,
+                amount: input.amount,
+                expiry_height: 1_000,
+                state: FederationBarkVtxoState::PendingSpend,
+                artifact: FederationBarkArtifact {
+                    kind: FederationBarkArtifactKind::Vtxo,
+                    hash: FederationBarkDigest::from_bytes([6; 32]).expect("artifact hash"),
+                    bytes: vec![6; 32],
+                },
+                reservation_action_id: Some(action_id),
+                origin_operation_id: operation_id,
+                origin_operation_index: 1,
+                latest_operation_id: operation_id,
+                latest_operation_index: 2,
+            }],
+            ..Default::default()
+        };
+        (plan, projection)
+    }
+
+    #[test]
+    fn bark_custody_pending_claim_input_retains_its_reservation() {
+        let (plan, projection) = pending_claim_input();
+        assert!(bark_custody_inputs_are_authorized(
+            &plan,
+            cdk::federation::FederationBarkSemanticPhase::ReceivePreimageDisclosed,
+            &projection,
+        ));
+    }
+
+    #[test]
+    fn pending_claim_input_requires_the_disclosed_incoming_phase() {
+        use cdk::federation::{
+            FederationBarkActionKind as Kind, FederationBarkSemanticPhase as Phase,
+        };
+
+        let (mut plan, projection) = pending_claim_input();
+        for (kind, phase) in [
+            (Kind::IncomingClaim, Phase::ClaimPlanned),
+            (Kind::IncomingClaim, Phase::ReceiveClaimed),
+            (Kind::LightningSend, Phase::SendPlanned),
+            (Kind::FailedSendRevocation, Phase::RevocationPlanned),
+            (Kind::Refresh, Phase::RefreshPlanned),
+            (Kind::EmergencyExit, Phase::ExitRegistered),
+        ] {
+            plan.kind = kind;
+            assert!(!bark_custody_inputs_are_authorized(
+                &plan,
+                phase,
+                &projection
+            ));
+        }
+    }
+
+    #[test]
+    fn pending_claim_input_preserves_exact_plan_binding() {
+        use cdk::federation::{
+            FederationBarkActionId, FederationBarkSemanticPhase as Phase, FederationBarkVtxoId,
+        };
+
+        let (plan, projection) = pending_claim_input();
+        let mut mismatches = Vec::new();
+        let mut wrong_id = projection.clone();
+        wrong_id.vtxos[0].vtxo_id =
+            FederationBarkVtxoId::from_bytes([9; 36]).expect("different VTXO");
+        mismatches.push(wrong_id);
+        let mut wrong_locator = projection.clone();
+        wrong_locator.vtxos[0].locator.index += 1;
+        mismatches.push(wrong_locator);
+        let mut wrong_amount = projection.clone();
+        wrong_amount.vtxos[0].amount = 2_049.into();
+        mismatches.push(wrong_amount);
+        let mut unreserved = projection.clone();
+        unreserved.vtxos[0].reservation_action_id = None;
+        mismatches.push(unreserved);
+        let mut wrong_owner = projection.clone();
+        wrong_owner.vtxos[0].reservation_action_id =
+            Some(FederationBarkActionId::from_bytes([9; 32]).expect("different action"));
+        mismatches.push(wrong_owner);
+        let mut absent = projection;
+        absent.vtxos.clear();
+        mismatches.push(absent);
+        for projection in mismatches {
+            assert!(!bark_custody_inputs_are_authorized(
+                &plan,
+                Phase::ReceivePreimageDisclosed,
+                &projection,
+            ));
+        }
+    }
+
+    #[test]
+    fn custody_input_state_preserves_reservation_and_exit_boundaries() {
+        use cdk::federation::{
+            FederationBarkActionKind as Kind, FederationBarkSemanticPhase as Phase,
+            FederationBarkVtxoState as State,
+        };
+
+        let (mut plan, mut projection) = pending_claim_input();
+        projection.vtxos[0].state = State::Reserved;
+        assert!(bark_custody_inputs_are_authorized(
+            &plan,
+            Phase::ClaimPlanned,
+            &projection
+        ));
+        for state in [
+            State::Observed,
+            State::Spendable,
+            State::Spent,
+            State::Exiting,
+            State::Exited,
+        ] {
+            projection.vtxos[0].state = state;
+            assert!(!bark_custody_inputs_are_authorized(
+                &plan,
+                Phase::ReceivePreimageDisclosed,
+                &projection
+            ));
+        }
+        plan.kind = Kind::EmergencyExit;
+        projection.vtxos[0].state = State::Exiting;
+        assert!(bark_custody_inputs_are_authorized(
+            &plan,
+            Phase::ExitRegistered,
+            &projection
+        ));
+    }
 
     #[test]
     fn only_refresh_authorizes_an_output_locator() {
@@ -1495,9 +1669,13 @@ async fn wait_for_bark_custody_projection(
                 action.signing_retry_phase,
                 action.attempt,
                 authorization_attempt,
+            ) && bark_custody_inputs_are_authorized(
+                plan,
+                action.signing_retry_phase.unwrap_or(action.phase),
+                &projection,
             )
         });
-        if authorization_is_current && bark_custody_inputs_are_reserved(plan, &projection) {
+        if authorization_is_current {
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
@@ -1510,8 +1688,9 @@ async fn wait_for_bark_custody_projection(
 }
 
 #[cfg(feature = "federation-bark")]
-fn bark_custody_inputs_are_reserved(
+fn bark_custody_inputs_are_authorized(
     plan: &cdk::federation::FederationBarkActionPlan,
+    phase: FederationBarkSemanticPhase,
     projection: &cdk::federation::FederationBarkProjectionSnapshot,
 ) -> bool {
     plan.inputs.iter().all(|input| {
@@ -1519,14 +1698,20 @@ fn bark_custody_inputs_are_reserved(
             record.vtxo_id == input.vtxo_id
                 && record.locator == input.locator
                 && record.amount == input.amount
-                && matches!(
-                    record.state,
-                    cdk::federation::FederationBarkVtxoState::Reserved
-                        | cdk::federation::FederationBarkVtxoState::Exiting
-                )
-                && (record.state != cdk::federation::FederationBarkVtxoState::Exiting
-                    || plan.kind == cdk::federation::FederationBarkActionKind::EmergencyExit)
                 && record.reservation_action_id == Some(plan.action_id)
+                && match record.state {
+                    cdk::federation::FederationBarkVtxoState::Reserved => true,
+                    // Disclosure retains the exact claim reservation while
+                    // recovery finishes spending the already authorized input.
+                    cdk::federation::FederationBarkVtxoState::PendingSpend => {
+                        plan.kind == FederationBarkActionKind::IncomingClaim
+                            && phase == FederationBarkSemanticPhase::ReceivePreimageDisclosed
+                    }
+                    cdk::federation::FederationBarkVtxoState::Exiting => {
+                        plan.kind == FederationBarkActionKind::EmergencyExit
+                    }
+                    _ => false,
+                }
         })
     })
 }

@@ -6,13 +6,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cdk::federation::{
     ark_server_commitment, federation_bark_description_hash, federation_bark_mailbox_scope,
     payment_hash_for_preimage, preimage_commitment, FederationBarkActionId,
-    FederationBarkActionTransition, FederationBarkEvidencePhase, FederationBarkMemberObservation,
-    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkReceiveIntent,
-    FederationBarkReceivePrepared, FederationBarkReceiveProof, FederationBarkReceiveSecretBinding,
-    FederationBarkSemanticPhase, FederationBarkUnit, FederationBarkVtxoLocator,
-    FederationBarkVtxoState, FederationError, FederationId, FederationOperationId,
-    FederationPaymentObservationContext, MemberConfigPublic, FEDERATION_BARK_OPERATION_VERSION,
-    FEDERATION_MAX_DERIVATION_INDEX,
+    FederationBarkActionRecord, FederationBarkActionTransition, FederationBarkEvidencePhase,
+    FederationBarkMemberObservation, FederationBarkObservationStatus, FederationBarkOperation,
+    FederationBarkReceiveIntent, FederationBarkReceivePrepared, FederationBarkReceiveProof,
+    FederationBarkReceiveSecretBinding, FederationBarkSemanticPhase, FederationBarkUnit,
+    FederationBarkVtxoLocator, FederationBarkVtxoState, FederationError, FederationId,
+    FederationJournalEntry, FederationOperationId, FederationPaymentObservationContext,
+    MemberConfigPublic, FEDERATION_BARK_OPERATION_VERSION, FEDERATION_MAX_DERIVATION_INDEX,
 };
 use cdk::mint::{MintQuoteRequest, MintQuoteResponse, QuoteId};
 use cdk::nuts::CurrencyUnit;
@@ -482,22 +482,7 @@ async fn advance_federated_bark_mint_quote_inner(
             let outcome = match claim_result {
                 Ok(outcome) => outcome,
                 Err(cdk_bark::Error::CustodySignerUnavailable) => {
-                    let retry = runtime
-                        .advance_signing_attempt(&action, &plan_entry)
-                        .map_err(|error| {
-                            error.into_federation_error(
-                                "advance incoming signing attempt",
-                                Some(plan_entry.operation_id),
-                            )
-                        })?;
-                    let envelope = federation.operation_envelope(super::bark_federation_operation(
-                        FederationBarkOperation::ActionTransition(retry),
-                    )?);
-                    state
-                        .submit_federation_envelope(envelope)
-                        .await?
-                        .ensure_accepted()?;
-                    return Ok(FederationPaymentAdvancement::Progressed);
+                    return advance_receive_signing_attempt(state, &action, &plan_entry).await;
                 }
                 Err(error) => {
                     return Err(error
@@ -512,6 +497,7 @@ async fn advance_federated_bark_mint_quote_inner(
             match outcome {
                 cdk_bark::FederatedBarkReceiveClaimOutcome::RecoveryRequired {
                     preimage_disclosed,
+                    signer_unavailable,
                 } => {
                     if effective_phase == FederationBarkSemanticPhase::ClaimPlanned {
                         let envelope =
@@ -523,6 +509,8 @@ async fn advance_federated_bark_mint_quote_inner(
                             .await?
                             .ensure_accepted()?;
                         Ok(FederationPaymentAdvancement::Progressed)
+                    } else if signer_unavailable {
+                        advance_receive_signing_attempt(state, &action, &plan_entry).await
                     } else {
                         Ok(FederationPaymentAdvancement::AwaitingExternalEvidence)
                     }
@@ -656,6 +644,34 @@ async fn advance_federated_bark_mint_quote_inner(
         }
         _ => Ok(FederationPaymentAdvancement::Complete),
     }
+}
+
+async fn advance_receive_signing_attempt(
+    state: &MintState,
+    action: &FederationBarkActionRecord,
+    plan_entry: &FederationJournalEntry,
+) -> Result<FederationPaymentAdvancement, cdk::Error> {
+    let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
+    let runtime = state
+        .federation
+        .bark_runtime()
+        .ok_or_else(bark_unavailable)?;
+    let retry = runtime
+        .advance_signing_attempt(action, plan_entry)
+        .map_err(|error| {
+            error.into_federation_error(
+                "advance incoming signing attempt",
+                Some(plan_entry.operation_id),
+            )
+        })?;
+    let envelope = federation.operation_envelope(super::bark_federation_operation(
+        FederationBarkOperation::ActionTransition(retry),
+    )?);
+    state
+        .submit_federation_envelope(envelope)
+        .await?
+        .ensure_accepted()?;
+    Ok(FederationPaymentAdvancement::Progressed)
 }
 
 async fn advance_receive_claimed_evidence(

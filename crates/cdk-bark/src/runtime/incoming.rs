@@ -716,7 +716,10 @@ impl FederatedBarkRuntime {
                     &custody_attempt,
                 )?),
             }),
-            Err(_) => Ok(FederatedBarkReceiveClaimOutcome::RecoveryRequired { preimage_disclosed }),
+            Err(_) => Ok(FederatedBarkReceiveClaimOutcome::RecoveryRequired {
+                preimage_disclosed,
+                signer_unavailable,
+            }),
         }
     }
 
@@ -745,9 +748,9 @@ impl FederatedBarkRuntime {
         self.prepare_receive_claim_successor(&disclosed, accepted_preimage.operation_id, result)
     }
 
-    /// Build the deterministic claim successor before the disclosure has
-    /// finalized, allowing both transitions to be ordered in one AlephBFT unit.
-    /// The caller must preserve this exact predecessor order atomically.
+    /// Build the claim successor with its original disclosure evidence.
+    /// At the disclosure's attempt both transitions can be ordered atomically;
+    /// a later signing attempt instead follows its accepted custody operation.
     pub fn prepare_receive_claim_successor(
         &self,
         disclosed: &FederationBarkActionTransition,
@@ -757,9 +760,18 @@ impl FederatedBarkRuntime {
         if disclosed.phase != FederationBarkSemanticPhase::ReceivePreimageDisclosed
             || disclosed.action_id != result.action_id
             || disclosed.plan_operation_id != result.plan_operation_id
+            || result.attempt < disclosed.attempt
         {
             return Err(Error::ReceiveClaimPlanInvalid);
         }
+        // A later signing attempt extends the accepted disclosure's lineage.
+        // Keep its evidence binding, but follow the custody operation that
+        // authorized this result rather than forking the original disclosure.
+        let predecessor_operation_id = if result.attempt > disclosed.attempt {
+            result.custody_operation_id
+        } else {
+            disclosed_operation_id
+        };
         let mut transitions = result.input_transitions;
         transitions.extend(result.output_transitions);
         transitions.sort();
@@ -770,7 +782,7 @@ impl FederatedBarkRuntime {
             phase: FederationBarkSemanticPhase::ReceiveClaimed,
             actor: self.member_id,
             plan_operation_id: result.plan_operation_id,
-            predecessor_operation_id: disclosed_operation_id,
+            predecessor_operation_id,
             payment_hash: Some(result.payment_hash),
             attempt: result.attempt,
             signer_set: result.signer_set,

@@ -1471,6 +1471,12 @@ impl Mint {
                 else {
                     return Err(bark_state_error("claim result references a non-plan"));
                 };
+                validate_receive_claim_transition_header(
+                    action,
+                    plan_entry.operation_id,
+                    &plan,
+                    transition,
+                )?;
                 let intent = self
                     .federation_bark_receive_intent(action.origin_operation_id)
                     .await?
@@ -1507,9 +1513,7 @@ impl Mint {
                         .checked_add(u64::from(mutation.amount))
                         .ok_or_else(|| bark_state_error("claim result amount overflow"))?;
                 }
-                if action.phase != FederationBarkSemanticPhase::ReceivePreimageDisclosed
-                    || transition.predecessor_operation_id != action.latest_operation_id
-                    || spent != planned
+                if spent != planned
                     || spendable_sat < u64::from(intent.cashu_amount)
                     || spendable_sat > u64::from(output.amount)
                 {
@@ -2602,6 +2606,37 @@ mod bark_validation {
         Error::Custom(format!("invalid federated Bark state: {reason}"))
     }
 
+    pub(super) fn validate_receive_claim_transition_header(
+        action: &FederationBarkActionRecord,
+        plan_operation_id: FederationOperationId,
+        plan: &FederationBarkActionPlan,
+        transition: &FederationBarkActionTransition,
+    ) -> Result<(), Error> {
+        let expected_signers = action_custody_signers(action, plan)?;
+        if plan.kind != FederationBarkActionKind::IncomingClaim
+            || action_effective_phase(action)
+                != FederationBarkSemanticPhase::ReceivePreimageDisclosed
+            || action.plan_operation_id != Some(plan_operation_id)
+            || action.action_id != plan.action_id
+            || action.quote != plan.quote
+            || action.payment_hash != plan.payment_hash
+            || transition.phase != FederationBarkSemanticPhase::ReceiveClaimed
+            || transition.plan_operation_id != plan_operation_id
+            || transition.predecessor_operation_id != action.latest_operation_id
+            || transition.action_id != action.action_id
+            || transition.quote != action.quote
+            || transition.payment_hash != action.payment_hash
+            || transition.actor != action.actor
+            || transition.attempt != action.attempt
+            || transition.signer_set != expected_signers
+        {
+            return Err(bark_state_error(
+                "claim result differs from its accepted custody attempt",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn validate_send_transition_header(
         action: &FederationBarkActionRecord,
         plan_operation_id: FederationOperationId,
@@ -3059,7 +3094,7 @@ fn payment_observation_materialized_row(
 }
 
 #[cfg(all(test, feature = "federation-bark"))]
-mod outgoing_tests {
+mod transition_tests {
     use super::*;
     use cdk_common::federation::MemberId;
     use cdk_federation_bark::{
@@ -3097,6 +3132,97 @@ mod outgoing_tests {
             attempt: 1,
             expires_at: 1,
         }
+    }
+
+    #[test]
+    fn receive_claim_retry_requires_the_current_disclosed_lineage() {
+        let mut plan = send_plan(digest(7));
+        plan.kind = FederationBarkActionKind::IncomingClaim;
+        let plan_id = FederationOperationId::from_bytes([20; 32]);
+        let disclosure_id = FederationOperationId::from_bytes([21; 32]);
+        let retry_id = FederationOperationId::from_bytes([22; 32]);
+        let retry = FederationBarkActionTransition::signing_attempt_advanced(
+            plan_id,
+            disclosure_id,
+            &plan,
+            plan.actor,
+            2,
+            vec![MemberId::new(2).expect("retry signer")],
+        )
+        .expect("retry transition");
+        let action = FederationBarkActionRecord {
+            action_id: plan.action_id,
+            quote: plan.quote.clone(),
+            payment_hash: plan.payment_hash,
+            action_kind: Some(plan.kind),
+            phase: FederationBarkSemanticPhase::SigningAttemptAdvanced,
+            signing_retry_phase: Some(FederationBarkSemanticPhase::ReceivePreimageDisclosed),
+            actor: plan.actor,
+            attempt: retry.attempt,
+            origin_operation_id: plan.predecessor_operation_id,
+            origin_operation_index: 0,
+            latest_operation_id: retry_id,
+            latest_operation_index: 3,
+            plan_operation_id: Some(plan_id),
+            predecessor_operation_id: Some(disclosure_id),
+            operation_commitment: digest(23),
+            operation: FederationBarkOperation::ActionTransition(retry.clone()),
+        };
+        let mut claimed = retry;
+        claimed.phase = FederationBarkSemanticPhase::ReceiveClaimed;
+        claimed.predecessor_operation_id = retry_id;
+        // This test covers the header boundary; separate application checks
+        // still require every spent input and sufficient validated output value.
+        validate_receive_claim_transition_header(&action, plan_id, &plan, &claimed)
+            .expect("current accepted retry retains the disclosed phase");
+
+        let mut fork = claimed.clone();
+        fork.predecessor_operation_id = disclosure_id;
+        assert!(validate_receive_claim_transition_header(&action, plan_id, &plan, &fork).is_err());
+        for attempt in [1, 3] {
+            let mut stale = claimed.clone();
+            stale.attempt = attempt;
+            assert!(
+                validate_receive_claim_transition_header(&action, plan_id, &plan, &stale).is_err()
+            );
+        }
+        let mut mixed = claimed.clone();
+        mixed.signer_set = plan.signer_set.clone();
+        assert!(validate_receive_claim_transition_header(&action, plan_id, &plan, &mixed).is_err());
+        let mut other_payment = claimed.clone();
+        other_payment.payment_hash = Some(digest(24));
+        assert!(
+            validate_receive_claim_transition_header(&action, plan_id, &plan, &other_payment)
+                .is_err()
+        );
+        let mut other_actor = claimed.clone();
+        other_actor.actor = MemberId::new(3).expect("other actor");
+        assert!(
+            validate_receive_claim_transition_header(&action, plan_id, &plan, &other_actor)
+                .is_err()
+        );
+        let mut undisclosed = action.clone();
+        undisclosed.signing_retry_phase = Some(FederationBarkSemanticPhase::ClaimPlanned);
+        assert!(
+            validate_receive_claim_transition_header(&undisclosed, plan_id, &plan, &claimed)
+                .is_err()
+        );
+
+        let mut disclosed = claimed.clone();
+        disclosed.phase = FederationBarkSemanticPhase::ReceivePreimageDisclosed;
+        disclosed.attempt = plan.attempt;
+        disclosed.signer_set = plan.signer_set.clone();
+        let mut initial = action;
+        initial.phase = disclosed.phase;
+        initial.signing_retry_phase = None;
+        initial.latest_operation_id = disclosure_id;
+        initial.attempt = disclosed.attempt;
+        initial.operation = FederationBarkOperation::ActionTransition(disclosed);
+        claimed.attempt = plan.attempt;
+        claimed.signer_set = plan.signer_set.clone();
+        claimed.predecessor_operation_id = disclosure_id;
+        validate_receive_claim_transition_header(&initial, plan_id, &plan, &claimed)
+            .expect("first-attempt claim still follows the disclosure directly");
     }
 
     #[test]
