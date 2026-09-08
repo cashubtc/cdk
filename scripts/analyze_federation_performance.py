@@ -87,7 +87,9 @@ def payment_window(report):
         "window_seconds": seconds,
         "offered_payments_per_second": counts["offered"] / seconds,
         "completed_payments_per_second": counts["completed"] / seconds,
+        "client_latency_population": "completed_inside_window_only",
         "client_latency": latency_metrics(latencies, "ms") if latencies else None,
+        "late_client_latency_population": "completed_during_drain_only",
         "late_client_latency": latency_metrics(late_latencies, "ms") if late_latencies else None,
         "sustainable_throughput": None,  # Requires queue stability and load sweeps.
     }

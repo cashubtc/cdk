@@ -130,3 +130,23 @@ tests. Neither correction has yet passed real-payment or performance acceptance.
 All campaign matrix, regression, adversarial, real-payment, restart, conservation,
 combined-comparison and two-final-profile gates remain pending. No final
 performance or correctness claim is made by this report yet.
+
+### Incoming Lightning collector investigation
+
+The stable-collector candidate keeps evidence collection attached to the original
+intent actor while allowing the current leased worker to prepare incoming HTLCs.
+A concurrent eight-request pilot completed all eight inside 60 seconds. Its
+baseline completed four inside that window, three during drain, and left one
+pending. Independent receipts verify 16,384 sat for the candidate and 14,336 sat
+for the baseline by drain. The pending baseline invoice is preserved for recovery.
+[All 16 pilot outcomes](benchmarks/2026-09-08-bark-incoming-isolation-pilot.csv) retain
+late/pending results and external payer intervals.
+
+This is **not an accepted performance comparison**: the baseline pilot ran with
+an inactive comparison federation still present. The replacement isolated series
+stopped at its pre-payment gate when a fresh baseline retained a startup consensus
+item. No payment was initiated in that fixture. A subsequent idle sample found
+similar CPU use across members, including the member with that item; a bounded
+probe is investigating whether it is stale recovery-barrier bookkeeping.
+The collector optimization remains provisional, and the five matched pairs have
+not yet been completed.

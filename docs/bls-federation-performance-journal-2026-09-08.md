@@ -1175,3 +1175,41 @@ recorded separately. Native sampling starts only after the SDK preparation signa
 All eight attempts, including drain completions and pending outcomes, are retained.
 The optional start handshake passed both pilot arms; scoped example Clippy and its
 release build had passed before these runs. It changes benchmark support only.
+
+### E06 follow-up — Classify startup work before payment comparisons
+
+The first isolated baseline retained one pending-finalization item on member 4
+with zero accepted operations. No benchmark invoice was created. The preparation
+controller was interrupted before payment initiation, with the fixture preserved.
+A 60-second native sample after stopping readiness polling recorded stable state:
+aggregate CPU 2.223203 seconds; per-member CPU 0.449881, 0.446972, 0.441797,
+0.441906 and 0.442646 seconds. The member with the pending item did not use more
+CPU. Collector CPU was 0.008826 seconds for the entire sample. This does **not**
+establish that the retained item causes excess idle CPU, nor validate earlier
+uncontrolled comparisons.
+
+Next attribution probe: count pending operations, module facts and recovery
+barriers; separately count barriers with an identical already accepted generation.
+Emit at most 32 reports per process, at least 30 seconds apart while pending work
+exists. Unlike the earlier probe, empty-state status calls cannot exhaust its
+report budget. No artifact contents, secrets or identities are logged. Build an
+isolated baseline probe and isolated E06 candidate, removing the probe from source
+before further acceptance measurements. Existing E06 tests establish the stale
+bookkeeping case; live attribution and any performance effect remain to be shown.
+
+Both isolated E06 artifacts built successfully and temporary probes were removed
+from source. The first log-attachment attempt failed before any member launched
+because tmux cannot pipe an exited pane. Direct private log capture corrected the
+helper. Restarting the preserved unmeasured fixture with the baseline probe
+cleared all pending items; signed status was healthy/converged at 35, 65 and 95
+seconds with zero operations, session zero and empty queues. No pending item
+survived for attribution. Thus the live item type remains unconfirmed. The E06
+candidate was not deployed and no E06 gain is claimed.
+
+The isolated incoming comparison will prepare both arms with exactly one normal
+warm restart after initial readiness, before SDK setup/timing, then enforce empty
+queues. This uses ordinary startup behavior rather than including an unaccepted
+fix in either arm. The interrupted second fixture is retained as a diagnostic;
+new independent fixtures will supply the five alternating pairs. Initial and
+post-restart signed status are both retained. No additional restart is attempted
+if this preparation protocol fails its gate.

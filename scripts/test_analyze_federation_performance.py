@@ -40,6 +40,8 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(result["late_completed"], 2)
         self.assertEqual(result["unfinished_at_window_end"], 3)
         self.assertEqual(result["client_latency"]["p50_ms"], 200)
+        self.assertEqual(result["client_latency_population"], "completed_inside_window_only")
+        self.assertEqual(result["late_client_latency_population"], "completed_during_drain_only")
         self.assertIsNone(result["sustainable_throughput"])
 
     def test_latency_tail_requires_enough_samples(self):
