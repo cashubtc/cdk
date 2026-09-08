@@ -583,7 +583,7 @@ five-payment run establishes neither a speedup, sustainable throughput nor p99.
 All owned services are stopped and original state preserved. E07 performance
 acceptance and the broader campaign gates remain open.
 
-### Direct ecash primary measurements: serial and four-way observations
+### Direct ecash primary measurements: concurrency observations
 
 A fresh five-member HTTP/SQLite fixture using the accepted E03a release completed
 64 serial 32-sat receives into independent wallets. Each consumes one proof and
@@ -591,14 +591,14 @@ produces twelve proofs under the existing wallet denomination policy. All member
 journals and recipient balances pass the independent audit; 8,192 sat funding
 reconciles exactly to 6,144 sat retained and 2,048 sat received.
 
-| Metric | Serial | Four-way |
-| --- | ---: | ---: |
-| p50 / p95 | 1.017 / 1.234 s | 1.212 / 1.362 s |
-| Time to last of 64 receipts | 66.039 s | 19.199 s |
-| Active member CPU per receipt, causal bounds | 0.38565–0.38646 s | 0.28257–0.28995 s |
-| Aggregate CPU over the fixed 180 s window | 28.84283–28.88785 s | 25.95402–26.07658 s |
-| Peak sampled aggregate RSS | 451.396 MB | 444.826 MB |
-| Quiescent CPU over 30 s | Missing | 1.33976 s |
+| Metric | Serial | Four-way | Sixteen-way |
+| --- | ---: | ---: | ---: |
+| p50 / p95 | 1.017 / 1.234 s | 1.212 / 1.362 s | 1.222 / 1.621 s |
+| Time to last of 64 receipts | 66.039 s | 19.199 s | 5.545 s |
+| Active member CPU per receipt, causal bounds | 0.38565–0.38646 s | 0.28257–0.28995 s | 0.24398–0.25203 s |
+| Aggregate CPU over the fixed 180 s window | 28.84283–28.88785 s | 25.95402–26.07658 s | 23.04648–23.45543 s |
+| Peak sampled aggregate RSS | 451.396 MB | 444.826 MB | 493.748 MB |
+| Quiescent CPU over 30 s | Missing | 1.33976 s | 1.17862 s |
 
 All 64 completed in-window with no failures or late completions. This is a finite
 burst with no sustainable-throughput or p99 conclusion, and no optimization is
@@ -613,4 +613,9 @@ member-state, idle and cleanup checks; its
 [run record](benchmarks/2026-09-08-primary-ecash-c4-run.csv) include the separate
 post-SDK audit CPU interval. The shorter burst and lower active CPU/receipt are
 observed concurrency scaling, not a validated code optimization or repeatability
-claim. The c16/c64 observations and profiling attribution remain pending.
+claim. The sixteen-way [requests](benchmarks/2026-09-08-primary-ecash-c16-requests.csv)
+and [run record](benchmarks/2026-09-08-primary-ecash-c16-run.csv) also pass receipt,
+proof-state, conservation, digest, idle and cleanup audits. Its higher sampled RSS
+and longer request tail remain visible alongside the shorter burst; no regression
+or improvement is inferred from one run. The c64 observation and profiling
+attribution remain pending.

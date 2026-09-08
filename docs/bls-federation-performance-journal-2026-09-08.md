@@ -4304,3 +4304,31 @@ finishes earlier with somewhat higher request latency and lower active CPU per
 receipt. This is descriptive concurrency scaling, not an accepted code change,
 a confidence interval over repeated runs, p99 or sustainable throughput. c16
 fixture preparation started only after c4 cleanup completed; c64 remains queued.
+
+### Primary ecash c16: full observation and cleanup passed
+
+All 64 original twelve-output receives completed in-window, with zero failures,
+timeouts, unfinished or late requests. Original recipient/member proof audits,
+exact 8,192 = 6,144 + 2,048 sat conservation, matching 77-operation digests, empty
+queues, unchanged idle state and owned-service cleanup all pass. The last receipt
+arrived at 5.544575 seconds; p50/p95 are 1,221.654250/1,621.248583 ms.
+
+Active member CPU is bounded at 15.614516749–16.129808333 seconds, or
+0.243976824–0.252028255 seconds per receipt. Fixed-window CPU is
+23.046484043–23.455425751 seconds over 180 seconds. Peak sampled aggregate RSS is
+493,748,224 bytes and collector CPU is 0.369328917 seconds. Post-SDK receipt
+audit/convergence CPU is 0.056142457 seconds, including the 0.025998375-second
+status-only subinterval. Separate quiescent CPU over 30 seconds is 1.178623541
+seconds, with 6,423 interrupt and 427 package wakeups. Do not add overlapping
+status/audit intervals or interpret a single idle observation as an improvement.
+
+```sh
+python3 "$RUN_ROOT/run_primary_ecash_observation.py" --concurrency 16
+python3 "$RUN_ROOT/export_primary_ecash_observation.py" --concurrency 16
+```
+
+The [requests](benchmarks/2026-09-08-primary-ecash-c16-requests.csv) and
+[run record](benchmarks/2026-09-08-primary-ecash-c16-run.csv) preserve every sample.
+The sequential controller started c64 only after c16 audit/export and cleanup.
+This remains descriptive finite-burst scaling, not a production change, repeated
+run confidence interval, sustainable throughput or p99 conclusion.
