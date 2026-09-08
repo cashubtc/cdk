@@ -674,16 +674,17 @@ accepted-plan serialization while measuring whether backend waits can safely sit
 outside it. The existing backend wait is bounded at four seconds; that bound alone
 is not evidence that a particular request waited four seconds for the lock.
 
-The existing `federation_receive_performance` driver is being extended to accept
+The existing `federation_receive_performance` driver now accepts
 either token fixtures or `mint_requests` (method `bolt11`/`onchain`, `amount_sat`).
 It reuses the same persistent connectors, independent/shared wallets, scheduler,
 bounded drain and completion accounting. Mint quotes are durably stored before
 their requests are exposed in private files to an independent payer. It records
 quote-readiness offsets and actual issued proof counts. No funding is performed
 inside the SDK driver. A separate private payer records its own causal timestamps
-and initiates each invoice/deposit only once. Compilation and pilot validation are
-deferred until the active paired payment measurements finish, avoiding build load
-in acceptance windows. This support change is not a production optimization.
+and initiates each invoice/deposit only once. Compilation, strict lint and both serial incoming pilots passed before the
+controlled paired measurements started, as recorded above. An optional tracing
+flag is being added for diagnostic runs; those traced runs cannot replace
+probe-free acceptance samples. This support change is not a production optimization.
 
 ## E03c — Prospective post-confirmation notification investigation
 
@@ -706,3 +707,205 @@ quotes must preserve existing ownership, avoid database I/O in terminal publicat
 and avoid an unrelated-history read for each notification. An extra generic event
 framework or speculative cache would not be justified. Delayed/lost notification,
 duplicate request and restart tests remain mandatory for any candidate here.
+
+
+### E03a precision and restart follow-up prepared
+
+The first four controlled pairs completed without input-shape mismatches; all
+payments have independent recipient receipts and exact SDK wallet debits. The
+fifth pair is still running. One candidate again showed elevated settled CPU,
+so no on-chain candidate is accepted yet.
+
+A private native process sampler was validated against the installed SDK ABI,
+Python process CPU time and the existing process sampler. Initial validation
+caught CPU counters expressed in platform clock ticks; conversion with the
+reported clock timebase now passes. Raw native counters must not be mislabeled
+as nanoseconds. This profiler is external to production code.
+
+After the payment series, restart the preserved completed fixtures one pair at
+a time, allow 60 seconds to settle, and sample each arm for 60 seconds with
+alternating order. This covers a full repair interval. Record precise CPU,
+retired instructions, cycles, hardware interrupt/package-idle wakeups, disk
+bytes and sampled memory, together with collector overhead. Hardware wakeup
+counts are not a count of all async task reschedules. Capture existing phase
+metrics around the window, separately from its CPU bracket, and require
+unchanged canonical state plus within-run member agreement. Preserve every
+sample, including anomalies. These checks remain pending.
+
+The next diagnostic build is prepared, but not applied during acceptance runs:
+256 bounded incoming lock/row probes and 512 bounded confirmation/scheduling
+probes per diagnostic member. Confirmation publication and quote probes share
+one monotonic clock; a proposal-to-quote mapping comes from the durable fixture
+state. Scheduling probes record the already chosen retry delay without changing
+it. The builder restores all temporary source edits after either success or
+failure. No lock, lease, retry, evidence or authorization policy is changed.
+
+
+### E03a controlled five-pair preview — later invalidated by runtime audit
+
+All five alternating pairs completed with the frozen original/candidate servers
+and common SDK artifact. Each arm started at 13 accepted operations with 64
+proofs of 2,048 sat and 131,072 sat total. Every run selected the same proof
+counts `[0, 9, 9, 9, 11]`, swap counts `[3, 0, 0, 0, 0]`, quote reserves of
+3,478 sat and fees of 285 sat. No request failed, timed out or remained
+unfinished. The independent chain audit verified 50 recipient outputs totaling
+50,000 sat and actual Bitcoin fees totaling 14,250 sat. Exact wallet debits and
+within-run member digests agree. The initial uncontrolled 50-payment series also
+passed an independent chain fee audit: 19,096 sat actual fees; this does not
+repair its input mismatches or make it acceptance evidence.
+
+The following unchecked preview is preserved for the investigation. The later
+runtime audit below invalidates it for acceptance. Geometric means of run metrics
+and paired 95% intervals:
+
+| Metric | Baseline | Candidate | Candidate/baseline interval |
+|---|---:|---:|---:|
+| Client p50 | 36.850 s | 25.307 s | 0.4775–0.9877 |
+| Client p95 | 38.596 s | 37.408 s | 0.8913–1.0540 |
+| Member CPU/payment, including SDK preparation | 5.302 s | 4.900 s | 0.7582–1.1265 |
+| Sampled peak aggregate RSS | 492.917 MB | 507.636 MB | 0.9603–1.1044 |
+| Post-payment 30-second aggregate member CPU | 1.499 s | 2.217 s | 0.7976–2.7433 |
+
+These are run-level intervals; the five transactions within each run are not
+independent replicates. Five observations do not support p99, and each run's
+nearest-rank p95 is its maximum. Candidate idle CPU was elevated in pairs three
+and five (3.69 / 3.95 s), and RSS was also higher in those runs. Preserve these
+observations. Median latency improved, but the guard metrics remain inconclusive;
+the candidate is still provisional. Diagnose idle work, then expand comparisons
+if no confirmed rejection is found. The
+[complete controlled numeric ledger](benchmarks/2026-09-08-bdk-broadcast-controlled.csv)
+includes all 50 samples. Missing external observation boundaries remain blank;
+their absence is not zero latency. External phase differences use one controller
+clock; SDK latency uses its own monotonic clock.
+
+
+## E05 — Repeated checkpoint-summary configuration digest hypothesis
+
+The idle stack profiles did not capture the earlier CPU spike. They did capture
+`FederationCheckpoint::validate_against_validated_config` calling
+`FederationConfig::config_digest_for_validated_config` beneath checkpoint-summary
+responses in both revisions. Inspection shows that this serializes the entire
+public configuration and hashes it for each summary. The immutable
+`MintFederationRuntimeConfig` already stores the same validated configuration's
+digest. No new cache is needed if these callers can safely reuse it.
+
+Hypothesis: reusing that existing digest in checkpoint-summary validation removes
+repeated serialization, hashing and allocation without skipping shape, federation
+binding, digest equality or roster checks. Owning layer: federation checkpoint
+validation and Axum summary construction. Predicted counter change: zero full
+configuration reserializations caused by summary validation after construction.
+Primary metric: settled member CPU at matched history; guard metrics: active
+payment latency/CPU, memory and recovery. First add bounded digest-duration and
+byte-count probes to the diagnostic build and measure the existing path. Do not
+change production behavior before those measurements. Existing ingress/startup
+verification and full-proof verification remain required.
+
+
+E03c ownership follow-up: the mint already has a federation-only payment-event
+channel carrying the established `payment::Event` type. The observer treats a
+successful-payment event as a prompt to independently probe accepted state.
+Transaction-observation application already loads the transaction projection and
+knows when its required confirmation settlement becomes complete. If the timing
+probe establishes the gap, consider emitting the existing successful-payment
+event for affected quotes **after the transaction commits**, using the already
+loaded authoritative receipts. This avoids another event channel, lookup cache
+or unrelated-history read in terminal response publication. Emit only on the
+transition into confirmed settlement; retain periodic recovery for lost events.
+This remains a hypothesis, with rollback, duplicate, lost-event and restart tests
+required before acceptance.
+
+
+### Starting-runtime audit invalidates E03a controlled acceptance
+
+The complete status snapshots expose a confound missed by the original fixture
+readiness check. Before the controlled payment window, both arms had empty
+queues in pairs one, two and four. In pairs three and five, all candidate members
+already had one item pending finalization; all baseline members had zero. The
+same condition remained in the corresponding elevated post-payment CPU samples.
+The starting proof/fee shapes matched, but starting consensus work did not.
+
+Added the observed pending-item counts, pending-finalization counts, live-session
+flags and session numbers to the existing matched-input dictionary. The analyzer
+now rejects the controlled series as well. Its earlier unchecked interval output
+and records are preserved privately. The numeric ledger exposes these starting
+conditions explicitly. **No E03a latency, CPU or memory gain is accepted from
+either payment series.** All independent receipt, fee and wallet-value audits
+remain valid functional evidence.
+
+The native restart follow-up completed four pairs and restarted pair five before
+its controller was stopped. No fixture database or service was removed. Most
+restarted fixtures had one pending finalization item; candidate pair three had
+none and used 82 aggregate active network pump cycles versus the baseline's
+1,525 during the metric bracket. Their native CPU rates were 0.0689 versus
+0.1409 aggregate member CPU seconds/second. This is diagnostic evidence of
+different pending work, not an idle performance comparison. Both reported live
+sessions and matching within-run digests. Readiness alone is insufficient for a
+quiescent benchmark. New acceptance windows must verify empty queues and pending
+finalization, plus matched session/process conditions, before initiation.
+
+## E06 — Leftover consensus finalization work
+
+The pending-work condition appears in the original revision after restart as
+well as in candidate fixtures. SQLite has no pending payment-operation rows in
+the inspected affected fixture, so the item may be an internal recovery barrier.
+Inspection found that pending-decision cleanup recognizes operation identities
+and conflict keys, while recovery barriers use separate coverage semantics.
+This is a hypothesis, not yet a diagnosed cleanup bug.
+
+A bounded diagnostic probe will report pending operation/barrier/module-fact
+counts and whether an already accepted retained recovery barrier covers a pending
+barrier under the existing coverage predicate. It runs only every 50 calls for
+the first 5,120 calls and logs scalar counts/cursors. No item is removed or
+requeued by the probe. Owning layer: federation consensus pending bookkeeping.
+Primary metric if a bug is established: CPU/wakeups with no user work, with exact
+pending-item counts and independent replay/finalization tests. Do not clear a
+pending item merely because a timer expired or the log advanced; authorization,
+barrier coverage and actual terminal decisions must justify cleanup.
+
+
+### E06 narrow reproducer and provisional cleanup
+
+The focused reproducer fails on the current implementation: after a peer
+finalizes an identical recovery barrier, the local pending-finalization count
+remains one instead of zero. A provisional change extends the existing pending
+operation-decision cleanup to accepted **identical barrier generations**. It
+releases only local bookkeeping; it does not remove journal records, mutate
+unit payloads, accept rejected barriers or infer completion from a timer.
+
+The complete consensus module passes: 55 tests, including the new peer-decision
+reproducer, late local-unit validation, preservation of unrelated module facts
+and different generations, and rejection of premature peer barriers. The
+reproducer's original failing output is retained. Commands in the pinned shell:
+
+```sh
+cargo test --locked -p cdk-common --no-default-features --features federation   --lib peer_finalization_releases_equivalent_local_recovery_barrier
+cargo fmt --all
+cargo test --locked -p cdk-common --no-default-features --features federation   --lib federation::consensus::tests
+```
+
+This proves a bookkeeping defect, but not yet that it accounts for the live
+fixture's leftover item. Restarting only the diagnostic member cleared that
+member's pending count while four untouched members retained one; that first
+probe therefore did not capture the offending item. A simultaneous five-member
+restart with the frozen **pre-fix** probe is now running to identify it.
+No E06 performance acceptance or commit has occurred.
+
+### E05 digest cost measured
+
+The first diagnostic member captured 112 full configuration digest calls across
+startup/readiness and the following 20-second observation. Serialized public
+configurations were 366,856–372,706 bytes. Median method duration was 1,147.021 μs,
+maximum 4,012.917 μs, and summed non-overlapping method work was 191.293 ms.
+These are bounded method timings, not end-to-end phase latency or an idle
+comparison. Together with the checkpoint-summary stack attribution, they justify
+testing reuse of the already stored immutable configuration digest. No E05
+production change has been made yet.
+
+The pre-fix simultaneous diagnostic restart did not reproduce pending work. Four
+members became ready; one remained awaiting quorum after the bounded readiness
+attempt, even though operation, application, materialized-state and persisted
+finalized-item digests agreed across all members. All reported the same session.
+No payments were initiated in this state. Logs and databases are preserved, and
+all five diagnostic members are being restored to the original baseline binary.
+This is a separate recovery investigation; it neither accepts nor disproves the
+narrow equivalent-barrier cleanup. All temporary probes are removed from source.

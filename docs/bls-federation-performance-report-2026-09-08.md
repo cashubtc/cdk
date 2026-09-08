@@ -89,6 +89,23 @@ Controlled fee inputs, pre-initiation reserve checks and settled idle measuremen
 are being used for the replacement series. The analyzer now rejects mismatched
 observed inputs rather than relying only on matching configuration.
 
+### Controlled-fee series: starting-state mismatch found
+
+All 50 payments completed with matched fees/proof selections, independent
+recipient receipts and audited Bitcoin fees. A later runtime-state audit found
+one pending consensus item **before payments** in two candidate runs, while their
+baselines had none. The resulting latency/CPU intervals are invalid for acceptance;
+the earlier provisional 31% median comparison must not be treated as a gain.
+The analyzer now rejects this series with the observed runtime state included.
+
+The same pending work explains why some post-payment CPU samples were not
+quiescent. Four restart measurement pairs preserve diagnostic evidence, but they
+also contain pending finalization work and support no idle improvement claim.
+Investigation is focused on that work before more acceptance runs. All 50
+controlled-fee requests, phase observations, fees, proof shapes and starting/pending
+counts remain in the [numeric ledger](benchmarks/2026-09-08-bdk-broadcast-controlled.csv).
+The broadcaster candidate remains unaccepted.
+
 ## Initial inspection
 
 The baseline already caches validated DKG state/plans, retains verified wallet
