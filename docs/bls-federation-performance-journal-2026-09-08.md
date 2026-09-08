@@ -4332,3 +4332,68 @@ The [requests](benchmarks/2026-09-08-primary-ecash-c16-requests.csv) and
 The sequential controller started c64 only after c16 audit/export and cleanup.
 This remains descriptive finite-burst scaling, not a production change, repeated
 run confidence interval, sustainable throughput or p99 conclusion.
+
+### Primary ecash c64: full observation and cleanup passed
+
+All 64 original receives completed in-window with no failed, timed-out, unfinished
+or late requests. Original recipient/member proof audits, exact value conservation,
+matching digests at 77 operations, empty queues, unchanged idle state and cleanup
+passed. The sequential primary controller exited successfully after this case.
+
+The last receipt arrived at 3.586554250 seconds; p50/p95 are
+2,598.164167/3,581.489583 ms. Active member CPU is bounded at
+13.012305459–14.898588665 seconds, or 0.203317273–0.232790448 seconds per receipt.
+Fixed-window CPU is 20.888431710–22.475621416 seconds over 180 seconds. These
+causal bounds are wider for this short burst; do not turn them into precise point
+estimates or statistical confidence intervals. Peak sampled aggregate RSS is
+658,751,488 bytes and collector CPU is 0.374841625 seconds.
+
+Post-SDK receipt-audit/convergence CPU is 0.069138416 seconds, including the
+0.042073-second status-only subinterval. The separate 30-second quiescent interval
+consumes 1.171451583 CPU seconds, 6,390 interrupt wakeups and 316 package wakeups.
+
+```sh
+python3 "$RUN_ROOT/run_primary_ecash_observation.py" --concurrency 64
+python3 "$RUN_ROOT/export_primary_ecash_observation.py" --concurrency 64
+```
+
+The [requests](benchmarks/2026-09-08-primary-ecash-c64-requests.csv) and
+[run record](benchmarks/2026-09-08-primary-ecash-c64-run.csv) retain all observations.
+Across c1/c4/c16/c64, all 256 original receipts reconcile. Higher concurrency
+shortens the finite burst while increasing the observed tail and, at c64, sampled
+RSS. These are single-run workload observations, not a code improvement, a
+sustainable-throughput result, p99 or a final campaign acceptance gate.
+
+### Next ecash attribution: existing timers and bounded stack samples
+
+Use a separate c4 diagnostic after all primary measurements stop. Its observed
+19-second burst provides a longer active sampling interval than the c16/c64 cases.
+Resume the original c4 fixture once, verify unchanged 77-operation state and all
+original wallet receipts, and package 64 different 32-sat tokens offline from the
+remaining 6,144 sat. Do not create another deposit, copy custody, or reuse an
+already submitted token. New recipient wallets preserve the same one-input,
+twelve-output shape; exact final conservation must be 8,192 = 4,096 bank + 2,048
+prior recipients + 2,048 new recipients, with 141 matching accepted operations.
+
+Enable the existing `cdk::wallet::federation_performance` debug stage timers only
+for this diagnostic. Collect ten-second, one-millisecond native stack samples
+from the SDK and one member, plus bounded native resource observations. Record
+SDK child CPU separately from member CPU and exclude its measured pre-start
+preparation. Profile-enabled timings are excluded from acceptance comparisons.
+No temporary production probes or code changes are needed.
+
+Source inspection identifies two hypotheses for attribution: complete keyset
+cloning for each returned signature in `validate_mint_response_signatures`, and
+recomputing the same signer interpolation coefficients for each output in
+`aggregate_blind_signature_shares`. Existing phase timers start after key lookup,
+so their verification durations alone cannot measure that earlier work. Neither
+hypothesis authorizes an implementation until counters/timings and profiles show
+its contribution. Do not sum overlapping stage durations as wall time or CPU.
+
+```sh
+python3 "$RUN_ROOT/profile_primary_ecash.py"
+```
+
+This command is prespecified and not yet run. Private source snapshots accompany
+the diagnostic manifest. Preserve all failures and original state; audit receipts
+and stop owned services before any subsequent build or matched comparison.
