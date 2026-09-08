@@ -564,3 +564,8 @@ identify the cause of its delay. The
 [phase ledger](benchmarks/2026-09-08-e10-bdk-payment-phases.csv) keeps the clocks
 separate and leaves two missed unconfirmed observations empty. Its intervals
 must not be added to each other or treated as exact block-wait measurements.
+
+Pair six adds ten audited payments and two long candidate observations. Its
+candidate p95 is 37.282 versus 20.984 seconds and CPU/payment 4.2735 versus
+3.6468 seconds, despite equal signing-coordination counts. Preserve these results;
+the final E10 comparison remains scheduled at ten pairs.

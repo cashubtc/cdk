@@ -3751,3 +3751,30 @@ SDK and observer origins are separate. Do not subtract their timestamps or add
 these potentially overlapping intervals as a wall-time breakdown. No new
 instrumentation, performance acceptance or change to the extension follows from
 this descriptive extraction.
+
+### E10 extension: sixth pair audited
+
+Pair six completed candidate first, then baseline, with unchanged artifacts and
+workload. All ten payments passed the independent receipt, exact fee/value,
+member digest, queue and actual-input checks. Both original fixtures are stopped
+with state preserved. Read-only audits now cover sixty original payments:
+
+```sh
+python3 "$RUN_ROOT/audit_e10_completed_pairs.py" --through-pair 6
+python3 "$RUN_ROOT/export_e10_completed_runs.py"
+python3 "$RUN_ROOT/extract_e10_payment_phases.py" --through-pair 6
+```
+
+All earlier public rows are unchanged. Ledgers now contain sixty request/phase
+rows, twelve runs and 1,706 phase-count deltas. Baseline/candidate p50 is
+19,395.533792/18,912.928125 ms; p95 is 20,984.472459/37,282.233625 ms;
+CPU/payment is 3.6467906752/4.2734894334 seconds. Retain both candidate requests
+above 30 seconds. Both arms completed 17 FROST coordinations and 22 successful
+liveness rounds; skipped liveness rounds were 78/133. No aggregate conclusion is
+drawn at six pairs; the prescribed extension continues to ten.
+
+The two new long candidate requests spend 33,449.601959 and 36,115.224334 ms in
+the SDK confirm call. Their separately observed receipt-to-confirmation intervals
+are roughly 3.55–3.56 seconds. The same clock restrictions apply, and the two
+previously missing unconfirmed observations remain missing. These observations
+do not authorize a production change or establish a cause for the long calls.
