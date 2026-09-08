@@ -4025,3 +4025,62 @@ performance sample. An uninstrumented release build is now in progress using
 `build_e07_runtime.py`. It checks the validated source hashes, isolates the E07
 production diff, and reuses the unchanged retained E03a baseline artifact. No
 candidate production runtime or payment has been started by that build.
+
+The E07 release build subsequently completed successfully. The uninstrumented
+candidate fingerprint is
+`a634f60ceb671a5328c2e7ee9471aca969412ea72c39364a815578c26ab944f8`,
+with production patch SHA-256
+`5c38a47ed65116fba78c39d6e2f783c3bd439de2021e1558b1e1652d89a4d67a`.
+It was built from `f42ae42b9` plus only the provisional E07 production change;
+subsequent HEAD changes are documentation. The baseline reuses retained E03a
+artifact `bf9e434e3bcc94c52b91548d289caa3f8c41afd8c9f591b0241db9fc13468e34`.
+Both use the matched release feature/profile configuration. Source hashes still
+match the scoped validation snapshot, and no temporary production probes or
+local dependency overrides were added. No candidate services were started.
+The next required step is isolated regtest recovery, not another helper-only test.
+
+### E07 isolated regtest recovery protocol
+
+Before execution, prepare one independent five-member release fixture with real
+Bitcoin, Bark and Lightning backends using the existing fixture/payment helpers.
+Use the existing local warmup setting of 256 rounds with one rotation solely to
+create a controlled session boundary; quorum, confirmation policy, retry limits,
+production timeouts and queues remain unchanged. After issuing a 131,072-sat
+on-chain deposit, stop member one with its original durable state. Wait for the
+four peers to rotate normally and agree on session one with the same application
+frontier. Then restart the original member, require certified readiness within
+the existing 180-second recovery observation bound, and verify that all financial
+state and the original wallet value are unchanged. Finally use the existing SDK
+and independent miner to send five real 1,000-sat on-chain payments and audit
+recipient outputs, actual fees, change, member state and exact conservation.
+
+The rotation wait is fixture preparation, outside payment timing. This initial
+run is functional recovery evidence, not a paired performance comparison. No
+custody/nonce state is cloned and no SQL state is edited. The one-shot controller
+preserves every original identity after failures and stops only owned processes;
+partial membership is an expected cleanup case. An unexpected frontier change,
+pre-existing rotation or missing readiness fails the scenario instead of changing
+its state to manufacture success. Raw status, timing and process evidence remain
+private. E07 remains provisional pending observed results and acceptance.
+
+### E07 regtest attempt one: controller extraction failure, excluded
+
+The independent fixture completed full DKG and a real 131,072-sat on-chain
+issuance. The controller then failed before stopping any member because its
+status extractor omitted `next_unit`; the underlying status output did include
+that field. This is a harness error, not a candidate recovery failure or passing
+recovery sample. Cleanup stopped every owned service and preserved the fixture.
+Read-only original-state audit confirms all five members at 13 operations/session
+zero, one quote paid and issued for exactly 131,072 sat, no melt quotes, and the
+original wallet holding exactly 131,072 unspent sat. No payment is pending and
+no deposit will be repeated against this wallet.
+
+Correct the extractor and validate every required field against the saved initial
+and funded status lines before another run. A new independent fixture is required
+because restarting the old fixture intentionally disables the fresh-session warmup
+cap; editing its database to restore the cap is prohibited. The next attempt uses
+128 warmup rounds instead of 256 to shorten fixture preparation: the invalid
+attempt's funded members had unit cursors 28–43. This changes only the controlled
+rotation schedule, not a production performance setting or a comparison sample.
+The recovery observation limit remains 180 seconds. Preserve the invalid attempt
+and its full funding/cleanup evidence; do not mix it into future comparisons.
