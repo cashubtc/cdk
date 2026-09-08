@@ -2884,3 +2884,168 @@ at completion; transaction latency comes from the SDK's own monotonic clock.
 The comparison runner reuses only an arm with complete receipts/results and
 verified stopped backends. An existing partial arm fails closed and requires
 identity reconciliation; it is never automatically rerun.
+
+
+#### Matched-series continuation and pending E03a correctness gates
+
+Started `python3 "$RUN_ROOT/run_e03a_retained_pairs.py" --first 1 --last 5`
+after the first baseline controller exited successfully. The runner collected
+that arm's original completed evidence and verified its five owned backends were
+stopped. It then began the candidate counterpart using new backend custody and
+an independent ceremony. Every subsequent arm is serial; order alternates by
+pair. No performance decision is made from partial results.
+
+A read-only coverage pass identified the focused post-measurement gates below.
+These are planned commands, not new passing test claims. Run with the pinned Nix
+toolchain and the existing 16 MiB test thread stack after all measured services
+stop, isolating E03a from provisional E07:
+
+```sh
+cargo test --locked -p cdk --features mint,federation --lib transaction_signing
+cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib federation::broadcast::tests
+cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib federation::services::tests
+cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib federation::tests::frost_signing
+cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib federation::tests::finalization
+cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib recovery
+```
+
+`transaction_signing` covers rejected premature observations/wrong settlement
+policy, persisted intent, unknown external results, exact already-known recovery,
+and restored signed/broadcast state. The broadcaster tests preserve backend
+classification, retry delays and safe diagnostics. Service tests cover draining
+children, grace-period abort, first-failure propagation and sibling cancellation.
+FROST scenarios cover unavailable quorum, catch-up admission before nonce use,
+slow peers, lost commitments/shares/acknowledgements and exact attempt recovery.
+Finalization tests cover lost applied and rejected publication. Recovery tests
+cover trusted checkpoints, deterministic suffix replay and restart/catch-up.
+
+These tests are distinct safety boundaries; retain them. Existing publication
+suppression deliberately skips notification, so the unchanged periodic repair
+path remains essential. Source inspection confirms notifications select only
+applied signed/intent entries; each awakened round still performs readiness,
+authorization/state, retry and exact-transaction checks. Inspection is not evidence
+that runtime gates passed. Scoped strict lint, ordinary/core federation feature
+checks and a real candidate restart/payment-state reconciliation remain necessary
+before retaining E03a, in addition to the matched performance decision.
+
+
+#### First complete retained-code pair: provisional observations
+
+Pair one completed both arms and passed the runner's actual-input comparison.
+All ten payments have independent 1,000-sat recipient receipts, independently
+audited 285-sat Bitcoin fees, exact wallet debits and terminal SDK results inside
+the window. Both arms began with 13 operations/empty queues and stopped all owned
+services afterward. Pair two then started in candidate-first order.
+
+Candidate request latencies, milliseconds, retaining every observation:
+21,021.722708; 35,387.600375; 19,608.195666; 20,238.056042; 19,803.11125.
+Candidate empirical p50/p95 are 20,238.056042 / 35,387.600375 ms, versus baseline
+36,376.258792 / 37,092.678542 ms. The longer candidate second payment is retained;
+it must not be removed to improve a tail comparison. No p99 or run-level
+confidence conclusion is available from one pair.
+
+Aggregate CPU/payment: baseline 4.9050518832 s, candidate 3.8976814418 s.
+Instructions/payment: 43,185,791,095.4 versus 37,442,062,783.4. Sampled peak
+aggregate RSS: 442,384,384 versus 439,861,248 bytes; physical footprint:
+166,236,696 versus 162,386,456 bytes. Separate 30-second idle CPU: 1.203483084
+versus 1.106509374 s. These observations do not yet establish repeatability or
+pass the regression guards.
+
+Read-only inspection of the stopped original journals further checked accepted
+proof shapes, beyond SDK preparation counts: each arm had one swap with three
+input proofs and 38 outputs; the five melts consumed 8, 9, 9, 9 and 11 proofs,
+with 12 requested outputs each. The independently receipted Bitcoin transactions
+had matched one-input/two-output shapes. Retain this additional journal-derived
+shape comparison for the final series audit.
+
+Final accepted history was 169 operations baseline and 164 candidate. Counts by
+operation type show the entire difference is chain observations (55 versus 50);
+all other operation-type counts match, including five proposals, five signed
+transactions, five broadcast intents, fifty broadcast observations and five
+melts. The fixed-schedule miner naturally produces fewer blocks over a shorter
+run; final history is an observed outcome, not the initial-history matching gate.
+Do not call these five fewer chain observations fewer user payments or assume
+that they prove a separate optimization. Digests agree within each live run;
+unrelated ceremony digests are not compared across revisions.
+
+Disposition remains provisional. Complete all five matched pairs, calculate the
+agreed intervals and expand to ten if inconclusive; preserve the slower sample
+and every rejected/incomplete result. No production change is accepted here.
+
+
+#### Follow-up attribution queue from the first matched pair
+
+The SDK's own monotonic phase boundaries further locate the long candidate
+second request: quote creation 941.069875 ms, local preparation 30.4795 ms and
+`confirm()` 34,416.051 ms. Other candidate confirmation calls ranged from
+18,444.386458 to 20,373.734125 ms. The call includes federation submission,
+optional swap, signing, broadcast, block waiting and settlement; it is not a
+measurement of Bitcoin confirmation alone. These sequential SDK boundaries share
+one clock. All per-request phase differences are preserved privately.
+
+Read-only source inspection identifies existing five-second wallet-liveness and
+on-chain-observer rounds, a separately configured descriptor-wallet sync loop,
+and confirmation reads from the locally persisted wallet graph. The liveness
+worker also has explicit proposer/signing leases and aggregator grace. These
+facts nominate attribution points; they do not prove that any particular delay
+caused the slower request or authorize reducing a safety-related lease.
+
+After the matched series and its decision, profile retained/candidate operation
+phases with the normal logging writer explicitly permitting TRACE, keeping
+connection setup and fixed mining separate. Correlate proposal acceptance,
+liveness/signing, persisted wallet synchronization, local confirmation evidence,
+accepted settlement and SDK completion. Preserve independent validation,
+confirmation requirements, durable identities, retry delays and failure backoff.
+Only consider another notification or work-removal change if that profile proves
+its owning layer and cost. No new production optimization or timer tuning is
+introduced by this inspection.
+
+
+#### Additional accepted-change work audit
+
+Added the private read-only audit command
+`python3 "$RUN_ROOT/audit_e03a_retained_completed_pairs.py" --through-pair 1`.
+It checks only terminal, cleaned-up pairs against their original databases and
+SDK/recipient receipts; it cannot submit a payment. The first ten receipts pass.
+Across all five members in each arm, accepted melt input values are 4,478 sat,
+with 12 requested outputs and seven persisted change signatures totaling 3,193
+sat per payment. Each reconciles 4,478 = 1,000 recipient + 285 fee + 3,193 change.
+The three-input/38-output preparatory swap and all five actual melt input counts
+match across arms. This strengthens the actual-work guard beyond the SDK's
+preparation selections, which precede any necessary swap.
+
+The audit preserves per-request quote, preparation, confirm and total durations,
+accepted proof input/output counts, actual change counts/value, Bitcoin shapes,
+fees and recipient amounts in a private numeric CSV. It checks every member's
+accepted shape, terminal history, original mint funding and exact SDK quote
+association. Repeat it over all complete pairs before final series acceptance;
+never infer actual returned change count solely from requested output slots.
+No production instrumentation is added and no performance gain is accepted.
+
+
+#### Two completed pairs: retained numeric evidence, decision pending
+
+The reversed-order second pair completed with all ten receipts and actual-input
+checks passing. Its candidate median/p95 were 20,213.234167 / 21,369.064041 ms;
+baseline median/p95 were 35,303.692 / 38,227.130833 ms. CPU/payment was
+3.8233765664 versus 4.5956104998 seconds. These remain descriptive observations;
+no interval is calculated before the prescribed five complete pairs.
+
+The accepted-change audit was extended with
+`python3 "$RUN_ROOT/audit_e03a_retained_completed_pairs.py" --through-pair 2`.
+All twenty original requests, independent receipts and every member's accepted
+proof/change shapes passed. The third pair proceeded with new independent state;
+no original payment was rerun. Save all observations, including the longer first
+candidate second request, in the numeric-only
+[per-request ledger](benchmarks/2026-09-08-bdk-retained-broadcast-requests.csv) and
+[per-run ledger](benchmarks/2026-09-08-bdk-retained-broadcast-runs.csv).
+
+The request ledger includes SDK phase durations, preparation selections, actual
+accepted input counts/value, requested versus returned change output counts,
+change value, reserves, audited fees and Bitcoin transaction shapes. The run
+ledger includes all measured latency/CPU/instruction/memory/idle counters,
+collector CPU, initial/final history and terminal-window accounting. Empty p99
+values mean insufficient samples, not zero latency. Raw identifiers, bearer
+material, original transactions, process samples and environment details remain
+outside Git. Update these ledgers with every later completed arm; do not select
+only favorable observations. Correctness gates and final acceptance remain open.

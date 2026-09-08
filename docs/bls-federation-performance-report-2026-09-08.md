@@ -167,6 +167,19 @@ Temporary probe source was restored after building, and the fixture executable
 was restored after profiling. E03a still requires fresh uninstrumented matched
 comparisons and correctness gates.
 
+A fresh uninstrumented alternating-pair series is now running on retained
+production. Its first two complete pairs passed independent receipts, exact fees,
+wallet balances, empty starting queues and observed-input matching. All twenty
+[request observations](benchmarks/2026-09-08-bdk-retained-broadcast-requests.csv)
+and [four run records](benchmarks/2026-09-08-bdk-retained-broadcast-runs.csv)
+are retained, including the longer candidate request. A separate
+read-only audit of every member's original journal/signature rows also matched
+actual change work: 12 requested outputs and seven returned change outputs per
+melt. The SDK's new bounded start handshake excludes wallet/connection preparation
+from resource measurement. These initial results remain provisional until the
+required pair count, regression intervals, correctness and restart gates pass;
+the historical series below remains invalid for acceptance.
+
 ### Controlled-fee series: starting-state mismatch found
 
 All 50 payments completed with matched fees/proof selections, independent
