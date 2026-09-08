@@ -2666,3 +2666,124 @@ Raw native samples, CLI logs, token/quote identities, payer/recipient receipts,
 failed helper attempts and restart snapshots remain private. No temporary probe
 or new production optimization was introduced. This closes this retained-build
 functional refresh only, not the campaign matrix or final combined acceptance.
+
+### E03a renewed attribution on retained code
+
+Hypothesis: the retained broadcaster's five-second periodic wakeup still adds
+avoidable delay after accepted `TransactionSigned` and broadcast intent. Earlier
+payment comparisons were invalidated by input/start-state mismatches; their
+percentages remain withdrawn. The fresh 39.132-second outgoing CLI observation
+includes block waiting and cannot establish how much of that time belongs to the
+broadcaster. New attribution precedes another keep-or-revert comparison.
+
+Build a diagnostic-only executable from retained production base `6a722ef73`
+using `python3 "$RUN_ROOT/build_retained_bdk_publication_probe.py"`. It excludes
+both provisional implementations. A temporary probe records at most 256 public
+proposal events per process on one process-local monotonic clock: accepted signed
+and intent publication, subsequent broadcaster observation, backend broadcast
+start/end and confirmation observation. The existing phase timers remain the
+source for phase durations. No secrets, payloads or external clock subtraction
+are needed; cross-member clocks must not be combined. The probe does not change
+control flow, authorization, retry policy, confirmations or transaction bytes.
+
+The builder saves the bounded patch and exact command, uses the same pinned Nix
+release feature set, and restores all original source in `finally`. Its binary is
+marked diagnostic and cannot be used for final performance acceptance. Subsequent
+profiling will use a new independently receipted payment on preserved original
+state with the fixed miner; compile/preparation and profiling overhead stay out
+of accepted payment comparisons. No new optimization is accepted by this build.
+
+
+#### Retained-code diagnostic result and limitations
+
+The build completed and byte-for-byte restoration of all four provisional source
+files passed. Diagnostic executable SHA-256:
+`ae613189721cf5114c59936db3561373c1863d034ddf9a0d262ec21d6ad028f2`;
+probe patch SHA-256:
+`29af1a9af7c9615b672f70a4037d42444ef7f6eeaa48d6498bf9f25624a6e7f3`.
+The committed production tree still matches retained base `6a722ef73`.
+
+Commands, executed serially:
+
+```sh
+python3 "$RUN_ROOT/profile_retained_bdk_publication.py"
+python3 "$RUN_ROOT/analyze_retained_bdk_publication.py"
+```
+
+The private profile helper resumed the original five-member HTTP/SQLite fixture
+at 123 accepted operations, session zero and empty queues. Logical member state
+and all 65 wallet snapshots matched across restart. It switched only the stopped
+fixture's executable link, used the original custody databases, and restored the
+retained executable after bounded shutdown. No database or key was copied.
+
+The first attempt failed while serializing a binary wallet transaction ID before
+creating an address, payment intent or miner thread. Original logs and the helper
+at failure are preserved. The helper now serializes private binary IDs as hex;
+a separately named retry preserved the first attempt and completed one new
+1,000-sat outgoing BDK payment. The original payment was never retried.
+
+Workload: five members, full denomination configuration, HTTP, SQLite, one CLI
+payment from the preserved wallet; independent fixed five-second miner; independent
+recipient RPC observations at 500 ms; a 20-second member-one sampling profile
+starting immediately before the CLI. Compilation and restart preceded measurement.
+The one-shot manifest preserves exact server and CLI hashes and original inputs.
+CLI timing includes startup and diagnostic overhead; the sampling profile covers
+only the early payment path, not the full operation.
+
+Each member recorded 16 probe events for one proposal, below the 256-event cap:
+five signed publications, one signed observation, five intent publications, two
+intent observations, one broadcast start/end and one confirmation observation.
+Repeated publications are retained rather than collapsed without explanation.
+Within each member's own monotonic clock:
+
+- First signed publication to broadcaster observation: 3,852.035–3,858.582 ms;
+  measured from the last signed publication instead: 3,839.621–3,846.609 ms.
+- First intent publication to observation: 4,177.248–4,185.614 ms;
+  from the last intent publication: 3,769.671–3,777.634 ms.
+- Backend broadcast RPC: 0.797–4.322 ms.
+- Broadcast completion to confirmation observation: 4,996.744–4,999.941 ms.
+  This includes external block waiting and cannot all be attributed to polling.
+
+All member-level numeric observations are in
+[the diagnostic ledger](benchmarks/2026-09-08-retained-bdk-publication-probe.csv).
+Members are correlated participants in one payment, not five independent benchmark
+samples. No cross-member clock subtraction or sum of overlapping spans is used.
+
+The independent recipient first observed the transaction during the driver's
+19.838–19.842-second RPC interval and its first confirmation at 20.344–20.348
+seconds. CLI duration was 35,539.455 ms. The 15,259.116 ms between observed first
+confirmation and CLI exit is not an isolated federation notification delay:
+first confirmation need not satisfy the configured settlement policy, and the
+existing phase traces are unavailable. Do not infer the missing phase breakdown.
+
+Although the targeted `RUST_LOG` filter selected trace events, the configured
+console/file writer levels remained INFO/DEBUG. Both writers suppress TRACE.
+`setup_tracing` in `crates/cdk-mintd/src/lib.rs` confirms this independent filter.
+The bounded INFO probe worked; existing transaction phase traces did not. Future
+phase profiles must explicitly configure the relevant writer level using the
+normal configuration interface, then restore it. The partial trace result is
+preserved and is not relabeled a complete profile.
+
+The sampling profile shows parked runtime threads and active BLS field/group
+arithmetic among the prominent frames during its early-path window. Thread sample
+counts are not CPU seconds or evidence of sustainable throughput. This profile
+does not establish another crypto optimization; raw stacks remain private.
+
+Independent Bitcoin receipt and previous-output inspection verified one input,
+two outputs, exactly 1,000 sat to the saved outpoint and 285 sat transaction fee.
+The original bank decreased from 7,925 to 6,640 sat, exactly amount plus fee.
+All five members finished at 154 accepted operations, session zero, ready and
+converged with empty queues. The recipient wallets were not spent. Cumulative
+wallet accounting is now 12,288 sat deposits = 6,640 bank + 2,048 ecash recipients
++ 3,000 external recipients + 600 reported fees; full Bark custody accounting
+remains a separate final gate. Sampling exited successfully, miner/observer
+errors were empty, all owned services stopped, and the original executable link
+was restored. Do not rerun payment helpers expecting the earlier 123-operation
+or 7,925-sat state.
+
+Disposition: fresh causal evidence supports a new uninstrumented comparison of
+E03a on retained production. It establishes seconds of local scheduling delay
+before millisecond-scale broadcast RPCs, not an accepted improvement. Preserve
+periodic repair, exact-byte broadcast, durable authorization and confirmation
+policy. Five matched alternating pairs with state/input guards are still required;
+expand to ten if inconclusive. No production optimization is accepted here.

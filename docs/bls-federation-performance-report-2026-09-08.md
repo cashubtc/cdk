@@ -148,6 +148,25 @@ A replacement series used controlled fee inputs and pre-initiation reserve
 checks, but subsequently failed the runtime-state audit described below. The analyzer now rejects mismatched
 observed inputs rather than relying only on matching configuration.
 
+A fresh diagnostic payment on retained production (`6a722ef73`, with the retained
+recovery fixes and without provisional optimizations) confirms the scheduling
+hypothesis. Across its five members, first accepted signed publication waited
+3.852–3.859 seconds for broadcaster observation; first intent publication waited
+4.177–4.186 seconds. Actual broadcast RPCs took 0.797–4.322 milliseconds.
+[The per-member probe ledger](benchmarks/2026-09-08-retained-bdk-publication-probe.csv)
+retains repeated-publication bounds. These are correlated observations of one
+payment, not independent benchmark runs or an accepted speedup.
+
+The new 1,000-sat receipt and 285-sat Bitcoin fee were independently verified;
+wallet debit matched, all five members converged at 154 operations with empty
+queues, and diagnostic services stopped. Existing phase TRACE events were
+suppressed by the configured writer levels despite the environment filter.
+Consequently the 35.539-second diagnostic CLI duration cannot provide a complete
+phase breakdown. The twenty-second sampling profile covers only the early path.
+Temporary probe source was restored after building, and the fixture executable
+was restored after profiling. E03a still requires fresh uninstrumented matched
+comparisons and correctness gates.
+
 ### Controlled-fee series: starting-state mismatch found
 
 All 50 payments completed with matched fees/proof selections, independent

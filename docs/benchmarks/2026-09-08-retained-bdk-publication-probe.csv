@@ -1,0 +1,6 @@
+member,signed_publications,intent_publications,signed_first_publication_to_observation_us,signed_last_publication_to_observation_us,intent_first_publication_to_observation_us,intent_last_publication_to_observation_us,broadcast_rpc_us,broadcast_end_to_confirmation_observation_us,probe_events,existing_phase_traces
+1,5,5,3855876,3840456,4179688,3772572,1575,4996744,16,0
+2,5,5,3852035,3839621,4177248,3769671,4322,4997215,16,0
+3,5,5,3858483,3846609,4183793,3776151,1040,4999941,16,0
+4,5,5,3853790,3841286,4179126,3771665,1060,4998311,16,0
+5,5,5,3858582,3845219,4185614,3777634,797,4999331,16,0
