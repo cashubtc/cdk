@@ -585,3 +585,8 @@ Pair eight also favors the candidate: median latency is 20.153 versus 35.722
 seconds and execution-envelope CPU/payment 3.9520 versus 4.8575 seconds. All
 eighty payments are audited. Two pairs remain before the prescribed final
 comparison; no E10 optimization has been accepted.
+
+Pair nine favors the candidate, with median latency 20.375 versus 35.280 seconds
+and execution-envelope CPU/payment 4.0688 versus 4.9161 seconds. All ninety
+payments are audited. The final pair remains necessary; favorable later pairs
+do not replace unfavorable earlier observations or establish acceptance alone.

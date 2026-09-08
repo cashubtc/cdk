@@ -3853,3 +3853,20 @@ at 169 accepted operations. Successful FROST coordinations are 21/17,
 successful liveness rounds 26/22 and skipped rounds 139/108. This favorable
 candidate pair does not replace the unfavorable observations in other pairs.
 The original ten-pair protocol continues without a new interim decision.
+
+### E10 extension: ninth pair audited
+
+Pair nine completed baseline first, then candidate. Read-only original-state
+checks confirm all ten independent receipts, exact fees and value conservation,
+matching proof shapes, member digests and empty queues. Both fixtures are stopped
+with state preserved. The same audit, run export and phase extraction commands
+used for pair eight were repeated with `--through-pair 9` where applicable.
+Public ledgers contain ninety request/phase rows, eighteen runs and 2,568
+phase-count deltas; earlier rows are unchanged.
+
+Baseline/candidate p50 is 35,280.223833/20,375.456333 ms and p95 is
+38,891.031667/20,922.762500 ms. Execution-envelope CPU/payment is
+4.9160932664/4.0687561086 seconds. Preserve all four baseline requests above
+30 seconds alongside the long candidate observations in earlier pairs. Both
+histories end at 169 accepted operations. These are descriptive observations;
+the unchanged ten-pair protocol supplies the next acceptance decision.
