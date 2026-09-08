@@ -494,3 +494,13 @@ notification gap or establish another improvement. See the
 [phase observations](benchmarks/2026-09-08-bdk-retained-completion-phases.csv) and
 journal for scope, preparation failures, sampling limitations and receipt audit.
 All diagnostic services are stopped and original logging settings restored.
+
+A bounded monotonic follow-up isolated roughly three seconds between accepted
+proposal publication and the next liveness/signing round. Provisional E10 wakes
+the existing worker on that accepted proposal; a diagnostic reduced this boundary
+to 1.3–1.5 ms. It also exercised five coordinations under the existing grace rule,
+versus one previously. Different holdings and lease positions prevent a paired
+payment-speed claim. The uninstrumented comparison must establish net latency
+and CPU benefit before retention. See the
+[retained](benchmarks/2026-09-08-bdk-scheduling-boundaries.csv) and
+[candidate](benchmarks/2026-09-08-e10-scheduling-boundaries.csv) boundary ledgers.

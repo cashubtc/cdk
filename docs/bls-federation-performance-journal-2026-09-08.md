@@ -3303,3 +3303,158 @@ liveness entry and local chain evidence to confirmed-observation/settlement entr
 Preserve proposer/signing leases and independent confirmation evidence. Only then
 form a narrow notification/work-removal candidate and run the prescribed matched
 comparison. No additional production optimization is accepted from this profile.
+
+#### BDK scheduling boundary probe: preregistered diagnostic
+
+The previous turn made progress: retained E03a was committed and a real payment
+profile narrowed the next attribution step. No campaign build or member process
+was live at continuation. Retained production is `9aa2ae395`; E07 remains excluded.
+
+Build a private diagnostic artifact with one process-local monotonic origin and
+at most 1,024 records per process. Record applied operation IDs, existing phase
+starts/finishes (excluding the high-frequency AlephBFT pump), pending intent and
+unsigned-proposal observations, and broadcaster confirmation observations. Resolve
+public operation/quote/proposal associations from the original accepted journal;
+do not log payloads or secrets. Preserve every publication, including duplicates.
+
+Hypotheses: accepted melt/proposal state waits for a wallet-liveness round, and
+accepted confirmed-transaction evidence waits for quote observation/settlement.
+Measure these waits within each process before proposing any production change.
+Reuse the existing phase timers and earlier stack sample for execution-cost
+context. The private artifact preserves scheduling, leases, validation, retry
+behavior and all payment policies. Build from retained production with E07
+excluded, restore source immediately after the build, and preserve the diagnostic
+patch/artifact privately. The run uses one new 1,000-sat payment on the original
+123,362-sat wallet, fixed five-second mining and independently audited receipt/fee.
+It is not a performance acceptance run; temporary probe/logging overhead is present.
+
+#### Scheduling probe result and E10 candidate contract
+
+The bounded artifact built successfully with the same pinned release flags.
+Base: `9aa2ae3953cc69d33ee8a74dea3d1ed61dd14d4a`; artifact SHA-256:
+`98d73ad2bea50086db0c812c70c42f50963a333f23298a6353dd8dd73ea2db33`;
+diagnostic patch SHA-256:
+`073c09d293aeec43944ef75988410ebbf78bff2d18b34c7d7611d5ea0e330e6e`.
+The builder restored every source file, preserving E07 separately. Commands:
+
+```sh
+python3 "$RUN_ROOT/build_bdk_scheduling_probe.py"
+python3 "$RUN_ROOT/profile_bdk_scheduling.py"
+python3 "$RUN_ROOT/analyze_bdk_scheduling_probe.py"
+```
+
+The new payment completed in 23,044.581792 ms of SDK time, including a necessary
+sender swap; this fragmented-wallet diagnostic is not matched with the prior
+no-swap diagnostic. Its 1,000-sat recipient output, 285-sat fee and exact wallet
+debit were independently checked. The original wallet now holds 122,077 sat:
+131,072 funding = 122,077 spendable + 7,000 received + 1,995 fees. Members
+converged with empty queues. Original configurations and the retained runtime
+executable link were restored, and all owned services stopped.
+
+The [scheduling boundary ledger](benchmarks/2026-09-08-bdk-scheduling-boundaries.csv)
+uses only same-process monotonic timestamps, with operation/quote/proposal IDs
+resolved from the original journal. Every event index is unique and the probe
+limit was not reached. All publication records, including any duplicates, are
+retained in the private correlation data. First-publication and last-publication
+before observation are reported separately; no negative delay is silently dropped.
+
+Accepted melt → first pending-intent observation was 256.442–267.191 ms across
+five members. Accepted proposal → first unsigned-proposal observation was
+2,992.098–2,997.496 ms. Member four began signing 2,995.011 ms after publication,
+immediately after observing the proposal at 2,994.978 ms. Source inspection
+confirms the existing liveness loop only selects cancellation or a five-second
+interval; its round uses a transaction-state snapshot loaded before proposing.
+Thus an accepted proposal waits for a subsequent round even though the exact
+accepted state is already available. This supports a proposal wakeup experiment.
+
+After the fourth independent confirmed broadcast observation was published,
+the first paid-quote observation was published 1,624.793–1,625.518 ms later.
+Member one's next quote probe started after 498.441 ms; other members' probes
+started just after the first paid observation, consistent with the existing
+accepted-payment wakeup. No probe overlapped that quorum-publication boundary.
+This run does not support attributing the entire earlier 5.34-second residual
+to a missing quote notification. Keep confirmation/settlement attribution open;
+do not change it together with the proposal experiment.
+
+**E10 hypothesis, before editing:** wake the existing wallet-liveness worker on
+an applied `TransactionProposal` through the common terminal-publication path.
+Use one coalescing permit owned by the existing worker. Expected work change:
+remove the roughly three-second observed wait until the next signing round;
+no new queue, periodic task or state cache. Primary metric: serial BDK outgoing
+latency, with member CPU/payment, p95, memory and separate idle guards unchanged.
+Do not wake on all melts or tune leases, quorum, confirmations, retries or backoff.
+Every awakened round still reloads authoritative state and follows the same
+readiness, scope, proposer/signing schedule, nonce and independent-validation checks.
+The periodic round remains necessary for lost publications and restart.
+
+Build separate uninstrumented retained baseline/candidate artifacts. Confirm
+boundary removal with bounded diagnostic evidence, then run five alternating
+matched pairs using the existing fresh five-member HTTP/SQLite BDK workload
+(five serial 1,000-sat payments, 131,072-sat initial funding, 64 initial proofs,
+13 initial accepted operations, fixed five-second miner and matched fee estimate).
+Expand inconclusive results to ten and revert if still inconclusive. Keep E10
+provisional until the comparison and relevant FROST/lifecycle/recovery, feature,
+lint and real candidate restart checks pass. The wider campaign matrix is unchanged.
+
+#### E10 diagnostic validates the boundary, exposes a work-risk
+
+The candidate diagnostic built and ran successfully. Its accepted-proposal to
+unsigned-observation delay was 1.259–1.538 ms across five members, compared with
+2,992.098–2,997.496 ms in the earlier retained-code diagnostic. All signing starts
+followed within 1.272–1.551 ms of publication. See the complete
+[candidate boundary ledger](benchmarks/2026-09-08-e10-scheduling-boundaries.csv).
+Each run uses its own process-local clock; this comparison is of within-process
+durations, not subtraction across process origins. Both diagnostic probes stayed
+below their 1,024-event caps, and no temporary probe remains in source.
+
+The candidate also exposes an important risk: all five members completed FROST
+coordination in this run, versus one in the earlier run. The unchanged signing
+aggregator grace allows this depending on the current attempt/lease position.
+Do not discard these extra coordinations or assume fewer elapsed seconds means
+less CPU. Their resource effect must pass the matched CPU/payment and memory
+criteria. Do not change the grace or quorum to make this experiment pass.
+
+The candidate diagnostic payment completed in 17,740.111875 ms, including a
+four-input preparatory swap; the prior diagnostic required twelve swap inputs.
+These different holdings, lease positions, block alignment and instrumentation
+make the totals unsuitable for a paired latency claim. The narrower observed
+worker boundary supports proceeding to a properly matched comparison.
+
+The 1,000-sat recipient amount and 285-sat fee were independently verified.
+Original wallet value is now 120,792 sat: 131,072 = 120,792 + 8,000 received +
+2,280 fees. All five members converged with empty queues at 253 accepted
+operations. All seven pre-existing receipts and logical state were checked on
+startup. The controller stopped every owned service and restored original
+configuration and the retained executable link after the new payment.
+
+The first diagnostic launch encountered an automatic approval-review timeout
+before command execution. Absence of the one-shot case proved that no run/payment
+had started; the review's allowed single retry succeeded. This was an execution
+approval delay outside every measured transaction window, not a payment failure.
+
+Commands completing the candidate diagnostic and freezing clean comparison code:
+
+```sh
+python3 "$RUN_ROOT/build_e10_scheduling_probe.py"
+python3 "$RUN_ROOT/profile_e10_scheduling.py"
+python3 "$RUN_ROOT/analyze_e10_scheduling_probe.py"
+python3 "$RUN_ROOT/build_e10_runtime.py"
+```
+
+Diagnostic artifact SHA-256:
+`0e6514ea3af15d40bda547b845f2769437af11d3cd63d57ede3c19e001b4e2a0`;
+candidate-only patch SHA-256:
+`2c230ece887cf2219aa7306d78e93724359a663dfcf15ae6053eb3bc50dab968`;
+diagnostic patch SHA-256:
+`122edcfaa1be349b009e3a825fe5d43c80478b11efdb61ade085779427d1469d`.
+The clean comparison builder verifies that exact candidate-only patch, excludes
+E07, and restores both provisional changes afterward. Neither comparison binary
+contains the probe.
+
+The matched runner now also scrapes the existing phase-count metrics once per
+member before timing and after post-payment convergence, identically in both
+arms. It records FROST coordination counts to expose extra work. Scrapes are
+outside the CPU/latency measurement envelope; their counts bracket a wider
+interval and are not CPU seconds. No operational metric or production fast path
+was added. Keep all independent fixtures, initial inputs, failure accounting and
+five/ten-pair acceptance rules unchanged. E10 is still provisional.
