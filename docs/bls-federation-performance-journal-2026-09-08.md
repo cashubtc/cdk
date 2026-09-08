@@ -1119,3 +1119,59 @@ configuration; its method now uses its sole caller's `federation-bark` gate.
 Strict Clippy passes for minimal federation, the full BDK/Bark/HTTP/Iroh feature
 combination, and both persistent SDK benchmark examples. The receiver's optional
 phase-tracing switch defaults to disabled and affects only benchmark support.
+
+### E08b matched ablation protocol
+
+Before measurement: compare the stable-collector candidate against the committed
+DKG improvements without any other provisional production changes. Each arm uses
+an independently created Bitcoin/Lightning/Ark backend and a fresh five-member
+HTTP federation. Initial balances, channel capacity, chain height, Ark policy,
+zero accepted operations, session, and empty pending queues must match. Fresh
+keys and transaction identifiers intentionally differ. No custody state is cloned.
+
+The first pair offers eight independent 2,048-sat incoming Lightning requests at
+closed-loop concurrency four, with a 60-second window and 120-second drain.
+This finite burst measures completion latency and resource cost; it cannot
+establish sustainable throughput. Independent payer records and SDK balances
+verify receipts. Uncertain payments retain their original identities and are
+never initiated again. Late and unfinished attempts remain separate outcomes.
+
+The persistent SDK's optional start handshake excludes wallet preparation and
+connection warming from the native resource bracket. Its bounded 10-ms signal
+check runs before the measurement origin; tracing is disabled. Both arms use the
+same release SDK binary. Native per-member CPU/RSS samples bracket execution;
+builds and fixture funding are excluded. The ablation baseline is based on
+`3b968f2f4`; the isolated candidate adds only E08b to the same production lineage.
+Binary fingerprints and complete raw samples remain private. This comparison
+must not be presented as the final original-baseline campaign comparison.
+
+The first comparison is classified as a protocol pilot, not one of the five
+acceptance pairs: the inactive comparison federation was still running. Future
+arms will stop inactive federations and their disposable backends before timing.
+The baseline completed seven of eight receives by drain, with four inside the
+window; one original payment remains pending. Post-run signed status reported a
+Bark recovery-required condition on one member despite agreement on accepted
+operations. The controller initially treated that failed health gate as a fatal
+reporting error. Raw SDK/resource samples were already persisted; a read-only
+finalizer retains the failure and independent payer outcomes. Future runs retain
+failed post-run health checks as outcomes rather than losing their report. No
+payment command was repeated. The pilot's resource bracket is reconstructed from
+its first/last native samples and is not acceptance evidence.
+
+The candidate pilot completed eight of eight receives inside the window, with
+16,384 sat in independently checked SDK wallets and matching payer settlements.
+The baseline delivered 14,336 sat by drain; its one unfinished invoice is preserved
+with its payer attempt records. Both fixtures and their backends were gracefully
+stopped without deleting state. This asymmetric completion outcome supports the
+hypothesis but is not a paired performance acceptance result.
+
+The five acceptance pairs use newly generated fixtures, alternating arm order.
+Only one campaign federation and its paired backend run at a time. Each arm starts
+from independently funded, equivalent liquidity and a zero-operation/session-zero
+federation with empty queues. Economic inputs are checked again immediately before
+measurement. Existing operational logging is set to `info` in both arms; temporary
+probes and benchmark phase tracing are disabled. Failed post-run readiness is
+recorded separately. Native sampling starts only after the SDK preparation signal.
+All eight attempts, including drain completions and pending outcomes, are retained.
+The optional start handshake passed both pilot arms; scoped example Clippy and its
+release build had passed before these runs. It changes benchmark support only.

@@ -65,6 +65,8 @@ struct Manifest {
     warm_connections: bool,
     #[serde(default)]
     trace_performance: bool,
+    #[serde(default)]
+    wait_for_start: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -295,6 +297,23 @@ async fn main() -> Result<()> {
         wallets.push(Arc::new(wallet));
     }
     let preparation_ns = offset(preparation_started);
+    if manifest.wait_for_start {
+        // Let the controller sample resources after wallet/connection setup.
+        // This bounded handshake is outside every transaction measurement.
+        fs::write(
+            manifest.state_dir.join("measurement-ready.json"),
+            serde_json::to_vec(&serde_json::json!({"preparation_ns": preparation_ns}))?,
+        )?;
+        let start_signal = manifest.state_dir.join("measurement-start");
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while !start_signal.try_exists()? {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok::<_, std::io::Error>(())
+        })
+        .await
+        .map_err(|_| Error::Input("measurement start signal timed out"))??;
+    }
     let origin = Instant::now();
     let window_end = origin + Duration::from_millis(manifest.window_ms);
     let drain_end = window_end + Duration::from_millis(manifest.drain_ms);
@@ -421,6 +440,7 @@ async fn main() -> Result<()> {
         "queue_capacity": 0, "shared_wallet": manifest.shared_wallet,
         "warm_connections": manifest.warm_connections,
         "trace_performance": manifest.trace_performance,
+        "wait_for_start": manifest.wait_for_start,
         "mint_requests": manifest.mint_requests,
         "input_proof_counts": input_proof_counts, "wallet_balances_sat": wallet_balances_sat,
         "wallet_proof_counts": wallet_proof_counts,
