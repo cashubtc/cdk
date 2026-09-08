@@ -3830,3 +3830,26 @@ Both histories end at 169 accepted operations. Successful FROST coordinations
 are 13/17 and skipped liveness rounds are 137/108. This pair favors the candidate
 despite more signing coordinations; counts alone are not CPU attribution.
 The comparison continues to ten with unchanged methods and no interim acceptance.
+
+### E10 extension: eighth pair audited
+
+Pair eight completed candidate first, then baseline. All ten payments passed
+independent receipts, exact fee/value, member digest, queue and actual-input
+checks. Both original fixtures are stopped with state preserved. The read-only
+audit and phase extraction now cover eighty payments:
+
+```sh
+python3 "$RUN_ROOT/audit_e10_completed_pairs.py" --through-pair 8
+python3 "$RUN_ROOT/export_e10_completed_runs.py"
+python3 "$RUN_ROOT/extract_e10_payment_phases.py" --through-pair 8
+```
+
+Public ledgers contain eighty request/phase rows, sixteen runs and 2,277
+phase-count deltas, preserving all prior rows. Baseline/candidate p50 is
+35,722.041584/20,153.085333 ms; p95 is 37,751.314750/21,332.634708 ms;
+execution-envelope CPU/payment is 4.8574522754/3.9520410412 seconds. Four baseline
+requests exceeded 30 seconds; each remains in the dataset. Both histories end
+at 169 accepted operations. Successful FROST coordinations are 21/17,
+successful liveness rounds 26/22 and skipped rounds 139/108. This favorable
+candidate pair does not replace the unfavorable observations in other pairs.
+The original ten-pair protocol continues without a new interim decision.

@@ -580,3 +580,8 @@ the current figures do not establish full lifecycle CPU cost.
 Pair seven favors the candidate: median latency is 20.391 versus 34.175 seconds
 and CPU/payment 3.9141 versus 4.4708 seconds. All seventy payments are audited;
 both favorable and unfavorable pairs remain in the unchanged ten-pair comparison.
+
+Pair eight also favors the candidate: median latency is 20.153 versus 35.722
+seconds and execution-envelope CPU/payment 3.9520 versus 4.8575 seconds. All
+eighty payments are audited. Two pairs remain before the prescribed final
+comparison; no E10 optimization has been accepted.
