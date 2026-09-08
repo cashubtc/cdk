@@ -1024,6 +1024,24 @@ impl FederationConsensusItemQueue {
         })
     }
 
+    fn release_accepted_recovery_barriers(
+        &mut self,
+        generations: &BTreeSet<FederationRecoveryBarrierId>,
+    ) {
+        if generations.is_empty() {
+            return;
+        }
+        // Barriers have no operation/conflict metadata. Preserve the ordering
+        // and grouping of every unrelated item while removing satisfied work.
+        self.pending.retain_mut(|items| {
+            items.retain(|item| {
+                !matches!(item, FederationConsensusItem::RecoveryBarrier(barrier)
+                    if generations.contains(&barrier.generation))
+            });
+            !items.is_empty()
+        });
+    }
+
     /// Return true when the queue has no pending items.
     #[must_use]
     #[cfg(test)]
@@ -2989,6 +3007,9 @@ impl FederationConsensusRuntime {
             return;
         }
 
+        self.data_provider
+            .queue
+            .release_accepted_recovery_barriers(&accepted_barriers);
         let pending_unit_keys = self
             .pending_finalization_units
             .keys()

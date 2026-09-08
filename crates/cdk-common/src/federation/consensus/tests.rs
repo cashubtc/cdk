@@ -775,6 +775,70 @@ fn peer_barrier_cleanup_preserves_other_pending_items_and_generations() {
 }
 
 #[test]
+fn peer_barrier_decision_cleans_only_satisfied_queued_barriers() {
+    for peer_requested_after in [0, 1, 5] {
+        let federation_id = federation_id(39);
+        let mut runtime = FederationConsensusRuntime::new(federation_id, member_id(), 0);
+        runtime
+            .finalize_unit(
+                FederationAlephBftUnitPayload::new(
+                    federation_id,
+                    member_id_value(2),
+                    0,
+                    0,
+                    vec![module_fact_item("advance-before-queued-barrier")],
+                )
+                .expect("initial peer unit"),
+            )
+            .expect("advance finalized cursor");
+        runtime
+            .submit_recovery_barrier(recovery_barrier(federation_id, 0))
+            .expect("queue local barrier without dispatching it");
+        let unrelated = module_fact_item("unrelated-queued-fact");
+        runtime
+            .data_provider
+            .submit_item(unrelated.clone())
+            .expect("queue unrelated fact");
+        runtime
+            .finalize_unit(
+                FederationAlephBftUnitPayload::new(
+                    federation_id,
+                    member_id_value(2),
+                    0,
+                    1,
+                    vec![FederationConsensusItem::recovery_barrier(recovery_barrier(
+                        federation_id,
+                        peer_requested_after,
+                    ))],
+                )
+                .expect("peer barrier unit"),
+            )
+            .expect("finalize peer before local dispatch");
+
+        let unit = runtime
+            .next_unit_payload()
+            .expect("next local unit")
+            .expect("unrelated fact remains queued");
+        let expected = if peer_requested_after == 0 {
+            vec![unrelated]
+        } else {
+            vec![
+                FederationConsensusItem::recovery_barrier(recovery_barrier(federation_id, 0)),
+                unrelated,
+            ]
+        };
+        assert_eq!(
+            serde_json::to_value(&unit.items).expect("serialize retained items"),
+            serde_json::to_value(&expected).expect("serialize expected items")
+        );
+        runtime
+            .finalize_unit(unit)
+            .expect("finalize remaining work");
+        assert_eq!(runtime.pending_mempool_len(), 0);
+    }
+}
+
+#[test]
 fn rejected_peer_barrier_does_not_release_local_request() {
     let federation_id = federation_id(38);
     let mut runtime = FederationConsensusRuntime::new(federation_id, member_id(), 0);

@@ -2,8 +2,9 @@
 
 Status: in progress. Two DKG arithmetic changes are measured. One isolated incoming
 Lightning pair is recorded; its optimization is not accepted. Recovery-barrier
-cleanup is accepted after five component comparisons, fresh-runtime validation
-and scoped regression/lint checks. Final campaign acceptance remains pending.
+cleanup is accepted for dispatched and queued ordering cases after five component
+comparisons per case, fresh-runtime validation and scoped regression/lint checks.
+Final campaign acceptance remains pending.
 
 Baseline: CDK `8e507cdf8`, Bark `8d1eda643dd11e9eb600ec44e36622c8f77b6322`.
 Method and acceptance rules: [approved plan](bls-federation-performance-plan-2026-09-08.md).
@@ -199,3 +200,33 @@ The manual ten-minute checkpoint benchmark was ignored by the recovery test run.
 **Keep:** the cleanup eliminates reproduced redundant recovery work and improves
 the measured component without changing validation or consensus policy. Full
 campaign payment and recovery gates remain pending.
+
+A subsequent fresh baseline containing this cleanup still retained one pending
+startup item; its matching candidate completed eight incoming Lightning payments
+inside 60 seconds. The baseline stopped at the pre-payment gate. This remains an
+[unpaired diagnostic](benchmarks/2026-09-08-bark-incoming-e06-partial.csv), with no
+new payment performance claim. The remaining startup case was diagnosed as the
+queued ordering below; E06's result above is limited to its dispatched-barrier
+recovery trace.
+
+### Queued recovery-barrier cleanup
+
+The next ordering case occurs when a peer accepts the barrier before the local
+provider dispatches its queued copy. A fresh bounded probe reproduced this on
+E06; a regression failed on that implementation and passes with the queued copy
+removed. Unrelated queue contents, ordering and operation metadata are preserved.
+
+Five alternating release component pairs against `d880c9703` measured a mean
+recovery cycle of 61.916 → 29.839 microseconds (51.8% lower; paired ratio interval
+[0.44678, 0.51982]) and whole-harness CPU of 2.244 → 1.560 seconds (30.5% lower;
+interval [0.62595, 0.77240]). The initial redundant payload and its recovery requeue
+both disappear. [All ten samples](benchmarks/2026-09-08-queued-recovery-barrier-cleanup.csv)
+are retained, along with the journal's invalid harness attempt. These component
+percentages cover a different ordering from E06 and cannot be added together.
+There is no payment, sustainable-throughput, live-service RSS or p95/p99 claim.
+**Keep:** all 56 consensus, 46 recovery, 10 session and 20 Bark tests passed,
+along with formatting and strict common-crate lint. The manual checkpoint idle
+benchmark remained ignored. A fresh isolated five-member runtime reached healthy,
+empty-queue readiness and retained stable state through a 60-second idle sample.
+That unpaired sample used 1.805 aggregate CPU seconds; it establishes no idle gain.
+Temporary probes/examples are removed. Full combined campaign gates remain pending.

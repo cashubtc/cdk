@@ -1,0 +1,9 @@
+pair,arm,order,request,amount_sat,outcome_at_drain,completed_in_window,completion_latency_ms,quote_ready_latency_ms,payer_interval_ms,issued_proofs,received_at_drain_sat,matched_acceptance
+1,candidate,1,0,2048,completed,True,16349.335333,3023.729833,7200.942792,30,2048,False
+1,candidate,1,1,2048,completed,True,18361.719541,4035.337416,7429.988125,30,2048,False
+1,candidate,1,2,2048,completed,True,8878.700958,2049.561958,3709.218791,30,2048,False
+1,candidate,1,3,2048,completed,True,19177.536125,5244.667167,9966.008834,30,2048,False
+1,candidate,1,4,2048,completed,True,16734.730708,6069.638666,4959.140833,30,2048,False
+1,candidate,1,5,2048,completed,True,16184.645,3227.75175,6313.608833,30,2048,False
+1,candidate,1,6,2048,completed,True,13139.274541,5040.057708,4898.44575,30,2048,False
+1,candidate,1,7,2048,completed,True,16959.614958,5236.799208,8334.603208,30,2048,False

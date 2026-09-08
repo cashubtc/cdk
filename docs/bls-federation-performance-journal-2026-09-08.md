@@ -1348,3 +1348,158 @@ and the isolated candidate reached empty-queue readiness. No end-to-end payment,
 sustainable-throughput, service-memory or idle-speedup claim follows. The temporary
 probe and component example are removed from source. Commit this focused cleanup
 and its evidence now; final combined campaign gates remain pending.
+
+### E08b comparison with the accepted recovery cleanup
+
+E06 was committed as `d880c9703`; analysis support and the first partial isolated
+payment ledger were committed separately as `db39b0910`. The next comparison
+includes E06 in both arms so obsolete startup work cannot confound collection
+performance. Earlier pilot/partial outcomes remain recorded and are not pooled
+with this new source baseline.
+
+Predeclared experiment: five alternating pairs of fresh independent five-member
+HTTP/SQLite federations, eight incoming 2,048-sat Lightning requests per arm,
+closed-loop concurrency four, a 60-second window and 120-second drain. Use the
+existing persistent SDK driver with controlled start, production info logging,
+and no temporary probes. Each arm gets independent DKG/custody and backend state,
+matched height 132, liquidity, resource limits and policy. Require healthy,
+converged, empty queues before SDK preparation; do not add an extra startup or
+change timeouts to make a failed preparation pass. Stop the measured members and
+backend after each arm while preserving their state. Reuse no payment identity
+for a new initiation. Baseline is the frozen isolated E06 build; candidate adds
+only stable incoming evidence collection, excluding broadcaster and replay-cursor
+experiments.
+
+Hypothesis and predicted work: keeping the collector attached to the immutable
+intent actor reduces repeated incomplete evidence collections when accepted
+operations rotate the preparation worker. The current worker retains preparation
+authority. Measure window completions, unconditional latency where the entire
+burst completes, pending/late outcomes, CPU per receipt, RSS and phase counts.
+The possible additional observer may increase backend waits: retain that cost and
+reject a confirmed resource regression. This finite burst does not establish
+sustainable throughput. Five paired results are required before a keep decision;
+expand to ten if inconclusive. Build and fixture preparation remain outside all
+transaction measurement windows.
+
+The first E08b+E06 candidate arm completed all eight requests inside its 60-second
+window: 16,384 sat independently verified, no late or unfinished attempts,
+23.520179 aggregate member CPU seconds over the observation. All eight outcomes
+are retained in the [partial E06-based ledger](benchmarks/2026-09-08-bark-incoming-e06-partial.csv).
+The matching baseline reached healthy state but retained one pending-finalization
+item on member 4, despite containing E06. No baseline payment was initiated. The
+controller and preparation child were stopped at this gate; their databases and
+backend state remain intact. There is no matched pair or E08b acceptance from
+this series.
+
+This does not invalidate the measured dispatched-barrier E06 trace, but shows it
+does not cover every startup interleaving. Inspect the remaining case with a fresh
+bounded probe built on E06 before changing production code. Distinguish an already
+accepted generation dispatched after its peer decision from a different generation
+that still needs a decision. Do not infer either from the pending count alone.
+The probe records counts and the requested frontier, creates no payments, and will
+be removed from source after building its isolated artifact.
+
+### E06b: peer decision before local queue dispatch
+
+The E06-based probe reproduced an identical accepted generation still pending on
+member 4 at roughly 0, 31 and 61 seconds: requested frontier zero, finalized cursor
+four, one barrier, no operation or module fact. Recovery proposal construction
+reads the cursor and queues its barrier under the consensus lock. Combined with
+E06's dispatched-entry cleanup, this points to the peer decision arriving while
+the matching local barrier is still queued. Record this as the next ordering case,
+not an unrelated pending generation or justification to bypass the startup gate.
+The diagnostic fixture was gracefully stopped; its databases and logs are retained.
+
+Predeclared candidate: remove only matching accepted recovery barriers from the
+bounded provider queue during decision cleanup. Preserve other generations,
+rejected barriers, unrelated item ordering and operation/conflict metadata. Add a
+regression covering peer finalization before dispatch; first verify that it fails
+on the committed implementation. Measure five alternating release component pairs
+against `d880c9703`, with queueing outside the timed phase and peer-prefix
+finalization, local dispatch, session recovery and drain inside it. Predicted
+savings: no local payload construction, canonical encoding or recovery requeue
+for the already satisfied request. Reuse the existing private component harness;
+retain identical peer-prefix checks and all samples. No historical scan/cache,
+wire change, timeout change or production benchmark branch is proposed.
+
+Regression evidence: the initial assertion attempted direct equality on consensus
+items, which do not implement `PartialEq`; that test-only compilation failed. After
+changing the assertion to compare serialized contents, the test failed on the
+committed implementation because a satisfied recovery barrier was still dispatched
+with the unrelated fact. The candidate removes only accepted matching barriers
+from pending groups, preserving remaining order/grouping and avoiding any change
+to operation/conflict metadata. All 56 focused consensus tests then passed after
+formatting. Performance acceptance remains pending the five release pairs and
+fresh-runtime validation; no E06b production commit is made yet.
+
+The first component runner stopped after its baseline sample on an incorrect
+harness capability assertion: queued, undispatched work can legitimately move to
+a new session. The capability check had not performed the local dispatch used by
+the measured path. Its raw sample and source are retained as invalid harness
+validation, not accepted performance evidence. Correct the separate capability
+check to dispatch after the peer prefix before testing rotation, rebuild both
+artifacts, and start a new five-pair result directory. The timed phase and predicted
+work counts remain unchanged. No production change follows from this harness error.
+
+The corrected component comparison completed all five alternating pairs, 20,000
+cycles per process. Every arm finalized the same recorded public peer prefix.
+Baseline emitted 20,000 initial local payloads and 20,000 recovery payloads; the
+candidate emitted neither. Recovery requeues fell from 20,000 to zero and extra
+canonical bytes from 21,600,000 to zero. Every cycle ended with an empty mempool.
+The separate rotation check now follows local dispatch: baseline cannot rotate
+without recovery; candidate has no outstanding dispatched work.
+
+Geometric means with candidate/baseline paired 95% confidence intervals:
+
+- Recovery-cycle mean: 61.916488 → 29.838577 microseconds, 51.8% lower;
+  ratio 0.48192, interval [0.44678, 0.51982].
+- Whole-process CPU including preparation: 2.244013 → 1.560330 seconds, 30.5%
+  lower; ratio 0.69533, interval [0.62595, 0.77240].
+- Whole-process retired instructions: 44.271 → 31.603 billion, 28.6% fewer;
+  ratio 0.71385, interval [0.71289, 0.71480].
+- Batch-harness peak RSS ratio: 0.57914, interval [0.57808, 0.58021]. This held
+  batch of 20,000 runtimes does not establish a live-service memory improvement.
+
+[All ten numeric samples](benchmarks/2026-09-08-queued-recovery-barrier-cleanup.csv)
+are retained. Commands: pinned Nix `cargo build --locked --release -p cdk-common
+--no-default-features --features federation,bench --example e06b_recovery_performance`,
+then each frozen binary with the same public configuration and `20000` under
+`/usr/bin/time -l`. Raw traces, fingerprints, both harness versions and the invalid
+first attempt remain private. The temporary example was removed after both builds.
+These results cover a different ordering case from E06; do not multiply or add
+their percentages. End-to-end payment, sustainable throughput, idle and combined
+campaign gains remain unestablished. Fresh-runtime validation and final scoped
+checks are next before an E06b keep decision.
+
+The isolated uninstrumented E06b candidate reached healthy, converged, empty-queue
+readiness on its first startup. Its 60-second idle follow-up retained identical
+state and zero pending items on all five members, using 1.804763 aggregate CPU
+seconds (collector 0.006678 seconds). This is an unpaired stability diagnostic,
+not an idle speedup. The fixture was stopped gracefully before final checks;
+all databases and backend state are preserved.
+
+Final commands in the pinned Nix environment:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --locked -p cdk-common --no-default-features --features federation --lib --tests -- -D warnings
+cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib recovery
+cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib aleph_bft_session::tests
+cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib bark_
+```
+
+Formatting and strict lint passed. Runtime results: 46 recovery, 10 session and
+20 Bark tests passed; the recovery filter's manual ten-minute checkpoint benchmark
+was ignored. Together with the earlier 56 passing consensus tests, these complete
+the scoped checks. As with E06, full-feature tests include other provisional
+working-tree changes; the measured binaries and fresh runtime isolate E06b.
+
+**E06b decision: keep.** The reproduced queue-ordering defect and failing-before,
+passing-after regression agree with five paired measurements showing removal of
+redundant payload construction/encoding and recovery work. Fresh-runtime startup
+and idle stability passed. Commit this narrow extension and its evidence now,
+without committing the provisional Lightning collector, broadcaster or replay
+cursor changes. The temporary diagnostic probe and component example are absent
+from production source. Next payment comparisons must include both recovery
+cleanups in each arm and use fresh cases; the earlier partial series cannot be
+pooled with those new binaries. The full campaign remains incomplete.
