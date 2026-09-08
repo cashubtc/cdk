@@ -2424,3 +2424,55 @@ fixed ten-Hz sample rate. Funding, wallet preparation, token packaging and a fix
 settling period remain outside transaction time; they are not hidden in faster
 payment results. This is guarded measurement support, not a new production fast
 path or a claim of sustainable throughput.
+
+The idle controller was revalidated through its live process handle and continues
+through pair 5; no additional workload was started. E05 remains provisional.
+Private functional guards are now syntax-checked for incoming/outgoing Bark
+Lightning, outgoing BDK on-chain, member convergence, wallet principal and
+reported-fee reconciliation, and restart of the original post-payment state.
+Incoming BDK is exercised by the preceding ecash fixture funding. These helpers
+are unexecuted and do not count as completed payment or recovery gates.
+
+The functional guard explicitly accounts for offline sender records: successfully
+received tokens may still be locally `PENDING_SPENT`. Before further payments it
+requires the original 64 token proofs to be spent in the federation's threshold
+response, while the remaining 192 bank proofs are unspent. It neither reissues
+those tokens nor treats a local pending label as permission to spend again.
+Outgoing invoices and deposit intentions are preserved before their sole payment
+calls. Independent recipient receipts remain separate from wallet fee accounting;
+that accounting alone will not be described as a full custody audit.
+
+### E05 fresh idle: five pairs complete; extend unchanged to ten
+
+The original controller exited successfully. Process inspection found no running
+campaign members; direct container inspection confirmed all fifty backend
+containers belonging to these ten arms were stopped. All databases, custody,
+identities, logs and samples remain preserved. No other build or payment workload
+overlapped the observations.
+
+The five independent AB/BA pairs used the same frozen service artifacts, five
+members, HTTP, SQLite, full 64-denomination setup, accepted history zero, fixed
+60-second warmup, five-second quiet period after status, and 60-second native
+one-Hz sampling. Every arm passed unchanged state, readiness, empty queue and
+matched-input checks. All ten runs, including the lower-RSS baseline in pair 3,
+are retained in [numeric evidence](benchmarks/2026-09-08-checkpoint-fresh-idle.csv).
+
+| Metric | Baseline mean | Candidate mean | Paired ratio; 95% interval |
+| --- | ---: | ---: | --- |
+| Aggregate member idle CPU, seconds | 2.414055 | 1.360148 | 0.564253; 0.524415–0.607116 |
+| Retired instructions | 13,948,763,563 | 3,066,649,140 | 0.219847; 0.218470–0.221233 |
+| Package wakeups | 867.0 | 1,027.4 | 1.191799; 0.956563–1.484884 |
+| Interrupt wakeups | 14,072.4 | 14,090.6 | 1.001296; 0.995362–1.007267 |
+| Peak sampled aggregate RSS, bytes | 325,065,114 | 334,964,326 | 1.033376; 0.926882–1.152106 |
+| Peak sampled aggregate physical footprint, bytes | 121,731,078 | 122,750,173 | 1.009084; 0.946249–1.076091 |
+
+CPU falls 43.57% and instructions 78.02%, consistent with the independently
+confirmed removal of repeated configuration hashing. These are idle member
+resources, not payment performance. RSS and physical-footprint intervals still
+permit a regression above 5%, and package wakeups remain inconclusive. Therefore
+**E05 is not accepted**. No outlier is excluded and no warmup or sampling setting
+is changed. Following the five-to-ten-pair rule, the next command is
+`python3 "$RUN_ROOT/run_e05_fresh_idle_pairs.py" --first 6 --last 10` using the
+same binaries and unchanged fixtures recipe. It adds independent fixtures and
+preserves the first five pairs. Active-payment checks remain deferred until the
+idle series ends; their unexecuted support is not correctness evidence.

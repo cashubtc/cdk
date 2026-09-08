@@ -345,3 +345,15 @@ pass; temporary counters and harness code are removed from source. See the
 [ten component runs](benchmarks/2026-09-08-checkpoint-summary-component.csv) and
 journal for all intervals and the harness-only failed build. Fresh independent
 idle comparisons and active-payment/recovery guards still gate retention.
+
+Five fresh, independently prepared service idle pairs now show 43.57% less
+aggregate member CPU (paired ratio 0.5643, 95% interval 0.5244–0.6071) and 78.02%
+fewer instructions (0.21985, 0.21847–0.22123). Mean CPU per 60-second observation
+is 2.4141 seconds baseline versus 1.3601 candidate across five members.
+
+Retention is still pending. Peak sampled RSS has ratio interval 0.9269–1.1521,
+physical footprint 0.9462–1.0761, and package wakeups 0.9566–1.4849. These do not
+establish acceptable resource behavior. The unchanged comparison is being
+extended to ten pairs, retaining every observation. See [all initial idle runs](benchmarks/2026-09-08-checkpoint-fresh-idle.csv).
+There is no new payment-latency or throughput claim, and active-payment/restart
+guards remain outstanding.
