@@ -4183,3 +4183,88 @@ is preserved. The temporary activity client source is absent from the worktree;
 no production probes remain. E07 remains provisional pending its performance
 acceptance decision. Broader transport/load/history and final campaign gates
 remain open.
+
+### Primary ecash concurrency observations: prespecified next workload
+
+Resume missing direct-ecash coverage with the accepted E03a release artifact
+(`bf9e434e3bcc94c52b91548d289caa3f8c41afd8c9f591b0241db9fc13468e34`),
+excluding provisional E07 and rejected E10. Use the existing persistent receive
+SDK (`7f36c5aea2a2adbe77f608e6cd6687d1ed80752d652ce189b0437931d40bb3e1`),
+with tracing disabled. This is baseline characterization, not a candidate or
+keep decision. Hypothesis to investigate: serial ecash latency and scaling depend
+on consensus/response waiting versus proof verification; only measured costs and
+subsequent sampling attribution may authorize an optimization.
+
+Run closed-loop concurrency 1, 4, 16 and 64 separately, each with fresh independent
+five-member HTTP/SQLite custody, full production DKG, 64 unique 32-sat tokens,
+one input/output proof each and 64 independent recipient wallets. Fund 8,192 sat
+as 256 proofs, package tokens offline, and require the same 13-operation starting
+history. Fixture creation, funding, packaging, 60-second settling and SDK connection
+preparation stay outside transaction timing. Use a fixed 180-second observation
+window and 120-second drain allowance; this is a finite burst, not sustainable
+throughput. These windows differ from historical 60-second guards and are not
+production timeout changes. Retain not-offered, late and unresolved outcomes.
+
+Collect existing native member CPU/memory/wakeup/I/O counters at 10 Hz with causal
+clock bounds; record controller cost and post-SDK status-audit CPU separately.
+After convergence, audit original member proof states and recipient databases,
+require exact 8,192 = 6,144 + 2,048 sat conservation, then measure 30 seconds of
+unchanged quiescent state. Preserve every original fixture, including failures;
+never repeat token submission after an uncertain result. Initial characterization
+has no temporary production probes or sampling profiler. Allocation/SQL/network
+attribution, shared-wallet contention, open-loop load and original-baseline
+comparisons remain separate open requirements.
+
+The private controller extends the existing fixture, offline-token and bounded
+SDK guard scripts, preserving source snapshots with each manifest:
+
+```sh
+python3 "$RUN_ROOT/run_primary_ecash_observation.py" --concurrency 1
+python3 "$RUN_ROOT/run_primary_ecash_observation.py" --concurrency 4
+python3 "$RUN_ROOT/run_primary_ecash_observation.py" --concurrency 16
+python3 "$RUN_ROOT/run_primary_ecash_observation.py" --concurrency 64
+```
+
+These commands are prespecified; only completed result records establish which
+ones actually ran. Run them serially with no overlapping builds or profiles.
+
+### Primary ecash c1: all receipts passed; output-shape assertion corrected
+
+The serial observation completed all 64 receives inside the fixed window with
+zero failures, timeouts, unfinished or late requests. The last receipt arrived
+at 66.039149167 seconds; p50/p95 are 1,016.563292/1,233.608708 ms. Active aggregate
+member CPU is causally bounded at 24.681448918–24.733759791 seconds, or
+0.385647639–0.386464997 seconds per receipt. Fixed-window CPU is
+28.842828208–28.887852126 seconds over 180 seconds; it includes the post-burst
+interval and must not be described as active CPU. Peak sampled aggregate RSS is
+451,395,584 bytes and the collector consumed 0.364829708 CPU seconds.
+
+The controller then failed its post-measurement one-output assertion. Actual
+ordinary wallet denomination selection returns **twelve outputs** per 32-sat
+receive: 1/1/1/1/2/2/2/2/4/4/4/8 sat. The token has one input as planned. Preserve
+the original manifest and controller source instead of rewriting the expectation
+retroactively. This is a harness assumption failure, not failed payment evidence.
+Future concurrency cases explicitly require this same observed twelve-output
+shape; changing the wallet's denomination policy to manufacture a faster workload
+would not be a valid optimization comparison.
+
+Cleanup stopped all owned services and preserved all original state. A separate
+read-only audit verified every original recipient database, all 64 accepted swaps
+and 64 spent input proofs on all five members, matching journals/digests at 77
+operations and exact **8,192 = 6,144 + 2,048 sat** conservation. No token was
+resubmitted. Live readiness and empty queues were observed before the assertion.
+The planned quiescent-idle sample and full post-SDK proof-audit CPU interval were
+not collected; record them as missing. The already measured post-SDK status-only
+CPU is 0.029647125 seconds and does not cover the later stopped-state proof audit.
+
+```sh
+python3 "$RUN_ROOT/audit_primary_ecash_c1_originals.py"
+python3 "$RUN_ROOT/export_primary_ecash_observation.py" --concurrency 1
+```
+
+The [request ledger](benchmarks/2026-09-08-primary-ecash-c1-requests.csv) and
+[run record](benchmarks/2026-09-08-primary-ecash-c1-run.csv) preserve the corrected
+actual shape and missing fields. Retain this as descriptive baseline evidence;
+it is one finite burst, with no p99, stable-load throughput or matched win claim.
+Next run the prespecified c4/c16/c64 cases sequentially with the corrected audit,
+fresh custody and unchanged production/SDK artifacts.
