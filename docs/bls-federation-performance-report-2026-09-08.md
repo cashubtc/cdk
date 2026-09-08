@@ -515,3 +515,10 @@ The slower baseline payment is retained in the
 [request ledger](benchmarks/2026-09-08-e10-bdk-requests.csv), with
 [run metrics](benchmarks/2026-09-08-e10-bdk-runs.csv) and
 [work counts](benchmarks/2026-09-08-e10-bdk-phase-counts.csv).
+
+The second pair also passed all ten payment checks. Median latency was 23.308
+versus 19.022 seconds and CPU/payment 4.2855 versus 4.1642 seconds. Its candidate
+included a 35.253-second payment; both revisions exhibit long observations and
+variable signing work. All samples remain in the ledgers. Two pairs do not
+establish acceptance; E10 remains provisional while the alternating comparison
+continues.

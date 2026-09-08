@@ -3529,3 +3529,48 @@ chain observations and one additional broadcast observation, with the same five
 user payments. These are workload outcomes, not initial-state mismatches or extra
 confirmed payments. Keep the five/ten-pair decision protocol; do not infer a net
 system gain solely from the earlier millisecond wakeup result.
+
+### E10 second matched pair: full observations retained
+
+Pair two completed candidate first, then baseline, using the same frozen release
+artifacts and workload. All ten payments completed within their windows. The
+independent receipt, fee, member digest, queue and wallet checks passed. The
+read-only proof audit also passed through both complete pairs:
+
+```sh
+python3 "$RUN_ROOT/audit_e10_completed_pairs.py" --through-pair 2
+python3 "$RUN_ROOT/export_e10_completed_runs.py"
+```
+
+The public request, run and phase-count ledgers now preserve both pairs. Actual
+proof/change and Bitcoin transaction shapes match the first-pair description.
+Each original bank again retains 124,647 sat after five 1,000-sat receipts and
+1,425 sat in independently checked fees. Both owned fixtures are stopped with
+their state preserved.
+
+| Second-pair observation | Baseline | Candidate |
+| --- | ---: | ---: |
+| Empirical p50 | 23,307.860416 ms | 19,022.309292 ms |
+| Empirical p95 | 36,932.175625 ms | 35,253.213542 ms |
+| Member CPU/payment | 4.2854584918 s | 4.1641662916 s |
+| Instructions/payment | 38,306,369,938 | 38,454,227,304 |
+| Peak aggregate RSS | 488,472,576 bytes | 491,438,080 bytes |
+| Peak aggregate footprint | 204,019,232 bytes | 203,773,472 bytes |
+| Idle CPU per 30 seconds | 1.253610791 s | 1.252933541 s |
+| Successful FROST coordinations for five payments | 13 | 17 |
+
+Keep the candidate's 35,253.213542-ms third payment and both baseline payments
+over 36 seconds. The candidate's SDK phases were 921.670917 ms for quote,
+31.730750 ms for preparation and 34,299.811875 ms for confirmation. Existing
+phase counters contain no nonzero error/cancelled counts for that arm, so these
+observations do not establish a failed signing retry as the long-tail cause.
+Do not change retry policy based on this observation.
+
+The baseline ended at 164 accepted operations versus 169 for the candidate,
+with five additional candidate chain observations and matching counts for the
+other operation kinds. Successful signing work varies in both revisions: the
+candidate has fewer coordinations in pair one and more in pair two. Neither
+this count nor the single-pair CPU difference establishes a repeatable net gain.
+E10 remains provisional pending the full five/ten-pair protocol and correctness
+gates. Pair three continues baseline first; no concurrent build or test load is
+introduced during its measurement.
