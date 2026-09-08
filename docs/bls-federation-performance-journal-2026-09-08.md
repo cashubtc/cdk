@@ -3938,3 +3938,21 @@ Next work remains the separate cross-session recovery finding and the missing
 primary payment measurements. Original-baseline combined comparison, full
 resource/drain accounting, scaling matrix, real payments in every direction,
 restart/catch-up/value conservation and two final profiling passes remain open.
+
+### E07 quorum verification resumed after E10
+
+After the E10 controller completed and the inconclusive E10 source was removed,
+reran the existing E07 candidate's scoped quorum tests on retained production.
+The pinned command passed **18 tests, zero failed or ignored**:
+
+```sh
+RUST_MIN_STACK=16777216 nix --extra-experimental-features 'nix-command flakes' develop .#stable --command cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib quorum_ -- --test-threads 1
+```
+
+This includes the old-session replay-floor/vote regression and neighboring quorum,
+checkpoint and recovery scenarios. It does not prove that a real member crossing
+sessions recovers with the candidate, nor establish performance acceptance.
+Only `sync_loop.rs` and its existing test addition remain provisional. No E07
+production runtime has been started. Next validation must exercise the original
+cross-session failure and candidate recovery with durable frontier/digest checks;
+repeating a same-session restart cannot substitute for that boundary.
