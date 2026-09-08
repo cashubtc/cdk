@@ -4268,3 +4268,39 @@ actual shape and missing fields. Retain this as descriptive baseline evidence;
 it is one finite burst, with no p99, stable-load throughput or matched win claim.
 Next run the prespecified c4/c16/c64 cases sequentially with the corrected audit,
 fresh custody and unchanged production/SDK artifacts.
+
+### Primary ecash c4: full observation and cleanup passed
+
+The corrected controller completed all 64 original requests, twelve-output proof
+shape checks, member/recipient audits and quiescent idle observation. All members
+agree at 77 operations with empty queues; exact 8,192 = 6,144 + 2,048 sat
+conservation passes. All owned members, backends and the proxy are stopped before
+starting c16. No token/custody state was copied or reused across fixtures.
+
+The last receipt arrived at 19.198747792 seconds. p50/p95 are
+1,211.640375/1,361.728791 ms; all 64 completed in-window, with no failures or late
+results. Active member CPU is bounded at 18.084706500–18.557099541 seconds,
+0.282573539–0.289954680 seconds per receipt. The fixed 180-second window consumes
+25.954016458–26.076580084 member CPU seconds. Peak sampled aggregate RSS is
+444,825,600 bytes; collector CPU is 0.391306916 seconds.
+
+The post-SDK native endpoint through receipt audit/convergence consumes
+0.069328125 member CPU seconds, including the 0.041510041-second status-only
+subinterval. Do not add those overlapping intervals. The separate unchanged
+30-second quiescent interval consumes 1.339761081 CPU seconds, 6,409 interrupt
+wakeups and 587 package wakeups across all five members. The serial case's
+missing idle endpoint prevents a matched idle comparison.
+
+```sh
+python3 "$RUN_ROOT/run_primary_ecash_observation.py" --concurrency 4
+python3 "$RUN_ROOT/export_primary_ecash_observation.py" --concurrency 4
+```
+
+These commands completed in the sequential controller. The
+[request ledger](benchmarks/2026-09-08-primary-ecash-c4-requests.csv) and
+[run record](benchmarks/2026-09-08-primary-ecash-c4-run.csv) retain every sample.
+Compared with the single serial observation, the same 64-receipt finite burst
+finishes earlier with somewhat higher request latency and lower active CPU per
+receipt. This is descriptive concurrency scaling, not an accepted code change,
+a confidence interval over repeated runs, p99 or sustainable throughput. c16
+fixture preparation started only after c4 cleanup completed; c64 remains queued.
