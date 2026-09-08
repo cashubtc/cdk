@@ -1890,3 +1890,95 @@ repository was modified, and no conclusion relies on the stale source.
 Unprobed E09 paired measurements are deferred until the remaining live recovery
 failure is understood. E08b still requires its additional five unchanged-binary
 pairs. The full campaign and final correctness/payment matrix remain incomplete.
+
+#### E09 bounded error probe and durable retry deadline
+
+The guarded error-probe build and original-state diagnostic completed. The probe
+records at most twelve failures per member and changes no return values. Source
+was restored after the build; only the frozen diagnostic executable contains it.
+The original five members and backend were resumed without SDK, invoice, payer,
+funding or mining commands. All members became healthy and remained healthy;
+the sixty-second observation ended normally and all owned processes were stopped
+with their databases preserved.
+
+Exactly one claim-execution error was recorded, on the actor during startup:
+the preimage was already disclosed and custody reported signer unavailability
+while a peer was awaiting quorum validation. No later claim execution was recorded
+within that observation. Read-only inspection of the actor's persisted payment
+schedule explains the gap: its seventh consecutive no-progress result selected
+an existing jittered external-evidence delay of 265,820 milliseconds. The other
+members waited for federation evidence. A sixty-second observation cannot test
+that actor's next scheduled retry; absence of another error does not establish a
+stuck scheduler or terminal signing failure.
+
+The next diagnostic observes the same original claim through the existing retry
+deadline, recording bounded error counts, schedule generation, wait category and
+remaining deadline. It does not change production timeouts, reset backoff, alter
+durable state, initiate another payment or infer permission to reuse a nonce.
+Private commands: `python3 "$RUN_ROOT/observe_e09_preserved_claim_errors.py"`,
+followed by `python3 "$RUN_ROOT/observe_e09_preserved_claim_deadline.py"` using a
+distinct output directory. The latter is in progress; its outcome is not yet
+acceptance evidence. No additional production change has been made.
+
+The extended observation reached the original actor's next deadline. Its schedule
+advanced from generation 17 to 18, proving the scheduler retried without a manual
+wake. The second bounded error identified a virtual MuSig2 session in a
+non-retryable state. Custody again classified the failure as signer unavailability
+with the preimage already disclosed. The runtime converted it to external-evidence
+waiting, leaving the accepted signing attempt unchanged and scheduling another
+backoff. The remaining wait is therefore not a missing scheduler wake.
+
+Follow-up hypothesis within E09: retain the custody-unavailable signal in the
+existing post-disclosure recovery outcome. The caller must first obtain accepted
+preimage disclosure if it is not already accepted, then use its existing
+consensus-controlled signing-attempt advancement. Generic ambiguous backend
+failures must remain external-evidence waits. This should remove retries against
+an unusable nonce session while preserving the original plan, external action,
+invoice, input reservation and payment hash. Never reset or reuse that session.
+Validation will require the original claim to recover, accepted disclosure and
+retry ordering, unchanged payer records, current-attempt rejection tests, and
+unprobed matched measurements before acceptance. No performance gain is claimed
+from this diagnostic.
+
+The extended diagnostic completed its 360-second window, verified all five
+members healthy, and stopped the owned fixture with original state preserved.
+There were exactly two bounded errors: startup readiness, then the non-retryable
+session at the scheduled deadline. No SDK or payment initiation ran.
+
+The follow-up implementation adds the local custody-unavailable flag to
+`FederatedBarkReceiveClaimOutcome::RecoveryRequired`. Incoming orchestration
+continues to submit disclosure first when it is not yet accepted. For an already
+disclosed claim, only that flag selects the existing accepted signing retry;
+generic ambiguous errors continue to wait. The pre-disclosure and post-disclosure
+paths share the existing retry submission body in one private helper. No wire
+format, public wallet method, standalone behavior, nonce validation or dependency
+revision changes. No temporary probe remains in production source.
+
+`cargo fmt --all` and the federation-enabled Axum `--lib bark` filter passed
+(24 tests, including custody transport attempt rotation and exact-result retry).
+An initial standalone `cdk-bark --lib` invocation selected zero tests because
+its federation feature was omitted; it is not runtime coverage. An explicit
+`cdk-bark --features federation-bark --lib` run, protocol tests and strict scoped
+lint are in progress. Recovery helpers now take a new output directory explicitly
+so prior failed receipts and diagnostics remain preserved. They still reuse the
+existing wallet, seed, quote and invoice and contain no payment initiation.
+The correction remains provisional and uncommitted pending live recovery and
+unprobed paired evidence.
+
+The explicit feature run passed 19 Bark runtime tests; the Bark protocol suite
+passed 36 tests. Scoped strict Axum library/test lint passed. Exact commands,
+all under the pinned stable Nix shell with `RUST_MIN_STACK=16777216`:
+
+```sh
+cargo test --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib bark
+cargo test --locked -p cdk-bark --features federation-bark --lib
+cargo test --locked -p cdk-federation-bark --lib
+cargo clippy --locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh --lib --tests -- -D warnings
+```
+
+The isolated uninstrumented recovery runtime and explicit-output SDK helper
+builds are now in progress. Their wrappers preserve unrelated experiments and
+remove private helper source after building. The runtime excludes E03a/E07 and
+includes E08b, matching the original preserved fixture except for the E09
+corrections. No final payment, performance, ordinary-CDK or campaign acceptance
+is inferred from these scoped tests.

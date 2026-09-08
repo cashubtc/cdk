@@ -275,3 +275,13 @@ state remained healthy, and the reservation error disappeared. The remaining
 backend/custody recovery failure needs attribution. E09 is therefore provisional;
 no accepted optimization or recovered payment is claimed. The journal retains
 both the invalid first harness attempt and this unsuccessful recovery.
+
+A longer same-identity diagnostic reached the persisted retry deadline and found
+that the original virtual MuSig2 session was non-retryable. Custody reported
+signer unavailability, but post-disclosure handling discarded that distinction
+and continued waiting for external evidence. A provisional follow-up carries the
+signal to the existing consensus-authorized signing-attempt transition, after
+accepted disclosure. It preserves generic ambiguous-outcome waiting and does not
+reset nonces or change the payment identity. The 24 scoped Axum Bark tests,
+19 Bark runtime tests, 36 Bark protocol tests and scoped strict lint pass;
+live recovery and performance acceptance of this follow-up are still pending.
