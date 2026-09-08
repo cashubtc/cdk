@@ -909,3 +909,148 @@ No payments were initiated in this state. Logs and databases are preserved, and
 all five diagnostic members are being restored to the original baseline binary.
 This is a separate recovery investigation; it neither accepts nor disproves the
 narrow equivalent-barrier cleanup. All temporary probes are removed from source.
+
+The restoration completed successfully: all five original baseline members
+became ready and converged. The diagnostic restart failure remains recorded.
+
+### E03b four concurrent Bark receives: incomplete workload
+
+Workload: five original-revision HTTP members, with only the receive actor using
+the frozen pre-fix bounded lock probe; four independent persistent SDK wallets,
+four 2,048-sat invoices, concurrency four, 60-second measurement window and
+120-second drain. Preparation and external payer initiation use the existing
+incoming SDK driver and private one-shot payer helper. No compilation overlapped
+the payment window. This was attribution/driver validation, not a matched pair.
+
+Two requests completed with independent payer receipts and 2,048 sat in each SDK
+wallet. Two remained pending after drain; their payer subprocess timeouts did not
+cancel the Lightning payments. The original invoice, quote, wallet and payer
+identities are retained for reconciliation. No replacement payment was initiated.
+All five members agree: two actions are `receive_claimed`, two `receive_prepared`.
+
+Read-only independent checks found the two pending HTLCs accepted at the receiving
+Lightning node. Ark's structured log records preparation of HTLC packages for all
+four requests, but claims only for the two successful requests. Other members
+have stored ready HTLC packages for both pending actions; the actor retains one
+ready package and one awaiting-payment checkpoint. This narrows the investigation
+to local evidence/recovery progress, rather than absent Lightning delivery.
+Invoice hashes match the durable action hashes. No preimage or invoice is
+included in this journal; raw evidence stays private.
+
+The bounded actor probe observed a maximum lock wait of 3,292.789 ms and maximum
+hold of 1,590.823 ms. These demonstrate contention, but the failed workload cannot
+support an optimization acceptance or throughput claim. No lock-scope production
+change has been made. The actor is being restored to the original binary with
+targeted debug logging to inspect the existing recovery decisions. The SDK's two
+pending attempts must be reconciled, not restarted as new payments.
+
+## E07 — Session-scoped replay targets
+
+The actor's first original-binary restart remained awaiting quorum for the full
+180-second readiness bound. Its live session had advanced, while its application
+frontier agreed with the four healthy peers. Inspection found that
+`quorum_supported_replay_target` retains the old local session's cursor as both a
+replay floor and a quorum vote when selecting a later session. Unit rounds reset
+at the session boundary, so these old rounds have no meaning in the new session.
+A subsequent same-session restart with the original binary restored readiness
+and convergence. This supports the diagnosis but is not candidate acceptance.
+
+The new focused test fails on the original helper. It checks both the obsolete
+replay floor and the prohibition on counting an old local cursor toward a new
+session's supported watermark. A provisional fix uses zero local watermarks
+when the target session differs; same-session durable floors remain unchanged.
+The existing `quorum_` tests are running. No production binary with this fix has
+been used and no performance claim is made.
+
+The initial minimal `federation` test command failed to compile existing
+BDK-specific tests without their feature. The reproducer was rerun with
+`federation-bdk,federation-bark,prometheus,iroh` and failed at its intended
+assertion. This feature-matrix failure remains an outstanding gate. E06's scoped
+strict `cdk-common` Clippy check passed.
+
+## E08 — Receive evidence routing after worker-lease rotation
+
+Hypothesis recorded before editing: incoming HTLC evidence uses inconsistent
+collector roots after the replaceable worker lease changes. The incoming path
+selects its collector and transition builder from the current receive worker,
+but passes the original intent actor to certificate collection. The evidence
+delivery wake also derives its fallback offset from the original actor.
+
+In the incomplete four-payment workload, pending intents originated at journal
+indices 203 and 206, with original actor 1 and current operation count 225.
+The existing eight-item lease policy therefore selects member 3 for both.
+Evidence collection still routes to member 1. This explains how every member can
+retain valid HTLC evidence while the selected transition builder lacks the
+matching certificate. The two later requests completed before this became a
+permanent wait in their workflows.
+
+Owning layer: Axum's incoming evidence routing. Candidate: use the current receive
+worker consistently for `ReceiveHtlcsReady` collection and its delivery wake;
+leave immutable action identity, signing actor, claim plan, evidence bindings,
+thresholds and external initiation unchanged. Expected work reduction: eliminate
+repeated unsuccessful collection/wake attempts after a lease transition. Primary
+outcome: the existing pending identities complete through normal authorized
+recovery, followed by fresh serial/concurrent payment comparisons. No evidence,
+preimage, nonce, quote or backend payment state may be edited to force completion.
+
+### E08 original payments recovered without reinitiation
+
+The isolated release candidate contains only E08 on top of committed work; E03a,
+E06 and E07 were excluded during compilation, then their workspace changes were
+restored. It contains no temporary probes. Existing Bark tests pass: 19. All five
+original members were stopped within the shutdown bound and restarted against
+their existing databases with this candidate. All became ready and converged.
+
+Normal workers advanced both pending actions to `receive_claimed` on every member.
+Independent payer `listsendpays` records show exactly one completed 2,048,000-msat
+part per original invoice. A temporary SDK recovery helper reopened the original
+wallet databases and 64-byte seeds, validated the saved quote/invoice identities,
+and used the ordinary proof stream for those existing funded quotes. Each wallet
+issued 2,048 sat and ended with a 2,048-sat spendable balance. Its temporary source
+was removed from the workspace after compilation and retained privately with the
+binary and receipts. It cannot create quotes or initiate backend payments.
+
+Together with the two original successes, all four original requests now have
+independent settlement and 8,192 sat of SDK receipts. The two recoveries occurred
+after the original drain; they are **late reconciliations**, not completions in
+that measurement window. No matched E08 performance acceptance has occurred.
+A fresh four-concurrent candidate receive run is now testing normal completion.
+
+Pinned-shell commands for the focused checks and candidate build:
+
+```sh
+cargo test --locked -p cdk-axum --no-default-features \
+  --features federation-bdk,federation-bark,prometheus,iroh --lib quorum_
+cargo test --locked -p cdk-axum --no-default-features \
+  --features federation-bdk,federation-bark,prometheus,iroh --lib bark_
+cargo build --locked --release -p cdk-mintd --no-default-features \
+  --features fakewallet,sqlite,info-page,federation-bdk,federation-bark,prometheus,iroh
+```
+
+Results: 18 quorum tests and 19 Bark tests pass; isolated release build passes.
+Raw commands with local fixture arguments, frozen source snapshots, fingerprints,
+receipts and restart logs remain private. E07 has not been deployed in this run.
+
+The fresh E08 concurrent batch completed all four receives with independent payer
+receipts, 8,192 sat in four SDK wallets, and converged member state. Each issuance
+contained 30 proofs. End-to-end durations by request were 70,180.628, 12,731.816,
+13,955.634 and 21,914.253 ms; external payer completion intervals were 64,337.408,
+4,182.666, 4,514.568 and 12,385.458 ms after the payer observed each invoice.
+The first request completed during drain, outside the 60-second window. These
+intervals use their own monotonic clocks; payer intervals are not subtracted from
+unrelated SDK timestamps. They do not establish a paired speedup or sustainable
+throughput. The remaining approximately one-minute delay warrants targeted
+collector/scheduling attribution before accepting E08 performance.
+
+Scoped strict Axum lint passed with the payment/transport feature combination:
+`cargo clippy --locked -p cdk-axum --no-default-features --features
+federation-bdk,federation-bark,prometheus,iroh --lib --tests -- -D warnings`.
+
+The next isolated E08 diagnostic adds at most 512 routing/schedule events per
+member, recording local monotonic elapsed durations, action correlations, worker
+and collector member numbers, fallback rounds, attestation counts and scheduled
+delays. It records no payment secrets or invoices. The first build-helper attempt
+stopped at an insertion assertion before compilation and restored source; the
+corrected build passed and also restored source. No probe is retained in source.
+The two completed on-chain comparison federations were stopped without removing
+databases before this profile. Its four-receive workload is diagnostic only.

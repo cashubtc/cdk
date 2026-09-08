@@ -116,6 +116,17 @@ DKG driver as a candidate to measure, not an established dominant bottleneck.
 
 ## Completion gates
 
+The four-concurrent incoming Lightning diagnostic completed two payments and left
+two pending after drain. An isolated correction to evidence routing after worker
+lease rotation recovered both original payments: independent payer settlement,
+matching member states, and 2,048 sat in each original SDK wallet. These late
+recoveries do not count toward the earlier window. Fresh concurrent validation
+and matched performance acceptance remain pending.
+
+A separate restart reproducer exposed old-session replay cursors being retained
+when joining a later session. Its provisional fix passes 18 quorum/recovery
+tests. Neither correction has yet passed real-payment or performance acceptance.
+
 All campaign matrix, regression, adversarial, real-payment, restart, conservation,
 combined-comparison and two-final-profile gates remain pending. No final
 performance or correctness claim is made by this report yet.
