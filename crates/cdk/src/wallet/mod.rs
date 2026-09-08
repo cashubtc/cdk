@@ -106,6 +106,8 @@ pub use payment_request::NostrWaitInfo;
 pub use payment_request::{CreateRequestParams, PayRequestOptions, PreparedPaymentRequest};
 pub use recovery::RecoveryReport;
 pub use send::PreparedSend;
+#[doc(hidden)]
+pub use send::PreparedSendPlan;
 #[cfg(all(feature = "npubcash", not(target_arch = "wasm32")))]
 pub use streams::npubcash::NpubCashProofStream;
 pub use types::{CrossMintTransferQuote, MeltQuote, MintQuote, SendKind};

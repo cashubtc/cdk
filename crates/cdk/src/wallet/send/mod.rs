@@ -14,9 +14,12 @@ use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{Proofs, Token};
 use crate::{Amount, Error, Wallet};
 
+mod fees;
+mod plan;
 pub(crate) mod saga;
 
-use saga::SendSaga;
+pub use self::plan::PreparedSendPlan;
+use self::saga::SendSaga;
 
 /// Prepared send transaction
 ///
@@ -32,7 +35,7 @@ pub struct PreparedSend<'a> {
     proofs_to_swap: Proofs,
     proofs_to_send: Proofs,
     swap_fee: Amount,
-    send_fee: Amount,
+    plan: PreparedSendPlan,
 }
 
 impl PreparedSend<'_> {
@@ -46,7 +49,7 @@ impl PreparedSend<'_> {
         self.amount
     }
 
-    /// Send options
+    /// Send options supplied by the caller.
     pub fn options(&self) -> &SendOptions {
         &self.options
     }
@@ -66,9 +69,15 @@ impl PreparedSend<'_> {
         &self.proofs_to_send
     }
 
-    /// Fee the recipient will pay to redeem the token
+    /// Fee the recipient will pay to redeem an exact send.
     pub fn send_fee(&self) -> Amount {
-        self.send_fee
+        self.plan.fee()
+    }
+
+    /// Internal output plan carried by binding adapters through confirmation.
+    #[doc(hidden)]
+    pub fn plan(&self) -> &PreparedSendPlan {
+        &self.plan
     }
 
     /// All proofs (both to swap and to send)
@@ -80,7 +89,7 @@ impl PreparedSend<'_> {
 
     /// Total fee (swap + send)
     pub fn fee(&self) -> Amount {
-        self.swap_fee + self.send_fee
+        self.swap_fee + self.plan.fee()
     }
 
     /// Confirm the prepared send and create a token
@@ -93,7 +102,7 @@ impl PreparedSend<'_> {
                 self.proofs_to_swap,
                 self.proofs_to_send,
                 self.swap_fee,
-                self.send_fee,
+                self.plan,
                 memo,
             )
             .await
@@ -130,7 +139,7 @@ impl Debug for PreparedSend<'_> {
                     .map(|p| p.amount)
                     .collect::<Vec<_>>(),
             )
-            .field("send_fee", &self.send_fee)
+            .field("plan", &self.plan)
             .finish()
     }
 }
@@ -177,7 +186,7 @@ impl Wallet {
             proofs_to_swap: prepared_saga.proofs_to_swap().clone(),
             proofs_to_send: prepared_saga.proofs_to_send().clone(),
             swap_fee: prepared_saga.swap_fee(),
-            send_fee: prepared_saga.send_fee(),
+            plan: prepared_saga.plan().clone(),
         };
 
         Ok(prepared)
@@ -197,7 +206,7 @@ impl Wallet {
         proofs_to_swap: Proofs,
         proofs_to_send: Proofs,
         swap_fee: Amount,
-        send_fee: Amount,
+        plan: PreparedSendPlan,
         memo: Option<SendMemo>,
     ) -> Result<Token, Error> {
         let db_saga = self
@@ -214,7 +223,7 @@ impl Wallet {
             proofs_to_swap,
             proofs_to_send,
             swap_fee,
-            send_fee,
+            plan,
             db_saga,
         )?;
         let (token, _saga) = saga.confirm(memo).await?;
@@ -245,8 +254,8 @@ impl Wallet {
             SendOptions::default(), // Dummy
             proofs_to_swap,
             proofs_to_send,
-            Amount::ZERO, // Dummy
-            Amount::ZERO, // Dummy
+            Amount::ZERO,                // Dummy
+            PreparedSendPlan::default(), // Dummy
             db_saga,
         )?;
         saga.cancel().await

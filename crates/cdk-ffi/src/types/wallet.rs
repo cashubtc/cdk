@@ -223,7 +223,7 @@ pub struct SendOptions {
     pub memo: Option<SendMemo>,
     /// Spending conditions
     pub conditions: Option<SpendingConditions>,
-    /// Amount split target
+    /// Amount split target.
     pub amount_split_target: SplitTarget,
     /// Send kind
     pub send_kind: SendKind,
@@ -556,7 +556,7 @@ pub struct PreparedSend {
     proofs_to_swap: cdk::nuts::Proofs,
     proofs_to_send: cdk::nuts::Proofs,
     swap_fee: Amount,
-    send_fee: Amount,
+    plan: cdk::wallet::PreparedSendPlan,
 }
 
 impl std::fmt::Debug for PreparedSend {
@@ -582,7 +582,7 @@ impl PreparedSend {
             proofs_to_swap: prepared.proofs_to_swap().clone(),
             proofs_to_send: prepared.proofs_to_send().clone(),
             swap_fee: prepared.swap_fee().into(),
-            send_fee: prepared.send_fee().into(),
+            plan: prepared.plan().clone(),
         }
     }
 }
@@ -613,7 +613,7 @@ impl PreparedSend {
 
     /// Get the total fee for this send operation
     pub fn fee(&self) -> Amount {
-        Amount::new(self.swap_fee.value + self.send_fee.value)
+        Amount::new(self.swap_fee.value + self.plan.fee().to_u64())
     }
 
     /// Confirm the prepared send and create a token
@@ -631,7 +631,7 @@ impl PreparedSend {
                 self.proofs_to_swap.clone(),
                 self.proofs_to_send.clone(),
                 self.swap_fee.into(),
-                self.send_fee.into(),
+                self.plan.clone(),
                 send_memo,
             )
             .await?;

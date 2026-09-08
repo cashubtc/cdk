@@ -10,7 +10,7 @@ use cdk_common::wallet::{KeysetLoadPolicy, WalletSaga};
 use uuid::Uuid;
 
 use crate::nuts::Proofs;
-use crate::wallet::send::SendOptions;
+use crate::wallet::send::{PreparedSendPlan, SendOptions};
 use crate::Amount;
 
 /// Initial state before any work is done.
@@ -36,8 +36,8 @@ pub struct Prepared {
     pub swap_fee: Amount,
     /// Proofs that will be included in the token directly
     pub proofs_to_send: Proofs,
-    /// Fee the recipient will pay to redeem the token
-    pub send_fee: Amount,
+    /// Outgoing denominations and quoted redemption fee
+    pub plan: PreparedSendPlan,
     /// The persisted saga for optimistic locking
     pub saga: WalletSaga,
 }
@@ -75,7 +75,7 @@ impl fmt::Debug for Prepared {
                     .map(|p| p.amount)
                     .collect::<Vec<_>>(),
             )
-            .field("send_fee", &self.send_fee)
+            .field("plan", &self.plan)
             .field("saga_id", &self.saga.id)
             .field("saga_state", &self.saga.state)
             .field("saga_version", &self.saga.version)
@@ -153,7 +153,7 @@ mod tests {
             proofs_to_swap: vec![proof.clone()],
             swap_fee: Amount::from(0),
             proofs_to_send: vec![proof.clone()],
-            send_fee: Amount::from(0),
+            plan: Default::default(),
             saga: send_saga(
                 operation_id,
                 SendSagaState::ProofsReserved,

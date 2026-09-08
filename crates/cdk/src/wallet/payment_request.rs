@@ -70,10 +70,10 @@ pub struct PreparedPaymentRequest {
     method_fee: Amount,
     payment_amount: Amount,
     swap_fee: Amount,
-    send_fee: Amount,
     input_fee: Amount,
     total_amount: Amount,
     send_options: SendOptions,
+    send_plan: super::send::PreparedSendPlan,
     proofs_to_swap: crate::nuts::Proofs,
     proofs_to_send: crate::nuts::Proofs,
 }
@@ -87,7 +87,7 @@ impl std::fmt::Debug for PreparedPaymentRequest {
             .field("method", &self.method)
             .field("method_fee", &self.method_fee)
             .field("swap_fee", &self.swap_fee)
-            .field("send_fee", &self.send_fee)
+            .field("send_fee", &self.send_plan.fee())
             .field("input_fee", &self.input_fee)
             .field("total_amount", &self.total_amount)
             .finish_non_exhaustive()
@@ -135,9 +135,9 @@ impl PreparedPaymentRequest {
         self.swap_fee
     }
 
-    /// Mint input fee added so the receiver obtains the full payment amount.
+    /// Mint input fee added so the receiver obtains exactly the full payment amount.
     pub fn send_fee(&self) -> Amount {
-        self.send_fee
+        self.send_plan.fee()
     }
 
     /// Total mint input fee for the payment.
@@ -174,7 +174,7 @@ impl PreparedPaymentRequest {
                 self.proofs_to_swap,
                 self.proofs_to_send,
                 self.swap_fee,
-                self.send_fee,
+                self.send_plan,
                 None,
             )
             .await?;
@@ -366,10 +366,10 @@ impl Wallet {
             method_fee,
             payment_amount,
             swap_fee: prepared_send.swap_fee(),
-            send_fee: prepared_send.send_fee(),
             input_fee,
             total_amount,
             send_options: prepared_send.options().clone(),
+            send_plan: prepared_send.plan().clone(),
             proofs_to_swap: prepared_send.proofs_to_swap().clone(),
             proofs_to_send: prepared_send.proofs_to_send().clone(),
         })
