@@ -57,6 +57,7 @@ pub use cdk_common::{
 pub mod event;
 pub mod fees;
 pub mod invoice;
+pub mod rpc;
 
 #[doc(hidden)]
 pub use bitcoin::secp256k1;
@@ -78,6 +79,7 @@ pub use self::wallet::HttpClient;
 pub type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
 /// Re-export subscription
+pub use cdk_common::stream_channel;
 pub use cdk_common::subscription;
 #[cfg(any(feature = "wallet", feature = "mint"))]
 pub mod http_client {

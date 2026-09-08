@@ -46,6 +46,7 @@ pub mod redact;
 #[cfg(feature = "mint")]
 pub mod state;
 pub mod stream;
+pub mod stream_channel;
 pub mod subscription;
 #[cfg(feature = "wallet")]
 pub mod wallet;
