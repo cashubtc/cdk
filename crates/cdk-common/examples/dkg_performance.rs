@@ -25,7 +25,7 @@ use cdk_common::nuts::nut01::{
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
 use serde::Serialize;
 
-const HARNESS_VERSION: u16 = 7;
+const HARNESS_VERSION: u16 = 8;
 const ALL_PHASES: [&str; 20] = [
     "participant_generation",
     "participant_generation_validated_by_construction",
@@ -246,12 +246,16 @@ fn parse_args() -> Result<Args> {
             "--denominations" => {
                 denomination_count = match args
                     .next()
-                    .context("--denominations requires one or eight")?
+                    .context("--denominations requires one, eight, or a count from 1 to 64")?
                     .as_str()
                 {
                     "one" | "1" => 1,
                     "eight" | "8" => 8,
-                    value => bail!("invalid denomination profile {value}; expected one or eight"),
+                    value => value
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|count| (1..=64).contains(count))
+                        .context("denomination count must be from 1 to 64")?,
                 };
             }
             "--iterations" => {
@@ -314,7 +318,7 @@ fn parse_args() -> Result<Args> {
 fn print_usage() {
     eprintln!(
         "usage: dkg_performance [--profile 5-of-3|11-of-8|20-of-14] \
-         [--denominations one|eight] [--iterations N] [--timeout-secs N] \
+         [--denominations one|eight|1..64] [--iterations N] [--timeout-secs N] \
          [--phases all|PHASE,...] [--full-ceremony] [--pretty]"
     );
 }
