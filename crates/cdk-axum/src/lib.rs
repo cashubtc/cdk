@@ -107,7 +107,11 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/ws", get(ws_handler))
         .route("/checkstate", post(post_check))
         .route("/info", get(get_mint_info))
-        .route("/restore", post(post_restore));
+        .route("/restore", post(post_restore))
+        .route(
+            "/mint/quote/{method}/pubkey",
+            post(post_mint_quote_by_pubkey),
+        );
 
     let mut mint_router = Router::new().nest("/v1", v1_router);
 

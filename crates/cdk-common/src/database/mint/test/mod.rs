@@ -428,6 +428,7 @@ macro_rules! mint_db_test {
             get_mint_quotes_by_ids,
             get_melt_quotes_by_request_lookup_id,
             lock_melt_quote_and_related,
+            get_mint_quote_by_public_key,
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {
