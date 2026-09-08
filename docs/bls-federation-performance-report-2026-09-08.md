@@ -484,3 +484,13 @@ The performance gate, 74 scoped tests, strict lint, ordinary/core feature checks
 and real candidate restart pass. Retain E03a. These short serial runs do not
 establish sustainable throughput or p99 and do not replace the final comparison
 against the original campaign baseline.
+
+A follow-up diagnostic on the retained broadcaster completed one new BDK payment
+in 20.530 seconds. Existing phase timers showed millisecond fee estimation, PSBT
+construction, FROST rounds and broadcast, while the independent confirmation
+observation preceded SDK process exit by about 5.34 seconds. These observations
+prioritize scheduling and settlement attribution; they do not isolate a particular
+notification gap or establish another improvement. See the
+[phase observations](benchmarks/2026-09-08-bdk-retained-completion-phases.csv) and
+journal for scope, preparation failures, sampling limitations and receipt audit.
+All diagnostic services are stopped and original logging settings restored.

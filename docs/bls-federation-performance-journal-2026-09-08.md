@@ -3194,3 +3194,112 @@ Continue next with the documented BDK phase-attribution queue on retained code.
 The five-pair serial result does not close Iroh, parallel/open-loop load,
 long-history, PostgreSQL, all-direction final payments, original-baseline combined
 comparison or the two final profiling passes.
+
+#### Next experiment: retained BDK completion-phase attribution
+
+Before editing production code, profile the accepted E03a artifact on the stopped
+original candidate fixture, after its successful restart check. Hypothesis:
+residual serial completion time includes recurring wallet-liveness, wallet-sync
+or confirmation-observation waiting, rather than expensive Bitcoin submission.
+Owning layers are the existing Axum liveness/observation workers and descriptor
+wallet synchronization. The expected evidence is phase duration/count and sampled
+stack attribution; this experiment has no production candidate or keep decision.
+
+Use one new 1,000-sat payment on the original 124,647-sat wallet, the same fixed
+five-second miner/fee estimate and persistent SDK. Enable the existing transaction
+phase TRACE target through the normal stored logging configuration, preserving
+and restoring all original configuration. Record preparation separately, retain
+independent chain observations and exact receipts, and sample one member over
+the payment. Keep raw logs/profiles private. Existing phase durations are
+monotonic; do not subtract unrelated log/SDK/observer clocks or sum overlapping
+spans as wall time. Diagnostic logging and sampling overhead exclude this run
+from performance acceptance. Preserve the new payment identity if it is pending;
+never rerun the initiation command to repair a diagnostic helper failure.
+
+#### Retained BDK diagnostic: completed, attribution still open
+
+The optimization was committed as `9aa2ae395`. The follow-up diagnostic used its
+same uninstrumented runtime artifact, with the normal stored logging writer set
+to permit the existing `cdk_axum::federation::transaction_latency=trace` target.
+No source probe, protocol setting, quorum, confirmation rule or retry delay changed.
+
+Two preparation-only failures are preserved. The first configuration apply lacked
+the fixture's environment-resolved test RPC credential; restoration encountered
+the same validation error. A subsequent read-only export proved the original
+configuration had never changed. No member started and no payment was created.
+The second attempt started the fee proxy before its upstream Bitcoin backend;
+the proxy's unchanged regtest-chain guard correctly refused startup. All original
+configurations were restored and the owned backends stopped. No payment existed.
+The helper was repaired to wait for backend readiness before starting the proxy;
+it does not suppress the guard or extend a production timeout.
+
+The third attempt completed successfully. Commands, with the failed helper
+versions retained in their original private case directories:
+
+```sh
+python3 "$RUN_ROOT/profile_e03a_retained_completion.py"
+python3 "$RUN_ROOT/analyze_e03a_completion_phases.py"
+```
+
+Existing phase messages were verified on all five members before the single new
+payment was offered. The persistent SDK selected 14 proofs without a preparatory
+swap. Its monotonic total duration was 20,530.463291 ms: quote creation
+947.947291 ms, local preparation 30.922167 ms and confirmation call
+19,551.593833 ms. The confirmation call includes federation processing and block
+waiting. This is one diagnostic, not a baseline or a repeatable improvement.
+
+An independent observer using one monotonic clock saw the destination transaction
+in the [14,218.068208, 14,221.591208] ms RPC bracket and its first confirmation in
+[15,234.312041, 15,237.349791] ms. From that confirmed observation to SDK process
+exit was [5,336.239084, 5,339.276834] ms on the same observer clock. This residual
+includes federation settlement, client work and process exit; it is not an exact
+notification delay. Do not subtract member log timestamps from those durations.
+
+[All grouped phase durations](benchmarks/2026-09-08-bdk-retained-completion-phases.csv)
+are retained by member, phase and outcome. Their scope is runtime startup through
+shutdown, including startup readiness errors and periodic background rounds.
+They are not an isolated payment CPU or error-rate population. In member one's
+single relevant preparation/signing path, existing monotonic timers measured:
+
+| Phase | Duration |
+| --- | ---: |
+| Fee estimation | 0.490 ms |
+| PSBT construction | 0.222 ms |
+| Address allocation, including accepted operation | 830.176 ms |
+| Proposal preparation, including nested phases | 1,863.586 ms |
+| FROST commitment round | 29.241 ms |
+| FROST signature round | 41.797 ms |
+| Signed transaction finalization | 1,129.201 ms |
+| Bitcoin broadcast RPC | 2.577 ms |
+
+The member's 15 wallet-sync calls ranged 1.040–6.910 ms, and its three local
+confirmation reads ranged 0.016–0.023 ms. Ten consensus submissions ranged
+600.579–1,037.083 ms. Nested and overlapping phases must not be summed as wall
+time. Phase results and independent receipts support investigating scheduling
+and accepted-state publication before speculative PSBT/RPC or crypto changes.
+They do not yet quantify the delay from a particular accepted operation to the
+next liveness/observation round.
+
+A 20-second, one-millisecond-interval stack sample of member one returned
+successfully; its controller envelope was approximately 20.72 seconds. Parked
+condition-variable, semaphore and event-loop frames dominated the aggregate
+thread samples; active frames included SHA-256, BLS field arithmetic, SQL writes
+and synchronization. Thread sample counts are not CPU seconds or a payment's
+critical path. Keep the raw sample private and do not interpret this diagnostic
+as an idle-CPU saving or a reason to weaken durable writes or validation.
+
+The new 1,000-sat receipt and 285-sat fee were independently verified. The original
+wallet now holds 123,362 sat; the six total outgoing payments reconcile exactly:
+131,072 = 123,362 + 6,000 received + 1,710 fees. All members converged with empty
+queues at 189 accepted operations. The original five matched measurements remain
+unchanged; subsequent state must not be mistaken for their post-window snapshot.
+Both helpers exited, every owned service stopped, and all five stored logging
+configurations were exported and compared equal to their originals after restore.
+
+Next attribution step: capture process-local monotonic accepted-operation
+publication and worker-entry boundaries, using bounded temporary probes only if
+the existing phase timers cannot provide them. Measure pending melt/proposal to
+liveness entry and local chain evidence to confirmed-observation/settlement entry.
+Preserve proposer/signing leases and independent confirmation evidence. Only then
+form a narrow notification/work-removal candidate and run the prescribed matched
+comparison. No additional production optimization is accepted from this profile.
