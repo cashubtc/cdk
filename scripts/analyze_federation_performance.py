@@ -225,7 +225,17 @@ def compare(records):
                 results[name] = {"status": "insufficient_samples", "pairs": samples}
                 continue
             if any(a == 0 or b == 0 for a, b in samples):
-                results[name] = {"status": "zero_values_require_absolute_analysis", "pairs": samples}
+                # Ratios are undefined at zero. Retain a paired absolute interval
+                # for counts/wakeups without treating it as a percentage gate.
+                differences = [b - a for a, b in samples]
+                mean = statistics.mean(differences)
+                margin = T_CRITICAL[count] * statistics.stdev(differences) / math.sqrt(count)
+                results[name] = {
+                    "status": "zero_values_require_absolute_analysis",
+                    "mean_candidate_minus_baseline": mean,
+                    "difference_95_percent_ci": [mean - margin, mean + margin],
+                    "pairs": samples,
+                }
                 continue
             ratios = [math.log(b / a) for a, b in samples]
             mean = statistics.mean(ratios)

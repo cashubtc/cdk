@@ -105,6 +105,20 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(result["p95_ms"]["status"], "inconclusive")
         self.assertEqual(result["operations_per_second"]["status"], "regression_over_5_percent")
 
+    def test_zero_counts_keep_absolute_intervals_without_percentage_claims(self):
+        data = records()
+        for record in data:
+            record["metrics"]["pending_count"] = 0 if record["arm"] == "candidate" else 1
+        result = compare(data)[0]["metrics"]["pending_count"]
+        self.assertEqual(result["status"], "zero_values_require_absolute_analysis")
+        self.assertEqual(result["mean_candidate_minus_baseline"], -1)
+        self.assertEqual(result["difference_95_percent_ci"], [-1, -1])
+        self.assertNotIn("candidate_over_baseline", result)
+        for record in data:
+            record["metrics"]["pending_count"] = 0
+        result = compare(data)[0]["metrics"]["pending_count"]
+        self.assertEqual(result["difference_95_percent_ci"], [0, 0])
+
     def test_missing_metric_and_small_sample_p99_are_rejected(self):
         data = records()
         for record in data[:2]:
