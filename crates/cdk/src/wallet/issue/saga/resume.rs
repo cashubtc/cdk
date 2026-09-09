@@ -27,7 +27,7 @@ use crate::wallet::blind_signature::{
 };
 use crate::wallet::issue::saga::compensation::ReleaseMintQuote;
 use crate::wallet::issue::saga::state::PreparedMintRequest;
-use crate::wallet::recovery::{OutputRecoveryResult, RecoveryAction};
+use crate::wallet::recovery::{OutputRecoveryMode, OutputRecoveryResult, RecoveryAction};
 use crate::wallet::saga::CompensatingAction;
 use crate::wallet::util::escape_log_value;
 use crate::{Error, Wallet};
@@ -135,6 +135,7 @@ impl Wallet {
                 data.blinded_messages.as_deref(),
                 data.counter_start,
                 data.counter_end,
+                OutputRecoveryMode::Complete,
             )
             .await?;
 
@@ -938,7 +939,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recover_issue_empty_restore_marks_transaction_failed() {
+    async fn test_recover_issue_empty_restore_keeps_transaction_pending() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let saga_id = uuid::Uuid::new_v4();
@@ -987,11 +988,8 @@ mod tests {
             .resume_issue_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
             .await;
 
-        assert!(result.is_ok());
-        let recovery_action = result.unwrap();
-
-        assert_eq!(recovery_action, RecoveryAction::Compensated);
-        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+        assert!(matches!(result, Err(crate::Error::InvalidMintResponse(_))));
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
 
         // No proofs
         let proofs = db.get_proofs(None, None, None, None).await.unwrap();
@@ -999,7 +997,7 @@ mod tests {
 
         let transactions = db.list_transactions(None, None, None).await.unwrap();
         assert_eq!(transactions.len(), 1);
-        assert_eq!(transactions[0].status, TransactionStatus::Failed);
+        assert_eq!(transactions[0].status, TransactionStatus::Pending);
     }
 
     #[tokio::test]
