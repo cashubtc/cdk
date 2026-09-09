@@ -4612,3 +4612,84 @@ ecash/runtime guards and relevant adversarial/recovery checks pass. Prepare
 isolated source builds so the unrelated provisional E07 startup change cannot
 enter either runtime arm. Both runtime arms must use the same release features,
 SDK source and fixtures; compilation and funding remain outside measurements.
+
+### E11 runtime comparison: prespecified before the first payment
+
+Continue the existing primary ecash fixture, token preparation and measurement
+scripts with explicit artifact/identity arguments. Build baseline and candidate
+from one isolated code-only checkout with identical pinned Nix release profiles,
+features and SDK source. Baseline is `df7ebb753`; the candidate adds only E11's
+Cashu arithmetic/optional dependency feature patch. E07 remains excluded. No
+custody or nonce state is copied, and no production instrumentation is enabled.
+
+Run five alternating pairs of fresh five-member HTTP/SQLite federations with
+signing threshold three and consensus quorum four. Each arm uses 64 independent
+recipient wallets at concurrency four, 32-sat tokens with one input and twelve
+outputs (four ones, four twos, three fours and one eight), zero input fees, and
+8,192 sats of independently confirmed funding. Preparation ends at 13 accepted
+operations. All 64 receipts must bring the journal to 77, with 6,144 sats in the
+funding wallet and 2,048 sats in independent recipient wallets. Compare member
+digests within each run, not across independently generated ceremonies.
+
+Use a fixed 60-second observation window, 120-second bounded drain, 60-second
+pre-measurement settling and a separate 30-second quiescent idle observation.
+The previous c4 observation completed in about 19 seconds; shortening the fixed
+window from the exploratory 180 seconds reduces unrelated post-burst idle while
+leaving both comparison arms identical. Do not change it after seeing results.
+A finite burst does not establish sustainable throughput, and 64 samples do not
+support a payment p99 claim. Preserve every failure and late completion.
+
+Primary attribution is SDK CPU per completed receipt, measured from native CPU
+counters after wallet/connection preparation to wait4 process-exit usage. This
+includes result writing and fixed-window idle, which are identical in both arms.
+Record member CPU with the existing causal lower/upper bounds for the window and
+last-receipt interval, plus the combined member/SDK execution envelope. Sample
+SDK and member RSS/physical footprint at 10 Hz; preserve collector CPU and all
+native samples. Capture latency, time to last receipt, and separate idle CPU and
+wakeups. The expected counter reduction is the component-validated removal of
+K final exponentiations per weighted batch; no new cryptographic probe is needed.
+
+Apply the plan's paired confidence-interval protocol to CPU, p95, memory and idle
+work. Extend to ten pairs if inconclusive, retaining all samples. Do not accept
+E11 arithmetic until runtime guards and relevant wallet adversarial/recovery
+checks pass. Keep E11 uncommitted while those gates remain open.
+
+The isolated baseline/candidate mintd and persistent SDK builds completed with
+identical release feature sets and no E07 or temporary probes. The code checkout
+contains no copied custody state. Root provisional source files stayed unchanged.
+A synthetic child-process check confirms native CPU counters and wait4 agree;
+it validates accounting only and is excluded from performance evidence.
+
+```sh
+python3 "$RUN_ROOT/build_e11_runtimes.py"
+python3 "$RUN_ROOT/run_primary_ecash_observation.py" --concurrency 4 --pair 1 --arm baseline --order 1
+```
+
+The build completed. The first runtime arm is scheduled next; no E11 runtime
+performance or payment acceptance is claimed yet.
+
+### E11 first real ecash baseline: 64 receipts audited; paired series started
+
+The first baseline arm completed all 64 original requests within the fixed window,
+with no failures or pending drain outcomes. p50 was 1,026.052 ms, p95 1,249.199 ms,
+and time to the last receipt was 17.346694 seconds. SDK execution-through-exit CPU
+was 3.117365 seconds, excluding preparation. Member active-interval CPU was
+17.795852–18.033172 seconds under the native causal bounds. These are one baseline
+run's observations, not a gain or sustainable throughput conclusion.
+
+All five members reached 77 accepted operations with matching digests and empty
+queues. Independent SQL audits found 64 spent 32-sat inputs per member, and every
+recipient had the required twelve proofs totaling 32 sats. Value reconciles:
+8,192 sat funding = 6,144 bank + 2,048 independent recipient wallets. The separate
+30-second idle audit passed with unchanged state. All owned services stopped;
+all original custody, nonce, recipient and trace state is preserved.
+
+```sh
+python3 "$RUN_ROOT/run_e11_ecash_pairs.py" --through-pair 5
+```
+
+The alternating series has started from the preserved successful first baseline.
+It checks source snapshots before each arm and creates new custody for each run.
+Each accepted receipt record and failed attempt will remain in the journal's
+private evidence. No E11 arithmetic commit or runtime performance acceptance has
+occurred; five-pair analysis and relevant correctness/recovery gates remain open.

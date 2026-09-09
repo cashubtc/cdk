@@ -644,10 +644,10 @@ member CPU was 22.52601 seconds over the profile-enabled observation envelope.
 These diagnostics are not comparable acceptance timings, and overlapping stage
 spans are not a CPU/wall-time breakdown.
 
-E11 will test combining the existing batch pairing equality into one multi-pairing
-final exponentiation, while retaining identical weights, validations and results.
-Prepared-point allocation and memory are explicit guards. The experiment is
-proposed, with no production change or accepted performance claim yet.
+This profile justified E11: combine the existing batch pairing equality into one
+final exponentiation while retaining identical weights, validations and results.
+Prepared-point allocation and memory are explicit guards. Component results and
+the remaining real-payment acceptance gates are recorded below.
 
 ### E11: component gains verified; real-payment acceptance pending
 
@@ -677,3 +677,12 @@ These are component results, not user-confirmed payment gains. The arithmetic
 candidate remains provisional pending matched real ecash, runtime/recovery and
 remaining campaign gates. E07 remains separate and is excluded from the planned
 runtime comparison.
+
+Both isolated runtime arms now build with identical pinned release features and
+SDK source; their only source difference is the E11 Cashu candidate. The baseline
+mintd matches the previously retained artifact byte for byte. The next comparison
+uses fresh five-member HTTP/SQLite fixtures, 64 independent 32-sat recipients at
+concurrency four, separate SDK/member CPU accounting, and the existing receipt,
+digest and conservation audits. It remains a finite-burst comparison, with no
+sustainable-throughput claim. Five alternating pairs are prescribed, extended to
+ten if inconclusive. No E11 runtime gain is accepted yet.
