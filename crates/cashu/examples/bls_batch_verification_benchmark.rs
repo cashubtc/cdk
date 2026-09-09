@@ -1,10 +1,12 @@
 //! Bounded BLS batch verification measurements with deterministic, non-custodial fixtures.
 //!
-//! Pass one JSON manifest containing `mode` (`shares` or `proofs`), `shape`
+//! Pass one JSON manifest containing `mode` (`shares`, `proofs`, or `aggregation`), `shape`
 //! (`single`, `wallet`, or `fragmented`), `iterations`, and `control_dir`.
 //! Fixture construction and warmup precede `ready.json`. A controller writes
 //! `start`, samples resources through `results.json`, then writes `release`.
-//! Both waits are bounded. Results contain monotonic durations, never secrets.
+//! Aggregation also requires explicit public `signer_ids` (up to twenty); other
+//! modes omit that field. Both waits are bounded. Results contain monotonic
+//! durations and public workload metadata, never secrets.
 
 use std::fs;
 use std::hint::black_box;
@@ -14,7 +16,8 @@ use std::time::{Duration, Instant};
 
 use cashu::dhke::batch_verify_bls_messages;
 use cashu::nuts::nut01::{
-    batch_verify_blind_signature_shares, BlsBlindSignatureShare, BlsG1PublicKey, BlsPublicKeyShare,
+    aggregate_blind_signature_shares, batch_verify_blind_signature_shares, trusted_dealer_keygen,
+    verify_blind_signature_share, BlsBlindSignatureShare, BlsG1PublicKey, BlsPublicKeyShare,
     BlsSecretKey, BlsSecretKeyShare, BlsSignerId, PublicKey,
 };
 use serde::{Deserialize, Serialize};
@@ -39,6 +42,7 @@ enum Error {
 enum Mode {
     Shares,
     Proofs,
+    Aggregation,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -67,6 +71,8 @@ struct Manifest {
     shape: Shape,
     iterations: usize,
     control_dir: PathBuf,
+    #[serde(default)]
+    signer_ids: Vec<u16>,
 }
 
 struct Fixture {
@@ -76,10 +82,12 @@ struct Fixture {
     public_shares: Vec<BlsPublicKeyShare>,
     signatures: Vec<PublicKey>,
     public_keys: Vec<PublicKey>,
+    aggregation_shares: Vec<Vec<BlsBlindSignatureShare>>,
+    expected_aggregates: Vec<BlsG1PublicKey>,
 }
 
 impl Fixture {
-    fn new(indexes: &[usize]) -> Result<Self, Error> {
+    fn new(indexes: &[usize], signer_ids: &[BlsSignerId]) -> Result<Self, Error> {
         let signer = BlsSignerId::new(1)?;
         let keys = (1..=8)
             .map(|seed| {
@@ -93,7 +101,22 @@ impl Fixture {
             public_shares: Vec::new(),
             signatures: Vec::new(),
             public_keys: Vec::new(),
+            aggregation_shares: Vec::new(),
+            expected_aggregates: Vec::new(),
         };
+        // Non-custodial polynomials exercise distinct shares. Preparation, direct
+        // reference signing, and individual share checks are outside timing.
+        let aggregation_keys = (0..if signer_ids.is_empty() { 0 } else { 8 })
+            .map(|key_index| {
+                let coefficients = (0..signer_ids.len())
+                    .map(|degree| {
+                        BlsSecretKey::from_reduced_bytes(&[(key_index * 20 + degree + 1) as u8; 32])
+                    })
+                    .collect::<Vec<_>>();
+                let keyset = trusted_dealer_keygen(&coefficients, signer_ids)?;
+                Ok((coefficients, keyset))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
         for (index, key_index) in indexes.iter().enumerate() {
             let message = format!("cdk-bls-batch-benchmark-fixture-{index}").into_bytes();
             let blinded = BlsG1PublicKey::hash_to_curve(&message);
@@ -106,6 +129,22 @@ impl Fixture {
             fixture.public_keys.push(public_share.public_key().into());
             fixture.shares.push(share);
             fixture.public_shares.push(public_share);
+            if let Some((coefficients, keyset)) = aggregation_keys.get(*key_index) {
+                let shares = keyset
+                    .secret_shares()
+                    .iter()
+                    .map(|key| key.blind_sign_share(&blinded))
+                    .collect::<Vec<_>>();
+                for (share, public) in shares.iter().zip(keyset.public_shares()) {
+                    if !verify_blind_signature_share(share, &blinded, public)? {
+                        return Err(Error::Input("invalid aggregation fixture share"));
+                    }
+                }
+                fixture
+                    .expected_aggregates
+                    .push(blinded.mul(&coefficients[0]));
+                fixture.aggregation_shares.push(shares);
+            }
         }
         Ok(fixture)
     }
@@ -119,6 +158,23 @@ impl Fixture {
                     black_box(&self.public_shares),
                 )? {
                     return Err(Error::Input("valid share fixture rejected"));
+                }
+            }
+            Mode::Aggregation => {
+                for (shares, expected) in self
+                    .aggregation_shares
+                    .iter()
+                    .zip(&self.expected_aggregates)
+                {
+                    let aggregate = aggregate_blind_signature_shares(
+                        black_box(shares.len()),
+                        black_box(shares),
+                    )?;
+                    if black_box(aggregate) != *expected {
+                        return Err(Error::Input(
+                            "aggregate differs from direct reference signature",
+                        ));
+                    }
                 }
             }
             Mode::Proofs => batch_verify_bls_messages(
@@ -152,9 +208,26 @@ fn main() -> Result<(), Error> {
     if !(1..=10_000).contains(&manifest.iterations) {
         return Err(Error::Input("iterations must be between 1 and 10000"));
     }
+    match manifest.mode {
+        Mode::Aggregation if !(1..=20).contains(&manifest.signer_ids.len()) => {
+            return Err(Error::Input(
+                "aggregation requires between 1 and 20 signer IDs",
+            ));
+        }
+        Mode::Shares | Mode::Proofs if !manifest.signer_ids.is_empty() => {
+            return Err(Error::Input("signer IDs apply only to aggregation"));
+        }
+        _ => {}
+    }
+    let signer_ids = manifest
+        .signer_ids
+        .iter()
+        .copied()
+        .map(BlsSignerId::new)
+        .collect::<Result<Vec<_>, _>>()?;
     fs::create_dir(&manifest.control_dir)?;
     let indexes = manifest.shape.key_indexes();
-    let fixture = Fixture::new(&indexes)?;
+    let fixture = Fixture::new(&indexes, &signer_ids)?;
     let messages = fixture
         .messages
         .iter()
@@ -170,7 +243,10 @@ fn main() -> Result<(), Error> {
     fs::write(
         manifest.control_dir.join("ready.json"),
         serde_json::to_vec(&serde_json::json!({
-            "schema_version": 1, "mode": manifest.mode, "shape": manifest.shape,
+            "schema_version": 2, "mode": manifest.mode, "shape": manifest.shape,
+            "signer_ids": manifest.signer_ids, "shares_per_output": match manifest.mode {
+                Mode::Shares => 1, Mode::Proofs => 0, Mode::Aggregation => signer_ids.len(),
+            },
             "items": indexes.len(), "distinct_keys": distinct_keys,
             "iterations": manifest.iterations, "warmup_batches": 5,
         }))?,
@@ -187,7 +263,10 @@ fn main() -> Result<(), Error> {
     fs::write(
         manifest.control_dir.join("results.json"),
         serde_json::to_vec(&serde_json::json!({
-            "schema_version": 1, "mode": manifest.mode, "shape": manifest.shape,
+            "schema_version": 2, "mode": manifest.mode, "shape": manifest.shape,
+            "signer_ids": manifest.signer_ids, "shares_per_output": match manifest.mode {
+                Mode::Shares => 1, Mode::Proofs => 0, Mode::Aggregation => signer_ids.len(),
+            },
             "items": indexes.len(), "distinct_keys": distinct_keys,
             "iterations": manifest.iterations, "all_batches_verified": true,
             "elapsed_ns": elapsed_ns, "durations_ns": durations_ns,

@@ -4935,3 +4935,44 @@ existing unsupported-nightly-setting warnings), `git diff --check` passed, and
 the CSV audit confirmed 20 run rows, 1,280 request rows and 26 comparison rows,
 with LF endings and no identifying paths, network addresses, credentials or
 tokens. Both restored Cashu files still match the frozen baseline hashes.
+
+### Aggregation benchmark support: validated on unchanged production arithmetic
+
+Extended the existing bounded BLS example with `mode: aggregation` and explicit
+public `signer_ids`. It reuses the single, twelve-output wallet and 64-output
+fragmented shapes, deterministic non-custodial polynomial fixtures, and the
+ready/start/results/release handshake. Individual share validation and direct
+reference signing happen before readiness. Each timed aggregation must equal
+the direct signature, using the existing production aggregation API without a
+shortcut. Benchmark schema version two records the public signer set and shares
+per output; existing proof/share modes remain available.
+
+Example manifest (the controller supplies the two handshake signals):
+
+```json
+{"mode":"aggregation","shape":"wallet","iterations":256,"signer_ids":[1,2,3],"control_dir":"aggregation-control"}
+```
+
+Commands, run serially after E11 stopped:
+
+```sh
+cargo fmt --all
+cargo build --locked --release -p cashu --no-default-features --features federation --example bls_batch_verification_benchmark
+python3 "$RUN_ROOT/smoke_aggregation_benchmark.py"
+cargo clippy --locked -p cashu --no-default-features --features federation --example bls_batch_verification_benchmark -- -D warnings
+```
+
+Cargo commands used the pinned stable Nix shell; all exited zero. The functional
+driver passed 49 valid manifests: all three existing shapes in proof/share modes,
+all ten three-of-five signer subsets in every shape, three six-of-eleven subsets
+in every shape, reversed order, boundary signer IDs and a twenty-signer fixture.
+Eight invalid manifests were rejected before readiness, covering omitted/empty,
+zero, duplicate, excessive and out-of-range IDs, incompatible mode and unknown
+fields. Every successful measured iteration matched the direct reference; source
+hashes remained unchanged through smoke and strict lint.
+
+These are benchmark correctness checks, not performance samples or evidence of
+an optimization. No production arithmetic, API, feature default, live payment
+fixture or E07 file changed. The bounded public-signer SDK diagnostic remains an
+unapplied private patch. The next step is measuring actual selection frequency
+and baseline aggregation cost before evaluating a production candidate.

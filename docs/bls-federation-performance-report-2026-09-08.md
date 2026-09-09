@@ -731,3 +731,14 @@ The [twenty-run ledger](benchmarks/2026-09-08-e11-ecash-10-pairs-runs.csv),
 [paired comparison](benchmarks/2026-09-08-e11-ecash-10-pairs-comparison.csv) retain
 every sample. Per-run p99 remains unavailable at 64 samples; pooling independent
 runs does not turn this into a per-run p99 or sustainable-throughput measurement.
+
+### Aggregation investigation: measurement support ready
+
+The existing diagnostic profile attributes 202 of 214 aggregation stack
+observations to G1 scalar multiplication, versus two to scalar inversion.
+These are non-overlapping call-graph observations, not CPU seconds or a speedup.
+The existing bounded BLS benchmark now supports explicit public signer sets and
+checks aggregates against direct reference signatures. Release build, 49 valid
+and eight rejected manifests, and scoped strict lint pass. Production arithmetic
+is unchanged; actual signer-selection frequency, baseline component costs and
+candidate comparisons remain to be measured.
