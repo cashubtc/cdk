@@ -693,6 +693,25 @@ impl MintPayment for CdkBdk {
         let amount = onchain_options.amount;
         let quote_id = onchain_options.quote_id;
 
+        // A replay must preserve an existing payment even when current wallet
+        // funds, fees, or validation rules would reject a new attempt. Only a
+        // durably failed or unknown payment may proceed through dispatch again.
+        let payment_lookup_id = PaymentIdentifier::QuoteId(quote_id.clone());
+        let pay_state = self.check_outgoing_payment(&payment_lookup_id).await?;
+        match pay_state.status {
+            MeltQuoteState::Paid | MeltQuoteState::Pending => {
+                let total_spent = pay_state
+                    .total_spent
+                    .convert_to(unit)
+                    .map_err(Error::AmountConversion)?;
+                return Ok(MakePaymentResponse {
+                    total_spent,
+                    ..pay_state
+                });
+            }
+            MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => {}
+        }
+
         if let Err(err) = Self::ensure_supported_payment_unit(unit) {
             return Ok(Self::outgoing_payment_failure_response(
                 unit, &quote_id, err,
@@ -2552,6 +2571,90 @@ mod tests {
         assert_eq!(response.status, MeltQuoteState::Failed);
         assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Sat));
         assert_eq!(response.payment_proof, None);
+    }
+
+    #[tokio::test]
+    async fn test_make_payment_replay_preserves_durable_state_without_spendable_utxos() {
+        use crate::send::payment_intent::SendIntent;
+
+        async fn assert_replay(
+            backend: &CdkBdk,
+            quote_id: &QuoteId,
+            status: MeltQuoteState,
+            spent_sat: u64,
+            proof: Option<&str>,
+        ) {
+            for unit in [CurrencyUnit::Sat, CurrencyUnit::Msat] {
+                let options = match unit {
+                    CurrencyUnit::Sat => onchain_options_for_quote(quote_id.clone(), 10_000),
+                    _ => onchain_options_for_msat(quote_id.clone(), 10_000_000, 1_000_000),
+                };
+                let response = backend
+                    .make_payment(&unit, options)
+                    .await
+                    .expect("replay should return durable payment state");
+
+                assert_eq!(response.status, status);
+                assert_eq!(
+                    response.payment_lookup_id,
+                    PaymentIdentifier::QuoteId(quote_id.clone())
+                );
+                assert_eq!(response.payment_proof.as_deref(), proof);
+                assert_eq!(
+                    response.total_spent,
+                    Amount::new(spent_sat, CurrencyUnit::Sat)
+                        .convert_to(&unit)
+                        .expect("convert expected spent amount")
+                );
+            }
+        }
+
+        // Persist the payment lifecycle directly, leaving the wallet empty so
+        // any fresh fee estimate would reject the otherwise identical replay.
+        let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
+        let quote_id = QuoteId::UUID(Uuid::new_v4());
+        let pending = SendIntent::new(
+            &backend.storage,
+            quote_id.to_string(),
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            10_000,
+            1_000,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("create original intent");
+        assert_replay(&backend, &quote_id, MeltQuoteState::Pending, 0, None).await;
+
+        let batched = pending
+            .assign_to_batch(&backend.storage, Uuid::new_v4())
+            .await
+            .expect("batch original intent");
+        assert_replay(&backend, &quote_id, MeltQuoteState::Pending, 0, None).await;
+
+        let broadcast = batched
+            .mark_broadcast(
+                &backend.storage,
+                "deadbeef".to_string(),
+                "deadbeef:0".to_string(),
+                250,
+            )
+            .await
+            .expect("broadcast original intent");
+        assert_replay(&backend, &quote_id, MeltQuoteState::Pending, 10_250, None).await;
+
+        broadcast
+            .finalize(&backend.storage)
+            .await
+            .expect("finalize original intent");
+        assert_replay(
+            &backend,
+            &quote_id,
+            MeltQuoteState::Paid,
+            10_250,
+            Some("deadbeef:0"),
+        )
+        .await;
     }
 
     #[tokio::test]
