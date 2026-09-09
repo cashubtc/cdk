@@ -648,3 +648,32 @@ E11 will test combining the existing batch pairing equality into one multi-pairi
 final exponentiation, while retaining identical weights, validations and results.
 Prepared-point allocation and memory are explicit guards. The experiment is
 proposed, with no production change or accepted performance claim yet.
+
+### E11: component gains verified; real-payment acceptance pending
+
+Ten alternating pairs across six deterministic batch workloads show repeatable
+CPU/p95 gains from one final exponentiation per complete BLS batch equation.
+Prepared keys are scoped one at a time; transcript weights and validation remain
+unchanged.
+
+| Workload | CPU reduction | Candidate/baseline CPU ratio, 95% CI |
+| --- | ---: | --- |
+| proofs / single | 22.59% | 0.77144–0.77685 |
+| proofs / wallet | 18.34% | 0.81505–0.81808 |
+| proofs / fragmented | 9.52% | 0.90323–0.90643 |
+| shares / single | 23.64% | 0.76186–0.76544 |
+| shares / wallet | 20.72% | 0.79097–0.79457 |
+| shares / fragmented | 10.79% | 0.89067–0.89352 |
+
+All memory upper bounds pass the 5% guard. Twelve-share physical footprint rises
+about 2.08% (95% ratio interval 1.00804–1.03369), which remains visible in the
+[120-run ledger](benchmarks/2026-09-08-e11-bls-batch-runs.csv) and
+[comparison ledger](benchmarks/2026-09-08-e11-bls-batch-comparison.csv).
+All 53,760 measured batches verified. Full Cashu federation tests (644 passed,
+two ignored), ordinary tests (506 passed), scoped strict lint, dependency isolation
+and formatting pass. No temporary production probes were added.
+
+These are component results, not user-confirmed payment gains. The arithmetic
+candidate remains provisional pending matched real ecash, runtime/recovery and
+remaining campaign gates. E07 remains separate and is excluded from the planned
+runtime comparison.

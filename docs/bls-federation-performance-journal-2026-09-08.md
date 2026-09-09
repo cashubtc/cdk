@@ -4510,3 +4510,105 @@ weight vectors, plus standalone isolation and scoped strict lint. A component
 result alone will not close runtime acceptance: repeat matched real ecash
 measurements and relevant correctness/recovery gates before accepting code.
 No E11 production edit or benchmark has run yet.
+
+### E11 baseline established; bounded-preparation variant selected
+
+Added a federation-only release benchmark example with deterministic non-custodial
+fixtures, separate fixture/warmup readiness, bounded start/release handshakes and
+per-batch monotonic results. The baseline twelve-share/four-key pilot completed
+256 verified batches: p50 7.575250 ms, p95 7.896500 ms, CPU 7.589111 ms per batch,
+and peak RSS 2,392,064 bytes. CPU excludes fixture construction and warmup but
+includes bounded handshake/result-write overhead. This pilot validates the
+measurement path; it is not one of the five matched pairs.
+
+The frozen baseline benchmark SHA-256 is
+`131e225d66f1c10a85a8fd67bbca82bd8d7c39384f9d311b32d73f5e9a60ef35`.
+Automatic approval review timed out once before the freeze command executed;
+the tool-permitted retry completed successfully. No pending approval remains.
+
+For the first candidate, accumulate single-term Miller-loop results and perform
+one final exponentiation after the complete equation. Keep each prepared G2 term
+scoped to its loop iteration, including the generator term, so prepared-key
+storage does not grow with distinct denomination count. This preserves the K+1
+Miller loops while removing K final exponentiations. It trades the possible shared
+loop savings of a full multi-term vector for bounded transient preparation memory;
+measure both the remaining cost and memory rather than presuming either outcome.
+The matched component workload uses 1,024 single-item, 256 twelve-item/four-key,
+and 64 fragmented sixty-four-item/eight-key batches for each of proofs and shares.
+Native samples are at 100 Hz, with identical bounded control overhead in both arms.
+
+### E11 first five pairs: CPU/latency gains; one memory guard inconclusive
+
+The bounded-preparation candidate passes 21 focused BLS tests, including unchanged
+weight vectors and new equivalence/cancelling-corruption checks. Five alternating
+pairs completed for all six component workloads with identical benchmark source
+and deterministic inputs. CPU and p95 improve in every workload. For twelve-share
+batches, CPU ratio is 0.79360 (95% CI 0.79127–0.79593), p95 ratio 0.79071
+(0.77165–0.81024), and instruction ratio 0.78418 (0.78402–0.78434).
+
+The twelve-share peak physical-footprint ratio is 1.02307 (0.99301–1.05404),
+narrowly crossing the 5% guard. Other memory bounds remain below that guard, but
+the overall component decision is inconclusive. Preserve all first-five-pair
+records and extend the same frozen artifacts/workloads to ten alternating pairs;
+no production adjustment or favorable-sample selection occurs between stages.
+No E11 code is accepted or committed yet, and real runtime acceptance remains open.
+
+```sh
+python3 "$RUN_ROOT/build_e11_batch_benchmark.py" --arm baseline
+python3 "$RUN_ROOT/run_e11_batch_arm.py" --pair 1 --arm baseline --order 1 --pilot
+python3 "$RUN_ROOT/build_e11_batch_benchmark.py" --arm candidate
+python3 "$RUN_ROOT/run_e11_batch_pairs.py"
+python3 "$RUN_ROOT/extend_e11_batch_pairs.py"
+```
+
+The first four commands completed; the extension is the next scheduled step.
+Builds use the pinned Nix release toolchain. The pilot is excluded from pairing.
+Exact commands, artifact/source fingerprints, all durations and native envelopes
+remain private pending the reviewed public evidence export.
+
+### E11 ten pairs and component correctness: passed; runtime acceptance pending
+
+All ten alternating pairs completed for each of six workloads: 120 process runs
+and 53,760 verified batches, excluding warmup and the baseline pilot. Every CPU
+and p95 ratio interval is below one. Every RSS, physical-footprint and lifetime
+footprint upper bound is below 1.05. The formerly inconclusive twelve-share
+physical-footprint ratio is now 1.02078 (95% CI 1.00804–1.03369): a small measured
+increase within the guard, not zero additional memory. No production change was
+made during the ten-pair series.
+
+| Workload | CPU reduction | Candidate/baseline CPU ratio, 95% CI |
+| --- | ---: | --- |
+| proofs / single | 22.59% | 0.77144–0.77685 |
+| proofs / wallet | 18.34% | 0.81505–0.81808 |
+| proofs / fragmented | 9.52% | 0.90323–0.90643 |
+| shares / single | 23.64% | 0.76186–0.76544 |
+| shares / wallet | 20.72% | 0.79097–0.79457 |
+| shares / fragmented | 10.79% | 0.89067–0.89352 |
+
+The [run ledger](benchmarks/2026-09-08-e11-bls-batch-runs.csv) preserves all 120
+results, and the [comparison ledger](benchmarks/2026-09-08-e11-bls-batch-comparison.csv)
+contains run-level intervals. Raw per-batch durations/native samples and both
+five-/ten-pair analyses remain private. Final-exponentiation counts in the ledger
+come from inspected caller/library control flow, not a runtime probe: K+1 becomes
+one while K+1 Miller loops and all transcript weights remain. Instruction counts
+also decrease in every workload. Component batch rates are not payment throughput.
+
+The full Cashu federation suite passes **644 tests, two ignored**, and the
+ordinary no-default-feature suite passes **506 tests**. Scoped strict Clippy,
+ordinary dependency-tree isolation (no BLS dependency) and formatting pass.
+Source hashes stayed unchanged throughout validation. The focused 21 BLS tests
+reported earlier overlap the full federation suite; do not add them as distinct
+coverage. These checks do not replace the full CDK/FFI/federation runtime gates.
+
+```sh
+python3 "$RUN_ROOT/extend_e11_batch_pairs.py"
+python3 "$RUN_ROOT/validate_e11_component.py"
+python3 "$RUN_ROOT/export_e11_batch_evidence.py"
+```
+
+All commands completed. Retain the reusable benchmark support and evidence.
+The arithmetic candidate remains provisional and uncommitted until matched real
+ecash/runtime guards and relevant adversarial/recovery checks pass. Prepare
+isolated source builds so the unrelated provisional E07 startup change cannot
+enter either runtime arm. Both runtime arms must use the same release features,
+SDK source and fixtures; compilation and funding remain outside measurements.

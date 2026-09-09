@@ -49,6 +49,10 @@ uuid = { workspace = true, features = ["js"], optional = true }
 bip39.workspace = true
 nostr-sdk.workspace = true
 
+[[example]]
+name = "bls_batch_verification_benchmark"
+required-features = ["federation"]
+
 [lints.rust]
 unsafe_code = "forbid"
 unreachable_pub = "warn"
