@@ -7,8 +7,10 @@ collector was reverted after ten matched pairs because its CPU/receipt guard
 remained inconclusive. Checkpoint-summary digest reuse was also reverted after
 ten idle pairs: CPU and instruction savings were clear, but memory intervals
 still permitted regressions above 5%. These are inconclusive guard results,
-not confirmed regressions. Final campaign and combined-candidate
-payment/performance acceptance remain pending.
+not confirmed regressions. Proposal wakeup (E10) was also reverted under the
+ten-pair rule. E11 BLS batch arithmetic remains provisional: five real ecash
+pairs show lower SDK CPU, but the latency guard requires extension to ten pairs.
+Final campaign and combined-candidate payment/performance acceptance remain pending.
 
 Baseline: CDK `8e507cdf8`, Bark `8d1eda643dd11e9eb600ec44e36622c8f77b6322`.
 Method and acceptance rules: [approved plan](bls-federation-performance-plan-2026-09-08.md).
@@ -21,9 +23,10 @@ Evidence and decisions: [experiment journal](bls-federation-performance-journal-
 | DKG polynomial evaluation and public signer IDs | Retained: `ceaf02216`, `fffa9d688` | Matched in-memory BLS measurements and scaling correctness; full service DKG remains unmeasured |
 | Dispatched and queued recovery barriers | Retained: `d880c9703`, `1d1669db4` | Separate reproduced orderings, component comparisons and recovery tests; percentages cannot be added |
 | Disclosed Bark claim recovery | Retained: `bacc0f971` | Authorization work reduction, original-payment recovery and further restart; no payment TPS claim |
-| Broadcaster notifications | Retained | Renewed five-pair retained-code comparison: lower serial BDK latency/CPU, 50 receipts, scoped correctness and candidate restart; earlier invalid series remain excluded |
-| Proposal wakeup (E10) | Provisional | Diagnostic worker-wait removal; uninstrumented matched comparison underway, no accepted gain |
-| Session-scoped replay cursor | Provisional | Quorum/recovery tests; live performance and payment gates outstanding |
+| Broadcaster notifications | Retained: `9aa2ae395` | Renewed five-pair retained-code comparison: lower serial BDK latency/CPU, 50 receipts, scoped correctness and candidate restart; earlier invalid series remain excluded |
+| Proposal wakeup (E10) | Reverted | Ten pairs and 100 receipts; median benefit, but p95/CPU guards remained inconclusive |
+| Session-scoped replay cursor (E07) | Provisional | Quorum/recovery tests and original-state recovery with five BDK outgoing receipts; matched performance acceptance remains open |
+| One final exponentiation per BLS batch (E11) | Provisional | Ten component pairs pass; five real ecash pairs show 10.81% lower SDK CPU, with p95 guard inconclusive; unchanged ten-pair extension running |
 | Stable incoming evidence collector | Reverted | Ten-pair CPU/receipt guard remained inconclusive despite more window completions |
 | Cached checkpoint digest in summaries | Reverted | Component work reduction and ten-pair idle CPU benefit; memory guard remained inconclusive |
 
@@ -41,7 +44,8 @@ remain outstanding.
 | Bark Lightning send | Pending | Pending | Unmeasured |
 | BDK on-chain receive | Pending | Pending | Unmeasured |
 | BDK on-chain send, five-member HTTP/SQLite serial | Mean per-run p50 36.572 s; CPU/payment 4.795 s | Mean per-run p50 19.909 s; CPU/payment 3.808 s | Broadcaster notification retained; scaling, sustainable throughput and original-baseline comparison pending |
-| Ecash send/receive | Pending | Pending | Unmeasured |
+| Ecash receive, five-member HTTP/SQLite, independent wallets at concurrency four | SDK CPU/receipt 48.945 ms; mean per-run p95 1.333 s | SDK CPU/receipt 43.657 ms; mean per-run p95 1.325 s | Provisional E11; five-pair latency guard inconclusive, extension running; finite burst only |
+| Ecash offline preparation and sender swap | Pending | Pending | Preparation excluded from the receive comparison; separate performance measurements remain open |
 
 Final operation latency breakdowns, sustainable-throughput curves, active/idle
 resource comparisons, history scaling and combined gains remain pending.

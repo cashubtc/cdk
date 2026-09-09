@@ -4811,3 +4811,30 @@ line endings; converting to LF preserved every parsed row, and the exporter now
 writes LF directly.
 E11 arithmetic remains uncommitted. Scoped correctness, real restart, all payment
 directions and the remaining campaign gates are still open.
+
+### Report summary reconciliation during the unchanged E11 extension
+
+The report's opening tables lagged its detailed results. Reconciled E10 to its
+recorded reverted disposition, identified the retained broadcaster commit, and
+reflected E07's completed functional recovery/payment evidence without implying
+performance acceptance. Added the measured E11 receive scope and kept offline
+preparation/sender swaps explicitly unmeasured. This is a documentation correction;
+no experiment, source, artifact, workload or keep/revert criterion changed.
+
+### Aggregation hypothesis queue: public small-coefficient multiplication
+
+A non-custodial arithmetic enumeration of all ten three-of-five signer sets
+finds 18 small signed integer coefficients among the 30 interpolation
+coefficients. For example, members 1/2/3 yield 3, -3, 1; members 1/3/5 yield
+15/8, -5/4, 3/8. This is a classification of public mathematics, not a measured
+selection distribution or work-saving percentage.
+
+The existing aggregation profile and inspected general G1 scalar multiplication
+justify measuring the selected-set distribution and the separate costs of
+coefficient construction and multiplication. Only after that attribution should
+a public-only small-coefficient path be considered, following the established
+DKG public-integer approach. It would need exact scalar-multiplication equivalence,
+unchanged threshold/share validation, and the general field-scalar fallback for
+other coefficients. Private-scalar constant-time arithmetic must remain untouched.
+No cache, new abstraction, production implementation, or performance claim was
+added. E11's source and workload remain fixed while its extension runs.
