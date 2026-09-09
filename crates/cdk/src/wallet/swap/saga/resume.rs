@@ -153,25 +153,9 @@ impl Wallet {
         };
 
         if should_restore {
-            match self
-                .complete_swap_from_restore(saga_id, data, &reserved_proofs)
-                .await
-            {
-                Ok(_) => Ok(RecoveryAction::Recovered),
-                Err(e) => {
-                    if reserved_proofs.is_empty() {
-                        tracing::warn!(
-                            "Restore failed for orphaned saga {} ({}). Cleaning up.",
-                            saga_id,
-                            escape_log_value(&e)
-                        );
-                        self.localstore.delete_saga(saga_id).await?;
-                        Ok(RecoveryAction::Recovered)
-                    } else {
-                        Err(e)
-                    }
-                }
-            }
+            self.complete_swap_from_restore(saga_id, data, &reserved_proofs)
+                .await?;
+            Ok(RecoveryAction::Recovered)
         } else {
             // Inputs exist and are Unspent -> Compensate
             self.compensate_swap(saga_id).await?;

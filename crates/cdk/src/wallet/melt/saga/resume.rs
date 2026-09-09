@@ -16,7 +16,7 @@ use crate::types::FinalizedMelt;
 use crate::util::unix_time;
 use crate::wallet::melt::saga::compensation::ReleaseMeltQuote;
 use crate::wallet::melt::MeltQuoteStatusResponse;
-use crate::wallet::recovery::OutputRecoveryResult;
+use crate::wallet::recovery::{OutputRecoveryMode, OutputRecoveryResult};
 use crate::wallet::saga::{CompensatingAction, RevertProofReservation};
 use crate::wallet::util::escape_log_value;
 use crate::{Error, Wallet};
@@ -316,6 +316,7 @@ impl Wallet {
                             Some(change_blinded_messages.as_slice()),
                             data.counter_start,
                             data.counter_end,
+                            OutputRecoveryMode::Partial,
                         )
                         .await
                     {
