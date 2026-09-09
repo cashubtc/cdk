@@ -375,7 +375,7 @@ impl WalletRepository {
     /// Get wallet for a mint URL and currency unit
     ///
     /// Returns an error if no wallet exists for the given mint URL and unit combination.
-    #[instrument(skip(self))]
+    #[instrument(skip(self, mint_url), fields(mint_url = ?cdk_common::redact::url_for_logs(&mint_url.to_string())))]
     pub async fn get_wallet(
         &self,
         mint_url: &MintUrl,
@@ -391,7 +391,7 @@ impl WalletRepository {
     }
 
     /// Get all wallets for a specific mint URL (any currency unit)
-    #[instrument(skip(self))]
+    #[instrument(skip(self, mint_url), fields(mint_url = ?cdk_common::redact::url_for_logs(&mint_url.to_string())))]
     pub async fn get_wallets_for_mint(&self, mint_url: &MintUrl) -> Vec<Wallet> {
         self.wallets
             .read()
@@ -403,7 +403,7 @@ impl WalletRepository {
     }
 
     /// Create an OIDC client using a wallet connector for this mint when available.
-    #[instrument(skip(self))]
+    #[instrument(skip(self, mint_url, openid_discovery), fields(mint_url = %cdk_common::redact::url_for_logs(&mint_url.to_string()), openid_discovery = %cdk_common::redact::url_for_logs(&openid_discovery)))]
     pub async fn oidc_client_for_mint(
         &self,
         mint_url: &MintUrl,
@@ -417,7 +417,7 @@ impl WalletRepository {
     }
 
     /// Check if a specific wallet exists (mint URL + unit combination)
-    #[instrument(skip(self))]
+    #[instrument(skip(self, mint_url), fields(mint_url = ?cdk_common::redact::url_for_logs(&mint_url.to_string())))]
     pub async fn has_wallet(&self, mint_url: &MintUrl, unit: &CurrencyUnit) -> bool {
         let key = WalletKey::new(mint_url.clone(), unit.clone());
         self.wallets.read().await.contains_key(&key)
@@ -427,7 +427,7 @@ impl WalletRepository {
     ///
     /// Fetches the mint info to discover all supported currency units and creates
     /// a wallet for each unit. Returns all created wallets.
-    #[instrument(skip(self))]
+    #[instrument(skip(self, mint_url), fields(mint_url = ?cdk_common::redact::url_for_logs(&mint_url.to_string())))]
     pub async fn add_wallet(&self, mint_url: MintUrl) -> Result<Vec<Wallet>, Error> {
         self.add_wallet_with_config(mint_url, None).await
     }
@@ -436,7 +436,7 @@ impl WalletRepository {
     ///
     /// Fetches the mint info to discover all supported currency units and creates
     /// a wallet for each unit with the given configuration. Returns all created wallets.
-    #[instrument(skip(self, config))]
+    #[instrument(skip(self, config, mint_url), fields(mint_url = ?cdk_common::redact::url_for_logs(&mint_url.to_string())))]
     pub async fn add_wallet_with_config(
         &self,
         mint_url: MintUrl,
@@ -471,7 +471,7 @@ impl WalletRepository {
     /// The write lock is held across the lookup and the insert so that concurrent
     /// callers for the same mint and unit all observe the same wallet instead of
     /// each building one and the last writer winning.
-    #[instrument(skip(self, config))]
+    #[instrument(skip(self, config, mint_url), fields(mint_url = ?cdk_common::redact::url_for_logs(&mint_url.to_string())))]
     pub async fn get_or_create_wallet(
         &self,
         mint_url: MintUrl,
@@ -496,7 +496,7 @@ impl WalletRepository {
     /// Update configuration for an existing mint and unit
     ///
     /// This re-creates the wallet with the new configuration.
-    #[instrument(skip(self, config))]
+    #[instrument(skip(self, config, mint_url), fields(mint_url = ?cdk_common::redact::url_for_logs(&mint_url.to_string())))]
     pub async fn set_mint_config(
         &self,
         mint_url: MintUrl,
@@ -509,7 +509,7 @@ impl WalletRepository {
 
     /// Create and add a new wallet for a mint URL and currency unit
     /// Returns the created wallet
-    #[instrument(skip(self, config))]
+    #[instrument(skip(self, config, mint_url), fields(mint_url = ?cdk_common::redact::url_for_logs(&mint_url.to_string())))]
     pub async fn create_wallet(
         &self,
         mint_url: MintUrl,
@@ -575,7 +575,7 @@ impl WalletRepository {
     /// live budget rather than starting full and bursting again. Once no wallet
     /// holds it and its budget has fully recovered, a later wallet creation
     /// evicts it; the persisted budget still survives a re-add.
-    #[instrument(skip(self))]
+    #[instrument(skip(self, mint_url), fields(mint_url = ?cdk_common::redact::url_for_logs(&mint_url.to_string())))]
     pub async fn remove_wallet(
         &self,
         mint_url: MintUrl,
@@ -599,7 +599,7 @@ impl WalletRepository {
     }
 
     /// Check if any wallet exists for a mint (regardless of currency unit)
-    #[instrument(skip(self))]
+    #[instrument(skip(self, mint_url), fields(mint_url = ?cdk_common::redact::url_for_logs(&mint_url.to_string())))]
     pub async fn has_mint(&self, mint_url: &MintUrl) -> bool {
         self.wallets
             .read()
@@ -1009,7 +1009,7 @@ impl WalletRepository {
     }
 
     /// Check all pending mint quotes and mint any that are paid
-    #[instrument(skip(self))]
+    #[instrument(skip(self, mint_url), fields(mint_url = ?mint_url.as_ref().map(|url| cdk_common::redact::url_for_logs(&url.to_string()))))]
     pub async fn check_all_mint_quotes(
         &self,
         mint_url: Option<MintUrl>,
@@ -1028,7 +1028,7 @@ impl WalletRepository {
 
                 if filtered.is_empty() {
                     return Err(Error::UnknownMint {
-                        mint_url: url.to_string(),
+                        mint_url: cdk_common::redact::url_for_logs(&url.to_string()),
                     });
                 }
                 filtered
