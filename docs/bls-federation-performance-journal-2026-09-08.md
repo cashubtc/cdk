@@ -4976,3 +4976,65 @@ an optimization. No production arithmetic, API, feature default, live payment
 fixture or E07 file changed. The bounded public-signer SDK diagnostic remains an
 unapplied private patch. The next step is measuring actual selection frequency
 and baseline aggregation cost before evaluating a production candidate.
+
+### Aggregation baseline: nineteen explicit signer-set observations
+
+Ran the committed example at `21df7c945` with unchanged production arithmetic and
+the existing native sampler/handshake protocol. Preparation and five warmup
+batches precede resource accounting; bounded start/result-write overhead remains
+in the CPU envelope. Sampling is 100 Hz. These are unpaired attribution runs,
+not keep/revert comparisons.
+
+The workload manifest contains all ten three-of-five subsets with twelve-output
+wallet batches (256 iterations each), three six-share wallet sets (256 each),
+and single/fragmented shapes for sets 1/2/3, 1/2/4 and 1/3/5 (1,024 and 64
+iterations respectively). All 6,592 batches and 55,296 output aggregates matched
+their direct reference signatures. Every process exited normally; source hashes
+remained unchanged. No production probe was used.
+
+```sh
+python3 "$RUN_ROOT/run_aggregation_baseline.py"
+```
+
+| Workload | Observed CPU per output |
+| --- | ---: |
+| Three-share wallet, all ten subsets | 0.58061–0.58693 ms |
+| Six-share wallet, three subsets | 1.14900–1.15375 ms |
+
+These ranges span different signer-set workloads; they are not confidence
+intervals. Together with the existing G1 multiplication profile, the costs support
+measuring whether public interpolation coefficients can avoid general scalar
+multiplication. They establish no candidate gain or real payment throughput.
+The [nineteen-run ledger](benchmarks/2026-09-08-aggregation-baseline-runs.csv)
+records every observation; all per-batch durations, native samples, manifests and
+the frozen binary remain private. p99 is reported only for the 1,024-iteration
+single-output component runs, never as payment p99.
+
+### Bounded signer-selection diagnostic: isolated build and fresh run
+
+Created a code-only detached checkout from `21df7c945`, excluding provisional E07.
+Its sole source difference is a temporary wallet diagnostic that records at most
+256 public signer-ID sets and output counts, after share validation/selection and
+before aggregation. It uses the existing opt-in performance tracing target.
+No secret, proof, signature, invoice or custody identifier is logged by this
+probe. Root production source is unchanged.
+
+The pinned release SDK build (`wallet,federation,iroh`, no default features) and
+formatting completed successfully. Binary and source fingerprints verify that
+only the diagnostic module differs; Cashu arithmetic and feature configuration
+match the retained baseline. No live custody was copied. A read-only Docker
+network preflight initially encountered a null IPAM configuration; handling
+networks without IPAM completed the collision check without changing any network.
+
+```sh
+python3 "$RUN_ROOT/build_aggregation_selection_sdk.py"
+python3 "$RUN_ROOT/run_aggregation_selection.py" --concurrency 4 --arm baseline
+```
+
+The second command is running on a new disposable five-member HTTP/SQLite
+fixture. It reuses the original funding, native-accounting, receipt, conservation,
+idle and bounded-shutdown helpers. Only the SDK tracing flag and diagnostic
+artifact differ. Instrumented timings are explicitly excluded from performance
+acceptance. Selection frequency and receipt results are pending; no production
+optimization has been implemented from this hypothesis. The probe remains confined
+to the private diagnostic build and must be absent from acceptance builds.

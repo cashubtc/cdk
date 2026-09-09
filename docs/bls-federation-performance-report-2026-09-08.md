@@ -740,5 +740,12 @@ These are non-overlapping call-graph observations, not CPU seconds or a speedup.
 The existing bounded BLS benchmark now supports explicit public signer sets and
 checks aggregates against direct reference signatures. Release build, 49 valid
 and eight rejected manifests, and scoped strict lint pass. Production arithmetic
-is unchanged; actual signer-selection frequency, baseline component costs and
-candidate comparisons remain to be measured.
+is unchanged. Nineteen unpaired baseline observations at `21df7c945` verified
+6,592 batches / 55,296 output aggregates: three-share wallet batches consumed
+0.58061–0.58693 ms CPU per output across all ten subsets; six-share batches
+consumed 1.14900–1.15375 ms across three sets. These ranges compare distinct
+workloads, not confidence intervals or speedups. See the
+[baseline ledger](benchmarks/2026-09-08-aggregation-baseline-runs.csv).
+A fresh bounded SDK diagnostic is running to measure actual signer selection.
+Candidate comparisons remain pending; instrumented payment timings will be
+excluded from acceptance.
