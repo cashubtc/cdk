@@ -33,7 +33,7 @@ pub use saga::{
 };
 
 /// Wallet Key
-#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct WalletKey {
     /// Mint Url
     pub mint_url: MintUrl,
@@ -41,9 +41,26 @@ pub struct WalletKey {
     pub unit: CurrencyUnit,
 }
 
+impl fmt::Debug for WalletKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WalletKey")
+            .field(
+                "mint_url",
+                &crate::redact::url_for_logs(&self.mint_url.to_string()),
+            )
+            .field("unit", &self.unit)
+            .finish()
+    }
+}
+
 impl fmt::Display for WalletKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "mint_url: {}, unit: {}", self.mint_url, self.unit,)
+        write!(
+            f,
+            "mint_url: {}, unit: {}",
+            crate::redact::url_for_logs(&self.mint_url.to_string()),
+            self.unit
+        )
     }
 }
 
@@ -87,7 +104,10 @@ impl fmt::Debug for ProofInfo {
             .field("keyset_id", &self.proof.keyset_id)
             .field("proof", &"[REDACTED]")
             .field("y", &self.y)
-            .field("mint_url", &self.mint_url)
+            .field(
+                "mint_url",
+                &crate::redact::url_for_logs(&self.mint_url.to_string()),
+            )
             .field("state", &self.state)
             .field("spending_condition", &self.spending_condition)
             .field("unit", &self.unit)
@@ -284,7 +304,13 @@ impl fmt::Debug for MeltQuote {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MeltQuote")
             .field("id", &self.id)
-            .field("mint_url", &self.mint_url)
+            .field(
+                "mint_url",
+                &self
+                    .mint_url
+                    .as_ref()
+                    .map(|url| crate::redact::url_for_logs(&url.to_string())),
+            )
             .field("unit", &self.unit)
             .field("amount", &self.amount)
             .field("request", &self.request)
@@ -632,7 +658,10 @@ pub struct Transaction {
 impl fmt::Debug for Transaction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Transaction")
-            .field("mint_url", &self.mint_url)
+            .field(
+                "mint_url",
+                &crate::redact::url_for_logs(&self.mint_url.to_string()),
+            )
             .field("direction", &self.direction)
             .field("amount", &self.amount)
             .field("fee", &self.fee)

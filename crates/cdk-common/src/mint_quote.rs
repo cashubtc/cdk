@@ -1,5 +1,7 @@
 //! Unified Mint Quote types for mint use-cases.
 
+use core::fmt;
+
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -11,7 +13,7 @@ use crate::nuts::nut30::{MintQuoteOnchainRequest, MintQuoteOnchainResponse};
 use crate::{Amount, CurrencyUnit, PaymentMethod, PublicKey};
 
 /// Unified mint quote request for all payment methods
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum MintQuoteRequest {
     /// Bolt11 (Lightning invoice)
     Bolt11(MintQuoteBolt11Request),
@@ -26,6 +28,23 @@ pub enum MintQuoteRequest {
         /// Payment method specific request
         request: MintQuoteCustomRequest,
     },
+}
+
+impl fmt::Debug for MintQuoteRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bolt11(request) => f.debug_tuple("Bolt11").field(request).finish(),
+            Self::Bolt12(request) => f.debug_tuple("Bolt12").field(request).finish(),
+            Self::Onchain(request) => f.debug_tuple("Onchain").field(request).finish(),
+            Self::Custom { method, request } => f
+                .debug_struct("Custom")
+                .field("method", method)
+                .field("amount", &request.amount)
+                .field("unit", &request.unit)
+                .field("request", &"[REDACTED]")
+                .finish(),
+        }
+    }
 }
 
 impl From<MintQuoteBolt11Request> for MintQuoteRequest {
