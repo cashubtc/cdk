@@ -5092,3 +5092,55 @@ and frozen from the same isolated checkout for future matched comparisons. The
 shared target outputs are clean again; only explicitly named private diagnostic
 artifacts retain the probe for evidence. No E12 production change or performance
 gain is accepted yet.
+
+### E12 component implementation and five-pair result
+
+Implemented the prescribed private public-coefficient interpolation helper. It
+retains the original scalar interpolation and validated group points, choosing
+the smaller signed coefficient and processing only its significant public bits.
+Secret-scalar multiplication and all public APIs remain unchanged. Provisional
+E07 is excluded from the isolated comparison source and both artifacts.
+
+Validation commands (pinned stable Nix environment, 16 MiB test thread stack):
+
+```sh
+python3 "$RUN_ROOT/validate_e12_component.py"
+python3 "$RUN_ROOT/build_e12_candidate.py"
+python3 "$RUN_ROOT/run_e12_component_pairs.py"
+python3 "$RUN_ROOT/review_e12_component.py" --pairs 5
+```
+
+The component validation passed: 644 Cashu federation tests, two ignored;
+506 ordinary tests; strict scoped library/benchmark Clippy; formatting; and the
+ordinary normal dependency tree without BLS. The new equivalence test compares
+5,654 point products against library scalar multiplication across every
+three-of-five and six-of-eleven subset, singleton/boundary IDs and twenty members.
+The separate focused invocation overlaps the full suite and is not an additional
+test count. An on-curve non-subgroup fixture verifies rejection at point decoding.
+
+Both arms use base `21df7c945`, identical pinned release commands and benchmark
+source; only the BLS implementation hash differs. No temporary probes are present.
+The five alternating pairs completed all nineteen prescribed workloads: 190 runs,
+65,920 batches and 552,960 output aggregates, every aggregate checked against its
+reference. The [run ledger](benchmarks/2026-09-08-e12-aggregation-5-pairs-runs.csv)
+and [comparison ledger](benchmarks/2026-09-08-e12-aggregation-5-pairs-comparison.csv)
+retain all run-level metrics and intervals. Native samples, per-batch durations,
+commands, source patches and frozen artifacts remain private.
+
+CPU per output decreased by 24.10–94.68% across the distinct workloads. Every
+workload's CPU and instruction-count ratio interval is below one. All prescribed
+component guards pass: p95, CPU, sampled RSS/physical footprint, lifetime physical
+footprint, and observed batch rate. The range compares different workloads;
+it is not one combined confidence interval or an end-to-end payment improvement.
+Only the 1,024-sample component cases support p99.
+
+Decision: advance to the already prescribed 256-receipt runtime comparison.
+Production retention remains pending real payment CPU/latency/memory/idle guards,
+wallet adversarial tests and recovery. The matched runtime comparison varies the
+SDK only: inspection locates the production aggregation caller in the wallet;
+the member service remains the same immutable retained artifact in both arms.
+The larger workload spends all 256 original 32-sat bank notes: expected final
+state is 269 accepted operations, zero bank balance and 8,192 sat across 256
+recipient wallets (3,072 unique notes). New one-shot controllers preserve older
+64-receipt experiments and all their original custody; observation stays at the
+pre-specified 180 seconds, drain at 120 seconds, and no operation timeout changes.

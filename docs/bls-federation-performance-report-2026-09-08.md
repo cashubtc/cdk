@@ -755,3 +755,26 @@ artifacts rebuilt; instrumented payment timings are excluded from acceptance.
 The locked group implementation's fixed 255-bit loop supports evaluating a
 public-only interpolation helper. E12's matched comparisons and correctness
 gates are prescribed in the journal; no implementation or gain is accepted yet.
+
+### E12 public interpolation: component guards pass, runtime pending
+
+Five alternating pairs across nineteen signer-set/output-shape workloads verified
+65,920 batches and 552,960 output aggregates. CPU per output fell 24.10–94.68%
+across these distinct workloads, with instruction reductions and all component
+latency, CPU, memory and batch-rate guards passing. Illustrative wallet workloads:
+
+| Public signer IDs | Baseline CPU/output | Candidate CPU/output | CPU ratio 95% CI |
+| --- | ---: | ---: | --- |
+| 1, 2, 3 | 0.60176 ms | 0.03815 ms | 0.06108–0.06578 |
+| 1, 2, 4 | 0.59730 ms | 0.28049 ms | 0.46160–0.47773 |
+| 1, 3, 5 | 0.60588 ms | 0.44765 ms | 0.71753–0.76087 |
+| 1, 2, 3, 4, 5, 6 | 1.18381 ms | 0.06299 ms | 0.05262–0.05381 |
+| 1, 3, 5, 7, 9, 11 | 1.17116 ms | 0.85357 ms | 0.71598–0.74173 |
+
+All [190 runs](benchmarks/2026-09-08-e12-aggregation-5-pairs-runs.csv) and
+[nineteen comparisons](benchmarks/2026-09-08-e12-aggregation-5-pairs-comparison.csv)
+are retained. These are component gains, not payment throughput or accepted
+production improvements. Cashu federation/ordinary suites, public interpolation
+equivalence, subgroup rejection, dependency isolation, scoped strict lint and
+formatting pass. The next gate is the prescribed fresh 256-receipt comparison,
+followed by relevant wallet/recovery checks. Full campaign gates remain open.
