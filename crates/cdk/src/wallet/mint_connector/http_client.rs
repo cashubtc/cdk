@@ -106,7 +106,10 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpClient")
             .field("transport", &core::any::type_name::<T>())
-            .field("mint_url", &self.mint_url)
+            .field(
+                "mint_url",
+                &cdk_common::redact::url_for_logs(&self.mint_url.to_string()),
+            )
             .field("cache_support", &"[INTERNAL]")
             .field("auth_wallet", &"[REDACTED]")
             .finish()
@@ -484,7 +487,7 @@ where
     }
 
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    #[instrument(skip_all)]
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, Error> {
         self.transport
             .as_ref()
@@ -494,7 +497,7 @@ where
     }
 
     /// Fetch Lightning address pay request data
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     async fn fetch_lnurl_pay_request(
         &self,
         url: &str,
@@ -506,7 +509,7 @@ where
     }
 
     /// Fetch invoice from Lightning address callback
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     async fn fetch_lnurl_invoice(
         &self,
         url: &str,
@@ -574,7 +577,7 @@ where
     }
 
     /// Get Active Mint Keys [NUT-01]
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
         let url = self.mint_url.join_paths(&["v1", "keys"])?;
 
@@ -585,7 +588,7 @@ where
     }
 
     /// Get Keyset Keys [NUT-01]
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
         let url = self
             .mint_url
@@ -601,14 +604,14 @@ where
     }
 
     /// Get Keysets [NUT-02]
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "keysets"])?;
         self.transport_http_get(url, None).await
     }
 
     /// Mint Quote [NUT-04, NUT-23, NUT-25]
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn post_mint_quote(
         &self,
         request: MintQuoteRequest,
@@ -651,7 +654,7 @@ where
     }
 
     /// Mint Quote status with payment method
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn get_mint_quote_status(
         &self,
         method: PaymentMethod,
@@ -731,7 +734,7 @@ where
     }
 
     /// Mint Tokens [NUT-04]
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn post_mint(
         &self,
         method: &PaymentMethod,
@@ -760,7 +763,7 @@ where
     }
 
     /// Batch check mint quote status [NUT-29]
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn post_batch_check_mint_quote_status(
         &self,
         method: &PaymentMethod,
@@ -817,7 +820,7 @@ where
     }
 
     /// Batch mint tokens [NUT-29]
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn post_batch_mint(
         &self,
         method: &PaymentMethod,
@@ -835,7 +838,7 @@ where
     }
 
     /// Melt Quote [NUT-05]
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn post_melt_quote(
         &self,
         request: MeltQuoteRequest,
@@ -877,7 +880,7 @@ where
     }
 
     /// Melt Quote Status
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn get_melt_quote_status(
         &self,
         method: PaymentMethod,
@@ -958,7 +961,7 @@ where
 
     /// Melt [NUT-05]
     /// [Nut-08] Lightning fee return if outputs defined
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn post_melt(
         &self,
         method: &PaymentMethod,
@@ -1021,7 +1024,7 @@ where
     }
 
     /// Swap Token [NUT-03]
-    #[instrument(skip(self, swap_request), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self, swap_request), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
         let auth_token = self.get_auth_token(Method::Post, RoutePath::Swap).await?;
 
@@ -1064,7 +1067,7 @@ where
     }
 
     /// Spendable check [NUT-07]
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn post_check_state(
         &self,
         request: CheckStateRequest,
@@ -1078,7 +1081,7 @@ where
     }
 
     /// Restore request [NUT-13]
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "restore"])?;
         let auth_token = self
@@ -1213,7 +1216,7 @@ where
     }
 
     /// Get Auth Keyset Keys [NUT-22]
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn get_mint_blind_auth_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
         let url =
             self.mint_url
@@ -1231,7 +1234,7 @@ where
     }
 
     /// Get Auth Keysets [NUT-22]
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn get_mint_blind_auth_keysets(&self) -> Result<KeysetResponse, Error> {
         let url = self
             .mint_url
@@ -1241,7 +1244,7 @@ where
     }
 
     /// Mint Tokens [NUT-22]
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    #[instrument(skip(self, request), fields(mint_url = %cdk_common::redact::url_for_logs(&self.mint_url.to_string())))]
     async fn post_mint_blind_auth(&self, request: MintAuthRequest) -> Result<MintResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "auth", "blind", "mint"])?;
         self.transport_http_post(url, Some(self.cat.read().await.clone()), &request)

@@ -137,7 +137,10 @@ pub struct MintMetadataCache {
 impl std::fmt::Debug for MintMetadataCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MintMetadataCache")
-            .field("mint_url", &self.mint_url)
+            .field(
+                "mint_url",
+                &cdk_common::redact::url_for_logs(&self.mint_url.to_string()),
+            )
             .field("is_populated", &self.metadata.load().status.is_populated)
             .field("keyset_count", &self.metadata.load().keysets.len())
             .finish()
@@ -368,7 +371,7 @@ impl MintMetadataCache {
 
         tracing::info!(
             "Loaded cache from database for {} with {} keysets (version {})",
-            self.mint_url,
+            cdk_common::redact::url_for_logs(&self.mint_url.to_string()),
             new_metadata.keysets.len(),
             new_metadata.status.version
         );
@@ -457,7 +460,7 @@ impl MintMetadataCache {
                 // Network failed but we have usable stale data — return it
                 tracing::warn!(
                     "Failed to refresh metadata from mint {}, using stale cache: {}",
-                    self.mint_url,
+                    cdk_common::redact::url_for_logs(&self.mint_url.to_string()),
                     e
                 );
                 Ok(cached_metadata)
@@ -593,7 +596,13 @@ impl MintMetadataCache {
         storage
             .add_mint(mint_url.clone(), Some(metadata.mint_info.clone()))
             .await
-            .inspect_err(|e| tracing::warn!("Failed to save mint info for {}: {}", mint_url, e))
+            .inspect_err(|e| {
+                tracing::warn!(
+                    "Failed to save mint info for {}: {}",
+                    cdk_common::redact::url_for_logs(&mint_url.to_string()),
+                    e
+                )
+            })
             .ok();
 
         // Save all keysets
@@ -603,7 +612,13 @@ impl MintMetadataCache {
             storage
                 .add_mint_keysets(mint_url.clone(), keysets)
                 .await
-                .inspect_err(|e| tracing::warn!("Failed to save keysets for {}: {}", mint_url, e))
+                .inspect_err(|e| {
+                    tracing::warn!(
+                        "Failed to save keysets for {}: {}",
+                        cdk_common::redact::url_for_logs(&mint_url.to_string()),
+                        e
+                    )
+                })
                 .ok();
         }
 
@@ -635,7 +650,7 @@ impl MintMetadataCache {
                         tracing::warn!(
                             "Failed to save keys for keyset {} at {}: {}",
                             keyset_id,
-                            mint_url,
+                            cdk_common::redact::url_for_logs(&mint_url.to_string()),
                             e
                         )
                     })
@@ -668,7 +683,9 @@ impl MintMetadataCache {
     ) -> Result<Arc<MintMetadata>, Error> {
         tracing::debug!(
             "Fetching mint metadata from HTTP for {}",
-            escape_log_value(&self.mint_url)
+            escape_log_value(&cdk_common::redact::url_for_logs(
+                &self.mint_url.to_string()
+            ))
         );
 
         // Start with current cache to preserve data from other sources
@@ -681,7 +698,9 @@ impl MintMetadataCache {
             new_metadata.mint_info = client.get_mint_info().await.inspect_err(|err| {
                 tracing::error!(
                     "Failed to fetch mint info for {}: {}",
-                    escape_log_value(&self.mint_url),
+                    escape_log_value(&cdk_common::redact::url_for_logs(
+                        &self.mint_url.to_string()
+                    )),
                     escape_log_value(err)
                 );
             })?;
@@ -694,7 +713,9 @@ impl MintMetadataCache {
                     .inspect_err(|err| {
                         tracing::error!(
                             "Failed to fetch keysets for {}: {}",
-                            escape_log_value(&self.mint_url),
+                            escape_log_value(&cdk_common::redact::url_for_logs(
+                                &self.mint_url.to_string()
+                            )),
                             escape_log_value(err)
                         );
                     })?
@@ -710,7 +731,9 @@ impl MintMetadataCache {
         tracing::debug!(
             "Fetched {} keysets for {}",
             keysets_to_fetch.len(),
-            escape_log_value(&self.mint_url)
+            escape_log_value(&cdk_common::redact::url_for_logs(
+                &self.mint_url.to_string()
+            ))
         );
 
         // Fetch keys for each keyset
@@ -766,7 +789,7 @@ impl MintMetadataCache {
 
         tracing::info!(
             "Updated cache for {} with {} keysets (version {})",
-            self.mint_url,
+            cdk_common::redact::url_for_logs(&self.mint_url.to_string()),
             new_metadata.keysets.len(),
             new_metadata.status.version
         );

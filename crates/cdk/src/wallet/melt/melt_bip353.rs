@@ -51,7 +51,7 @@ impl Wallet {
     /// # }
     /// ```
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-    #[instrument(skip(self, amount_msat), fields(address = %bip353_address))]
+    #[instrument(skip_all, fields(%network))]
     pub async fn melt_bip353_quote(
         &self,
         bip353_address: &str,
@@ -66,7 +66,7 @@ impl Wallet {
             Error::Bip353NoBolt12Offer
         })?;
 
-        tracing::debug!("Found BOLT12 offer in BIP353 instructions: {}", offer);
+        tracing::debug!("Found BOLT12 offer in BIP353 instructions");
 
         // Create melt options with the provided amount
         let options = MeltOptions::new_amountless(amount_msat);
