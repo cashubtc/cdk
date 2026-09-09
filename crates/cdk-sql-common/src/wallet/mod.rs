@@ -184,7 +184,7 @@ where
         .collect::<Result<_, _>>()?)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, mint_url), fields(mint_url = ?cdk_common::redact::url_for_logs(&mint_url.to_string())))]
     async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, database::Error> {
         let conn = self
             .pool
@@ -259,7 +259,7 @@ where
         .collect::<Result<HashMap<_, _>, Error>>()?)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, mint_url), fields(mint_url = ?cdk_common::redact::url_for_logs(&mint_url.to_string())))]
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
@@ -505,7 +505,7 @@ where
         .transpose()
     }
 
-    #[instrument(skip(self, state, spending_conditions))]
+    #[instrument(skip(self, state, spending_conditions, mint_url), fields(mint_url = ?mint_url.as_ref().map(|url| cdk_common::redact::url_for_logs(&url.to_string()))))]
     async fn get_proofs(
         &self,
         mint_url: Option<MintUrl>,
@@ -707,7 +707,7 @@ where
         .transpose()?)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, mint_url), fields(mint_url = ?mint_url.as_ref().map(|url| cdk_common::redact::url_for_logs(&url.to_string()))))]
     async fn list_transactions(
         &self,
         mint_url: Option<MintUrl>,
@@ -859,7 +859,7 @@ where
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, ys), fields(proof_count = ys.len()))]
     async fn update_proofs_state(
         &self,
         ys: Vec<PublicKey>,
@@ -959,7 +959,7 @@ where
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, old_mint_url, new_mint_url), fields(old_mint_url = %cdk_common::redact::url_for_logs(&old_mint_url.to_string()), new_mint_url = %cdk_common::redact::url_for_logs(&new_mint_url.to_string())))]
     async fn update_mint_url(
         &self,
         old_mint_url: MintUrl,
@@ -1056,7 +1056,7 @@ where
         Ok(new_counter)
     }
 
-    #[instrument(skip(self, mint_info))]
+    #[instrument(skip(self, mint_info, mint_url), fields(mint_url = ?cdk_common::redact::url_for_logs(&mint_url.to_string())))]
     async fn add_mint(
         &self,
         mint_url: MintUrl,
@@ -1167,7 +1167,7 @@ where
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, mint_url), fields(mint_url = ?cdk_common::redact::url_for_logs(&mint_url.to_string())))]
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), database::Error> {
         let conn = self
             .pool
@@ -1183,7 +1183,7 @@ where
         Ok(())
     }
 
-    #[instrument(skip(self, keysets))]
+    #[instrument(skip(self, keysets, mint_url), fields(mint_url = ?cdk_common::redact::url_for_logs(&mint_url.to_string())))]
     async fn add_mint_keysets(
         &self,
         mint_url: MintUrl,
@@ -1613,7 +1613,7 @@ where
         rows.into_iter().map(sql_row_to_wallet_saga).collect()
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, ys), fields(proof_count = ys.len()))]
     async fn reserve_proofs(
         &self,
         ys: Vec<PublicKey>,
