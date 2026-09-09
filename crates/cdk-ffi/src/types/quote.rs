@@ -301,7 +301,7 @@ impl From<cdk::nuts::MintQuoteCustomResponse<String>> for MintQuoteCustomRespons
 }
 
 /// FFI-compatible MeltQuoteBolt11Response
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MeltQuoteBolt11Response {
     /// Quote ID
     pub quote: String,
@@ -321,6 +321,25 @@ pub struct MeltQuoteBolt11Response {
     pub request: Option<String>,
     /// Unit (optional)
     pub unit: Option<CurrencyUnit>,
+}
+
+impl fmt::Debug for MeltQuoteBolt11Response {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeltQuoteBolt11Response")
+            .field("quote", &self.quote)
+            .field("method", &self.method)
+            .field("amount", &self.amount)
+            .field("fee_reserve", &self.fee_reserve)
+            .field("state", &self.state)
+            .field("expiry", &self.expiry)
+            .field(
+                "payment_proof",
+                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("request", &self.request)
+            .field("unit", &self.unit)
+            .finish()
+    }
 }
 
 impl From<cdk::nuts::MeltQuoteBolt11Response<String>> for MeltQuoteBolt11Response {

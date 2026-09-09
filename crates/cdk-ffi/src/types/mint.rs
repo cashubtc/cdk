@@ -1,5 +1,7 @@
 //! Mint-related FFI types
 
+use core::fmt;
+
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
@@ -9,10 +11,18 @@ use super::quote::PaymentMethod;
 use crate::error::FfiError;
 
 /// FFI-compatible Mint URL
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, uniffi::Record)]
 #[serde(transparent)]
 pub struct MintUrl {
     pub url: String,
+}
+
+impl fmt::Debug for MintUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MintUrl")
+            .field("url", &cdk_common::redact::url_for_logs(&self.url))
+            .finish()
+    }
 }
 
 impl MintUrl {
@@ -709,6 +719,7 @@ pub fn decode_mint_info(json: String) -> Result<MintInfo, FfiError> {
 pub fn encode_mint_info(info: MintInfo) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&info)?)
 }
+
 #[cfg(test)]
 mod tests {
     use cdk::nuts::nut00::{KnownMethod, PaymentMethod as NutPaymentMethod};
