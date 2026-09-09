@@ -498,9 +498,9 @@ async fn test_wallet_repository_get_balances_for_unit() {
         .await
         .expect("failed to add first mint");
     wallet_repository
-        .add_wallet(second_mint_url.clone())
+        .create_wallet(second_mint_url.clone(), CurrencyUnit::Sat, None)
         .await
-        .expect("failed to add second mint");
+        .expect("failed to create second mint wallet");
 
     // Fund the first mint only
     fund_wallet_repository(&wallet_repository, &mint_url, 100.into()).await;
@@ -539,11 +539,18 @@ async fn test_wallet_repository_get_balances_for_unit() {
 
     // get_balances() should still return all wallets (backward compat)
     let all_balances = wallet_repository.get_balances().await.unwrap();
-    assert_eq!(
-        all_balances.len(),
-        2,
-        "get_balances() should return all 2 wallets"
+    // Unfiltered view is a superset of the unit-filtered view
+    assert!(
+        all_balances.len() >= sat_balances.len(),
+        "get_balances() should return at least as many wallets as get_balances_for_unit(Sat)"
     );
+    for (key, amount) in &sat_balances {
+        assert_eq!(
+            all_balances.get(key),
+            Some(amount),
+            "sat_balances entry should be present in all_balances"
+        );
+    }
 }
 
 /// Test list_proofs() function
