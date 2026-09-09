@@ -51,10 +51,14 @@ use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
 use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey, SigFlag, State};
 use crate::util::hex;
+use crate::wallet::blind_signature::{
+    validate_mint_response_signatures, SignatureAmountValidation,
+};
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
 };
 use crate::wallet::swap::ProofReservation;
+use crate::wallet::util::escape_log_value;
 use crate::{Amount, Error, Wallet, SECP256K1};
 
 pub(crate) mod compensation;
@@ -410,6 +414,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             })
             .await?;
 
+        let requested_outputs = pre_swap.swap_request.outputs().clone();
         let swap_response = match self.wallet.client.post_swap(pre_swap.swap_request).await {
             Ok(response) => response,
             Err(err) => {
@@ -423,6 +428,22 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 return Err(err);
             }
         };
+
+        validate_mint_response_signatures(
+            self.wallet,
+            &swap_response.signatures,
+            &requested_outputs,
+            SignatureAmountValidation::Exact,
+        )
+        .await
+        .inspect_err(|err| {
+            tracing::warn!(
+                mint_url = %escape_log_value(&self.wallet.mint_url),
+                operation = "receive",
+                error = %escape_log_value(err),
+                "Mint response signature validation failed"
+            );
+        })?;
 
         let recv_proofs = construct_proofs(
             swap_response.signatures,
@@ -544,5 +565,70 @@ impl<S: std::fmt::Debug> std::fmt::Debug for ReceiveSaga<'_, S> {
         f.debug_struct("ReceiveSaga")
             .field("state_data", &self.state_data)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::amount::SplitTarget;
+    use crate::nuts::{nut12::BlindSignatureDleq, BlindSignature, Id, SwapResponse};
+    use crate::wallet::test_utils::{
+        create_test_db, create_test_wallet_with_mock, test_keyset_id, test_proof, MockMintConnector,
+    };
+
+    #[tokio::test]
+    async fn receive_rejects_invalid_returned_signatures() {
+        for case in ["amount", "keyset", "dleq"] {
+            let db = create_test_db().await;
+            let client = Arc::new(MockMintConnector::new());
+            client.reset_default_mint_state();
+            let wallet = create_test_wallet_with_mock(db, client.clone()).await;
+            let keyset_id = test_keyset_id();
+            let mut signature = BlindSignature {
+                amount: Amount::from(2),
+                keyset_id,
+                c: SecretKey::generate().public_key(),
+                dleq: None,
+            };
+            match case {
+                "amount" => signature.amount = Amount::from(1),
+                "keyset" => signature.keyset_id = Id::from_str("0011223344556677").unwrap(),
+                "dleq" => {
+                    signature.dleq = Some(BlindSignatureDleq {
+                        e: SecretKey::generate(),
+                        s: SecretKey::generate(),
+                    });
+                }
+                _ => unreachable!(),
+            }
+            client.set_post_swap_response(Ok(SwapResponse {
+                signatures: vec![signature],
+            }));
+            let result = wallet
+                .receive_proofs(
+                    vec![test_proof(keyset_id, 3)],
+                    ReceiveOptions {
+                        amount_split_target: SplitTarget::Values(vec![Amount::from(2)]),
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                )
+                .await;
+            match case {
+                "dleq" => assert!(
+                    matches!(result, Err(Error::CouldNotVerifyDleq)),
+                    "{result:?}"
+                ),
+                _ => assert!(
+                    matches!(&result, Err(Error::InvalidMintResponse(message)) if message.contains(case)),
+                    "{case}: {result:?}"
+                ),
+            }
+            assert!(wallet.get_unspent_proofs().await.unwrap().is_empty());
+        }
     }
 }
