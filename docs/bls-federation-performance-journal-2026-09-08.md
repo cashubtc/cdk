@@ -5144,3 +5144,44 @@ state is 269 accepted operations, zero bank balance and 8,192 sat across 256
 recipient wallets (3,072 unique notes). New one-shot controllers preserve older
 64-receipt experiments and all their original custody; observation stays at the
 pre-specified 180 seconds, drain at 120 seconds, and no operation timeout changes.
+
+### E12 real ecash series started
+
+```sh
+python3 "$RUN_ROOT/run_e12_ecash_pairs.py"
+# After five completed pairs, without changing artifacts or workloads:
+python3 "$RUN_ROOT/review_e12_ecash.py" --pairs 5
+# Only after a passing performance review, outside live measurements:
+python3 "$RUN_ROOT/validate_e12_runtime.py" --pairs 5
+```
+
+The first command is running; the latter two have not run. The one-shot series
+freezes controller hashes and both SDK fingerprints, alternates arm order, and
+runs the existing fresh-backend, federation-setup, funding and measurement
+helpers with explicit 256-receipt expectations. Every arm must stop its owned
+services and pass a read-only note-identity audit before the next starts.
+Existing 64-receipt helpers and custody remain unchanged. A preflight confirmed
+no live campaign members or overlap with the planned disposable networks.
+
+The first baseline completed backend preparation, real five-member DKG and
+confirmed incoming on-chain funding. Offline packaging produced exactly 256
+unique tokens from 256 original notes, totaling 8,192 sat; all bank notes are
+pending-spent, with no unspent bank remainder. Warm SDK preparation completed
+without changing accepted history, and the timed window started with tracing
+disabled. Payment results, all five paired comparisons and acceptance remain
+pending. The prepared follow-up checks cover the exact SDK candidate source,
+ordinary downstream APIs, ordinary/federation FFI and formatting; they are gated
+on the performance review and do not run alongside measurements.
+
+The first baseline arm subsequently completed all 256 receipts inside the window,
+with zero failed, late or unfinished requests. Its observed p50/p95 are
+1,205.40/1,620.98 ms, SDK CPU is 53.020 ms per receipt, and the last receipt arrived
+at 77.462 seconds. These are one baseline observation, not a paired improvement
+or sustainable-throughput result; payment p99 remains unavailable. The independent
+identity audit confirms 3,072 unique spendable recipient notes disjoint from all
+256 original inputs, identical spent sets on all five members, 269 accepted
+operations, and 8,192 = 0 bank + 8,192 recipient sat. Idle state stayed unchanged
+and all owned services stopped. The first candidate arm has started with fresh
+custody. Service setup logs retain the baseline member-binary label because the
+same retained service artifact is used in both arms; SDK fingerprints and arm
+manifests identify the actual comparison. No production retention decision yet.
