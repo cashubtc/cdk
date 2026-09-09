@@ -9,8 +9,9 @@ use cdk::util::unix_time;
 use cdk::wallet::{ReceiveOptions, WalletRepository};
 use cdk::Amount;
 use clap::Args;
-use nostr::prelude::nip04;
-use nostr::prelude::{Filter, Keys, Kind, PublicKey, SecretKey as NostrSecretKey, Timestamp};
+use nostr::prelude::{
+    nip04, Filter, Keys, Kind, PublicKey, SecretKey as NostrSecretKey, Timestamp,
+};
 use nostr_sdk::prelude::{Client, RelayCapabilities, SignerAuthenticator};
 
 use crate::nostr_storage;
