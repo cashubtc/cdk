@@ -778,3 +778,36 @@ production improvements. Cashu federation/ordinary suites, public interpolation
 equivalence, subgroup rejection, dependency isolation, scoped strict lint and
 formatting pass. The next gate is the prescribed fresh 256-receipt comparison,
 followed by relevant wallet/recovery checks. Full campaign gates remain open.
+
+### E12 real ecash: inconclusive after five pairs
+
+All **2,560 receives** passed independent receipt, note-identity, value,
+member-state, idle and shutdown audits. Each fresh five-member HTTP/SQLite run
+used 256 independent 32-sat receipts at concurrency four, with one input and twelve
+outputs each. All completed within the 180-second observation window; no requests
+failed, completed late or remained pending. Each run preserves
+8,192 = 0 bank + 8,192 recipient sat in 3,072 unique spendable notes, disjoint from
+the 256 spent inputs. Both arms use the same retained member service; only the
+SDK's interpolation implementation differs.
+
+| Metric | Candidate/baseline ratio | Run-level 95% CI |
+| --- | ---: | --- |
+| SDK CPU per receipt | 0.96693 | 0.87457–1.06904 |
+| Combined execution CPU per receipt | 1.03982 | 0.97288–1.11137 |
+| p95 receipt latency | 1.06050 | 0.93124–1.20770 |
+| SDK peak physical footprint | 1.00056 | 0.99858–1.00255 |
+| Member aggregate peak physical footprint | 1.04415 | 0.92481–1.17890 |
+
+The primary CPU benefit and several regression guards are inconclusive. The
+first pair's favorable result did not establish a repeatable end-to-end gain.
+SDK memory and member RSS pass; idle CPU shows no reproducible increase. No
+confirmed regression is established, and the approved rule requires extending
+to ten unchanged pairs. **E12 remains provisional.** The earlier component gains
+are not production acceptance or evidence of sustainable payment throughput.
+
+The [ten-run ledger](benchmarks/2026-09-08-e12-ecash-5-pairs-runs.csv),
+[2,560-request ledger](benchmarks/2026-09-08-e12-ecash-5-pairs-requests.csv), and
+[paired comparison](benchmarks/2026-09-08-e12-ecash-5-pairs-comparison.csv) preserve
+all results. Payment p99 remains unavailable at 256 samples per run. Exact-source
+wallet/FFI and real restart checks await a passing performance review; all final
+campaign gates remain open.

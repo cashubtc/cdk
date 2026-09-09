@@ -5185,3 +5185,72 @@ and all owned services stopped. The first candidate arm has started with fresh
 custody. Service setup logs retain the baseline member-binary label because the
 same retained service artifact is used in both arms; SDK fingerprints and arm
 manifests identify the actual comparison. No production retention decision yet.
+
+### E12 real ecash: five pairs complete, prescribed extension required
+
+All ten fresh runs completed their 256 receives inside the fixed window: **2,560
+receipts**, zero failures, late receipts or unfinished requests. Each independent
+stopped-state audit verifies 3,072 unique spendable recipient notes, disjoint from
+all 256 original inputs, identical member spent sets, 269 accepted operations,
+and exact 8,192 = 0 bank + 8,192 recipient sat conservation. Member digests agree
+within every run. Idle audits preserve quiescent state, all owned services stopped,
+and all original custody remains intact. No temporary probe was used.
+
+```sh
+python3 "$RUN_ROOT/review_e12_ecash.py" --pairs 5
+python3 "$RUN_ROOT/export_e12_ecash_evidence.py" --pairs 5
+```
+
+The review returns `extend_to_ten_pairs`. All
+[ten runs](benchmarks/2026-09-08-e12-ecash-5-pairs-runs.csv),
+[2,560 requests](benchmarks/2026-09-08-e12-ecash-5-pairs-requests.csv) and
+[paired comparisons](benchmarks/2026-09-08-e12-ecash-5-pairs-comparison.csv)
+are preserved, including the less favorable observations. No run was discarded.
+
+| Metric | Candidate/baseline ratio | Run-level 95% CI |
+| --- | ---: | --- |
+| SDK CPU per receipt | 0.96693 | 0.87457–1.06904 |
+| Combined execution CPU per receipt | 1.03982 | 0.97288–1.11137 |
+| p50 receipt latency | 0.99995 | 0.97387–1.02674 |
+| p95 receipt latency | 1.06050 | 0.93124–1.20770 |
+| SDK peak RSS | 1.00059 | 0.99875–1.00242 |
+| SDK peak physical footprint | 1.00056 | 0.99858–1.00255 |
+| Member aggregate peak physical footprint | 1.04415 | 0.92481–1.17890 |
+| Idle member aggregate CPU | 0.98908 | 0.90461–1.08145 |
+
+The arithmetic mean SDK CPU values are 56.513 and 54.963 ms per receipt;
+paired ratio estimates use the analyzer's run-level comparison and are not ratios
+of these arithmetic means. The primary CPU improvement is **inconclusive**.
+The p95, SDK CPU, combined CPU, member physical-footprint and conservative active
+member CPU guards also remain inconclusive. The latter compares candidate upper
+CPU bounds against baseline lower bounds and has interval 0.99044–1.12884; it is
+not an exact change estimate. SDK memory and member RSS guards pass. Idle CPU
+shows no reproducible increase, but establishes no idle benefit. No guard shows
+a confirmed regression under the prescribed decision rule.
+
+The later runs vary materially from the first pair. These results do not establish
+the cause; neither a production regression nor external interference is assumed.
+The component work savings therefore do not yet justify production retention.
+No payment p99 is available from 256 samples per run, and this finite workload
+establishes no sustainable-throughput gain. Candidate-only domain/FFI/restart
+acceptance checks remain gated and have not run.
+
+Next, use the pre-existing extension controller, preserving the first-five files,
+source hashes, immutable artifacts, workload, ordering rule, observation/drain
+bounds, resource accounting and receipt audits:
+
+```sh
+python3 "$RUN_ROOT/extend_e12_ecash_pairs.py"
+python3 "$RUN_ROOT/review_e12_ecash.py" --pairs 10
+python3 "$RUN_ROOT/export_e12_ecash_evidence.py" --pairs 10
+```
+
+If ten pairs remain inconclusive, revert E12's production change and retain the
+investigation evidence. Neither E12 nor provisional E07 is accepted by this
+milestone. The complete campaign matrix, original-baseline comparison, all payment
+directions, recovery gates and final profiling passes remain open.
+
+Between series, the pinned `nix develop .#stable --command cargo fmt --all --
+--check` completed successfully. The review/export commands also completed
+successfully; private logs and the first-five source/artifact fingerprints remain
+preserved. Only evidence is committed at this point.
