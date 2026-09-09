@@ -4838,3 +4838,41 @@ unchanged threshold/share validation, and the general field-scalar fallback for
 other coefficients. Private-scalar constant-time arithmetic must remain untouched.
 No cache, new abstraction, production implementation, or performance claim was
 added. E11's source and workload remain fixed while its extension runs.
+
+### Aggregation attribution from the existing SDK profile
+
+Re-read the preserved ten-second SDK sampling profile from the successful c4
+diagnostic. Counted only immediate descendants of
+`aggregate_blind_signature_shares` in the call graph, excluding the profiler's
+summary tables. Checked that descendant counts sum to their aggregation frames
+and that the profile's SHA-256 matches the private attribution record. This
+avoids counting nested multiplication/field-arithmetic frames again.
+
+| Immediate aggregation work | Stack observations |
+| --- | ---: |
+| G1 scalar multiplication | 202 |
+| G1 affine conversion | 9 |
+| Scalar inversion | 2 |
+| Public signer ID to scalar conversion | 1 |
+| Total | 214 |
+
+These are observations within a bounded diagnostic profile, not CPU seconds,
+whole-process percentages or acceptance measurements. The actual selected-signer
+distribution remains unknown. The evidence prioritizes G1 multiplication over
+coefficient caching for the next investigation; the earlier overlapping stage
+timer alone could not make that distinction.
+
+Next, after E11's fixed series finishes, measure aggregation with explicit public
+signer sets: all ten three-of-five subsets, eleven-member signing subsets, and
+the existing single/wallet/fragmented output shapes. Record the selected-set
+distribution in a separate bounded SDK diagnostic before weighting component
+results as representative of payment work. A potential change must preserve
+exact interpolation for arbitrary valid IDs and ordering, including coefficients
+that need general field-scalar multiplication. Any variable-time helper must
+derive its coefficient solely from public signer IDs; secret-scalar arithmetic
+remains on the existing library path.
+
+No production or benchmark source changed for this attribution. Raw profiles,
+addresses, machine metadata and the parsing ledger remain outside Git. E11's
+unchanged ten-pair extension is still running; no further arithmetic candidate
+has been implemented or accepted.
