@@ -51,7 +51,13 @@ pub struct WalletBuilder {
 impl std::fmt::Debug for WalletBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WalletBuilder")
-            .field("mint_url", &self.mint_url)
+            .field(
+                "mint_url",
+                &self
+                    .mint_url
+                    .as_ref()
+                    .map(|url| cdk_common::redact::url_for_logs(&url.to_string())),
+            )
             .field("unit", &self.unit)
             .field("target_proof_count", &self.target_proof_count)
             .finish_non_exhaustive()
