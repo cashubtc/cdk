@@ -39,7 +39,10 @@ pub struct JwtAuthProvider {
 impl fmt::Debug for JwtAuthProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("JwtAuthProvider")
-            .field("base_url", &self.base_url)
+            .field(
+                "base_url",
+                &cdk_common::redact::url_for_logs(&self.base_url),
+            )
             .field("keys", &"[REDACTED]")
             .field("http_client", &self.http_client)
             .field("cached_token", &self.cached_token)

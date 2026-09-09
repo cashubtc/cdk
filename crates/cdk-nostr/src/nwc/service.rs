@@ -17,6 +17,8 @@
 //! - **No information leak / no panics**: every handler error is mapped to a
 //!   NIP-47 error response; the relay loop never aborts on a single bad request.
 
+use core::fmt;
+
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -65,7 +67,7 @@ enum Encryption {
 }
 
 /// Configuration for an [`NwcService`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NwcServiceConfig {
     /// Keys of the wallet service (the "signer"). Its public key is the one
     /// advertised in the connection URI.
@@ -79,14 +81,51 @@ pub struct NwcServiceConfig {
     pub lud16: Option<String>,
 }
 
+impl fmt::Debug for NwcServiceConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NwcServiceConfig")
+            .field("service_keys", &"[REDACTED]")
+            .field("client_secret", &"[REDACTED]")
+            .field(
+                "relays",
+                &self
+                    .relays
+                    .iter()
+                    .map(|url| cdk_common::redact::url_for_logs(url.as_str()))
+                    .collect::<Vec<_>>(),
+            )
+            .field("lud16", &self.lud16.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
 /// A NIP-47 wallet service bound to a single client connection.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NwcService {
     service_keys: Keys,
     client_secret: SecretKey,
     client_pubkey: PublicKey,
     relays: Vec<RelayUrl>,
     lud16: Option<String>,
+}
+
+impl fmt::Debug for NwcService {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NwcService")
+            .field("service_keys", &"[REDACTED]")
+            .field("client_secret", &"[REDACTED]")
+            .field("client_pubkey", &self.client_pubkey)
+            .field(
+                "relays",
+                &self
+                    .relays
+                    .iter()
+                    .map(|url| cdk_common::redact::url_for_logs(url.as_str()))
+                    .collect::<Vec<_>>(),
+            )
+            .field("lud16", &self.lud16.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 impl NwcService {
