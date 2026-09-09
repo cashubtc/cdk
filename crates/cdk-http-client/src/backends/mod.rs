@@ -18,6 +18,8 @@ fn url_for_debug(value: &str) -> String {
         return INVALID_URL_FOR_DEBUG.to_owned();
     }
 
+    // Paths may carry bearer capabilities (LNURL callbacks, quote IDs, etc.).
+    url.set_path("/");
     url.set_query(None);
     url.set_fragment(None);
 
@@ -88,7 +90,7 @@ mod tests {
 
         let debug_url = url_for_debug(&url);
 
-        assert_eq!(debug_url, "https://example.com/api");
+        assert_eq!(debug_url, "https://example.com/");
         assert!(!debug_url.contains(secret));
     }
 
