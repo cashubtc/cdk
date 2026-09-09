@@ -746,6 +746,12 @@ is unchanged. Nineteen unpaired baseline observations at `21df7c945` verified
 consumed 1.14900–1.15375 ms across three sets. These ranges compare distinct
 workloads, not confidence intervals or speedups. See the
 [baseline ledger](benchmarks/2026-09-08-aggregation-baseline-runs.csv).
-A fresh bounded SDK diagnostic is running to measure actual signer selection.
-Candidate comparisons remain pending; instrumented payment timings will be
-excluded from acceptance.
+A fresh bounded SDK diagnostic completed 64 audited receipts and aggregation
+events. Of its 2,304 public interpolation terms, 1,728 have small signed integer
+coefficients; this 75% classification is not a measured saving. The
+[selection counts](benchmarks/2026-09-08-aggregation-selection-counts.csv) preserve
+all observed sets. The temporary probe has been removed from source and clean
+artifacts rebuilt; instrumented payment timings are excluded from acceptance.
+The locked group implementation's fixed 255-bit loop supports evaluating a
+public-only interpolation helper. E12's matched comparisons and correctness
+gates are prescribed in the journal; no implementation or gain is accepted yet.

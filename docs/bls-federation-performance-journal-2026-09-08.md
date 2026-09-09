@@ -5038,3 +5038,57 @@ artifact differ. Instrumented timings are explicitly excluded from performance
 acceptance. Selection frequency and receipt results are pending; no production
 optimization has been implemented from this hypothesis. The probe remains confined
 to the private diagnostic build and must be absent from acceptance builds.
+
+### Selection diagnostic completed; E12 public interpolation hypothesis
+
+The fresh diagnostic completed all 64 receives, with 64 successful aggregation
+events and twelve outputs each. Independent stopped-state auditing verifies 960
+unique spendable notes, the exact original spent-input set on all five members,
+77 accepted operations and 8,192 = 6,144 + 2,048 sat. All owned services stopped;
+no original state was changed by the audit. The
+[selection counts](benchmarks/2026-09-08-aggregation-selection-counts.csv) contain
+every observed signer set. Public arithmetic classifies 1,728 of 2,304 terms as
+small signed integers (75% in this diagnostic); this is not a measured saving or
+a claim about all future signer selections.
+
+Inspection of the locked `bls12_381` 0.8.0 implementation confirms that
+`G1Projective::multiply` invokes a double, addition and conditional selection for
+each of 255 scalar bits. Its fixed-work implementation serves secret scalars.
+Federation interpolation derives its coefficients entirely from public signer
+IDs. This evidence broadens the earlier small-integer hypothesis: a single
+public-only binary multiplication can also omit additions for unset bits in
+fractional field coefficients, avoiding a separate small-integer fast path and
+fallback.
+
+E12 is therefore prescribed before production edits:
+
+- Owning layer: Cashu's federation-only blind-share interpolation, reached by the
+  production wallet aggregation caller. Other located callers are test code.
+- Derive the coefficient inside a private helper accepting public shares/IDs,
+  choose its smaller signed field representative, and use binary double/add on
+  those public bits. Keep secret-scalar library calls, interpolation mathematics,
+  threshold validation, encodings, point validation and public APIs unchanged.
+- Expected work reduction: omit leading-zero work and additions for unset public
+  bits. Confirm instruction/CPU savings rather than treating source counts as
+  measured instruction counts. The primary component metric is CPU per output.
+- Use the nineteen explicit signer-set/shape workloads above for five alternating
+  matched component pairs, extending inconclusive guards to ten and reverting if
+  still inconclusive. Apply the approved latency/CPU/memory/idle rules unchanged.
+- Check direct library multiplication equivalence, five/eleven-member subsets,
+  boundary IDs, subgroup rejection and the existing threshold, corruption,
+  permutation, restore and partial-change coverage before retention.
+- Pre-specify the subsequent primary runtime comparison at 256 independent
+  32-sat receipts, concurrency four, five-member HTTP/SQLite, 8,192-sat funding,
+  one input/twelve outputs per receipt, warm persistent clients, a 180-second
+  observation window, unchanged 120-second drain and 30-second idle audit.
+  This larger new workload improves tail sampling; it does not reopen or change
+  E11's rejected series. Report all failures/late outcomes and no payment p99 from
+  256 samples. The observation window is not an increased operation timeout or
+  queue. The final matrix and original-baseline comparison remain mandatory.
+
+The temporary diagnostic module was restored after verifying its exact patch
+and source hash. Both a clean SDK and component benchmark have now been rebuilt
+and frozen from the same isolated checkout for future matched comparisons. The
+shared target outputs are clean again; only explicitly named private diagnostic
+artifacts retain the probe for evidence. No E12 production change or performance
+gain is accepted yet.
