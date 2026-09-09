@@ -1,6 +1,6 @@
 # Federation performance optimization report
 
-Status: in progress. Two DKG arithmetic changes, dispatched/queued recovery-barrier
+Status: closed at user request on September 9; full campaign acceptance incomplete. Two DKG arithmetic changes, dispatched/queued recovery-barrier
 cleanup, the disclosed-claim recovery correction, and accepted-state broadcaster
 notifications are retained. The incoming
 collector was reverted after ten matched pairs because its CPU/receipt guard
@@ -25,7 +25,7 @@ Evidence and decisions: [experiment journal](bls-federation-performance-journal-
 | Disclosed Bark claim recovery | Retained: `bacc0f971` | Authorization work reduction, original-payment recovery and further restart; no payment TPS claim |
 | Broadcaster notifications | Retained: `9aa2ae395` | Renewed five-pair retained-code comparison: lower serial BDK latency/CPU, 50 receipts, scoped correctness and candidate restart; earlier invalid series remain excluded |
 | Proposal wakeup (E10) | Reverted | Ten pairs and 100 receipts; median benefit, but p95/CPU guards remained inconclusive |
-| Session-scoped replay cursor (E07) | Provisional | Quorum/recovery tests and original-state recovery with five BDK outgoing receipts; matched performance acceptance remains open |
+| Session-scoped replay cursor (E07) | Reverted at closeout | Quorum/recovery tests and original-state recovery with five BDK outgoing receipts; matched performance acceptance remains open |
 | One final exponentiation per BLS batch (E11) | Reverted | Ten real ecash pairs: 11.31% lower SDK CPU and 2.32% lower combined execution CPU, but p95 guard remained inconclusive |
 | Stable incoming evidence collector | Reverted | Ten-pair CPU/receipt guard remained inconclusive despite more window completions |
 | Cached checkpoint digest in summaries | Reverted | Component work reduction and ten-pair idle CPU benefit; memory guard remained inconclusive |
@@ -811,3 +811,35 @@ The [ten-run ledger](benchmarks/2026-09-08-e12-ecash-5-pairs-runs.csv),
 all results. Payment p99 remains unavailable at 256 samples per run. Exact-source
 wallet/FFI and real restart checks await a passing performance review; all final
 campaign gates remain open.
+
+
+## September 9 closeout
+
+The user requested an immediate finish rather than further experiments. Retained
+optimizations remain in their existing commits. E07 and E12 provisional source
+changes were reverted, including their candidate-only tests; private patches and
+all original fixture state are preserved. No new performance win is claimed.
+
+E12 stopped with eight complete pairs and the ninth baseline (17 fully audited
+runs, 4,352 receipts). The ninth candidate lost its measurement output when the
+runner was interrupted. A separate read-only closeout audit reconciled all 256
+original candidate receipts: 3,072 unique spendable notes totaling 8,192 sat,
+zero bank spendable balance, and the same 256 spent inputs at all five members.
+Each member has 269 journal entries. That arm is excluded from performance
+statistics because its timing/resource record is missing. No payment was retried.
+The owned fixture was stopped with bounded shutdown; its databases and backend
+volumes remain intact. Pair ten was not started.
+
+The [complete-run closeout ledger](benchmarks/2026-09-08-e12-closeout-runs.csv)
+preserves all 17 available samples, including the unmatched ninth baseline.
+The earlier five-pair comparison remains the last completed acceptance review;
+no ten-pair conclusion or selective favorable-pair comparison is asserted.
+Component arithmetic savings alone did not justify retaining E12.
+
+Final formatting and diff checks passed after reverting the provisional patches.
+The full combined feature/FFI, adversarial, SQL and restart matrix was not rerun
+at closeout. Final all-direction Bark Lightning, BDK on-chain and ecash regtest
+verification, combined comparison against the original baseline, sustained-load,
+network/history scaling and two final profiling passes remain incomplete.
+Earlier scoped evidence remains valid within its documented scope; it does not
+establish those missing final gates or a combined system speedup.

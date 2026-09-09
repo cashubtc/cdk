@@ -1,6 +1,6 @@
 # Federation performance optimization journal
 
-Status: in progress. See the [plan](bls-federation-performance-plan-2026-09-08.md)
+Status: closed at user request on September 9; full campaign acceptance incomplete. See the [plan](bls-federation-performance-plan-2026-09-08.md)
 and [report](bls-federation-performance-report-2026-09-08.md).
 
 Only anonymized aggregates and repository-relative commands belong here. Raw
@@ -5254,3 +5254,35 @@ Between series, the pinned `nix develop .#stable --command cargo fmt --all --
 --check` completed successfully. The review/export commands also completed
 successfully; private logs and the first-five source/artifact fingerprints remain
 preserved. Only evidence is committed at this point.
+
+
+## September 9 — bounded closeout at user request
+
+- Decision: stop extending the campaign. Keep previously accepted commits; revert
+  E12 public interpolation and E07 session replay cursor because acceptance is
+  unresolved. Save exact patches privately before applying their reverse diffs.
+- Source: retained HEAD `71d57b437`; Bark pin unchanged. After reversal there are
+  no provisional production changes. Reusable benchmark support is retained.
+- E12 extension: 17 completed and audited arms (eight pairs plus ninth baseline),
+  4,352 receipts. Export every available scalar metric to the closeout CSV, with
+  pair/arm/order preserved. Do not recompute an acceptance decision on an
+  opportunistically truncated series. Original first-five ledgers remain intact.
+- Interrupted ninth candidate: measurement/result and SDK/results are absent.
+  All original recipient databases nevertheless contain the completed receipts.
+  A read-only adaptation of the identity audit (without completed-measurement
+  prerequisites) verified 256 recipients, 3,072 unique notes, exact 8,192 sat,
+  no spendable bank notes, disjoint spent inputs, identical original spent sets
+  on all five members and 269 journal entries per member. This is receipt
+  reconciliation, not a recovered timing sample or complete runtime digest audit.
+- Shutdown: the existing bounded owned-fixture shutdown helper exited zero;
+  process inspection found no campaign mint, payment driver or fee proxy.
+  Preserve all custody, recipient and backend state. Do not rerun one-shot helpers.
+- Checks: `git diff --check` passed. `nix develop .#stable --command cargo fmt
+  --all -- --check` passed (existing stable-rustfmt option warnings). The first
+  sandboxed Nix invocation could not open its cache lock; the authorized retry
+  succeeded. No new heavy test suite was started at closeout.
+- Instrumentation: no temporary production probes retained. Candidate patches,
+  interrupted-run audit and raw extended records remain private and ignored.
+- Delivery limitation: this closes investigation at the user's deadline; it does
+  not satisfy the original full campaign completion criteria. See the report's
+  closeout section for missing combined correctness and performance gates.
