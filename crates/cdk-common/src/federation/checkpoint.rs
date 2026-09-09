@@ -1227,11 +1227,35 @@ impl FederationCheckpoint {
 
     /// Validate payload structure and bindings against an already-validated config.
     pub fn validate_against_validated_config(&self, config: &FederationConfig) -> Result<()> {
+        self.validate_config_binding(config, || config.config_digest_for_validated_config())
+    }
+
+    /// Validate against an already-validated config and its locally cached digest.
+    ///
+    /// The expected digest must belong to this exact immutable config, computed
+    /// when its trusted owner validated it. Never use a checkpoint's or peer's
+    /// claimed digest as the expected value.
+    pub fn validate_against_validated_config_with_digest(
+        &self,
+        config: &FederationConfig,
+        expected_digest: FederationConfigDigest,
+    ) -> Result<()> {
+        self.validate_config_binding(config, || Ok(expected_digest))
+    }
+
+    fn validate_config_binding<F>(
+        &self,
+        config: &FederationConfig,
+        expected_digest: F,
+    ) -> Result<()>
+    where
+        F: FnOnce() -> Result<FederationConfigDigest>,
+    {
         self.validate_shape()?;
         if self.federation_id != config.federation_id {
             return Err(checkpoint_invalid("federation id mismatch"));
         }
-        if self.federation_config_digest != config.config_digest_for_validated_config()? {
+        if self.federation_config_digest != expected_digest()? {
             return Err(checkpoint_invalid("federation config digest mismatch"));
         }
 
@@ -2519,6 +2543,56 @@ mod tests {
             Err(FederationError::CheckpointInvalid { reason })
                 if reason == "next-unit watermarks do not match the configured federation roster"
         ));
+    }
+
+    #[test]
+    fn cached_config_digest_preserves_checkpoint_validation() {
+        let (config, _) = configs();
+        let original = checkpoint(&config);
+        let expected_digest = config.config_digest().expect("local config digest");
+        original
+            .validate_against_validated_config_with_digest(&config, expected_digest)
+            .expect("same trusted config and digest");
+
+        let mut invalid = Vec::new();
+        let mut wrong_version = original.clone();
+        wrong_version.version = 0;
+        invalid.push(wrong_version);
+        let mut wrong_federation = original.clone();
+        wrong_federation.federation_id = FederationId::from_bytes([91; 32]);
+        invalid.push(wrong_federation);
+        let mut wrong_digest = original.clone();
+        wrong_digest.federation_config_digest = FederationConfigDigest::from_bytes([92; 32]);
+        invalid.push(wrong_digest);
+        let mut missing_member = original.clone();
+        missing_member
+            .next_unit_index_by_member
+            .remove(&member_id(4));
+        invalid.push(missing_member);
+        let mut unknown_member = original.clone();
+        unknown_member
+            .next_unit_index_by_member
+            .remove(&member_id(4));
+        unknown_member
+            .next_unit_index_by_member
+            .insert(member_id(9), 0);
+        invalid.push(unknown_member);
+
+        for candidate in invalid {
+            let original_error = candidate
+                .validate_against_validated_config(&config)
+                .expect_err("invalid checkpoint");
+            let cached_error = candidate
+                .validate_against_validated_config_with_digest(&config, expected_digest)
+                .expect_err("cached digest must not bypass validation");
+            assert_eq!(cached_error.to_string(), original_error.to_string());
+        }
+        assert!(original
+            .validate_against_validated_config_with_digest(
+                &config,
+                FederationConfigDigest::from_bytes([93; 32]),
+            )
+            .is_err());
     }
 
     #[test]

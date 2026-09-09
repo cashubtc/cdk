@@ -18,11 +18,11 @@ use crate::{
 use cdk::federation::{
     FederationAlephBftUnitPayload, FederationApplicationState, FederationCheckpoint,
     FederationCheckpointBoundary, FederationCheckpointQuorum, FederationCheckpointSignature,
-    FederationCheckpointSummary, FederationConfig, FederationConsensusRuntimeStatus,
-    FederationError, FederationJournalEntry, FederationMaterializedStateDigest,
-    FederationOperationId, FederationOperationStatus, MemberConfigPublic, MemberId,
+    FederationCheckpointSummary, FederationConsensusRuntimeStatus, FederationError,
+    FederationJournalEntry, FederationMaterializedStateDigest, FederationOperationId,
+    FederationOperationStatus, MemberConfigPublic, MemberId,
 };
-use cdk::mint::Mint;
+use cdk::mint::{FederationRuntimeConfig, Mint};
 
 /// Required handles shared by setup and active member operation.
 #[derive(Clone)]
@@ -330,19 +330,22 @@ pub(super) fn verify_checkpoint_signature_with_metrics(
 
 pub(super) fn checkpoint_summary(
     checkpoint: &FederationCheckpoint,
-    config: &FederationConfig,
+    runtime_config: &FederationRuntimeConfig,
 ) -> Result<FederationCheckpointSummary, cdk::Error> {
-    checkpoint.validate_against_validated_config(config)?;
+    checkpoint.validate_against_validated_config_with_digest(
+        runtime_config.public_config(),
+        runtime_config.config_digest(),
+    )?;
     Ok(FederationCheckpointSummary::from_checkpoint(checkpoint)?)
 }
 
 pub(super) fn stored_checkpoint_quorum_summary(
     quorum: &FederationCheckpointQuorum,
-    config: &FederationConfig,
+    runtime_config: &FederationRuntimeConfig,
 ) -> Result<FederationCheckpointSummary, cdk::Error> {
     // This is presentation-only metadata. Stored proofs are verified at startup or ingress, and
     // a peer must verify the full proof after fetching it before making any safety decision.
-    checkpoint_summary(&quorum.checkpoint, config)
+    checkpoint_summary(&quorum.checkpoint, runtime_config)
 }
 
 pub(super) fn checkpoint_matches_boundary(

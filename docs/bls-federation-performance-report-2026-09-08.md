@@ -1,6 +1,6 @@
 # Federation performance optimization report
 
-Status: closed at user request on September 9; full campaign acceptance incomplete. Two DKG arithmetic changes, dispatched/queued recovery-barrier
+Status: original campaign closed; targeted digest/collector follow-up is in progress. Full campaign acceptance remains incomplete. Two DKG arithmetic changes, dispatched/queued recovery-barrier
 cleanup, the disclosed-claim recovery correction, and accepted-state broadcaster
 notifications are retained. The incoming
 collector was reverted after ten matched pairs because its CPU/receipt guard
@@ -28,7 +28,7 @@ Evidence and decisions: [experiment journal](bls-federation-performance-journal-
 | Session-scoped replay cursor (E07) | Reverted at closeout | Quorum/recovery tests and original-state recovery with five BDK outgoing receipts; matched performance acceptance remains open |
 | One final exponentiation per BLS batch (E11) | Reverted | Ten real ecash pairs: 11.31% lower SDK CPU and 2.32% lower combined execution CPU, but p95 guard remained inconclusive |
 | Stable incoming evidence collector | Reverted | Ten-pair CPU/receipt guard remained inconclusive despite more window completions |
-| Cached checkpoint digest in summaries | Reverted | Component work reduction and ten-pair idle CPU benefit; memory guard remained inconclusive |
+| Configuration digest reuse in checkpoint summaries | Retained with approved RSS exception | Current ten-pair CPU/instruction benefit and physical-footprint guard pass; RSS remains inconclusive |
 
 These retained changes have their documented local gates; they do not constitute
 final campaign acceptance. The full workload matrix, combined comparison against
@@ -843,3 +843,52 @@ verification, combined comparison against the original baseline, sustained-load,
 network/history scaling and two final profiling passes remain incomplete.
 Earlier scoped evidence remains valid within its documented scope; it does not
 establish those missing final gates or a combined system speedup.
+
+
+## September 9 targeted digest reconsideration
+
+The implementation reuses the immutable configuration digest already held by
+`FederationRuntimeConfig`; it adds no stored field or mutable cache. Checkpoint
+shape, federation binding, digest binding and roster checks remain in place.
+Current-source checkpoint/recovery tests, minimal federation tests, standalone
+common compilation, scoped strict lint and formatting passed.
+
+Ten alternating pairs used independently prepared five-member HTTP/SQLite
+federations, matched backend inputs and release binaries on base `197fef899`.
+Each arm had empty payment history, a 60-second warmup, five seconds after
+status inspection, and a 180-second idle window. All twenty state guards and
+shutdowns passed; backup sizes and response-cache state were stable. The final
+read-only audit verified 100 member databases, stopped owned containers, unchanged
+first-five records/helper hashes, and exact candidate source identity.
+
+| Metric | Candidate/baseline | Run-level 95% CI | Result |
+| --- | ---: | --- | --- |
+| Idle CPU | 0.57453 | 0.54104–0.61008 | 42.55% lower |
+| Instructions | 0.21890 | 0.21749–0.22032 | 78.11% lower |
+| Peak RSS | 1.02883 | 0.91638–1.15507 | Inconclusive guard |
+| Peak physical footprint | 1.01269 | 0.98767–1.03833 | Within 5% guard |
+| Last-third physical footprint | 1.02603 | 1.00696–1.04545 | Within 5% guard |
+
+Arithmetic mean aggregate idle CPU was 6.672 → 3.839 seconds per three-minute
+window. Mean peak physical footprint was 119.54 → 121.04 MB across five members
+(about 0.30 MB more per member). These arithmetic means differ from the paired
+geometric ratios above. Candidate physical footprint increased by at most
+0.286 MB across all five members between the first and last thirds of a window;
+this is an observed interval, not a universal memory bound. Package wakeups remain
+inconclusive; no energy or payment-throughput gain is claimed.
+
+**The original acceptance rule still does not pass:** RSS uncertainty allows an
+increase above 5% after ten pairs. Physical footprint does pass, and the source
+adds no retained cache state, but these facts do not turn the RSS result into a
+passing guard. The user explicitly approved an RSS-only exception on September 9. Retain this
+measured CPU improvement with that limitation recorded; the original RSS guard
+remains inconclusive. This exception does not waive physical-footprint or
+correctness gates and does not apply to other experiments.
+
+The [twenty-run ledger](benchmarks/2026-09-09-checkpoint-digest-reconsider-10-pairs-runs.csv)
+and [preserved five-pair ledger](benchmarks/2026-09-09-checkpoint-digest-reconsider-5-pairs-runs.csv)
+include every fresh result. Earlier sequential-restart designs were rejected
+because replay state grew between arms; an older baseline also lost session
+convergence. Their [diagnostic observations](benchmarks/2026-09-09-checkpoint-digest-rejected-designs.csv)
+remain available and are excluded from acceptance. Two setup failures produced
+no measurement. All original custody and backend state is preserved.

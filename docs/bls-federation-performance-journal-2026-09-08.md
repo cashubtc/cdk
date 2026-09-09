@@ -1,6 +1,6 @@
 # Federation performance optimization journal
 
-Status: closed at user request on September 9; full campaign acceptance incomplete. See the [plan](bls-federation-performance-plan-2026-09-08.md)
+Status: original campaign closed; targeted digest/collector reconsideration is in progress. Full campaign acceptance remains incomplete. See the [plan](bls-federation-performance-plan-2026-09-08.md)
 and [report](bls-federation-performance-report-2026-09-08.md).
 
 Only anonymized aggregates and repository-relative commands belong here. Raw
@@ -5286,3 +5286,127 @@ preserved. Only evidence is committed at this point.
 - Delivery limitation: this closes investigation at the user's deadline; it does
   not satisfy the original full campaign completion criteria. See the report's
   closeout section for missing combined correctness and performance gates.
+
+
+## September 9 — authorized targeted reconsideration, digest reuse first
+
+The user authorized reconsidering E05 and the incoming collector sequentially,
+committing each only after confirming its benefit. This does not reopen the full
+campaign. E05's new question is memory behavior on the same settled original
+state across sequential baseline/candidate restarts, avoiding independently
+generated fixture variation. The implementation reuses the existing immutable
+`FederationRuntimeConfig` digest: no new cache, allocation or stored field.
+Preserve checkpoint shape, federation, digest and member binding checks.
+
+Before measurement: run current-source checkpoint/recovery/standalone checks and
+freeze release binaries on the same retained base. Use five alternating matched
+pairs, a fixed 60-second warmup and a 180-second idle observation, with no other
+heavy work. Primary metrics are aggregate CPU and instructions; retain the 5%
+RSS/physical-footprint regression guard. Report memory over the full window and
+its first/last thirds to expose growth. Preserve original fixture identities and
+state; never clone or replay payment initiation. The earlier ten-pair results
+remain unchanged. If guards are inconclusive, do not claim acceptance.
+
+Current-source validation passed: common checkpoint 15, full-feature Axum
+checkpoint 43 (two manual benchmarks ignored), recovery 46 (one overlapping
+manual benchmark ignored), minimal federation checkpoint 39; counts overlap.
+Common and Axum strict lib/test Clippy, standalone common compilation and
+formatting passed. Commands match the earlier scoped validation with current
+source and pinned Nix stable, `RUST_MIN_STACK=16777216`. An initial idle compiler
+was terminated and the complete retry passed; both attempts remain private.
+No benchmark overlapped validation or release compilation.
+
+The first fixed-state series aborted on pair 2 baseline: a member advanced its
+AlephBFT session while peers remained in the prior session. The end-of-window
+convergence guard failed; no acceptance statistics are computed from this
+incomplete series. Preserve all three completed records and the failed arm's
+resource trace. Pair 1 alone showed 43.15% lower idle CPU, but higher candidate
+memory; it is not acceptance evidence. All owned services stopped cleanly.
+
+Before further measurement, select a newer settled ecash fixture whose original
+269 operations and 8,192 paid/issued sat agree on all five members. Repeat the
+same frozen five-pair, 60-second warmup/180-second idle recipe under a new series
+identifier, changing only fixture/history and its required fixed-fee RPC proxy.
+Use the same immutable binaries. Preserve all existing wallets and original
+backend state; create no new payment, clone no custody, and do not repair the
+older fixture by changing database contents or adding unrelated runtime fixes.
+
+The newer fixture's first setup failed before measurement: the helper started
+the fixed-fee proxy before Bitcoin readiness, and its upstream check failed.
+The controller was interrupted through its cleanup handler; owned services
+stopped and the original binary link was restored. The corrected helper starts
+the proxy after backend readiness, records a separate retry directory, and
+retains the same binaries, warmup, duration, sampling and guards. No payment was
+initiated or retried, and no performance sample exists for the failed setup.
+
+The restarted-fixture approach is rejected as an acceptance design. Inspection
+of retained status records showed member one's backup growing from 2,403 chunks
+(1,211,235 bytes) before the first baseline to 7,970 chunks (1,940,512 bytes)
+before the third candidate despite unchanged payment history. The first baseline
+also had 14 response-cache entries versus zero subsequently. These inputs were
+not controlled by the original projection-only guard. Stop through bounded
+cleanup, preserve every record and do not compute acceptance from this series.
+The apparent CPU reductions remain diagnostic observations, not a retained win.
+
+Use the established independent fresh-fixture recipe instead: fresh five-member
+DKG and empty payment history per arm, matched backend economics and policies,
+60-second warmup plus five seconds after status, and 180-second idle observation.
+Reuse frozen current-source binaries and original startup helpers. Record initial
+and final backup sizes in addition to memory thirds. No persisted custody is
+cloned or reset. Five alternating pairs; original ten-pair evidence is untouched.
+The private harness watchdog is adjusted for the longer observation duration;
+no production timeout, payment timeout, queue or consensus policy changes.
+
+### Fresh reconsideration: five pairs completed, extend unchanged
+
+Ten independent fresh arms completed with matching semantic inputs, unchanged
+backup sizes within every observation, stable checkpoint/payment state and
+bounded shutdown. Source files still match the frozen candidate. Relative to
+retained base `197fef899`, idle CPU ratio is 0.57200 (95% CI 0.51965–0.62962):
+42.80% lower CPU. Instructions ratio is 0.21995 (0.21761–0.22231): 78.01% lower.
+Peak RSS ratio is 0.93051 (0.79686–1.08659); physical footprint ratio is 1.01378
+(0.95259–1.07889). Thus both memory guards are inconclusive despite no confirmed
+regression. Package wakeups are inconclusive; interrupt wakeups are similar.
+Do not discard the fifth pair's lower candidate RSS or higher baseline physical
+peak. No memory-growth claim follows from those differences.
+
+Preserve all ten rows in the five-pair CSV and the original raw records. Extend
+the exact fresh-fixture recipe to pairs 6–10, with unchanged binaries, helper
+hashes, windows and guards. No implementation is accepted or committed yet.
+
+### Fresh reconsideration: ten-pair result and retention boundary
+
+`run_e05r_fresh_pairs.py --first 6 --last 10` completed and stopped every owned
+fixture. `review_e05r_fresh.py --pairs 10` preserved every row and returned:
+CPU ratio 0.574526 (95% CI 0.541044–0.610080), instructions 0.218896
+(0.217485–0.220317), RSS 1.028829 (0.916384–1.155073), physical footprint
+1.012685 (0.987671–1.038334). Physical memory passes the 5% guard; RSS does not.
+No confirmed RSS regression is established. No sample or outlier is removed.
+
+`audit_e05r_final.py` passed: all 20 observations stable, all 100 member databases
+preserve zero accepted payment operations/quotes, owned containers stopped,
+source matches the frozen candidate, helper hashes unchanged and first-five raw
+records unchanged. Response-cache entries remain zero; backup sizes are unchanged
+within every window. The largest observed candidate first-to-last-third physical
+footprint increase is 286,063 bytes across five members. No production probe,
+new state field, mutable cache, wire change or dependency override was introduced.
+`git diff --check` passed. Earlier rejected designs and the session-divergence
+window are exported separately; the interrupted partial window has no complete
+sample. None enters the fresh-series comparison.
+
+Decision boundary: implementation and scoped validation are complete, but the
+original rule requires removal after an inconclusive ten-pair guard. Keeping
+the measured CPU win requires an explicit exception for RSS; physical-footprint
+and correctness gates are not being waived. Candidate remains uncommitted while
+that retention decision is resolved. The Bark collector is still pending.
+
+
+### Digest retention approved
+
+The user explicitly approved the pending RSS-only exception on September 9.
+Keep the tested digest reuse and all twenty fresh measurements. The original
+RSS guard remains inconclusive; no statistical method, sample selection or
+acceptance result is changed. Physical-footprint and scoped correctness gates
+passed and remain mandatory. Commit this isolated optimization before modifying
+the Bark collector. The exception does not extend to the collector or any other
+experiment.

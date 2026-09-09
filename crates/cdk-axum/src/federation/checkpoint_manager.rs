@@ -544,34 +544,33 @@ impl FederationNodeRuntime {
         let runtime_config = mint
             .federation_config()
             .ok_or_else(|| runtime_unavailable("mint configuration"))?;
-        let public_config = runtime_config.public_config();
         let db = mint.localstore();
 
         let latest_scheduled_candidate = db
             .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
             .await?
-            .map(|checkpoint| checkpoint_summary(&checkpoint, public_config))
+            .map(|checkpoint| checkpoint_summary(&checkpoint, runtime_config))
             .transpose()?;
         let latest_recovery_candidate = db
             .get_latest_federation_checkpoint(FederationCheckpointKind::Recovery)
             .await?
-            .map(|checkpoint| checkpoint_summary(&checkpoint, public_config))
+            .map(|checkpoint| checkpoint_summary(&checkpoint, runtime_config))
             .transpose()?;
         let latest_scheduled_quorum = db
             .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
             .await?
-            .map(|quorum| stored_checkpoint_quorum_summary(&quorum, public_config))
+            .map(|quorum| stored_checkpoint_quorum_summary(&quorum, runtime_config))
             .transpose()?;
         let latest_recovery_quorum = db
             .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Recovery)
             .await?
-            .map(|quorum| stored_checkpoint_quorum_summary(&quorum, public_config))
+            .map(|quorum| stored_checkpoint_quorum_summary(&quorum, runtime_config))
             .transpose()?;
         let next_scheduled_quorum = match next_scheduled_quorum_after {
             Some(sequence) => db
                 .get_next_federation_scheduled_checkpoint_quorum(sequence)
                 .await?
-                .map(|quorum| stored_checkpoint_quorum_summary(&quorum, public_config))
+                .map(|quorum| stored_checkpoint_quorum_summary(&quorum, runtime_config))
                 .transpose()?,
             None => None,
         };

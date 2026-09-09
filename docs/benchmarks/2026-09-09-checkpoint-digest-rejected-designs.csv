@@ -1,0 +1,12 @@
+series,pair,arm,outcome,idle_cpu_seconds,peak_aggregate_rss_bytes,peak_aggregate_physical_footprint_bytes
+older_restart,1,baseline,confounded_completed,13.162655457,575389696,281465320
+older_restart,1,candidate,confounded_completed,7.482588291,602226688,315511392
+older_restart,2,candidate,confounded_completed,7.817343585,676462592,434950872
+newer_restart,1,baseline,confounded_completed,12.073194165,578945024,222188104
+newer_restart,1,candidate,confounded_completed,8.058635625,541851648,244437504
+newer_restart,2,candidate,confounded_completed,7.375920585,575242240,262771296
+newer_restart,2,baseline,confounded_completed,11.315444544,569442304,258855448
+newer_restart,3,baseline,confounded_completed,10.283781832999999,611942400,291738136
+newer_restart,3,candidate,confounded_completed,6.766771082,650887168,324620944
+older_restart,2,baseline,session_divergence,9.686036623,725417984,371511976
+newer_restart,4,candidate,interrupted_no_complete_sample,,,
