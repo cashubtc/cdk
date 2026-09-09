@@ -4397,3 +4397,116 @@ python3 "$RUN_ROOT/profile_primary_ecash.py"
 This command is prespecified and not yet run. Private source snapshots accompany
 the diagnostic manifest. Preserve all failures and original state; audit receipts
 and stop owned services before any subsequent build or matched comparison.
+
+### Ecash profiling setup attempt one: proxy startup order failure
+
+The diagnostic failed before token packaging or measurement. The fixed-fee proxy
+checks its upstream chain when starting; launching it while the original Bitcoin
+backend was still stopped made that preflight fail. Member startup subsequently
+failed opening Bark wallets through the absent proxy. This is a controller startup
+order error, not an ecash performance result or recovery comparison.
+
+The controller exited nonzero after bounded cleanup. An independent read-only
+check confirms every original member journal/payment/proof record and all 65
+original wallet proof/transaction records are unchanged. No new tokens were
+packaged, no new payment began, and all owned members/backends are stopped. The
+failed source snapshots, proxy/startup logs and audit remain private and excluded
+from timings.
+
+The second one-shot attempt uses separate output directories and verifies the
+original Bitcoin backend first, then the proxy's unchanged 2-sat/vB estimate,
+before starting other backends and members. It still requires unchanged original
+financial state before token packaging. The proxy remains owned by the live
+profiling controller throughout the run; no original state or failure record is
+replaced. This corrected command has not yet run.
+
+### Ecash profiling setup attempt two: extra CLI output after successful packaging
+
+Corrected backend/proxy startup and original-state restart verification passed.
+The offline send command completed successfully, but the controller expected every
+stdout line to be a token. The CLI first reported recovery of 64 prior operations,
+with zero compensated, skipped or failed operations, then printed the 64 tokens.
+The strict line-count assertion stopped the controller before SDK preparation or
+submission. Preserve the original output and failure; this is not a payment or
+performance failure.
+
+Read-only audit confirms 64 unique new tokens, disjoint from the previous batch,
+and unchanged member state at 77 operations with 64 spent proofs worth 2,048 sat.
+All prior recipient wallets remain unchanged. The original sender now holds
+4,096 unspent sat, 2,048 sat in the newly packaged pending proofs, and 2,048 sat
+marked spent after normal CLI recovery of the prior sends. All owned services
+were stopped and no new SDK state exists.
+
+The next continuation consumes these exact saved tokens once; it does not repeat
+packaging or funding. It accepts only the verified recovery-summary line alongside
+the 64 token lines, retains the original stdout, and records its hash. Startup
+compares the current original wallet/member state, including the legitimate
+packaging/recovery changes, before any submission. Separate attempt directories
+preserve both failures and the original successful restart evidence.
+
+### Ecash profile continuation: receipts, profiles and cleanup passed
+
+The third attempt resumed the original fixture with its already packaged tokens,
+without another send or deposit. Original-state comparison passed before
+submission. All 64 new receives completed, all five members agree on the same
+141-operation journal, all old/new recipient proof shapes match, and exact
+**8,192 = 4,096 bank + 2,048 prior recipients + 2,048 new recipients** conservation
+passes. Both ten-second native profiles completed successfully. Owned members,
+backends and the controller-owned proxy are stopped; original state and all three
+attempts remain preserved.
+
+SDK preparation consumed 1.099030541 CPU seconds. SDK execution through process
+exit consumed 3.123889459 CPU seconds after subtracting that pre-start cumulative
+CPU; member execution through SDK exit consumed 22.526005667 CPU seconds. These
+include diagnostic tracing/sampling and the fixed 60-second observation window,
+so they are neither an acceptance comparison nor active-only CPU. Process-exit
+scope includes SDK result persistence. Do not add concurrent stage spans to obtain
+CPU or end-to-end wall time.
+
+The [wallet-stage ledger](benchmarks/2026-09-08-ecash-profile-wallet-stages.csv)
+records 64 input-proof verification calls, 192 successful twelve-share batch
+verification calls, and 64 twelve-output aggregations. The configured signing
+threshold is three, while the independent consensus threshold is four. Thus
+2,304 member shares were verified and 768 outputs aggregated. No scalar fallback
+was observed. Summed stage durations are 0.124417085 / 1.641902839 / 0.492543127
+seconds respectively; share batch p50 is 8.505667 ms and aggregation p50 is
+7.632792 ms. These sums describe measured stage work across concurrent requests,
+not a wall-time breakdown.
+
+Both SDK and member stack samples show BLS field multiplication/squaring and
+curve arithmetic as leading sampled computation. Blocked-thread frames are also
+present and must not be counted as CPU work. Keyset cloning does not appear as a
+dominant cost in this sample: defer that source-only hypothesis. Aggregation cost
+is measurable, but this profile does not isolate coefficient recomputation;
+retain that attribution question rather than implementing a cache speculatively.
+
+### E11 proposed experiment: one final exponentiation per batch equation
+
+The supported next target is BLS batch pairing verification in federation-gated
+`cashu`. Both proof and blinded-share batch functions already combine messages
+by identical public key, but then call the full pairing operation separately for
+the signature term and each grouped message term. With four denomination keys,
+that performs five final exponentiations for one equality check. Test whether the
+pinned library's `multi_miller_loop` can evaluate the same signed pairing product
+with **one** final exponentiation. Preserve every transcript-derived weight,
+input/group validation, key grouping, signer check and fallback decision.
+
+The measured share-verification stage and sampled BLS arithmetic establish the
+owning cost. Expected counter change is final exponentiations from K+1 to one for
+K distinct public keys, with identical verified results; this is a hypothesis,
+not yet a measured saving. The library requires its allocation feature for
+prepared G2 terms, so allocation/RSS are explicit guards. No long-lived cache,
+wire change, public wallet API change or altered cryptographic construction is
+proposed. Reuse one private arithmetic helper for the two existing batch paths
+if the experiment is retained.
+
+Before production editing, add/reuse bounded release benchmark fixtures for a
+single input, the observed twelve-output/four-key shape, and larger fragmented
+batches. Keep fixture generation outside timing. Record five alternating
+baseline/candidate pairs of latency, CPU and work counts; extend inconclusive
+results to ten and revert if still inconclusive. Check malformed lengths, empty
+batches, invalid/mixed shares, signer mismatches and unchanged deterministic
+weight vectors, plus standalone isolation and scoped strict lint. A component
+result alone will not close runtime acceptance: repeat matched real ecash
+measurements and relevant correctness/recovery gates before accepting code.
+No E11 production edit or benchmark has run yet.

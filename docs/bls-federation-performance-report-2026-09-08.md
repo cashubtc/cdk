@@ -625,3 +625,26 @@ shortens the finite burst while increasing the observed tail and c64 memory use;
 there is no sustained-load or repeatability claim. Separate SDK/member profiling
 is next. Shared-wallet, open-loop, transport/network/history scaling and the
 original-baseline comparison remain open.
+
+### Ecash profiling: BLS computation is the next supported target
+
+A separate traced/sampled four-way diagnostic completed 64 more real receives
+after original-state restart verification. All old/new recipients and member
+journals reconcile exactly: 8,192 sat = 4,096 bank + 2,048 prior recipients +
+2,048 new recipients, at 141 accepted operations. Both profiles completed and all
+owned services stopped. Two earlier controller setup failures are preserved;
+neither submitted a token or contributes performance timing.
+
+The [stage ledger](benchmarks/2026-09-08-ecash-profile-wallet-stages.csv) records
+192 successful twelve-share verification batches and 64 twelve-output aggregations,
+with p50 stage durations of 8.506 ms and 7.633 ms respectively. Stack samples point
+to BLS field/curve arithmetic; keyset cloning is not established as dominant.
+SDK execution-through-exit CPU was 3.12389 seconds after excluding preparation;
+member CPU was 22.52601 seconds over the profile-enabled observation envelope.
+These diagnostics are not comparable acceptance timings, and overlapping stage
+spans are not a CPU/wall-time breakdown.
+
+E11 will test combining the existing batch pairing equality into one multi-pairing
+final exponentiation, while retaining identical weights, validations and results.
+Prepared-point allocation and memory are explicit guards. The experiment is
+proposed, with no production change or accepted performance claim yet.
