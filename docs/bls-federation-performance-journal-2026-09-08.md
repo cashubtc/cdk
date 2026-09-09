@@ -4876,3 +4876,62 @@ No production or benchmark source changed for this attribution. Raw profiles,
 addresses, machine metadata and the parsing ledger remain outside Git. E11's
 unchanged ten-pair extension is still running; no further arithmetic candidate
 has been implemented or accepted.
+
+### E11 ten real ecash pairs: CPU gains; revert under the latency guard
+
+The unchanged extension completed normally. All twenty runs passed receipt,
+member-digest, queue, idle and bounded-shutdown audits. The separate read-only
+identity audit then verified all 1,280 original receipts: each run has 960 unique
+spendable notes totaling 8,192 sat, disjoint from its 64 original spent inputs.
+Every member's spent set matches those inputs exactly. No payment was resubmitted,
+no custody was copied, and all original databases and artifacts are preserved.
+
+```sh
+python3 "$RUN_ROOT/review_e11_ecash.py" --pairs 10
+python3 "$RUN_ROOT/audit_e11_unique_receipts.py" --pairs 10
+python3 "$RUN_ROOT/export_e11_ecash_evidence.py" --pairs 10
+```
+
+All three commands completed successfully. The prescribed review returned
+`revert_inconclusive`:
+
+| Metric | Candidate/baseline ratio | Run-level 95% CI |
+| --- | ---: | --- |
+| SDK CPU per receipt | 0.88694 | 0.87855–0.89540 |
+| Combined execution CPU per receipt | 0.97676 | 0.96285–0.99087 |
+| p50 receipt latency | 1.00168 | 0.95080–1.05529 |
+| p95 receipt latency | 1.01460 | 0.96143–1.07070 |
+| SDK peak RSS | 1.00744 | 1.00521–1.00967 |
+| SDK peak physical footprint | 1.00811 | 1.00484–1.01139 |
+
+The SDK CPU reduction is 11.31%; the combined execution-envelope CPU reduction
+is 2.32%. All CPU/memory guards pass; the conservative member active-CPU guard
+interval is 0.98384–1.01983. Idle CPU has no reproducible increase (interval
+0.79611–1.06817). However, p95's upper bound still permits a 7.07% regression.
+This is inconclusive, not a confirmed regression, and does not meet retention.
+No samples, workload parameters or acceptance criteria were changed to obtain
+a different decision. No sustainable-throughput, idle-benefit or p99 claim follows.
+
+Restored only `crates/cashu/Cargo.toml` and
+`crates/cashu/src/nuts/nut01/bls.rs` to the measured baseline. Before writing,
+checked both current file hashes against the frozen candidate, the complete diff
+against its preserved patch, and both HEAD blobs against the baseline hashes.
+After writing, their Git diff is empty. The candidate patch and restoration
+ledger remain private. The unrelated provisional E07 files are unchanged.
+No temporary production probe was introduced by E11; reusable benchmark support
+remains. Candidate-only runtime/FFI/restart follow-up checks were not launched
+after rejection. The full campaign still requires its final correctness and
+payment gates.
+
+The [complete runs](benchmarks/2026-09-08-e11-ecash-10-pairs-runs.csv),
+[complete requests](benchmarks/2026-09-08-e11-ecash-10-pairs-requests.csv) and
+[comparison](benchmarks/2026-09-08-e11-ecash-10-pairs-comparison.csv) contain all
+twenty runs and 1,280 receipts. The original five-pair evidence remains intact.
+The next aggregation benchmark and bounded public-signer diagnostic are private,
+unapplied drafts; neither has been compiled, measured or accepted.
+
+Post-restoration checks: pinned stable `cargo fmt --all` exited zero (with the
+existing unsupported-nightly-setting warnings), `git diff --check` passed, and
+the CSV audit confirmed 20 run rows, 1,280 request rows and 26 comparison rows,
+with LF endings and no identifying paths, network addresses, credentials or
+tokens. Both restored Cashu files still match the frozen baseline hashes.

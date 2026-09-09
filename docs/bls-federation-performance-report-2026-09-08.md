@@ -8,8 +8,8 @@ remained inconclusive. Checkpoint-summary digest reuse was also reverted after
 ten idle pairs: CPU and instruction savings were clear, but memory intervals
 still permitted regressions above 5%. These are inconclusive guard results,
 not confirmed regressions. Proposal wakeup (E10) was also reverted under the
-ten-pair rule. E11 BLS batch arithmetic remains provisional: five real ecash
-pairs show lower SDK CPU, but the latency guard requires extension to ten pairs.
+ten-pair rule. E11 BLS batch arithmetic was reverted after ten real ecash pairs:
+SDK and combined CPU improved, but the p95 latency guard remained inconclusive.
 Final campaign and combined-candidate payment/performance acceptance remain pending.
 
 Baseline: CDK `8e507cdf8`, Bark `8d1eda643dd11e9eb600ec44e36622c8f77b6322`.
@@ -26,7 +26,7 @@ Evidence and decisions: [experiment journal](bls-federation-performance-journal-
 | Broadcaster notifications | Retained: `9aa2ae395` | Renewed five-pair retained-code comparison: lower serial BDK latency/CPU, 50 receipts, scoped correctness and candidate restart; earlier invalid series remain excluded |
 | Proposal wakeup (E10) | Reverted | Ten pairs and 100 receipts; median benefit, but p95/CPU guards remained inconclusive |
 | Session-scoped replay cursor (E07) | Provisional | Quorum/recovery tests and original-state recovery with five BDK outgoing receipts; matched performance acceptance remains open |
-| One final exponentiation per BLS batch (E11) | Provisional | Ten component pairs pass; five real ecash pairs show 10.81% lower SDK CPU, with p95 guard inconclusive; unchanged ten-pair extension running |
+| One final exponentiation per BLS batch (E11) | Reverted | Ten real ecash pairs: 11.31% lower SDK CPU and 2.32% lower combined execution CPU, but p95 guard remained inconclusive |
 | Stable incoming evidence collector | Reverted | Ten-pair CPU/receipt guard remained inconclusive despite more window completions |
 | Cached checkpoint digest in summaries | Reverted | Component work reduction and ten-pair idle CPU benefit; memory guard remained inconclusive |
 
@@ -44,7 +44,7 @@ remain outstanding.
 | Bark Lightning send | Pending | Pending | Unmeasured |
 | BDK on-chain receive | Pending | Pending | Unmeasured |
 | BDK on-chain send, five-member HTTP/SQLite serial | Mean per-run p50 36.572 s; CPU/payment 4.795 s | Mean per-run p50 19.909 s; CPU/payment 3.808 s | Broadcaster notification retained; scaling, sustainable throughput and original-baseline comparison pending |
-| Ecash receive, five-member HTTP/SQLite, independent wallets at concurrency four | SDK CPU/receipt 48.945 ms; mean per-run p95 1.333 s | SDK CPU/receipt 43.657 ms; mean per-run p95 1.325 s | Provisional E11; five-pair latency guard inconclusive, extension running; finite burst only |
+| Ecash receive, five-member HTTP/SQLite, independent wallets at concurrency four | SDK CPU/receipt 49.030 ms; mean per-run p95 1.322 s | SDK CPU/receipt 43.488 ms; mean per-run p95 1.340 s | E11 reverted after ten pairs: latency guard inconclusive; finite burst only |
 | Ecash offline preparation and sender swap | Pending | Pending | Preparation excluded from the receive comparison; separate performance measurements remain open |
 
 Final operation latency breakdowns, sustainable-throughput curves, active/idle
@@ -651,9 +651,9 @@ spans are not a CPU/wall-time breakdown.
 This profile justified E11: combine the existing batch pairing equality into one
 final exponentiation while retaining identical weights, validations and results.
 Prepared-point allocation and memory are explicit guards. Component results and
-the remaining real-payment acceptance gates are recorded below.
+the final real-payment disposition are recorded below.
 
-### E11: component gains verified; real-payment acceptance pending
+### E11: component gains verified; production candidate subsequently reverted
 
 Ten alternating pairs across six deterministic batch workloads show repeatable
 CPU/p95 gains from one final exponentiation per complete BLS batch equation.
@@ -677,38 +677,57 @@ All 53,760 measured batches verified. Full Cashu federation tests (644 passed,
 two ignored), ordinary tests (506 passed), scoped strict lint, dependency isolation
 and formatting pass. No temporary production probes were added.
 
-These are component results, not user-confirmed payment gains. The arithmetic
-candidate remains provisional pending matched real ecash, runtime/recovery and
-remaining campaign gates. E07 remains separate and is excluded from the planned
-runtime comparison.
+These component gains did not establish retention. Both isolated runtime arms
+were built with identical pinned release features and SDK source; only E11's
+Cashu arithmetic differed. E07 was excluded from both. The baseline mintd matched
+the previously retained artifact byte for byte. The real ecash comparison below
+supersedes the provisional component disposition.
 
-Both isolated runtime arms now build with identical pinned release features and
-SDK source; their only source difference is the E11 Cashu candidate. The baseline
-mintd matches the previously retained artifact byte for byte. The next comparison
-uses fresh five-member HTTP/SQLite fixtures, 64 independent 32-sat recipients at
-concurrency four, separate SDK/member CPU accounting, and the existing receipt,
-digest and conservation audits. It remains a finite-burst comparison, with no
-sustainable-throughput claim. Five alternating pairs are prescribed, extended to
-ten if inconclusive. No E11 runtime gain is accepted yet.
+### E11 real ecash: reverted after ten pairs
 
-### E11 real ecash: five pairs require the prescribed extension
+The initial five pairs showed lower SDK CPU but an inconclusive latency guard,
+triggering the prescribed extension without changing source, artifacts or
+workload. The initial [run ledger](benchmarks/2026-09-08-e11-ecash-5-pairs-runs.csv),
+[request ledger](benchmarks/2026-09-08-e11-ecash-5-pairs-requests.csv) and
+[comparison](benchmarks/2026-09-08-e11-ecash-5-pairs-comparison.csv) remain preserved.
 
-All 640 receives across ten fresh five-member HTTP/SQLite runs passed independent
-receipt, note-identity, value and member-state audits. Each run preserves
-8,192 sat = 6,144 bank + 2,048 recipient wallets, with no duplicated spendable
-notes or overlap with spent inputs. All services stopped and state is preserved.
+All **1,280 receives** across the final twenty runs passed independent receipt,
+note-identity, value and member-state audits. Each fresh five-member HTTP/SQLite
+run used 64 independent 32-sat recipients at concurrency four, one input and twelve
+outputs per receipt, warm persistent SDK connections, a 60-second observation
+window and a separate 30-second idle audit. All completed inside the window,
+with no failed, late or unfinished requests. Each run preserves
+8,192 sat = 6,144 bank + 2,048 recipients; 960 distinct spendable notes are disjoint
+from the 64 spent inputs, which match every member's spent set. All services
+stopped and original state is preserved.
 
-SDK CPU per receipt improved **10.81%**: candidate/baseline ratio 0.89191
-(95% CI 0.88028–0.90370). Combined execution CPU ratio is 0.98137
-(0.95944–1.00380), which does not establish a combined gain. p95 ratio is 0.99524
-(0.89973–1.10088), so a greater than 5% latency regression is still unresolved.
-CPU/memory guards otherwise pass, and idle CPU has no reproducible increase.
-SDK peak RSS rises about 0.79%, within the guard; it is not unchanged memory use.
+| Metric | Candidate/baseline ratio | Run-level 95% CI |
+| --- | ---: | --- |
+| SDK CPU per receipt | 0.88694 | 0.87855–0.89540 |
+| Combined execution CPU per receipt | 0.97676 | 0.96285–0.99087 |
+| p50 receipt latency | 1.00168 | 0.95080–1.05529 |
+| p95 receipt latency | 1.01460 | 0.96143–1.07070 |
+| SDK peak RSS | 1.00744 | 1.00521–1.00967 |
+| SDK peak physical footprint | 1.00811 | 1.00484–1.01139 |
 
-The [ten-run ledger](benchmarks/2026-09-08-e11-ecash-5-pairs-runs.csv),
-[640-request ledger](benchmarks/2026-09-08-e11-ecash-5-pairs-requests.csv), and
-[paired comparison](benchmarks/2026-09-08-e11-ecash-5-pairs-comparison.csv) preserve
-all results. This finite burst does not establish sustained throughput or p99.
-Extend to ten alternating pairs without changing source, artifacts or workload.
-E11 production code remains provisional; correctness/restart acceptance and the
-broader campaign are incomplete.
+SDK CPU fell **11.31%**, from 49.030 to 43.488 ms per receipt. Combined execution
+CPU fell **2.32%**, from 359.872 to 351.544 ms per receipt; this includes the fixed
+member/SDK execution envelope and is not a sustained-throughput result. Memory
+and CPU guards pass, including the conservative member active-CPU interval
+0.98384–1.01983. Idle CPU shows no reproducible increase, with ratio interval
+0.79611–1.06817; no idle benefit is established.
+
+The p95 interval still permits a **7.07% regression**, above the 5% guard. This is
+inconclusive, not a confirmed latency regression. Following the ten-pair rule,
+**E11's production change was reverted**, including its optional BLS allocation
+feature. Reusable benchmark support and all investigation evidence remain.
+Candidate-only follow-up correctness/restart acceptance was not run after this
+rejection; the earlier component tests and audited receipts do not stand in for
+those gates. The full campaign's correctness, all-direction payment/recovery,
+scaling, sustained-load and original-baseline comparison gates remain open.
+
+The [twenty-run ledger](benchmarks/2026-09-08-e11-ecash-10-pairs-runs.csv),
+[1,280-request ledger](benchmarks/2026-09-08-e11-ecash-10-pairs-requests.csv) and
+[paired comparison](benchmarks/2026-09-08-e11-ecash-10-pairs-comparison.csv) retain
+every sample. Per-run p99 remains unavailable at 64 samples; pooling independent
+runs does not turn this into a per-run p99 or sustainable-throughput measurement.
