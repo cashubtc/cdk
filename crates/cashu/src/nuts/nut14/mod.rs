@@ -301,7 +301,7 @@ fn verify_htlc_preimage(witness: &HTLCWitness, secret: &Secret) -> Result<(), Er
 /// 2. Sender/Refund path (refund keys, no preimage): available AFTER locktime
 pub(crate) fn verify_sig_all_htlc(
     first_input: &Proof,
-    msgs_to_sign: &[Vec<u8>],
+    digests_to_sign: &[[u8; 32]],
 ) -> Result<(), Error> {
     // Get the first input, as it's the one with the signatures
     let first_secret =
@@ -351,8 +351,8 @@ pub(crate) fn verify_sig_all_htlc(
         }
 
         let signatures = extract_signatures_from_witness(first_witness)?;
-        let valid_sig_count = super::nut11::valid_signatures_any_msg(
-            msgs_to_sign,
+        let valid_sig_count = super::nut11::valid_signatures_any_digest(
+            digests_to_sign,
             &requirements.pubkeys,
             &signatures,
         );
@@ -366,8 +366,11 @@ pub(crate) fn verify_sig_all_htlc(
         // Refund path: preimage not valid/provided, but locktime has passed
         // Check SIG_ALL signatures against refund keys
         let signatures = extract_signatures_from_witness(first_witness)?;
-        let valid_sig_count =
-            super::nut11::valid_signatures_any_msg(msgs_to_sign, &refund_path.pubkeys, &signatures);
+        let valid_sig_count = super::nut11::valid_signatures_any_digest(
+            digests_to_sign,
+            &refund_path.pubkeys,
+            &signatures,
+        );
 
         if valid_sig_count >= refund_path.required_sigs {
             Ok(())
@@ -635,7 +638,7 @@ mod tests {
             })),
         );
 
-        assert!(verify_sig_all_htlc(&proof, &[b"sig-all message".to_vec()]).is_ok());
+        assert!(verify_sig_all_htlc(&proof, &[[7u8; 32]]).is_ok());
     }
 
     /// Tests that verify_htlc correctly rejects an HTLC with an invalid hash format.

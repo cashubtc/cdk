@@ -87,8 +87,13 @@ impl SecretKey {
     /// Schnorr Signature on Message
     pub fn sign(&self, msg: &[u8]) -> Result<Signature, Error> {
         let hash: Sha256Hash = Sha256Hash::hash(msg);
-        let msg = Message::from_digest_slice(hash.as_ref())?;
-        Ok(SECP256K1.sign_schnorr(&msg, &Keypair::from_secret_key(&SECP256K1, &self.inner)))
+        Ok(self.sign_digest(hash.to_byte_array()))
+    }
+
+    /// Schnorr signature over an already hashed 32-byte message.
+    pub(crate) fn sign_digest(&self, digest: [u8; 32]) -> Signature {
+        let msg = Message::from_digest(digest);
+        SECP256K1.sign_schnorr(&msg, &Keypair::from_secret_key(&SECP256K1, &self.inner))
     }
 
     /// Get public key
