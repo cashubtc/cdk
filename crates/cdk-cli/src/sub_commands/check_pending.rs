@@ -18,7 +18,10 @@ pub async fn check_pending(wallet_repository: &WalletRepository) -> Result<()> {
 
     for (i, wallet) in wallets.iter().enumerate() {
         let mint_url = wallet.mint_url.clone();
-        println!("{i}: {}", escape_control(&mint_url.to_string()));
+        println!(
+            "{i}: {}",
+            escape_control(&cdk_common::redact::url_for_logs(&mint_url.to_string()))
+        );
 
         // Check all orphaned pending proofs (not managed by active sagas)
         // This function queries the mint and marks spent proofs accordingly
