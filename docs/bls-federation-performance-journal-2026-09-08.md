@@ -4693,3 +4693,121 @@ It checks source snapshots before each arm and creates new custody for each run.
 Each accepted receipt record and failed attempt will remain in the journal's
 private evidence. No E11 arithmetic commit or runtime performance acceptance has
 occurred; five-pair analysis and relevant correctness/recovery gates remain open.
+
+### E11 first pair: receipts pass; performance conclusion remains open
+
+Both original arms completed and stopped with all 128 receipts, matching member
+state, exact proof shapes and independent value conservation. Observed workload
+and matched-input manifests are identical. No instrumentation or production
+source changed between arms.
+
+| Metric | Baseline | Candidate |
+| --- | ---: | ---: |
+| SDK execution-through-exit CPU, seconds | 3.117365 | 2.763051 |
+| Combined execution CPU per receipt, seconds | 0.357477 | 0.349499 |
+| p95 receipt latency, ms | 1,249.199 | 1,316.215 |
+| Time to last receipt, seconds | 17.346694 | 17.906443 |
+
+The single-pair SDK CPU ratio is 0.88634, but p95 ratio is 1.05365. These are
+observations without a repeatability interval: neither a win nor a confirmed
+regression is declared. The prescribed alternating series continues with pair
+two's candidate first; the first pair and all its raw samples remain preserved.
+
+Prepared an offline review using the existing shared analyzer and all prescribed
+pairs. It checks SDK/combined CPU, p95, separate SDK/member memory, and idle CPU.
+For member active CPU, its guard conservatively compares candidate upper bounds
+to baseline lower bounds; it does not present those bounds as exact counters.
+The scoped post-performance validation uses the isolated measured source, the
+full CDK mint/wallet federation library suite, the standalone downstream API
+checker, ordinary/federation FFI compilation and formatting. FFI's federation
+feature already includes its Iroh dependency; no nonexistent standalone Iroh
+feature is requested. These checks are prepared, not executed or claimed passing.
+
+### E11 second pair: all receipts retained; latency concern persists
+
+The second pair ran candidate first, then baseline. Both completed and stopped
+with all 128 receipts audited, exact value conservation, matching member digests
+and unchanged measurement source. The first two pairs therefore preserve 256
+successful original receipts; no failed or late operations were hidden.
+
+| Metric | Baseline | Candidate |
+| --- | ---: | ---: |
+| SDK execution-through-exit CPU, seconds | 3.138054 | 2.773765 |
+| Combined execution CPU per receipt, seconds | 0.362550 | 0.357927 |
+| p95 receipt latency, ms | 1,264.507 | 1,332.068 |
+| Time to last receipt, seconds | 18.753802 | 18.745053 |
+
+SDK CPU is lower in both first pairs, while candidate p95 is about 5.3% higher
+in both. This recurring direction is a concern, not yet the prescribed five-pair
+confidence-interval result. Continue the original alternating series without
+changing the candidate, load, timings, inputs or acceptance criteria.
+
+The original-state restart audit and numeric-only evidence exporter are prepared
+and syntax-checked. Neither restart correctness nor five-pair performance
+acceptance has been executed or established. All raw inputs remain private.
+
+### Ecash aggregation follow-up: narrow the next profiling question
+
+Read-only inspection while E11's unchanged runtime series runs confirms that
+`RequestShareVerification::aggregate` starts its aggregation timer after share
+verification and agreement selection. `aggregate_blind_signature_shares` performs
+threshold/signer validation, Lagrange coefficients and G1 scalar multiplication;
+it does not perform another pairing check. There is no redundant aggregate
+pairing in that measured stage to remove.
+
+Coefficients are recomputed for the selected signer set for each output, but the
+existing aggregation-stage timing does not isolate their cost from G1 arithmetic
+and output construction. Keep coefficient reuse in the profiling queue, as
+previously deferred; do not add a speculative cache or batch abstraction. No
+production code or active measurement source changed during this inspection.
+
+### E11 five real ecash pairs: CPU gain; latency guard inconclusive
+
+All ten original runs completed and stopped: 640 of 640 independent receipts,
+zero failed or late requests, matching member digests and empty queues. The
+additional read-only identity audit confirms 960 distinct spendable notes per
+run (192 bank notes and 768 recipient notes), totaling 8,192 sats. None overlaps
+the 64 spent input identities; every member's spent set matches the bank's
+original sent notes exactly. Original wallets and custody remain preserved.
+
+| Metric | Candidate/baseline ratio | Run-level 95% CI |
+| --- | ---: | --- |
+| SDK CPU per receipt | 0.89191 | 0.88028–0.90370 |
+| Combined execution CPU per receipt | 0.98137 | 0.95944–1.00380 |
+| p50 receipt latency | 0.96348 | 0.90358–1.02736 |
+| p95 receipt latency | 0.99524 | 0.89973–1.10088 |
+| SDK peak RSS | 1.00790 | 1.00481–1.01099 |
+| SDK peak physical footprint | 1.00838 | 1.00416–1.01262 |
+
+SDK CPU falls repeatably by 10.81%. Combined CPU's interval includes no change;
+no combined-system gain is yet established. SDK memory rises slightly, within
+the 5% guard. Other CPU/member-memory guards pass, including the conservative
+member active-CPU guard (candidate upper/baseline lower interval 0.97999–1.03513).
+Idle CPU has no reproducible increase; its ratio interval is 0.67334–1.10178, so
+no idle improvement is claimed either. The p95 interval cannot exclude a greater
+than 5% regression. The prescribed decision is **extend to ten pairs**, with no
+production change, workload adjustment or sample removal.
+
+The [run ledger](benchmarks/2026-09-08-e11-ecash-5-pairs-runs.csv),
+[request ledger](benchmarks/2026-09-08-e11-ecash-5-pairs-requests.csv) and
+[comparison ledger](benchmarks/2026-09-08-e11-ecash-5-pairs-comparison.csv) retain
+all ten runs and 640 receipts. Private records also retain native samples,
+causal clock bounds, exact source/artifact fingerprints, custody, and identity
+audits. Per-run p99 remains unavailable at 64 samples. Finite-burst completion
+rates are not sustainable throughput.
+
+```sh
+python3 "$RUN_ROOT/review_e11_ecash.py" --pairs 5
+python3 "$RUN_ROOT/audit_e11_unique_receipts.py" --pairs 5
+python3 "$RUN_ROOT/export_e11_ecash_evidence.py" --pairs 5
+python3 "$RUN_ROOT/extend_e11_ecash_pairs.py"
+```
+
+All four commands have now been dispatched: the first three completed and the
+extension is running. It preserved immutable first-five record/comparison copies
+and uses the same frozen artifacts, measurement source, release features, amounts,
+timing and acceptance criteria. The initial CSV whitespace check caught CRLF
+line endings; converting to LF preserved every parsed row, and the exporter now
+writes LF directly.
+E11 arithmetic remains uncommitted. Scoped correctness, real restart, all payment
+directions and the remaining campaign gates are still open.

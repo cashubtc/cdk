@@ -686,3 +686,25 @@ concurrency four, separate SDK/member CPU accounting, and the existing receipt,
 digest and conservation audits. It remains a finite-burst comparison, with no
 sustainable-throughput claim. Five alternating pairs are prescribed, extended to
 ten if inconclusive. No E11 runtime gain is accepted yet.
+
+### E11 real ecash: five pairs require the prescribed extension
+
+All 640 receives across ten fresh five-member HTTP/SQLite runs passed independent
+receipt, note-identity, value and member-state audits. Each run preserves
+8,192 sat = 6,144 bank + 2,048 recipient wallets, with no duplicated spendable
+notes or overlap with spent inputs. All services stopped and state is preserved.
+
+SDK CPU per receipt improved **10.81%**: candidate/baseline ratio 0.89191
+(95% CI 0.88028–0.90370). Combined execution CPU ratio is 0.98137
+(0.95944–1.00380), which does not establish a combined gain. p95 ratio is 0.99524
+(0.89973–1.10088), so a greater than 5% latency regression is still unresolved.
+CPU/memory guards otherwise pass, and idle CPU has no reproducible increase.
+SDK peak RSS rises about 0.79%, within the guard; it is not unchanged memory use.
+
+The [ten-run ledger](benchmarks/2026-09-08-e11-ecash-5-pairs-runs.csv),
+[640-request ledger](benchmarks/2026-09-08-e11-ecash-5-pairs-requests.csv), and
+[paired comparison](benchmarks/2026-09-08-e11-ecash-5-pairs-comparison.csv) preserve
+all results. This finite burst does not establish sustained throughput or p99.
+Extend to ten alternating pairs without changing source, artifacts or workload.
+E11 production code remains provisional; correctness/restart acceptance and the
+broader campaign are incomplete.
