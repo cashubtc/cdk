@@ -1,7 +1,7 @@
 //! Open Id Connect
 
 use std::collections::HashMap;
-use std::fmt::Debug;
+use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -100,10 +100,18 @@ pub struct OidcConfig {
 }
 
 /// Raw OIDC HTTP response.
-#[derive(Debug)]
 pub struct OidcHttpResponse {
     status: u16,
     body: Vec<u8>,
+}
+
+impl fmt::Debug for OidcHttpResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OidcHttpResponse")
+            .field("status", &self.status)
+            .field("body", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl OidcHttpResponse {
@@ -142,7 +150,7 @@ impl OidcHttpResponse {
 /// HTTP transport used by [`OidcClient`].
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait OidcHttpTransport: Debug + Send + Sync {
+pub trait OidcHttpTransport: fmt::Debug + Send + Sync {
     /// HTTP GET returning raw response bytes.
     async fn get(&self, url: &str) -> Result<OidcHttpResponse, HttpError>;
 
@@ -202,7 +210,7 @@ pub enum GrantType {
 
 /// Request to refresh an access token
 #[cfg(feature = "wallet")]
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct RefreshTokenRequest {
     /// The grant type for this request
     pub grant_type: GrantType,
@@ -212,9 +220,20 @@ pub struct RefreshTokenRequest {
     pub refresh_token: String,
 }
 
+#[cfg(feature = "wallet")]
+impl fmt::Debug for RefreshTokenRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RefreshTokenRequest")
+            .field("grant_type", &self.grant_type)
+            .field("client_id", &self.client_id)
+            .field("refresh_token", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// Response from token endpoint
 #[cfg(feature = "wallet")]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct TokenResponse {
     /// The access token issued by the authorization server
     pub access_token: String,
@@ -224,6 +243,21 @@ pub struct TokenResponse {
     pub expires_in: Option<i64>,
     /// The type of token issued (typically "Bearer")
     pub token_type: String,
+}
+
+#[cfg(feature = "wallet")]
+impl fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TokenResponse")
+            .field("access_token", &"[REDACTED]")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("expires_in", &self.expires_in)
+            .field("token_type", &self.token_type)
+            .finish()
+    }
 }
 
 impl OidcClient {

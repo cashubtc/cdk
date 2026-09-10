@@ -244,7 +244,7 @@ impl fmt::Debug for AuthResponse {
                 "refresh_token",
                 &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
             )
-            .field("user_json", &self.user_json)
+            .field("user_json", &"[REDACTED]")
             .finish()
     }
 }
@@ -342,7 +342,7 @@ mod tests {
 
         let debug = format!("{response:?}");
 
-        assert!(debug.contains("public-user-id"));
+        assert!(!debug.contains("public-user-id"));
         assert!(!debug.contains(access_token));
         assert!(!debug.contains(refresh_token));
     }

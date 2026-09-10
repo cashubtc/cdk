@@ -173,7 +173,10 @@ async fn main() -> Result<()> {
     println!("Fake auth mint: http://127.0.0.1:{}", args.port);
     println!("Temp directory: {temp_dir:?}");
     println!("Database type: {}", args.database_type);
-    println!("OpenID Discovery: {}", args.openid_discovery);
+    println!(
+        "OpenID Discovery: {}",
+        cdk_common::redact::url_for_logs(&args.openid_discovery)
+    );
     println!();
     println!("Environment variables needed for tests:");
     println!("  CDK_TEST_OIDC_USER=<username>");

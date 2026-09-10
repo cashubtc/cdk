@@ -94,7 +94,7 @@ pub async fn mint_batch(
     println!(
         "Batch mint complete: received {} from mint {} in {} proofs",
         proofs.total_amount()?,
-        mint_url,
+        cdk_common::redact::url_for_logs(&mint_url.to_string()),
         proofs.len()
     );
 
