@@ -562,6 +562,32 @@ impl From<cdk::types::ProofInfo> for ProofInfo {
     }
 }
 
+impl TryFrom<ProofInfo> for cdk::types::ProofInfo {
+    type Error = FfiError;
+
+    fn try_from(info: ProofInfo) -> Result<Self, Self::Error> {
+        Ok(Self {
+            proof: info.proof.try_into()?,
+            y: info.y.try_into()?,
+            mint_url: info.mint_url.try_into()?,
+            state: info.state.into(),
+            spending_condition: info.spending_condition.map(TryInto::try_into).transpose()?,
+            unit: info.unit.into(),
+            derivation_index: info.derivation_index,
+            used_by_operation: info
+                .used_by_operation
+                .map(|id| uuid::Uuid::parse_str(&id))
+                .transpose()
+                .map_err(FfiError::internal)?,
+            created_by_operation: info
+                .created_by_operation
+                .map(|id| uuid::Uuid::parse_str(&id))
+                .transpose()
+                .map_err(FfiError::internal)?,
+        })
+    }
+}
+
 /// Decode ProofInfo from JSON string
 #[uniffi::export]
 pub fn decode_proof_info(json: String) -> Result<ProofInfo, FfiError> {
@@ -572,27 +598,7 @@ pub fn decode_proof_info(json: String) -> Result<ProofInfo, FfiError> {
 /// Encode ProofInfo to JSON string
 #[uniffi::export]
 pub fn encode_proof_info(info: ProofInfo) -> Result<String, FfiError> {
-    use std::str::FromStr;
-    // Convert to cdk::types::ProofInfo for serialization
-    let cdk_info = cdk::types::ProofInfo {
-        proof: info.proof.try_into()?,
-        y: info.y.try_into()?,
-        mint_url: info.mint_url.try_into()?,
-        state: info.state.into(),
-        spending_condition: info.spending_condition.map(TryInto::try_into).transpose()?,
-        unit: info.unit.into(),
-        derivation_index: info.derivation_index,
-        used_by_operation: info
-            .used_by_operation
-            .map(|id| uuid::Uuid::from_str(&id))
-            .transpose()
-            .map_err(|e| FfiError::internal(e.to_string()))?,
-        created_by_operation: info
-            .created_by_operation
-            .map(|id| uuid::Uuid::from_str(&id))
-            .transpose()
-            .map_err(|e| FfiError::internal(e.to_string()))?,
-    };
+    let cdk_info: cdk::types::ProofInfo = info.try_into()?;
     Ok(serde_json::to_string(&cdk_info)?)
 }
 

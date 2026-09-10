@@ -16,7 +16,7 @@ use crate::wallet::RateLimit;
 ///
 /// Rate limiting is a repository-wide setting: every wallet the repository
 /// hands out shares one limiter, so there is no per-wallet equivalent.
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct WalletRepositoryConfig {
     /// Proxy used by every mint operation. Omit for a direct connection.
     #[uniffi(default = None)]
@@ -45,28 +45,7 @@ impl WalletRepository {
     /// - `Custom { db }` — foreign-language implementation of `WalletDatabase`
     #[uniffi::constructor]
     pub fn new(mnemonic: String, store: crate::database::WalletStore) -> Result<Self, FfiError> {
-        let db = crate::database::resolve_wallet_store(store)?;
-
-        // Parse mnemonic and generate seed without passphrase
-        let m = Mnemonic::parse(&mnemonic)
-            .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
-        let seed = m.to_seed_normalized("");
-
-        // Convert the FFI database trait to a CDK database implementation
-        let localstore = crate::database::create_cdk_database_from_ffi(db);
-
-        let rt = crate::runtime::RuntimeGuard::new().map_err(FfiError::internal)?;
-        let wallet = rt.block_on(async move {
-            WalletRepositoryBuilder::new()
-                .localstore(localstore)
-                .seed(seed)
-                .build()
-                .await
-        })?;
-
-        Ok(Self {
-            inner: Arc::new(wallet),
-        })
+        Self::new_with_config(mnemonic, store, WalletRepositoryConfig::default())
     }
 
     /// Create a new WalletRepository with proxy configuration.
@@ -80,33 +59,14 @@ impl WalletRepository {
         store: crate::database::WalletStore,
         proxy_url: String,
     ) -> Result<Self, FfiError> {
-        let db = crate::database::resolve_wallet_store(store)?;
-
-        // Parse mnemonic and generate seed without passphrase
-        let m = Mnemonic::parse(&mnemonic)
-            .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
-        let seed = m.to_seed_normalized("");
-
-        // Convert the FFI database trait to a CDK database implementation
-        let localstore = crate::database::create_cdk_database_from_ffi(db);
-
-        // Parse proxy URL
-        let proxy_url = url::Url::parse(&proxy_url)
-            .map_err(|e| FfiError::internal(format!("Invalid URL: {}", e)))?;
-
-        let rt = crate::runtime::RuntimeGuard::new().map_err(FfiError::internal)?;
-        let wallet = rt.block_on(async move {
-            WalletRepositoryBuilder::new()
-                .localstore(localstore)
-                .seed(seed)
-                .proxy_url(proxy_url)
-                .build()
-                .await
-        })?;
-
-        Ok(Self {
-            inner: Arc::new(wallet),
-        })
+        Self::new_with_config(
+            mnemonic,
+            store,
+            WalletRepositoryConfig {
+                proxy_url: Some(proxy_url),
+                ..Default::default()
+            },
+        )
     }
 
     /// Create a new WalletRepository with proxy and rate-limit configuration.

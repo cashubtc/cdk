@@ -244,18 +244,7 @@ pub struct SendOptions {
 
 impl Default for SendOptions {
     fn default() -> Self {
-        Self {
-            memo: None,
-            conditions: None,
-            amount_split_target: SplitTarget::None,
-            send_kind: SendKind::OnlineExact,
-            include_fee: false,
-            max_proofs: None,
-            metadata: HashMap::new(),
-            use_p2bk: false,
-            p2pk_signing_keys: Vec::new(),
-            p2pk_locked_proof_send_mode: P2PKLockedProofSendMode::Swap,
-        }
+        cdk::wallet::SendOptions::default().into()
     }
 }
 
@@ -410,12 +399,7 @@ impl fmt::Debug for ReceiveOptions {
 
 impl Default for ReceiveOptions {
     fn default() -> Self {
-        Self {
-            amount_split_target: SplitTarget::None,
-            p2pk_signing_keys: Vec::new(),
-            preimages: Vec::new(),
-            metadata: HashMap::new(),
-        }
+        cdk::wallet::ReceiveOptions::default().into()
     }
 }
 

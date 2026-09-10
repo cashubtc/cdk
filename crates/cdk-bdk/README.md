@@ -89,11 +89,25 @@ reveal and batch construction are not blocked during long chain catch-ups.
 Chain-source clients are reused across sync iterations and rebuilt only on
 error.
 
+Esplora sync, broadcast, and fee-estimation requests have a 10-second timeout.
+Esplora's `parallel_requests` must be greater than zero. Missed polling ticks
+are skipped so a slow sync does not trigger a burst of catch-up polls.
+
 Fresh Bitcoin Core wallets checkpoint at the current chain tip instead of
 scanning from genesis. When restoring from a mnemonic, set
 `BitcoinRpcConfig::wallet_rescan_from_height` to the wallet's known birthday
 height. This setting only affects wallet creation and never rewinds persisted
 wallet state.
+
+On reorgs, Bitcoin Core sync follows the orphaned branch's block headers to
+find the actual common ancestor, including ancestors absent from the wallet's
+stored checkpoints. It then replays all replacement blocks after that ancestor,
+even below the original birthday. The birthday controls wallet creation, not
+reorg recovery. Normal catch-up still resumes from the latest checkpoint.
+Missing headers or required block data fail the sync tick and are retried; sync
+does not skip affected blocks or substitute a genesis rescan for missing history.
+A rollback with no replacement block is retried rather than reported as completed
+recovery.
 
 ## Finality and Confirmation Policy
 
