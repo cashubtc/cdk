@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bip39::Mnemonic;
+use cdk_common::amount::MSAT_IN_SAT;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::DynKVStore;
 use cdk_common::payment::{self, *};
@@ -456,7 +457,13 @@ impl CdkLdkNode {
                 .amount_msat
                 .ok_or(Error::CouldNotGetAmountSpent)?
                 + payment_details.fee_paid_msat.unwrap_or_default();
-            Amount::new(total_spent, CurrencyUnit::Msat).convert_to(unit)?
+            // Round the principal and routing fees together, only once.
+            match unit {
+                CurrencyUnit::Sat => {
+                    Amount::new(total_spent.div_ceil(MSAT_IN_SAT), CurrencyUnit::Sat)
+                }
+                _ => Amount::new(total_spent, CurrencyUnit::Msat).convert_to(unit)?,
+            }
         } else {
             Amount::new(0, unit.clone())
         };
@@ -991,8 +998,14 @@ impl MintPayment for CdkLdkNode {
                         .into(),
                 };
 
-                let amount =
-                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?;
+                let amount = match unit {
+                    // The quote must cover the entire millisatoshi principal.
+                    CurrencyUnit::Sat => Amount::new(
+                        u64::from(amount_msat).div_ceil(MSAT_IN_SAT),
+                        CurrencyUnit::Sat,
+                    ),
+                    _ => Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?,
+                };
 
                 let relative_fee_reserve =
                     (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
@@ -1035,8 +1048,14 @@ impl MintPayment for CdkLdkNode {
                         }
                     }
                 };
-                let amount =
-                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?;
+                let amount = match unit {
+                    // The quote must cover the entire millisatoshi principal.
+                    CurrencyUnit::Sat => Amount::new(
+                        u64::from(amount_msat).div_ceil(MSAT_IN_SAT),
+                        CurrencyUnit::Sat,
+                    ),
+                    _ => Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?,
+                };
 
                 let relative_fee_reserve =
                     (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
@@ -1786,6 +1805,96 @@ mod tests {
 
         assert_eq!(response.status, MeltQuoteState::Pending);
         assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Msat));
+    }
+
+    #[tokio::test]
+    async fn payment_quotes_round_up_sat_principals() {
+        let storage = std::env::temp_dir().join(format!("cdk-ldk-rounding-{}", QuoteId::new()));
+        let node = CdkLdkNodeBuilder::new(
+            Network::Regtest,
+            ChainSource::Esplora("http://127.0.0.1:1".to_owned()),
+            GossipSource::P2P,
+            storage.to_str().unwrap().to_owned(),
+            FeeReserve {
+                min_fee_reserve: Amount::ZERO,
+                percent_fee_reserve: 0.0,
+            },
+            vec!["127.0.0.1:0".parse().unwrap()],
+            test_kv_store().await,
+        )
+        .build()
+        .unwrap();
+        for (msat, sat) in [(1, 1), (999, 1), (1_000, 1), (1_999, 2), (2_000, 2)] {
+            let invoice = node
+                .inner
+                .bolt11_payment()
+                .receive(
+                    msat,
+                    &Bolt11InvoiceDescription::Direct(
+                        Description::new("rounding".to_owned()).unwrap(),
+                    ),
+                    3600,
+                )
+                .unwrap();
+            let offer = ldk_node::lightning::offers::offer::OfferBuilder::new(node.inner.node_id())
+                .amount_msats(msat)
+                .build()
+                .unwrap();
+            for (unit, expected) in [(CurrencyUnit::Sat, sat), (CurrencyUnit::Msat, msat)] {
+                for options in [
+                    OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+                        bolt11: invoice.clone(),
+                        max_fee_amount: None,
+                        timeout_secs: None,
+                        melt_options: None,
+                        quote_id: QuoteId::new(),
+                    })),
+                    OutgoingPaymentOptions::Bolt12(Box::new(Bolt12OutgoingPaymentOptions {
+                        offer: offer.clone(),
+                        max_fee_amount: None,
+                        timeout_secs: None,
+                        melt_options: None,
+                        quote_id: QuoteId::new(),
+                    })),
+                ] {
+                    let quote = node.get_payment_quote(&unit, options).await.unwrap();
+                    assert_eq!(quote.amount, Amount::new(expected, unit.clone()));
+                }
+            }
+        }
+        drop(node);
+        std::fs::remove_dir_all(storage).unwrap();
+    }
+
+    #[test]
+    fn paid_payment_response_rounds_total_once_for_sat_quotes() {
+        for (principal, fee, expected_sat) in
+            [(1_999, 0, 2), (2_000, 1, 3), (1_999, 1, 2), (2_000, 0, 2)]
+        {
+            let mut details = test_payment_details(PaymentStatus::Succeeded, Some(principal));
+            details.fee_paid_msat = Some(fee);
+            let payment_id = PaymentIdentifier::PaymentId([2; 32]);
+            let synchronous = CdkLdkNode::make_payment_response_from_details(
+                &CurrencyUnit::Sat,
+                payment_id.clone(),
+                &details,
+            )
+            .unwrap();
+            let recovered = CdkLdkNode::make_payment_response_from_details(
+                &CurrencyUnit::Msat,
+                payment_id,
+                &details,
+            )
+            .unwrap();
+            assert_eq!(
+                synchronous.total_spent,
+                Amount::new(expected_sat, CurrencyUnit::Sat)
+            );
+            assert_eq!(
+                recovered.total_spent,
+                Amount::new(principal + fee, CurrencyUnit::Msat)
+            );
+        }
     }
 
     #[test]
