@@ -10,9 +10,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
-use cdk_common::{
-    Amount, HttpClient, PaymentRequest, PaymentRequestPayload, SupportedMethod, TransportType,
-};
+use cdk_common::{Amount, PaymentRequest, PaymentRequestPayload, SupportedMethod, TransportType};
 #[cfg(feature = "nostr")]
 use futures::StreamExt;
 #[cfg(feature = "nostr")]
@@ -455,23 +453,12 @@ impl Wallet {
             }
 
             TransportType::HttpPost => {
-                let client = HttpClient::new();
+                self.client
+                    .post_payment_request_payload(&transport.target, &payload)
+                    .await?;
 
-                let res = client
-                    .post(&transport.target)
-                    .json(&payload)
-                    .send()
-                    .await
-                    .map_err(|e| Error::HttpError(None, e.to_string()))?;
-
-                if res.is_success() {
-                    tracing::info!("Successfully posted payment");
-                    Ok(())
-                } else {
-                    let status = res.status();
-                    let body = res.text().await.unwrap_or_default();
-                    Err(Error::HttpError(Some(status), body))
-                }
+                tracing::info!("Successfully posted payment");
+                Ok(())
             }
         }
     }
@@ -988,6 +975,56 @@ mod tests {
         assert_eq!(
             wallet.total_balance().await.expect("balance"),
             Amount::from(1024)
+        );
+    }
+
+    /// The connector's transport carries proxy and Tor settings, so a connector
+    /// without delivery support must fail rather than reach the network
+    /// directly. The target is unroutable: a reintroduced direct-network
+    /// fallback would surface as `Error::HttpError` instead.
+    #[tokio::test]
+    async fn deliver_payment_request_http_requires_connector_support() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_keyset, test_mint_url, test_proof,
+            MockMintConnector,
+        };
+
+        let keyset = test_keyset();
+        let keyset_id = keyset.id;
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        db.add_mint(mint_url.clone(), None)
+            .await
+            .expect("mint should be stored");
+
+        let mock = MockMintConnector::new();
+        mock.set_mint_keys_response(Ok(vec![keyset]));
+        let wallet = create_test_wallet_with_mock(db, Arc::new(mock)).await;
+
+        let token = crate::nuts::Token::new(
+            mint_url,
+            vec![test_proof(keyset_id, 1)],
+            None,
+            CurrencyUnit::Sat,
+        );
+        let transport = Transport {
+            _type: TransportType::HttpPost,
+            target: "http://127.0.0.1:1/pay".to_string(),
+            tags: vec![],
+        };
+
+        let error = wallet
+            .deliver_payment_request(
+                &payment_request(Some(CurrencyUnit::Sat), Some(Amount::from(1)), vec![]),
+                &transport,
+                &token,
+            )
+            .await
+            .expect_err("delivery should fail");
+
+        assert!(
+            matches!(error, Error::PaymentRequestDeliveryUnsupported),
+            "unexpected error: {error:?}"
         );
     }
 

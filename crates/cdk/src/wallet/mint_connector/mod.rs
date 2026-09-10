@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cdk_common::{
     AuthToken, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
-    MintQuoteResponse,
+    MintQuoteResponse, PaymentRequestPayload,
 };
 
 use super::Error;
@@ -98,6 +98,22 @@ pub trait MintConnector: Debug {
         &self,
         url: &str,
     ) -> Result<crate::lightning_address::LnurlPayInvoiceResponse, Error>;
+
+    /// Deliver a NUT-18 payment request payload to a receiver's HTTP endpoint
+    /// using this connector's transport.
+    ///
+    /// Delivery rides the wallet's configured transport so proxy and Tor
+    /// settings also cover the recipient request. The default fails instead of
+    /// falling back to a direct request, which would leak the payer's egress
+    /// address. NUT-18 defines no response body, so any 2xx counts as
+    /// delivered whatever the receiver answers with.
+    async fn post_payment_request_payload(
+        &self,
+        _url: &str,
+        _payload: &PaymentRequestPayload,
+    ) -> Result<(), Error> {
+        Err(Error::PaymentRequestDeliveryUnsupported)
+    }
 
     /// Get Active Mint Keys [NUT-01]
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error>;

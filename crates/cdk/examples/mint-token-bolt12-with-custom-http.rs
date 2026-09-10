@@ -14,7 +14,6 @@ use cdk_common::{AuthToken, PaymentMethod};
 use cdk_http_client::{HttpError, RawResponse};
 use cdk_sqlite::wallet::memory;
 use rand::random;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tracing_subscriber::EnvFilter;
 use ureq::config::Config;
@@ -57,24 +56,7 @@ impl HttpTransport for CustomHttp {
         panic!("Not supported");
     }
 
-    async fn http_get<R>(&self, url: Url, _auth: Option<AuthToken>) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned,
-    {
-        self.agent
-            .get(url.as_str())
-            .call()
-            .map_err(|e| HttpError::Connection(e.to_string()))?
-            .body_mut()
-            .read_json()
-            .map_err(|e| HttpError::Serialization(e.to_string()))
-    }
-
-    async fn http_get_raw(
-        &self,
-        url: Url,
-        auth: Option<AuthToken>,
-    ) -> Result<RawResponse, HttpError> {
+    async fn http_get(&self, url: Url, auth: Option<AuthToken>) -> Result<RawResponse, HttpError> {
         let mut request = self.agent.get(url.as_str());
 
         if let Some(auth) = auth {
@@ -93,26 +75,34 @@ impl HttpTransport for CustomHttp {
         Ok(RawResponse::new(status, body))
     }
 
-    async fn http_post<P, R>(
+    async fn http_post<P>(
         &self,
         url: Url,
-        _auth_token: Option<AuthToken>,
+        auth_token: Option<AuthToken>,
         payload: &P,
-    ) -> Result<R, HttpError>
+    ) -> Result<RawResponse, HttpError>
     where
-        P: Serialize + ?Sized + Send + Sync,
-        R: DeserializeOwned,
+        P: Serialize + Send + Sync,
     {
-        self.agent
-            .post(url.as_str())
+        let mut request = self.agent.post(url.as_str());
+
+        if let Some(auth) = auth_token {
+            request = request.header(auth.header_key(), auth.to_string());
+        }
+
+        let mut response = request
             .send_json(payload)
-            .map_err(|e| HttpError::Connection(e.to_string()))?
+            .map_err(|e| HttpError::Connection(e.to_string()))?;
+        let status = response.status().as_u16();
+        let body = response
             .body_mut()
-            .read_json()
-            .map_err(|e| HttpError::Serialization(e.to_string()))
+            .read_to_vec()
+            .map_err(|e| HttpError::Connection(e.to_string()))?;
+
+        Ok(RawResponse::new(status, body))
     }
 
-    async fn http_post_form_raw<P>(
+    async fn http_post_form<P>(
         &self,
         url: Url,
         auth_token: Option<AuthToken>,

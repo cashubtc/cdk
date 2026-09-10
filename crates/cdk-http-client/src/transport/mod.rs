@@ -4,7 +4,6 @@ use std::fmt::Debug;
 
 use async_trait::async_trait;
 use cashu::nuts::nut22::AuthToken;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
 
@@ -52,31 +51,15 @@ pub trait Transport: Send + Sync + Debug + Clone {
         ))
     }
 
-    /// HTTP GET request.
-    async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned;
-
     /// HTTP GET request returning a raw response.
-    async fn http_get_raw(
-        &self,
-        url: Url,
-        auth: Option<AuthToken>,
-    ) -> Result<RawResponse, HttpError>;
+    async fn http_get(&self, url: Url, auth: Option<AuthToken>) -> Result<RawResponse, HttpError>;
 
-    /// HTTP POST request.
-    async fn http_post<P, R>(
-        &self,
-        url: Url,
-        auth_token: Option<AuthToken>,
-        payload: &P,
-    ) -> Result<R, HttpError>
-    where
-        P: Serialize + Send + Sync,
-        R: DeserializeOwned;
-
-    /// HTTP POST request with a form body returning a raw response.
-    async fn http_post_form_raw<P>(
+    /// HTTP POST request with a JSON body returning a raw response.
+    ///
+    /// The caller decides what the status and body mean: mint calls decode with
+    /// [`RawResponse::json_or_status_error`], while NUT-18 delivery only checks
+    /// the status, since an empty or non-JSON success body is still a delivery.
+    async fn http_post<P>(
         &self,
         url: Url,
         auth_token: Option<AuthToken>,
@@ -84,6 +67,26 @@ pub trait Transport: Send + Sync + Debug + Clone {
     ) -> Result<RawResponse, HttpError>
     where
         P: Serialize + Send + Sync;
+
+    /// HTTP POST request with a form body returning a raw response.
+    ///
+    /// This cannot be expressed in terms of [`Transport::http_post`]: the body
+    /// is form-encoded, and the endpoints that need it (OAuth token exchange)
+    /// reject JSON. Transports that cannot send a form-encoded body keep the
+    /// default and lose OIDC authentication only.
+    async fn http_post_form<P>(
+        &self,
+        _url: Url,
+        _auth_token: Option<AuthToken>,
+        _payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        Err(HttpError::Other(
+            "form-encoded POST is not supported by this transport".to_owned(),
+        ))
+    }
 }
 
 /// Default async transport backed by the crate `HttpClient`.
@@ -133,18 +136,7 @@ impl Transport for Async {
         crate::dns::resolve_dns_txt(domain).await
     }
 
-    async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned,
-    {
-        self.http_get_raw(url, auth).await?.json_or_status_error()
-    }
-
-    async fn http_get_raw(
-        &self,
-        url: Url,
-        auth: Option<AuthToken>,
-    ) -> Result<RawResponse, HttpError> {
+    async fn http_get(&self, url: Url, auth: Option<AuthToken>) -> Result<RawResponse, HttpError> {
         let url_str = url.to_string();
         let mut request = self.inner.get(&url_str);
 
@@ -155,15 +147,14 @@ impl Transport for Async {
         request.send().await
     }
 
-    async fn http_post<P, R>(
+    async fn http_post<P>(
         &self,
         url: Url,
         auth_token: Option<AuthToken>,
         payload: &P,
-    ) -> Result<R, HttpError>
+    ) -> Result<RawResponse, HttpError>
     where
         P: Serialize + Send + Sync,
-        R: DeserializeOwned,
     {
         let url_str = url.to_string();
         let mut request = self.inner.post(&url_str).json(payload);
@@ -172,10 +163,10 @@ impl Transport for Async {
             request = request.header(auth.header_key(), auth.to_string());
         }
 
-        request.send_json::<R>().await
+        request.send().await
     }
 
-    async fn http_post_form_raw<P>(
+    async fn http_post_form<P>(
         &self,
         url: Url,
         auth_token: Option<AuthToken>,
