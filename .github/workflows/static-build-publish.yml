@@ -9,8 +9,18 @@ on:
         description: "Tag to build and publish"
         required: true
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
+  release-ci:
+    uses: ./.github/workflows/release-ci.yml
+    with:
+      ref: ${{ inputs.tag || github.ref }}
+
   build-x86_64:
+    needs: release-ci
     name: "Build static binaries (x86_64)"
     runs-on: self-hosted
     timeout-minutes: 120
@@ -55,6 +65,7 @@ jobs:
           path: ./static-bin/
 
   build-aarch64:
+    needs: release-ci
     name: "Build static binaries (aarch64)"
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
@@ -101,6 +112,7 @@ jobs:
           path: ./static-bin/
 
   build-aarch64-darwin:
+    needs: release-ci
     name: "Build macOS binaries (aarch64)"
     runs-on: macos-26
     timeout-minutes: 120

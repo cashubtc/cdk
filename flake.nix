@@ -1576,6 +1576,46 @@
               exampleChecks
           ))
           // {
+            # PRs run the default unit suite once; alternate feature combinations
+            # remain in the full matrix. PostgreSQL has a separate service job.
+            pr-unit-tests = craneLib.mkCargoDerivation (
+              commonCraneArgs
+              // {
+                pname = "cdk-pr-unit-tests";
+                cargoArtifacts = workspaceDeps;
+                buildPhaseCargoCommand = ''
+                  cargo test --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
+                  cargo test --bins -p cdk-cli
+                  cargo test --lib -p cdk-nostr --all-features
+                '';
+                doCheck = false;
+                installPhaseCommand = "mkdir -p $out";
+                doInstallCargoArtifacts = false;
+              }
+            );
+
+            # Keep optional features and minimal package builds covered on PRs.
+            # The full matrix already covers these configurations separately.
+            pr-feature-tests = craneLib.mkCargoDerivation (
+              commonCraneArgs
+              // {
+                pname = "cdk-pr-feature-tests";
+                cargoArtifacts = workspaceDeps;
+                buildPhaseCargoCommand = ''
+                  cargo test --lib -p cdk-sqlite --features sqlcipher
+                  cargo test --bins -p cdk-cli --features redb
+                  cargo check -p cdk-mintd --features redis
+                  cargo test --lib -p cdk-common --no-default-features --features wallet
+                  cargo test --lib -p cdk-common --no-default-features --features mint
+                  cargo test --lib -p cdk-sql-common --no-default-features --features wallet
+                  cargo test --lib -p cdk-sql-common --no-default-features --features mint
+                '';
+                doCheck = false;
+                installPhaseCommand = "mkdir -p $out";
+                doInstallCargoArtifacts = false;
+              }
+            );
+
             # Workspace-wide all-targets clippy check
             workspace-clippy-all-targets = workspaceClippyAllTargets;
 

@@ -2,6 +2,7 @@ name: "FFI - Go Bindings"
 
 permissions:
   contents: read
+  actions: read
 
 on:
   workflow_dispatch:
@@ -51,7 +52,13 @@ env:
   UNIFFI_BINDGEN_GO_TAG: v0.6.0+v0.30.0
 
 jobs:
+  release-ci:
+    uses: ./.github/workflows/release-ci.yml
+    with:
+      ref: ${{ inputs.nightly && inputs.cdk_ref || inputs.release_tag }}
+
   validate-release-ref:
+    needs: release-ci
     name: "go: Validate release ref"
     runs-on: ubuntu-latest
     steps:
