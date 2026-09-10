@@ -4,6 +4,7 @@
 //! These ensure that the status of the mint or melt quote matches in the mint db and on the node.
 
 use std::str::FromStr;
+use std::time::Duration;
 
 use cdk_common::mint::{OperationKind, Saga};
 use cdk_common::{PublicKey, QuoteId, State};
@@ -12,6 +13,9 @@ use super::{Error, Mint};
 use crate::mint::swap::swap_saga::compensation::{CompensatingAction, RemoveSwapSetup};
 use crate::mint::{MeltQuote, MeltQuoteState};
 use crate::types::PaymentProcessorKey;
+
+/// Bound status lookups so an unresponsive backend cannot stall recovery.
+const PAYMENT_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Recovery decision for an incomplete swap saga found during startup.
 #[derive(Debug, PartialEq, Eq)]
@@ -71,19 +75,25 @@ impl Mint {
             Error::Internal
         })?;
 
-        // Check payment status with LN backend
-        let pay_invoice_response =
-            ln_backend
-                .check_outgoing_payment(lookup_id)
-                .await
-                .map_err(|err| {
-                    tracing::error!(
-                        "Failed to check payment status for quote {}: {}",
-                        quote.id,
-                        err
-                    );
-                    Error::Internal
-                })?;
+        // A status check must not wait for settlement. On timeout, leave the
+        // saga and its reserved proofs intact for a later recovery attempt.
+        let pay_invoice_response = tokio::time::timeout(
+            PAYMENT_STATUS_TIMEOUT,
+            ln_backend.check_outgoing_payment(lookup_id),
+        )
+        .await
+        .map_err(|_| {
+            tracing::warn!("Payment status check timed out for quote {}", quote.id);
+            Error::Internal
+        })?
+        .map_err(|err| {
+            tracing::error!(
+                "Failed to check payment status for quote {}: {}",
+                quote.id,
+                err
+            );
+            Error::Internal
+        })?;
 
         tracing::info!(
             "Payment status for melt quote {}: {}",
