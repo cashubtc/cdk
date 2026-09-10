@@ -52,33 +52,29 @@ impl MintUrl {
     fn format_url(url: &str) -> Result<String, Error> {
         ensure_cdk!(!url.is_empty(), Error::InvalidUrl);
 
-        let url = url.trim_end_matches('/');
-        // https://URL.com/path/TO/resource -> https://url.com/path/TO/resource
-        let protocol = url
-            .split("://")
-            .nth(0)
-            .ok_or(Error::InvalidUrl)?
-            .to_lowercase();
-        let host = url
-            .split("://")
-            .nth(1)
-            .ok_or(Error::InvalidUrl)?
-            .split('/')
-            .nth(0)
-            .ok_or(Error::InvalidUrl)?
-            .to_lowercase();
-        let path = url
-            .split("://")
-            .nth(1)
-            .ok_or(Error::InvalidUrl)?
-            .split('/')
-            .skip(1)
-            .collect::<Vec<&str>>()
-            .join("/");
-        let mut formatted_url = format!("{protocol}://{host}");
-        if !path.is_empty() {
-            formatted_url.push_str(&format!("/{path}"));
+        let mut url = Url::parse(url)?;
+        ensure_cdk!(url.has_host(), Error::InvalidUrl);
+
+        let path = url.path().trim_end_matches('/').to_owned();
+        let query = url.query().map(str::to_owned);
+        let fragment = url.fragment().map(str::to_owned);
+
+        url.set_path(&path);
+        url.set_query(None);
+        url.set_fragment(None);
+
+        // `Url` serializes an empty path as `/`. Strip that path separator
+        // before restoring the untouched query and fragment components.
+        let mut formatted_url = url.to_string().trim_end_matches('/').to_owned();
+        if let Some(query) = query {
+            formatted_url.push('?');
+            formatted_url.push_str(&query);
         }
+        if let Some(fragment) = fragment {
+            formatted_url.push('#');
+            formatted_url.push_str(&fragment);
+        }
+
         Ok(formatted_url)
     }
 
@@ -197,6 +193,42 @@ mod tests {
         assert_eq!(
             format!("{url_with_path_with_slash}hello/world"),
             url.join_paths(&["hello", "world"]).unwrap().to_string()
+        );
+    }
+
+    #[test]
+    fn test_preserve_path_containing_scheme_separator() {
+        let mint_url = "https://shared.example/tenant://primary";
+        let url = MintUrl::from_str(mint_url).unwrap();
+
+        assert_eq!(mint_url, url.to_string());
+        assert_eq!(
+            "https://shared.example/tenant://primary/v1/swap",
+            url.join_paths(&["v1", "swap"]).unwrap().to_string()
+        );
+    }
+
+    #[test]
+    fn test_preserve_query_case() {
+        let mint_url = "https://shared.example?tenant=CaseSensitiveTenant";
+        let url = MintUrl::from_str(mint_url).unwrap();
+
+        assert_eq!(mint_url, url.to_string());
+        assert_eq!(
+            "https://shared.example/v1/swap?tenant=CaseSensitiveTenant",
+            url.join_paths(&["v1", "swap"]).unwrap().to_string()
+        );
+    }
+
+    #[test]
+    fn test_strip_path_slash_without_trimming_query_value() {
+        let mint_url = "https://shared.example/?tenant=tenant/";
+        let url = MintUrl::from_str(mint_url).unwrap();
+
+        assert_eq!("https://shared.example?tenant=tenant/", url.to_string());
+        assert_eq!(
+            "https://shared.example/v1/swap?tenant=tenant/",
+            url.join_paths(&["v1", "swap"]).unwrap().to_string()
         );
     }
 
