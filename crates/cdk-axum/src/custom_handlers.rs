@@ -108,6 +108,35 @@ async fn validate_melt_quote_method(
     Ok(())
 }
 
+// Validate batch bounds before any per-quote database work, including on cache hits.
+async fn validate_batch_quote_ids(
+    state: &MintState,
+    quote_ids: &[QuoteId],
+) -> Result<(), cdk::Error> {
+    if quote_ids.is_empty() {
+        return Err(cdk::Error::UnknownQuote);
+    }
+
+    if let Some(max) = state.mint.mint_info().await?.nuts.nut29.max_batch_size {
+        let max = usize::try_from(max).unwrap_or(usize::MAX);
+        if quote_ids.len() > max {
+            return Err(cdk::Error::BatchSizeExceeded {
+                actual: quote_ids.len(),
+                max,
+            });
+        }
+    }
+
+    let mut unique_ids = std::collections::HashSet::new();
+    for quote_id in quote_ids {
+        if !unique_ids.insert(quote_id) {
+            return Err(cdk::Error::DuplicateQuoteIds);
+        }
+    }
+
+    Ok(())
+}
+
 async fn validate_mint_quote_methods(
     state: &MintState,
     method: &str,
@@ -350,6 +379,10 @@ pub async fn post_batch_check_mint_quote(
             auth.into(),
             &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuote(method.clone())),
         )
+        .await
+        .map_err(into_response)?;
+
+    validate_batch_quote_ids(&state, &payload.quotes)
         .await
         .map_err(into_response)?;
 
@@ -694,7 +727,20 @@ pub async fn cache_post_batch_mint(
     let method = method.0;
     let payload = payload.0;
 
-    validate_mint_request_route(auth, &mint_state, &method, &payload.quotes)
+    mint_state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Mint(method.clone())),
+        )
+        .await
+        .map_err(into_response)?;
+
+    validate_batch_quote_ids(&mint_state, &payload.quotes)
+        .await
+        .map_err(into_response)?;
+
+    validate_mint_quote_methods(&mint_state, &method, &payload.quotes)
         .await
         .map_err(into_response)?;
 
@@ -1074,6 +1120,85 @@ mod tests {
             result.is_err(),
             "cache_post_batch_mint must reject cross-method cached mint"
         );
+    }
+
+    #[tokio::test]
+    async fn batch_routes_reject_invalid_bounds_before_loading_quotes() {
+        let state = create_test_state().await;
+        // These IDs do not exist. Any premature quote lookup would return UnknownQuote.
+        let duplicate_id = QuoteId::new();
+        for (quotes, expected) in [
+            (
+                vec![duplicate_id.clone(), duplicate_id],
+                cdk::Error::DuplicateQuoteIds,
+            ),
+            (
+                (0..11).map(|_| QuoteId::new()).collect(),
+                cdk::Error::BatchSizeExceeded {
+                    actual: 11,
+                    max: 10,
+                },
+            ),
+        ] {
+            let status_error = post_batch_check_mint_quote(
+                AuthHeader::None,
+                State(state.clone()),
+                Path("bolt11".to_string()),
+                Json(BatchCheckMintQuoteRequest {
+                    quotes: quotes.clone(),
+                }),
+            )
+            .await
+            .unwrap_err();
+            let mint_error = cache_post_batch_mint(
+                AuthHeader::None,
+                State(state.clone()),
+                Path("bolt11".to_string()),
+                Json(BatchMintRequest {
+                    quotes,
+                    outputs: vec![],
+                    quote_amounts: None,
+                    signatures: None,
+                }),
+            )
+            .await
+            .unwrap_err();
+
+            let expected = into_response(expected);
+            let expected_status = expected.status();
+            let expected_body = axum::body::to_bytes(expected.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            for response in [status_error, mint_error] {
+                assert_eq!(response.status(), expected_status);
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                assert_eq!(body, expected_body);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_status_accepts_configured_limit() {
+        let state = create_test_state().await;
+        let mut quotes = Vec::new();
+        for _ in 0..10 {
+            quotes.push(create_paid_bolt11_quote(&state).await);
+        }
+        let response = post_batch_check_mint_quote(
+            AuthHeader::None,
+            State(state),
+            Path("bolt11".to_string()),
+            Json(BatchCheckMintQuoteRequest { quotes }),
+        )
+        .await
+        .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let quotes: Vec<MintQuoteBolt11Response<QuoteId>> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(quotes.len(), 10);
     }
 
     #[tokio::test]
