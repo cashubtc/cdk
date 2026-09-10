@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cdk_common::{
     AuthToken, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
-    MintQuoteResponse,
+    MintQuoteResponse, PaymentRequestPayload,
 };
 
 use super::Error;
@@ -98,6 +98,36 @@ pub trait MintConnector: Debug {
         &self,
         url: &str,
     ) -> Result<crate::lightning_address::LnurlPayInvoiceResponse, Error>;
+
+    /// Whether NUT-18 proofs can be handed to this receiver URL over this
+    /// connector's transport.
+    ///
+    /// The wallet calls this before reserving any proofs, so every refusal
+    /// knowable up front (no delivery support, an unusable URL, a transport
+    /// that verifies no certificate) fails with nothing to revoke. An
+    /// implementor that overrides
+    /// [`MintConnector::post_payment_request_payload`] overrides this too.
+    fn ensure_payment_request_deliverable(&self, _url: &str) -> Result<(), Error> {
+        Err(Error::PaymentRequestDeliveryUnsupported)
+    }
+
+    /// Deliver a NUT-18 payment request payload to a receiver's HTTP endpoint
+    /// using this connector's transport.
+    ///
+    /// Delivery rides the wallet's configured transport so proxy and Tor
+    /// settings also cover the recipient request. The default fails instead of
+    /// falling back to a direct request, which would leak the payer's egress
+    /// address. NUT-18 defines no response body, so any 2xx counts as
+    /// delivered whatever the receiver answers with. Implementors override
+    /// [`MintConnector::ensure_payment_request_deliverable`] alongside this, so
+    /// the wallet can refuse the payment before it locks the payer's proofs.
+    async fn post_payment_request_payload(
+        &self,
+        _url: &str,
+        _payload: &PaymentRequestPayload,
+    ) -> Result<(), Error> {
+        Err(Error::PaymentRequestDeliveryUnsupported)
+    }
 
     /// Get Active Mint Keys [NUT-01]
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error>;

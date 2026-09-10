@@ -22,6 +22,12 @@ pub enum HttpError {
     /// Serialization error
     #[error("Serialization error: {0}")]
     Serialization(String),
+    /// The endpoint answered with a redirect that was not followed.
+    ///
+    /// Wallet transports run without redirects because a redirected POST can
+    /// lose its body, so the caller has to reach the final URL itself.
+    #[error("Redirect not followed: {0}")]
+    Redirect(String),
     /// Proxy error
     #[error("Proxy error: {0}")]
     Proxy(String),
@@ -74,6 +80,9 @@ impl From<bitreq::Error> for HttpError {
                 }
             }
             Error::AddressNotFound => HttpError::Connection(err.to_string()),
+            Error::TooManyRedirections
+            | Error::RedirectLocationMissing
+            | Error::InfiniteRedirectionLoop => HttpError::Redirect(err.to_string()),
             _ => HttpError::Other(err.to_string()),
         }
     }
