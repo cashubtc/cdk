@@ -13,20 +13,16 @@ use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use cdk_common::{
     Amount, HttpClient, PaymentRequest, PaymentRequestPayload, SupportedMethod, TransportType,
 };
-#[cfg(feature = "nostr")]
+#[cfg(all(feature = "nostr", test))]
 use futures::StreamExt;
 #[cfg(feature = "nostr")]
 use nostr::prelude::nip19::Nip19Profile;
 #[cfg(all(feature = "nostr", test))]
 use nostr::prelude::EventId;
-#[cfg(all(feature = "nostr", target_arch = "wasm32"))]
-use nostr::prelude::{Filter, Kind, UnwrappedGift};
 #[cfg(feature = "nostr")]
 use nostr::prelude::{
     FinalizeEvent, FromBech32, Keys, PrivateDirectMessageBuilder, PublicKey, RelayUrl, ToBech32,
 };
-#[cfg(all(feature = "nostr", target_arch = "wasm32"))]
-use nostr_sdk::prelude::ClientNotification;
 #[cfg(feature = "nostr")]
 use nostr_sdk::prelude::{
     Client as NostrClient, RelayCapabilities, SendEventOutput, SignerAuthenticator,
@@ -42,7 +38,7 @@ use crate::nuts::nut18::Nut10SecretRequest;
 #[cfg(feature = "nostr")]
 use crate::nuts::ProofsMethods;
 use crate::nuts::{CurrencyUnit, Nut10Secret, PaymentMethod, Transport};
-#[cfg(feature = "nostr")]
+#[cfg(all(feature = "nostr", test))]
 use crate::wallet::ReceiveOptions;
 use crate::wallet::{SendOptions, WalletRepository};
 use crate::Wallet;
@@ -595,6 +591,10 @@ mod tests {
         assert!(open.validate_payload(&wrong).is_err());
 
         let repository = test_repository().await;
+        repository
+            .persist_nostr_request(&info)
+            .await
+            .expect("save request");
         for payload in invalid {
             assert!(matches!(
                 repository.receive_nostr_payment(&info, payload).await,
@@ -671,6 +671,10 @@ mod tests {
 
         let (info, payload) = nostr_request_and_payload().await;
         let repository = test_repository().await;
+        repository
+            .persist_nostr_request(&info)
+            .await
+            .expect("save request");
         let connector = Arc::new(MockMintConnector::new());
         repository
             .create_wallet(
@@ -713,6 +717,10 @@ mod tests {
             }],
         }));
         let repository = test_repository().await;
+        repository
+            .persist_nostr_request(&info)
+            .await
+            .expect("save request");
         let wallet = repository
             .create_wallet(
                 payload.mint.clone(),
@@ -743,6 +751,50 @@ mod tests {
             Amount::from(1)
         );
         assert_eq!(connector.captured_swap_requests().len(), 1);
+    }
+
+    #[cfg(feature = "nostr")]
+    #[tokio::test]
+    async fn nostr_request_defaults_to_configured_mints_for_requested_unit() {
+        use crate::wallet::test_utils::{test_mint_url, MockMintConnector};
+        use crate::wallet::WalletConfig;
+
+        let repository = test_repository().await;
+        let params = CreateRequestParams {
+            transport: "nostr".to_string(),
+            nostr_relays: Some(vec!["wss://relay.example".to_string()]),
+            ..Default::default()
+        };
+        assert!(matches!(
+            repository.create_request(params.clone()).await,
+            Err(Error::InvalidPaymentRequest)
+        ));
+        repository
+            .create_wallet(
+                test_mint_url(),
+                CurrencyUnit::Sat,
+                Some(WalletConfig {
+                    mint_connector: Some(Arc::new(MockMintConnector::new())),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .expect("wallet");
+        let (request, info) = repository
+            .create_request(params.clone())
+            .await
+            .expect("request");
+        assert_eq!(request.mints, vec![test_mint_url()]);
+        assert_eq!(info.unwrap().trusted_mints, request.mints);
+        assert!(matches!(
+            repository
+                .create_request(CreateRequestParams {
+                    unit: "msat".to_string(),
+                    ..params
+                })
+                .await,
+            Err(Error::InvalidPaymentRequest)
+        ));
     }
 
     #[cfg(feature = "nostr")]
@@ -790,6 +842,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            repository.persist_nostr_request(&validation).await.unwrap();
             let result = repository.receive_nostr_payment(&validation, payload).await;
             assert_eq!(result.is_ok(), accepted, "{listed} {method} {method_fee}");
             assert_eq!(
@@ -1498,7 +1551,7 @@ fn payment_request_uses_unlisted_mint(
     !payment_request.mints.is_empty() && !payment_request.mints.contains(mint_url)
 }
 
-async fn payment_request_amount_for_wallet(
+pub(super) async fn payment_request_amount_for_wallet(
     amount: Amount,
     payment_request: &PaymentRequest,
     wallet: &Wallet,
@@ -1656,7 +1709,9 @@ pub struct CreateRequestParams {
     pub http_url: Option<String>, // when transport == http
     /// List of Nostr relay URLs to include in the nprofile (used if `transport == nostr`)
     pub nostr_relays: Option<Vec<String>>, // when transport == nostr
-    /// Optional list of mint URLs the receiver accepts or prefers; `None` emits no mint list
+    /// Optional list of mint URLs the receiver accepts or prefers.
+    /// For Nostr, an empty list defaults to locally configured mints for the unit;
+    /// other transports emit no mint list.
     pub mints: Option<Vec<String>>,
     /// Whether the mint list is preferred rather than required
     pub mint_preferred: Option<bool>,
@@ -1796,12 +1851,10 @@ impl NostrWaitInfo {
         }
     }
 
-    #[cfg(test)]
     pub(super) fn validate_amount(&self, amount: Amount) -> Result<(), Error> {
         self.validation().validate_amount(amount)
     }
 
-    #[cfg(test)]
     pub(super) fn validate_payload(&self, payload: &PaymentRequestPayload) -> Result<(), Error> {
         self.validation().validate_payload(payload)
     }
@@ -2080,7 +2133,10 @@ impl WalletRepository {
     ///
     /// Notes:
     /// - Sets `single_use = true` to discourage replays.
-    /// - Retain the returned wait information to receive and validate the payment.
+    /// - Persists Nostr keys, request constraints, and mint trust in the repository KV
+    ///   before returning. After restarting, use the payment ID with
+    ///   `check_nostr_request` or `wait_for_nostr_request`.
+    /// - Persistence failures are returned before the public request can be shared.
     #[cfg(feature = "nostr")]
     pub async fn create_request(
         &self,
@@ -2188,6 +2244,9 @@ impl WalletRepository {
             trusted_mints,
         });
 
+        if let Some(info) = &nostr_info {
+            self.persist_nostr_request(info).await?;
+        }
         Ok((req, nostr_info))
     }
 
@@ -2263,26 +2322,13 @@ impl WalletRepository {
         Ok(req)
     }
 
-    /// Validate and redeem a payload against the original request and mint trust.
-    /// This does not persist the request or enforce single-use across calls.
-    #[cfg(feature = "nostr")]
-    #[instrument(skip_all)]
-    pub async fn receive_nostr_payment(
-        &self,
-        info: &NostrWaitInfo,
-        payload: PaymentRequestPayload,
-    ) -> Result<Amount, Error> {
-        self.receive_validated_nostr_payment(&info.validation(), payload)
-            .await
-    }
-
     #[cfg(feature = "nostr")]
     async fn preflight_nostr_payment(
         &self,
         validation: &NostrRequestValidation,
         payload: &PaymentRequestPayload,
     ) -> Result<Wallet, Error> {
-        validation.validate_payload(&payload)?;
+        validation.validate_payload(payload)?;
         let wallet = self
             .get_or_create_wallet(payload.mint.clone(), payload.unit.clone(), None)
             .await?;
@@ -2315,33 +2361,19 @@ impl WalletRepository {
         Ok(wallet)
     }
 
-    #[cfg(feature = "nostr")]
-    async fn receive_validated_nostr_payment(
-        &self,
-        validation: &NostrRequestValidation,
-        payload: PaymentRequestPayload,
-    ) -> Result<Amount, Error> {
-        let wallet = self.preflight_nostr_payment(validation, &payload).await?;
-        let token =
-            crate::nuts::Token::new(payload.mint, payload.proofs, payload.memo, payload.unit);
-        wallet
-            .receive(&token.to_string(), ReceiveOptions::default())
-            .await
-    }
-
     // None means this payload was definitively rejected, so keep listening.
     // Errors mean infrastructure failure or a potentially committed swap.
     #[cfg(feature = "nostr")]
-    async fn receive_nostr_stream_payload(
+    pub(super) async fn preflight_nostr_stream_payload(
         &self,
         validation: &NostrRequestValidation,
-        payload: PaymentRequestPayload,
-    ) -> Result<Option<Amount>, Error> {
+        payload: &PaymentRequestPayload,
+    ) -> Result<Option<Wallet>, Error> {
         use std::collections::HashSet;
 
         use crate::nuts::{CheckStateRequest, State};
 
-        let wallet = match self.preflight_nostr_payment(validation, &payload).await {
+        let wallet = match self.preflight_nostr_payment(validation, payload).await {
             Ok(wallet) => wallet,
             Err(
                 Error::InvalidPaymentRequest
@@ -2377,6 +2409,21 @@ impl WalletRepository {
             return Err(Error::TokenPending);
         }
 
+        Ok(Some(wallet))
+    }
+
+    #[cfg(all(feature = "nostr", test))]
+    async fn receive_nostr_stream_payload(
+        &self,
+        validation: &NostrRequestValidation,
+        payload: PaymentRequestPayload,
+    ) -> Result<Option<Amount>, Error> {
+        let Some(wallet) = self
+            .preflight_nostr_stream_payload(validation, &payload)
+            .await?
+        else {
+            return Ok(None);
+        };
         let token =
             crate::nuts::Token::new(payload.mint, payload.proofs, payload.memo, payload.unit);
         match wallet
@@ -2402,7 +2449,7 @@ impl WalletRepository {
         }
     }
 
-    #[cfg(all(feature = "nostr", any(not(target_arch = "wasm32"), test)))]
+    #[cfg(all(feature = "nostr", test))]
     async fn receive_nostr_payment_stream<S>(
         &self,
         validation: &NostrRequestValidation,
@@ -2424,67 +2471,36 @@ impl WalletRepository {
         Err(Error::PaymentPending)
     }
 
-    /// Listen for a payment matching the original request, including net amount,
-    /// unit, ID, mint trust, and spending conditions. Invalid payments are ignored;
-    /// operational and indeterminate failures are returned for recovery.
-    #[cfg(all(feature = "nostr", not(target_arch = "wasm32")))]
+    /// Validate and redeem a payload for a persisted Nostr request.
+    ///
+    /// The saved request is authoritative. Completed requests return the original
+    /// received amount without redeeming another token.
+    #[cfg(feature = "nostr")]
     #[instrument(skip_all)]
-    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
-        use crate::wallet::streams::nostr::NostrPaymentEventStream;
-        let validation = info.validation();
-        let stream = NostrPaymentEventStream::new(info.keys, info.relays, info.pubkey);
-        let cancel = stream.cancel_token();
-        let result = self.receive_nostr_payment_stream(&validation, stream).await;
-        cancel.cancel();
-        Ok(result?)
+    pub async fn receive_nostr_payment(
+        &self,
+        info: &NostrWaitInfo,
+        payload: PaymentRequestPayload,
+    ) -> Result<Amount, Error> {
+        let id = info
+            .request
+            .payment_id
+            .as_deref()
+            .ok_or(Error::InvalidPaymentRequest)?;
+        self.receive_nostr_request(id, payload).await
     }
 
-    /// Listen for a payment matching the original request on WASM.
-    /// Invalid payments are ignored; operational and indeterminate failures return.
-    #[cfg(all(feature = "nostr", target_arch = "wasm32"))]
-    #[instrument(skip_all)]
+    /// Resume listening for a previously persisted Nostr request.
+    ///
+    /// Callers may instead use `wait_for_nostr_request` with the payment ID after
+    /// restarting. Dropping this future stops listening without cancelling the request.
+    #[cfg(feature = "nostr")]
     pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
-        let validation = info.validation();
-        let client = NostrClient::builder()
-            .authenticator(SignerAuthenticator::new(info.keys.clone()))
-            .build();
-        for relay in &info.relays {
-            client
-                .add_relay(relay.clone())
-                .capabilities(RelayCapabilities::READ)
-                .await
-                .map_err(|e| Error::Custom(format!("Add relay {relay}: {e}")))?;
-        }
-        client.connect().await;
-        let mut notifications = client.notifications();
-        let filter = Filter::new().pubkey(info.pubkey).kind(Kind::GiftWrap);
-        if let Err(error) = client.subscribe(filter).await {
-            client.disconnect().await;
-            return Err(Error::Custom(format!("Subscribe: {error}")).into());
-        }
-        while let Some(notification) = notifications.next().await {
-            if let ClientNotification::Event { event, .. } = notification {
-                let Ok(unwrapped) = UnwrappedGift::from_gift_wrap(&info.keys, &event) else {
-                    continue;
-                };
-                let Ok(payload) =
-                    serde_json::from_str::<PaymentRequestPayload>(&unwrapped.rumor.content)
-                else {
-                    continue;
-                };
-                match self
-                    .receive_nostr_stream_payload(&validation, payload)
-                    .await
-                {
-                    Ok(None) => continue,
-                    result => {
-                        client.disconnect().await;
-                        return Ok(result?.ok_or(Error::PaymentPending)?);
-                    }
-                }
-            }
-        }
-        client.disconnect().await;
-        Err(Error::PaymentPending.into())
+        let id = info
+            .request
+            .payment_id
+            .as_deref()
+            .ok_or(Error::InvalidPaymentRequest)?;
+        Ok(self.wait_for_nostr_request(id).await?)
     }
 }

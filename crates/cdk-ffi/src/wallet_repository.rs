@@ -320,7 +320,8 @@ impl WalletRepository {
         Ok(backup.into())
     }
 
-    /// Create a payment request and its in-memory Nostr listener information.
+    /// Create a payment request. Nostr requests are saved before this returns.
+    /// After an app restart, use the request's payment ID to check or resume it.
     pub async fn create_request(
         &self,
         params: CreateRequestParams,
@@ -332,7 +333,39 @@ impl WalletRepository {
         })
     }
 
-    /// Validate and redeem one payload against the original request without persisting it.
+    /// List saved requests without network access or exposing their secret keys.
+    pub async fn list_nostr_requests(&self) -> Result<Vec<NostrRequest>, FfiError> {
+        Ok(self
+            .inner
+            .list_nostr_requests()
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    /// Read a request's durable status without network access.
+    pub async fn get_nostr_request(&self, id: String) -> Result<Option<NostrRequest>, FfiError> {
+        Ok(self.inner.get_nostr_request(&id).await?.map(Into::into))
+    }
+
+    /// Recover interrupted redemption and check for payments retained by the relays.
+    pub async fn check_nostr_request(&self, id: String) -> Result<NostrRequest, FfiError> {
+        Ok(self.inner.check_nostr_request(&id).await?.into())
+    }
+
+    /// Resume listening after an app restart. Cancelling this future leaves the request pending.
+    pub async fn wait_for_nostr_request(&self, id: String) -> Result<Amount, FfiError> {
+        Ok(self.inner.wait_for_nostr_request(&id).await?.into())
+    }
+
+    /// Stop accepting payment for a pending request and discard its secret key.
+    /// An uncertain receive operation must be recovered before cancellation.
+    pub async fn cancel_nostr_request(&self, id: String) -> Result<(), FfiError> {
+        Ok(self.inner.cancel_nostr_request(&id).await?)
+    }
+
+    /// Validate and redeem one payload using the saved request constraints.
     pub async fn receive_nostr_payment(
         &self,
         info: Arc<NostrWaitInfo>,
@@ -345,7 +378,7 @@ impl WalletRepository {
             .into())
     }
 
-    /// Listen with full request validation. Retain the wait information to resume listening.
+    /// Listen with full request validation. Use the payment ID to resume after restarting.
     pub async fn wait_for_nostr_payment(
         &self,
         info: Arc<NostrWaitInfo>,
@@ -461,6 +494,53 @@ mod tests {
                 rate_limit,
             },
         )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn nostr_request_can_be_listed_and_cancelled_after_ffi_repository_restart() {
+        let db = WalletSqliteDatabase::new_in_memory().unwrap();
+        let repo =
+            WalletRepository::new(MNEMONIC.to_string(), custom_wallet_store(db.clone())).unwrap();
+        let created = repo
+            .create_request(CreateRequestParams {
+                amount: Some(10),
+                transport: "nostr".to_string(),
+                nostr_relays: Some(vec!["wss://relay.example".to_string()]),
+                mints: Some(vec!["https://mint.example".to_string()]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let id = created.payment_request.payment_id().unwrap();
+        assert!(repo.get_wallets().await.is_empty());
+        drop(created);
+        drop(repo);
+        let reopened =
+            WalletRepository::new(MNEMONIC.to_string(), custom_wallet_store(db)).unwrap();
+        let requests = reopened.list_nostr_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].payment_request.payment_id(), Some(id.clone()));
+        assert_eq!(requests[0].payment_request.amount().unwrap().value, 10);
+        assert_eq!(requests[0].status, NostrRequestStatus::Pending);
+        reopened.cancel_nostr_request(id.clone()).await.unwrap();
+        assert_eq!(
+            reopened
+                .check_nostr_request(id.clone())
+                .await
+                .unwrap()
+                .status,
+            NostrRequestStatus::Cancelled
+        );
+        assert!(reopened.wait_for_nostr_request(id.clone()).await.is_err());
+        assert_eq!(
+            reopened
+                .get_nostr_request(id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            NostrRequestStatus::Cancelled
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

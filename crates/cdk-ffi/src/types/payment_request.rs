@@ -357,7 +357,8 @@ pub struct CreateRequestParams {
     pub http_url: Option<String>,
     /// Nostr relay URLs (required if transport is "nostr")
     pub nostr_relays: Option<Vec<String>>,
-    /// Optional list of mint URLs the receiver accepts or prefers; `None` emits no mint list
+    /// Optional accepted or preferred mints. Nostr requests default to locally
+    /// configured mints for the requested unit when no list is supplied.
     pub mints: Option<Vec<String>>,
     /// Whether the mint list is preferred rather than required
     pub mint_preferred: Option<bool>,
@@ -460,9 +461,9 @@ pub fn decode_create_request_params(json: String) -> Result<CreateRequestParams,
 
 /// Information needed to wait for an incoming Nostr payment
 ///
-/// Returned by `create_request` when the transport is `nostr`. Pass this to
-/// `wait_for_nostr_payment` to connect, subscribe, and receive the incoming
-/// payment on the specified relays.
+/// Returned by `create_request` when the transport is `nostr`.
+/// The request is already persisted. Use its payment ID with
+/// `WalletRepository::wait_for_nostr_request` to resume after an app restart.
 #[derive(uniffi::Object)]
 pub struct NostrWaitInfo {
     inner: cdk::wallet::payment_request::NostrWaitInfo,
@@ -518,6 +519,49 @@ pub struct CreateRequestResult {
     pub payment_request: Arc<PaymentRequest>,
     /// Nostr wait info (present when transport is "nostr")
     pub nostr_wait_info: Option<Arc<NostrWaitInfo>>,
+}
+
+/// Durable state of a Nostr payment request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum NostrRequestStatus {
+    /// Waiting for a matching payment.
+    Pending,
+    /// A receive operation needs completion or recovery.
+    Receiving,
+    /// Payment was successfully redeemed.
+    Completed,
+    /// Cancelled locally.
+    Cancelled,
+}
+
+/// Saved Nostr request without secret keys. The payment ID is the recovery handle.
+#[derive(uniffi::Record)]
+pub struct NostrRequest {
+    /// Original public payment request.
+    pub payment_request: Arc<PaymentRequest>,
+    /// Durable request status.
+    pub status: NostrRequestStatus,
+    /// Amount received after mint input fees.
+    pub received: Option<Amount>,
+    /// Receive saga UUID for transaction correlation.
+    pub receive_operation_id: Option<String>,
+}
+
+impl From<cdk::wallet::NostrRequest> for NostrRequest {
+    fn from(value: cdk::wallet::NostrRequest) -> Self {
+        use cdk::wallet::NostrRequestStatus as Status;
+        Self {
+            payment_request: Arc::new(PaymentRequest::from_inner(value.request)),
+            status: match value.status {
+                Status::Pending => NostrRequestStatus::Pending,
+                Status::Receiving => NostrRequestStatus::Receiving,
+                Status::Completed => NostrRequestStatus::Completed,
+                Status::Cancelled => NostrRequestStatus::Cancelled,
+            },
+            received: value.received.map(Into::into),
+            receive_operation_id: value.receive_operation_id.map(|id| id.to_string()),
+        }
+    }
 }
 
 /// Payment Request Payload
