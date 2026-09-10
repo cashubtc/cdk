@@ -836,6 +836,18 @@ impl MeltSaga<SetupComplete> {
             .await
         {
             Ok(pay) if pay.status == MeltQuoteState::Paid => {
+                if pay.total_spent.unit() != &quote.unit {
+                    // Payment already succeeded. Preserve the paid handoff so
+                    // rejecting the response cannot release the input proofs.
+                    self.persist_paid_payment(&pay).await?;
+                    tracing::error!(
+                        quote_id = %quote.id,
+                        expected_unit = %quote.unit,
+                        actual_unit = %pay.total_spent.unit(),
+                        "successful payment response uses the wrong quote unit",
+                    );
+                    return Err(Error::UnitMismatch);
+                }
                 tracing::info!(
                     quote_id = %quote.id,
                     saga_id = %self.operation_id,
