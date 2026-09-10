@@ -102,9 +102,10 @@ struct Cli {
     #[arg(long, default_value = "0")]
     keyset_refresh_interval_ms: u64,
     /// Automatically rotate active keysets once they reach this age, in seconds.
-    /// Defaults to 7776000 (90 days), matching the embedded mint. A value of 0
-    /// disables auto-rotation.
-    #[arg(long, default_value = "7776000")]
+    /// 0 (the default) disables it, matching the embedded mint, so an upgrade
+    /// never rotates an existing signatory's keysets on its own. 7776000 is a
+    /// reasonable 90 day interval.
+    #[arg(long, default_value = "0")]
     rotation_interval_secs: u64,
 }
 

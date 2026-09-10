@@ -448,6 +448,7 @@ impl DbSignatory {
         }
 
         let mut staged = Ok(());
+        let mut rotated: Vec<(Id, CurrencyUnit, Id)> = Vec::with_capacity(due.len());
         for info in &due {
             let active_age = now.saturating_sub(info.valid_from);
 
@@ -459,7 +460,7 @@ impl DbSignatory {
                 max_age
             );
 
-            staged = self
+            match self
                 .stage_rotation(
                     &mut *tx,
                     RotateKeyArguments {
@@ -475,14 +476,27 @@ impl DbSignatory {
                     },
                 )
                 .await
-                .map(|_| ());
-
-            if staged.is_err() {
-                break;
+            {
+                Ok(replacement) => rotated.push((info.id, info.unit.clone(), replacement.id)),
+                Err(err) => {
+                    staged = Err(err);
+                    break;
+                }
             }
         }
 
-        self.finish_rotation(tx, staged).await
+        self.finish_rotation(tx, staged).await?;
+
+        for (retired, unit, replacement) in &rotated {
+            tracing::info!(
+                "Auto-rotated keyset {} for unit {} into keyset {}",
+                retired,
+                unit,
+                replacement
+            );
+        }
+
+        Ok(())
     }
 
     /// Spawn the background keyset auto-rotation task.

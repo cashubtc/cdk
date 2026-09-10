@@ -91,8 +91,8 @@ impl Settings {
             ),
         });
 
-        self.info = self.info.clone().from_env();
-        self.signatory = Some(self.signatory.clone().unwrap_or_default().from_env()?);
+        self.info = self.info.clone().from_env()?;
+        self.signatory = Some(self.signatory.clone().unwrap_or_default().from_env());
 
         self.mint_info = self.mint_info.clone().from_env();
         // CDK_MINTD_PAYMENT_BACKEND_* env vars only apply when there is exactly

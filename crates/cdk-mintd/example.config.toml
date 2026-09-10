@@ -17,6 +17,12 @@ mnemonic = "env:CDK_MINTD_MNEMONIC"
 # If unset (default), existing keysets are preserved, but new ones use V2.
 # use_keyset_v2 = true
 
+# Automatically rotate active keysets once they reach this age, in seconds.
+# Applies to the embedded signatory; a remote [signatory] rotates on its own
+# schedule. Defaults to 0, which is off; 7776000 is a reasonable 90 day
+# interval.
+# keyset_rotation_interval_seconds = 7776000
+
 [info.quote_ttl]
 # Prefer explicit fields over inline tables for readability and reviewable edits
 mint_ttl = 600
@@ -39,12 +45,6 @@ enabled = false
 # port = 15060
 # tls_dir = "/path/to/tls"
 # allow_insecure = false
-
-# Automatically rotate active keysets once they reach this age, in seconds.
-# Applies to the embedded signatory (enabled = false); a remote signatory
-# rotates on its own schedule. Defaults to 7776000 (90 days); set to 0 to
-# disable auto-rotation.
-# keyset_rotation_interval_seconds = 7776000
 
 # Optional existing management RPC for immediate mint metadata and keyset
 # operations. Configuration commands access the database directly.
