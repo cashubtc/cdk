@@ -24,16 +24,6 @@ pub struct NostrPaymentEventStream {
     init_fut: Option<RecvFuture<'static, Result<(), Error>>>,
     // Future to detect external cancellation
     cancel_fut: Option<RecvFuture<'static, ()>>,
-    // Future awaiting the next item from `rx`
-    rx_future: Option<
-        RecvFuture<
-            'static,
-            (
-                Option<Result<PaymentRequestPayload, Error>>,
-                mpsc::Receiver<Result<PaymentRequestPayload, Error>>,
-            ),
-        >,
-    >,
 }
 
 impl NostrPaymentEventStream {
@@ -59,59 +49,20 @@ impl NostrPaymentEventStream {
 
             // Subscribe to events addressed to `pubkey`
             let filter = Filter::new().pubkey(pubkey).kind(Kind::GiftWrap);
-            let mut notifications = client.notifications();
+            let notifications = client.notifications();
             client
                 .subscribe(filter)
                 .await
                 .map_err(|e| Error::Custom(format!("Subscribe: {e}")))?;
 
             // Pump notifications in a background task into the channel until cancelled
-            let _bg = tokio::spawn(async move {
-                loop {
-                    let notification = tokio::select! {
-                        _ = init_cancel.cancelled() => break,
-                        notification = notifications.next() => notification,
-                    };
-                    let event = match notification {
-                        Some(ClientNotification::Event { event, .. }) => event,
-                        Some(_) => continue,
-                        None => {
-                            let _ = tx
-                                .send(Err(Error::Custom("Notification stream closed".to_string())))
-                                .await;
-                            break;
-                        }
-                    };
-
-                    match UnwrappedGift::from_gift_wrap(&keys, &event) {
-                        Ok(unwrapped) => {
-                            match serde_json::from_str::<PaymentRequestPayload>(
-                                &unwrapped.rumor.content,
-                            ) {
-                                Ok(payload) => {
-                                    if tx.send(Ok(payload)).await.is_err() {
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    let _ = tx
-                                        .send(Err(Error::Custom(format!(
-                                            "Invalid payload JSON: {e}"
-                                        ))))
-                                        .await;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            let _ = tx
-                                .send(Err(Error::Custom(format!("Unwrap gift wrap failed: {e}"))))
-                                .await;
-                        }
-                    }
-                }
-
-                client.disconnect().await;
-            });
+            tokio::spawn(pump_notifications(
+                client,
+                keys,
+                notifications,
+                tx,
+                init_cancel,
+            ));
 
             Ok(())
         });
@@ -121,13 +72,63 @@ impl NostrPaymentEventStream {
             rx: Some(rx),
             init_fut: Some(init_fut),
             cancel_fut: None,
-            rx_future: None,
         }
     }
 
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel.clone()
     }
+}
+
+impl Drop for NostrPaymentEventStream {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+async fn pump_notifications<S>(
+    client: Client,
+    keys: Keys,
+    mut notifications: S,
+    tx: mpsc::Sender<Result<PaymentRequestPayload, Error>>,
+    cancel: CancellationToken,
+) where
+    S: Stream<Item = ClientNotification> + Unpin,
+{
+    loop {
+        let notification = tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = tx.closed() => break,
+            notification = notifications.next() => notification,
+        };
+        let closed = notification.is_none();
+        let item = match notification {
+            Some(ClientNotification::Event { event, .. }) => {
+                match UnwrappedGift::from_gift_wrap(&keys, &event) {
+                    Ok(unwrapped) => {
+                        serde_json::from_str::<PaymentRequestPayload>(&unwrapped.rumor.content)
+                            .map_err(|e| Error::Custom(format!("Invalid payload JSON: {e}")))
+                    }
+                    Err(e) => Err(Error::Custom(format!("Unwrap gift wrap failed: {e}"))),
+                }
+            }
+            Some(_) => continue,
+            None => Err(Error::Custom("Notification stream closed".to_string())),
+        };
+
+        // Every result observes receiver closure and cancellation, including
+        // malformed messages and sends blocked by a full channel.
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            result = tx.send(item) => {
+                if result.is_err() || closed {
+                    break;
+                }
+            }
+        }
+    }
+
+    client.disconnect().await;
 }
 
 impl Stream for NostrPaymentEventStream {
@@ -148,6 +149,7 @@ impl Stream for NostrPaymentEventStream {
             if fut.poll_unpin(cx).is_ready() {
                 // Drop receiver to end the stream
                 this.rx.take();
+                this.init_fut.take();
                 return Poll::Ready(None);
             }
             this.cancel_fut = Some(fut);
@@ -169,32 +171,122 @@ impl Stream for NostrPaymentEventStream {
             }
         }
 
-        // Drive next item from the internal channel
-        if this.rx.is_none() {
-            return Poll::Ready(None);
+        match this.rx.as_mut() {
+            Some(rx) => rx.poll_recv(cx),
+            None => Poll::Ready(None),
         }
+    }
+}
 
-        if this.rx_future.is_none() {
-            let mut rx = this.rx.take().expect("receiver");
-            this.rx_future = Some(Box::pin(async move {
-                let item = rx.recv().await;
-                (item, rx)
-            }));
-        }
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
 
-        let mut fut = this.rx_future.take().ok_or(Error::Internal)?;
-        match fut.poll_unpin(cx) {
-            Poll::Pending => {
-                this.rx_future = Some(fut);
-                Poll::Pending
-            }
-            Poll::Ready((item, rx)) => {
-                this.rx = Some(rx);
-                match item {
-                    None => Poll::Ready(None),
-                    Some(item) => Poll::Ready(Some(item)),
-                }
-            }
-        }
+    use futures::{poll, stream};
+    use nostr::prelude::{EventBuilder, FinalizeEvent, RelayUrl, SubscriptionId};
+    use nostr_sdk::prelude::RelayStatus;
+    use tokio::time::timeout;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn dropping_stream_stops_idle_pump() {
+        let keys = Keys::generate();
+        let mut stream = NostrPaymentEventStream::new(keys.clone(), vec![], keys.public_key());
+        let (tx, rx) = mpsc::channel(1);
+        stream.rx = Some(rx);
+        let client = Client::default();
+        let relay_url = "wss://relay.example.com";
+        client.add_relay(relay_url).await.expect("add relay");
+        let relay = client
+            .relay(relay_url)
+            .await
+            .expect("lookup relay")
+            .expect("relay");
+        assert_ne!(relay.status(), RelayStatus::Terminated);
+        let pump = pump_notifications(
+            client.clone(),
+            keys,
+            stream::pending(),
+            tx,
+            stream.cancel_token(),
+        );
+        tokio::pin!(pump);
+        assert!(poll!(&mut pump).is_pending());
+        // Keep the receiver alive separately: termination must come from Drop
+        // cancellation, not from a failed send or another relay notification.
+        let _rx = stream.rx.take().expect("receiver");
+        drop(stream);
+        timeout(Duration::from_secs(1), pump)
+            .await
+            .expect("drop must stop idle pump");
+        // Retaining the client ensures this checks explicit disconnect cleanup.
+        assert_eq!(relay.status(), RelayStatus::Terminated);
+    }
+
+    #[tokio::test]
+    async fn closing_receiver_stops_idle_pump() {
+        let (tx, rx) = mpsc::channel(1);
+        let pump = pump_notifications(
+            Client::default(),
+            Keys::generate(),
+            stream::pending(),
+            tx,
+            CancellationToken::new(),
+        );
+        tokio::pin!(pump);
+        assert!(poll!(&mut pump).is_pending());
+        drop(rx);
+        timeout(Duration::from_secs(1), pump)
+            .await
+            .expect("receiver closure must stop idle pump");
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_backpressured_malformed_message() {
+        let keys = Keys::generate();
+        let event = EventBuilder::new(Kind::GiftWrap, "invalid ciphertext")
+            .finalize(&keys)
+            .expect("signed event");
+        let notification = ClientNotification::Event {
+            relay_url: RelayUrl::parse("wss://relay.example.com").expect("relay URL"),
+            subscription_id: SubscriptionId::new("test"),
+            event: Box::new(event),
+        };
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.send(Err(Error::Internal)).await.expect("fill channel");
+        let cancel = CancellationToken::new();
+        let pump = pump_notifications(
+            Client::default(),
+            keys,
+            stream::iter([notification]).chain(stream::pending()),
+            tx,
+            cancel.clone(),
+        );
+        tokio::pin!(pump);
+        // The notification is ready, so this blocks on sending its parse error.
+        assert!(poll!(&mut pump).is_pending());
+        cancel.cancel();
+        timeout(Duration::from_secs(1), pump)
+            .await
+            .expect("cancellation must interrupt a blocked send");
+        assert!(matches!(rx.recv().await, Some(Err(Error::Internal))));
+        assert!(rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_receive_does_not_end_stream() {
+        let keys = Keys::generate();
+        let mut stream = NostrPaymentEventStream::new(keys.clone(), vec![], keys.public_key());
+        stream.init_fut = None;
+        let (tx, rx) = mpsc::channel(1);
+        stream.rx = Some(rx);
+        assert!(poll!(stream.next()).is_pending());
+        assert!(poll!(stream.next()).is_pending());
+        tx.send(Err(Error::Internal)).await.expect("send item");
+        assert!(matches!(stream.next().await, Some(Err(Error::Internal))));
+        stream.cancel_token().cancel();
+        assert!(stream.next().await.is_none());
+        assert!(tx.is_closed());
     }
 }
