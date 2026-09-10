@@ -1,0 +1,44 @@
+name: Report branch CI failure
+
+on:
+  workflow_run:
+    workflows: [CI, Nutshell integration]
+    types: [completed]
+    branches: [main, "v[0-9]*.[0-9]*.x"]
+
+permissions:
+  issues: write
+
+# Serialize updates from CI and Nutshell for the same branch.
+concurrency:
+  group: ci-branch-failure-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  report:
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Never check out or execute code from the triggering run.
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const branch = run.head_branch;
+            const title = `CI failure: ${branch}`;
+            const marker = `<!-- cdk-ci-failure:${branch} -->`;
+            const body = `${marker}\n${run.name} failed on ${branch}.\n\n` +
+              `Commit: ${run.head_sha}\n\n[Failed workflow run](${run.html_url})\n\n` +
+              `Investigate the failed jobs and fix or revert the change. Close this issue once ${branch} is healthy.`;
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              ...context.repo, state: 'open', creator: 'github-actions[bot]', per_page: 100
+            });
+            const issue = issues.find(issue => !issue.pull_request && issue.body?.includes(marker));
+            if (issue) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: issue.number, body });
+            } else {
+              await github.rest.issues.create({ ...context.repo, title, body });
+            }

@@ -2,6 +2,7 @@ name: "FFI - Nightly Bindings"
 
 permissions:
   contents: read
+  actions: read
 
 on:
   schedule:
