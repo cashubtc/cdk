@@ -111,7 +111,10 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
                 }
             }
 
-            Some(from_ws) = socket.next() => {
+            from_ws = socket.next() => {
+                let Some(from_ws) = from_ws else {
+                    break;
+                };
                 let text = match from_ws {
                     Ok(Message::Text(text)) => text.to_string(),
                     Ok(Message::Binary(bin)) => String::from_utf8_lossy(&bin).to_string(),
