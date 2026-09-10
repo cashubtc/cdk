@@ -370,6 +370,20 @@ impl WalletRepository {
         Ok(balance_map)
     }
 
+    /// Get wallet balances for wallets matching a specific currency unit
+    pub async fn get_balances_for_unit(
+        &self,
+        unit: CurrencyUnit,
+    ) -> Result<HashMap<WalletKey, Amount>, FfiError> {
+        let unit_cdk: cdk::nuts::CurrencyUnit = unit.into();
+        let balances = self.inner.get_balances_for_unit(&unit_cdk).await?;
+        let mut balance_map = HashMap::new();
+        for (wallet_key, amount) in balances {
+            balance_map.insert(wallet_key.into(), amount.into());
+        }
+        Ok(balance_map)
+    }
+
     /// Get all wallets from WalletRepository
     pub async fn get_wallets(&self) -> Vec<Arc<crate::wallet::Wallet>> {
         let wallets = self.inner.get_wallets().await;

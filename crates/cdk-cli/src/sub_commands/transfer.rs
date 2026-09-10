@@ -88,7 +88,7 @@ async fn select_mint(
     exclude_mint: Option<&MintUrl>,
     unit: &cdk::nuts::CurrencyUnit,
 ) -> Result<MintUrl> {
-    let balances = wallet_repository.get_balances().await?;
+    let balances = wallet_repository.get_balances_for_unit(unit).await?;
 
     // Filter out excluded mint if provided
     let available_mints: Vec<_> = balances
@@ -130,11 +130,12 @@ pub async fn transfer(
     // Get source mint URL either from args or by prompting user
     let source_mint_url = if let Some(source_mint) = &sub_command_args.source_mint {
         let url = MintUrl::from_str(source_mint)?;
-        // Verify the mint is in the wallet
-        if !wallet_repository.has_mint(&url).await {
+        // Verify the mint has a wallet for the requested unit
+        if !wallet_repository.has_wallet(&url, unit).await {
             bail!(
-                "Source mint {} is not in the wallet. Please add it first.",
-                url
+                "Source mint {} has no wallet for unit {}. Please add it first.",
+                url,
+                unit
             );
         }
         url
@@ -152,11 +153,12 @@ pub async fn transfer(
     // Get target mint URL either from args or by prompting user
     let target_mint_url = if let Some(target_mint) = &sub_command_args.target_mint {
         let url = MintUrl::from_str(target_mint)?;
-        // Verify the mint is in the wallet
-        if !wallet_repository.has_mint(&url).await {
+        // Verify the mint has a wallet for the requested unit
+        if !wallet_repository.has_wallet(&url, unit).await {
             bail!(
-                "Target mint {} is not in the wallet. Please add it first.",
-                url
+                "Target mint {} has no wallet for unit {}. Please add it first.",
+                url,
+                unit
             );
         }
         url
