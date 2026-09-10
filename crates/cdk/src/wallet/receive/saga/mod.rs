@@ -78,8 +78,11 @@ pub(crate) struct ReceiveSaga<'a, S> {
 impl<'a> ReceiveSaga<'a, Initial> {
     /// Create a new receive saga in the Initial state.
     pub fn new(wallet: &'a Wallet) -> Self {
-        let operation_id = uuid::Uuid::now_v7();
+        Self::with_operation_id(wallet, uuid::Uuid::now_v7())
+    }
 
+    /// Use an operation ID persisted by a higher-level receive workflow.
+    pub(crate) fn with_operation_id(wallet: &'a Wallet, operation_id: uuid::Uuid) -> Self {
         Self {
             wallet,
             compensations: new_compensations(),

@@ -41,6 +41,8 @@ pub mod bip321;
 mod blind_signature;
 #[cfg(feature = "nostr")]
 mod nostr_backup;
+#[cfg(feature = "nostr")]
+mod nostr_requests;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub use mint_connector::{
     RateLimitedTorAuthHttpClient, RateLimitedTorHttpClient, TorAuthHttpClient, TorHttpClient,
@@ -94,6 +96,8 @@ pub use mint_connector::{
 pub use mint_metadata_cache::MintMetadata;
 #[cfg(feature = "nostr")]
 pub use nostr_backup::{BackupOptions, BackupResult, RestoreOptions, RestoreResult};
+#[cfg(feature = "nostr")]
+pub use nostr_requests::{NostrRequest, NostrRequestStatus};
 #[cfg(feature = "npubcash")]
 pub use npubcash::derive_npubcash_secret_key_from_seed;
 #[cfg(feature = "nwc")]

@@ -170,7 +170,7 @@ impl Stream for NostrPaymentEventStream {
         }
 
         // Drive next item from the internal channel
-        if this.rx.is_none() {
+        if this.rx.is_none() && this.rx_future.is_none() {
             return Poll::Ready(None);
         }
 
@@ -196,5 +196,11 @@ impl Stream for NostrPaymentEventStream {
                 }
             }
         }
+    }
+}
+
+impl Drop for NostrPaymentEventStream {
+    fn drop(&mut self) {
+        self.cancel.cancel();
     }
 }
