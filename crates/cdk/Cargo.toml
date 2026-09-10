@@ -178,6 +178,7 @@ name = "revoke_send"
 required-features = ["wallet"]
 
 [dev-dependencies]
+tokio-tungstenite = { workspace = true, default-features = false, features = ["handshake"] }
 rand.workspace = true
 cdk-sqlite.workspace = true
 cdk-postgres.workspace = true
