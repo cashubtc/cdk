@@ -3,7 +3,7 @@
 * Status: accepted
 * Authors: Cesar Rodas
 * Date: 2026-07-31
-* Targeted modules: cdk-common (pub_sub), cdk-postgres, cdk-sql-common (bus), cdk-mintd (config), cdk (mint)
+* Targeted modules: cdk-common (pub_sub), cdk-postgres (bus), cdk-mintd (config), cdk (mint)
 * Associated tickets/PRs: n/a
 
 ## Context and Problem Statement
@@ -18,9 +18,7 @@ that same instance. A wallet whose socket is pinned to another instance sees the
 change only on reconnect, through the database-backed `fetch_events` backfill.
 
 How does a published event reach subscribers on every instance without changing
-any publish call site or the WebSocket layer, across deployments that differ in
-database engine and connection topology (direct Postgres, Postgres behind a
-transaction-pooling proxy such as PgBouncer, or SQLite)?
+any publish call site or the WebSocket layer?
 
 ## Decision Drivers
 
@@ -38,10 +36,9 @@ transaction-pooling proxy such as PgBouncer, or SQLite)?
   single-instance case, which must stay the zero-configuration default.
 * Reuse what exists: `Spec::Event` and `Spec::Topic` already require
   `Serialize + DeserializeOwned`; `cdk-postgres` already speaks `tokio-postgres`
-  with TLS handling; the SQL layer already runs plain queries against a shared
-  pool.
-* A transport must exist that works on SQLite and through connection poolers,
-  not only on directly-connected Postgres.
+  with TLS handling.
+* Only a mint sharing one database across instances needs distribution at all.
+  SQLite cannot be shared that way, so this is a Postgres question.
 
 ## Considered Options
 
@@ -75,52 +72,60 @@ Fan events out through a Redis channel.
 * Bad, because a mint that already runs Postgres would take on a second
   datastore purely for notifications.
 
-#### A single wire transport (Postgres `LISTEN`/`NOTIFY` only)
+#### A portable SQL polling bus (outbox table)
 
-Ship one distributed backend behind a trait and tell pooled deployments to route
-its connection directly to Postgres.
+Append each published event to a shared table and have every instance poll rows
+newer than its cursor.
 
 **Pros:**
 
-* Good, because it needs the least code and keeps the lowest latency.
+* Good, because it uses only plain `INSERT`/`SELECT`, so it works through a
+  transaction-pooling proxy, where `LISTEN` cannot hold a session.
+* Good, because the event lives in a row, so it has no payload cap and survives
+  a missed poll within the retention window.
 
 **Cons:**
 
-* Bad, because `LISTEN` needs a session-pinned connection, so it fails behind a
-  transaction-pooling proxy unless the operator carves out a direct connection.
-* Bad, because it does nothing for SQLite, which then has no cross-process
-  transport at all.
+* Bad, because latency is bounded by the poll interval rather than near-instant.
+* Bad, because it adds a table, a write per published event, and a periodic
+  prune, all to carry data that is never the source of truth.
+* Bad, because the engine it uniquely served is SQLite, which cannot be shared
+  across instances anyway, so most of its portability is theoretical.
 
-#### A `Bus` trait seam with selectable transports
+#### A `Bus` trait seam with a single wire transport
 
 Introduce a `Bus` trait between publish and local fan-out. The default keeps
-everything in-process; wire implementations forward events to peers. Ship both a
-Postgres `LISTEN`/`NOTIFY` bus and a portable SQL polling bus, and let the mint
-pick per deployment.
+everything in-process; one wire implementation forwards events to peers over
+Postgres `LISTEN`/`NOTIFY`.
 
 **Pros:**
 
 * Good, because the trait keeps the in-process default unchanged and confines
   distribution to one seam.
 * Good, because `LISTEN`/`NOTIFY` serves a directly-connected Postgres with no
-  new infrastructure, while the SQL polling bus serves SQLite and pooled Postgres
-  using only plain `INSERT`/`SELECT`.
+  new infrastructure and no new table.
 * Good, because a Redis or message-queue backend can be added later as another
   `Bus` implementation without touching the seam.
 
 **Cons:**
 
-* Bad, because `NOTIFY` caps payloads at 8000 bytes, so the `LISTEN`/`NOTIFY`
-  transport cannot forward unusually large events verbatim.
-* Bad, because polling latency is bounded by the interval, and the outbox adds a
-  table, a write per event, and a periodic prune.
+* Bad, because `NOTIFY` caps payloads at 8000 bytes, so the transport cannot
+  forward unusually large events verbatim.
+* Bad, because `LISTEN` needs a session-pinned connection, so a deployment
+  behind a transaction-pooling proxy has to carve out a direct connection for
+  it.
 
 ## Decision Outcome
 
-Chosen option: "A `Bus` trait seam with selectable transports". It distributes
+Chosen option: "A `Bus` trait seam with a single wire transport". It distributes
 events without new infrastructure, keeps the single-instance path
-dependency-free, covers every supported database and connection topology, and
-leaves room for other backends.
+dependency-free, and leaves room for other backends.
+
+The outbox bus was built first and then removed. It bought a table, a write per
+published event and a prune loop, to serve a portability need that did not hold
+up: the engine it uniquely covered was SQLite, which cannot be shared across
+instances, and the pooled-Postgres case is answered by giving the bus a direct
+connection.
 
 ### The seam
 
@@ -197,37 +202,6 @@ larger than the 8000-byte `NOTIFY` limit are delivered locally and skipped for
 peers with a warning; mint events (quote responses, proof states) are well under
 it, so this only concerns unusually large melts.
 
-### The SQL polling transport
-
-`SqlBus` lives in `crates/cdk-sql-common/src/mint/bus.rs`. It is the portable
-alternative: it uses only plain `INSERT`/`SELECT`, so it works on any backend
-the SQL layer supports (SQLite, Postgres) and, because it never holds a
-session-pinned connection, it also works when Postgres is reached through a
-transaction-pooling proxy such as PgBouncer, where `LISTEN` cannot. It reuses the
-mint's existing connection pool through a new `SQLMintDatabase::pool()` accessor,
-so it opens no connection of its own.
-
-Delivery model:
-
-* On publish the event is delivered to local subscribers immediately and, in the
-  background, appended as a row to `pubsub_outbox (id, origin, payload,
-  created_time)`. `payload` is the JSON-serialized event; `origin` is the
-  per-instance id.
-* Each instance polls `WHERE id > :cursor AND origin <> :origin ORDER BY id`,
-  delivers each row through the same local fan-out, and advances its cursor. The
-  `origin` filter drops an instance's own rows, so there is no self-echo to
-  detect after the fact.
-* The starting cursor is the current `MAX(id)`, so history is not replayed; an
-  instance only sees events published after it came up, matching
-  `LISTEN`/`NOTIFY`.
-* Rows older than a retention window are pruned on a coarse cadence. Pruning is
-  idempotent, so every instance can run it.
-
-Relative to `LISTEN`/`NOTIFY`, the SQL bus trades near-instant latency for a
-poll interval, but removes the 8000-byte payload cap (the event lives in a row)
-and resumes from its cursor after a missed poll or restart instead of dropping
-the event, as long as the row is still within the retention window.
-
 ### Mint integration and transport selection
 
 ```rust
@@ -240,16 +214,12 @@ A mint left on the default `PubSubManager::new` behaves exactly as before.
 `CDK_MINTD_PUBSUB_TRANSPORT`):
 
 * `in-memory` (default): `LocalBus`. Correct for a single instance.
-* `sql`: `SqlBus`. Works on SQLite and Postgres, and through PgBouncer. Tuned
-  with `poll_interval_ms` / `retention_seconds`.
-* `postgres-listen-notify`: `PostgresBus`. Lowest latency, Postgres only, needs a
-  session-pinned connection. The channel is set by `channel` /
-  `CDK_MINTD_PUBSUB_CHANNEL`.
+* `postgres-listen-notify`: `PostgresBus`. Postgres only, needs a session-pinned
+  connection. The channel is set by `channel` / `CDK_MINTD_PUBSUB_CHANNEL`.
 
-Choosing `postgres-listen-notify` on a non-Postgres engine is a startup error.
-For the `sql` transport `cdk-mintd` reuses the mint database's pool; for
-`postgres-listen-notify` it opens the dedicated `LISTEN` connection described
-above.
+Choosing `postgres-listen-notify` on a non-Postgres engine is a startup error,
+and so is the removed `sql` value, which fails with a message naming both
+remaining transports rather than falling back to the default.
 
 When mintd runs from a database-backed configuration document, the bus is
 created while opening that database, before the document can be read. The
@@ -260,9 +230,8 @@ the bootstrap value is used.
 
 ### Positive Consequences
 
-* A multi-instance mint gets real-time notifications on every instance with no
-  new infrastructure: `LISTEN`/`NOTIFY` for directly-connected Postgres, SQL
-  polling for SQLite and pooled Postgres.
+* A multi-instance mint on directly-connected Postgres gets real-time
+  notifications on every instance with no new infrastructure and no new table.
 * The single-instance path is unchanged and dependency-free; any bus is opt-in.
 * Publish call sites, the mint spec, and the WS handlers are untouched.
 * Another backend (Redis, a message queue) is a new `Bus` implementation, not a
@@ -272,28 +241,27 @@ the bootstrap value is used.
 
 ### Negative Consequences
 
-* `NOTIFY`'s 8000-byte payload cap means the `LISTEN`/`NOTIFY` transport does not
-  forward very large events to peers; those subscribers fall back to the existing
-  on-read/reconnect backfill. The SQL transport has no such cap.
-* The `LISTEN`/`NOTIFY` transport holds a dedicated Postgres connection and a
-  reconnect loop per instance, plus one inbound dispatcher task. The SQL
-  transport adds an outbox table, a write per event, and a periodic prune, and
-  its latency is bounded by the poll interval.
-* A brief `LISTEN`/`NOTIFY` reconnect window, a bounded-inbound-queue overflow,
-  or an SQL cursor that skips a row committed out of id order can drop the live
-  push. In every case subscribers recover current state on their next
-  `fetch_events` backfill, so state is not lost, only the live push during the
-  gap.
+* `NOTIFY`'s 8000-byte payload cap means the transport does not forward very
+  large events to peers; those subscribers fall back to the existing
+  on-read/reconnect backfill.
+* The transport holds a dedicated Postgres connection and a reconnect loop per
+  instance, plus one inbound dispatcher task.
+* Postgres reached through a transaction-pooling proxy has no cross-instance
+  transport unless the operator gives the bus a direct connection. Such a
+  deployment left on `in-memory` still serves correct state, but only through
+  the `fetch_events` backfill, not a live push.
+* A brief reconnect window or a bounded-inbound-queue overflow can drop the live
+  push. Subscribers recover current state on their next `fetch_events` backfill,
+  so state is not lost, only the live push during the gap.
 * Inbound events are delivered to subscribers without re-validating against the
   database. This is sound because publishing requires a connection to the mint's
   own database, so a publisher is already inside the trust boundary (it could
   write mint state directly). It is not a new attack surface, but it is an
-  assumption: all instances on a channel or outbox must be the same trust domain.
+  assumption: all instances on a channel must be the same trust domain.
 
 ## Links
 
 * Builds on the pub/sub primitives in `crates/cdk-common/src/pub_sub/`
-* `PostgresBus` lives in `crates/cdk-postgres/src/bus.rs`; `SqlBus` lives in
-  `crates/cdk-sql-common/src/mint/bus.rs`
+* `PostgresBus` lives in `crates/cdk-postgres/src/bus.rs`
 * Reuses the reconnect pattern also used by the signatory client in
   [ADR-0002](0002-signatory-keyset-subscription.md)

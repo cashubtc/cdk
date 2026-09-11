@@ -8,7 +8,6 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 
 // external crates
 use anyhow::{anyhow, bail, Context, Result};
@@ -40,7 +39,6 @@ use cdk_common::payment::MetricsMintPayment;
 use cdk_common::payment::MintPayment;
 #[cfg(feature = "postgres")]
 use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase, PgConfig, PostgresBusConnector};
-use cdk_sql_common::mint::bus::{SqlBusConnector, SqlBusOptions};
 
 /// Default `LISTEN`/`NOTIFY` channel for the cross-instance pub/sub bus when the
 /// Postgres config does not set one.
@@ -51,7 +49,7 @@ use cdk_sqlite::mint::MintSqliteAuthDatabase;
 #[cfg(feature = "sqlite")]
 use cdk_sqlite::MintSqliteDatabase;
 use cli::CLIArgs;
-use config::{AuthType, DatabaseEngine, PaymentBackendType, PubSubConfig, PubSubTransport};
+use config::{AuthType, DatabaseEngine, PaymentBackendType, PubSubTransport};
 use env_vars::ENV_WORK_DIR;
 use setup::PaymentBackendSetup;
 use tower::ServiceBuilder;
@@ -612,10 +610,8 @@ fn validate_database_config(settings: &config::Settings) -> Result<()> {
     if settings.database.pubsub.transport == PubSubTransport::PostgresListenNotify
         && settings.database.engine != DatabaseEngine::Postgres
     {
-        bail!("pubsub transport 'postgres-listen-notify' requires the Postgres database engine; use 'sql' for a portable cross-instance transport");
+        bail!("pubsub transport 'postgres-listen-notify' requires the Postgres database engine");
     }
-
-    sql_bus_options(&settings.database.pubsub)?;
 
     Ok(())
 }
@@ -929,22 +925,6 @@ pub fn apply_seed_file(settings: &mut config::Settings, seed_file: &Path) -> Res
     Ok(())
 }
 
-/// Build [`SqlBusOptions`] from the mint's pub/sub config, falling back to the
-/// library defaults for any unset field.
-fn sql_bus_options(pubsub: &PubSubConfig) -> Result<SqlBusOptions> {
-    let mut options = SqlBusOptions::default();
-    if let Some(ms) = pubsub.poll_interval_ms {
-        options.poll_interval = Duration::from_millis(ms);
-    }
-    if let Some(secs) = pubsub.retention_seconds {
-        options.retention = Duration::from_secs(secs);
-    }
-    options
-        .validate()
-        .map_err(|err| anyhow!("Invalid [database.pubsub] timing: {err}"))?;
-    Ok(options)
-}
-
 async fn setup_database(
     settings: &config::Settings,
     _work_dir: &Path,
@@ -963,15 +943,9 @@ async fn setup_database(
         DatabaseEngine::Sqlite => {
             let db = setup_sqlite_database(_work_dir, _db_password).await?;
 
-            // SQLite spans a single host, so LISTEN/NOTIFY does not apply. Only
-            // the in-memory and SQL polling transports are meaningful here.
+            // SQLite spans a single host, so no cross-instance transport applies.
             let bus: Option<MintPubSubBusBuilder> = match pubsub.transport {
                 PubSubTransport::InMemory => None,
-                PubSubTransport::Sql => {
-                    let connector =
-                        SqlBusConnector::connect(db.pool(), sql_bus_options(pubsub)?).await?;
-                    Some(Box::new(move |local| connector.build(local)))
-                }
                 PubSubTransport::PostgresListenNotify => {
                     bail!("pubsub transport 'postgres-listen-notify' requires the Postgres database engine");
                 }
@@ -1007,11 +981,6 @@ async fn setup_database(
 
             let bus: Option<MintPubSubBusBuilder> = match pubsub.transport {
                 PubSubTransport::InMemory => None,
-                PubSubTransport::Sql => {
-                    let connector =
-                        SqlBusConnector::connect(pg_db.pool(), sql_bus_options(pubsub)?).await?;
-                    Some(Box::new(move |local| connector.build(local)))
-                }
                 PubSubTransport::PostgresListenNotify => {
                     let bus_config = PgConfig::new(
                         pg_config.url.as_str(),
@@ -2748,7 +2717,7 @@ fn load_database_bootstrap_settings() -> Result<config::Settings> {
     } else {
         settings.database.postgres = None;
     }
-    settings.database.pubsub = config::PubSubConfig::default().from_env();
+    settings.database.pubsub = config::PubSubConfig::default().from_env()?;
     validate_database_config(&settings)?;
     Ok(settings)
 }
@@ -3461,15 +3430,25 @@ engine = "sqlite"
         let _env_lock = crate::test_utils::env_lock();
         clear_mintd_env();
         std::env::remove_var(env_vars::DATABASE_ENV_VAR);
-        std::env::set_var(env_vars::ENV_PUBSUB_TRANSPORT, "sql");
-        std::env::set_var(env_vars::ENV_PUBSUB_POLL_INTERVAL_MS, "250");
+        std::env::set_var(env_vars::ENV_PUBSUB_CHANNEL, "cdk_test_channel");
 
         let settings = load_database_bootstrap_settings().expect("bootstrap with pubsub");
         assert_eq!(
             settings.database.pubsub.transport,
-            config::PubSubTransport::Sql
+            config::PubSubTransport::InMemory
         );
-        assert_eq!(settings.database.pubsub.poll_interval_ms, Some(250));
+        assert_eq!(
+            settings.database.pubsub.channel.as_deref(),
+            Some("cdk_test_channel")
+        );
+
+        // A removed transport name must fail here rather than fall back to the
+        // default, which would silently drop cross-instance notifications.
+        std::env::set_var(env_vars::ENV_PUBSUB_TRANSPORT, "sql");
+        assert!(
+            load_database_bootstrap_settings().is_err(),
+            "the removed sql transport must be rejected"
+        );
 
         std::env::set_var(env_vars::ENV_PUBSUB_TRANSPORT, "postgres-listen-notify");
         assert!(
@@ -3618,24 +3597,6 @@ engine = "sqlite"
         assert_eq!(settings.info.mnemonic, None);
 
         let _ = fs::remove_file(&seed_file);
-    }
-
-    #[test]
-    fn validate_database_config_rejects_degenerate_pubsub_timings() {
-        let mut settings = config::Settings::default();
-        settings.database.pubsub.transport = config::PubSubTransport::Sql;
-
-        settings.database.pubsub.poll_interval_ms = Some(0);
-        let err = validate_database_config(&settings).expect_err("zero poll interval");
-        assert!(err.to_string().contains("poll interval"));
-
-        settings.database.pubsub.poll_interval_ms = Some(200);
-        settings.database.pubsub.retention_seconds = Some(1);
-        let err = validate_database_config(&settings).expect_err("retention below poll window");
-        assert!(err.to_string().contains("retention"));
-
-        settings.database.pubsub.retention_seconds = Some(3600);
-        validate_database_config(&settings).expect("sane timings are accepted");
     }
 
     #[cfg(feature = "fakewallet")]
@@ -4329,8 +4290,6 @@ backend = "fakewallet"
             "CDK_MINTD_POSTGRES_CONNECTION_TIMEOUT_SECONDS",
             "CDK_MINTD_PUBSUB_TRANSPORT",
             "CDK_MINTD_PUBSUB_CHANNEL",
-            "CDK_MINTD_PUBSUB_POLL_INTERVAL_MS",
-            "CDK_MINTD_PUBSUB_RETENTION_SECONDS",
             "CDK_MINTD_SEED",
             "CDK_MINTD_MNEMONIC",
             "CDK_MINTD_SIGNATORY_ENABLED",

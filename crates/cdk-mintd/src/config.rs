@@ -977,10 +977,6 @@ pub enum PubSubTransport {
     /// instance it is connected to (others arrive on the next backfill).
     #[default]
     InMemory,
-    /// Poll a shared outbox table. Works on any engine (SQLite, Postgres) and
-    /// through connection poolers such as PgBouncer. Latency is bounded by the
-    /// poll interval.
-    Sql,
     /// Postgres `LISTEN`/`NOTIFY`. Lowest latency, Postgres only, and needs a
     /// session-pinned connection (not a transaction-pooling proxy).
     PostgresListenNotify,
@@ -992,10 +988,15 @@ impl std::str::FromStr for PubSubTransport {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().replace('_', "-").as_str() {
             "in-memory" | "memory" | "local" => Ok(PubSubTransport::InMemory),
-            "sql" | "polling" => Ok(PubSubTransport::Sql),
             "postgres-listen-notify" | "listen-notify" | "notify" => {
                 Ok(PubSubTransport::PostgresListenNotify)
             }
+            "sql" | "polling" => Err(
+                "The 'sql' polling transport was removed; use 'in-memory' or \
+                 'postgres-listen-notify'. Postgres behind a transaction pooler needs a \
+                 direct connection for LISTEN"
+                    .to_string(),
+            ),
             _ => Err(format!("Unknown pubsub transport: {s}")),
         }
     }
@@ -1010,13 +1011,6 @@ pub struct PubSubConfig {
     /// that share notifications must use the same channel. Defaults to a
     /// built-in name when unset.
     pub channel: Option<String>,
-    /// Poll interval in milliseconds (sql transport). Defaults to a built-in
-    /// value when unset. Validated at startup against the bus minimum.
-    pub poll_interval_ms: Option<u64>,
-    /// Age in seconds after which outbox rows are pruned (sql transport).
-    /// Defaults to a built-in value when unset. Validated at startup: it must
-    /// cover several poll intervals so no instance misses a row.
-    pub retention_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1604,10 +1598,6 @@ listen_por = 8085
             PubSubTransport::InMemory
         );
         assert_eq!(
-            PubSubTransport::from_str("sql").unwrap(),
-            PubSubTransport::Sql
-        );
-        assert_eq!(
             PubSubTransport::from_str("postgres-listen-notify").unwrap(),
             PubSubTransport::PostgresListenNotify
         );
@@ -1617,6 +1607,19 @@ listen_por = 8085
             PubSubTransport::PostgresListenNotify
         );
         assert!(PubSubTransport::from_str("carrier-pigeon").is_err());
+    }
+
+    /// The removed transport gets a message naming its replacements, so an
+    /// operator carrying the old value is not left guessing.
+    #[test]
+    fn pubsub_transport_rejects_the_removed_sql_names() {
+        use std::str::FromStr;
+
+        for name in ["sql", "polling"] {
+            let err = PubSubTransport::from_str(name).expect_err("sql transport was removed");
+            assert!(err.contains("in-memory"), "unhelpful message: {err}");
+            assert!(err.contains("postgres-listen-notify"), "unhelpful: {err}");
+        }
     }
 
     #[test]
