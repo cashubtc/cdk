@@ -93,6 +93,9 @@ pub(crate) mod test_utils {
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 const DEFAULT_BATCH_MINT_SIZE: u64 = 100;
 const REQUEST_BODY_LIMIT_BYTES: usize = 1_048_576;
+/// Floor for `ws_max_message_bytes`, below which a legitimate subscribe frame
+/// would no longer fit.
+const MIN_WS_MESSAGE_BYTES: usize = 4096;
 
 type DynSignatory = Arc<dyn cdk_signatory::signatory::Signatory + Send + Sync>;
 
@@ -569,8 +572,123 @@ pub(crate) fn validate_settings(settings: &config::Settings) -> Result<()> {
     validate_auth_config(settings)?;
     validate_management_rpc_config(settings)?;
     validate_prometheus_config(settings)?;
+    validate_limits_config(settings)?;
 
     Ok(())
+}
+
+fn validate_limits_config(settings: &config::Settings) -> Result<()> {
+    let limits = &settings.limits;
+
+    // A zero here would wedge the mint rather than protect it, so it is rejected
+    // outright. `ws_max_connections_per_ip` is the exception: zero disables the
+    // per-address limit, which is what a mint behind a reverse proxy needs.
+    for (name, value) in [
+        ("max_inputs", limits.max_inputs),
+        ("max_outputs", limits.max_outputs),
+        ("ws_max_connections", limits.ws_max_connections),
+        (
+            "ws_max_subscriptions_per_connection",
+            limits.ws_max_subscriptions_per_connection,
+        ),
+        (
+            "ws_max_filters_per_subscription",
+            limits.ws_max_filters_per_subscription,
+        ),
+        (
+            "ws_max_topics_per_connection",
+            limits.ws_max_topics_per_connection,
+        ),
+        ("pubsub_max_topics", limits.pubsub_max_topics),
+        (
+            "pubsub_max_concurrent_backfills",
+            limits.pubsub_max_concurrent_backfills,
+        ),
+    ] {
+        if value == 0 {
+            bail!("Invalid limits configuration: {name} must be greater than zero");
+        }
+    }
+
+    if limits.ws_max_request_units_per_second > 0 {
+        let subscription_units = u32::try_from(limits.ws_max_filters_per_subscription)
+            .unwrap_or(u32::MAX)
+            .saturating_add(1);
+        if limits.ws_max_request_burst_units < subscription_units {
+            bail!(
+                "Invalid limits configuration: ws_max_request_burst_units must be at least {subscription_units} to cover one ws_max_filters_per_subscription request"
+            );
+        }
+    }
+
+    if limits.ws_max_message_bytes < MIN_WS_MESSAGE_BYTES {
+        bail!(
+            "Invalid limits configuration: ws_max_message_bytes must be at least {MIN_WS_MESSAGE_BYTES}"
+        );
+    }
+
+    if limits.ws_idle_timeout_secs == 0 || limits.ws_ping_interval_secs == 0 {
+        bail!(
+            "Invalid limits configuration: ws_idle_timeout_secs and ws_ping_interval_secs must be greater than zero"
+        );
+    }
+
+    if limits.ws_ping_interval_secs > limits.ws_idle_timeout_secs {
+        bail!(
+            "Invalid limits configuration: ws_ping_interval_secs must not exceed ws_idle_timeout_secs"
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod limits_validation_tests {
+    use super::*;
+
+    fn settings_with(limits: config::Limits) -> config::Settings {
+        config::Settings {
+            limits,
+            ..config::Settings::default()
+        }
+    }
+
+    #[test]
+    fn defaults_are_valid() {
+        validate_limits_config(&settings_with(config::Limits::default()))
+            .expect("the shipped defaults must validate");
+    }
+
+    #[test]
+    fn a_burst_smaller_than_a_full_subscription_is_rejected() {
+        let limits = config::Limits {
+            ws_max_filters_per_subscription: 100,
+            ws_max_request_units_per_second: 32,
+            ws_max_request_burst_units: 100,
+            ..config::Limits::default()
+        };
+
+        let err = validate_limits_config(&settings_with(limits))
+            .expect_err("a burst that cannot cover one subscription must be rejected");
+        assert!(
+            err.to_string().contains("ws_max_request_burst_units"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// With the throttle off the burst is never charged, so an undersized one is
+    /// not a misconfiguration.
+    #[test]
+    fn a_disabled_throttle_ignores_the_burst_rule() {
+        let limits = config::Limits {
+            ws_max_filters_per_subscription: 100,
+            ws_max_request_units_per_second: 0,
+            ws_max_request_burst_units: 1,
+            ..config::Limits::default()
+        };
+
+        validate_limits_config(&settings_with(limits)).expect("a disabled throttle validates");
+    }
 }
 
 fn validate_payment_backends(settings: &config::Settings) -> Result<()> {
@@ -1082,8 +1200,9 @@ async fn configure_mint_builder_with_wallet_info(
     let mint_builder = configure_cache(settings, mint_builder, &payment_methods).await?;
 
     // Configure transaction limits
-    let mint_builder =
-        mint_builder.with_limits(settings.limits.max_inputs, settings.limits.max_outputs);
+    let mint_builder = mint_builder
+        .with_limits(settings.limits.max_inputs, settings.limits.max_outputs)
+        .with_pubsub_limits(settings.limits.pubsub_limits());
 
     // Verify at least one payment processor is configured
     if mint_builder
@@ -2297,6 +2416,7 @@ impl PreparedMintd {
             cache,
             custom_methods,
             settings.info.enable_info_page.unwrap_or(true),
+            settings.limits.ws_limits(),
         )
         .await?;
 
@@ -2433,8 +2553,14 @@ impl RunningMintd {
         };
 
         // Wait for axum server to complete with custom shutdown signal
-        let axum_result =
-            axum::serve(self.listener, self.mint_service).with_graceful_shutdown(axum_shutdown);
+        // Connect info is what the WebSocket per-address limit keys on; without
+        // it every connection looks anonymous and that limit cannot apply.
+        let axum_result = axum::serve(
+            self.listener,
+            self.mint_service
+                .into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(axum_shutdown);
 
         match axum_result.await {
             Ok(_) => {

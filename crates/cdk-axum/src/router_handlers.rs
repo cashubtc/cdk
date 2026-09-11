@@ -1,8 +1,11 @@
+use std::net::SocketAddr;
+
 use anyhow::Result;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{Json, Path, State};
+use axum::extract::{ConnectInfo, Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::Extension;
 use cdk::error::ErrorResponse;
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
@@ -14,7 +17,7 @@ use paste::paste;
 use tracing::instrument;
 
 use crate::auth::AuthHeader;
-use crate::ws::main_websocket;
+use crate::ws::{main_websocket, WsRejection};
 use crate::MintState;
 
 /// Macro to add cache to endpoint
@@ -123,12 +126,40 @@ pub(crate) async fn get_keysets(
     Ok(Json(state.mint.keysets()))
 }
 
+/// Upgrades a connection to the mint's NUT-17 WebSocket endpoint.
+///
+/// The connection slot is claimed before authenticating: verifying auth reads
+/// the database and may reach the signatory, so an over-quota client has to be
+/// turned away by the cheap check first. The guard is released on drop, so an
+/// auth failure hands the slot straight back.
 #[instrument(skip_all)]
 pub(crate) async fn ws_handler(
     auth: AuthHeader,
     State(state): State<MintState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, Response> {
+    let peer_ip = peer.map(|Extension(ConnectInfo(addr))| addr.ip());
+    if peer_ip.is_none() {
+        tracing::debug!("WebSocket peer address unavailable, per-IP limit not enforced");
+    }
+
+    let guard = state
+        .ws_limiter
+        .try_acquire(peer_ip)
+        .map_err(|rejection| match rejection {
+            WsRejection::PerIpFull => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many websocket connections from this address",
+            )
+                .into_response(),
+            WsRejection::ServerFull | WsRejection::Unavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "websocket capacity reached",
+            )
+                .into_response(),
+        })?;
+
     state
         .mint
         .verify_auth(
@@ -138,7 +169,12 @@ pub(crate) async fn ws_handler(
         .await
         .map_err(into_response)?;
 
-    Ok(ws.on_upgrade(|ws| main_websocket(ws, state)))
+    let limits = state.ws_limiter.limits();
+
+    Ok(ws
+        .max_message_size(limits.max_message_bytes)
+        .max_frame_size(limits.max_message_bytes)
+        .on_upgrade(move |ws| main_websocket(ws, state, guard)))
 }
 
 /// Check whether a proof is spent already or is pending in a transaction

@@ -10,6 +10,7 @@ use cdk_common::nut00::KnownMethod;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::DynMintPayment;
+use cdk_common::pub_sub::PubsubLimits;
 use cdk_common::{nut21, nut22};
 use cdk_signatory::signatory::{RotateKeyArguments, Signatory};
 
@@ -19,7 +20,7 @@ use super::verification::validate_custom_payment_method;
 use super::Nuts;
 use crate::amount::Amount;
 use crate::cdk_database;
-use crate::mint::Mint;
+use crate::mint::{Mint, MintLimits};
 use crate::nuts::{
     AuthRequired, ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings,
     MintVersion, MppMethodSettings, PaymentMethod, ProtectedEndpoint,
@@ -73,8 +74,7 @@ pub struct MintBuilder {
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     use_keyset_v2: Option<bool>,
     keyset_rotations: Vec<KeysetRotation>,
-    max_inputs: usize,
-    max_outputs: usize,
+    limits: MintLimits,
     max_batch_size: Option<u64>,
     /// Interval at which the built signatory reloads keysets from the shared
     /// database. `None` (the default) disables the reload for a single-instance
@@ -121,8 +121,7 @@ impl MintBuilder {
             custom_paths: HashMap::new(),
             use_keyset_v2: None,
             keyset_rotations: Vec::new(),
-            max_inputs: 1000,
-            max_outputs: 1000,
+            limits: MintLimits::default(),
             max_batch_size: None,
             keyset_refresh_interval: None,
         }
@@ -325,8 +324,14 @@ impl MintBuilder {
 
     /// Set transaction limits for DoS protection
     pub fn with_limits(mut self, max_inputs: usize, max_outputs: usize) -> Self {
-        self.max_inputs = max_inputs;
-        self.max_outputs = max_outputs;
+        self.limits.max_inputs = max_inputs;
+        self.limits.max_outputs = max_outputs;
+        self
+    }
+
+    /// Set the ceilings on the shared resources held by the subscription manager
+    pub fn with_pubsub_limits(mut self, pubsub: PubsubLimits) -> Self {
+        self.limits.pubsub = pubsub;
         self
     }
 
@@ -729,8 +734,7 @@ impl MintBuilder {
                 self.localstore,
                 auth_localstore,
                 self.payment_processors,
-                self.max_inputs,
-                self.max_outputs,
+                self.limits,
             )
             .await;
         }
@@ -739,8 +743,7 @@ impl MintBuilder {
             signatory,
             self.localstore,
             self.payment_processors,
-            self.max_inputs,
-            self.max_outputs,
+            self.limits,
         )
         .await
     }

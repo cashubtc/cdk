@@ -377,9 +377,46 @@ max_delay_time = 3
 # restore = "blind"
 # check_proof_state = "none"
 
-# Transaction limits for DoS protection (optional, defaults shown)
+# Resource limits for DoS protection (optional, defaults shown)
 [limits]
 # Maximum number of inputs allowed per transaction (swap/melt)
 max_inputs = 1000
 # Maximum number of outputs allowed per transaction (mint/swap/melt)
 max_outputs = 1000
+
+# Maximum concurrent WebSocket connections across the whole mint
+ws_max_connections = 512
+# Maximum concurrent WebSocket connections from one peer address.
+# Set this to 0 when running behind a reverse proxy: every connection then
+# arrives from the proxy's address, so the limit would apply to all clients at
+# once. Forwarded headers are not trusted, because a client can forge them.
+ws_max_connections_per_ip = 2
+# Maximum concurrent subscriptions on one WebSocket connection
+ws_max_subscriptions_per_connection = 10
+# Maximum filters accepted in a single subscription request
+ws_max_filters_per_subscription = 100
+# Maximum topics one WebSocket connection may register across its subscriptions
+ws_max_topics_per_connection = 100
+# Request units one WebSocket connection earns per second. A unit is roughly one
+# frame; a subscription costs one unit per filter, because registering a filter
+# is what takes the mint-wide topic lock. Set to 0 to disable the throttle.
+ws_max_request_units_per_second = 32
+# Request units one WebSocket connection may hold unspent. Must cover one
+# ws_max_filters_per_subscription request, or such a request could never succeed.
+ws_max_request_burst_units = 128
+# Throttled requests tolerated before the connection is closed. Set to 0 to keep
+# a throttled connection open indefinitely.
+ws_max_throttled_requests = 20
+# Largest WebSocket message accepted from a client, in bytes
+ws_max_message_bytes = 524288
+# Seconds a WebSocket may go without inbound traffic before it is closed
+ws_idle_timeout_secs = 120
+# Seconds between keepalive pings on an otherwise silent WebSocket
+ws_ping_interval_secs = 30
+
+# Maximum subscription topics registered across the whole mint
+pubsub_max_topics = 100000
+# Maximum subscription backfills running concurrently
+pubsub_max_concurrent_backfills = 32
+# Maximum payment-backend quote checks performed by a single backfill
+pubsub_max_quote_checks_per_backfill = 64

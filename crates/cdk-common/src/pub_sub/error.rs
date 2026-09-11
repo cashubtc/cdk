@@ -36,6 +36,11 @@ pub enum Error {
     /// Channel is closed
     #[error("Channel is close")]
     ChannelClosed,
+
+    /// The pub/sub instance already holds its maximum number of topic
+    /// registrations; the caller should narrow its filters or retry later.
+    #[error("Topic budget exhausted")]
+    TooManyTopics,
 }
 
 impl<T> From<TrySendError<T>> for Error {

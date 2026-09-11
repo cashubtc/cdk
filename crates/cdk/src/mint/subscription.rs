@@ -9,7 +9,7 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltQuote, MintQuote};
 use cdk_common::nut17::NotificationId;
 use cdk_common::payment::DynMintPayment;
-use cdk_common::pub_sub::{Pubsub, Spec, Subscriber};
+use cdk_common::pub_sub::{Pubsub, PubsubLimits, Spec, Subscriber};
 use cdk_common::subscription::SubId;
 use cdk_common::{
     Amount, BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteBolt12Response,
@@ -29,6 +29,7 @@ pub struct MintPubSubSpec {
     payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
     // The manager owns this spec; a strong reference back would retain both forever.
     pubsub_manager: Weak<PubSubManager>,
+    limits: PubsubLimits,
 }
 
 impl MintPubSubSpec {
@@ -42,6 +43,7 @@ impl MintPubSubSpec {
         }
 
         let mut quotes = HashMap::new();
+        let mut checks_left = self.limits.max_quote_checks_per_backfill;
 
         for mut quote in self
             .db
@@ -50,13 +52,25 @@ impl MintPubSubSpec {
             .into_iter()
             .flatten()
         {
-            Mint::check_mint_quote_payments(
-                self.db.clone(),
-                self.payment_processors.clone(),
-                self.pubsub_manager.upgrade(),
-                &mut quote,
-            )
-            .await?;
+            // Each check is a payment-backend round trip held inside one backfill
+            // slot. Past the cap the stored state is served as-is: it is already
+            // only refreshed once every few seconds, and a real payment still
+            // publishes a live notification through the normal issue path.
+            if checks_left > 0 {
+                checks_left -= 1;
+                Mint::check_mint_quote_payments(
+                    self.db.clone(),
+                    self.payment_processors.clone(),
+                    self.pubsub_manager.upgrade(),
+                    &mut quote,
+                )
+                .await?;
+            } else {
+                tracing::debug!(
+                    "Backfill quote-check budget exhausted, serving quote {} from storage",
+                    quote.id
+                );
+            }
 
             quotes.insert(quote.id.clone(), quote);
         }
@@ -233,6 +247,7 @@ impl Spec for MintPubSubSpec {
             db: context.0,
             payment_processors: context.1,
             pubsub_manager: Weak::new(),
+            limits: PubsubLimits::default(),
         })
     }
 
@@ -253,19 +268,34 @@ impl Spec for MintPubSubSpec {
 pub struct PubSubManager(Pubsub<MintPubSubSpec>);
 
 impl PubSubManager {
-    /// Create a new instance
+    /// Create a new instance with [`PubsubLimits::default`]
     pub fn new(
         context: (
             DynMintDatabase,
             Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
         ),
     ) -> Arc<Self> {
+        Self::with_limits(context, PubsubLimits::default())
+    }
+
+    /// Create a new instance whose shared resources are capped by `limits`
+    pub fn with_limits(
+        context: (
+            DynMintDatabase,
+            Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+        ),
+        limits: PubsubLimits,
+    ) -> Arc<Self> {
         Arc::new_cyclic(|manager| {
-            Self(Pubsub::new(Arc::new(MintPubSubSpec {
-                db: context.0,
-                payment_processors: context.1,
-                pubsub_manager: manager.clone(),
-            })))
+            Self(Pubsub::with_limits(
+                Arc::new(MintPubSubSpec {
+                    db: context.0,
+                    payment_processors: context.1,
+                    pubsub_manager: manager.clone(),
+                    limits,
+                }),
+                limits,
+            ))
         })
     }
 
