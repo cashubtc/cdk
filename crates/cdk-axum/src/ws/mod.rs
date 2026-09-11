@@ -1,6 +1,7 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket};
 use cdk::mint::QuoteId;
@@ -15,7 +16,7 @@ use futures::StreamExt;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::MissedTickBehavior;
+use tokio::time::{timeout, MissedTickBehavior};
 
 use crate::MintState;
 
@@ -112,6 +113,67 @@ impl Drop for WsContext {
     }
 }
 
+/// Why a frame could not be handed to the peer.
+#[derive(Debug)]
+enum SendFailure {
+    /// The peer stopped reading and the write never drained.
+    Timeout(Duration),
+    /// The socket itself failed.
+    Socket(axum::Error),
+}
+
+impl fmt::Display for SendFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Timeout(after) => {
+                write!(f, "write timed out after {:.1}s", after.as_secs_f32())
+            }
+            Self::Socket(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+/// Sends one frame, giving up once `deadline` passes.
+///
+/// A peer that stops reading would otherwise leave the write stalled inside the
+/// select arm, where the idle check never runs and the connection keeps its
+/// slot for as long as the peer refuses to read. The idle timeout is reused as
+/// the deadline: a write that cannot drain in that long is as dead as a
+/// connection that says nothing.
+async fn send(
+    socket: &mut WebSocket,
+    message: Message,
+    deadline: Duration,
+) -> Result<(), SendFailure> {
+    match timeout(deadline, socket.send(message)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(err)) => Err(SendFailure::Socket(err)),
+        Err(_elapsed) => Err(SendFailure::Timeout(deadline)),
+    }
+}
+
+/// Builds a close frame.
+fn close_message(code: u16, reason: &'static str) -> Message {
+    Message::Close(Some(CloseFrame {
+        code,
+        reason: reason.into(),
+    }))
+}
+
+/// Decodes a binary frame as request text.
+///
+/// Clients are expected to send text; a binary frame is read as a request only
+/// when it happens to carry UTF-8.
+fn decode_request(bin: &[u8]) -> Option<&str> {
+    match std::str::from_utf8(bin) {
+        Ok(text) => Some(text),
+        Err(err) => {
+            tracing::debug!("Could not decode request: {err}");
+            None
+        }
+    }
+}
+
 /// Main function for websocket connections
 ///
 /// This function will handle all incoming websocket connections and keep them in their own loop.
@@ -160,7 +222,11 @@ pub async fn main_websocket(
                     }
                 };
 
-                if let Err(err)= socket.send(Message::Text(message.into())).await {
+                if let Err(err) = send(
+                    &mut socket,
+                    Message::Text(message.into()),
+                    limits.idle_timeout,
+                ).await {
                     tracing::error!("Could not send websocket message: {}", err);
                     break;
                 }
@@ -169,16 +235,21 @@ pub async fn main_websocket(
             _ = keepalive.tick() => {
                 if last_activity.elapsed() >= limits.idle_timeout {
                     tracing::debug!("ws-idle: closing after {:?}", last_activity.elapsed());
-                    if let Err(err) = socket.send(Message::Close(Some(CloseFrame {
-                        code: close_code::POLICY,
-                        reason: "idle timeout".into(),
-                    }))).await {
+                    if let Err(err) = send(
+                        &mut socket,
+                        close_message(close_code::POLICY, "idle timeout"),
+                        limits.idle_timeout,
+                    ).await {
                         tracing::debug!("Could not send idle close frame: {err}");
                     }
                     break;
                 }
 
-                if let Err(err) = socket.send(Message::Ping(Default::default())).await {
+                if let Err(err) = send(
+                    &mut socket,
+                    Message::Ping(Default::default()),
+                    limits.idle_timeout,
+                ).await {
                     tracing::debug!("Could not send keepalive ping: {err}");
                     break;
                 }
@@ -201,19 +272,18 @@ pub async fn main_websocket(
                     }
                 };
 
+                // Any inbound frame proves the peer is alive, the pong answering
+                // our own keepalive ping included, so the idle clock restarts
+                // before the frame is judged on its contents.
+                let now = Instant::now();
+                last_activity = now;
+
                 let text = match &message {
-                    Message::Text(text) => text.as_str(),
-                    Message::Binary(bin) => match std::str::from_utf8(bin) {
-                        Ok(text) => text,
-                        Err(err) => {
-                            tracing::debug!("Could not decode request: {err}");
-                            continue;
-                        }
-                    },
+                    Message::Text(text) => Some(text.as_str()),
+                    Message::Binary(bin) => decode_request(bin),
                     // Axum answers pings itself; replying here too would send a
                     // second pong for every ping a client sends.
-                    Message::Ping(_) => continue,
-                    Message::Pong(_payload) => continue,
+                    Message::Ping(_) | Message::Pong(_) => None,
                     Message::Close(frame) => {
                         if let Some(CloseFrame { code, reason }) = frame {
                             tracing::info!(
@@ -224,53 +294,60 @@ pub async fn main_websocket(
                             tracing::info!("ws-close: no frame");
                         }
 
-                        if let Err(err) = socket.send(Message::Close(Some(CloseFrame {
-                            code: close_code::NORMAL,
-                            reason: "bye!".into(),
-                        }))).await {
+                        if let Err(err) = send(
+                            &mut socket,
+                            close_message(close_code::NORMAL, "bye!"),
+                            limits.idle_timeout,
+                        ).await {
                             tracing::debug!("Could not send close frame: {err}");
                         }
                         break;
                     }
                 };
 
-                let now = Instant::now();
-                let result = match context.budget.charge(1, now) {
-                    Charge::Accepted => {
-                        last_activity = now;
-                        match deserialize_request(text) {
-                            Ok(request) => process(&mut context, request).await,
-                            Err(ParseFailure { error, id }) => {
-                                tracing::debug!("Could not parse request: {error}");
-                                match id {
-                                    Some(id) => error_response(id, WsError::InvalidParams),
-                                    None => continue,
-                                }
+                let charge = context.budget.charge(1, now);
+                if charge == Charge::Exhausted {
+                    tracing::debug!("ws-rate: closing after repeated throttling");
+                    if let Err(err) = send(
+                        &mut socket,
+                        close_message(close_code::POLICY, "request rate exceeded"),
+                        limits.idle_timeout,
+                    ).await {
+                        tracing::debug!("Could not send rate-limit close frame: {err}");
+                    }
+                    break;
+                }
+
+                // Charged above rather than skipped, so a flood of control or
+                // undecodable frames still spends the connection's budget.
+                let Some(text) = text else {
+                    continue;
+                };
+
+                let result = match charge {
+                    Charge::Accepted => match deserialize_request(text) {
+                        Ok(request) => process(&mut context, request).await,
+                        Err(ParseFailure { error, id }) => {
+                            tracing::debug!("Could not parse request: {error}");
+                            match id {
+                                Some(id) => error_response(id, WsError::InvalidParams),
+                                None => continue,
                             }
                         }
-                    }
-                    Charge::Throttled => match recover_request_id(text) {
+                    },
+                    Charge::Throttled | Charge::Exhausted => match recover_request_id(text) {
                         Some(id) => error_response(id, WsError::ServerBusy),
                         None => continue,
                     },
-                    Charge::Exhausted => {
-                        tracing::debug!("ws-rate: closing after repeated throttling");
-                        if let Err(err) = socket.send(Message::Close(Some(CloseFrame {
-                            code: close_code::POLICY,
-                            reason: "request rate exceeded".into(),
-                        }))).await {
-                            tracing::debug!("Could not send rate-limit close frame: {err}");
-                        }
-                        break;
-                    }
                 };
 
                 match result {
                     Ok(result) => {
-                        if let Err(err) = socket
-                            .send(Message::Text(result.to_string().into()))
-                            .await
-                        {
+                        if let Err(err) = send(
+                            &mut socket,
+                            Message::Text(result.to_string().into()),
+                            limits.idle_timeout,
+                        ).await {
                             tracing::debug!("Could not send request: {}", err);
                             break;
                         }
@@ -665,6 +742,34 @@ mod tests {
             "a throttled subscription must leave no state behind"
         );
         assert_eq!(pubsub.active_subscribers(), 0);
+    }
+
+    /// The smallest burst the mintd config validation accepts is one unit for
+    /// the frame plus one per filter, so that burst must actually admit a
+    /// maximum-size subscription.
+    #[tokio::test]
+    async fn the_minimum_burst_admits_a_maximum_size_subscription() {
+        let filters = 8;
+        let mint = create_test_mint().await;
+        let limits = WsLimits {
+            max_filters_per_subscription: filters,
+            max_topics_per_connection: filters,
+            max_request_units_per_second: 1,
+            max_request_burst_units: u32::try_from(filters).expect("filter count") + 1,
+            max_throttled_requests: 0,
+            ..WsLimits::default()
+        };
+        let mut context = make_context_with_limits(mint, limits);
+
+        assert_eq!(
+            context.budget.charge(1, Instant::now()),
+            Charge::Accepted,
+            "the read loop charges one unit for the frame itself"
+        );
+
+        subscribe::handle(&mut context, make_params_with_filters("sub-max", filters))
+            .await
+            .expect("the smallest valid burst must cover a maximum-size subscription");
     }
 
     /// A subscription costs one unit per filter, so churning wide subscriptions

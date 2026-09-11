@@ -2884,7 +2884,7 @@ max_melt = 500000
         let settings = Settings::try_from_toml(section).expect("limits section parses");
 
         assert_eq!(settings.limits.ws_max_connections_per_ip, 2);
-        assert_eq!(settings.limits.ws_max_subscriptions_per_connection, 10);
+        assert_eq!(settings.limits.ws_max_subscriptions_per_connection, 100);
         assert_eq!(
             settings.limits,
             Limits::default(),

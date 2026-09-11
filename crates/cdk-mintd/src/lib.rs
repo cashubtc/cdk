@@ -616,7 +616,7 @@ fn validate_limits_config(settings: &config::Settings) -> Result<()> {
             .saturating_add(1);
         if limits.ws_max_request_burst_units < subscription_units {
             bail!(
-                "Invalid limits configuration: ws_max_request_burst_units must be at least {subscription_units} to cover one ws_max_filters_per_subscription request"
+                "Invalid limits configuration: ws_max_request_burst_units must be at least {subscription_units} to cover the frame and every filter of one ws_max_filters_per_subscription request"
             );
         }
     }

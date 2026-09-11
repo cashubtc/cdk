@@ -392,18 +392,19 @@ ws_max_connections = 512
 # once. Forwarded headers are not trusted, because a client can forge them.
 ws_max_connections_per_ip = 2
 # Maximum concurrent subscriptions on one WebSocket connection
-ws_max_subscriptions_per_connection = 10
+ws_max_subscriptions_per_connection = 100
 # Maximum filters accepted in a single subscription request
-ws_max_filters_per_subscription = 100
+ws_max_filters_per_subscription = 1000
 # Maximum topics one WebSocket connection may register across its subscriptions
-ws_max_topics_per_connection = 100
+ws_max_topics_per_connection = 1000
 # Request units one WebSocket connection earns per second. A unit is roughly one
 # frame; a subscription costs one unit per filter, because registering a filter
 # is what takes the mint-wide topic lock. Set to 0 to disable the throttle.
 ws_max_request_units_per_second = 32
-# Request units one WebSocket connection may hold unspent. Must cover one
-# ws_max_filters_per_subscription request, or such a request could never succeed.
-ws_max_request_burst_units = 128
+# Request units one WebSocket connection may hold unspent. Must be at least
+# ws_max_filters_per_subscription + 1, or a maximum-size subscription could never
+# succeed: the frame costs one unit and each of its filters costs one more.
+ws_max_request_burst_units = 1024
 # Throttled requests tolerated before the connection is closed. Set to 0 to keep
 # a throttled connection open indefinitely.
 ws_max_throttled_requests = 20
@@ -418,5 +419,6 @@ ws_ping_interval_secs = 30
 pubsub_max_topics = 100000
 # Maximum subscription backfills running concurrently
 pubsub_max_concurrent_backfills = 32
-# Maximum payment-backend quote checks performed by a single backfill
+# Maximum payment-backend round trips performed by a single backfill. Quotes
+# already in a final state do not count against it.
 pubsub_max_quote_checks_per_backfill = 64

@@ -11,6 +11,8 @@ use super::{Charge, SubscriptionSlot, WsContext, WsError};
 /// The request is charged to the connection's budget per filter, because
 /// registering a filter is what takes the mint-wide topic lock. A flat charge
 /// would leave subscribe and unsubscribe churn as cheap as any other frame.
+/// The frame itself was already charged one unit by the read loop, so only the
+/// filters are charged here.
 pub(crate) async fn handle(
     context: &mut WsContext,
     params: Params,
@@ -55,9 +57,7 @@ pub(crate) async fn handle(
         return Err(WsError::ServerBusy);
     }
 
-    let units = u32::try_from(requested)
-        .unwrap_or(u32::MAX)
-        .saturating_add(1);
+    let units = u32::try_from(requested).unwrap_or(u32::MAX);
     if context.budget.charge(units, Instant::now()) != Charge::Accepted {
         tracing::debug!("WebSocket subscription request exceeds the connection's request budget");
         return Err(WsError::ServerBusy);
