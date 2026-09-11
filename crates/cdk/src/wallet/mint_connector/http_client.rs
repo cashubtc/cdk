@@ -1251,6 +1251,9 @@ mod tests {
     use super::*;
     use crate::nuts::nut04::MintQuoteCustomRequest;
     use crate::nuts::nut05::MeltQuoteCustomRequest;
+    use crate::wallet::mint_connector::transport::{
+        RateLimitConfig, RateLimitedTransport, RateLimiterManager,
+    };
 
     /// Transport double for recipient delivery.
     ///
@@ -1515,7 +1518,7 @@ mod tests {
         }
     }
 
-    fn delivery_client(transport: RecordingPostTransport) -> HttpClient<RecordingPostTransport> {
+    fn delivery_client<T: Transport>(transport: T) -> HttpClient<T> {
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
         HttpClient::with_transport(mint_url, transport, None)
     }
@@ -1770,6 +1773,34 @@ mod tests {
             "unexpected error: {error:?}"
         );
         assert!(transport.calls().is_empty(), "payload must not be sent");
+    }
+
+    /// The wallet's default transport is rate limited, so the refusal has to
+    /// survive decoration: a wrapper that answers for its inner transport
+    /// without asking it would report a verified connection that is not one.
+    #[tokio::test]
+    async fn post_payment_request_payload_refuses_a_wrapped_unverified_transport() {
+        let mut inner = RecordingPostTransport::with_response(200, "{}");
+        let proxy = Url::parse("http://127.0.0.1:9050").expect("parse proxy url");
+        inner
+            .with_proxy(proxy, None, true)
+            .expect("configure proxy");
+        let transport = RateLimitedTransport::with_manager(
+            inner.clone(),
+            RateLimiterManager::new(RateLimitConfig::default(), None),
+        );
+        let client = delivery_client(transport);
+
+        let error = client
+            .post_payment_request_payload(receiver_url(), &delivery_payload())
+            .await
+            .expect_err("delivery should refuse an unverified connection");
+
+        assert!(
+            matches!(error, Error::UnverifiedTlsEndpoint { .. }),
+            "unexpected error: {error:?}"
+        );
+        assert!(inner.calls().is_empty(), "payload must not be sent");
     }
 
     #[tokio::test]
