@@ -8,7 +8,6 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::hashes::sha256;
@@ -311,9 +310,11 @@ impl MintPayment for Cln {
                             break Some((event, (cln_client, last_pay_idx, cancel_token, is_active, kv_store)));
                                 }
                                 Err(e) => {
-                                    tracing::warn!("CLN: Error fetching invoice: {e}");
-                                    tokio::time::sleep(Duration::from_secs(1)).await;
-                                    continue;
+                                    tracing::warn!("CLN: Error fetching invoice, closing payment event stream: {e}");
+                                    // ClnRpc cannot reconnect a broken socket. Let the
+                                    // supervisor create a fresh stream with backoff.
+                                    is_active.store(false, Ordering::SeqCst);
+                                    return None;
                                 }
                             }
                         }
@@ -1370,12 +1371,16 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
     use std::str::FromStr;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use cdk_common::database::{
         DbTransactionFinalizer, Error as DatabaseError, KVStore, KVStoreDatabase,
         KVStoreTransaction,
     };
     use cdk_common::payment::Bolt11OutgoingPaymentOptions;
+    use futures::SinkExt;
+    use tokio::net::{UnixListener, UnixStream};
+    use tokio_util::codec::Framed;
 
     use super::*;
 
@@ -1699,6 +1704,121 @@ mod tests {
 
     fn test_cln_with_memory_kv() -> Cln {
         test_cln_with_kv(Arc::new(MemoryKvStore::default()))
+    }
+
+    struct TestRpcSocket(PathBuf);
+
+    impl TestRpcSocket {
+        fn new() -> Self {
+            Self(std::env::temp_dir().join(format!("cdk-cln-{}.sock", Uuid::new_v4())))
+        }
+    }
+
+    impl Drop for TestRpcSocket {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    async fn receive_wait_request(
+        connection: &mut Framed<UnixStream, cln_rpc::codec::JsonCodec>,
+        last_pay_index: u64,
+    ) -> serde_json::Value {
+        let request = connection.next().await.unwrap().unwrap();
+        assert_eq!(request["method"], "waitanyinvoice");
+        assert_eq!(request["params"]["lastpay_index"], last_pay_index);
+        request
+    }
+
+    async fn send_paid_invoice(
+        connection: &mut Framed<UnixStream, cln_rpc::codec::JsonCodec>,
+        last_pay_index: u64,
+    ) {
+        let request = receive_wait_request(connection, last_pay_index).await;
+        connection
+            .send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "status": "paid",
+                    "created_index": 1,
+                    "expires_at": 2000000000,
+                    "label": "reconnect-test",
+                    "payment_hash": "01".repeat(32),
+                    "pay_index": last_pay_index + 1,
+                    "amount_received_msat": 1000
+                }
+            }))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn payment_event_stream_recovers_after_disconnect() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let socket = TestRpcSocket::new();
+            let listener = UnixListener::bind(&socket.0).unwrap();
+            let mut cln = test_cln_with_memory_kv();
+            cln.rpc_socket = socket.0.clone();
+            let mut tx = cln.kv_store.begin_transaction().await.unwrap();
+            tx.kv_write(
+                CLN_KV_PRIMARY_NAMESPACE,
+                CLN_KV_SECONDARY_NAMESPACE,
+                LAST_PAY_INDEX_KV_KEY,
+                b"41",
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+
+            let mut stream = cln.wait_payment_event().await.unwrap();
+            let (connection, _) = listener.accept().await.unwrap();
+            let mut connection = Framed::new(connection, cln_rpc::codec::JsonCodec::default());
+            let (event, ()) = tokio::join!(stream.next(), send_paid_invoice(&mut connection, 41));
+            assert!(matches!(event, Some(Event::PaymentReceived(_))));
+            assert!(cln.is_payment_event_stream_active());
+            assert_eq!(cln.get_last_pay_index().await.unwrap(), Some(42));
+
+            // Simulate CLN going away while waitanyinvoice is outstanding.
+            let (event, ()) = tokio::join!(stream.next(), async {
+                receive_wait_request(&mut connection, 42).await;
+                drop(connection);
+                drop(listener);
+                std::fs::remove_file(&socket.0).unwrap();
+            });
+            assert!(event.is_none(), "a dead connection must close the stream");
+            assert!(!cln.is_payment_event_stream_active());
+            assert!(cln.wait_payment_event().await.is_err());
+            assert!(!cln.is_payment_event_stream_active());
+
+            // The supervisor retries this entry point when CLN comes back.
+            let listener = UnixListener::bind(&socket.0).unwrap();
+            let mut stream = cln.wait_payment_event().await.unwrap();
+            let (connection, _) = listener.accept().await.unwrap();
+            let mut connection = Framed::new(connection, cln_rpc::codec::JsonCodec::default());
+            let (event, ()) = tokio::join!(stream.next(), send_paid_invoice(&mut connection, 42));
+            match event {
+                Some(Event::PaymentReceived(payment)) => {
+                    assert_eq!(
+                        payment.payment_identifier,
+                        PaymentIdentifier::PaymentHash([1; 32])
+                    );
+                    assert_eq!(
+                        payment.payment_amount,
+                        Amount::new(1000, CurrencyUnit::Msat)
+                    );
+                }
+                event => panic!("expected a payment after reconnect, got {event:?}"),
+            }
+            assert!(cln.is_payment_event_stream_active());
+            assert_eq!(cln.get_last_pay_index().await.unwrap(), Some(43));
+
+            cln.cancel_payment_event_stream();
+            assert!(stream.next().await.is_none());
+            assert!(!cln.is_payment_event_stream_active());
+        })
+        .await
+        .expect("payment stream recovery must complete promptly");
     }
 
     fn test_invoice() -> Bolt11Invoice {
