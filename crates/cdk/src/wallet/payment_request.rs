@@ -256,11 +256,13 @@ impl Wallet {
     /// [`PreparedPaymentRequest::confirm`] or released with
     /// [`PreparedPaymentRequest::cancel`].
     ///
-    /// A request whose only transport is HTTP POST fails here with
-    /// [`Error::PaymentRequestDeliveryUnsupported`] when the wallet's mint
-    /// connector cannot deliver. Capability is knowable before any proofs are
-    /// reserved, and finding out at confirm time would leave the payer with a
-    /// pending send to revoke.
+    /// A request whose only transport is HTTP POST fails here when the
+    /// wallet's mint connector cannot hand proofs to that target: no delivery
+    /// support ([`Error::PaymentRequestDeliveryUnsupported`]), an unusable URL,
+    /// or a transport that verifies no certificate
+    /// ([`Error::UnverifiedTlsEndpoint`]). All three are knowable before any
+    /// proofs are reserved, and finding out at confirm time would leave the
+    /// payer with a pending send to revoke.
     #[instrument(skip_all)]
     pub async fn prepare_pay_request(
         &self,
@@ -323,10 +325,9 @@ impl Wallet {
                 Error::Custom("No transport available in payment request".to_string())
             })?;
 
-        if transport._type == TransportType::HttpPost
-            && !self.client.supports_payment_request_delivery()
-        {
-            return Err(Error::PaymentRequestDeliveryUnsupported);
+        if transport._type == TransportType::HttpPost {
+            self.client
+                .ensure_payment_request_deliverable(&transport.target)?;
         }
 
         let prepared_send = self
@@ -949,7 +950,7 @@ mod tests {
     async fn prepared_payment_exposes_exact_fee_breakdown_and_cancel_releases_proofs() {
         use crate::wallet::test_utils::{
             create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url,
-            test_proof_info, MockMintConnector,
+            test_proof_info, MockMintConnector, PaymentRequestDeliverability,
         };
 
         let db = create_test_db().await;
@@ -960,7 +961,7 @@ mod tests {
         .await
         .expect("store proof");
         let mock = MockMintConnector::new();
-        mock.set_payment_request_delivery_supported(true);
+        mock.set_payment_request_deliverability(PaymentRequestDeliverability::Deliverable);
         let wallet = create_test_wallet_with_mock(db, Arc::new(mock)).await;
         let request = payment_request_with_http_transport(Amount::from(100), Amount::from(500));
 
@@ -1036,11 +1037,14 @@ mod tests {
             .is_empty());
     }
 
+    /// A transport that verifies no certificate refuses an https receiver, and
+    /// it knows that before the swap. Discovering it during delivery would cost
+    /// the payer the input fee for a payment that can never go through.
     #[tokio::test]
-    async fn prepare_pay_request_accepts_http_transport_when_connector_delivers() {
+    async fn prepare_pay_request_rejects_http_only_request_over_unverified_tls() {
         use crate::wallet::test_utils::{
             create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url,
-            test_proof_info, MockMintConnector,
+            test_proof_info, MockMintConnector, PaymentRequestDeliverability,
         };
 
         let db = create_test_db().await;
@@ -1051,7 +1055,50 @@ mod tests {
         .await
         .expect("store proof");
         let mock = MockMintConnector::new();
-        mock.set_payment_request_delivery_supported(true);
+        mock.set_payment_request_deliverability(PaymentRequestDeliverability::UnverifiedTls);
+        let wallet = create_test_wallet_with_mock(db, Arc::new(mock)).await;
+        let request = payment_request_with_http_transport(Amount::from(100), Amount::from(500));
+
+        let error = wallet
+            .prepare_pay_request(request, None)
+            .await
+            .expect_err("prepare should refuse an unverified receiver");
+
+        assert!(
+            matches!(error, Error::UnverifiedTlsEndpoint { ref host } if host == "receiver.example.com"),
+            "unexpected error: {error:?}"
+        );
+        assert_eq!(
+            wallet.total_reserved_balance().await.expect("balance"),
+            Amount::ZERO
+        );
+        assert_eq!(
+            wallet.total_balance().await.expect("balance"),
+            Amount::from(1024)
+        );
+        assert!(wallet
+            .get_pending_sends()
+            .await
+            .expect("pending sends")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn prepare_pay_request_accepts_http_transport_when_connector_delivers() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url,
+            test_proof_info, MockMintConnector, PaymentRequestDeliverability,
+        };
+
+        let db = create_test_db().await;
+        db.update_proofs(
+            vec![test_proof_info(test_keyset_id(), 1024, test_mint_url())],
+            vec![],
+        )
+        .await
+        .expect("store proof");
+        let mock = MockMintConnector::new();
+        mock.set_payment_request_deliverability(PaymentRequestDeliverability::Deliverable);
         let wallet = create_test_wallet_with_mock(db, Arc::new(mock)).await;
         let request = payment_request_with_http_transport(Amount::from(100), Amount::from(500));
 
@@ -1458,8 +1505,9 @@ impl WalletRepository {
     /// - The specified mint is not accepted by the payment request
     /// - No matching mint has sufficient balance
     /// - No transport is available in the payment request
-    /// - The request only offers HTTP POST and the mint connector cannot
-    ///   deliver payment requests
+    /// - The request only offers HTTP POST and the mint connector cannot hand
+    ///   proofs to that target: no delivery support, an unusable URL, or a
+    ///   transport that verifies no certificate
     ///
     /// The returned payment must be explicitly completed with
     /// [`PreparedPaymentRequest::confirm`] or released with

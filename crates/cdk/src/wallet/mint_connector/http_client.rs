@@ -516,8 +516,9 @@ where
         self.transport_http_get(parsed_url, None).await
     }
 
-    fn supports_payment_request_delivery(&self) -> bool {
-        true
+    fn ensure_payment_request_deliverable(&self, url: &str) -> Result<(), Error> {
+        let url = Url::parse(url)?;
+        self.ensure_verified_tls(&url)
     }
 
     /// Deliver a NUT-18 payment request payload to the receiver
@@ -530,8 +531,8 @@ where
         url: &str,
         payload: &PaymentRequestPayload,
     ) -> Result<(), Error> {
+        self.ensure_payment_request_deliverable(url)?;
         let url = Url::parse(url)?;
-        self.ensure_verified_tls(&url)?;
 
         let response =
             self.transport
@@ -1749,14 +1750,14 @@ mod tests {
     /// that knows verification is off, so the client has to ask rather than
     /// trust its own flag. `with_transport` cannot set that flag, and proofs
     /// are bearer funds: an unverified https receiver is a MITM's to redeem.
-    #[tokio::test]
-    async fn post_payment_request_payload_refuses_a_pre_configured_unverified_transport() {
+    #[test]
+    fn ensure_payment_request_deliverable_refuses_a_pre_configured_unverified_transport() {
         let mut transport = RecordingPostTransport::with_response(200, "{}");
         let proxy = Url::parse("http://127.0.0.1:9050").expect("parse proxy url");
         transport
             .with_proxy(proxy, None, true)
             .expect("configure proxy");
-        let client = delivery_client(transport.clone());
+        let client = delivery_client(transport);
 
         assert!(
             !client.tls_verification_disabled,
@@ -1764,43 +1765,59 @@ mod tests {
         );
 
         let error = client
-            .post_payment_request_payload(receiver_url(), &delivery_payload())
-            .await
+            .ensure_payment_request_deliverable(receiver_url())
             .expect_err("delivery should refuse an unverified connection");
 
         assert!(
             matches!(error, Error::UnverifiedTlsEndpoint { .. }),
             "unexpected error: {error:?}"
         );
-        assert!(transport.calls().is_empty(), "payload must not be sent");
     }
 
     /// The wallet's default transport is rate limited, so the refusal has to
     /// survive decoration: a wrapper that answers for its inner transport
     /// without asking it would report a verified connection that is not one.
-    #[tokio::test]
-    async fn post_payment_request_payload_refuses_a_wrapped_unverified_transport() {
+    #[test]
+    fn ensure_payment_request_deliverable_refuses_a_wrapped_unverified_transport() {
         let mut inner = RecordingPostTransport::with_response(200, "{}");
         let proxy = Url::parse("http://127.0.0.1:9050").expect("parse proxy url");
         inner
             .with_proxy(proxy, None, true)
             .expect("configure proxy");
         let transport = RateLimitedTransport::with_manager(
-            inner.clone(),
+            inner,
             RateLimiterManager::new(RateLimitConfig::default(), None),
         );
         let client = delivery_client(transport);
 
         let error = client
-            .post_payment_request_payload(receiver_url(), &delivery_payload())
-            .await
+            .ensure_payment_request_deliverable(receiver_url())
             .expect_err("delivery should refuse an unverified connection");
 
         assert!(
             matches!(error, Error::UnverifiedTlsEndpoint { .. }),
             "unexpected error: {error:?}"
         );
-        assert!(inner.calls().is_empty(), "payload must not be sent");
+    }
+
+    /// The wallet asks before it swaps, so a target it can never post to has to
+    /// fail here rather than after the payer has paid the input fee.
+    #[test]
+    fn ensure_payment_request_deliverable_rejects_an_unparsable_url() {
+        let client = delivery_client(RecordingPostTransport::with_response(200, ""));
+
+        client
+            .ensure_payment_request_deliverable("receiver.example.com/pay")
+            .expect_err("a target without a scheme is not a receiver URL");
+    }
+
+    #[test]
+    fn ensure_payment_request_deliverable_allows_plain_http_without_certificate_verification() {
+        let client = unverified_tls_delivery_client(RecordingPostTransport::with_response(200, ""));
+
+        client
+            .ensure_payment_request_deliverable("http://receiver.example.com/pay")
+            .expect("plain http has no certificate to verify");
     }
 
     #[tokio::test]

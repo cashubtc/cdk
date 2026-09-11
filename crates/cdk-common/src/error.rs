@@ -82,7 +82,8 @@ pub enum Error {
     /// `danger_accept_invalid_certs` disables verification for the whole
     /// client, and it is configured for the mint, not for an LNURL service or
     /// a receiver URL a payment request chose. A MITM there swaps the invoice
-    /// or redeems the proofs.
+    /// or redeems the proofs. Preparing a NUT-18 payment raises this before
+    /// reserving any proofs, so there is no pending send to revoke.
     #[cfg(feature = "wallet")]
     #[error("Refusing to reach {host} without TLS certificate verification")]
     UnverifiedTlsEndpoint {
