@@ -77,14 +77,15 @@ pub enum Error {
         /// Redirect status, when the transport surfaced the response itself.
         status: Option<u16>,
     },
-    /// Delivery would have sent proofs over an unverified TLS connection.
+    /// A third-party endpoint was reached over an unverified TLS connection.
     ///
     /// `danger_accept_invalid_certs` disables verification for the whole
-    /// client, and it is configured for the mint, not for a receiver URL the
-    /// payment request chose.
+    /// client, and it is configured for the mint, not for an LNURL service or
+    /// a receiver URL a payment request chose. A MITM there swaps the invoice
+    /// or redeems the proofs.
     #[cfg(feature = "wallet")]
-    #[error("Refusing to deliver payment request to {host} without TLS certificate verification")]
-    PaymentRequestDeliveryUnverifiedTls {
+    #[error("Refusing to reach {host} without TLS certificate verification")]
+    UnverifiedTlsEndpoint {
         /// Receiver host that would have been trusted without verification.
         host: String,
     },
@@ -666,7 +667,7 @@ mod tests {
         #[cfg(feature = "wallet")]
         assert!(Error::PaymentRequestDeliveryUnsupported.is_definitive_failure());
         #[cfg(feature = "wallet")]
-        assert!(Error::PaymentRequestDeliveryUnverifiedTls {
+        assert!(Error::UnverifiedTlsEndpoint {
             host: "receiver.example.com".to_string(),
         }
         .is_definitive_failure());
@@ -849,7 +850,7 @@ impl Error {
 
             #[cfg(feature = "wallet")]
             Self::PaymentRequestDeliveryUnsupported
-            | Self::PaymentRequestDeliveryUnverifiedTls { .. } => true,
+            | Self::UnverifiedTlsEndpoint { .. } => true,
 
             // Network/IO/Parsing Errors (Usually ambiguous as they could happen reading response)
             Self::HttpError(None, _) // No status code means network error
