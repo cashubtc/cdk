@@ -20,8 +20,11 @@ mod auth;
 pub mod cache;
 mod custom_handlers;
 mod custom_router;
-mod router_handlers;
+pub(crate) mod router_handlers;
 mod ws;
+
+use ws::WsConnectionLimiter;
+pub use ws::WsLimits;
 
 /// CDK Mint State
 #[derive(Clone)]
@@ -29,6 +32,7 @@ mod ws;
 pub struct MintState {
     mint: Arc<Mint>,
     cache: Arc<cache::HttpCache>,
+    ws_limiter: Arc<WsConnectionLimiter>,
 }
 
 /// Create mint [`Router`] with required endpoints for cashu mint with the default cache
@@ -36,7 +40,14 @@ pub struct MintState {
 /// The `custom_methods` parameter should include all custom payment methods supported
 /// by the payment processor, including "bolt11" and "bolt12" if they are supported.
 pub async fn create_mint_router(mint: Arc<Mint>, custom_methods: Vec<String>) -> Result<Router> {
-    create_mint_router_with_custom_cache(mint, Default::default(), custom_methods, false).await
+    create_mint_router_with_custom_cache(
+        mint,
+        Default::default(),
+        custom_methods,
+        false,
+        WsLimits::default(),
+    )
+    .await
 }
 
 async fn cors_middleware(
@@ -93,10 +104,12 @@ pub async fn create_mint_router_with_custom_cache(
     cache: HttpCache,
     custom_methods: Vec<String>,
     enable_info_page: bool,
+    ws_limits: WsLimits,
 ) -> Result<Router> {
     let state = MintState {
         mint,
         cache: Arc::new(cache),
+        ws_limiter: Arc::new(WsConnectionLimiter::new(ws_limits)),
     };
 
     let v1_router = Router::new()
