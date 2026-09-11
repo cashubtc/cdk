@@ -92,8 +92,10 @@ where
     mint_url: MintUrl,
     cache_support: Arc<StdRwLock<Cache>>,
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
-    /// Set when the transport was built with certificate verification off, so
-    /// delivery to a third-party receiver can refuse to run over it.
+    /// Set when this client configured the transport with certificate
+    /// verification off, so delivery to a third-party receiver can refuse to
+    /// run over it. A transport handed in pre-configured is asked directly
+    /// instead.
     tls_verification_disabled: bool,
 }
 
@@ -166,6 +168,16 @@ where
             | HttpError::Build(message)
             | HttpError::Other(message) => Error::HttpError(None, message),
         }
+    }
+
+    /// Whether proofs would leave over a connection with no verified
+    /// certificate.
+    ///
+    /// The client's own flag only covers a transport it configured itself. One
+    /// passed to [`HttpClient::with_transport`] may already have verification
+    /// off and is the only thing that knows, so both are consulted.
+    fn tls_verification_disabled(&self) -> bool {
+        self.tls_verification_disabled || self.transport.tls_verification_disabled()
     }
 
     async fn transport_http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, Error>
@@ -498,7 +510,7 @@ where
     ) -> Result<(), Error> {
         let url = Url::parse(url)?;
 
-        if self.tls_verification_disabled && url.scheme() == "https" {
+        if self.tls_verification_disabled() && url.scheme() == "https" {
             let host = url.host_str().ok_or_else(|| {
                 Error::Custom("Payment request endpoint must include a host".to_string())
             })?;
@@ -1235,6 +1247,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct RecordingPostTransport {
         proxy: Arc<Mutex<Option<String>>>,
+        accept_invalid_certs: Arc<Mutex<bool>>,
         calls: Arc<Mutex<Vec<RecordedPost>>>,
         response: Arc<Mutex<Option<(u16, String)>>>,
         error: Arc<Mutex<Option<HttpError>>>,
@@ -1286,10 +1299,15 @@ mod tests {
             &mut self,
             proxy: Url,
             _host_matcher: Option<&str>,
-            _accept_invalid_certs: bool,
+            accept_invalid_certs: bool,
         ) -> Result<(), HttpError> {
             *self.proxy.lock().expect("lock") = Some(proxy.to_string());
+            *self.accept_invalid_certs.lock().expect("lock") = accept_invalid_certs;
             Ok(())
+        }
+
+        fn tls_verification_disabled(&self) -> bool {
+            *self.accept_invalid_certs.lock().expect("lock")
         }
 
         #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -1702,6 +1720,36 @@ mod tests {
 
         assert!(!verified.tls_verification_disabled);
         assert!(unverified.tls_verification_disabled);
+    }
+
+    /// A transport configured before the client wraps it is the only thing
+    /// that knows verification is off, so the client has to ask rather than
+    /// trust its own flag. `with_transport` cannot set that flag, and proofs
+    /// are bearer funds: an unverified https receiver is a MITM's to redeem.
+    #[tokio::test]
+    async fn post_payment_request_payload_refuses_a_pre_configured_unverified_transport() {
+        let mut transport = RecordingPostTransport::with_response(200, "{}");
+        let proxy = Url::parse("http://127.0.0.1:9050").expect("parse proxy url");
+        transport
+            .with_proxy(proxy, None, true)
+            .expect("configure proxy");
+        let client = delivery_client(transport.clone());
+
+        assert!(
+            !client.tls_verification_disabled,
+            "with_transport cannot know how the transport was built"
+        );
+
+        let error = client
+            .post_payment_request_payload(receiver_url(), &delivery_payload())
+            .await
+            .expect_err("delivery should refuse an unverified connection");
+
+        assert!(
+            matches!(error, Error::PaymentRequestDeliveryUnverifiedTls { .. }),
+            "unexpected error: {error:?}"
+        );
+        assert!(transport.calls().is_empty(), "payload must not be sent");
     }
 
     #[tokio::test]
