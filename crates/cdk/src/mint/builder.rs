@@ -338,6 +338,10 @@ impl MintBuilder {
     }
 
     /// Set custom derivation paths for mint units
+    ///
+    /// A unit given a fixed path is excluded from automatic keyset rotation,
+    /// and rotating it explicitly fails: keys derive from the path, so a
+    /// replacement would carry the keys it replaces.
     pub fn with_custom_derivation_paths(
         mut self,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,

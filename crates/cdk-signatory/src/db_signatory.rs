@@ -73,6 +73,9 @@ pub struct DbSignatory {
     rotation_lock: Mutex<()>,
     localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
     secp_ctx: Secp256k1<secp256k1::All>,
+    /// Fixed derivation path per unit, overriding the index-derived default.
+    /// Such a unit is excluded from automatic rotation: the path cannot change,
+    /// so a replacement would carry the keys it replaces.
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     /// Units to initialize on boot, as `init_keysets` expects them.
     supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
@@ -373,6 +376,22 @@ impl DbSignatory {
                 }
                 true
             })
+            // A fixed custom derivation path re-derives the same keys, so the
+            // replacement would be the keyset it replaces. Excluded here rather
+            // than left to fail in staging, for the same reason as above: the
+            // sweep is one transaction and this unit would never succeed.
+            .filter(|info| {
+                if self.custom_paths.contains_key(&info.unit) {
+                    tracing::warn!(
+                        "Keyset {} for unit {} uses a fixed custom derivation path, so rotating \
+                         it would re-derive the same keys and it is not rotated automatically",
+                        info.id,
+                        info.unit
+                    );
+                    return false;
+                }
+                true
+            })
             .cloned()
             .collect();
 
@@ -392,6 +411,36 @@ impl DbSignatory {
             keysets.by_id.values().map(|(info, _)| &info.unit),
             new_keyset,
         )
+    }
+
+    /// Reject a rotation that re-derives an existing keyset's keys.
+    ///
+    /// Keys are a function of the xpriv and the derivation path alone, so a
+    /// path that already produced a keyset produces the same keys again. A
+    /// fixed custom path is how this happens; `add_keyset_info` upserts, so
+    /// without this the same row would be rewritten with a fresh `valid_from`
+    /// and reported as a rotation that never occurred.
+    ///
+    /// Keyed on the path rather than the derived id because a version 2 id also
+    /// hashes the unit, fee and expiry: a rotation that only moves
+    /// `final_expiry` earns a new id over identical signing keys, which an id
+    /// comparison would wave through.
+    ///
+    /// Sync for the same reason as [`Self::check_unit_collision`].
+    fn check_derivation_path_reuse(&self, new_keyset: &MintKeySetInfo) -> Result<(), Error> {
+        let keysets = self.keysets.load();
+        match keysets
+            .by_id
+            .values()
+            .find(|(info, _)| info.derivation_path == new_keyset.derivation_path)
+        {
+            Some((existing, _)) => Err(Error::Custom(format!(
+                "rotating unit {} re-derives keyset {} from derivation path {}; a fixed custom \
+                 derivation path cannot produce new keys",
+                new_keyset.unit, existing.id, new_keyset.derivation_path
+            ))),
+            None => Ok(()),
+        }
     }
 }
 
@@ -755,6 +804,7 @@ impl DbSignatory {
         );
 
         self.check_unit_collision(&info)?;
+        self.check_derivation_path_reuse(&info)?;
 
         let id = info.id;
 
@@ -2575,6 +2625,124 @@ mod test {
             memory_active_keyset_id(&sig, &CurrencyUnit::Sat),
             Some(seeded),
             "the amountless keyset stays active rather than rotating"
+        );
+    }
+
+    /// A fixed custom derivation path cannot yield new keys, so the sweep must
+    /// leave the unit alone instead of upserting the same keyset with a fresh
+    /// `valid_from` and reporting a rotation.
+    #[tokio::test]
+    async fn auto_rotation_skips_a_unit_with_a_custom_derivation_path() {
+        let (store, _fail_unit, transactions) = FailUnitDb::new().await;
+        let path: DerivationPath = "m/129372'/0'/1'".parse().expect("derivation path");
+        let sig = Arc::new(
+            DbSignatory::new(
+                store.clone(),
+                b"test-seed-custom-auto-rotation",
+                Default::default(),
+                HashMap::from([(CurrencyUnit::Sat, path)]),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+
+        let original = sig
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::Sat,
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: 0,
+                keyset_id_type: cdk_common::nut02::KeySetVersion::Version01,
+                final_expiry: None,
+            })
+            .await
+            .expect("rotate_keyset");
+
+        age_active_keyset(&sig, &CurrencyUnit::Sat, 120).await;
+
+        let epoch_before = store.keysets_epoch().await.expect("epoch");
+        transactions.store(0, Ordering::SeqCst);
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        assert_eq!(
+            transactions.load(Ordering::SeqCst),
+            0,
+            "the custom-path unit is the only due one, so no transaction is opened"
+        );
+        assert_eq!(
+            store.keysets_epoch().await.expect("epoch"),
+            epoch_before,
+            "nothing was written, so valid_from was not refreshed"
+        );
+        assert_eq!(
+            memory_active_keyset_id(&sig, &CurrencyUnit::Sat),
+            Some(original.id),
+            "the custom-path keyset stays active rather than rotating"
+        );
+        assert_eq!(
+            db_keyset_ids(&sig).await.len(),
+            1,
+            "no second keyset was created"
+        );
+    }
+
+    /// The sweep filter never reaches an explicit rotation, so staging rejects a
+    /// path that already produced a keyset rather than upserting over it.
+    #[tokio::test]
+    async fn rotate_keyset_rejects_a_custom_path_that_rederives_an_existing_keyset() {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let path: DerivationPath = "m/129372'/0'/1'".parse().expect("derivation path");
+        let sig = DbSignatory::new(
+            store,
+            b"test-seed-custom-manual-rotation",
+            Default::default(),
+            HashMap::from([(CurrencyUnit::Sat, path)]),
+        )
+        .await
+        .expect("DbSignatory::new");
+
+        let rotate = |final_expiry| RotateKeyArguments {
+            unit: CurrencyUnit::Sat,
+            amounts: vec![1, 2, 4, 8],
+            input_fee_ppk: 0,
+            keyset_id_type: cdk_common::nut02::KeySetVersion::Version01,
+            final_expiry,
+        };
+
+        let original = sig
+            .rotate_keyset(rotate(None))
+            .await
+            .expect("the first rotation creates the keyset");
+
+        let err = sig
+            .rotate_keyset(rotate(None))
+            .await
+            .expect_err("re-deriving the same keys must be rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains(&original.id.to_string()),
+            "the error must name the keyset it would have overwritten: {message}"
+        );
+
+        // A version 2 id also hashes the expiry, so this rotation earns a
+        // distinct id over identical keys. Rejected because the guard compares
+        // derivation paths, not ids.
+        sig.rotate_keyset(rotate(Some(unix_time() + 3600)))
+            .await
+            .expect_err("a new expiry over the same keys must be rejected too");
+
+        assert_eq!(
+            memory_active_keyset_id(&sig, &CurrencyUnit::Sat),
+            Some(original.id),
+            "a rejected rotation leaves the active keyset untouched"
+        );
+        assert_eq!(
+            db_keyset_ids(&sig).await.len(),
+            1,
+            "a rejected rotation rolls back cleanly"
         );
     }
 
