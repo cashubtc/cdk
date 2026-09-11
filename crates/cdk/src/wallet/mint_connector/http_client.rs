@@ -180,6 +180,26 @@ where
         self.tls_verification_disabled || self.transport.tls_verification_disabled()
     }
 
+    /// Refuse a third-party endpoint when the transport verifies no
+    /// certificate.
+    ///
+    /// The mint is the embedder's own choice; an LNURL service or a NUT-18
+    /// receiver is not, and a MITM there swaps the invoice or redeems the
+    /// proofs.
+    fn ensure_verified_tls(&self, url: &Url) -> Result<(), Error> {
+        if !self.tls_verification_disabled() || url.scheme() != "https" {
+            return Ok(());
+        }
+
+        let host = url
+            .host_str()
+            .ok_or_else(|| Error::Custom("Endpoint must include a host".to_string()))?;
+
+        Err(Error::UnverifiedTlsEndpoint {
+            host: host.to_string(),
+        })
+    }
+
     async fn transport_http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, Error>
     where
         R: DeserializeOwned,
@@ -481,6 +501,7 @@ where
     ) -> Result<crate::lightning_address::LnurlPayResponse, Error> {
         let parsed_url =
             url::Url::parse(url).map_err(|e| Error::Custom(format!("Invalid URL: {}", e)))?;
+        self.ensure_verified_tls(&parsed_url)?;
         self.transport_http_get(parsed_url, None).await
     }
 
@@ -491,6 +512,7 @@ where
         url: &str,
     ) -> Result<crate::lightning_address::LnurlPayInvoiceResponse, Error> {
         let parsed_url = parse_lnurl_callback_url(url)?;
+        self.ensure_verified_tls(&parsed_url)?;
         self.transport_http_get(parsed_url, None).await
     }
 
@@ -509,16 +531,7 @@ where
         payload: &PaymentRequestPayload,
     ) -> Result<(), Error> {
         let url = Url::parse(url)?;
-
-        if self.tls_verification_disabled() && url.scheme() == "https" {
-            let host = url.host_str().ok_or_else(|| {
-                Error::Custom("Payment request endpoint must include a host".to_string())
-            })?;
-
-            return Err(Error::PaymentRequestDeliveryUnverifiedTls {
-                host: host.to_string(),
-            });
-        }
+        self.ensure_verified_tls(&url)?;
 
         let response =
             self.transport
@@ -1386,6 +1399,8 @@ mod tests {
         post_errors: Arc<Mutex<VecDeque<HttpError>>>,
         /// Artificial delay applied to each `http_post` call.
         post_delay: Option<Duration>,
+        /// Whether `with_proxy` was told to accept invalid certificates.
+        accept_invalid_certs: Arc<Mutex<bool>>,
     }
 
     impl fmt::Debug for MockTransport {
@@ -1401,9 +1416,14 @@ mod tests {
             &mut self,
             _proxy: Url,
             _host_matcher: Option<&str>,
-            _accept_invalid_certs: bool,
+            accept_invalid_certs: bool,
         ) -> Result<(), HttpError> {
+            *self.accept_invalid_certs.lock().expect("lock") = accept_invalid_certs;
             Ok(())
+        }
+
+        fn tls_verification_disabled(&self) -> bool {
+            *self.accept_invalid_certs.lock().expect("lock")
         }
 
         #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -1678,7 +1698,7 @@ mod tests {
             .expect_err("delivery should fail");
 
         match error {
-            Error::PaymentRequestDeliveryUnverifiedTls { host } => {
+            Error::UnverifiedTlsEndpoint { host } => {
                 assert_eq!(host, "receiver.example.com");
             }
             error => panic!("unexpected error: {error:?}"),
@@ -1746,7 +1766,7 @@ mod tests {
             .expect_err("delivery should refuse an unverified connection");
 
         assert!(
-            matches!(error, Error::PaymentRequestDeliveryUnverifiedTls { .. }),
+            matches!(error, Error::UnverifiedTlsEndpoint { .. }),
             "unexpected error: {error:?}"
         );
         assert!(transport.calls().is_empty(), "payload must not be sent");
@@ -1804,6 +1824,7 @@ mod tests {
             post_urls: Arc::new(Mutex::new(Vec::new())),
             post_errors: Arc::new(Mutex::new(VecDeque::new())),
             post_delay: None,
+            accept_invalid_certs: Arc::new(Mutex::new(false)),
         };
         let captured = transport.captured_payload.clone();
 
@@ -2224,6 +2245,61 @@ mod tests {
             }
             _ => panic!("expected custom response"),
         }
+    }
+
+    /// An LNURL service is not the mint the embedder chose to trust, and the
+    /// invoice it returns is what the wallet melts to. On an unverified
+    /// connection a MITM substitutes their own and is paid directly.
+    #[tokio::test]
+    async fn fetch_lnurl_pay_request_refuses_an_unverified_transport() {
+        let mut transport = MockTransport::default();
+        let get_urls = transport.get_urls.clone();
+        let proxy = Url::parse("http://127.0.0.1:9050").expect("parse proxy url");
+        transport
+            .with_proxy(proxy, None, true)
+            .expect("configure proxy");
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+
+        let error = client
+            .fetch_lnurl_pay_request("https://service.example.com/.well-known/lnurlp/alice")
+            .await
+            .expect_err("unverified connection should be refused");
+
+        assert!(
+            matches!(error, Error::UnverifiedTlsEndpoint { .. }),
+            "unexpected error: {error:?}"
+        );
+        assert!(
+            get_urls.lock().expect("lock").is_empty(),
+            "must be refused before the transport"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_lnurl_invoice_refuses_an_unverified_transport() {
+        let mut transport = MockTransport::default();
+        let get_urls = transport.get_urls.clone();
+        let proxy = Url::parse("http://127.0.0.1:9050").expect("parse proxy url");
+        transport
+            .with_proxy(proxy, None, true)
+            .expect("configure proxy");
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+
+        let error = client
+            .fetch_lnurl_invoice("https://service.example.com/callback?amount=1000")
+            .await
+            .expect_err("unverified connection should be refused");
+
+        assert!(
+            matches!(error, Error::UnverifiedTlsEndpoint { .. }),
+            "unexpected error: {error:?}"
+        );
+        assert!(
+            get_urls.lock().expect("lock").is_empty(),
+            "must be refused before the transport"
+        );
     }
 
     #[tokio::test]
