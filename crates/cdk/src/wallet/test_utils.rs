@@ -566,11 +566,24 @@ pub struct MockMintConnector {
     /// Response for DNS TXT resolution calls
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     pub dns_txt_response: Mutex<Option<Result<Vec<String>, Error>>>,
-    /// Whether the mock claims NUT-18 payment request delivery support.
+    /// What the mock answers when asked whether a receiver URL can be paid.
     ///
-    /// Defaults to `false` to mirror the `MintConnector` default, so a test
-    /// paying an HTTP-only payment request has to opt in.
-    pub payment_request_delivery_supported: Mutex<bool>,
+    /// Defaults to [`PaymentRequestDeliverability::Unsupported`] to mirror the
+    /// `MintConnector` default, so a test paying an HTTP-only payment request
+    /// has to opt in.
+    pub payment_request_deliverability: Mutex<PaymentRequestDeliverability>,
+}
+
+/// What a [`MockMintConnector`] reports for a NUT-18 receiver URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaymentRequestDeliverability {
+    /// The connector cannot deliver payment requests at all.
+    Unsupported,
+    /// Proofs can be handed to the receiver.
+    Deliverable,
+    /// The transport would reach the receiver without verifying its
+    /// certificate.
+    UnverifiedTls,
 }
 
 impl Default for MockMintConnector {
@@ -614,7 +627,7 @@ impl MockMintConnector {
             lnurl_invoice_response: Mutex::new(None),
             #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
             dns_txt_response: Mutex::new(None),
-            payment_request_delivery_supported: Mutex::new(false),
+            payment_request_deliverability: Mutex::new(PaymentRequestDeliverability::Unsupported),
         }
     }
 
@@ -876,16 +889,29 @@ impl MockMintConnector {
         *self.dns_txt_response.lock().unwrap() = Some(response);
     }
 
-    pub fn set_payment_request_delivery_supported(&self, supported: bool) {
-        *self.payment_request_delivery_supported.lock().unwrap() = supported;
+    pub fn set_payment_request_deliverability(&self, deliverability: PaymentRequestDeliverability) {
+        *self.payment_request_deliverability.lock().unwrap() = deliverability;
     }
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MintConnector for MockMintConnector {
-    fn supports_payment_request_delivery(&self) -> bool {
-        *self.payment_request_delivery_supported.lock().unwrap()
+    fn ensure_payment_request_deliverable(&self, url: &str) -> Result<(), Error> {
+        match *self.payment_request_deliverability.lock().unwrap() {
+            PaymentRequestDeliverability::Unsupported => {
+                Err(Error::PaymentRequestDeliveryUnsupported)
+            }
+            PaymentRequestDeliverability::Deliverable => Ok(()),
+            PaymentRequestDeliverability::UnverifiedTls => {
+                let host = url::Url::parse(url)
+                    .ok()
+                    .and_then(|url| url.host_str().map(ToString::to_string))
+                    .unwrap_or_else(|| url.to_string());
+
+                Err(Error::UnverifiedTlsEndpoint { host })
+            }
+        }
     }
 
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
