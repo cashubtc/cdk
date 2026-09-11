@@ -11,8 +11,9 @@ pub struct PubsubLimits {
     pub max_topics: usize,
     /// Maximum number of backfills running concurrently.
     pub max_concurrent_backfills: usize,
-    /// Maximum number of quotes a single backfill may check against the payment
-    /// backend. Bounds how long one backfill holds its concurrency slot.
+    /// Maximum number of payment-backend round trips a single backfill may
+    /// make. Bounds how long one backfill holds its concurrency slot. Quotes
+    /// already in a final state cost nothing against it.
     pub max_quote_checks_per_backfill: usize,
 }
 

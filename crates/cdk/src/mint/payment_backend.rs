@@ -16,6 +16,18 @@ use crate::Error;
 /// Minimum delay between payment backend status checks for the same mint quote.
 pub(super) const MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS: u64 = 10;
 
+/// Whether checking a mint quote reached the payment backend.
+///
+/// Callers that budget backend round trips, such as a subscription backfill,
+/// count only the checks that actually cost one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaymentCheck {
+    /// The payment backend was queried.
+    Queried,
+    /// The quote was already final, or another check holds the rate limit.
+    Skipped,
+}
+
 impl Mint {
     /// Static implementation of check_mint_quote_paid to avoid circular dependency to the Mint
     pub(crate) async fn check_mint_quote_payments(
@@ -23,7 +35,7 @@ impl Mint {
         payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
         pubsub_manager: Option<Arc<PubSubManager>>,
         quote: &mut MintQuote,
-    ) -> Result<(), Error> {
+    ) -> Result<PaymentCheck, Error> {
         let state = quote.state();
 
         // We can just return here and do not need to check with the payment
@@ -32,7 +44,7 @@ impl Mint {
         if quote.payment_method.is_bolt11()
             && (state == MintQuoteState::Issued || state == MintQuoteState::Paid)
         {
-            return Ok(());
+            return Ok(PaymentCheck::Skipped);
         }
 
         // Claim this check before contacting the backend. The conditional update prevents
@@ -54,7 +66,7 @@ impl Mint {
                 check_interval_seconds = MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS,
                 "mint quote payment check skipped because another recent check holds the rate limit",
             );
-            return Ok(());
+            return Ok(PaymentCheck::Skipped);
         }
         quote.set_last_checked(now);
 
@@ -93,7 +105,7 @@ impl Mint {
                 quote_state = %quote.state(),
                 "mint quote payment check found no new payments",
             );
-            return Ok(());
+            return Ok(PaymentCheck::Queried);
         }
 
         let mut tx = localstore.begin_transaction().await?;
@@ -110,7 +122,7 @@ impl Mint {
             && (current_state == MintQuoteState::Issued || current_state == MintQuoteState::Paid)
         {
             *quote = new_quote.inner();
-            return Ok(());
+            return Ok(PaymentCheck::Queried);
         }
 
         let mut should_notify = false;
@@ -175,7 +187,7 @@ impl Mint {
 
         *quote = new_quote.inner();
 
-        Ok(())
+        Ok(PaymentCheck::Queried)
     }
 
     /// Check the status of a payment for a quote with the payment backend
@@ -187,6 +199,8 @@ impl Mint {
             Some(self.pubsub_manager.clone()),
             quote,
         )
-        .await
+        .await?;
+
+        Ok(())
     }
 }

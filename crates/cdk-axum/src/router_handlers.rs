@@ -128,10 +128,10 @@ pub(crate) async fn get_keysets(
 
 /// Upgrades a connection to the mint's NUT-17 WebSocket endpoint.
 ///
-/// The connection slot is claimed before authenticating: verifying auth reads
-/// the database and may reach the signatory, so an over-quota client has to be
-/// turned away by the cheap check first. The guard is released on drop, so an
-/// auth failure hands the slot straight back.
+/// Authentication runs before the connection slot is claimed, so a mint that
+/// protects this endpoint cannot have its whole connection budget squatted by
+/// clients that never authenticate. The guard is released on drop, so a
+/// connection ending at any later point hands the slot straight back.
 #[instrument(skip_all)]
 pub(crate) async fn ws_handler(
     auth: AuthHeader,
@@ -139,6 +139,15 @@ pub(crate) async fn ws_handler(
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, Response> {
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Get, RoutePath::Ws),
+        )
+        .await
+        .map_err(into_response)?;
+
     let peer_ip = peer.map(|Extension(ConnectInfo(addr))| addr.ip());
     if peer_ip.is_none() {
         tracing::debug!("WebSocket peer address unavailable, per-IP limit not enforced");
@@ -159,15 +168,6 @@ pub(crate) async fn ws_handler(
             )
                 .into_response(),
         })?;
-
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Get, RoutePath::Ws),
-        )
-        .await
-        .map_err(into_response)?;
 
     let limits = state.ws_limiter.limits();
 

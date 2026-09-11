@@ -58,13 +58,17 @@ impl WsLimits {
     pub const DEFAULT_MAX_CONNECTIONS_PER_IP: usize = 2;
 
     /// Subscriptions per connection allowed when none is configured.
-    pub const DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 10;
+    ///
+    /// A rejected subscription tears down the whole stream on the reference
+    /// wallet, so the default stays above what a busy client plausibly opens
+    /// and the mint-wide budgets do the real limiting.
+    pub const DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 100;
 
     /// Filters per subscription allowed when none is configured.
-    pub const DEFAULT_MAX_FILTERS_PER_SUBSCRIPTION: usize = 100;
+    pub const DEFAULT_MAX_FILTERS_PER_SUBSCRIPTION: usize = 1000;
 
     /// Topics per connection allowed when none is configured.
-    pub const DEFAULT_MAX_TOPICS_PER_CONNECTION: usize = 100;
+    pub const DEFAULT_MAX_TOPICS_PER_CONNECTION: usize = 1000;
 
     /// Sustained request rate allowed when none is configured.
     pub const DEFAULT_MAX_REQUEST_UNITS_PER_SECOND: u32 = 32;
@@ -73,7 +77,7 @@ impl WsLimits {
     ///
     /// Comfortably above `1 + DEFAULT_MAX_FILTERS_PER_SUBSCRIPTION`, so a
     /// maximum-size subscription fits with room left for ordinary traffic.
-    pub const DEFAULT_MAX_REQUEST_BURST_UNITS: u32 = 128;
+    pub const DEFAULT_MAX_REQUEST_BURST_UNITS: u32 = 1024;
 
     /// Throttled requests tolerated before closing, when none is configured.
     pub const DEFAULT_MAX_THROTTLED_REQUESTS: usize = 20;

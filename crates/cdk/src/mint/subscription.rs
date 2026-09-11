@@ -18,6 +18,7 @@ use cdk_common::{
     NotificationPayload, ProofState, PublicKey, QuoteId,
 };
 
+use super::payment_backend::PaymentCheck;
 use super::Mint;
 use crate::event::MintEvent;
 
@@ -44,6 +45,7 @@ impl MintPubSubSpec {
 
         let mut quotes = HashMap::new();
         let mut checks_left = self.limits.max_quote_checks_per_backfill;
+        let mut unchecked = 0usize;
 
         for mut quote in self
             .db
@@ -52,27 +54,34 @@ impl MintPubSubSpec {
             .into_iter()
             .flatten()
         {
-            // Each check is a payment-backend round trip held inside one backfill
-            // slot. Past the cap the stored state is served as-is: it is already
-            // only refreshed once every few seconds, and a real payment still
-            // publishes a live notification through the normal issue path.
+            // Only round trips that reach the payment backend are charged, so a
+            // subscription covering many already-settled quotes does not spend
+            // the budget that keeps one backfill from holding its slot too long.
             if checks_left > 0 {
-                checks_left -= 1;
-                Mint::check_mint_quote_payments(
+                let check = Mint::check_mint_quote_payments(
                     self.db.clone(),
                     self.payment_processors.clone(),
                     self.pubsub_manager.upgrade(),
                     &mut quote,
                 )
                 .await?;
+
+                if check == PaymentCheck::Queried {
+                    checks_left -= 1;
+                }
             } else {
-                tracing::debug!(
-                    "Backfill quote-check budget exhausted, serving quote {} from storage",
-                    quote.id
-                );
+                unchecked += 1;
             }
 
             quotes.insert(quote.id.clone(), quote);
+        }
+
+        if unchecked > 0 {
+            tracing::warn!(
+                budget = self.limits.max_quote_checks_per_backfill,
+                served_from_storage = unchecked,
+                "Backfill quote-check budget exhausted; some quotes were served without a payment-backend check",
+            );
         }
 
         Ok(quotes)
