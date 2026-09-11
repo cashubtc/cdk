@@ -83,8 +83,9 @@ enum Inbound<E> {
     Deliver(E),
     /// This instance's own event echoed back by Postgres; ignore it.
     SelfEcho,
-    /// Undecodable payload; ignore it.
-    Malformed,
+    /// Undecodable payload; ignore it. Carries the decode error so the dispatcher
+    /// can say why a peer's event was dropped.
+    Malformed(serde_json::Error),
 }
 
 /// Decode an inbound payload and decide what to do with it.
@@ -95,7 +96,7 @@ fn classify<E: DeserializeOwned>(payload: &str, our_origin: &str) -> Inbound<E> 
     match serde_json::from_str::<InEnvelope<E>>(payload) {
         Ok(envelope) if envelope.origin == our_origin => Inbound::SelfEcho,
         Ok(envelope) => Inbound::Deliver(envelope.event),
-        Err(_) => Inbound::Malformed,
+        Err(err) => Inbound::Malformed(err),
     }
 }
 
@@ -209,8 +210,8 @@ impl PostgresBusConnector {
                         Some(payload) => match classify::<S::Event>(&payload, &dispatch_origin) {
                             Inbound::Deliver(event) => dispatch_local.deliver(event),
                             Inbound::SelfEcho => {}
-                            Inbound::Malformed => {
-                                tracing::warn!("postgres bus: dropping malformed payload");
+                            Inbound::Malformed(err) => {
+                                tracing::warn!("postgres bus: dropping malformed payload: {err}");
                             }
                         },
                         None => break,
@@ -539,14 +540,15 @@ mod tests {
     }
 
     /// Connect a Postgres bus on `channel` and wrap it in a `Pubsub`.
-    async fn pg_pubsub(channel: &str) -> Pubsub<CustomPubSub> {
+    async fn pg_pubsub<S>(channel: &str) -> Pubsub<S>
+    where
+        S: Spec<Context = ()> + 'static,
+    {
         let connector =
             PostgresBusConnector::connect(PgConfig::from(test_db_url().as_str()), channel)
                 .await
                 .expect("connect postgres bus");
-        Pubsub::new_with_bus(CustomPubSub::new_instance(()), move |local| {
-            connector.build(local)
-        })
+        Pubsub::new_with_bus(S::new_instance(()), move |local| connector.build(local))
     }
 
     /// Factory for the generic bus suite: one Postgres-backed node per test.
@@ -570,8 +572,8 @@ mod tests {
             .as_nanos();
         let channel = pg_channel(&format!("test_{nanos}_cross_node"));
 
-        let instance_a = pg_pubsub(&channel).await;
-        let instance_b = pg_pubsub(&channel).await;
+        let instance_a = pg_pubsub::<CustomPubSub>(&channel).await;
+        let instance_b = pg_pubsub::<CustomPubSub>(&channel).await;
 
         let mut sub_a = instance_a.subscribe(SubscriptionReq::Foo(2)).unwrap();
         let mut sub_b = instance_b.subscribe(SubscriptionReq::Foo(2)).unwrap();
@@ -684,11 +686,44 @@ mod tests {
         assert!(matches!(classify::<Ev>(&json, "self"), Inbound::SelfEcho));
     }
 
+    /// The wire path for the mint's own event type, without a database: a
+    /// published `MintEvent` must come back out of `classify` unchanged. Before
+    /// the wire format carried the subscription kind, every real mint event
+    /// decoded as malformed here and was silently dropped.
+    #[test]
+    fn classify_decodes_real_mint_events() {
+        use cdk_common::event::MintEvent;
+        use cdk_common::nut07::State;
+        use cdk_common::{NotificationPayload, ProofState, PublicKey, QuoteId};
+
+        let event: MintEvent<QuoteId> =
+            MintEvent::new(NotificationPayload::ProofState(ProofState {
+                y: PublicKey::from_hex(
+                    "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+                )
+                .expect("valid pubkey"),
+                state: State::Spent,
+                witness: None,
+            }));
+
+        let payload = serde_json::to_string(&OutEnvelope {
+            origin: "peer",
+            event: &event,
+        })
+        .expect("serialize");
+
+        match classify::<MintEvent<QuoteId>>(&payload, "self") {
+            Inbound::Deliver(decoded) => assert_eq!(decoded, event),
+            Inbound::SelfEcho => panic!("expected Deliver, got SelfEcho"),
+            Inbound::Malformed(err) => panic!("expected Deliver, got Malformed: {err}"),
+        }
+    }
+
     #[test]
     fn classify_rejects_malformed_payload() {
         assert!(matches!(
             classify::<Ev>("not json", "self"),
-            Inbound::Malformed
+            Inbound::Malformed(_)
         ));
     }
 
@@ -793,5 +828,144 @@ mod tests {
             .await
             .expect("oversized event delivered locally before timeout");
         assert_eq!(received.map(|e| e.blob.len()), Some(MAX_NOTIFY_PAYLOAD + 1));
+    }
+
+    /// A [`Spec`] carrying the mint's own NUT-17 event type.
+    ///
+    /// `MintEvent` is not plain serde: its payloads are only decodable together
+    /// with the subscription kind that produced them, so a bus that re-encodes
+    /// events has to preserve that kind. The synthetic `Message` used by the
+    /// generic suite would never catch a wire format that loses it.
+    mod mint_events {
+        use std::sync::Arc;
+
+        use cdk_common::event::MintEvent;
+        use cdk_common::nut17::NotificationId;
+        use cdk_common::pub_sub::{Error, Spec, Subscriber, SubscriptionRequest};
+        use cdk_common::QuoteId;
+
+        #[derive(Debug)]
+        pub struct MintEventSpec;
+
+        #[async_trait::async_trait]
+        impl Spec for MintEventSpec {
+            type Topic = NotificationId<QuoteId>;
+            type Event = MintEvent<QuoteId>;
+            type SubscriptionId = String;
+            type Context = ();
+
+            fn new_instance(_context: ()) -> Arc<Self> {
+                Arc::new(MintEventSpec)
+            }
+
+            async fn fetch_events(
+                self: &Arc<Self>,
+                _topics: Vec<Self::Topic>,
+                _reply_to: Subscriber<Self>,
+            ) {
+            }
+        }
+
+        pub struct Sub(pub NotificationId<QuoteId>);
+
+        impl SubscriptionRequest for Sub {
+            type Topic = NotificationId<QuoteId>;
+            type SubscriptionId = String;
+
+            fn try_get_topics(&self) -> Result<Vec<Self::Topic>, Error> {
+                Ok(vec![self.0.clone()])
+            }
+
+            fn subscription_name(&self) -> Arc<String> {
+                Arc::new("mint-events".to_owned())
+            }
+        }
+    }
+
+    /// Real mint notifications cross instances: a proof state and a quote
+    /// response published on instance A reach a subscriber on instance B
+    /// unchanged.
+    #[tokio::test]
+    async fn mint_events_cross_instances_through_postgres() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        use cdk_common::event::MintEvent;
+        use cdk_common::nut07::State;
+        use cdk_common::nut17::NotificationId;
+        use cdk_common::{
+            Amount, CurrencyUnit, MintQuoteBolt11Response, MintQuoteState, NotificationPayload,
+            PaymentMethod, ProofState, PublicKey, QuoteId,
+        };
+        use mint_events::{MintEventSpec, Sub};
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let channel = pg_channel(&format!("test_{nanos}_mint_events"));
+
+        let instance_a = pg_pubsub::<MintEventSpec>(&channel).await;
+        let instance_b = pg_pubsub::<MintEventSpec>(&channel).await;
+
+        let y = PublicKey::from_hex(
+            "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+        )
+        .expect("valid pubkey");
+        let proof_state: MintEvent<QuoteId> =
+            MintEvent::new(NotificationPayload::ProofState(ProofState {
+                y,
+                state: State::Spent,
+                witness: None,
+            }));
+
+        let quote_id = QuoteId::new();
+        let mint_quote: MintEvent<QuoteId> = MintEvent::new(
+            NotificationPayload::MintQuoteBolt11Response(MintQuoteBolt11Response {
+                quote: quote_id.clone(),
+                request: "lnbc...".to_string(),
+                amount: Some(Amount::from(100_000)),
+                unit: Some(CurrencyUnit::Sat),
+                method: PaymentMethod::BOLT11,
+                amount_paid: Amount::from(0),
+                amount_issued: Amount::from(0),
+                updated_at: 0,
+                state: MintQuoteState::Paid,
+                expiry: Some(1701704757),
+                pubkey: None,
+            }),
+        );
+
+        let mut proofs_b = instance_b
+            .subscribe(Sub(NotificationId::ProofState(y)))
+            .expect("subscribe proof state");
+        let mut quotes_b = instance_b
+            .subscribe(Sub(NotificationId::MintQuoteBolt11(quote_id.clone())))
+            .expect("subscribe mint quote");
+        let mut proofs_a = instance_a
+            .subscribe(Sub(NotificationId::ProofState(y)))
+            .expect("subscribe proof state");
+
+        instance_a.publish(proof_state.clone());
+        instance_a.publish(mint_quote.clone());
+
+        let received = timeout(Duration::from_secs(5), proofs_b.recv())
+            .await
+            .expect("proof state delivered to instance B before timeout");
+        assert_eq!(received, Some(proof_state.clone()));
+
+        let received = timeout(Duration::from_secs(5), quotes_b.recv())
+            .await
+            .expect("mint quote delivered to instance B before timeout");
+        assert_eq!(received, Some(mint_quote));
+
+        // The publishing instance sees its own event once: the copy Postgres
+        // echoes back is dropped, not re-delivered.
+        let received = timeout(Duration::from_secs(5), proofs_a.recv())
+            .await
+            .expect("proof state delivered to instance A before timeout");
+        assert_eq!(received, Some(proof_state));
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(proofs_a.try_recv().is_none());
     }
 }
