@@ -45,6 +45,17 @@ pub trait Transport: Send + Sync + Debug + Clone {
         accept_invalid_certs: bool,
     ) -> Result<(), HttpError>;
 
+    /// Whether this transport accepts invalid TLS certificates.
+    ///
+    /// A transport that turns certificate verification off must report it here.
+    /// The wallet refuses to hand NUT-18 proofs to an https receiver over an
+    /// unverified connection, and the transport is the only thing that knows:
+    /// a client wrapping a pre-configured transport cannot see how it was
+    /// built.
+    fn tls_verification_disabled(&self) -> bool {
+        false
+    }
+
     /// DNS resolver to get TXT records from a domain name.
     ///
     /// Transports that support DNS resolution should override this method. The
@@ -99,6 +110,7 @@ pub trait Transport: Send + Sync + Debug + Clone {
 #[derive(Debug, Clone)]
 pub struct Async {
     inner: HttpClient,
+    tls_verification_disabled: bool,
 }
 
 #[cfg(any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest"))]
@@ -109,6 +121,7 @@ impl Default for Async {
                 .no_redirects()
                 .build()
                 .expect("default no-redirect client"),
+            tls_verification_disabled: false,
         }
     }
 }
@@ -133,7 +146,12 @@ impl Transport for Async {
         };
 
         self.inner = builder.build()?;
+        self.tls_verification_disabled = accept_invalid_certs;
         Ok(())
+    }
+
+    fn tls_verification_disabled(&self) -> bool {
+        self.tls_verification_disabled
     }
 
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -208,3 +226,49 @@ mod tor_transport;
 
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub use self::tor_transport::TorAsync;
+
+#[cfg(all(
+    test,
+    any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest")
+))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_transport_verifies_certificates() {
+        assert!(!Async::default().tls_verification_disabled());
+    }
+
+    #[cfg(feature = "reqwest")]
+    #[test]
+    fn proxy_transport_reports_whether_verification_is_disabled() {
+        let proxy = Url::parse("http://127.0.0.1:9050").expect("parse proxy url");
+
+        let mut unverified = Async::default();
+        unverified
+            .with_proxy(proxy.clone(), None, true)
+            .expect("configure proxy");
+        assert!(unverified.tls_verification_disabled());
+
+        let mut verified = Async::default();
+        verified
+            .with_proxy(proxy, None, false)
+            .expect("configure proxy");
+        assert!(!verified.tls_verification_disabled());
+    }
+
+    /// The flag is set only after the build succeeds, so a backend that
+    /// refuses invalid certificates does not end up claiming it accepts them.
+    #[cfg(all(feature = "bitreq", not(feature = "reqwest")))]
+    #[test]
+    fn bitreq_proxy_transport_refuses_disabled_verification() {
+        let proxy = Url::parse("http://127.0.0.1:9050").expect("parse proxy url");
+
+        let mut transport = Async::default();
+        transport
+            .with_proxy(proxy, None, true)
+            .expect_err("bitreq cannot accept invalid certificates");
+
+        assert!(!transport.tls_verification_disabled());
+    }
+}
