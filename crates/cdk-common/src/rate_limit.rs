@@ -743,8 +743,9 @@ async fn sleep(duration: Duration) {
 /// unrelated host (an LNURL service, an OIDC provider) and does not pace that
 /// host by the mint's budget either.
 ///
-/// Only the HTTP request methods are throttled; `ws_connect`, `with_proxy`, and
-/// `resolve_dns_txt` pass straight through to the inner transport.
+/// Only the HTTP request methods are throttled; `ws_connect`, `with_proxy`,
+/// `resolve_dns_txt` and `tls_verification_disabled` pass straight through to
+/// the inner transport.
 #[derive(Debug, Clone)]
 pub struct RateLimitedTransport<T> {
     inner: T,
@@ -792,6 +793,13 @@ impl<T: Transport> Transport for RateLimitedTransport<T> {
     ) -> Result<(), HttpError> {
         self.inner
             .with_proxy(proxy, host_matcher, accept_invalid_certs)
+    }
+
+    /// Decorating a transport must not launder its certificate policy: the
+    /// wallet reads this to refuse handing NUT-18 proofs to an unverified
+    /// https receiver, and only the inner transport knows how it was built.
+    fn tls_verification_disabled(&self) -> bool {
+        self.inner.tls_verification_disabled()
     }
 
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -1352,6 +1360,7 @@ mod tests {
     struct CountingTransport {
         http_calls: Arc<std::sync::atomic::AtomicUsize>,
         proxied: Arc<std::sync::atomic::AtomicBool>,
+        unverified: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl CountingTransport {
@@ -1370,11 +1379,17 @@ mod tests {
             &mut self,
             _proxy: Url,
             _host_matcher: Option<&str>,
-            _accept_invalid_certs: bool,
+            accept_invalid_certs: bool,
         ) -> Result<(), HttpError> {
             self.proxied
                 .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.unverified
+                .store(accept_invalid_certs, std::sync::atomic::Ordering::SeqCst);
             Ok(())
+        }
+
+        fn tls_verification_disabled(&self) -> bool {
+            self.unverified.load(std::sync::atomic::Ordering::SeqCst)
         }
 
         async fn http_get(
@@ -1496,6 +1511,26 @@ mod tests {
         // with_proxy reached the inner transport and consumed no rate-limit slot.
         assert!(flag.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(counter.http_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn transport_reports_the_inner_certificate_policy() {
+        let mut transport = RateLimitedTransport::with_manager(
+            CountingTransport::default(),
+            RateLimiterManager::new(config(1, 300), None),
+        );
+
+        assert!(
+            !transport.tls_verification_disabled(),
+            "an unconfigured transport verifies certificates"
+        );
+
+        transport.with_proxy(url(), None, true).expect("proxy set");
+
+        assert!(
+            transport.tls_verification_disabled(),
+            "the wrapper must not hide the inner transport's policy"
+        );
     }
 
     #[tokio::test]
