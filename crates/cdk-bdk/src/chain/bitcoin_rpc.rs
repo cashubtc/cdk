@@ -534,7 +534,8 @@ mod tests {
     use std::thread;
 
     use bdk_wallet::bitcoin::consensus::encode::serialize_hex;
-    use bdk_wallet::bitcoin::{constants::genesis_block, BlockHash, Network, TxOut};
+    use bdk_wallet::bitcoin::constants::genesis_block;
+    use bdk_wallet::bitcoin::{BlockHash, Network, TxOut};
     use bdk_wallet::rusqlite::Connection;
     use bdk_wallet::template::Bip84;
     use bdk_wallet::{KeychainKind, Wallet};
