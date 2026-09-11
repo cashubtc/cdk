@@ -3,6 +3,8 @@
 use std::env;
 use std::str::FromStr;
 
+use anyhow::{anyhow, Result};
+
 use crate::config::{PostgresAuthConfig, PostgresConfig, PubSubConfig, PubSubTransport};
 
 pub const ENV_POSTGRES_URL: &str = "CDK_MINTD_POSTGRES_URL";
@@ -12,8 +14,6 @@ pub const ENV_POSTGRES_CONNECTION_TIMEOUT: &str = "CDK_MINTD_POSTGRES_CONNECTION
 
 pub const ENV_PUBSUB_TRANSPORT: &str = "CDK_MINTD_PUBSUB_TRANSPORT";
 pub const ENV_PUBSUB_CHANNEL: &str = "CDK_MINTD_PUBSUB_CHANNEL";
-pub const ENV_PUBSUB_POLL_INTERVAL_MS: &str = "CDK_MINTD_PUBSUB_POLL_INTERVAL_MS";
-pub const ENV_PUBSUB_RETENTION_SECONDS: &str = "CDK_MINTD_PUBSUB_RETENTION_SECONDS";
 
 pub const ENV_AUTH_POSTGRES_URL: &str = "CDK_MINTD_AUTH_POSTGRES_URL";
 pub const ENV_AUTH_POSTGRES_TLS_MODE: &str = "CDK_MINTD_AUTH_POSTGRES_TLS_MODE";
@@ -52,30 +52,20 @@ impl PostgresConfig {
 }
 
 impl PubSubConfig {
-    pub fn from_env(mut self) -> Self {
+    /// Returns an error on an unusable transport name rather than falling back
+    /// to the default, so an operator carrying a removed value learns at
+    /// startup instead of silently losing cross-instance notifications.
+    pub fn from_env(mut self) -> Result<Self> {
         if let Ok(transport) = env::var(ENV_PUBSUB_TRANSPORT) {
-            if let Ok(parsed) = PubSubTransport::from_str(&transport) {
-                self.transport = parsed;
-            }
+            self.transport = PubSubTransport::from_str(&transport)
+                .map_err(|err| anyhow!("{ENV_PUBSUB_TRANSPORT}: {err}"))?;
         }
 
         if let Ok(channel) = env::var(ENV_PUBSUB_CHANNEL) {
             self.channel = Some(channel);
         }
 
-        if let Ok(interval) = env::var(ENV_PUBSUB_POLL_INTERVAL_MS) {
-            if let Ok(parsed) = interval.parse::<u64>() {
-                self.poll_interval_ms = Some(parsed);
-            }
-        }
-
-        if let Ok(retention) = env::var(ENV_PUBSUB_RETENTION_SECONDS) {
-            if let Ok(parsed) = retention.parse::<u64>() {
-                self.retention_seconds = Some(parsed);
-            }
-        }
-
-        self
+        Ok(self)
     }
 }
 
