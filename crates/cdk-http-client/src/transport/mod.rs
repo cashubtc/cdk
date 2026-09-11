@@ -16,6 +16,11 @@ use crate::{HttpError, RawResponse};
 /// Callers that construct a transport implicitly may add a [`Default`] bound,
 /// while configured transports can be supplied directly without implementing
 /// a meaningless default configuration.
+///
+/// Implementations must not follow redirects. Most HTTP clients replay a
+/// redirected POST as a bodyless GET, which would turn a receiver's 3xx into a
+/// successful NUT-18 delivery that never carried the proofs. Return the 3xx
+/// status, or [`HttpError::Redirect`] if the client refuses to hand it back.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait Transport: Send + Sync + Debug + Clone {

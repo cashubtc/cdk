@@ -482,6 +482,10 @@ where
         self.transport_http_get(parsed_url, None).await
     }
 
+    fn supports_payment_request_delivery(&self) -> bool {
+        true
+    }
+
     /// Deliver a NUT-18 payment request payload to the receiver
     ///
     /// The payload carries proofs, so it is never recorded in the span. NUT-18
