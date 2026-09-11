@@ -431,6 +431,9 @@ mod tests {
     /// test, so the seed below needs no checked-in dump. It covers the two cases the migration
     /// exists for: a row whose mint was never added through `add_mint`, and the nullable
     /// `melt_quote.mint_url`.
+    ///
+    /// The reopen at the end is load-bearing: the migration has to be recorded under its own name
+    /// and skipped, or the second run would try to convert a `mint_url` column that is gone.
     #[tokio::test]
     async fn migrates_mint_url_to_mint_id() {
         let path = std::env::temp_dir()
@@ -535,8 +538,13 @@ mod tests {
             .expect("query");
         assert_eq!(melt, Some(Value::Null));
 
-        drop(db);
         drop(conn);
+
+        WalletSqliteDatabase::new(path.as_str())
+            .await
+            .expect("migration is recorded and skipped on reopen");
+
+        drop(db);
         let _ = std::fs::remove_file(&path);
     }
 }

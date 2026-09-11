@@ -247,8 +247,8 @@ where
 /// The SQLite form of the migration.
 ///
 /// `PRAGMA foreign_keys` is deliberately not touched: SQLite ignores it inside a transaction, and
-/// the runner always holds one. Nothing in `cdk-sqlite` turns foreign keys on, so the rebuilds and
-/// column drops below are unconstrained.
+/// the runner always holds one. Foreign keys are therefore enforced throughout, which is why
+/// [`REBUILD_MINT_AND_KEYSET`] renames the old `mint` aside rather than dropping it.
 pub(super) struct Sqlite;
 
 #[async_trait]
