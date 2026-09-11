@@ -566,6 +566,11 @@ pub struct MockMintConnector {
     /// Response for DNS TXT resolution calls
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     pub dns_txt_response: Mutex<Option<Result<Vec<String>, Error>>>,
+    /// Whether the mock claims NUT-18 payment request delivery support.
+    ///
+    /// Defaults to `false` to mirror the `MintConnector` default, so a test
+    /// paying an HTTP-only payment request has to opt in.
+    pub payment_request_delivery_supported: Mutex<bool>,
 }
 
 impl Default for MockMintConnector {
@@ -609,6 +614,7 @@ impl MockMintConnector {
             lnurl_invoice_response: Mutex::new(None),
             #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
             dns_txt_response: Mutex::new(None),
+            payment_request_delivery_supported: Mutex::new(false),
         }
     }
 
@@ -869,11 +875,19 @@ impl MockMintConnector {
     pub fn set_dns_txt_response(&self, response: Result<Vec<String>, Error>) {
         *self.dns_txt_response.lock().unwrap() = Some(response);
     }
+
+    pub fn set_payment_request_delivery_supported(&self, supported: bool) {
+        *self.payment_request_delivery_supported.lock().unwrap() = supported;
+    }
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MintConnector for MockMintConnector {
+    fn supports_payment_request_delivery(&self) -> bool {
+        *self.payment_request_delivery_supported.lock().unwrap()
+    }
+
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
         self.dns_txt_response

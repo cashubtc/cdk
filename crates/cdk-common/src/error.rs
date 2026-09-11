@@ -60,6 +60,8 @@ pub enum Error {
     /// Delivery rides the wallet's configured transport so proxy and Tor
     /// settings cover the recipient request; a connector without delivery
     /// support fails here rather than falling back to a direct request.
+    /// Preparing a payment raises this before reserving any proofs, so there
+    /// is no pending send to revoke.
     #[cfg(feature = "wallet")]
     #[error("Mint connector does not support payment request delivery")]
     PaymentRequestDeliveryUnsupported,

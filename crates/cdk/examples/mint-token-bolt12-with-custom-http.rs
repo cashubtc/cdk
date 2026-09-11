@@ -20,6 +20,13 @@ use ureq::config::Config;
 use ureq::Agent;
 use url::Url;
 
+/// A minimal `HttpTransport` built on `ureq`, wired into a wallet below.
+///
+/// `max_redirects(0)` is the one setting a transport cannot leave at its
+/// default: ureq otherwise follows up to ten redirects and replays a POST as a
+/// bodyless GET on 301/302/303, so a receiver's redirect would report a NUT-18
+/// delivery that never carried the proofs. At zero, the 3xx comes back as a
+/// status the caller can classify.
 #[derive(Debug, Clone)]
 struct CustomHttp {
     agent: Agent,
@@ -32,6 +39,7 @@ impl Default for CustomHttp {
                 Config::builder()
                     .timeout_global(Some(Duration::from_secs(5)))
                     .no_delay(true)
+                    .max_redirects(0)
                     .user_agent("Custom HTTP Transport")
                     .build(),
             ),

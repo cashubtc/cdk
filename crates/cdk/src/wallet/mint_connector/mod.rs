@@ -99,6 +99,16 @@ pub trait MintConnector: Debug {
         url: &str,
     ) -> Result<crate::lightning_address::LnurlPayInvoiceResponse, Error>;
 
+    /// Whether this connector can deliver NUT-18 payloads over its transport.
+    ///
+    /// The wallet checks this before reserving any proofs, so a connector
+    /// without delivery support fails with nothing to revoke. An implementor
+    /// that overrides [`MintConnector::post_payment_request_payload`] has to
+    /// return `true` here as well.
+    fn supports_payment_request_delivery(&self) -> bool {
+        false
+    }
+
     /// Deliver a NUT-18 payment request payload to a receiver's HTTP endpoint
     /// using this connector's transport.
     ///
@@ -106,7 +116,9 @@ pub trait MintConnector: Debug {
     /// settings also cover the recipient request. The default fails instead of
     /// falling back to a direct request, which would leak the payer's egress
     /// address. NUT-18 defines no response body, so any 2xx counts as
-    /// delivered whatever the receiver answers with.
+    /// delivered whatever the receiver answers with. Implementors override
+    /// [`MintConnector::supports_payment_request_delivery`] alongside this, so
+    /// the wallet can refuse the payment before it locks the payer's proofs.
     async fn post_payment_request_payload(
         &self,
         _url: &str,
