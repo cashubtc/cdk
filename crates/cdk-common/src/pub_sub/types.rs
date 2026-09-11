@@ -8,7 +8,7 @@ use std::sync::Arc;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use super::Subscriber;
+use super::{Error, Subscriber};
 
 /// Pubsub settings
 #[async_trait::async_trait]
@@ -59,11 +59,17 @@ pub trait Spec: Send + Sync {
 
     /// Callback function that is called on new subscriptions, to back-fill optionally the previous
     /// events
+    ///
+    /// Returning an error leaves the subscription live and receiving new
+    /// events; only the state it had at the moment it subscribed is missing.
+    /// An implementation that honours [`PubsubLimits::backfill_timeout`](super::PubsubLimits)
+    /// reports the overrun this way.
     async fn fetch_events(
         self: &Arc<Self>,
         topics: Vec<<Self::Event as Event>::Topic>,
         reply_to: Subscriber<Self>,
-    ) where
+    ) -> Result<(), Error>
+    where
         Self: Sized;
 }
 
