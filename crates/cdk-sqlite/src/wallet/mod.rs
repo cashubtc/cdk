@@ -26,13 +26,9 @@ mod tests {
     use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::{ProofDleq, State};
     use cdk_common::secret::Secret;
-
     use cdk_sql_common::database::ConnectionWithTransaction;
-    use cdk_sql_common::migrate;
     use cdk_sql_common::pool::Pool;
-    use cdk_sql_common::stmt::query;
-    use cdk_sql_common::value::Value;
-    use cdk_sql_common::wallet::migrations::MIGRATIONS;
+    use cdk_sql_common::wallet::test::{assert_mint_id_migrated, seed_pre_mint_id};
 
     use crate::common::SqliteConnectionManager;
     use crate::WalletSqliteDatabase;
@@ -427,10 +423,8 @@ mod tests {
 
     /// Checks the `mint_url` to `mint_id` conversion over real rows.
     ///
-    /// An empty Rust registry stops the runner exactly at the schema before the migration under
-    /// test, so the seed below needs no checked-in dump. It covers the two cases the migration
-    /// exists for: a row whose mint was never added through `add_mint`, and the nullable
-    /// `melt_quote.mint_url`.
+    /// The seed and the assertions are shared with the Postgres test, since the two dialects take
+    /// completely different routes to the same end state and only a real row proves either one.
     ///
     /// The reopen at the end is load-bearing: the migration has to be recorded under its own name
     /// and skipped, or the second run would try to convert a `mint_url` column that is gone.
@@ -441,52 +435,15 @@ mod tests {
             .to_string_lossy()
             .to_string();
 
-        let known = "https://known.example.com/";
-        let orphan = "https://orphan.example.com/";
+        let pool = Pool::<SqliteConnectionManager>::new(path.as_str().into());
 
         {
-            let pool = Pool::<SqliteConnectionManager>::new(path.as_str().into());
             let conn = pool.get().await.expect("connection");
-            let tx = ConnectionWithTransaction::new(conn).await.expect("transaction");
-
-            migrate(&tx, "sqlite", MIGRATIONS, Vec::new())
+            let tx = ConnectionWithTransaction::new(conn)
                 .await
-                .expect("pre-migration schema");
+                .expect("transaction");
 
-            for statement in [
-                format!("INSERT INTO mint (mint_url) VALUES ('{known}')"),
-                format!(
-                    "INSERT INTO keyset (id, mint_url, unit, active) \
-                     VALUES ('ks', '{known}', 'sat', 1)"
-                ),
-                format!(
-                    "INSERT INTO proof (y, mint_url, state, unit, amount, keyset_id, secret, c) \
-                     VALUES (X'01', '{orphan}', 'UNSPENT', 'sat', 1, 'ks', 's', X'02')"
-                ),
-                format!(
-                    "INSERT INTO mint_quote (id, mint_url, unit, request, state, expiry) \
-                     VALUES ('mq', '{known}', 'sat', 'r', 'UNPAID', 0)"
-                ),
-                "INSERT INTO melt_quote (id, unit, amount, request, fee_reserve, expiry, mint_url) \
-                 VALUES ('no_mint', 'sat', 1, 'r', 0, 0, NULL)"
-                    .to_owned(),
-                format!(
-                    "INSERT INTO transactions \
-                     (id, mint_url, direction, amount, fee, unit, ys, timestamp) \
-                     VALUES (X'03', '{orphan}', 'Incoming', 1, 0, 'sat', X'04', 0)"
-                ),
-                format!(
-                    "INSERT INTO wallet_sagas \
-                     (id, kind, state, amount, mint_url, unit, created_at, updated_at, data) \
-                     VALUES ('sg', 'send', 'st', 1, '{known}', 'sat', 0, 0, '{{}}')"
-                ),
-            ] {
-                query(&statement)
-                    .expect("statement")
-                    .batch(&tx)
-                    .await
-                    .expect("seed");
-            }
+            seed_pre_mint_id(&tx, "sqlite").await.expect("seed");
 
             tx.commit().await.expect("commit");
         }
@@ -495,50 +452,10 @@ mod tests {
             .await
             .expect("migration applies");
 
-        let pool = Pool::<SqliteConnectionManager>::new(path.as_str().into());
-        let conn = pool.get().await.expect("connection");
-
-        let url_for = |table: &str, id: &str| {
-            format!(
-                "SELECT m.mint_url FROM {table} t JOIN mint m ON m.id = t.mint_id WHERE t.id = {id}"
-            )
-        };
-
-        for (sql, expected) in [
-            (url_for("keyset", "'ks'"), known),
-            (url_for("mint_quote", "'mq'"), known),
-            (url_for("wallet_sagas", "'sg'"), known),
-            (url_for("transactions", "X'03'"), orphan),
-            (
-                "SELECT m.mint_url FROM proof p JOIN mint m ON m.id = p.mint_id".to_owned(),
-                orphan,
-            ),
-        ] {
-            let found = query(&sql)
-                .expect("statement")
-                .pluck(&*conn)
-                .await
-                .expect("query")
-                .unwrap_or_else(|| panic!("row lost by the migration: {sql}"));
-
-            assert_eq!(found, Value::Text(expected.to_owned()), "{sql}");
+        {
+            let conn = pool.get().await.expect("connection");
+            assert_mint_id_migrated(&*conn).await.expect("assertions");
         }
-
-        let mints = query("SELECT COUNT(*) FROM mint")
-            .expect("statement")
-            .pluck(&*conn)
-            .await
-            .expect("query");
-        assert_eq!(mints, Some(Value::Integer(2)));
-
-        let melt = query("SELECT mint_id FROM melt_quote WHERE id = 'no_mint'")
-            .expect("statement")
-            .pluck(&*conn)
-            .await
-            .expect("query");
-        assert_eq!(melt, Some(Value::Null));
-
-        drop(conn);
 
         WalletSqliteDatabase::new(path.as_str())
             .await

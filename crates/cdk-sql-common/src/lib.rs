@@ -6,6 +6,8 @@ mod migration_name;
 
 mod common;
 pub mod database;
+#[cfg(test)]
+mod fake_executor;
 mod keyvalue;
 mod macros;
 pub mod migration;
@@ -15,7 +17,7 @@ pub mod value;
 
 pub use cdk_common::database::ConversionError;
 pub use common::{migrate, run_db_operation, run_db_operation_sync};
-pub use migration::{RegisteredRustMigration, RustMigration};
+pub use migration::{Dialect, RegisteredRustMigration, RustMigration};
 
 #[cfg(feature = "mint")]
 pub mod mint;

@@ -111,9 +111,9 @@ where
 
     let mut rust = Vec::new();
 
-    for (prefix, name, migration) in rust_migrations {
-        if prefix.is_empty() || prefix == db_prefix {
-            rust.push((migration_order_key(name), name, migration));
+    for entry in rust_migrations {
+        if entry.dialect.driver_name() == db_prefix {
+            rust.push((migration_order_key(entry.name), entry.name, entry.migration));
         }
     }
 
@@ -165,7 +165,7 @@ where
 /// The key `build.rs` sorts migrations by: the leading integer of the name. A name without one
 /// sorts first, as it does there. The parse error carries nothing beyond "not a number", which is
 /// what the fallback already encodes.
-fn migration_order_key(name: &str) -> u64 {
+pub(crate) fn migration_order_key(name: &str) -> u64 {
     name.split('_')
         .next()
         .and_then(|prefix| prefix.parse().ok())
@@ -197,12 +197,128 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::migration_order_key;
+    use async_trait::async_trait;
+
+    use super::{migrate, migration_order_key};
+    use crate::database::DatabaseExecutor;
+    use crate::fake_executor::FakeExecutor;
+    use crate::migration::{Dialect, RegisteredRustMigration, RustMigration};
+    use crate::stmt::query;
+
+    /// A Rust migration that only leaves a recognisable mark, so a test can see where in the order
+    /// the runner placed it.
+    #[derive(Debug)]
+    struct Marker(&'static str);
+
+    #[async_trait]
+    impl<C> RustMigration<C> for Marker
+    where
+        C: DatabaseExecutor,
+    {
+        async fn apply(&self, conn: &C) -> Result<(), cdk_common::database::Error> {
+            query(self.0)?.batch(conn).await
+        }
+    }
+
+    const SQL: &[(&str, &str, &str)] = &[
+        ("sqlite", "1_first.sql", "MARK first"),
+        ("sqlite", "30_last.sql", "MARK last"),
+        ("postgres", "20_other_dialect.sql", "MARK other_dialect"),
+    ];
+
+    fn rust_entry(dialect: Dialect, name: &'static str) -> RegisteredRustMigration<FakeExecutor> {
+        RegisteredRustMigration {
+            dialect,
+            name,
+            migration: Box::new(Marker(match name {
+                "20_middle.rs" => "MARK middle",
+                _ => "MARK unexpected",
+            })),
+        }
+    }
+
+    fn marks(conn: &FakeExecutor) -> Vec<String> {
+        conn.executed()
+            .into_iter()
+            .filter(|sql| sql.starts_with("MARK "))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_rust_migration_runs_where_its_prefix_places_it() {
+        let conn = FakeExecutor::default();
+
+        migrate(
+            &conn,
+            "sqlite",
+            SQL,
+            vec![rust_entry(Dialect::Sqlite, "20_middle.rs")],
+        )
+        .await
+        .expect("migrate");
+
+        assert_eq!(marks(&conn), ["MARK first", "MARK middle", "MARK last"]);
+    }
+
+    #[tokio::test]
+    async fn entries_for_another_dialect_are_left_alone() {
+        let conn = FakeExecutor::default();
+
+        migrate(
+            &conn,
+            "sqlite",
+            SQL,
+            vec![rust_entry(Dialect::Postgres, "20_middle.rs")],
+        )
+        .await
+        .expect("migrate");
+
+        assert_eq!(marks(&conn), ["MARK first", "MARK last"]);
+        assert!(!conn.recorded_names().contains(&"20_middle.rs".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn an_already_recorded_rust_migration_is_skipped() {
+        let conn = FakeExecutor::with_applied(&["20_middle.rs"]);
+
+        migrate(
+            &conn,
+            "sqlite",
+            SQL,
+            vec![rust_entry(Dialect::Sqlite, "20_middle.rs")],
+        )
+        .await
+        .expect("migrate");
+
+        assert_eq!(marks(&conn), ["MARK first", "MARK last"]);
+    }
+
+    #[tokio::test]
+    async fn every_applied_migration_is_recorded_under_its_own_name() {
+        let conn = FakeExecutor::default();
+
+        migrate(
+            &conn,
+            "sqlite",
+            SQL,
+            vec![rust_entry(Dialect::Sqlite, "20_middle.rs")],
+        )
+        .await
+        .expect("migrate");
+
+        assert_eq!(
+            conn.recorded_names(),
+            ["1_first.sql", "20_middle.rs", "30_last.sql"]
+        );
+    }
 
     #[test]
     fn order_key_matches_the_build_script() {
         assert_eq!(migration_order_key("1_initial.sql"), 1);
-        assert_eq!(migration_order_key("20240612132920_init.sql"), 20240612132920);
+        assert_eq!(
+            migration_order_key("20240612132920_init.sql"),
+            20240612132920
+        );
         assert_eq!(
             migration_order_key("20260902000000_mint_internal_id.rs"),
             20260902000000

@@ -21,9 +21,10 @@ pub(super) const NAME: &str = "20260902000000_mint_internal_id.rs";
 /// A table that referenced a mint by URL and now references it by `mint.id`.
 struct MintRef {
     table: &'static str,
-    /// `melt_quote.mint_url` was nullable, so its `mint_id` stays nullable on PostgreSQL and the
-    /// orphan backfill has to skip its NULLs on both dialects.
-    nullable: bool,
+    /// Whether the old `mint_url` column was nullable. Two things follow from it: the orphan
+    /// backfill must skip those NULLs, since `mint.mint_url` is `NOT NULL`, and the new `mint_id`
+    /// cannot take a `NOT NULL` constraint, since the rows that had no URL still have no mint.
+    mint_url_nullable: bool,
     /// SQLite cannot drop a column a foreign key depends on, so `keyset` is rebuilt there instead
     /// of going through the generic add/update/drop path.
     sqlite_rebuilt: bool,
@@ -37,37 +38,37 @@ struct MintRef {
 const TABLES: &[MintRef] = &[
     MintRef {
         table: "keyset",
-        nullable: false,
+        mint_url_nullable: false,
         sqlite_rebuilt: true,
         stale_mint_url_index: None,
     },
     MintRef {
         table: "proof",
-        nullable: false,
+        mint_url_nullable: false,
         sqlite_rebuilt: false,
         stale_mint_url_index: None,
     },
     MintRef {
         table: "mint_quote",
-        nullable: false,
+        mint_url_nullable: false,
         sqlite_rebuilt: false,
         stale_mint_url_index: None,
     },
     MintRef {
         table: "melt_quote",
-        nullable: true,
+        mint_url_nullable: true,
         sqlite_rebuilt: false,
         stale_mint_url_index: None,
     },
     MintRef {
         table: "transactions",
-        nullable: false,
+        mint_url_nullable: false,
         sqlite_rebuilt: false,
         stale_mint_url_index: Some("mint_url_index"),
     },
     MintRef {
         table: "wallet_sagas",
-        nullable: false,
+        mint_url_nullable: false,
         sqlite_rebuilt: false,
         stale_mint_url_index: Some("wallet_sagas_mint_url_index"),
     },
@@ -153,7 +154,7 @@ fn orphan_backfill() -> String {
         .iter()
         .map(|mint_ref| {
             let table = mint_ref.table;
-            if mint_ref.nullable {
+            if mint_ref.mint_url_nullable {
                 format!("SELECT mint_url FROM {table} WHERE mint_url IS NOT NULL")
             } else {
                 format!("SELECT mint_url FROM {table}")
@@ -210,7 +211,7 @@ fn postgres_statements() -> Vec<String> {
             "UPDATE {table} SET mint_id = mint.id FROM mint WHERE mint.mint_url = {table}.mint_url"
         ));
 
-        if !mint_ref.nullable {
+        if !mint_ref.mint_url_nullable {
             statements.push(format!(
                 "ALTER TABLE {table} ALTER COLUMN mint_id SET NOT NULL"
             ));
@@ -249,6 +250,7 @@ where
 /// `PRAGMA foreign_keys` is deliberately not touched: SQLite ignores it inside a transaction, and
 /// the runner always holds one. Foreign keys are therefore enforced throughout, which is why
 /// [`REBUILD_MINT_AND_KEYSET`] renames the old `mint` aside rather than dropping it.
+#[derive(Debug)]
 pub(super) struct Sqlite;
 
 #[async_trait]
@@ -262,6 +264,7 @@ where
 }
 
 /// The PostgreSQL form of the migration.
+#[derive(Debug)]
 pub(super) struct Postgres;
 
 #[async_trait]
@@ -316,11 +319,11 @@ mod tests {
 
         for mint_ref in TABLES {
             let table = mint_ref.table;
-            let not_null = statements
-                .iter()
-                .any(|sql| **sql == format!("ALTER TABLE {table} ALTER COLUMN mint_id SET NOT NULL"));
+            let not_null = statements.iter().any(|sql| {
+                **sql == format!("ALTER TABLE {table} ALTER COLUMN mint_id SET NOT NULL")
+            });
 
-            assert_eq!(not_null, !mint_ref.nullable, "{table}");
+            assert_eq!(not_null, !mint_ref.mint_url_nullable, "{table}");
         }
     }
 
@@ -332,4 +335,3 @@ mod tests {
         assert!(backfill.contains("SELECT mint_url FROM proof UNION"));
     }
 }
-

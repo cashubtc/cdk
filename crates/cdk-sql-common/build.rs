@@ -74,7 +74,7 @@ fn main() {
                 "".to_owned()
             };
 
-            let prefix_b = if parts_a.len() == 2 {
+            let prefix_b = if parts_b.len() == 2 {
                 parts_b.first().map(|x| x.to_owned()).unwrap_or_default()
             } else {
                 "".to_owned()
@@ -86,25 +86,10 @@ fn main() {
                 return prefix_cmp;
             }
 
-            let path_a = path_a.file_name().unwrap().to_str().unwrap();
-            let path_b = path_b.file_name().unwrap().to_str().unwrap();
-
-            let prefix_a = path_a
-                .split("_")
-                .next()
-                .and_then(|prefix| prefix.parse::<usize>().ok())
-                .unwrap_or_default();
-            let prefix_b = path_b
-                .split("_")
-                .next()
-                .and_then(|prefix| prefix.parse::<usize>().ok())
-                .unwrap_or_default();
-
-            if prefix_a != 0 && prefix_b != 0 {
-                prefix_a.cmp(&prefix_b)
-            } else {
-                path_a.cmp(path_b)
-            }
+            compare_file_names(
+                path_a.file_name().unwrap().to_str().unwrap(),
+                path_b.file_name().unwrap().to_str().unwrap(),
+            )
         });
 
         writeln!(out_file, "/// @generated").unwrap();
@@ -157,6 +142,29 @@ fn main() {
 
         println!("cargo:rerun-if-changed={}", migration_path.display());
     }
+}
+
+/// Orders two migration file names by their leading integer, falling back on the whole name.
+///
+/// The name is also the tie-break: two migrations can share a numeric prefix, and returning `Equal`
+/// leaves the stable sort on `read_dir` order, which differs between machines.
+fn compare_file_names(name_a: &str, name_b: &str) -> Ordering {
+    let prefix_a = numeric_prefix(name_a);
+    let prefix_b = numeric_prefix(name_b);
+
+    if prefix_a != 0 && prefix_b != 0 {
+        prefix_a.cmp(&prefix_b).then_with(|| name_a.cmp(name_b))
+    } else {
+        name_a.cmp(name_b)
+    }
+}
+
+/// The leading integer of a migration file name, or zero when it has none.
+fn numeric_prefix(name: &str) -> usize {
+    name.split("_")
+        .next()
+        .and_then(|prefix| prefix.parse().ok())
+        .unwrap_or_default()
 }
 
 fn find_migrations_dirs(root: &Path) -> Vec<PathBuf> {

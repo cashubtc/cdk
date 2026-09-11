@@ -33,12 +33,11 @@ use crate::{
 
 mod rust_migrations;
 
-/// SQL migrations embedded by `build.rs`.
-///
-/// Public so a test can build the schema as of any point in the migration history by pairing this
-/// with a shorter list of Rust migrations.
+#[cfg(feature = "test")]
+pub mod test;
+
 #[rustfmt::skip]
-pub mod migrations {
+mod migrations {
     include!(concat!(env!("OUT_DIR"), "/migrations_wallet.rs"));
 }
 
