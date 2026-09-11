@@ -31,8 +31,14 @@ use crate::{
     column_as_nullable_string, column_as_number, column_as_string, unpack_into,
 };
 
+mod rust_migrations;
+
+/// SQL migrations embedded by `build.rs`.
+///
+/// Public so a test can build the schema as of any point in the migration history by pairing this
+/// with a shorter list of Rust migrations.
 #[rustfmt::skip]
-mod migrations {
+pub mod migrations {
     include!(concat!(env!("OUT_DIR"), "/migrations_wallet.rs"));
 }
 
@@ -63,7 +69,13 @@ where
     /// Migrate [`WalletSqliteDatabase`]
     async fn migrate(conn: PooledResource<RM>) -> Result<(), Error> {
         let tx = ConnectionWithTransaction::new(conn).await?;
-        migrate(&tx, RM::Connection::name(), migrations::MIGRATIONS).await?;
+        migrate(
+            &tx,
+            RM::Connection::name(),
+            migrations::MIGRATIONS,
+            rust_migrations::rust_migrations(),
+        )
+        .await?;
         // Update any existing keys with missing keyset_u32 values
         Self::add_keyset_u32(&tx).await?;
         tx.commit().await?;

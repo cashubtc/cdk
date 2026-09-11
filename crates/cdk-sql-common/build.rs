@@ -48,6 +48,16 @@ fn main() {
         // Step 2: Collect all files inside the migrations dir
         let mut files = Vec::new();
         visit_dirs(&migration_path, &mut files).expect("Failed to read migrations directory");
+
+        for path in &files {
+            assert!(
+                path.extension().and_then(|ext| ext.to_str()) == Some("sql"),
+                "every file in a migrations directory is embedded and executed as SQL, so {} \
+                 would be run against the database; migrations written in Rust live outside any \
+                 migrations directory and are registered in code",
+                path.display()
+            );
+        }
         files.sort_by(|path_a, path_b| {
             let parts_a = path_a.to_str().unwrap().replace("\\", "/")[skip_name + 1..]
                 .split("/")
