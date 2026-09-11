@@ -182,7 +182,7 @@ Delivery model:
 
 ```text
 publish(event):
-  serialize { origin, event } as JSON
+  serialize { origin, event: { kind, payload } } as JSON
   local.deliver(event)                     // immediate, never blocked on Postgres
   spawn: SELECT pg_notify(channel, payload)
 
@@ -195,7 +195,14 @@ inbound payload:
 Publishing delivers locally at once and forwards to peers; the origin check
 drops the copy Postgres echoes back, so a locally-published event is delivered
 exactly once on its own instance and once on every peer. Wire format is JSON,
-because cashu types do not round-trip through CBOR. The `channel` name is
+because cashu types do not round-trip through CBOR.
+
+The event itself is encoded as `{ kind, payload }`. NUT-17 payloads are not
+self-describing: quote responses for different payment methods share field
+names, so a payload can only be decoded with the subscription kind that produced
+it (`nut17::deserialize_payload_for_kind`). `MintEvent` therefore serializes the
+kind alongside the payload and decodes with it; without that tag every forwarded
+event is undecodable on the receiving instance. The `channel` name is
 validated as a Postgres identifier before it is interpolated into `LISTEN`
 (which cannot be parameterized); `NOTIFY` itself uses bound parameters. Events
 larger than the 8000-byte `NOTIFY` limit are delivered locally and skipped for
