@@ -15,10 +15,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bip39::Mnemonic;
+use bitcoin::bip32::DerivationPath;
 use cashu::nut00::KnownMethod;
 use cashu::util::unix_time;
 use cashu::PaymentMethod;
-use cdk::mint::{MintBuilder, MintMeltLimits};
+use cdk::mint::{KeysetRotation, Mint, MintBuilder, MintMeltLimits};
 use cdk::nuts::CurrencyUnit;
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk_fake_wallet::FakeWallet;
@@ -501,4 +502,314 @@ async fn test_builder_does_not_replace_all_expired_keysets() {
         .unwrap();
 
     assert_eq!(mint2.keysets().keysets.len(), count_before_rebuild);
+}
+
+/// Build a mint over `localstore`, with a fake wallet for `unit` at `fee` and
+/// `unit` optionally pinned to a fixed derivation path.
+async fn build_mint(
+    localstore: Arc<cdk_sqlite::mint::MintSqliteDatabase>,
+    seed: &[u8],
+    unit: CurrencyUnit,
+    fee: u64,
+    custom_path: Option<DerivationPath>,
+    rotations: Vec<KeysetRotation>,
+) -> Result<Mint, cdk::Error> {
+    let fake_wallet = FakeWallet::new(
+        FeeReserve {
+            min_fee_reserve: 1.into(),
+            percent_fee_reserve: 1.0,
+        },
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        unit.clone(),
+    );
+
+    let mut builder = MintBuilder::new(localstore.clone());
+    builder
+        .add_payment_processor(
+            unit.clone(),
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintMeltLimits::new(1, 5_000),
+            Arc::new(fake_wallet),
+        )
+        .await
+        .unwrap();
+    builder.set_unit_fee(&unit, fee).unwrap();
+
+    if let Some(path) = custom_path {
+        builder = builder.with_custom_derivation_paths(HashMap::from([(unit, path)]));
+    }
+    for rotation in rotations {
+        builder = builder.with_keyset_rotation(rotation);
+    }
+
+    builder.build_with_seed(localstore, seed).await
+}
+
+fn custom_path() -> DerivationPath {
+    "m/129372'/0'/7'".parse().expect("derivation path")
+}
+
+async fn keyset_count(localstore: &Arc<cdk_sqlite::mint::MintSqliteDatabase>) -> usize {
+    use cdk_common::database::mint::KeysDatabase;
+
+    let mut tx = KeysDatabase::begin_transaction(localstore.as_ref())
+        .await
+        .expect("keys transaction");
+    let count = tx.get_keyset_infos().await.expect("keyset infos").len();
+    tx.commit().await.expect("commit");
+    count
+}
+
+/// A unit pinned to a fixed derivation path keeps the keys derived from it, so
+/// a fee change can only be applied by a rotation that cannot happen. The build
+/// is refused rather than run half way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_builder_refuses_fee_change_on_a_custom_derivation_path() {
+    let mnemonic = Mnemonic::generate(12).unwrap();
+    let seed = mnemonic.to_seed_normalized("");
+    let localstore = Arc::new(memory::empty().await.expect("valid db instance"));
+
+    let mint = build_mint(
+        localstore.clone(),
+        &seed,
+        CurrencyUnit::Sat,
+        0,
+        Some(custom_path()),
+        Vec::new(),
+    )
+    .await
+    .expect("the first build creates the pinned keyset");
+    drop(mint);
+
+    let count_before = keyset_count(&localstore).await;
+    assert_eq!(count_before, 1);
+
+    let err = build_mint(
+        localstore.clone(),
+        &seed,
+        CurrencyUnit::Sat,
+        100,
+        Some(custom_path()),
+        Vec::new(),
+    )
+    .await
+    .expect_err("a fee change on a pinned unit cannot be applied");
+
+    let message = err.to_string();
+    assert!(
+        message.contains("sat") && message.contains("input fee"),
+        "the error must name the unit and what changed: {message}"
+    );
+    assert_eq!(
+        keyset_count(&localstore).await,
+        count_before,
+        "the build is refused before anything is written"
+    );
+}
+
+/// The refusal is limited to what cannot be applied: an unchanged pinned unit
+/// rebuilds and keeps its keyset.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_builder_rebuilds_an_unchanged_custom_derivation_path() {
+    let mnemonic = Mnemonic::generate(12).unwrap();
+    let seed = mnemonic.to_seed_normalized("");
+    let localstore = Arc::new(memory::empty().await.expect("valid db instance"));
+
+    let mint = build_mint(
+        localstore.clone(),
+        &seed,
+        CurrencyUnit::Sat,
+        0,
+        Some(custom_path()),
+        Vec::new(),
+    )
+    .await
+    .expect("the first build creates the pinned keyset");
+    let active = mint.keysets().keysets;
+    drop(mint);
+
+    let mint2 = build_mint(
+        localstore.clone(),
+        &seed,
+        CurrencyUnit::Sat,
+        0,
+        Some(custom_path()),
+        Vec::new(),
+    )
+    .await
+    .expect("nothing changed, so nothing has to rotate");
+
+    assert_eq!(mint2.keysets().keysets, active);
+    assert_eq!(keyset_count(&localstore).await, 1);
+}
+
+/// The check runs over every planned rotation before the first one is written,
+/// so a unit that could have rotated does not rotate when another cannot.
+///
+/// The pinned unit is `usd`, which sorts after `sat`: a build that rotated as it
+/// planned would already have rotated `sat` by the time it reached the unit it
+/// has to refuse.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_builder_rotates_nothing_when_one_unit_cannot_rotate() {
+    let mnemonic = Mnemonic::generate(12).unwrap();
+    let seed = mnemonic.to_seed_normalized("");
+    let localstore = Arc::new(memory::empty().await.expect("valid db instance"));
+
+    let fake_wallet = FakeWallet::new(
+        FeeReserve {
+            min_fee_reserve: 1.into(),
+            percent_fee_reserve: 1.0,
+        },
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Sat,
+    );
+    let fake_wallet_usd = FakeWallet::new(
+        FeeReserve {
+            min_fee_reserve: 1.into(),
+            percent_fee_reserve: 1.0,
+        },
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Usd,
+    );
+
+    let two_units = |fee: u64| {
+        let sat = fake_wallet.clone();
+        let usd = fake_wallet_usd.clone();
+        let localstore = localstore.clone();
+        async move {
+            let mut builder = MintBuilder::new(localstore.clone());
+            builder
+                .add_payment_processor(
+                    CurrencyUnit::Sat,
+                    PaymentMethod::Known(KnownMethod::Bolt11),
+                    MintMeltLimits::new(1, 5_000),
+                    Arc::new(sat),
+                )
+                .await
+                .unwrap();
+            builder
+                .add_payment_processor(
+                    CurrencyUnit::Usd,
+                    PaymentMethod::Known(KnownMethod::Bolt11),
+                    MintMeltLimits::new(1, 5_000),
+                    Arc::new(usd),
+                )
+                .await
+                .unwrap();
+            builder.set_unit_fee(&CurrencyUnit::Sat, fee).unwrap();
+            builder.set_unit_fee(&CurrencyUnit::Usd, fee).unwrap();
+            builder
+                .with_custom_derivation_paths(HashMap::from([(CurrencyUnit::Usd, custom_path())]))
+        }
+    };
+
+    let mint = two_units(0)
+        .await
+        .build_with_seed(localstore.clone(), &seed)
+        .await
+        .expect("the first build creates both keysets");
+    drop(mint);
+
+    let count_before = keyset_count(&localstore).await;
+    assert_eq!(count_before, 2);
+
+    two_units(100)
+        .await
+        .build_with_seed(localstore.clone(), &seed)
+        .await
+        .expect_err("the pinned unit cannot take the new fee");
+
+    assert_eq!(
+        keyset_count(&localstore).await,
+        count_before,
+        "the unpinned unit must not rotate when the build is refused"
+    );
+}
+
+/// A configured rotation whose keyset already exists has nothing left to do, so
+/// restarts stop issuing another keyset for the same entry. The expiry offset
+/// differs between the two builds, since a real config recomputes it on boot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_builder_applies_a_configured_rotation_once() {
+    let mnemonic = Mnemonic::generate(12).unwrap();
+    let seed = mnemonic.to_seed_normalized("");
+    let localstore = Arc::new(memory::empty().await.expect("valid db instance"));
+
+    let amounts = cdk_integration_tests::standard_keyset_amounts(32);
+    let rotations = |expiry_offset: u64| {
+        vec![
+            KeysetRotation {
+                unit: CurrencyUnit::Sat,
+                amounts: amounts.clone(),
+                input_fee_ppk: 0,
+                use_keyset_v2: false,
+                final_expiry: Some(unix_time().saturating_sub(expiry_offset)),
+            },
+            KeysetRotation {
+                unit: CurrencyUnit::Sat,
+                amounts: amounts.clone(),
+                input_fee_ppk: 0,
+                use_keyset_v2: true,
+                final_expiry: None,
+            },
+        ]
+    };
+
+    let mint = build_mint(
+        localstore.clone(),
+        &seed,
+        CurrencyUnit::Sat,
+        0,
+        None,
+        rotations(3600),
+    )
+    .await
+    .expect("the first build applies both rotations");
+    assert_active_keyset_is_unexpired(&mint);
+    drop(mint);
+
+    let count_before = keyset_count(&localstore).await;
+
+    let mint2 = build_mint(
+        localstore.clone(),
+        &seed,
+        CurrencyUnit::Sat,
+        0,
+        None,
+        rotations(1800),
+    )
+    .await
+    .expect("the second build finds both rotations already applied");
+
+    assert_eq!(
+        keyset_count(&localstore).await,
+        count_before,
+        "a restart must not issue another keyset per configured rotation"
+    );
+    assert_active_keyset_is_unexpired(&mint2);
+}
+
+/// The configured rotations end on an unexpired keyset, so that is what the
+/// unit must be left active on. The expired entry comes first and rotating is
+/// what makes a keyset active, so a build that stopped early would leave the
+/// mint active on an expired keyset.
+fn assert_active_keyset_is_unexpired(mint: &Mint) {
+    let active: Vec<_> = mint
+        .keysets()
+        .keysets
+        .into_iter()
+        .filter(|keyset| keyset.active && keyset.unit == CurrencyUnit::Sat)
+        .collect();
+
+    assert_eq!(active.len(), 1, "sat must have exactly one active keyset");
+    assert_eq!(
+        active[0].final_expiry, None,
+        "the active keyset must be the one the configured rotations end on"
+    );
 }

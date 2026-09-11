@@ -333,6 +333,9 @@ max_delay_time = 3
 # input_fee_ppk: input fee in parts per thousand (default: 0)
 # expired: if true, keyset is created with a past expiry timestamp (default: false)
 #
+# An entry is applied only when the mint has no keyset matching it, so a restart
+# does not issue another keyset for the same entry.
+#
 # [[fake_wallet.keyset_rotations]]
 # unit = "sat"
 # version = "v1"

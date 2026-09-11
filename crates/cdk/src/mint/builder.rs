@@ -1,17 +1,19 @@
 //! Mint Builder
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::{DynMintAuthDatabase, DynMintDatabase, MintKeysDatabase};
 use cdk_common::error::Error;
 use cdk_common::nut00::KnownMethod;
+use cdk_common::nut02::KeySetVersion;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::DynMintPayment;
+use cdk_common::util::unix_time;
 use cdk_common::{nut21, nut22};
-use cdk_signatory::signatory::{RotateKeyArguments, Signatory};
+use cdk_signatory::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet};
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
@@ -58,6 +60,162 @@ pub struct KeysetRotation {
     pub use_keyset_v2: bool,
     /// Optional expiry timestamp (unix seconds)
     pub final_expiry: Option<u64>,
+}
+
+impl KeysetRotation {
+    fn rotate_args(&self) -> RotateKeyArguments {
+        RotateKeyArguments {
+            unit: self.unit.clone(),
+            amounts: self.amounts.clone(),
+            input_fee_ppk: self.input_fee_ppk,
+            keyset_id_type: if self.use_keyset_v2 {
+                KeySetVersion::Version01
+            } else {
+                KeySetVersion::Version00
+            },
+            final_expiry: self.final_expiry,
+        }
+    }
+}
+
+/// A rotation the build has decided on but not yet run.
+///
+/// Held back so every rotation can be checked against the keysets the build
+/// will have produced by the time it runs, before any of them is written.
+///
+/// Ordered by unit before anything runs: `supported_units` is a `HashMap`, so
+/// neither the keysets a build produces nor the error it may report should vary
+/// between runs.
+struct PlannedRotation {
+    unit: CurrencyUnit,
+    reason: String,
+    args: RotateKeyArguments,
+}
+
+/// What a keyset would have to look like for a configured rotation to be
+/// considered already applied.
+///
+/// Expiry is compared as a state rather than a timestamp: an expired keyset is
+/// configured as an offset from the current time, so its value differs on every
+/// boot and an exact comparison would re-run the rotation on every restart.
+#[derive(Clone, PartialEq)]
+struct RotationShape {
+    unit: CurrencyUnit,
+    amounts: Vec<u64>,
+    input_fee_ppk: u64,
+    use_keyset_v2: bool,
+    expired: Option<bool>,
+}
+
+impl From<&SignatoryKeySet> for RotationShape {
+    fn from(keyset: &SignatoryKeySet) -> Self {
+        Self {
+            unit: keyset.unit.clone(),
+            amounts: keyset.amounts.clone(),
+            input_fee_ppk: keyset.input_fee_ppk,
+            use_keyset_v2: keyset.id.get_version() == KeySetVersion::Version01,
+            expired: keyset.final_expiry.map(|_| keyset.is_expired()),
+        }
+    }
+}
+
+impl From<&RotateKeyArguments> for RotationShape {
+    fn from(args: &RotateKeyArguments) -> Self {
+        Self {
+            unit: args.unit.clone(),
+            amounts: args.amounts.clone(),
+            input_fee_ppk: args.input_fee_ppk,
+            use_keyset_v2: args.keyset_id_type == KeySetVersion::Version01,
+            expired: args.final_expiry.map(|expiry| expiry < unix_time()),
+        }
+    }
+}
+
+/// The rotations a build has to run, in the order it has to run them.
+///
+/// A configured rotation whose keyset already exists is dropped. Without that,
+/// every restart would issue another keyset for each configured rotation. The
+/// last configured rotation for a unit is kept unless its keyset is also the
+/// active one, since rotating is what makes a keyset active and the configured
+/// order is what decides which one a unit ends on.
+///
+/// Fails when a unit pinned to a custom derivation path needs one. Keys derive
+/// from the xpriv and the derivation path alone, so a pinned unit keeps the keys
+/// it already has and no rotation can give it new ones. Each rotation is checked
+/// against the keysets the build will have produced by the time it runs, so the
+/// build is refused before anything is written rather than leaving a mint half
+/// rotated.
+///
+/// `custom_paths` is only populated when the builder constructs the signatory
+/// itself. A caller that supplies its own signatory has nothing checked here,
+/// and a pinned unit is caught later by the signatory's own guard, part way
+/// through the rotations.
+fn plan_rotations(
+    mut planned: Vec<PlannedRotation>,
+    configured: &[KeysetRotation],
+    keysets: &[SignatoryKeySet],
+    custom_paths: &HashMap<CurrencyUnit, DerivationPath>,
+) -> Result<Vec<RotateKeyArguments>, Error> {
+    planned.sort_by(|a, b| a.unit.cmp(&b.unit));
+
+    let mut units_with_keysets: HashSet<CurrencyUnit> =
+        keysets.iter().map(|keyset| keyset.unit.clone()).collect();
+    let mut shapes: Vec<RotationShape> = keysets.iter().map(RotationShape::from).collect();
+    let mut active: HashMap<CurrencyUnit, RotationShape> = keysets
+        .iter()
+        .filter(|keyset| keyset.active)
+        .map(|keyset| (keyset.unit.clone(), RotationShape::from(keyset)))
+        .collect();
+    let mut unrotatable: Vec<String> = Vec::new();
+    let mut rotations: Vec<RotateKeyArguments> = Vec::new();
+
+    for planned in planned {
+        if custom_paths.contains_key(&planned.unit) && units_with_keysets.contains(&planned.unit) {
+            unrotatable.push(format!("{} ({})", planned.unit, planned.reason));
+        }
+        let shape = RotationShape::from(&planned.args);
+        units_with_keysets.insert(planned.unit.clone());
+        shapes.push(shape.clone());
+        active.insert(planned.unit.clone(), shape);
+        rotations.push(planned.args);
+    }
+
+    for (index, rotation) in configured.iter().enumerate() {
+        let args = rotation.rotate_args();
+        let shape = RotationShape::from(&args);
+        let ends_the_unit = !configured[index + 1..]
+            .iter()
+            .any(|later| later.unit == rotation.unit);
+        let already_active = active.get(&rotation.unit) == Some(&shape);
+
+        if shapes.contains(&shape) && (!ends_the_unit || already_active) {
+            tracing::debug!(
+                "Configured keyset rotation for unit {} already applied; skipping",
+                rotation.unit
+            );
+            continue;
+        }
+
+        if custom_paths.contains_key(&rotation.unit) && units_with_keysets.contains(&rotation.unit)
+        {
+            unrotatable.push(format!("{} (configured keyset rotation)", rotation.unit));
+        }
+        units_with_keysets.insert(rotation.unit.clone());
+        shapes.push(shape.clone());
+        active.insert(rotation.unit.clone(), shape);
+        rotations.push(args);
+    }
+
+    if !unrotatable.is_empty() {
+        return Err(Error::Custom(format!(
+            "cannot rotate {}: the unit has a custom derivation path and a keyset derived from \
+             it, so a rotation would re-derive the keys it already has. Drop the custom \
+             derivation path for the unit or restore its previous configuration.",
+            unrotatable.join(", ")
+        )));
+    }
+
+    Ok(rotations)
 }
 
 /// Cashu Mint Builder
@@ -154,6 +312,11 @@ impl MintBuilder {
 
     /// Add a keyset rotation to execute during build.
     /// Used to create inactive/expired keysets for testing.
+    ///
+    /// Applied only when no keyset for the unit already matches it, so a
+    /// restart does not issue another keyset for the same entry. The last entry
+    /// for a unit is applied anyway unless its keyset is the active one, since
+    /// rotating is what leaves a unit active on a given keyset.
     pub fn with_keyset_rotation(mut self, rotation: KeysetRotation) -> Self {
         self.keyset_rotations.push(rotation);
         self
@@ -341,7 +504,10 @@ impl MintBuilder {
     ///
     /// A unit given a fixed path is excluded from automatic keyset rotation,
     /// and rotating it explicitly fails: keys derive from the path, so a
-    /// replacement would carry the keys it replaces.
+    /// replacement would carry the keys it replaces. Building the mint is
+    /// refused outright when such a unit's fee, amounts or keyset version
+    /// differ from the keyset it already has, since that difference can only be
+    /// applied by rotating.
     pub fn with_custom_derivation_paths(
         mut self,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
@@ -647,6 +813,8 @@ impl MintBuilder {
                 .or_insert((0, vec![1]));
         }
 
+        let mut planned_rotations: Vec<PlannedRotation> = Vec::new();
+
         for (unit, (fee, amounts)) in &self.supported_units {
             // Check if we have an active keyset for this unit
             let keyset = active_keysets
@@ -654,7 +822,7 @@ impl MintBuilder {
                 .iter()
                 .find(|k| k.active && k.unit == *unit);
 
-            let mut rotate = false;
+            let mut reasons: Vec<&str> = Vec::new();
 
             if let Some(keyset) = keyset {
                 if keyset.is_expired() {
@@ -669,65 +837,58 @@ impl MintBuilder {
                         keyset.input_fee_ppk,
                         fee
                     );
-                    rotate = true;
+                    reasons.push("input fee");
                 }
 
                 // Check if amounts match
                 if keyset.amounts != *amounts {
                     tracing::info!("Rotating keyset for unit {} due to amounts mismatch", unit);
-                    rotate = true;
+                    reasons.push("amounts");
                 }
 
                 // Check if version matches explicit preference
                 if let Some(want_v2) = self.use_keyset_v2 {
-                    let is_v2 =
-                        keyset.id.get_version() == cdk_common::nut02::KeySetVersion::Version01;
+                    let is_v2 = keyset.id.get_version() == KeySetVersion::Version01;
                     if want_v2 && !is_v2 {
                         tracing::info!("Rotating keyset for unit {} due to explicit V2 preference (current is V1)", unit);
-                        rotate = true;
+                        reasons.push("keyset version");
                     } else if !want_v2 && is_v2 {
                         tracing::info!("Rotating keyset for unit {} due to explicit V1 preference (current is V2)", unit);
-                        rotate = true;
+                        reasons.push("keyset version");
                     }
                 }
             } else {
                 // No active keyset for this unit
                 tracing::info!("Rotating keyset for unit {} (no active keyset found)", unit);
-                rotate = true;
+                reasons.push("no active keyset");
             }
 
-            if rotate {
-                signatory
-                    .rotate_keyset(RotateKeyArguments {
+            if !reasons.is_empty() {
+                planned_rotations.push(PlannedRotation {
+                    unit: unit.clone(),
+                    reason: reasons.join(", "),
+                    args: RotateKeyArguments {
                         unit: unit.clone(),
                         amounts: amounts.clone(),
                         input_fee_ppk: *fee,
                         keyset_id_type: if self.use_keyset_v2.unwrap_or(true) {
-                            cdk_common::nut02::KeySetVersion::Version01
+                            KeySetVersion::Version01
                         } else {
-                            cdk_common::nut02::KeySetVersion::Version00
+                            KeySetVersion::Version00
                         },
                         final_expiry: None,
-                    })
-                    .await?;
+                    },
+                });
             }
         }
 
-        // Execute configured keyset rotations (e.g. for test keysets)
-        for rotation in &self.keyset_rotations {
-            signatory
-                .rotate_keyset(RotateKeyArguments {
-                    unit: rotation.unit.clone(),
-                    amounts: rotation.amounts.clone(),
-                    input_fee_ppk: rotation.input_fee_ppk,
-                    keyset_id_type: if rotation.use_keyset_v2 {
-                        cdk_common::nut02::KeySetVersion::Version01
-                    } else {
-                        cdk_common::nut02::KeySetVersion::Version00
-                    },
-                    final_expiry: rotation.final_expiry,
-                })
-                .await?;
+        for rotation in plan_rotations(
+            planned_rotations,
+            &self.keyset_rotations,
+            &active_keysets.keysets,
+            &self.custom_paths,
+        )? {
+            signatory.rotate_keyset(rotation).await?;
         }
 
         if self.blind_auth_configured
