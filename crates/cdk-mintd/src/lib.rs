@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 // external crates
 use anyhow::{anyhow, bail, Context, Result};
@@ -1189,7 +1190,21 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
 
     builder = builder.with_keyset_v2(settings.info.use_keyset_v2);
 
+    builder = builder.with_keyset_rotation_interval(keyset_rotation_interval(settings));
+
     builder
+}
+
+/// Embedded signatory keyset auto-rotation interval, or `None` when rotation is
+/// disabled.
+///
+/// `0` is both the documented off switch and the default, so a mint only
+/// rotates once its operator asks for it.
+fn keyset_rotation_interval(settings: &config::Settings) -> Option<Duration> {
+    match settings.info.keyset_rotation_interval_seconds {
+        0 => None,
+        seconds => Some(Duration::from_secs(seconds)),
+    }
 }
 /// Configures payment backends based on the specified backend types
 async fn configure_payment_backends(
@@ -3368,6 +3383,50 @@ engine = "sqlite"
         assert_eq!(settings.database.engine, DatabaseEngine::Sqlite);
         assert!(settings.database.postgres.is_none());
         clear_mintd_env();
+    }
+
+    /// Upgrading a mint whose config never mentions the setting must not start
+    /// rotating its keysets behind the operator's back.
+    #[test]
+    fn keyset_rotation_interval_defaults_without_explicit_configuration() {
+        let settings = config::Settings::default();
+
+        assert_eq!(
+            keyset_rotation_interval(&settings),
+            None,
+            "an unconfigured mint must leave auto-rotation off"
+        );
+    }
+
+    /// `0` is the documented off switch, in the README, `example.config.toml`
+    /// and the signatory CLI. It has to actually disable rotation.
+    #[test]
+    fn keyset_rotation_interval_zero_disables_rotation() {
+        let settings = config::Settings {
+            info: config::Info {
+                keyset_rotation_interval_seconds: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(keyset_rotation_interval(&settings), None);
+    }
+
+    #[test]
+    fn keyset_rotation_interval_uses_the_configured_value() {
+        let settings = config::Settings {
+            info: config::Info {
+                keyset_rotation_interval_seconds: 3600,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(
+            keyset_rotation_interval(&settings),
+            Some(Duration::from_secs(3600))
+        );
     }
 
     #[test]

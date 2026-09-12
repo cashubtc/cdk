@@ -1332,6 +1332,69 @@ engine = "sqlite"
         let _ = std::fs::remove_file(secret_path);
     }
 
+    /// `prune_inactive_configuration` drops a disabled `[signatory]` section,
+    /// which is exactly the deployment the rotation interval configures, so the
+    /// setting has to live outside that section to reach the mint builder.
+    /// Helper tests over `Settings` literals never touch this path.
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
+    #[tokio::test]
+    async fn keyset_rotation_interval_survives_startup_validation() {
+        use std::time::Duration;
+
+        for (configured, expected) in [(0, None), (3600, Some(Duration::from_secs(3600)))] {
+            let secret_path = crate::test_utils::unique_temp_path("rotation_interval_secret");
+            std::fs::write(&secret_path, TEST_MNEMONIC_ONE).expect("write signing secret");
+            let document = format!(
+                r#"
+[info]
+mnemonic = "file:{}"
+keyset_rotation_interval_seconds = {configured}
+
+[mint_info]
+name = "rotation"
+
+[payment_backend]
+backend = "fakewallet"
+
+[fake_wallet]
+
+[database]
+engine = "sqlite"
+
+[signatory]
+enabled = false
+"#,
+                secret_path.display()
+            );
+
+            let service = service().await;
+            service
+                .initialize(
+                    &document,
+                    MintInitializationMode::New,
+                    None,
+                    false,
+                    Path::new("."),
+                    BdkWalletPolicy::RequireExisting,
+                )
+                .await
+                .expect("initialize configuration");
+
+            let startup = service.startup().await.expect("startup document");
+            assert!(
+                startup.resolved.settings.signatory.is_none(),
+                "a disabled [signatory] section is still pruned"
+            );
+            assert_eq!(
+                crate::keyset_rotation_interval(&startup.resolved.settings),
+                expected,
+                "a configured interval of {configured} must survive startup validation"
+            );
+
+            let _ = std::fs::remove_file(secret_path);
+        }
+    }
+
     #[test]
     fn configuration_without_payment_backend_is_rejected() {
         let secret_path = crate::test_utils::unique_temp_path("no_payment_backend_secret");
@@ -1558,6 +1621,7 @@ url = "file:{}"
             r#"
 [info]
 seed = "env:{SEED_ENV}"
+keyset_rotation_interval_seconds = 3600
 
 [mint_info]
 name = "pruned"
@@ -1597,6 +1661,10 @@ allow_insecure = true
         assert!(resolved.settings.auth.is_none());
         assert!(resolved.settings.auth_database.is_none());
         assert!(resolved.settings.signatory.is_none());
+        assert_eq!(
+            resolved.settings.info.keyset_rotation_interval_seconds, 3600,
+            "pruning the disabled [signatory] section must not touch [info]"
+        );
         assert!(format!("{resolved:?}").contains("redacted"));
 
         let identity = discover_signing_identity(&resolved.settings).expect("seed identity");
