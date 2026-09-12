@@ -979,6 +979,10 @@ pub enum PubSubTransport {
     InMemory,
     /// Postgres `LISTEN`/`NOTIFY`. Lowest latency, Postgres only, and needs a
     /// session-pinned connection (not a transaction-pooling proxy).
+    ///
+    /// Only for a database the mint has to itself: publishing on the channel
+    /// needs no privileges beyond connecting, and what a peer publishes reaches
+    /// wallets as if the mint had sent it.
     PostgresListenNotify,
 }
 
