@@ -5,8 +5,9 @@
 //! instance. [`PostgresBus`] implements [`cdk_common::pub_sub::Bus`] so several
 //! mint instances sharing a Postgres database also share notifications.
 //!
-//! On publish the event is delivered to local subscribers immediately and, in
-//! the background, sent to peers with `pg_notify`. Each instance keeps a
+//! A publish hands the event to a background task, as the in-process bus does,
+//! which fans it out to local subscribers and sends it to peers with
+//! `pg_notify`, so no request handler waits on either. Each instance keeps a
 //! dedicated connection in `LISTEN`, deserializes inbound events, and injects
 //! them into its own local fan-out. Messages carry the origin instance id so a
 //! bus skips the copy of its own event that Postgres echoes back.
@@ -18,6 +19,14 @@
 //! Inbound notifications flow through a bounded queue: if a peer floods faster
 //! than they can be dispatched, the excess is dropped (those subscribers
 //! recover on their next backfill) rather than growing memory without bound.
+//!
+//! Inbound payloads are trusted: they are decoded and handed to local
+//! subscribers without being re-validated against the database. `LISTEN` and
+//! `NOTIFY` need no privileges beyond connecting, so every role that can reach
+//! the mint's database can both read this channel and publish on it, and what
+//! it publishes reaches wallets as if the mint had sent it. A mint using this
+//! bus must own its database; see the trust model in
+//! `docs/adr/0005-cross-process-mint-notifications-bus.md`.
 //!
 //! The background connection and its tasks are tied to the bus lifetime: when
 //! the built [`PostgresBus`] (or an unbuilt [`PostgresBusConnector`]) is
@@ -248,33 +257,38 @@ impl<S> Bus<S> for PostgresBus<S>
 where
     S: Spec + 'static,
 {
+    /// Serialization and local fan-out run on the spawned task, like
+    /// [`LocalBus`](cdk_common::pub_sub::LocalBus), so a publishing request
+    /// handler never pays for them or contends with a concurrent `subscribe`.
     fn publish(&self, event: S::Event) {
-        // Serialize before delivering locally, since delivery consumes the event.
-        let payload = match serde_json::to_string(&OutEnvelope {
-            origin: self.origin.as_ref(),
-            event: &event,
-        }) {
-            Ok(payload) => Some(payload),
-            Err(err) => {
-                tracing::warn!("postgres bus: failed to serialize event: {err}");
-                None
-            }
-        };
-
-        self.local.deliver(event);
-
-        let Some(payload) = payload else { return };
-        if payload.len() > MAX_NOTIFY_PAYLOAD {
-            tracing::warn!(
-                "postgres bus: event of {} bytes exceeds NOTIFY limit, not forwarded to peers",
-                payload.len()
-            );
-            return;
-        }
-
+        let local = self.local.clone();
+        let origin = self.origin.clone();
         let client = self.client.clone();
         let channel = self.channel.clone();
+
         cdk_common::task::spawn(async move {
+            let payload = match serde_json::to_string(&OutEnvelope {
+                origin: origin.as_ref(),
+                event: &event,
+            }) {
+                Ok(payload) => Some(payload),
+                Err(err) => {
+                    tracing::warn!("postgres bus: failed to serialize event: {err}");
+                    None
+                }
+            };
+
+            local.deliver(event);
+
+            let Some(payload) = payload else { return };
+            if payload.len() > MAX_NOTIFY_PAYLOAD {
+                tracing::warn!(
+                    "postgres bus: event of {} bytes exceeds NOTIFY limit, not forwarded to peers",
+                    payload.len()
+                );
+                return;
+            }
+
             let client = client.read().ok().and_then(|guard| guard.clone());
             match client {
                 Some(client) => {

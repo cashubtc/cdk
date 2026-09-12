@@ -380,7 +380,7 @@ async fn initial_setup(
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync>,
-    Option<MintPubSubBusBuilder>,
+    Option<PubSubBusPlan>,
 )> {
     tracing::info!("Initializing database...");
     let (localstore, keystore, kv, configuration_store, pubsub_bus) =
@@ -925,6 +925,38 @@ pub fn apply_seed_file(settings: &mut config::Settings, seed_file: &Path) -> Res
     Ok(())
 }
 
+/// The cross-instance notification bus selected by configuration, not yet
+/// connected.
+///
+/// Connecting pins a Postgres session to `LISTEN`, so it is deferred to the
+/// paths that serve notifications. The `config` subcommands open the database
+/// only, and a bus outage never keeps an operator from reading their stored
+/// configuration.
+#[derive(Debug)]
+enum PubSubBusPlan {
+    /// Forward events between instances with Postgres `LISTEN`/`NOTIFY`.
+    #[cfg(feature = "postgres")]
+    PostgresListenNotify {
+        /// Settings for the dedicated listening session.
+        config: PgConfig,
+        /// Channel both `LISTEN` and `NOTIFY` name.
+        channel: String,
+    },
+}
+
+impl PubSubBusPlan {
+    /// Open the bus and return the builder the mint installs.
+    async fn connect(self) -> Result<MintPubSubBusBuilder> {
+        match self {
+            #[cfg(feature = "postgres")]
+            Self::PostgresListenNotify { config, channel } => {
+                let connector = PostgresBusConnector::connect(config, &channel).await?;
+                Ok(Box::new(move |local| connector.build(local)))
+            }
+        }
+    }
+}
+
 async fn setup_database(
     settings: &config::Settings,
     _work_dir: &Path,
@@ -934,7 +966,7 @@ async fn setup_database(
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync>,
-    Option<MintPubSubBusBuilder>,
+    Option<PubSubBusPlan>,
 )> {
     tracing::info!("Using database engine: {:?}", settings.database.engine);
     let pubsub = &settings.database.pubsub;
@@ -944,7 +976,7 @@ async fn setup_database(
             let db = setup_sqlite_database(_work_dir, _db_password).await?;
 
             // SQLite spans a single host, so no cross-instance transport applies.
-            let bus: Option<MintPubSubBusBuilder> = match pubsub.transport {
+            let bus: Option<PubSubBusPlan> = match pubsub.transport {
                 PubSubTransport::InMemory => None,
                 PubSubTransport::PostgresListenNotify => {
                     bail!("pubsub transport 'postgres-listen-notify' requires the Postgres database engine");
@@ -979,18 +1011,22 @@ async fn setup_database(
             let pg_db = Arc::new(MintPgDatabase::new(db_config).await?);
             tracing::info!("PostgreSQL database connection established");
 
-            let bus: Option<MintPubSubBusBuilder> = match pubsub.transport {
+            let bus: Option<PubSubBusPlan> = match pubsub.transport {
                 PubSubTransport::InMemory => None,
                 PubSubTransport::PostgresListenNotify => {
-                    let bus_config = PgConfig::new(
-                        pg_config.url.as_str(),
-                        pg_config.tls_mode.as_deref(),
-                        pg_config.max_connections,
-                        pg_config.connection_timeout_seconds,
-                    );
-                    let channel = pubsub.channel.as_deref().unwrap_or(DEFAULT_PUBSUB_CHANNEL);
-                    let connector = PostgresBusConnector::connect(bus_config, channel).await?;
-                    Some(Box::new(move |local| connector.build(local)))
+                    Some(PubSubBusPlan::PostgresListenNotify {
+                        config: PgConfig::new(
+                            pg_config.url.as_str(),
+                            pg_config.tls_mode.as_deref(),
+                            pg_config.max_connections,
+                            pg_config.connection_timeout_seconds,
+                        ),
+                        channel: pubsub
+                            .channel
+                            .as_deref()
+                            .unwrap_or(DEFAULT_PUBSUB_CHANNEL)
+                            .to_string(),
+                    })
                 }
             };
 
@@ -2617,7 +2653,7 @@ async fn run_mintd_with_database_and_shutdown(
     localstore: DynMintDatabase,
     keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
-    pubsub_bus: Option<MintPubSubBusBuilder>,
+    pubsub_bus: Option<PubSubBusPlan>,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     db_password: Option<String>,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
@@ -2632,7 +2668,7 @@ async fn run_mintd_with_database_and_shutdown(
     // WebSocket subscriber only receives events from the instance it is
     // connected to.
     let mint_builder = match pubsub_bus {
-        Some(build_bus) => mint_builder.with_pubsub_bus(build_bus),
+        Some(plan) => mint_builder.with_pubsub_bus(plan.connect().await?),
         None => mint_builder,
     };
 

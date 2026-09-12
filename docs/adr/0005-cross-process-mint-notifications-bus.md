@@ -181,10 +181,11 @@ Construction is two steps, keeping `new_with_bus`'s sync closure intact:
 Delivery model:
 
 ```text
-publish(event):
-  serialize { origin, event: { kind, payload } } as JSON
-  local.deliver(event)                     // immediate, never blocked on Postgres
-  spawn: SELECT pg_notify(channel, payload)
+publish(event):                            // returns at once, like LocalBus
+  spawn:
+    serialize { origin, event: { kind, payload } } as JSON
+    local.deliver(event)                   // never blocked on Postgres
+    SELECT pg_notify(channel, payload)
 
 inbound payload:
   parse { origin, event }
@@ -192,7 +193,7 @@ inbound payload:
   else: local.deliver(event)
 ```
 
-Publishing delivers locally at once and forwards to peers; the origin check
+Publishing delivers locally and forwards to peers; the origin check
 drops the copy Postgres echoes back, so a locally-published event is delivered
 exactly once on its own instance and once on every peer. Wire format is JSON,
 because cashu types do not round-trip through CBOR.
@@ -208,6 +209,36 @@ validated as a Postgres identifier before it is interpolated into `LISTEN`
 larger than the 8000-byte `NOTIFY` limit are delivered locally and skipped for
 peers with a warning; mint events (quote responses, proof states) are well under
 it, so this only concerns unusually large melts.
+
+### Trust model
+
+`LISTEN` and `NOTIFY` are not privileged operations. `pg_notify` is executable
+by `PUBLIC`, and neither statement needs rights on any table, so every role that
+can open a session to the mint's database can speak on the channel and read it,
+including roles created for monitoring, health checks, replica polling or
+another application sharing the server.
+
+Inbound events are delivered to local subscribers without re-validating them
+against the database. That is a deliberate trade (a re-read on every inbound
+event would query the database and ping the payment backend on every instance),
+but it means a payload from the channel reaches wallets over NUT-17 exactly as
+if the mint had published it. A wallet acts on those notifications: the melt
+flow finalizes on the state and preimage it receives. Reading the channel leaks
+the same data in the other direction: quote ids, invoices, amounts and payment
+preimages.
+
+Enabling this transport therefore makes the mint's database single-tenant. An
+operator who turns it on has to:
+
+* give the mint its own role and keep other principals off that database;
+* `REVOKE EXECUTE ON FUNCTION pg_notify(text, text) FROM PUBLIC` on it, so a
+  role added later cannot publish;
+* pick a channel name that is not the documented default, which costs nothing
+  and removes the obvious target.
+
+A deployment that cannot meet this (a shared database, an analytics role with
+connect rights) should stay on `in-memory` and let wallets pick state up from
+the `fetch_events` backfill.
 
 ### Mint integration and transport selection
 
@@ -260,11 +291,9 @@ the bootstrap value is used.
 * A brief reconnect window or a bounded-inbound-queue overflow can drop the live
   push. Subscribers recover current state on their next `fetch_events` backfill,
   so state is not lost, only the live push during the gap.
-* Inbound events are delivered to subscribers without re-validating against the
-  database. This is sound because publishing requires a connection to the mint's
-  own database, so a publisher is already inside the trust boundary (it could
-  write mint state directly). It is not a new attack surface, but it is an
-  assumption: all instances on a channel must be the same trust domain.
+* The channel is as trusted as the database it runs on. See "Trust model"
+  above: with this transport enabled, the mint's database must be single-tenant,
+  because any session on it can both read the channel and speak on it.
 
 ## Links
 

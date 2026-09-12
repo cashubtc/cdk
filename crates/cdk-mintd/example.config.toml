@@ -121,6 +121,17 @@ connection_timeout_seconds = 10
 #                              a transaction-pooling proxy such as PgBouncer
 #                              needs a direct connection carved out for it.
 #
+# Before enabling "postgres-listen-notify", note that LISTEN and NOTIFY need no
+# privileges beyond connecting: pg_notify is executable by PUBLIC and neither
+# statement touches a table. Any role that can open a session to this database
+# can therefore read the channel (quote ids, invoices, amounts and payment
+# preimages) and publish on it, and what it publishes reaches wallets over
+# NUT-17 as if the mint had sent it. Enable it only on a database the mint has
+# to itself: give the mint its own role, keep other principals off the database,
+# run REVOKE EXECUTE ON FUNCTION pg_notify(text, text) FROM PUBLIC, and set a
+# channel name other than the default below. A shared database should stay on
+# "in-memory".
+#
 # Every field can also be set via environment variables:
 #   CDK_MINTD_PUBSUB_TRANSPORT, CDK_MINTD_PUBSUB_CHANNEL
 [database.pubsub]
