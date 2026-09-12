@@ -21,14 +21,16 @@ use tokio::time::{timeout, MissedTickBehavior};
 use crate::MintState;
 
 mod budget;
+mod client_ip;
 mod error;
 mod limits;
 mod subscribe;
 mod unsubscribe;
 
 pub(crate) use budget::{Charge, RequestBudget};
-pub use limits::WsLimits;
+pub(crate) use client_ip::client_ip;
 pub(crate) use limits::{WsConnectionGuard, WsConnectionLimiter, WsRejection};
+pub use limits::{WsLimits, WsLimitsError, WsLimitsField};
 
 async fn process(
     context: &mut WsContext,
@@ -185,7 +187,7 @@ pub async fn main_websocket(
     state: MintState,
     connection_guard: WsConnectionGuard,
 ) {
-    let limits = state.ws_limiter.limits();
+    let limits = state.ws_limiter.limits().clone();
     let (publisher, mut subscriber) = mpsc::channel(100);
     let started_at = Instant::now();
     let mut context = WsContext {
@@ -503,7 +505,7 @@ mod tests {
     }
 
     fn make_context_with_limits(mint: Arc<Mint>, limits: WsLimits) -> WsContext {
-        let ws_limiter = Arc::new(WsConnectionLimiter::new(limits));
+        let ws_limiter = Arc::new(WsConnectionLimiter::new(limits.clone()));
         let connection_guard = ws_limiter.try_acquire(None).expect("connection slot");
         let state = MintState {
             mint,
@@ -759,6 +761,9 @@ mod tests {
             max_throttled_requests: 0,
             ..WsLimits::default()
         };
+        limits
+            .validate()
+            .expect("the smallest burst the validation accepts");
         let mut context = make_context_with_limits(mint, limits);
 
         assert_eq!(
@@ -892,7 +897,10 @@ mod tests {
 
     /// Drives a real handshake over TCP: the `WebSocketUpgrade` extractor needs
     /// hyper's upgrade extension, which an in-memory request does not carry.
-    async fn handshake_status(limits: WsLimits, connections: usize) -> Vec<u16> {
+    ///
+    /// One handshake is made per entry of `forwarded`, sending that entry as an
+    /// `X-Forwarded-For` header when it is set.
+    async fn handshake_status(limits: WsLimits, forwarded: &[Option<&str>]) -> Vec<u16> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::{TcpListener, TcpStream};
 
@@ -922,12 +930,15 @@ mod tests {
         // Held open so each handshake sees the slots the previous ones took.
         let mut sockets = Vec::new();
 
-        for _ in 0..connections {
+        for entry in forwarded {
             let mut socket = TcpStream::connect(addr).await.expect("connect");
+            let forwarded_header = entry
+                .map(|value| format!("X-Forwarded-For: {value}\r\n"))
+                .unwrap_or_default();
             socket
                 .write_all(
                     format!(
-                        "GET /v1/ws HTTP/1.1\r\nHost: {addr}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+                        "GET /v1/ws HTTP/1.1\r\nHost: {addr}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n{forwarded_header}\r\n"
                     )
                     .as_bytes(),
                 )
@@ -958,7 +969,7 @@ mod tests {
                 max_connections_per_ip: 0,
                 ..WsLimits::default()
             },
-            2,
+            &[None, None],
         )
         .await;
 
@@ -975,10 +986,91 @@ mod tests {
                 max_connections_per_ip: 1,
                 ..WsLimits::default()
             },
-            2,
+            &[None, None],
         )
         .await;
 
         assert_eq!(statuses, vec![101, 429]);
+    }
+
+    /// A forwarded header is ignored unless the operator names it, or any client
+    /// could hand itself a fresh allowance.
+    #[tokio::test]
+    async fn an_unconfigured_forwarded_header_does_not_lift_the_peer_limit() {
+        let statuses = handshake_status(
+            WsLimits {
+                max_connections: 8,
+                max_connections_per_ip: 1,
+                ..WsLimits::default()
+            },
+            &[Some("203.0.113.7"), Some("203.0.113.8")],
+        )
+        .await;
+
+        assert_eq!(statuses, vec![101, 429]);
+    }
+
+    /// With the header named, clients behind one proxy are counted separately,
+    /// which is the whole point of trusting it.
+    #[tokio::test]
+    async fn a_trusted_header_counts_each_forwarded_client_on_its_own() {
+        let limits = WsLimits {
+            max_connections: 8,
+            max_connections_per_ip: 1,
+            trusted_client_ip_header: Some(axum::http::HeaderName::from_static("x-forwarded-for")),
+            ..WsLimits::default()
+        };
+
+        let statuses = handshake_status(
+            limits,
+            &[
+                Some("203.0.113.7"),
+                Some("203.0.113.8"),
+                Some("10.0.0.1, 203.0.113.7"),
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            statuses,
+            vec![101, 101, 429],
+            "the third handshake repeats the first client's address"
+        );
+    }
+
+    /// The shipped default leaves the per-address cap off, so a reverse proxy or a
+    /// NAT pool presenting every client as one address is not held to a handful of
+    /// sockets for the whole mint.
+    #[tokio::test]
+    async fn the_default_limits_admit_several_connections_from_one_address() {
+        let statuses = handshake_status(WsLimits::default(), &[None, None, None]).await;
+
+        assert_eq!(statuses, vec![101, 101, 101]);
+    }
+
+    /// A zero ping interval panics `tokio::time::interval`, so the router must not
+    /// be handed out at all.
+    #[tokio::test]
+    async fn a_router_is_not_built_from_limits_that_cannot_be_served() {
+        let err = crate::create_mint_router_with_custom_cache(
+            create_test_mint().await,
+            HttpCache::default(),
+            Vec::new(),
+            false,
+            WsLimits {
+                ping_interval: Duration::ZERO,
+                ..WsLimits::default()
+            },
+        )
+        .await
+        .expect_err("limits that cannot be served must not yield a router");
+
+        assert_eq!(
+            err.downcast_ref::<WsLimitsError>(),
+            Some(&WsLimitsError::Zero {
+                field: WsLimitsField::PingInterval
+            }),
+            "unexpected error: {err:#}"
+        );
     }
 }

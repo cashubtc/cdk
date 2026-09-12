@@ -2,22 +2,35 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::fmt;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use axum::http::HeaderName;
+use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-/// Operator-tunable ceilings for the public `/v1/ws` endpoint.
-#[derive(Debug, Clone, Copy)]
+/// Operator-tunable ceilings for the public `/v1/ws` endpoint, and how a client
+/// is identified for the ones that are per-client.
+#[derive(Debug, Clone)]
 pub struct WsLimits {
     /// Maximum concurrent WebSocket connections across the whole process.
     pub max_connections: usize,
-    /// Maximum concurrent WebSocket connections from a single peer address.
+    /// Maximum concurrent WebSocket connections from a single client address.
     ///
     /// `0` disables the per-address cap, which is what a mint behind a reverse
-    /// proxy needs, since every connection then arrives from the proxy.
+    /// proxy needs unless `trusted_client_ip_header` tells it which header
+    /// carries the real client, since every connection otherwise arrives from
+    /// the proxy.
     pub max_connections_per_ip: usize,
+    /// Header a trusted reverse proxy sets with the client's address, read in
+    /// place of the TCP peer by the per-address cap.
+    ///
+    /// `None` keys the cap on the peer address. Only set this when a proxy in
+    /// front of the mint overwrites or appends to the header, because any client
+    /// can send it otherwise and the cap becomes trivial to evade.
+    pub trusted_client_ip_header: Option<HeaderName>,
     /// Maximum concurrent subscriptions on one connection.
     pub max_subscriptions_per_connection: usize,
     /// Maximum filters accepted in a single subscription request.
@@ -54,8 +67,14 @@ impl WsLimits {
     /// Concurrent connections allowed when none is configured.
     pub const DEFAULT_MAX_CONNECTIONS: usize = 512;
 
-    /// Concurrent connections per peer address allowed when none is configured.
-    pub const DEFAULT_MAX_CONNECTIONS_PER_IP: usize = 2;
+    /// Concurrent connections per client address allowed when none is configured.
+    ///
+    /// Disabled, because the usual deployment terminates TLS at a proxy and every
+    /// connection then arrives from one address, where the cap would apply to all
+    /// clients at once until `trusted_client_ip_header` is set. `max_connections`
+    /// and the per-connection request and subscription budgets already bound an
+    /// anonymous client.
+    pub const DEFAULT_MAX_CONNECTIONS_PER_IP: usize = 0;
 
     /// Subscriptions per connection allowed when none is configured.
     ///
@@ -90,6 +109,185 @@ impl WsLimits {
 
     /// Keepalive interval applied when none is configured.
     pub const DEFAULT_PING_INTERVAL: Duration = Duration::from_secs(30);
+
+    /// Smallest accepted `max_message_bytes`, below which a legitimate subscribe
+    /// frame would no longer fit.
+    pub const MIN_MAX_MESSAGE_BYTES: usize = 4096;
+
+    /// Rejects limits the endpoint could not serve.
+    ///
+    /// Checked before a router is built rather than when traffic arrives, because
+    /// these failures are silent or fatal: a zero `ping_interval` panics the
+    /// connection task, a zero `idle_timeout` makes every write time out at once,
+    /// and a budget too small for one maximum-size subscription refuses that
+    /// request for the life of the process.
+    pub fn validate(&self) -> Result<(), WsLimitsError> {
+        for (field, value) in [
+            (WsLimitsField::MaxConnections, self.max_connections),
+            (
+                WsLimitsField::MaxSubscriptionsPerConnection,
+                self.max_subscriptions_per_connection,
+            ),
+            (
+                WsLimitsField::MaxFiltersPerSubscription,
+                self.max_filters_per_subscription,
+            ),
+            (
+                WsLimitsField::MaxTopicsPerConnection,
+                self.max_topics_per_connection,
+            ),
+        ] {
+            if value == 0 {
+                return Err(WsLimitsError::Zero { field });
+            }
+        }
+
+        if self.max_connections > Semaphore::MAX_PERMITS {
+            return Err(WsLimitsError::TooManyConnections {
+                maximum: Semaphore::MAX_PERMITS,
+            });
+        }
+
+        if self.max_request_units_per_second > 0 {
+            let required = u32::try_from(self.max_filters_per_subscription)
+                .unwrap_or(u32::MAX)
+                .saturating_add(1);
+            if self.max_request_burst_units < required {
+                return Err(WsLimitsError::BurstTooSmall { required });
+            }
+        }
+
+        if self.max_topics_per_connection < self.max_filters_per_subscription {
+            return Err(WsLimitsError::TopicBudgetTooSmall {
+                required: self.max_filters_per_subscription,
+            });
+        }
+
+        if self.max_message_bytes < Self::MIN_MAX_MESSAGE_BYTES {
+            return Err(WsLimitsError::MessageTooSmall {
+                required: Self::MIN_MAX_MESSAGE_BYTES,
+            });
+        }
+
+        if self.idle_timeout.is_zero() {
+            return Err(WsLimitsError::Zero {
+                field: WsLimitsField::IdleTimeout,
+            });
+        }
+
+        if self.ping_interval.is_zero() {
+            return Err(WsLimitsError::Zero {
+                field: WsLimitsField::PingInterval,
+            });
+        }
+
+        if self.ping_interval > self.idle_timeout {
+            return Err(WsLimitsError::PingIntervalExceedsIdleTimeout);
+        }
+
+        Ok(())
+    }
+}
+
+/// A [`WsLimits`] field an invalid configuration can be blamed on, so a caller
+/// that exposes these limits under its own names can report the failure in its
+/// own vocabulary.
+///
+/// Only fields [`WsLimits::validate`] can actually blame are named, because a
+/// variant that never occurs forces callers to write an arm that never runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WsLimitsField {
+    /// [`WsLimits::max_connections`].
+    MaxConnections,
+    /// [`WsLimits::max_subscriptions_per_connection`].
+    MaxSubscriptionsPerConnection,
+    /// [`WsLimits::max_filters_per_subscription`].
+    MaxFiltersPerSubscription,
+    /// [`WsLimits::max_topics_per_connection`].
+    MaxTopicsPerConnection,
+    /// [`WsLimits::max_request_burst_units`].
+    MaxRequestBurstUnits,
+    /// [`WsLimits::max_message_bytes`].
+    MaxMessageBytes,
+    /// [`WsLimits::idle_timeout`].
+    IdleTimeout,
+    /// [`WsLimits::ping_interval`].
+    PingInterval,
+}
+
+impl fmt::Display for WsLimitsField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::MaxConnections => "max_connections",
+            Self::MaxSubscriptionsPerConnection => "max_subscriptions_per_connection",
+            Self::MaxFiltersPerSubscription => "max_filters_per_subscription",
+            Self::MaxTopicsPerConnection => "max_topics_per_connection",
+            Self::MaxRequestBurstUnits => "max_request_burst_units",
+            Self::MaxMessageBytes => "max_message_bytes",
+            Self::IdleTimeout => "idle_timeout",
+            Self::PingInterval => "ping_interval",
+        };
+        f.write_str(name)
+    }
+}
+
+/// Why a [`WsLimits`] set cannot be served.
+///
+/// Each variant carries the value an operator has to reach, so a caller can
+/// restate the failure without recomputing the rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum WsLimitsError {
+    /// A limit that has to leave at least one request possible was zero.
+    #[error("{field} must be greater than zero")]
+    Zero {
+        /// The limit that was zero.
+        field: WsLimitsField,
+    },
+    /// The request budget could not cover one maximum-size subscription, which
+    /// refuses every such request for the life of the process.
+    #[error("max_request_burst_units must be at least {required} to cover the frame and every filter of one max_filters_per_subscription request")]
+    BurstTooSmall {
+        /// Units one maximum-size subscription costs.
+        required: u32,
+    },
+    /// The per-connection topic budget could not cover one maximum-size
+    /// subscription, which is a permanent refusal dressed up as a rate limit.
+    #[error("max_topics_per_connection must be at least {required} to admit one max_filters_per_subscription request")]
+    TopicBudgetTooSmall {
+        /// Topics one maximum-size subscription registers.
+        required: usize,
+    },
+    /// The message ceiling was below what a legitimate subscribe frame needs.
+    #[error("max_message_bytes must be at least {required}")]
+    MessageTooSmall {
+        /// Smallest ceiling that still admits a legitimate request.
+        required: usize,
+    },
+    /// A ping tick is the only moment the idle check runs, so pings arriving
+    /// after the timeout had elapsed would stretch it silently.
+    #[error("ping_interval must not exceed idle_timeout")]
+    PingIntervalExceedsIdleTimeout,
+    /// More connections than the semaphore backing the global budget accepts.
+    #[error("max_connections must not exceed {maximum}")]
+    TooManyConnections {
+        /// Largest budget the connection semaphore accepts.
+        maximum: usize,
+    },
+}
+
+impl WsLimitsError {
+    /// The field an operator has to change, so a caller can name it in its own
+    /// configuration vocabulary without matching on every variant.
+    pub const fn field(self) -> WsLimitsField {
+        match self {
+            Self::Zero { field } => field,
+            Self::BurstTooSmall { .. } => WsLimitsField::MaxRequestBurstUnits,
+            Self::TopicBudgetTooSmall { .. } => WsLimitsField::MaxTopicsPerConnection,
+            Self::MessageTooSmall { .. } => WsLimitsField::MaxMessageBytes,
+            Self::PingIntervalExceedsIdleTimeout => WsLimitsField::PingInterval,
+            Self::TooManyConnections { .. } => WsLimitsField::MaxConnections,
+        }
+    }
 }
 
 impl Default for WsLimits {
@@ -97,6 +295,7 @@ impl Default for WsLimits {
         Self {
             max_connections: Self::DEFAULT_MAX_CONNECTIONS,
             max_connections_per_ip: Self::DEFAULT_MAX_CONNECTIONS_PER_IP,
+            trusted_client_ip_header: None,
             max_subscriptions_per_connection: Self::DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION,
             max_filters_per_subscription: Self::DEFAULT_MAX_FILTERS_PER_SUBSCRIPTION,
             max_topics_per_connection: Self::DEFAULT_MAX_TOPICS_PER_CONNECTION,
@@ -140,8 +339,8 @@ impl WsConnectionLimiter {
         }
     }
 
-    pub(crate) fn limits(&self) -> WsLimits {
-        self.limits
+    pub(crate) fn limits(&self) -> &WsLimits {
+        &self.limits
     }
 
     /// Claim a connection slot, or say why one is not available.
@@ -328,5 +527,181 @@ mod tests {
         let _second = limiter.try_acquire(None).expect("second connection");
 
         assert_eq!(limiter.tracked_addresses(), 0);
+    }
+
+    #[test]
+    fn the_shipped_defaults_validate() {
+        WsLimits::default()
+            .validate()
+            .expect("the shipped defaults must be servable");
+    }
+
+    /// The limits documented as "0 disables it" must survive the nonzero rules,
+    /// or a mint behind a reverse proxy could not start.
+    #[test]
+    fn the_optional_limits_may_be_zero() {
+        WsLimits {
+            max_connections_per_ip: 0,
+            max_request_units_per_second: 0,
+            max_request_burst_units: 0,
+            max_throttled_requests: 0,
+            ..WsLimits::default()
+        }
+        .validate()
+        .expect("zero disables these limits rather than breaking them");
+    }
+
+    #[test]
+    fn a_limit_that_refuses_every_request_is_rejected() {
+        for (limits, field) in [
+            (
+                WsLimits {
+                    max_connections: 0,
+                    ..WsLimits::default()
+                },
+                WsLimitsField::MaxConnections,
+            ),
+            (
+                WsLimits {
+                    max_subscriptions_per_connection: 0,
+                    ..WsLimits::default()
+                },
+                WsLimitsField::MaxSubscriptionsPerConnection,
+            ),
+            (
+                WsLimits {
+                    max_filters_per_subscription: 0,
+                    ..WsLimits::default()
+                },
+                WsLimitsField::MaxFiltersPerSubscription,
+            ),
+            (
+                WsLimits {
+                    max_topics_per_connection: 0,
+                    ..WsLimits::default()
+                },
+                WsLimitsField::MaxTopicsPerConnection,
+            ),
+            (
+                WsLimits {
+                    idle_timeout: Duration::ZERO,
+                    ..WsLimits::default()
+                },
+                WsLimitsField::IdleTimeout,
+            ),
+            (
+                WsLimits {
+                    ping_interval: Duration::ZERO,
+                    ..WsLimits::default()
+                },
+                WsLimitsField::PingInterval,
+            ),
+        ] {
+            assert_eq!(
+                limits.validate(),
+                Err(WsLimitsError::Zero { field }),
+                "{field} must be rejected at zero"
+            );
+        }
+    }
+
+    #[test]
+    fn a_burst_smaller_than_one_subscription_is_rejected() {
+        let limits = WsLimits {
+            max_filters_per_subscription: 100,
+            max_topics_per_connection: 100,
+            max_request_units_per_second: 32,
+            max_request_burst_units: 100,
+            ..WsLimits::default()
+        };
+
+        assert_eq!(
+            limits.validate(),
+            Err(WsLimitsError::BurstTooSmall { required: 101 })
+        );
+        assert_eq!(
+            WsLimits {
+                max_request_burst_units: 101,
+                ..limits
+            }
+            .validate(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_topic_budget_smaller_than_one_subscription_is_rejected() {
+        let limits = WsLimits {
+            max_filters_per_subscription: 10,
+            max_topics_per_connection: 9,
+            ..WsLimits::default()
+        };
+
+        assert_eq!(
+            limits.validate(),
+            Err(WsLimitsError::TopicBudgetTooSmall { required: 10 })
+        );
+    }
+
+    #[test]
+    fn a_message_ceiling_below_the_floor_is_rejected() {
+        for bytes in [0, WsLimits::MIN_MAX_MESSAGE_BYTES - 1] {
+            assert_eq!(
+                WsLimits {
+                    max_message_bytes: bytes,
+                    ..WsLimits::default()
+                }
+                .validate(),
+                Err(WsLimitsError::MessageTooSmall {
+                    required: WsLimits::MIN_MAX_MESSAGE_BYTES
+                })
+            );
+        }
+    }
+
+    /// A ping is the only thing that runs the idle check, so a ping interval past
+    /// the timeout stretches it silently.
+    #[test]
+    fn a_ping_interval_past_the_idle_timeout_is_rejected() {
+        let limits = WsLimits {
+            idle_timeout: Duration::from_secs(30),
+            ping_interval: Duration::from_secs(31),
+            ..WsLimits::default()
+        };
+
+        assert_eq!(
+            limits.validate(),
+            Err(WsLimitsError::PingIntervalExceedsIdleTimeout)
+        );
+        assert_eq!(
+            WsLimits {
+                ping_interval: Duration::from_secs(30),
+                ..limits
+            }
+            .validate(),
+            Ok(())
+        );
+    }
+
+    /// The connection semaphore panics above its permit ceiling, so the router has
+    /// to refuse the configuration first.
+    #[test]
+    fn a_connection_budget_the_semaphore_cannot_hold_is_rejected() {
+        assert_eq!(
+            WsLimits {
+                max_connections: usize::MAX,
+                ..WsLimits::default()
+            }
+            .validate(),
+            Err(WsLimitsError::TooManyConnections {
+                maximum: Semaphore::MAX_PERMITS
+            })
+        );
+        WsLimits {
+            max_connections: Semaphore::MAX_PERMITS,
+            ..WsLimits::default()
+        }
+        .validate()
+        .expect("the ceiling itself is servable");
     }
 }

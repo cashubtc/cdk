@@ -224,8 +224,8 @@ pub fn display_mint_info(port: u16, work_dir: &Path, database_type: &str) {
 
 /// Create settings for a fake wallet mint
 /// Test suites drive many sockets at one mint from 127.0.0.1, so the per-address
-/// WebSocket limit is disabled rather than letting parallel tests starve each
-/// other. Every other limit keeps its production default.
+/// WebSocket limit is pinned off here rather than inherited, keeping the suites
+/// independent of that default. Every other limit keeps its production value.
 fn test_limits() -> cdk_mintd::config::Limits {
     cdk_mintd::config::Limits {
         ws_max_connections_per_ip: 0,
