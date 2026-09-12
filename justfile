@@ -261,6 +261,9 @@ test-pure db="memory":
     run_test test_swap_flow -j 1
     run_test wallet_saga -j 1
     run_test nwc_e2e -j 1
+    if [ "{{db}}" = memory ]; then
+      run_test nip17_inbox_e2e -j 1
+    fi
   else
     # Run pure integration tests (cargo test will only build what's needed for the test)
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure -- --test-threads 1
@@ -273,6 +276,9 @@ test-pure db="memory":
 
     # Run NWC (NIP-47) e2e tests (requires nostr-rs-relay on PATH; skipped locally if absent)
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test nwc_e2e -- --test-threads 1
+    if [ "{{db}}" = memory ]; then
+      cargo test -p cdk-integration-tests --test nip17_inbox_e2e -- --test-threads 1
+    fi
   fi
 
 # Run Redis cache clippy and unit tests against both single-node and cluster Redis.
@@ -755,6 +761,22 @@ release m="":
     echo "Tag v$VERSION does not exist on upstream. Push the release tag before publishing crates."
     exit 1
   fi
+
+  # Publish only the source that passed full CI, not an unvalidated local merge.
+  SOURCE_SHA=$(gh api "repos/cashubtc/cdk/commits/v$VERSION" --jq .sha)
+  if [ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ] || ! git diff --quiet HEAD; then
+    echo "Check out the clean release commit $SOURCE_SHA before publishing."
+    exit 1
+  fi
+  for workflow in ci.yml nutshell_itest.yml; do
+    result=$(gh api --paginate --slurp \
+      "repos/cashubtc/cdk/actions/workflows/$workflow/runs?head_sha=$SOURCE_SHA&per_page=100" \
+      --jq '[.[].workflow_runs[] | select(.event == "workflow_dispatch" or .event == "release" or (.event == "push" and (.head_branch == "main" or ((.head_branch // "") | test("^v[0-9][^/]*[.][0-9][^/]*[.]x$")))))] | max_by(.id) | if . == null then "missing" else (.status + "/" + .conclusion) end')
+    if [ "$result" != completed/success ]; then
+      echo "$workflow must pass full CI on $SOURCE_SHA before publishing (latest: $result)."
+      exit 1
+    fi
+  done
 
   args=(
     "-p cashu"

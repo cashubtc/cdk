@@ -13,8 +13,18 @@ env:
   REGISTRY: docker.io
   IMAGE_NAME: cashubtc/mintd
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
+  release-ci:
+    uses: ./.github/workflows/release-ci.yml
+    with:
+      ref: ${{ inputs.tag || github.ref }}
+
   build:
+    needs: release-ci
     strategy:
       fail-fast: false
       matrix:

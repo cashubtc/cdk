@@ -2,17 +2,22 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "v[0-9]*.[0-9]*.x"]
   pull_request:
     branches:
       - main
       - "v[0-9]*.[0-9]*.x" # Match version branches like v0.13.x, v1.0.x, etc.
   release:
     types: [created]
+  # Select a branch or tag to validate the full suite before a local merge/release.
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 # Cancel previous runs on same PR
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -181,9 +186,16 @@ jobs:
         id: groups
         run: |
           examples=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 8 n == "example-") (builtins.attrNames attrs)' --json)
-          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: n != "pre-commit-check" && n != "workspace-clippy-all-targets" && n != "doc-tests" && n != "strict-docs" && n != "ffi-tests" && builtins.substring 0 8 n != "example-" && builtins.substring 0 5 n != "msrv-" && builtins.substring 0 5 n != "wasm-") (builtins.attrNames attrs)' --json)
+          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: n != "pr-unit-tests" && n != "pr-feature-tests" && n != "pre-commit-check" && n != "workspace-clippy-all-targets" && n != "doc-tests" && n != "strict-docs" && n != "ffi-tests" && builtins.substring 0 8 n != "example-" && builtins.substring 0 5 n != "msrv-" && builtins.substring 0 5 n != "wasm-") (builtins.attrNames attrs)' --json)
           msrv_checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "msrv-") (builtins.attrNames attrs)' --json)
           wasm_checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "wasm-") (builtins.attrNames attrs)' --json)
+          # PRs retain workspace unit tests and core feature boundaries. Other
+          # events run every feature group discovered above.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            checks='["pr-unit-tests","pr-feature-tests","core-cashu","core-sdk-baseline","core-sdk-wallet","core-sdk-mint"]'
+            msrv_checks='["msrv-cdk-all-features"]'
+            wasm_checks='["wasm-cdk-wallet"]'
+          fi
           {
             echo "examples=$examples"
             echo "checks=$checks"
@@ -711,6 +723,7 @@ jobs:
         run: nix develop --fallback -i -L .#ffi --command just ffi-test-live-python
 
   coverage:
+    if: github.event_name != 'pull_request'
     name: "Code Coverage"
     runs-on: self-hosted
     timeout-minutes: 45
@@ -759,6 +772,7 @@ jobs:
         run: nix develop --fallback -L .#bindings --command just test-dart
 
   kotlin-binding-tests:
+    if: github.event_name != 'pull_request'
     name: "Kotlin binding tests"
     runs-on: self-hosted
     timeout-minutes: 30
@@ -781,6 +795,7 @@ jobs:
         run: nix develop --fallback -L .#bindings --command just test-kotlin
 
   go-binding-tests:
+    if: github.event_name != 'pull_request'
     name: "Go binding tests"
     runs-on: self-hosted
     timeout-minutes: 30
@@ -812,6 +827,7 @@ jobs:
         run: nix develop --fallback -L .#bindings --command just test-go
 
   swift-binding-tests:
+    if: github.event_name != 'pull_request'
     name: "Swift binding tests"
     runs-on: macos-latest
     timeout-minutes: 45
@@ -839,3 +855,25 @@ jobs:
             DEVELOPER_DIR="$(/usr/bin/xcode-select -p)" \
             DYLD_LIBRARY_PATH="$PWD/target/release" \
             /usr/bin/swift test
+
+  status:
+    name: CI status
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [pre-commit-checks, fuzz-check, warm-nix-cache, warm-msrv-nix-cache, quick-check, discover_ci_groups, examples, clippy-and-test, build-itest-binaries, postgres-tests, supabase-tests, redis-tests, regtest-ln-itest, regtest-onchain-itest, fake-mint-itest, pure-itest, payment-processor-itests, msrv-build, check-wasm, fake-mint-auth-itest, docs, ffi-tests, coverage, dart-binding-tests, kotlin-binding-tests, go-binding-tests, swift-binding-tests]
+    steps:
+      - name: Verify required jobs
+        uses: actions/github-script@v8
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        with:
+          script: |
+            const results = JSON.parse(process.env.JOB_RESULTS);
+            const fullOnly = new Set([
+              'coverage', 'kotlin-binding-tests', 'go-binding-tests', 'swift-binding-tests'
+            ]);
+            for (const [name, job] of Object.entries(results)) {
+              if (context.eventName === 'pull_request' && fullOnly.has(name) && job.result === 'skipped') continue;
+              if (job.result !== 'success') core.setFailed(`${name}: ${job.result}`);
+            }

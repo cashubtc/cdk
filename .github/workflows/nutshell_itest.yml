@@ -2,17 +2,18 @@ name: Nutshell integration
 
 on:
   push:
-    branches: [main]
+    branches: [main, "v[0-9]*.[0-9]*.x"]
   pull_request:
     branches:
       - main
       - 'v[0-9]*.[0-9]*.x'  # Match version branches like v0.13.x, v1.0.x, etc.
   release:
     types: [created]
+  workflow_dispatch:
 
 # Cancel previous runs on same PR
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
