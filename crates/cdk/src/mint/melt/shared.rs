@@ -22,8 +22,12 @@ use crate::Mint;
 
 /// Retrieves fee and amount configuration for the keyset matching the change outputs.
 ///
-/// Searches active keysets for one matching the first output's keyset_id.
-/// Used during change calculation for melts.
+/// Searches every known keyset for one matching the first output's keyset_id.
+/// Used during change calculation for melts. Inactive keysets are included:
+/// change outputs are committed at melt-request time and signed after
+/// settlement, so the keyset may have rotated out in between, and falling back
+/// to the default denominations would split the change into amounts the keyset
+/// has no key for.
 ///
 /// # Arguments
 ///
@@ -41,7 +45,7 @@ pub fn get_keyset_fee_and_amounts(
         .load()
         .iter()
         .filter_map(|keyset| {
-            if keyset.active && Some(keyset.id) == outputs.first().map(|x| x.keyset_id) {
+            if Some(keyset.id) == outputs.first().map(|x| x.keyset_id) {
                 Some((keyset.input_fee_ppk, keyset.amounts.clone()).into())
             } else {
                 None
