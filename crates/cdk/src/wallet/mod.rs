@@ -32,8 +32,12 @@ use crate::nuts::{
     nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
     RestoreRequest, SpendingConditions, State,
 };
+use crate::wallet::blind_signature::{
+    validate_mint_response_signatures, SignatureAmountValidation,
+};
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::p2pk::{P2PK_ACCOUNT, P2PK_PURPOSE};
+use crate::wallet::util::escape_log_value;
 use crate::{Amount, OidcClient};
 
 mod auth;
@@ -730,6 +734,19 @@ impl Wallet {
 
                 let response = self.client.post_restore(restore_request).await?;
 
+                if response.outputs.len() != response.signatures.len() {
+                    tracing::warn!(
+                        mint_url = %escape_log_value(&self.mint_url),
+                        operation = "restore",
+                        outputs = response.outputs.len(),
+                        signatures = response.signatures.len(),
+                        "Restore response outputs and signatures have different lengths"
+                    );
+                    return Err(Error::InvalidMintResponse(
+                        "restore outputs and signatures must have equal lengths".to_string(),
+                    ));
+                }
+
                 if response.signatures.is_empty() {
                     empty_batch += 1;
                     start_counter = start_counter.saturating_add(batch_size);
@@ -768,6 +785,13 @@ impl Wallet {
                 // the response outputs and premint secrets should be the same after filtering
                 // blinded messages the mint did not have signatures for
                 if response.outputs.len() != matched_secrets.len() {
+                    tracing::warn!(
+                        mint_url = %escape_log_value(&self.mint_url),
+                        operation = "restore",
+                        outputs = response.outputs.len(),
+                        matched_secrets = matched_secrets.len(),
+                        "Restore response outputs do not match requested secrets"
+                    );
                     return Err(Error::InvalidMintResponse(format!(
                         "restore response outputs ({}) does not match premint secrets ({})",
                         response.outputs.len(),
@@ -775,13 +799,30 @@ impl Wallet {
                     )));
                 }
 
+                let signatures = matched_secrets
+                    .iter()
+                    .map(|(_, _, sig)| sig.clone())
+                    .collect::<Vec<_>>();
+                validate_mint_response_signatures(
+                    self,
+                    &signatures,
+                    matched_secrets.iter().map(|(_, p, _)| &p.blinded_message),
+                    SignatureAmountValidation::AllowZeroAmountPlaceholder,
+                )
+                .await
+                .inspect_err(|err| {
+                    tracing::warn!(
+                        mint_url = %escape_log_value(&self.mint_url),
+                        operation = "restore",
+                        error = %escape_log_value(err),
+                        "Mint response signature validation failed"
+                    );
+                })?;
+
                 // Extract signatures, rs, and secrets in matching order
                 // Each tuple (idx, premint, signature) ensures correct pairing
                 let proofs = construct_proofs(
-                    matched_secrets
-                        .iter()
-                        .map(|(_, _, sig)| sig.clone())
-                        .collect(),
+                    signatures,
                     matched_secrets
                         .iter()
                         .map(|(_, p, _)| p.r.clone())
@@ -1665,6 +1706,66 @@ mod tests {
             matches!(result, Err(Error::AmountOverflow)),
             "expected amount overflow, got {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn restore_rejects_invalid_returned_signatures() {
+        use crate::nuts::{nut12::BlindSignatureDleq, RestoreResponse};
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, test_keyset_id, test_mint_info,
+            MockMintConnector,
+        };
+
+        for case in ["keyset", "dleq", "length"] {
+            let seed = [7; 64];
+            let keyset_id = test_keyset_id();
+            let premint = PreMintSecrets::restore_batch(keyset_id, &seed, 0, 1).unwrap();
+            let mut signature = BlindSignature {
+                amount: Amount::from(1),
+                keyset_id,
+                c: SecretKey::generate().public_key(),
+                dleq: None,
+            };
+            match case {
+                "keyset" => signature.keyset_id = Id::from_str("0011223344556677").unwrap(),
+                "dleq" => {
+                    signature.dleq = Some(BlindSignatureDleq {
+                        e: SecretKey::generate(),
+                        s: SecretKey::generate(),
+                    });
+                }
+                _ => (),
+            }
+            let db = create_test_db().await;
+            let client = Arc::new(MockMintConnector::new());
+            client.reset_default_mint_state();
+            let mut mint_info = test_mint_info();
+            mint_info.time = None;
+            client.set_mint_info_response(Ok(mint_info));
+            client._set_restore_response(Ok(RestoreResponse {
+                outputs: premint.blinded_messages(),
+                signatures: if case == "length" {
+                    vec![]
+                } else {
+                    vec![signature]
+                },
+            }));
+            let wallet = create_test_wallet_with_mock_seed(db, client, seed).await;
+            let result = wallet
+                .restore_with_opts(NUT13Options::new(1, 1).unwrap())
+                .await;
+            match case {
+                "dleq" => assert!(
+                    matches!(result, Err(Error::CouldNotVerifyDleq)),
+                    "{result:?}"
+                ),
+                _ => assert!(
+                    matches!(&result, Err(Error::InvalidMintResponse(message)) if message.contains(case)),
+                    "{case}: {result:?}"
+                ),
+            }
+            assert!(wallet.get_unspent_proofs().await.unwrap().is_empty());
+        }
     }
 
     #[tokio::test]
