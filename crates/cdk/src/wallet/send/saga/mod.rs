@@ -74,6 +74,7 @@ use cdk_common::Id;
 use tracing::instrument;
 
 use self::state::{Initial, Prepared, TokenCreated};
+use super::fees::split_exact_with_fee;
 use super::{split_proofs_for_send, SendMemo, SendOptions};
 use crate::amount::SplitTarget;
 use crate::fees::calculate_fee;
@@ -504,7 +505,14 @@ impl<'a> SendSaga<'a, Initial> {
             }
         }
 
-        let send_amounts = if opts.include_fee {
+        let send_amounts = if opts.include_fee && opts.send_kind.is_exact() {
+            split_exact_with_fee(
+                amount,
+                &fee_and_amounts,
+                available_proofs.total_amount()?,
+                opts.max_proofs,
+            )?
+        } else if opts.include_fee {
             let send_split = amount.split_with_fee(&fee_and_amounts)?;
             let send_fee = self
                 .wallet
@@ -591,7 +599,7 @@ impl<'a> SendSaga<'a, Initial> {
     async fn internal_prepare(
         mut self,
         amount: Amount,
-        opts: SendOptions,
+        mut opts: SendOptions,
         proofs: Proofs,
         force_swap: bool,
         keyset_policy: KeysetLoadPolicy,
@@ -609,7 +617,14 @@ impl<'a> SendSaga<'a, Initial> {
             .cloned()
             .ok_or(Error::UnknownKeySet)?;
 
-        let (send_amounts, send_fee) = if opts.include_fee {
+        let (send_amounts, send_fee) = if opts.include_fee && opts.send_kind.is_exact() {
+            split_exact_with_fee(
+                amount,
+                &fee_and_amounts,
+                proofs.total_amount()?,
+                opts.max_proofs,
+            )?
+        } else if opts.include_fee {
             let send_split = amount.split_with_fee(&fee_and_amounts)?;
             let send_fee = self
                 .wallet
@@ -619,17 +634,13 @@ impl<'a> SendSaga<'a, Initial> {
                         .collect(),
                 )
                 .await?;
-            (send_split, send_fee)
+            (send_split, send_fee.total)
         } else {
             let send_split = amount.split(&fee_and_amounts)?;
-            let send_fee = crate::fees::ProofsFeeBreakdown {
-                total: Amount::ZERO,
-                per_keyset: std::collections::HashMap::new(),
-            };
-            (send_split, send_fee)
+            (send_split, Amount::ZERO)
         };
 
-        let mut exact_proofs = proofs.total_amount()? == amount + send_fee.total;
+        let mut exact_proofs = proofs.total_amount()? == amount + send_fee;
         if let Some(max_proofs) = opts.max_proofs {
             exact_proofs &= proofs.len() <= max_proofs;
         }
@@ -646,18 +657,31 @@ impl<'a> SendSaga<'a, Initial> {
             .map(|(key, values)| (*key, values.fee()))
             .collect();
 
+        // Reused proofs must have the same fee rate as the planned outputs.
+        // Reissue mixed-rate inputs rather than quoting a different redemption fee.
+        let force_swap = force_swap
+            || (opts.include_fee
+                && opts.send_kind.is_exact()
+                && proofs.iter().any(|proof| {
+                    keyset_fees.get(&proof.keyset_id) != keyset_fees.get(&active_keyset_id)
+                }));
+
         let split_result = split_proofs_for_send_respecting_p2pk_locks(
             proofs,
             opts.p2pk_locked_proof_send_mode,
             SendSplitContext {
                 send_amounts: &send_amounts,
                 amount,
-                send_fee: send_fee.total,
+                send_fee,
                 keyset_fees: &keyset_fees,
                 force_swap,
                 is_exact_or_offline,
             },
         )?;
+
+        if opts.include_fee && opts.send_kind.is_exact() {
+            opts.amount_split_target = SplitTarget::Values(send_amounts);
+        }
 
         let mut proof_ys = split_result.proofs_to_swap.ys()?;
         proof_ys.extend(split_result.proofs_to_send.ys()?);
@@ -706,7 +730,7 @@ impl<'a> SendSaga<'a, Initial> {
                 proofs_to_swap: split_result.proofs_to_swap,
                 swap_fee: split_result.swap_fee,
                 proofs_to_send: split_result.proofs_to_send,
-                send_fee: send_fee.total,
+                send_fee,
                 saga,
             },
         })
@@ -868,6 +892,22 @@ impl<'a> SendSaga<'a, Prepared> {
                 }
 
                 let keyset_id = self.wallet.active_keyset().await?.id;
+                let send_split_target = if options.include_fee && options.send_kind.is_exact() {
+                    let SplitTarget::Values(mut outputs) = options.amount_split_target.clone()
+                    else {
+                        return Err(Error::InvalidOperationState);
+                    };
+                    for proof in &final_proofs_to_send {
+                        let index = outputs
+                            .iter()
+                            .position(|amount| *amount == proof.amount)
+                            .ok_or(Error::InvalidOperationState)?;
+                        outputs.remove(index);
+                    }
+                    Some(SplitTarget::Values(outputs))
+                } else {
+                    None
+                };
 
                 // Capture counter start before swap
                 counter_start = Some(
@@ -886,6 +926,7 @@ impl<'a> SendSaga<'a, Prepared> {
                         options.conditions.clone(),
                         false,
                         options.use_p2bk,
+                        send_split_target,
                     )
                     .await?
                 {
@@ -903,6 +944,21 @@ impl<'a> SendSaga<'a, Prepared> {
 
             if amount > final_proofs_to_send.total_amount()? {
                 return Err(Error::InsufficientFunds);
+            }
+
+            if options.include_fee && options.send_kind.is_exact() {
+                let keyset_fees = self
+                    .wallet
+                    .keysets(KeysetLoadPolicy::CacheOnly)
+                    .await?
+                    .into_iter()
+                    .map(|keyset| (keyset.id, keyset.input_fee_ppk))
+                    .collect();
+                let fee =
+                    calculate_fee(&final_proofs_to_send.count_by_keyset(), &keyset_fees)?.total;
+                if final_proofs_to_send.total_amount()?.checked_sub(fee) != Some(amount) {
+                    return Err(Error::InsufficientFunds);
+                }
             }
 
             self.wallet
@@ -1058,6 +1114,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
                 None,
                 false,
                 false,
+                None,
             )
             .await;
 
