@@ -8,9 +8,10 @@ use cdk_common::auth::oidc::{OidcHttpResponse, OidcHttpTransport};
 use cdk_common::{
     nut19, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, Method,
     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
-    MintQuoteOnchainResponse, MintQuoteRequest, MintQuoteResponse, ProtectedEndpoint, RoutePath,
+    MintQuoteOnchainResponse, MintQuoteRequest, MintQuoteResponse, PaymentRequestPayload,
+    ProtectedEndpoint, RoutePath,
 };
-use cdk_http_client::HttpError;
+use cdk_http_client::{HttpError, RawResponse};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tokio::sync::RwLock;
@@ -91,6 +92,11 @@ where
     mint_url: MintUrl,
     cache_support: Arc<StdRwLock<Cache>>,
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
+    /// Set when this client configured the transport with certificate
+    /// verification off, so delivery to a third-party receiver can refuse to
+    /// run over it. A transport handed in pre-configured is asked directly
+    /// instead.
+    tls_verification_disabled: bool,
 }
 
 impl<T> fmt::Debug for HttpClient<T>
@@ -123,7 +129,7 @@ where
 {
     async fn get(&self, url: &str) -> Result<OidcHttpResponse, HttpError> {
         let url = Url::parse(url).map_err(|e| HttpError::Other(e.to_string()))?;
-        let response = self.transport.http_get_raw(url, None).await?;
+        let response = self.transport.http_get(url, None).await?;
         let status = response.status();
         let body = response.bytes().await?;
         Ok(OidcHttpResponse::new(status, body))
@@ -135,10 +141,7 @@ where
         params: Vec<(String, String)>,
     ) -> Result<OidcHttpResponse, HttpError> {
         let url = Url::parse(url).map_err(|e| HttpError::Other(e.to_string()))?;
-        let response = self
-            .transport
-            .http_post_form_raw(url, None, &params)
-            .await?;
+        let response = self.transport.http_post_form(url, None, &params).await?;
         let status = response.status();
         let body = response.bytes().await?;
         Ok(OidcHttpResponse::new(status, body))
@@ -158,12 +161,43 @@ where
                 }
             }
             HttpError::Timeout => Error::Timeout,
-            HttpError::Connection(message)
+            HttpError::Redirect(message)
+            | HttpError::Connection(message)
             | HttpError::Serialization(message)
             | HttpError::Proxy(message)
             | HttpError::Build(message)
             | HttpError::Other(message) => Error::HttpError(None, message),
         }
+    }
+
+    /// Whether proofs would leave over a connection with no verified
+    /// certificate.
+    ///
+    /// The client's own flag only covers a transport it configured itself. One
+    /// passed to [`HttpClient::with_transport`] may already have verification
+    /// off and is the only thing that knows, so both are consulted.
+    fn tls_verification_disabled(&self) -> bool {
+        self.tls_verification_disabled || self.transport.tls_verification_disabled()
+    }
+
+    /// Refuse a third-party endpoint when the transport verifies no
+    /// certificate.
+    ///
+    /// The mint is the embedder's own choice; an LNURL service or a NUT-18
+    /// receiver is not, and a MITM there swaps the invoice or redeems the
+    /// proofs.
+    fn ensure_verified_tls(&self, url: &Url) -> Result<(), Error> {
+        if !self.tls_verification_disabled() || url.scheme() != "https" {
+            return Ok(());
+        }
+
+        let host = url
+            .host_str()
+            .ok_or_else(|| Error::Custom("Endpoint must include a host".to_string()))?;
+
+        Err(Error::UnverifiedTlsEndpoint {
+            host: host.to_string(),
+        })
     }
 
     async fn transport_http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, Error>
@@ -173,6 +207,7 @@ where
         self.transport
             .http_get(url, auth)
             .await
+            .and_then(RawResponse::json_or_status_error)
             .map_err(Self::map_http_error)
     }
 
@@ -189,6 +224,7 @@ where
         self.transport
             .http_post(url, auth, payload)
             .await
+            .and_then(RawResponse::json_or_status_error)
             .map_err(Self::map_http_error)
     }
 
@@ -215,6 +251,7 @@ where
             mint_url,
             auth_wallet: Arc::new(RwLock::new(auth_wallet)),
             cache_support: Default::default(),
+            tls_verification_disabled: false,
         }
     }
 
@@ -228,6 +265,7 @@ where
             mint_url,
             auth_wallet: Arc::new(RwLock::new(auth_wallet)),
             cache_support: Default::default(),
+            tls_verification_disabled: false,
         }
     }
 
@@ -270,6 +308,7 @@ where
             mint_url,
             auth_wallet: Arc::new(RwLock::new(None)),
             cache_support: Default::default(),
+            tls_verification_disabled: accept_invalid_certs,
         })
     }
 
@@ -319,10 +358,14 @@ where
 
             let request = async {
                 match method {
-                    nut19::Method::Get => transport.http_get(url, auth_token.clone()).await,
-                    nut19::Method::Post => {
-                        transport.http_post(url, auth_token.clone(), payload).await
-                    }
+                    nut19::Method::Get => transport
+                        .http_get(url, auth_token.clone())
+                        .await
+                        .and_then(RawResponse::json_or_status_error),
+                    nut19::Method::Post => transport
+                        .http_post(url, auth_token.clone(), payload)
+                        .await
+                        .and_then(RawResponse::json_or_status_error),
                 }
             };
             let result = if retriable_window.is_zero() {
@@ -458,6 +501,7 @@ where
     ) -> Result<crate::lightning_address::LnurlPayResponse, Error> {
         let parsed_url =
             url::Url::parse(url).map_err(|e| Error::Custom(format!("Invalid URL: {}", e)))?;
+        self.ensure_verified_tls(&parsed_url)?;
         self.transport_http_get(parsed_url, None).await
     }
 
@@ -468,7 +512,54 @@ where
         url: &str,
     ) -> Result<crate::lightning_address::LnurlPayInvoiceResponse, Error> {
         let parsed_url = parse_lnurl_callback_url(url)?;
+        self.ensure_verified_tls(&parsed_url)?;
         self.transport_http_get(parsed_url, None).await
+    }
+
+    fn ensure_payment_request_deliverable(&self, url: &str) -> Result<(), Error> {
+        let url = Url::parse(url)?;
+        self.ensure_verified_tls(&url)
+    }
+
+    /// Deliver a NUT-18 payment request payload to the receiver
+    ///
+    /// The payload carries proofs, so it is never recorded in the span. NUT-18
+    /// defines no response body, so any 2xx counts as delivered.
+    #[instrument(skip_all)]
+    async fn post_payment_request_payload(
+        &self,
+        url: &str,
+        payload: &PaymentRequestPayload,
+    ) -> Result<(), Error> {
+        self.ensure_payment_request_deliverable(url)?;
+        let url = Url::parse(url)?;
+
+        let response =
+            self.transport
+                .http_post(url, None, payload)
+                .await
+                .map_err(|err| match err {
+                    HttpError::Redirect(_) => {
+                        Error::PaymentRequestDeliveryRedirected { status: None }
+                    }
+                    HttpError::Status { status, message } => {
+                        Error::HttpError(Some(status), message)
+                    }
+                    other => Self::map_http_error(other),
+                })?;
+
+        if response.is_success() {
+            return Ok(());
+        }
+
+        let status = response.status();
+        if (300..400).contains(&status) {
+            return Err(Error::PaymentRequestDeliveryRedirected {
+                status: Some(status),
+            });
+        }
+
+        Err(Error::HttpError(Some(status), response.body_lossy()))
     }
 
     /// Get Active Mint Keys [NUT-01]
@@ -1010,6 +1101,7 @@ where
         self.transport
             .http_get(url, auth)
             .await
+            .and_then(RawResponse::json_or_status_error)
             .map_err(HttpClient::<T>::map_http_error)
     }
 
@@ -1026,6 +1118,7 @@ where
         self.transport
             .http_post(url, auth, payload)
             .await
+            .and_then(RawResponse::json_or_status_error)
             .map_err(HttpClient::<T>::map_http_error)
     }
 
@@ -1153,13 +1246,143 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
-    use cdk_common::MintQuoteState;
+    use cdk_common::{CurrencyUnit, MintQuoteState};
     use cdk_http_client::{HttpError, RawResponse};
-    use serde::de::DeserializeOwned;
 
     use super::*;
     use crate::nuts::nut04::MintQuoteCustomRequest;
     use crate::nuts::nut05::MeltQuoteCustomRequest;
+    use crate::wallet::mint_connector::transport::{
+        RateLimitConfig, RateLimitedTransport, RateLimiterManager,
+    };
+
+    /// Transport double for recipient delivery.
+    ///
+    /// Records every JSON POST together with the proxy configured on the same
+    /// instance, so tests can prove delivery rode the configured transport and
+    /// carried no mint credentials.
+    #[derive(Clone, Default)]
+    struct RecordingPostTransport {
+        proxy: Arc<Mutex<Option<String>>>,
+        accept_invalid_certs: Arc<Mutex<bool>>,
+        calls: Arc<Mutex<Vec<RecordedPost>>>,
+        response: Arc<Mutex<Option<(u16, String)>>>,
+        error: Arc<Mutex<Option<HttpError>>>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct RecordedPost {
+        url: String,
+        had_auth: bool,
+        payload: serde_json::Value,
+    }
+
+    impl fmt::Debug for RecordingPostTransport {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("RecordingPostTransport").finish()
+        }
+    }
+
+    impl RecordingPostTransport {
+        fn with_response(status: u16, body: &str) -> Self {
+            let transport = Self::default();
+            *transport.response.lock().expect("lock") = Some((status, body.to_string()));
+            transport
+        }
+
+        fn with_error(error: HttpError) -> Self {
+            let transport = Self::default();
+            *transport.error.lock().expect("lock") = Some(error);
+            transport
+        }
+
+        fn calls(&self) -> Vec<RecordedPost> {
+            self.calls.lock().expect("lock").clone()
+        }
+
+        fn proxy(&self) -> Option<String> {
+            self.proxy.lock().expect("lock").clone()
+        }
+
+        fn unexpected() -> HttpError {
+            HttpError::Other("unexpected call".to_string())
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    impl Transport for RecordingPostTransport {
+        fn with_proxy(
+            &mut self,
+            proxy: Url,
+            _host_matcher: Option<&str>,
+            accept_invalid_certs: bool,
+        ) -> Result<(), HttpError> {
+            *self.proxy.lock().expect("lock") = Some(proxy.to_string());
+            *self.accept_invalid_certs.lock().expect("lock") = accept_invalid_certs;
+            Ok(())
+        }
+
+        fn tls_verification_disabled(&self) -> bool {
+            *self.accept_invalid_certs.lock().expect("lock")
+        }
+
+        #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+        async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, HttpError> {
+            Err(Self::unexpected())
+        }
+
+        async fn http_get(
+            &self,
+            _url: Url,
+            _auth: Option<AuthToken>,
+        ) -> Result<RawResponse, HttpError> {
+            Err(Self::unexpected())
+        }
+
+        async fn http_post<P>(
+            &self,
+            url: Url,
+            auth_token: Option<AuthToken>,
+            payload: &P,
+        ) -> Result<RawResponse, HttpError>
+        where
+            P: serde::Serialize + Send + Sync,
+        {
+            let payload = serde_json::to_value(payload)
+                .map_err(|e| HttpError::Serialization(e.to_string()))?;
+            self.calls.lock().expect("lock").push(RecordedPost {
+                url: url.to_string(),
+                had_auth: auth_token.is_some(),
+                payload,
+            });
+
+            if let Some(error) = self.error.lock().expect("lock").take() {
+                return Err(error);
+            }
+
+            let (status, body) = self
+                .response
+                .lock()
+                .expect("lock")
+                .clone()
+                .ok_or_else(Self::unexpected)?;
+
+            Ok(RawResponse::new(status, body.into_bytes()))
+        }
+
+        async fn http_post_form<P>(
+            &self,
+            _url: Url,
+            _auth_token: Option<AuthToken>,
+            _payload: &P,
+        ) -> Result<RawResponse, HttpError>
+        where
+            P: serde::Serialize + Send + Sync,
+        {
+            Err(Self::unexpected())
+        }
+    }
 
     /// A mock transport that captures the serialized POST payload and returns
     /// a canned JSON response. Follows the same canned-response pattern as
@@ -1180,6 +1403,8 @@ mod tests {
         post_errors: Arc<Mutex<VecDeque<HttpError>>>,
         /// Artificial delay applied to each `http_post` call.
         post_delay: Option<Duration>,
+        /// Whether `with_proxy` was told to accept invalid certificates.
+        accept_invalid_certs: Arc<Mutex<bool>>,
     }
 
     impl fmt::Debug for MockTransport {
@@ -1195,9 +1420,14 @@ mod tests {
             &mut self,
             _proxy: Url,
             _host_matcher: Option<&str>,
-            _accept_invalid_certs: bool,
+            accept_invalid_certs: bool,
         ) -> Result<(), HttpError> {
+            *self.accept_invalid_certs.lock().expect("lock") = accept_invalid_certs;
             Ok(())
+        }
+
+        fn tls_verification_disabled(&self) -> bool {
+            *self.accept_invalid_certs.lock().expect("lock")
         }
 
         #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -1205,21 +1435,7 @@ mod tests {
             Ok(vec![])
         }
 
-        async fn http_get<R>(&self, _url: Url, _auth: Option<AuthToken>) -> Result<R, HttpError>
-        where
-            R: DeserializeOwned,
-        {
-            self.get_urls.lock().expect("lock").push(_url.to_string());
-            let json = self
-                .get_response
-                .lock()
-                .expect("lock")
-                .clone()
-                .expect("no mock response set");
-            serde_json::from_str(&json).map_err(|e| HttpError::Serialization(e.to_string()))
-        }
-
-        async fn http_get_raw(
+        async fn http_get(
             &self,
             url: Url,
             _auth: Option<AuthToken>,
@@ -1234,18 +1450,16 @@ mod tests {
             Ok(RawResponse::new(200, json.into_bytes()))
         }
 
-        async fn http_post<P, R>(
+        async fn http_post<P>(
             &self,
-            _url: Url,
+            url: Url,
             _auth_token: Option<AuthToken>,
             payload: &P,
-        ) -> Result<R, HttpError>
+        ) -> Result<RawResponse, HttpError>
         where
             P: serde::Serialize + Send + Sync,
-            R: DeserializeOwned,
         {
-            self.post_urls.lock().expect("lock").push(_url.to_string());
-            // Capture the serialized payload for test assertions
+            self.post_urls.lock().expect("lock").push(url.to_string());
             let value = serde_json::to_value(payload)
                 .map_err(|e| HttpError::Serialization(e.to_string()))?;
             *self.captured_payload.lock().expect("lock") = Some(value);
@@ -1258,17 +1472,16 @@ mod tests {
                 return Err(error);
             }
 
-            // Return the canned response
             let json = self
                 .post_response
                 .lock()
                 .expect("lock")
                 .clone()
                 .expect("no mock response set");
-            serde_json::from_str(&json).map_err(|e| HttpError::Serialization(e.to_string()))
+            Ok(RawResponse::new(200, json.into_bytes()))
         }
 
-        async fn http_post_form_raw<P>(
+        async fn http_post_form<P>(
             &self,
             url: Url,
             _auth_token: Option<AuthToken>,
@@ -1290,6 +1503,336 @@ mod tests {
                 .expect("no mock response set");
             Ok(RawResponse::new(200, json.into_bytes()))
         }
+    }
+
+    fn receiver_url() -> &'static str {
+        "https://receiver.example.com/pay"
+    }
+
+    fn delivery_payload() -> PaymentRequestPayload {
+        PaymentRequestPayload {
+            id: Some("payment-id".to_string()),
+            memo: None,
+            mint: MintUrl::from_str("https://mint.example.com").expect("parse url"),
+            unit: CurrencyUnit::Sat,
+            proofs: Vec::new(),
+        }
+    }
+
+    fn delivery_client<T: Transport>(transport: T) -> HttpClient<T> {
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        HttpClient::with_transport(mint_url, transport, None)
+    }
+
+    fn unverified_tls_delivery_client(
+        transport: RecordingPostTransport,
+    ) -> HttpClient<RecordingPostTransport> {
+        let mut client = delivery_client(transport);
+        client.tls_verification_disabled = true;
+        client
+    }
+
+    #[tokio::test]
+    async fn post_payment_request_payload_uses_configured_proxy_transport() {
+        let mut transport = RecordingPostTransport::with_response(200, "{}");
+        let proxy = Url::parse("http://127.0.0.1:9050").expect("parse proxy url");
+        transport
+            .with_proxy(proxy.clone(), None, false)
+            .expect("configure proxy");
+        let client = delivery_client(transport.clone());
+        let payload = delivery_payload();
+
+        client
+            .post_payment_request_payload(receiver_url(), &payload)
+            .await
+            .expect("delivery should succeed");
+
+        assert_eq!(transport.proxy(), Some(proxy.to_string()));
+        let calls = transport.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].url, receiver_url());
+        assert_eq!(
+            calls[0].payload,
+            serde_json::to_value(&payload).expect("serialize payload")
+        );
+    }
+
+    #[tokio::test]
+    async fn post_payment_request_payload_sends_no_mint_credentials() {
+        let transport = RecordingPostTransport::with_response(200, "{}");
+        let client = delivery_client(transport.clone());
+
+        client
+            .post_payment_request_payload(receiver_url(), &delivery_payload())
+            .await
+            .expect("delivery should succeed");
+
+        let calls = transport.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            !calls[0].had_auth,
+            "recipient request must not carry mint credentials"
+        );
+        assert!(
+            !calls[0].url.contains("mint.example.com"),
+            "delivery must target the receiver, not the mint"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_payment_request_payload_maps_a_transport_status_error() {
+        let transport = RecordingPostTransport::with_error(HttpError::Status {
+            status: 402,
+            message: "payment required".to_string(),
+        });
+        let client = delivery_client(transport.clone());
+
+        let error = client
+            .post_payment_request_payload(receiver_url(), &delivery_payload())
+            .await
+            .expect_err("delivery should fail");
+
+        match error {
+            Error::HttpError(status, body) => {
+                assert_eq!(status, Some(402));
+                assert_eq!(body, "payment required");
+            }
+            error => panic!("unexpected error: {error:?}"),
+        }
+    }
+
+    /// NUT-18 defines no response body, and receivers commonly answer an empty
+    /// 200. Reporting that as a failure would send the payer to `revoke_send`
+    /// for proofs the receiver already holds.
+    #[tokio::test]
+    async fn post_payment_request_payload_accepts_success_without_a_body() {
+        let transport = RecordingPostTransport::with_response(200, "");
+        let client = delivery_client(transport.clone());
+
+        client
+            .post_payment_request_payload(receiver_url(), &delivery_payload())
+            .await
+            .expect("empty success body is a delivered payment");
+
+        assert_eq!(transport.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn post_payment_request_payload_accepts_a_non_json_success_body() {
+        let transport = RecordingPostTransport::with_response(200, "ok");
+        let client = delivery_client(transport.clone());
+
+        client
+            .post_payment_request_payload(receiver_url(), &delivery_payload())
+            .await
+            .expect("plain text success body is a delivered payment");
+
+        assert_eq!(transport.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn post_payment_request_payload_reports_a_redirect_response() {
+        let transport = RecordingPostTransport::with_response(302, "Found");
+        let client = delivery_client(transport.clone());
+
+        let error = client
+            .post_payment_request_payload(receiver_url(), &delivery_payload())
+            .await
+            .expect_err("delivery should fail");
+
+        assert!(
+            matches!(
+                error,
+                Error::PaymentRequestDeliveryRedirected { status: Some(302) }
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_payment_request_payload_reports_a_blocked_redirect() {
+        let transport = RecordingPostTransport::with_error(HttpError::Redirect(
+            "too many redirections".to_string(),
+        ));
+        let client = delivery_client(transport.clone());
+
+        let error = client
+            .post_payment_request_payload(receiver_url(), &delivery_payload())
+            .await
+            .expect_err("delivery should fail");
+
+        assert!(
+            matches!(
+                error,
+                Error::PaymentRequestDeliveryRedirected { status: None }
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_payment_request_payload_reports_the_receiver_status() {
+        let transport = RecordingPostTransport::with_response(402, "payment required");
+        let client = delivery_client(transport.clone());
+
+        let error = client
+            .post_payment_request_payload(receiver_url(), &delivery_payload())
+            .await
+            .expect_err("delivery should fail");
+
+        match error {
+            Error::HttpError(status, body) => {
+                assert_eq!(status, Some(402));
+                assert_eq!(body, "payment required");
+            }
+            error => panic!("unexpected error: {error:?}"),
+        }
+    }
+
+    /// `--danger-accept-invalid-certs` is configured for the mint, so proofs
+    /// must not ride it to a receiver URL the payment request picked.
+    #[tokio::test]
+    async fn post_payment_request_payload_refuses_https_without_certificate_verification() {
+        let transport = RecordingPostTransport::with_response(200, "");
+        let client = unverified_tls_delivery_client(transport.clone());
+
+        let error = client
+            .post_payment_request_payload(receiver_url(), &delivery_payload())
+            .await
+            .expect_err("delivery should fail");
+
+        match error {
+            Error::UnverifiedTlsEndpoint { host } => {
+                assert_eq!(host, "receiver.example.com");
+            }
+            error => panic!("unexpected error: {error:?}"),
+        }
+        assert!(
+            transport.calls().is_empty(),
+            "nothing may be sent before the refusal"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_payment_request_payload_allows_http_without_certificate_verification() {
+        let transport = RecordingPostTransport::with_response(200, "");
+        let client = unverified_tls_delivery_client(transport.clone());
+
+        client
+            .post_payment_request_payload("http://receiver.example.com/pay", &delivery_payload())
+            .await
+            .expect("plain http has no certificate to verify");
+
+        assert_eq!(transport.calls().len(), 1);
+    }
+
+    #[test]
+    fn proxy_client_records_disabled_certificate_verification() {
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let proxy = Url::parse("http://127.0.0.1:9050").expect("parse proxy url");
+
+        let verified = HttpClient::<RecordingPostTransport>::with_proxy(
+            mint_url.clone(),
+            proxy.clone(),
+            None,
+            false,
+        )
+        .expect("build proxy client");
+        let unverified =
+            HttpClient::<RecordingPostTransport>::with_proxy(mint_url, proxy, None, true)
+                .expect("build proxy client");
+
+        assert!(!verified.tls_verification_disabled);
+        assert!(unverified.tls_verification_disabled);
+    }
+
+    /// A transport configured before the client wraps it is the only thing
+    /// that knows verification is off, so the client has to ask rather than
+    /// trust its own flag. `with_transport` cannot set that flag, and proofs
+    /// are bearer funds: an unverified https receiver is a MITM's to redeem.
+    #[test]
+    fn ensure_payment_request_deliverable_refuses_a_pre_configured_unverified_transport() {
+        let mut transport = RecordingPostTransport::with_response(200, "{}");
+        let proxy = Url::parse("http://127.0.0.1:9050").expect("parse proxy url");
+        transport
+            .with_proxy(proxy, None, true)
+            .expect("configure proxy");
+        let client = delivery_client(transport);
+
+        assert!(
+            !client.tls_verification_disabled,
+            "with_transport cannot know how the transport was built"
+        );
+
+        let error = client
+            .ensure_payment_request_deliverable(receiver_url())
+            .expect_err("delivery should refuse an unverified connection");
+
+        assert!(
+            matches!(error, Error::UnverifiedTlsEndpoint { .. }),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    /// The wallet's default transport is rate limited, so the refusal has to
+    /// survive decoration: a wrapper that answers for its inner transport
+    /// without asking it would report a verified connection that is not one.
+    #[test]
+    fn ensure_payment_request_deliverable_refuses_a_wrapped_unverified_transport() {
+        let mut inner = RecordingPostTransport::with_response(200, "{}");
+        let proxy = Url::parse("http://127.0.0.1:9050").expect("parse proxy url");
+        inner
+            .with_proxy(proxy, None, true)
+            .expect("configure proxy");
+        let transport = RateLimitedTransport::with_manager(
+            inner,
+            RateLimiterManager::new(RateLimitConfig::default(), None),
+        );
+        let client = delivery_client(transport);
+
+        let error = client
+            .ensure_payment_request_deliverable(receiver_url())
+            .expect_err("delivery should refuse an unverified connection");
+
+        assert!(
+            matches!(error, Error::UnverifiedTlsEndpoint { .. }),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    /// The wallet asks before it swaps, so a target it can never post to has to
+    /// fail here rather than after the payer has paid the input fee.
+    #[test]
+    fn ensure_payment_request_deliverable_rejects_an_unparsable_url() {
+        let client = delivery_client(RecordingPostTransport::with_response(200, ""));
+
+        client
+            .ensure_payment_request_deliverable("receiver.example.com/pay")
+            .expect_err("a target without a scheme is not a receiver URL");
+    }
+
+    #[test]
+    fn ensure_payment_request_deliverable_allows_plain_http_without_certificate_verification() {
+        let client = unverified_tls_delivery_client(RecordingPostTransport::with_response(200, ""));
+
+        client
+            .ensure_payment_request_deliverable("http://receiver.example.com/pay")
+            .expect("plain http has no certificate to verify");
+    }
+
+    #[tokio::test]
+    async fn post_payment_request_payload_does_not_retry_after_transport_error() {
+        let transport =
+            RecordingPostTransport::with_error(HttpError::Connection("refused".to_string()));
+        let client = delivery_client(transport.clone());
+
+        let error = client
+            .post_payment_request_payload(receiver_url(), &delivery_payload())
+            .await
+            .expect_err("delivery should fail");
+
+        assert!(matches!(error, Error::HttpError(None, _)), "{error:?}");
+        assert_eq!(transport.calls().len(), 1);
     }
 
     #[test]
@@ -1329,6 +1872,7 @@ mod tests {
             post_urls: Arc::new(Mutex::new(Vec::new())),
             post_errors: Arc::new(Mutex::new(VecDeque::new())),
             post_delay: None,
+            accept_invalid_certs: Arc::new(Mutex::new(false)),
         };
         let captured = transport.captured_payload.clone();
 
@@ -1749,6 +2293,61 @@ mod tests {
             }
             _ => panic!("expected custom response"),
         }
+    }
+
+    /// An LNURL service is not the mint the embedder chose to trust, and the
+    /// invoice it returns is what the wallet melts to. On an unverified
+    /// connection a MITM substitutes their own and is paid directly.
+    #[tokio::test]
+    async fn fetch_lnurl_pay_request_refuses_an_unverified_transport() {
+        let mut transport = MockTransport::default();
+        let get_urls = transport.get_urls.clone();
+        let proxy = Url::parse("http://127.0.0.1:9050").expect("parse proxy url");
+        transport
+            .with_proxy(proxy, None, true)
+            .expect("configure proxy");
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+
+        let error = client
+            .fetch_lnurl_pay_request("https://service.example.com/.well-known/lnurlp/alice")
+            .await
+            .expect_err("unverified connection should be refused");
+
+        assert!(
+            matches!(error, Error::UnverifiedTlsEndpoint { .. }),
+            "unexpected error: {error:?}"
+        );
+        assert!(
+            get_urls.lock().expect("lock").is_empty(),
+            "must be refused before the transport"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_lnurl_invoice_refuses_an_unverified_transport() {
+        let mut transport = MockTransport::default();
+        let get_urls = transport.get_urls.clone();
+        let proxy = Url::parse("http://127.0.0.1:9050").expect("parse proxy url");
+        transport
+            .with_proxy(proxy, None, true)
+            .expect("configure proxy");
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+
+        let error = client
+            .fetch_lnurl_invoice("https://service.example.com/callback?amount=1000")
+            .await
+            .expect_err("unverified connection should be refused");
+
+        assert!(
+            matches!(error, Error::UnverifiedTlsEndpoint { .. }),
+            "unexpected error: {error:?}"
+        );
+        assert!(
+            get_urls.lock().expect("lock").is_empty(),
+            "must be refused before the transport"
+        );
     }
 
     #[tokio::test]
