@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bitcoin::secp256k1::schnorr::Signature;
 use cdk_common::error::Error;
 use cdk_common::grpc::{VersionInterceptor, VERSION_SIGNATORY_HEADER};
 use cdk_common::stream::{BackoffPolicy, SupervisedStream};
@@ -258,6 +259,20 @@ impl Signatory for SignatoryRpcClient {
                 } else {
                     Err(Error::SignatureMissingOrInvalid)
                 }
+            })
+            .map_err(|e| Error::Custom(e.to_string()))?
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn sign(&self, payload: Vec<u8>) -> Result<Signature, Error> {
+        let req = super::SignRequest { payload };
+        self.client
+            .clone()
+            .sign(tonic::Request::new(req))
+            .await
+            .map(|response| {
+                let signature = handle_error!(response, signature, scalar);
+                Signature::from_slice(&signature).map_err(|e| Error::Custom(e.to_string()))
             })
             .map_err(|e| Error::Custom(e.to_string()))?
     }

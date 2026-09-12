@@ -19,4 +19,5 @@ mod common;
 
 pub mod db_signatory;
 pub mod embedded;
+pub mod identity;
 pub mod signatory;
