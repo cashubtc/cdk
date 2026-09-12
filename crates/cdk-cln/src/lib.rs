@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bitcoin::hashes::sha256;
-use cdk_common::amount::Amount;
+use cdk_common::amount::{Amount, MSAT_IN_SAT};
 use cdk_common::common::FeeReserve;
 use cdk_common::database::DynKVStore;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
@@ -365,8 +365,14 @@ impl MintPayment for Cln {
                         .into()
                 };
                 // Convert to target unit
-                let amount =
-                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?;
+                let amount = match unit {
+                    // The quote must cover the entire millisatoshi principal.
+                    CurrencyUnit::Sat => Amount::new(
+                        u64::from(amount_msat).div_ceil(MSAT_IN_SAT),
+                        CurrencyUnit::Sat,
+                    ),
+                    _ => Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?,
+                };
 
                 // Calculate fee
                 let relative_fee_reserve =
@@ -404,7 +410,13 @@ impl MintPayment for Cln {
                 };
 
                 // Convert to target unit
-                let amount = Amount::new(amount_msat, CurrencyUnit::Msat).convert_to(unit)?;
+                let amount = match unit {
+                    // The quote must cover the entire millisatoshi principal.
+                    CurrencyUnit::Sat => {
+                        Amount::new(amount_msat.div_ceil(MSAT_IN_SAT), CurrencyUnit::Sat)
+                    }
+                    _ => Amount::new(amount_msat, CurrencyUnit::Msat).convert_to(unit)?,
+                };
 
                 // Calculate fee
                 let relative_fee_reserve =
@@ -560,13 +572,12 @@ impl MintPayment for Cln {
             })
             .await;
 
-        let response = match cln_response {
+        let mut response = match cln_response {
             Ok(pay_response) => MakePaymentResponse {
                 payment_lookup_id,
                 payment_proof: Some(hex::encode(pay_response.payment_preimage.to_vec())),
                 status: MeltQuoteState::Paid,
-                total_spent: Amount::new(pay_response.amount_sent_msat.msat(), CurrencyUnit::Msat)
-                    .convert_to(unit)?,
+                total_spent: Amount::new(pay_response.amount_sent_msat.msat(), CurrencyUnit::Msat),
             },
             Err(err) => {
                 tracing::warn!("xpay returned an error: {}", err);
@@ -641,6 +652,16 @@ impl MintPayment for Cln {
 
                 response
             }
+        };
+
+        // Both xpay and reconciliation report principal plus fees in Msat.
+        // Return the quote unit and round the combined total only once.
+        response.total_spent = match unit {
+            CurrencyUnit::Sat => Amount::new(
+                response.total_spent.value().div_ceil(MSAT_IN_SAT),
+                CurrencyUnit::Sat,
+            ),
+            _ => response.total_spent.convert_to(unit)?,
         };
 
         Ok(response)
@@ -1824,6 +1845,130 @@ mod tests {
     fn test_invoice() -> Bolt11Invoice {
         Bolt11Invoice::from_str("lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq")
             .expect("test invoice must parse")
+    }
+
+    #[tokio::test]
+    async fn payment_quotes_round_up_sat_principals() {
+        for (msat, sat) in [
+            (1, 1),
+            (999, 1),
+            (1_000, 1),
+            (1_999, 2),
+            (2_000, 2),
+            (u64::MAX, u64::MAX / 1_000 + 1),
+        ] {
+            for (unit, expected) in [(CurrencyUnit::Sat, sat), (CurrencyUnit::Msat, msat)] {
+                let quote = test_cln()
+                    .get_payment_quote(
+                        &unit,
+                        OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+                            bolt11: test_invoice(),
+                            max_fee_amount: None,
+                            timeout_secs: None,
+                            melt_options: Some(MeltOptions::new_mpp(msat)),
+                            quote_id: QuoteId::new(),
+                        })),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(quote.amount, Amount::new(expected, unit.clone()));
+                let quote = test_cln()
+                    .get_payment_quote(
+                        &unit,
+                        OutgoingPaymentOptions::Bolt12(Box::new(
+                            payment::Bolt12OutgoingPaymentOptions {
+                                offer:
+                                    "lno1zcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pksese"
+                                        .parse()
+                                        .unwrap(),
+                                max_fee_amount: None,
+                                timeout_secs: None,
+                                melt_options: Some(MeltOptions::new_amountless(msat)),
+                                quote_id: QuoteId::new(),
+                            },
+                        )),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(quote.amount, Amount::new(expected, unit));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn synchronous_payment_rounds_up_total_for_sat_quotes() {
+        for reconcile in [false, true] {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let socket = TestRpcSocket::new();
+                let listener = UnixListener::bind(&socket.0).unwrap();
+                let mut cln = test_cln();
+                cln.rpc_socket = socket.0.clone();
+                let payment = cln.make_payment(
+                    &CurrencyUnit::Sat,
+                    OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+                        bolt11: test_invoice(),
+                        max_fee_amount: None,
+                        timeout_secs: None,
+                        melt_options: None,
+                        quote_id: QuoteId::new(),
+                    })),
+                );
+                let server = async {
+                    // make_payment opens its xpay connection before checking listpays.
+                    let (connection, _) = listener.accept().await.unwrap();
+                    let mut pay = Framed::new(connection, cln_rpc::codec::JsonCodec::default());
+                    let (connection, _) = listener.accept().await.unwrap();
+                    let mut check = Framed::new(connection, cln_rpc::codec::JsonCodec::default());
+                    let request = check.next().await.unwrap().unwrap();
+                    assert_eq!(request["method"], "listpays");
+                    check
+                        .send(serde_json::json!({
+                            "jsonrpc": "2.0", "id": request["id"], "result": {"pays": []}
+                        }))
+                        .await
+                        .unwrap();
+                    let request = pay.next().await.unwrap().unwrap();
+                    assert_eq!(request["method"], "xpay");
+                    if reconcile {
+                        pay.send(serde_json::json!({
+                            "jsonrpc": "2.0", "id": request["id"],
+                            "error": {"code": 219, "message": "already paid"}
+                        }))
+                        .await
+                        .unwrap();
+                        let (connection, _) = listener.accept().await.unwrap();
+                        let mut check =
+                            Framed::new(connection, cln_rpc::codec::JsonCodec::default());
+                        let request = check.next().await.unwrap().unwrap();
+                        assert_eq!(request["method"], "listpays");
+                        let mut payment = test_listpays_payment(1, ListpaysPaysStatus::COMPLETE);
+                        payment.amount_sent_msat = Some(CLN_Amount::from_msat(10001));
+                        check
+                            .send(serde_json::json!({
+                                "jsonrpc": "2.0", "id": request["id"], "result": {"pays": [payment]}
+                            }))
+                            .await
+                            .unwrap();
+                    } else {
+                        pay.send(serde_json::json!({
+                            "jsonrpc": "2.0", "id": request["id"], "result": {
+                                "amount_msat": 10000, "amount_sent_msat": 10001,
+                                "failed_parts": 0, "successful_parts": 1,
+                                "payment_preimage": "01".repeat(32)
+                            }
+                        }))
+                        .await
+                        .unwrap();
+                    }
+                };
+                let (response, ()) = tokio::join!(payment, server);
+                let response = response.unwrap();
+                assert_eq!(response.status, MeltQuoteState::Paid);
+                assert_eq!(response.total_spent, Amount::new(11, CurrencyUnit::Sat));
+            })
+            .await
+            .expect("mock payment must complete promptly");
+        }
     }
 
     #[tokio::test]
