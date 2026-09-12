@@ -368,6 +368,72 @@ async fn test_mint_with_auth() {
     assert!(proofs.total_amount().expect("Could not get proofs amount") == mint_amount);
 }
 
+/// The `/v1/ws` endpoint is blind-auth protected. A browser cannot set the
+/// `Blind-auth` header, so the wallet authenticates the connection in-band with
+/// the NUT-22 `authenticate` command. This exercises that end-to-end: a
+/// subscription only receives notifications once the connection is
+/// authenticated.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_websocket_subscription_with_auth() {
+    use cdk::nuts::{MintQuoteState, NotificationPayload};
+    use cdk::wallet::WalletSubscription;
+
+    let db = Arc::new(memory::empty().await.unwrap());
+
+    let wallet = WalletBuilder::new()
+        .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
+        .unit(CurrencyUnit::Sat)
+        .localstore(db.clone())
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .build()
+        .expect("Wallet");
+
+    let mint_info = wallet
+        .fetch_mint_info()
+        .await
+        .expect("mint info")
+        .expect("could not get mint info");
+
+    let (access_token, _) = get_tokens(&mint_info, false)
+        .await
+        .expect("could not get access token");
+
+    wallet.set_cat(access_token).await.unwrap();
+    wallet
+        .mint_blind_auth(10.into())
+        .await
+        .expect("Could not mint blind auth");
+
+    let wallet = Arc::new(wallet);
+
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(10.into()), None, None)
+        .await
+        .expect("mint quote");
+
+    // Opening this subscription connects to the protected `/v1/ws`, so the
+    // wallet must authenticate in-band before the mint accepts the subscribe.
+    let mut subscription = wallet
+        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![mint_quote
+            .id
+            .clone()]))
+        .await
+        .expect("failed to subscribe over authenticated websocket");
+
+    let msg = tokio::time::timeout(tokio::time::Duration::from_secs(10), subscription.recv())
+        .await
+        .expect("timeout waiting for notification")
+        .expect("no notification received");
+
+    match msg.into_inner() {
+        NotificationPayload::MintQuoteBolt11Response(response) => {
+            assert_eq!(response.quote.to_string(), mint_quote.id);
+            assert_eq!(response.state, MintQuoteState::Unpaid);
+        }
+        other => panic!("unexpected notification: {other:?}"),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_swap_with_auth() {
     let db = Arc::new(memory::empty().await.unwrap());
