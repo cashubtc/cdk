@@ -31,6 +31,7 @@ use cdk::nuts::{
     AuthRequired, ContactInfo, Method, MintVersion, PaymentMethod, ProtectedEndpoint, RoutePath,
 };
 use cdk_axum::cache::HttpCache;
+use cdk_axum::{WsLimitsError, WsLimitsField};
 use cdk_common::common::QuoteTTL;
 use cdk_common::database::DynMintDatabase;
 // internal crate modules
@@ -569,8 +570,169 @@ pub(crate) fn validate_settings(settings: &config::Settings) -> Result<()> {
     validate_auth_config(settings)?;
     validate_management_rpc_config(settings)?;
     validate_prometheus_config(settings)?;
+    validate_limits_config(settings)?;
 
     Ok(())
+}
+
+/// Rejects limits that would wedge the mint rather than protect it.
+///
+/// The WebSocket rules live in `WsLimits::validate`, so an embedder building the
+/// router directly gets the same guarantees; only the rest is checked here.
+fn validate_limits_config(settings: &config::Settings) -> Result<()> {
+    let limits = &settings.limits;
+
+    for (name, value) in [
+        ("max_inputs", limits.max_inputs),
+        ("max_outputs", limits.max_outputs),
+        ("pubsub_max_topics", limits.pubsub_max_topics),
+        (
+            "pubsub_max_concurrent_backfills",
+            limits.pubsub_max_concurrent_backfills,
+        ),
+    ] {
+        if value == 0 {
+            bail!("Invalid limits configuration: {name} must be greater than zero");
+        }
+    }
+
+    validate_ws_limits(limits)
+}
+
+/// The configuration key an operator edits to change a `WsLimits` field.
+///
+/// Spelled out rather than derived by prefixing, because the timeouts are
+/// configured in seconds and so do not share the library's field names.
+fn ws_config_key(field: WsLimitsField) -> &'static str {
+    match field {
+        WsLimitsField::MaxConnections => "ws_max_connections",
+        WsLimitsField::MaxSubscriptionsPerConnection => "ws_max_subscriptions_per_connection",
+        WsLimitsField::MaxFiltersPerSubscription => "ws_max_filters_per_subscription",
+        WsLimitsField::MaxTopicsPerConnection => "ws_max_topics_per_connection",
+        WsLimitsField::MaxRequestBurstUnits => "ws_max_request_burst_units",
+        WsLimitsField::MaxMessageBytes => "ws_max_message_bytes",
+        WsLimitsField::IdleTimeout => "ws_idle_timeout_secs",
+        WsLimitsField::PingInterval => "ws_ping_interval_secs",
+    }
+}
+
+/// Restates a WebSocket limits failure in the operator's vocabulary, since
+/// `WsLimits` names its fields without the `ws_` prefix.
+fn validate_ws_limits(limits: &config::Limits) -> Result<()> {
+    let ws_limits = limits.ws_limits().map_err(|err| {
+        anyhow!("Invalid limits configuration: ws_trusted_client_ip_header is not a valid HTTP header name: {err}")
+    })?;
+
+    let Err(err) = ws_limits.validate() else {
+        return Ok(());
+    };
+
+    let key = ws_config_key(err.field());
+    match err {
+        WsLimitsError::Zero { .. } => {
+            bail!("Invalid limits configuration: {key} must be greater than zero")
+        }
+        WsLimitsError::BurstTooSmall { required } => bail!(
+            "Invalid limits configuration: {key} must be at least {required} to cover the frame and every filter of one ws_max_filters_per_subscription request"
+        ),
+        WsLimitsError::TopicBudgetTooSmall { required } => bail!(
+            "Invalid limits configuration: {key} must be at least {required} to admit one ws_max_filters_per_subscription request"
+        ),
+        WsLimitsError::MessageTooSmall { required } => {
+            bail!("Invalid limits configuration: {key} must be at least {required}")
+        }
+        WsLimitsError::PingIntervalExceedsIdleTimeout => bail!(
+            "Invalid limits configuration: ws_ping_interval_secs must not exceed ws_idle_timeout_secs"
+        ),
+        WsLimitsError::TooManyConnections { maximum } => {
+            bail!("Invalid limits configuration: {key} must not exceed {maximum}")
+        }
+    }
+}
+
+#[cfg(test)]
+mod limits_validation_tests {
+    use super::*;
+
+    fn settings_with(limits: config::Limits) -> config::Settings {
+        config::Settings {
+            limits,
+            ..config::Settings::default()
+        }
+    }
+
+    #[test]
+    fn defaults_are_valid() {
+        validate_limits_config(&settings_with(config::Limits::default()))
+            .expect("the shipped defaults must validate");
+    }
+
+    #[test]
+    fn a_burst_smaller_than_a_full_subscription_is_rejected() {
+        let limits = config::Limits {
+            ws_max_filters_per_subscription: 100,
+            ws_max_request_units_per_second: 32,
+            ws_max_request_burst_units: 100,
+            ..config::Limits::default()
+        };
+
+        let err = validate_limits_config(&settings_with(limits))
+            .expect_err("a burst that cannot cover one subscription must be rejected");
+        assert!(
+            err.to_string().contains("ws_max_request_burst_units"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A filter budget the topic budget cannot admit is reported against the
+    /// configuration key, not the library's field name.
+    #[test]
+    fn a_topic_budget_smaller_than_a_full_subscription_is_rejected() {
+        let limits = config::Limits {
+            ws_max_filters_per_subscription: 10,
+            ws_max_topics_per_connection: 9,
+            ..config::Limits::default()
+        };
+
+        let err = validate_limits_config(&settings_with(limits))
+            .expect_err("a topic budget that cannot admit one subscription must be rejected");
+        assert!(
+            err.to_string().contains("ws_max_topics_per_connection"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A header name the mint could never match is a typo worth failing on, not
+    /// a limit to enforce against the peer address behind the operator's back.
+    #[test]
+    fn an_invalid_trusted_client_ip_header_is_rejected() {
+        let limits = config::Limits {
+            ws_max_connections_per_ip: 2,
+            ws_trusted_client_ip_header: Some("X Forwarded For".to_string()),
+            ..config::Limits::default()
+        };
+
+        let err = validate_limits_config(&settings_with(limits))
+            .expect_err("a header name with a space must be rejected");
+        assert!(
+            err.to_string().contains("ws_trusted_client_ip_header"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// With the throttle off the burst is never charged, so an undersized one is
+    /// not a misconfiguration.
+    #[test]
+    fn a_disabled_throttle_ignores_the_burst_rule() {
+        let limits = config::Limits {
+            ws_max_filters_per_subscription: 100,
+            ws_max_request_units_per_second: 0,
+            ws_max_request_burst_units: 1,
+            ..config::Limits::default()
+        };
+
+        validate_limits_config(&settings_with(limits)).expect("a disabled throttle validates");
+    }
 }
 
 fn validate_payment_backends(settings: &config::Settings) -> Result<()> {
@@ -1082,8 +1244,9 @@ async fn configure_mint_builder_with_wallet_info(
     let mint_builder = configure_cache(settings, mint_builder, &payment_methods).await?;
 
     // Configure transaction limits
-    let mint_builder =
-        mint_builder.with_limits(settings.limits.max_inputs, settings.limits.max_outputs);
+    let mint_builder = mint_builder
+        .with_limits(settings.limits.max_inputs, settings.limits.max_outputs)
+        .with_pubsub_limits(settings.limits.pubsub_limits());
 
     // Verify at least one payment processor is configured
     if mint_builder
@@ -2297,6 +2460,7 @@ impl PreparedMintd {
             cache,
             custom_methods,
             settings.info.enable_info_page.unwrap_or(true),
+            settings.limits.ws_limits()?,
         )
         .await?;
 
@@ -2433,8 +2597,14 @@ impl RunningMintd {
         };
 
         // Wait for axum server to complete with custom shutdown signal
-        let axum_result =
-            axum::serve(self.listener, self.mint_service).with_graceful_shutdown(axum_shutdown);
+        // Connect info is what the WebSocket per-address limit keys on; without
+        // it every connection looks anonymous and that limit cannot apply.
+        let axum_result = axum::serve(
+            self.listener,
+            self.mint_service
+                .into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(axum_shutdown);
 
         match axum_result.await {
             Ok(_) => {

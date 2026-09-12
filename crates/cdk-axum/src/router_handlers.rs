@@ -1,8 +1,11 @@
+use std::net::SocketAddr;
+
 use anyhow::Result;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{Json, Path, State};
-use axum::http::StatusCode;
+use axum::extract::{ConnectInfo, Json, Path, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::Extension;
 use cdk::error::ErrorResponse;
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
@@ -14,7 +17,7 @@ use paste::paste;
 use tracing::instrument;
 
 use crate::auth::AuthHeader;
-use crate::ws::main_websocket;
+use crate::ws::{client_ip, main_websocket, WsRejection};
 use crate::MintState;
 
 /// Macro to add cache to endpoint
@@ -123,10 +126,18 @@ pub(crate) async fn get_keysets(
     Ok(Json(state.mint.keysets()))
 }
 
+/// Upgrades a connection to the mint's NUT-17 WebSocket endpoint.
+///
+/// Authentication runs before the connection slot is claimed, so a mint that
+/// protects this endpoint cannot have its whole connection budget squatted by
+/// clients that never authenticate. The guard is released on drop, so a
+/// connection ending at any later point hands the slot straight back.
 #[instrument(skip_all)]
 pub(crate) async fn ws_handler(
     auth: AuthHeader,
     State(state): State<MintState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, Response> {
     state
@@ -138,7 +149,39 @@ pub(crate) async fn ws_handler(
         .await
         .map_err(into_response)?;
 
-    Ok(ws.on_upgrade(|ws| main_websocket(ws, state)))
+    let limits = state.ws_limiter.limits().clone();
+    let peer = peer.map(|Extension(ConnectInfo(addr))| addr);
+    let client_ip = client_ip(limits.trusted_client_ip_header.as_ref(), &headers, peer);
+    if client_ip.is_none() {
+        tracing::debug!("WebSocket client address unavailable, per-IP limit not enforced");
+    }
+
+    let guard = state
+        .ws_limiter
+        .try_acquire(client_ip)
+        .map_err(|rejection| match rejection {
+            WsRejection::PerIpFull => {
+                tracing::debug!(
+                    "WebSocket upgrade refused: {:?} is at its per-address connection limit",
+                    client_ip
+                );
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "too many websocket connections from this address",
+                )
+                    .into_response()
+            }
+            WsRejection::ServerFull | WsRejection::Unavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "websocket capacity reached",
+            )
+                .into_response(),
+        })?;
+
+    Ok(ws
+        .max_message_size(limits.max_message_bytes)
+        .max_frame_size(limits.max_message_bytes)
+        .on_upgrade(move |ws| main_websocket(ws, state, guard)))
 }
 
 /// Check whether a proof is spent already or is pending in a transaction

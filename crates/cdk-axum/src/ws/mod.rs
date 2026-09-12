@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use axum::extract::ws::{CloseFrame, Message, WebSocket};
+use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket};
 use cdk::mint::QuoteId;
 use cdk::nuts::nut17::NotificationPayload;
 use cdk::subscription::SubId;
@@ -11,16 +13,24 @@ use cdk::ws::{
 };
 use cdk_common::terminal::escape_control;
 use futures::StreamExt;
+use serde::Deserialize;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+use tokio::time::{timeout, MissedTickBehavior};
 
 use crate::MintState;
 
+mod budget;
+mod client_ip;
 mod error;
+mod limits;
 mod subscribe;
 mod unsubscribe;
 
-pub(crate) const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 100;
-pub(crate) const MAX_FILTERS_PER_SUBSCRIPTION: usize = 1000;
+pub(crate) use budget::{Charge, RequestBudget};
+pub(crate) use client_ip::client_ip;
+pub(crate) use limits::{WsConnectionGuard, WsConnectionLimiter, WsRejection};
+pub use limits::{WsLimits, WsLimitsError, WsLimitsField};
 
 async fn process(
     context: &mut WsContext,
@@ -37,14 +47,36 @@ async fn process(
     serde_json::to_value(response)
 }
 
-fn deserialize_request(text: &str) -> Result<WsRequest, (serde_json::Error, Option<usize>)> {
-    let value = serde_json::from_str::<serde_json::Value>(text).map_err(|err| (err, None))?;
-    let request_id = value
-        .get("id")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|id| usize::try_from(id).ok());
+/// A frame that could not be parsed, carrying the JSON-RPC id when one could
+/// still be recovered so the client can correlate the error.
+#[derive(Debug)]
+struct ParseFailure {
+    error: serde_json::Error,
+    id: Option<usize>,
+}
 
-    serde_json::from_value(value).map_err(|err| (err, request_id))
+/// Only the JSON-RPC id, used to answer a frame whose body was never parsed.
+#[derive(Deserialize)]
+struct RequestEnvelope {
+    #[serde(default)]
+    id: Option<usize>,
+}
+
+fn deserialize_request(text: &str) -> Result<WsRequest, ParseFailure> {
+    serde_json::from_str::<WsRequest>(text).map_err(|error| ParseFailure {
+        id: recover_request_id(text),
+        error,
+    })
+}
+
+/// Recovers the request id while skipping every other value, so a frame that is
+/// unparsable or over the rate limit is never walked as a full
+/// `serde_json::Value`.
+fn recover_request_id(text: &str) -> Option<usize> {
+    match serde_json::from_str::<RequestEnvelope>(text) {
+        Ok(envelope) => envelope.id,
+        Err(_) => None,
+    }
 }
 
 fn error_response(
@@ -57,16 +89,89 @@ fn error_response(
 
 pub use error::WsError;
 
+/// One live subscription, with the share of the connection's topic budget it
+/// claimed so that unsubscribing can give exactly that much back.
+struct SubscriptionSlot {
+    handle: JoinHandle<()>,
+    topics: usize,
+}
+
 pub struct WsContext {
     state: MintState,
-    subscriptions: HashMap<Arc<SubId>, tokio::task::JoinHandle<()>>,
+    subscriptions: HashMap<Arc<SubId>, SubscriptionSlot>,
+    topics_in_use: usize,
+    budget: RequestBudget,
     publisher: mpsc::Sender<(Arc<SubId>, NotificationPayload<QuoteId>)>,
+    /// Declared last so the manual `Drop` below tears down the subscriptions
+    /// before the connection slot is handed back.
+    _connection_guard: WsConnectionGuard,
 }
 
 impl Drop for WsContext {
     fn drop(&mut self) {
-        for (_, handle) in self.subscriptions.drain() {
-            handle.abort();
+        for (_, slot) in self.subscriptions.drain() {
+            slot.handle.abort();
+        }
+    }
+}
+
+/// Why a frame could not be handed to the peer.
+#[derive(Debug)]
+enum SendFailure {
+    /// The peer stopped reading and the write never drained.
+    Timeout(Duration),
+    /// The socket itself failed.
+    Socket(axum::Error),
+}
+
+impl fmt::Display for SendFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Timeout(after) => {
+                write!(f, "write timed out after {:.1}s", after.as_secs_f32())
+            }
+            Self::Socket(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+/// Sends one frame, giving up once `deadline` passes.
+///
+/// A peer that stops reading would otherwise leave the write stalled inside the
+/// select arm, where the idle check never runs and the connection keeps its
+/// slot for as long as the peer refuses to read. The idle timeout is reused as
+/// the deadline: a write that cannot drain in that long is as dead as a
+/// connection that says nothing.
+async fn send(
+    socket: &mut WebSocket,
+    message: Message,
+    deadline: Duration,
+) -> Result<(), SendFailure> {
+    match timeout(deadline, socket.send(message)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(err)) => Err(SendFailure::Socket(err)),
+        Err(_elapsed) => Err(SendFailure::Timeout(deadline)),
+    }
+}
+
+/// Builds a close frame.
+fn close_message(code: u16, reason: &'static str) -> Message {
+    Message::Close(Some(CloseFrame {
+        code,
+        reason: reason.into(),
+    }))
+}
+
+/// Decodes a binary frame as request text.
+///
+/// Clients are expected to send text; a binary frame is read as a request only
+/// when it happens to carry UTF-8.
+fn decode_request(bin: &[u8]) -> Option<&str> {
+    match std::str::from_utf8(bin) {
+        Ok(text) => Some(text),
+        Err(err) => {
+            tracing::debug!("Could not decode request: {err}");
+            None
         }
     }
 }
@@ -77,13 +182,27 @@ impl Drop for WsContext {
 ///
 /// For simplicity sake this function will spawn tasks for each subscription and
 /// keep them in a hashmap, and will have a single subscriber for all of them.
-pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
+pub async fn main_websocket(
+    mut socket: WebSocket,
+    state: MintState,
+    connection_guard: WsConnectionGuard,
+) {
+    let limits = state.ws_limiter.limits().clone();
     let (publisher, mut subscriber) = mpsc::channel(100);
+    let started_at = Instant::now();
     let mut context = WsContext {
         state,
         subscriptions: HashMap::new(),
+        topics_in_use: 0,
+        budget: RequestBudget::new(&limits, started_at),
         publisher,
+        _connection_guard: connection_guard,
     };
+
+    let mut last_activity = started_at;
+    let mut keepalive = tokio::time::interval(limits.ping_interval);
+    keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    keepalive.tick().await;
 
     loop {
         tokio::select! {
@@ -105,74 +224,133 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
                     }
                 };
 
-                if let Err(err)= socket.send(Message::Text(message.into())).await {
+                if let Err(err) = send(
+                    &mut socket,
+                    Message::Text(message.into()),
+                    limits.idle_timeout,
+                ).await {
                     tracing::error!("Could not send websocket message: {}", err);
                     break;
                 }
             }
 
+            _ = keepalive.tick() => {
+                if last_activity.elapsed() >= limits.idle_timeout {
+                    tracing::debug!("ws-idle: closing after {:?}", last_activity.elapsed());
+                    if let Err(err) = send(
+                        &mut socket,
+                        close_message(close_code::POLICY, "idle timeout"),
+                        limits.idle_timeout,
+                    ).await {
+                        tracing::debug!("Could not send idle close frame: {err}");
+                    }
+                    break;
+                }
+
+                if let Err(err) = send(
+                    &mut socket,
+                    Message::Ping(Default::default()),
+                    limits.idle_timeout,
+                ).await {
+                    tracing::debug!("Could not send keepalive ping: {err}");
+                    break;
+                }
+            }
+
             from_ws = socket.next() => {
+                // The keepalive arm is always ready, so a closed socket no longer
+                // falls through to `else`; end the loop here instead of polling a
+                // finished stream until the next ping fails.
                 let Some(from_ws) = from_ws else {
+                    tracing::debug!("ws-close: stream ended");
                     break;
                 };
-                let text = match from_ws {
-                    Ok(Message::Text(text)) => text.to_string(),
-                    Ok(Message::Binary(bin)) => String::from_utf8_lossy(&bin).to_string(),
-                    Ok(Message::Ping(payload)) => {
-                        // Reply with Pong with same payload
-                        if let Err(e) = socket.send(Message::Pong(payload)).await {
-                            tracing::error!("failed to send pong: {e}");
-                            break;
-                        }
-                        continue;
-                    },
-                    Ok(Message::Pong(_payload)) => {
-                        tracing::error!("Unexpected pong");
-                        continue;
-                    },
-                    Ok(Message::Close(frame)) => {
+
+                let message = match from_ws {
+                    Ok(message) => message,
+                    Err(err) => {
+                        tracing::debug!("ws-error: {err}");
+                        break;
+                    }
+                };
+
+                // Any inbound frame proves the peer is alive, the pong answering
+                // our own keepalive ping included, so the idle clock restarts
+                // before the frame is judged on its contents.
+                let now = Instant::now();
+                last_activity = now;
+
+                let text = match &message {
+                    Message::Text(text) => Some(text.as_str()),
+                    Message::Binary(bin) => decode_request(bin),
+                    // Axum answers pings itself; replying here too would send a
+                    // second pong for every ping a client sends.
+                    Message::Ping(_) | Message::Pong(_) => None,
+                    Message::Close(frame) => {
                         if let Some(CloseFrame { code, reason }) = frame {
                             tracing::info!(
                                 "ws-close: code={code:?} reason='{}'",
-                                escape_control(&reason)
+                                escape_control(reason)
                             );
                         } else {
                             tracing::info!("ws-close: no frame");
                         }
 
-                        let _ = socket.send(Message::Close(Some(CloseFrame {
-                            code: axum::extract::ws::close_code::NORMAL,
-                            reason: "bye!".into(),
-                        }))).await;
-                        break;
-                    }
-                    Err(err) => {
-                        tracing::error!("ws-error: {err}");
+                        if let Err(err) = send(
+                            &mut socket,
+                            close_message(close_code::NORMAL, "bye!"),
+                            limits.idle_timeout,
+                        ).await {
+                            tracing::debug!("Could not send close frame: {err}");
+                        }
                         break;
                     }
                 };
 
-
-                let result = match deserialize_request(&text) {
-                    Ok(request) => process(&mut context, request).await,
-                    Err((err, request_id)) => {
-                        tracing::error!("Could not parse request: {}", err);
-                        match request_id {
-                            Some(request_id) => {
-                                error_response(request_id, WsError::InvalidParams)
-                            }
-                            None => continue,
-                        }
+                let charge = context.budget.charge(1, now);
+                if charge == Charge::Exhausted {
+                    tracing::debug!("ws-rate: closing after repeated throttling");
+                    if let Err(err) = send(
+                        &mut socket,
+                        close_message(close_code::POLICY, "request rate exceeded"),
+                        limits.idle_timeout,
+                    ).await {
+                        tracing::debug!("Could not send rate-limit close frame: {err}");
                     }
+                    break;
+                }
+
+                // Charged above rather than skipped, so a flood of control or
+                // undecodable frames still spends the connection's budget.
+                let Some(text) = text else {
+                    continue;
+                };
+
+                let result = match charge {
+                    Charge::Accepted => match deserialize_request(text) {
+                        Ok(request) => process(&mut context, request).await,
+                        Err(ParseFailure { error, id }) => {
+                            tracing::debug!("Could not parse request: {error}");
+                            match id {
+                                Some(id) => error_response(id, WsError::InvalidParams),
+                                None => continue,
+                            }
+                        }
+                    },
+                    Charge::Throttled | Charge::Exhausted => match recover_request_id(text) {
+                        Some(id) => error_response(id, WsError::ServerBusy),
+                        None => continue,
+                    },
                 };
 
                 match result {
                     Ok(result) => {
-                        if let Err(err) = socket
-                            .send(Message::Text(result.to_string().into()))
-                            .await
-                        {
-                            tracing::error!("Could not send request: {}", err);
+                        if let Err(err) = send(
+                            &mut socket,
+                            Message::Text(result.to_string().into()),
+                            limits.idle_timeout,
+                        ).await {
+                            tracing::debug!("Could not send request: {}", err);
                             break;
                         }
                     }
@@ -196,12 +374,13 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use cdk::mint::{Mint, QuoteId};
+    use cdk::mint::{Mint, MintLimits, QuoteId};
     use cdk::nuts::nut02::KeySetVersion;
     use cdk::nuts::nut17::{MAX_CUSTOM_KIND_LEN, MAX_SUBSCRIPTION_ID_LEN};
     use cdk::nuts::{CurrencyUnit, MintInfo};
     use cdk::subscription::{Params, SubId};
     use cdk::ws::WsUnsubscribeRequest;
+    use cdk_common::pub_sub::PubsubLimits;
     use cdk_signatory::db_signatory::DbSignatory;
     use cdk_signatory::signatory::{RotateKeyArguments, Signatory};
     use cdk_sqlite::mint::memory;
@@ -241,14 +420,14 @@ mod tests {
                 "id": 3,
             }),
         ] {
-            let (err, request_id) =
+            let ParseFailure { error, id } =
                 deserialize_request(&request.to_string()).expect_err("oversized request");
             assert!(
-                err.to_string().contains("exceeds"),
-                "unexpected error: {err}"
+                error.to_string().contains("exceeds"),
+                "unexpected error: {error}"
             );
 
-            let response = error_response(request_id.expect("request ID"), WsError::InvalidParams)
+            let response = error_response(id.expect("request ID"), WsError::InvalidParams)
                 .expect("error response");
             assert_eq!(response["error"]["code"], serde_json::json!(-32602));
             assert_eq!(
@@ -260,7 +439,7 @@ mod tests {
         }
     }
 
-    async fn create_test_mint_with_limits(max_inputs: usize, max_outputs: usize) -> Arc<Mint> {
+    async fn create_test_mint_with_limits(limits: MintLimits) -> Arc<Mint> {
         let localstore = Arc::new(memory::empty().await.expect("in-memory db"));
 
         let seed = [0u8; 32];
@@ -298,8 +477,7 @@ mod tests {
                 signatory,
                 localstore,
                 HashMap::new(),
-                max_inputs,
-                max_outputs,
+                limits,
             )
             .await
             .expect("mint"),
@@ -307,7 +485,7 @@ mod tests {
     }
 
     async fn create_test_mint() -> Arc<Mint> {
-        create_test_mint_with_limits(1000, 1000).await
+        create_test_mint_with_limits(MintLimits::default()).await
     }
 
     fn make_params(sub_id: &str) -> Params {
@@ -323,15 +501,25 @@ mod tests {
     }
 
     fn make_context(mint: Arc<Mint>) -> WsContext {
+        make_context_with_limits(mint, WsLimits::default())
+    }
+
+    fn make_context_with_limits(mint: Arc<Mint>, limits: WsLimits) -> WsContext {
+        let ws_limiter = Arc::new(WsConnectionLimiter::new(limits.clone()));
+        let connection_guard = ws_limiter.try_acquire(None).expect("connection slot");
         let state = MintState {
             mint,
             cache: Arc::new(HttpCache::default()),
+            ws_limiter,
         };
         let (publisher, _receiver) = tokio::sync::mpsc::channel(100);
         WsContext {
             state,
             subscriptions: HashMap::new(),
+            topics_in_use: 0,
+            budget: RequestBudget::new(&limits, Instant::now()),
             publisher,
+            _connection_guard: connection_guard,
         }
     }
 
@@ -425,11 +613,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_per_connection_subscription_count_limit() {
+        let cap = WsLimits::default().max_subscriptions_per_connection;
         let mint = create_test_mint().await;
         let pubsub = mint.pubsub_manager();
         let mut context = make_context(mint);
 
-        for i in 0..MAX_SUBSCRIPTIONS_PER_CONNECTION {
+        for i in 0..cap {
             subscribe::handle(&mut context, make_params(&format!("sub-cap-{i}")))
                 .await
                 .expect("subscribe before cap should succeed");
@@ -438,30 +627,32 @@ mod tests {
         tokio::task::yield_now().await;
         assert_eq!(
             pubsub.active_subscribers(),
-            MAX_SUBSCRIPTIONS_PER_CONNECTION,
+            cap,
             "should have subscribers up to the per-connection cap"
         );
 
-        let over_cap = subscribe::handle(
-            &mut context,
-            make_params(&format!("sub-cap-{MAX_SUBSCRIPTIONS_PER_CONNECTION}")),
-        )
-        .await;
+        let over_cap =
+            subscribe::handle(&mut context, make_params(&format!("sub-cap-{cap}"))).await;
 
         assert!(
-            over_cap.is_err(),
-            "subscription over the per-connection cap should be rejected"
+            matches!(over_cap, Err(WsError::ServerBusy)),
+            "subscription over the per-connection cap should be rejected as busy"
         );
         assert_eq!(
             pubsub.active_subscribers(),
-            MAX_SUBSCRIPTIONS_PER_CONNECTION,
+            cap,
             "rejected subscription should not allocate a pub/sub subscriber"
         );
     }
 
     #[tokio::test]
     async fn test_subscription_filter_count_not_tied_to_max_inputs() {
-        let mint = create_test_mint_with_limits(2, 2).await;
+        let mint = create_test_mint_with_limits(MintLimits {
+            max_inputs: 2,
+            max_outputs: 2,
+            ..MintLimits::default()
+        })
+        .await;
         let mut context = make_context(mint);
 
         let params = Params {
@@ -475,6 +666,411 @@ mod tests {
             result.is_ok(),
             "subscription filter count must not be capped by mint max_inputs; got {:?}",
             result.as_ref().err()
+        );
+    }
+
+    fn make_params_with_filters(sub_id: &str, filters: usize) -> Params {
+        Params {
+            kind: cdk::nuts::nut17::Kind::Bolt11MintQuote,
+            filters: (0..filters).map(|_| QuoteId::new().to_string()).collect(),
+            id: Arc::new(SubId::from(sub_id)),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_per_connection_topic_budget() {
+        let mint = create_test_mint().await;
+        let pubsub = mint.pubsub_manager();
+        let limits = WsLimits {
+            max_topics_per_connection: 10,
+            ..WsLimits::default()
+        };
+        let mut context = make_context_with_limits(mint, limits);
+
+        subscribe::handle(&mut context, make_params_with_filters("sub-a", 6))
+            .await
+            .expect("first subscription fits in the budget");
+        assert_eq!(context.topics_in_use, 6);
+
+        let over_budget =
+            subscribe::handle(&mut context, make_params_with_filters("sub-b", 5)).await;
+
+        assert!(
+            matches!(over_budget, Err(WsError::ServerBusy)),
+            "subscription over the per-connection topic budget should be rejected as busy"
+        );
+        assert_eq!(
+            context.topics_in_use, 6,
+            "rejection must not consume budget"
+        );
+
+        tokio::task::yield_now().await;
+        assert_eq!(
+            pubsub.registered_topics(),
+            6,
+            "rejected subscription must not register topics in the mint-wide index"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_subscription_over_the_request_budget_is_refused_as_busy() {
+        let mint = create_test_mint().await;
+        let pubsub = mint.pubsub_manager();
+        let limits = WsLimits {
+            max_request_units_per_second: 1,
+            max_request_burst_units: 5,
+            max_throttled_requests: 0,
+            ..WsLimits::default()
+        };
+        let mut context = make_context_with_limits(mint, limits);
+
+        let over_budget =
+            subscribe::handle(&mut context, make_params_with_filters("sub-a", 8)).await;
+
+        assert!(
+            matches!(over_budget, Err(WsError::ServerBusy)),
+            "subscription over the connection's request budget should be rejected as busy"
+        );
+        assert_eq!(
+            context.topics_in_use, 0,
+            "rejection must not consume budget"
+        );
+        assert!(context.subscriptions.is_empty());
+
+        tokio::task::yield_now().await;
+        assert_eq!(
+            pubsub.registered_topics(),
+            0,
+            "a throttled subscription must leave no state behind"
+        );
+        assert_eq!(pubsub.active_subscribers(), 0);
+    }
+
+    /// The smallest burst the mintd config validation accepts is one unit for
+    /// the frame plus one per filter, so that burst must actually admit a
+    /// maximum-size subscription.
+    #[tokio::test]
+    async fn the_minimum_burst_admits_a_maximum_size_subscription() {
+        let filters = 8;
+        let mint = create_test_mint().await;
+        let limits = WsLimits {
+            max_filters_per_subscription: filters,
+            max_topics_per_connection: filters,
+            max_request_units_per_second: 1,
+            max_request_burst_units: u32::try_from(filters).expect("filter count") + 1,
+            max_throttled_requests: 0,
+            ..WsLimits::default()
+        };
+        limits
+            .validate()
+            .expect("the smallest burst the validation accepts");
+        let mut context = make_context_with_limits(mint, limits);
+
+        assert_eq!(
+            context.budget.charge(1, Instant::now()),
+            Charge::Accepted,
+            "the read loop charges one unit for the frame itself"
+        );
+
+        subscribe::handle(&mut context, make_params_with_filters("sub-max", filters))
+            .await
+            .expect("the smallest valid burst must cover a maximum-size subscription");
+    }
+
+    /// A subscription costs one unit per filter, so churning wide subscriptions
+    /// drains the budget far faster than the per-connection topic cap alone
+    /// would suggest.
+    #[tokio::test]
+    async fn subscribe_churn_is_charged_per_filter() {
+        let mint = create_test_mint().await;
+        let limits = WsLimits {
+            max_request_units_per_second: 1,
+            max_request_burst_units: 12,
+            max_throttled_requests: 0,
+            ..WsLimits::default()
+        };
+        let mut context = make_context_with_limits(mint, limits);
+
+        for round in 0..2 {
+            let sub_id = format!("sub-{round}");
+            subscribe::handle(&mut context, make_params_with_filters(&sub_id, 5))
+                .await
+                .expect("subscription fits in the request budget");
+
+            unsubscribe::handle(
+                &mut context,
+                WsUnsubscribeRequest {
+                    sub_id: Arc::new(SubId::from(sub_id.as_str())),
+                },
+            )
+            .await
+            .expect("unsubscribe");
+        }
+
+        let exhausted = subscribe::handle(&mut context, make_params_with_filters("sub-2", 5)).await;
+
+        assert!(
+            matches!(exhausted, Err(WsError::ServerBusy)),
+            "a third round of churn must exhaust the request budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_disabled_rate_never_refuses_a_subscription() {
+        let mint = create_test_mint().await;
+        let limits = WsLimits {
+            max_request_units_per_second: 0,
+            max_request_burst_units: 1,
+            ..WsLimits::default()
+        };
+        let mut context = make_context_with_limits(mint, limits);
+
+        for round in 0..4 {
+            subscribe::handle(
+                &mut context,
+                make_params_with_filters(&format!("sub-{round}"), 5),
+            )
+            .await
+            .expect("a disabled throttle admits every request");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_topic_budget_released_on_unsubscribe() {
+        let mint = create_test_mint().await;
+        let limits = WsLimits {
+            max_topics_per_connection: 10,
+            ..WsLimits::default()
+        };
+        let mut context = make_context_with_limits(mint, limits);
+
+        subscribe::handle(&mut context, make_params_with_filters("sub-a", 8))
+            .await
+            .expect("first subscription fits in the budget");
+        assert!(
+            subscribe::handle(&mut context, make_params_with_filters("sub-b", 8))
+                .await
+                .is_err()
+        );
+
+        unsubscribe::handle(
+            &mut context,
+            WsUnsubscribeRequest {
+                sub_id: Arc::new(SubId::from("sub-a")),
+            },
+        )
+        .await
+        .expect("unsubscribe");
+
+        assert_eq!(context.topics_in_use, 0);
+        subscribe::handle(&mut context, make_params_with_filters("sub-b", 8))
+            .await
+            .expect("budget is available again after unsubscribe");
+    }
+
+    #[tokio::test]
+    async fn test_mint_wide_topic_budget_maps_to_server_busy() {
+        let mint = create_test_mint_with_limits(MintLimits {
+            pubsub: PubsubLimits {
+                max_topics: 1,
+                ..PubsubLimits::default()
+            },
+            ..MintLimits::default()
+        })
+        .await;
+        let mut first = make_context(mint.clone());
+        let mut second = make_context(mint);
+
+        subscribe::handle(&mut first, make_params("sub-a"))
+            .await
+            .expect("first subscription takes the whole mint-wide budget");
+
+        let over_budget = subscribe::handle(&mut second, make_params("sub-b")).await;
+        assert!(
+            matches!(over_budget, Err(WsError::ServerBusy)),
+            "a second connection must be refused once the mint-wide budget is gone"
+        );
+
+        let body = cdk::ws::WsErrorBody::from(WsError::ServerBusy);
+        assert_eq!(body.code, -32000);
+    }
+
+    /// Drives a real handshake over TCP: the `WebSocketUpgrade` extractor needs
+    /// hyper's upgrade extension, which an in-memory request does not carry.
+    ///
+    /// One handshake is made per entry of `forwarded`, sending that entry as an
+    /// `X-Forwarded-For` header when it is set.
+    async fn handshake_status(limits: WsLimits, forwarded: &[Option<&str>]) -> Vec<u16> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+
+        let ws_limiter = Arc::new(WsConnectionLimiter::new(limits));
+        let state = MintState {
+            mint: create_test_mint().await,
+            cache: Arc::new(HttpCache::default()),
+            ws_limiter,
+        };
+        let router = axum::Router::new()
+            .route(
+                "/v1/ws",
+                axum::routing::get(crate::router_handlers::ws_handler),
+            )
+            .with_state(state);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let server = tokio::spawn(async move {
+            let service = router.into_make_service_with_connect_info::<std::net::SocketAddr>();
+            if let Err(err) = axum::serve(listener, service).await {
+                tracing::debug!("test server stopped: {err}");
+            }
+        });
+
+        let mut statuses = Vec::new();
+        // Held open so each handshake sees the slots the previous ones took.
+        let mut sockets = Vec::new();
+
+        for entry in forwarded {
+            let mut socket = TcpStream::connect(addr).await.expect("connect");
+            let forwarded_header = entry
+                .map(|value| format!("X-Forwarded-For: {value}\r\n"))
+                .unwrap_or_default();
+            socket
+                .write_all(
+                    format!(
+                        "GET /v1/ws HTTP/1.1\r\nHost: {addr}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n{forwarded_header}\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write handshake");
+
+            let mut buf = [0u8; 64];
+            let read = socket.read(&mut buf).await.expect("read status line");
+            let status = String::from_utf8_lossy(&buf[..read])
+                .split_whitespace()
+                .nth(1)
+                .and_then(|code| code.parse().ok())
+                .expect("status code");
+
+            statuses.push(status);
+            sockets.push(socket);
+        }
+
+        server.abort();
+        statuses
+    }
+
+    #[tokio::test]
+    async fn handshake_is_refused_once_the_mint_is_at_capacity() {
+        let statuses = handshake_status(
+            WsLimits {
+                max_connections: 1,
+                max_connections_per_ip: 0,
+                ..WsLimits::default()
+            },
+            &[None, None],
+        )
+        .await;
+
+        assert_eq!(statuses, vec![101, 503]);
+    }
+
+    /// Also covers the connect-info plumbing: without it the handler sees no peer
+    /// address and this limit silently does nothing.
+    #[tokio::test]
+    async fn handshake_is_refused_once_the_peer_address_is_at_capacity() {
+        let statuses = handshake_status(
+            WsLimits {
+                max_connections: 8,
+                max_connections_per_ip: 1,
+                ..WsLimits::default()
+            },
+            &[None, None],
+        )
+        .await;
+
+        assert_eq!(statuses, vec![101, 429]);
+    }
+
+    /// A forwarded header is ignored unless the operator names it, or any client
+    /// could hand itself a fresh allowance.
+    #[tokio::test]
+    async fn an_unconfigured_forwarded_header_does_not_lift_the_peer_limit() {
+        let statuses = handshake_status(
+            WsLimits {
+                max_connections: 8,
+                max_connections_per_ip: 1,
+                ..WsLimits::default()
+            },
+            &[Some("203.0.113.7"), Some("203.0.113.8")],
+        )
+        .await;
+
+        assert_eq!(statuses, vec![101, 429]);
+    }
+
+    /// With the header named, clients behind one proxy are counted separately,
+    /// which is the whole point of trusting it.
+    #[tokio::test]
+    async fn a_trusted_header_counts_each_forwarded_client_on_its_own() {
+        let limits = WsLimits {
+            max_connections: 8,
+            max_connections_per_ip: 1,
+            trusted_client_ip_header: Some(axum::http::HeaderName::from_static("x-forwarded-for")),
+            ..WsLimits::default()
+        };
+
+        let statuses = handshake_status(
+            limits,
+            &[
+                Some("203.0.113.7"),
+                Some("203.0.113.8"),
+                Some("10.0.0.1, 203.0.113.7"),
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            statuses,
+            vec![101, 101, 429],
+            "the third handshake repeats the first client's address"
+        );
+    }
+
+    /// The shipped default leaves the per-address cap off, so a reverse proxy or a
+    /// NAT pool presenting every client as one address is not held to a handful of
+    /// sockets for the whole mint.
+    #[tokio::test]
+    async fn the_default_limits_admit_several_connections_from_one_address() {
+        let statuses = handshake_status(WsLimits::default(), &[None, None, None]).await;
+
+        assert_eq!(statuses, vec![101, 101, 101]);
+    }
+
+    /// A zero ping interval panics `tokio::time::interval`, so the router must not
+    /// be handed out at all.
+    #[tokio::test]
+    async fn a_router_is_not_built_from_limits_that_cannot_be_served() {
+        let err = crate::create_mint_router_with_custom_cache(
+            create_test_mint().await,
+            HttpCache::default(),
+            Vec::new(),
+            false,
+            WsLimits {
+                ping_interval: Duration::ZERO,
+                ..WsLimits::default()
+            },
+        )
+        .await
+        .expect_err("limits that cannot be served must not yield a router");
+
+        assert_eq!(
+            err.downcast_ref::<WsLimitsError>(),
+            Some(&WsLimitsError::Zero {
+                field: WsLimitsField::PingInterval
+            }),
+            "unexpected error: {err:#}"
         );
     }
 }

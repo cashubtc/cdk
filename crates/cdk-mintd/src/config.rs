@@ -1,11 +1,15 @@
 use std::fmt;
 use std::path::PathBuf;
+use std::time::Duration;
 
+use axum::http::header::{HeaderName, InvalidHeaderName};
 use bitcoin::hashes::{sha256, Hash};
+use cdk::mint::MintLimits;
 use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
-use cdk_axum::cache;
+use cdk_axum::{cache, WsLimits};
 use cdk_common::common::QuoteTTL;
+use cdk_common::pub_sub::PubsubLimits;
 use cdk_common::redact::url_for_logs;
 use config::{Config, ConfigError, File, FileFormat};
 use serde::{Deserialize, Serialize};
@@ -1159,8 +1163,8 @@ pub struct Prometheus {
     pub port: Option<u16>,
 }
 
-/// Transaction limits configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Resource limits for DoS protection
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Limits {
     /// Maximum number of inputs allowed per transaction (swap/melt)
     #[serde(default = "default_max_inputs")]
@@ -1168,13 +1172,119 @@ pub struct Limits {
     /// Maximum number of outputs allowed per transaction (mint/swap/melt)
     #[serde(default = "default_max_outputs")]
     pub max_outputs: usize,
+    /// Maximum concurrent WebSocket connections across the whole mint
+    #[serde(default = "default_ws_max_connections")]
+    pub ws_max_connections: usize,
+    /// Maximum concurrent WebSocket connections from one client address.
+    ///
+    /// Set to `0` behind a reverse proxy, unless
+    /// `ws_trusted_client_ip_header` names the header carrying the real client:
+    /// every connection otherwise arrives from the proxy's address and the cap
+    /// applies to all clients at once.
+    #[serde(default = "default_ws_max_connections_per_ip")]
+    pub ws_max_connections_per_ip: usize,
+    /// Header a trusted reverse proxy sets with the client's address, read by
+    /// `ws_max_connections_per_ip` in place of the TCP peer address.
+    ///
+    /// Unset by default, so nothing a client sends is trusted. Set it only when
+    /// a proxy in front of the mint overwrites or appends to the header.
+    #[serde(default)]
+    pub ws_trusted_client_ip_header: Option<String>,
+    /// Maximum concurrent subscriptions on one WebSocket connection
+    #[serde(default = "default_ws_max_subscriptions_per_connection")]
+    pub ws_max_subscriptions_per_connection: usize,
+    /// Maximum filters accepted in a single subscription request
+    #[serde(default = "default_ws_max_filters_per_subscription")]
+    pub ws_max_filters_per_subscription: usize,
+    /// Maximum topics one WebSocket connection may register
+    #[serde(default = "default_ws_max_topics_per_connection")]
+    pub ws_max_topics_per_connection: usize,
+    /// Request units one WebSocket connection earns per second, 0 to disable
+    #[serde(default = "default_ws_max_request_units_per_second")]
+    pub ws_max_request_units_per_second: u32,
+    /// Request units one WebSocket connection may hold unspent
+    #[serde(default = "default_ws_max_request_burst_units")]
+    pub ws_max_request_burst_units: u32,
+    /// Throttled requests tolerated before the connection is closed, 0 to never close
+    #[serde(default = "default_ws_max_throttled_requests")]
+    pub ws_max_throttled_requests: usize,
+    /// Largest WebSocket message accepted from a client, in bytes
+    #[serde(default = "default_ws_max_message_bytes")]
+    pub ws_max_message_bytes: usize,
+    /// Seconds a WebSocket may go without inbound traffic before it is closed
+    #[serde(default = "default_ws_idle_timeout_secs")]
+    pub ws_idle_timeout_secs: u64,
+    /// Seconds between keepalive pings on an otherwise silent WebSocket
+    #[serde(default = "default_ws_ping_interval_secs")]
+    pub ws_ping_interval_secs: u64,
+    /// Maximum subscription topics registered across the whole mint
+    #[serde(default = "default_pubsub_max_topics")]
+    pub pubsub_max_topics: usize,
+    /// Maximum subscription backfills running concurrently
+    #[serde(default = "default_pubsub_max_concurrent_backfills")]
+    pub pubsub_max_concurrent_backfills: usize,
+    /// Maximum payment-backend quote checks performed by a single backfill
+    #[serde(default = "default_pubsub_max_quote_checks_per_backfill")]
+    pub pubsub_max_quote_checks_per_backfill: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_inputs: 1000,
-            max_outputs: 1000,
+            max_inputs: default_max_inputs(),
+            max_outputs: default_max_outputs(),
+            ws_max_connections: default_ws_max_connections(),
+            ws_max_connections_per_ip: default_ws_max_connections_per_ip(),
+            ws_trusted_client_ip_header: None,
+            ws_max_subscriptions_per_connection: default_ws_max_subscriptions_per_connection(),
+            ws_max_filters_per_subscription: default_ws_max_filters_per_subscription(),
+            ws_max_topics_per_connection: default_ws_max_topics_per_connection(),
+            ws_max_request_units_per_second: default_ws_max_request_units_per_second(),
+            ws_max_request_burst_units: default_ws_max_request_burst_units(),
+            ws_max_throttled_requests: default_ws_max_throttled_requests(),
+            ws_max_message_bytes: default_ws_max_message_bytes(),
+            ws_idle_timeout_secs: default_ws_idle_timeout_secs(),
+            ws_ping_interval_secs: default_ws_ping_interval_secs(),
+            pubsub_max_topics: default_pubsub_max_topics(),
+            pubsub_max_concurrent_backfills: default_pubsub_max_concurrent_backfills(),
+            pubsub_max_quote_checks_per_backfill: default_pubsub_max_quote_checks_per_backfill(),
+        }
+    }
+}
+
+impl Limits {
+    /// Ceilings applied to the mint's WebSocket endpoint
+    ///
+    /// Fails when `ws_trusted_client_ip_header` is not a valid header name.
+    pub fn ws_limits(&self) -> Result<WsLimits, InvalidHeaderName> {
+        let trusted_client_ip_header = self
+            .ws_trusted_client_ip_header
+            .as_deref()
+            .map(HeaderName::try_from)
+            .transpose()?;
+
+        Ok(WsLimits {
+            max_connections: self.ws_max_connections,
+            max_connections_per_ip: self.ws_max_connections_per_ip,
+            trusted_client_ip_header,
+            max_subscriptions_per_connection: self.ws_max_subscriptions_per_connection,
+            max_filters_per_subscription: self.ws_max_filters_per_subscription,
+            max_topics_per_connection: self.ws_max_topics_per_connection,
+            max_request_units_per_second: self.ws_max_request_units_per_second,
+            max_request_burst_units: self.ws_max_request_burst_units,
+            max_throttled_requests: self.ws_max_throttled_requests,
+            max_message_bytes: self.ws_max_message_bytes,
+            idle_timeout: Duration::from_secs(self.ws_idle_timeout_secs),
+            ping_interval: Duration::from_secs(self.ws_ping_interval_secs),
+        })
+    }
+
+    /// Ceilings applied to the mint's subscription manager
+    pub fn pubsub_limits(&self) -> PubsubLimits {
+        PubsubLimits {
+            max_topics: self.pubsub_max_topics,
+            max_concurrent_backfills: self.pubsub_max_concurrent_backfills,
+            max_quote_checks_per_backfill: self.pubsub_max_quote_checks_per_backfill,
         }
     }
 }
@@ -1185,6 +1295,62 @@ fn default_max_inputs() -> usize {
 
 fn default_max_outputs() -> usize {
     1000
+}
+
+fn default_ws_max_connections() -> usize {
+    WsLimits::DEFAULT_MAX_CONNECTIONS
+}
+
+fn default_ws_max_connections_per_ip() -> usize {
+    WsLimits::DEFAULT_MAX_CONNECTIONS_PER_IP
+}
+
+fn default_ws_max_subscriptions_per_connection() -> usize {
+    WsLimits::DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION
+}
+
+fn default_ws_max_filters_per_subscription() -> usize {
+    WsLimits::DEFAULT_MAX_FILTERS_PER_SUBSCRIPTION
+}
+
+fn default_ws_max_topics_per_connection() -> usize {
+    WsLimits::DEFAULT_MAX_TOPICS_PER_CONNECTION
+}
+
+fn default_ws_max_request_units_per_second() -> u32 {
+    WsLimits::DEFAULT_MAX_REQUEST_UNITS_PER_SECOND
+}
+
+fn default_ws_max_request_burst_units() -> u32 {
+    WsLimits::DEFAULT_MAX_REQUEST_BURST_UNITS
+}
+
+fn default_ws_max_throttled_requests() -> usize {
+    WsLimits::DEFAULT_MAX_THROTTLED_REQUESTS
+}
+
+fn default_ws_max_message_bytes() -> usize {
+    WsLimits::DEFAULT_MAX_MESSAGE_BYTES
+}
+
+fn default_ws_idle_timeout_secs() -> u64 {
+    WsLimits::DEFAULT_IDLE_TIMEOUT.as_secs()
+}
+
+fn default_ws_ping_interval_secs() -> u64 {
+    WsLimits::DEFAULT_PING_INTERVAL.as_secs()
+}
+
+fn default_pubsub_max_topics() -> usize {
+    MintLimits::DEFAULT_MAX_TOPICS
+}
+
+fn default_pubsub_max_concurrent_backfills() -> usize {
+    PubsubLimits::DEFAULT_MAX_CONCURRENT_BACKFILLS
+}
+
+fn default_pubsub_max_quote_checks_per_backfill() -> usize {
+    PubsubLimits::DEFAULT_MAX_QUOTE_CHECKS_PER_BACKFILL
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -2719,5 +2885,29 @@ max_melt = 500000
 
         // Cleanup test file
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// The TOML loader rejects unknown fields, so a key documented in the example
+    /// but missing from `Limits` would break startup for anyone copying it.
+    #[test]
+    fn example_config_limits_section_parses() {
+        let example = include_str!("../example.config.toml");
+        let start = example
+            .find("[limits]")
+            .expect("example config documents a limits section");
+        let section = match example[start + 1..].find("\n[") {
+            Some(offset) => &example[start..start + 1 + offset],
+            None => &example[start..],
+        };
+
+        let settings = Settings::try_from_toml(section).expect("limits section parses");
+
+        assert_eq!(settings.limits.ws_max_connections_per_ip, 0);
+        assert_eq!(settings.limits.ws_max_subscriptions_per_connection, 100);
+        assert_eq!(
+            settings.limits,
+            Limits::default(),
+            "the documented values must match the code defaults"
+        );
     }
 }

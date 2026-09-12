@@ -223,6 +223,16 @@ pub fn display_mint_info(port: u16, work_dir: &Path, database_type: &str) {
 }
 
 /// Create settings for a fake wallet mint
+/// Test suites drive many sockets at one mint from 127.0.0.1, so the per-address
+/// WebSocket limit is pinned off here rather than inherited, keeping the suites
+/// independent of that default. Every other limit keeps its production value.
+fn test_limits() -> cdk_mintd::config::Limits {
+    cdk_mintd::config::Limits {
+        ws_max_connections_per_ip: 0,
+        ..cdk_mintd::config::Limits::default()
+    }
+}
+
 pub fn create_fake_wallet_settings(
     port: u16,
     database: &str,
@@ -267,7 +277,7 @@ pub fn create_fake_wallet_settings(
         },
         signatory: signatory_config,
         mint_info: cdk_mintd::config::MintInfo::default(),
-        limits: cdk_mintd::config::Limits::default(),
+        limits: test_limits(),
         payment_backend: vec![
             cdk_mintd::config::PaymentBackend {
                 backend: cdk_mintd::config::PaymentBackendType::FakeWallet,
@@ -337,7 +347,7 @@ pub fn create_cln_settings(
             enable_info_page: None,
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
-        limits: cdk_mintd::config::Limits::default(),
+        limits: test_limits(),
         payment_backend: vec![cdk_mintd::config::PaymentBackend {
             backend: cdk_mintd::config::PaymentBackendType::Cln,
             unit: cdk::nuts::CurrencyUnit::Sat,
@@ -390,7 +400,7 @@ pub fn create_lnd_settings(
             enable_info_page: None,
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
-        limits: cdk_mintd::config::Limits::default(),
+        limits: test_limits(),
         payment_backend: vec![cdk_mintd::config::PaymentBackend {
             backend: cdk_mintd::config::PaymentBackendType::Lnd,
             unit: cdk::nuts::CurrencyUnit::Sat,

@@ -9,7 +9,7 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltQuote, MintQuote};
 use cdk_common::nut17::NotificationId;
 use cdk_common::payment::DynMintPayment;
-use cdk_common::pub_sub::{Pubsub, Spec, Subscriber};
+use cdk_common::pub_sub::{Pubsub, PubsubLimits, Spec, Subscriber};
 use cdk_common::subscription::SubId;
 use cdk_common::{
     Amount, BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteBolt12Response,
@@ -18,6 +18,7 @@ use cdk_common::{
     NotificationPayload, ProofState, PublicKey, QuoteId,
 };
 
+use super::payment_backend::PaymentCheck;
 use super::Mint;
 use crate::event::MintEvent;
 
@@ -29,6 +30,7 @@ pub struct MintPubSubSpec {
     payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
     // The manager owns this spec; a strong reference back would retain both forever.
     pubsub_manager: Weak<PubSubManager>,
+    limits: PubsubLimits,
 }
 
 impl MintPubSubSpec {
@@ -42,6 +44,8 @@ impl MintPubSubSpec {
         }
 
         let mut quotes = HashMap::new();
+        let mut checks_left = self.limits.max_quote_checks_per_backfill;
+        let mut unchecked = 0usize;
 
         for mut quote in self
             .db
@@ -50,15 +54,34 @@ impl MintPubSubSpec {
             .into_iter()
             .flatten()
         {
-            Mint::check_mint_quote_payments(
-                self.db.clone(),
-                self.payment_processors.clone(),
-                self.pubsub_manager.upgrade(),
-                &mut quote,
-            )
-            .await?;
+            // Only round trips that reach the payment backend are charged, so a
+            // subscription covering many already-settled quotes does not spend
+            // the budget that keeps one backfill from holding its slot too long.
+            if checks_left > 0 {
+                let check = Mint::check_mint_quote_payments(
+                    self.db.clone(),
+                    self.payment_processors.clone(),
+                    self.pubsub_manager.upgrade(),
+                    &mut quote,
+                )
+                .await?;
+
+                if check == PaymentCheck::Queried {
+                    checks_left -= 1;
+                }
+            } else {
+                unchecked += 1;
+            }
 
             quotes.insert(quote.id.clone(), quote);
+        }
+
+        if unchecked > 0 {
+            tracing::warn!(
+                budget = self.limits.max_quote_checks_per_backfill,
+                served_from_storage = unchecked,
+                "Backfill quote-check budget exhausted; some quotes were served without a payment-backend check",
+            );
         }
 
         Ok(quotes)
@@ -233,6 +256,7 @@ impl Spec for MintPubSubSpec {
             db: context.0,
             payment_processors: context.1,
             pubsub_manager: Weak::new(),
+            limits: PubsubLimits::default(),
         })
     }
 
@@ -253,19 +277,34 @@ impl Spec for MintPubSubSpec {
 pub struct PubSubManager(Pubsub<MintPubSubSpec>);
 
 impl PubSubManager {
-    /// Create a new instance
+    /// Create a new instance with [`PubsubLimits::default`]
     pub fn new(
         context: (
             DynMintDatabase,
             Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
         ),
     ) -> Arc<Self> {
+        Self::with_limits(context, PubsubLimits::default())
+    }
+
+    /// Create a new instance whose shared resources are capped by `limits`
+    pub fn with_limits(
+        context: (
+            DynMintDatabase,
+            Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+        ),
+        limits: PubsubLimits,
+    ) -> Arc<Self> {
         Arc::new_cyclic(|manager| {
-            Self(Pubsub::new(Arc::new(MintPubSubSpec {
-                db: context.0,
-                payment_processors: context.1,
-                pubsub_manager: manager.clone(),
-            })))
+            Self(Pubsub::with_limits(
+                Arc::new(MintPubSubSpec {
+                    db: context.0,
+                    payment_processors: context.1,
+                    pubsub_manager: manager.clone(),
+                    limits,
+                }),
+                limits,
+            ))
         })
     }
 

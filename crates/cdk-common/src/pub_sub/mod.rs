@@ -20,25 +20,29 @@
 //! - **Spec**: type bundle tying `Event`, `Topic`, `SubscriptionId`, and serialization.
 
 mod error;
+mod limits;
 mod pubsub;
 pub mod remote_consumer;
 mod subscriber;
 mod types;
 
 pub use self::error::Error;
+pub use self::limits::PubsubLimits;
 pub use self::pubsub::Pubsub;
-pub use self::subscriber::{Subscriber, SubscriptionRequest};
+pub use self::subscriber::{Subscriber, SubscriptionCounters, SubscriptionRequest};
 pub use self::types::*;
 
 #[cfg(test)]
 mod test {
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, RwLock};
 
     use serde::{Deserialize, Serialize};
+    use tokio::sync::Notify;
 
     use super::subscriber::SubscriptionRequest;
-    use super::{Error, Event, Pubsub, Spec, Subscriber};
+    use super::{Error, Event, Pubsub, PubsubLimits, Spec, Subscriber};
 
     #[derive(Clone, Debug, Serialize, Eq, PartialEq, Deserialize)]
     pub struct Message {
@@ -123,6 +127,84 @@ mod test {
         }
     }
 
+    /// Requests a fixed number of distinct topics, to exercise the topic budget.
+    #[derive(Debug, Clone)]
+    pub struct WideSubscriptionReq(pub u64);
+
+    impl SubscriptionRequest for WideSubscriptionReq {
+        type Topic = IndexTest;
+
+        type SubscriptionId = String;
+
+        fn try_get_topics(&self) -> Result<Vec<Self::Topic>, Error> {
+            Ok((0..self.0).map(IndexTest::Foo).collect())
+        }
+
+        fn subscription_name(&self) -> Arc<Self::SubscriptionId> {
+            Arc::new("wide".to_owned())
+        }
+    }
+
+    /// Requests the same topic twice, to pin down duplicate accounting.
+    #[derive(Debug, Clone)]
+    pub struct DuplicateSubscriptionReq;
+
+    impl SubscriptionRequest for DuplicateSubscriptionReq {
+        type Topic = IndexTest;
+
+        type SubscriptionId = String;
+
+        fn try_get_topics(&self) -> Result<Vec<Self::Topic>, Error> {
+            Ok(vec![IndexTest::Foo(1), IndexTest::Foo(1)])
+        }
+
+        fn subscription_name(&self) -> Arc<Self::SubscriptionId> {
+            Arc::new("duplicate".to_owned())
+        }
+    }
+
+    /// Records how many backfills run at once and parks until released.
+    pub struct BlockingPubSub {
+        pub running: AtomicUsize,
+        pub peak: AtomicUsize,
+        pub completed: AtomicBool,
+        pub release: Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl Spec for BlockingPubSub {
+        type Topic = IndexTest;
+
+        type Event = Message;
+
+        type SubscriptionId = String;
+
+        type Context = ();
+
+        fn new_instance(_context: Self::Context) -> Arc<Self> {
+            Arc::new(Self {
+                running: AtomicUsize::new(0),
+                peak: AtomicUsize::new(0),
+                completed: AtomicBool::new(false),
+                release: Notify::new(),
+            })
+        }
+
+        async fn fetch_events(
+            self: &Arc<Self>,
+            _topics: Vec<<Self::Event as Event>::Topic>,
+            _reply_to: Subscriber<Self>,
+        ) {
+            let running = self.running.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(running, Ordering::SeqCst);
+
+            self.release.notified().await;
+
+            self.running.fetch_sub(1, Ordering::SeqCst);
+            self.completed.store(true, Ordering::SeqCst);
+        }
+    }
+
     #[derive(Debug, Clone)]
     pub struct FailingSubscriptionReq;
 
@@ -172,6 +254,127 @@ mod test {
 
         assert!(result.is_err());
         assert_eq!(pubsub.active_subscribers(), 0);
+        assert_eq!(pubsub.registered_topics(), 0);
+    }
+
+    fn bounded_pubsub(max_topics: usize) -> Pubsub<CustomPubSub> {
+        Pubsub::with_limits(
+            CustomPubSub::new_instance(()),
+            PubsubLimits {
+                max_topics,
+                ..PubsubLimits::default()
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn topic_budget_rejects_over_limit() {
+        let pubsub = bounded_pubsub(2);
+
+        let _first = pubsub.subscribe(SubscriptionReq::Foo(1)).unwrap();
+        let _second = pubsub.subscribe(SubscriptionReq::Foo(2)).unwrap();
+        assert_eq!(pubsub.registered_topics(), 2);
+
+        assert!(matches!(
+            pubsub.subscribe(SubscriptionReq::Foo(3)),
+            Err(Error::TooManyTopics)
+        ));
+        assert_eq!(pubsub.registered_topics(), 2);
+        assert_eq!(pubsub.active_subscribers(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_single_request_cannot_exceed_the_whole_budget() {
+        let pubsub = bounded_pubsub(4);
+
+        assert!(matches!(
+            pubsub.subscribe(WideSubscriptionReq(5)),
+            Err(Error::TooManyTopics)
+        ));
+        assert_eq!(pubsub.registered_topics(), 0);
+
+        let _fits = pubsub.subscribe(WideSubscriptionReq(4)).unwrap();
+        assert_eq!(pubsub.registered_topics(), 4);
+    }
+
+    #[tokio::test]
+    async fn topic_budget_is_released_on_drop() {
+        let pubsub = bounded_pubsub(2);
+
+        let first = pubsub.subscribe(SubscriptionReq::Foo(1)).unwrap();
+        let second = pubsub.subscribe(SubscriptionReq::Foo(2)).unwrap();
+        assert!(pubsub.subscribe(SubscriptionReq::Foo(3)).is_err());
+
+        drop(first);
+        drop(second);
+
+        assert_eq!(pubsub.registered_topics(), 0);
+        pubsub
+            .subscribe(SubscriptionReq::Foo(3))
+            .expect("budget is available again");
+    }
+
+    /// Duplicate topics collapse to one index entry but must reserve and release
+    /// the same count, or the budget would drift down over time.
+    #[tokio::test]
+    async fn duplicate_topics_reserve_and_release_the_same_count() {
+        let pubsub = bounded_pubsub(4);
+
+        let subscription = pubsub.subscribe(DuplicateSubscriptionReq).unwrap();
+        assert_eq!(pubsub.registered_topics(), 2);
+
+        drop(subscription);
+        assert_eq!(pubsub.registered_topics(), 0);
+    }
+
+    #[tokio::test]
+    async fn backfill_concurrency_is_bounded() {
+        let inner = BlockingPubSub::new_instance(());
+        let pubsub = Pubsub::with_limits(
+            inner.clone(),
+            PubsubLimits {
+                max_concurrent_backfills: 1,
+                ..PubsubLimits::default()
+            },
+        );
+
+        let _subscriptions = (0..4)
+            .map(|n| pubsub.subscribe(SubscriptionReq::Foo(n)).unwrap())
+            .collect::<Vec<_>>();
+
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(inner.peak.load(Ordering::SeqCst), 1);
+        assert_eq!(pubsub.available_backfill_slots(), 0);
+    }
+
+    #[tokio::test]
+    async fn backfill_is_aborted_when_the_subscription_drops() {
+        let inner = BlockingPubSub::new_instance(());
+        let pubsub = Pubsub::new(inner.clone());
+
+        let subscription = pubsub.subscribe(SubscriptionReq::Foo(1)).unwrap();
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(inner.running.load(Ordering::SeqCst), 1);
+
+        drop(subscription);
+        inner.release.notify_waiters();
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+
+        assert!(
+            !inner.completed.load(Ordering::SeqCst),
+            "backfill should be aborted rather than run to completion"
+        );
+        assert_eq!(
+            pubsub.available_backfill_slots(),
+            PubsubLimits::default().max_concurrent_backfills
+        );
     }
 
     #[tokio::test]

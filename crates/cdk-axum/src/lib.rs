@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use auth::create_auth_router;
 use axum::middleware::from_fn;
 use axum::response::Response;
@@ -20,8 +20,11 @@ mod auth;
 pub mod cache;
 mod custom_handlers;
 mod custom_router;
-mod router_handlers;
+pub(crate) mod router_handlers;
 mod ws;
+
+use ws::WsConnectionLimiter;
+pub use ws::{WsLimits, WsLimitsError, WsLimitsField};
 
 /// CDK Mint State
 #[derive(Clone)]
@@ -29,6 +32,7 @@ mod ws;
 pub struct MintState {
     mint: Arc<Mint>,
     cache: Arc<cache::HttpCache>,
+    ws_limiter: Arc<WsConnectionLimiter>,
 }
 
 /// Create mint [`Router`] with required endpoints for cashu mint with the default cache
@@ -36,7 +40,14 @@ pub struct MintState {
 /// The `custom_methods` parameter should include all custom payment methods supported
 /// by the payment processor, including "bolt11" and "bolt12" if they are supported.
 pub async fn create_mint_router(mint: Arc<Mint>, custom_methods: Vec<String>) -> Result<Router> {
-    create_mint_router_with_custom_cache(mint, Default::default(), custom_methods, false).await
+    create_mint_router_with_custom_cache(
+        mint,
+        Default::default(),
+        custom_methods,
+        false,
+        WsLimits::default(),
+    )
+    .await
 }
 
 async fn cors_middleware(
@@ -93,10 +104,37 @@ pub async fn create_mint_router_with_custom_cache(
     cache: HttpCache,
     custom_methods: Vec<String>,
     enable_info_page: bool,
+    ws_limits: WsLimits,
 ) -> Result<Router> {
+    ws_limits.validate().context("Invalid WebSocket limits")?;
+
+    match (
+        ws_limits.max_connections_per_ip,
+        &ws_limits.trusted_client_ip_header,
+    ) {
+        (0, Some(header)) => tracing::info!(
+            "The trusted client address header {} is configured, but the per-address WebSocket \
+             connection limit is 0, so nothing reads it.",
+            header.as_str()
+        ),
+        (0, None) => {}
+        (max, Some(header)) => tracing::info!(
+            "WebSocket per-address connection limit active at {max}, keyed on the {} header. \
+             Make sure only a proxy in front of the mint can set it, or the limit is trivial to \
+             evade.",
+            header.as_str()
+        ),
+        (max, None) => tracing::info!(
+            "WebSocket per-address connection limit active at {max}, keyed on the TCP peer \
+             address. Behind a reverse proxy every connection arrives from the proxy, so either \
+             name the header carrying the client address or set the limit to 0."
+        ),
+    }
+
     let state = MintState {
         mint,
         cache: Arc::new(cache),
+        ws_limiter: Arc::new(WsConnectionLimiter::new(ws_limits)),
     };
 
     let v1_router = Router::new()

@@ -1,9 +1,18 @@
+use std::time::Instant;
+
 use cdk::subscription::Params;
 use cdk::ws::WsResponseResult;
+use cdk_common::pub_sub::Error as PubSubError;
 
-use super::{WsContext, WsError, MAX_FILTERS_PER_SUBSCRIPTION, MAX_SUBSCRIPTIONS_PER_CONNECTION};
+use super::{Charge, SubscriptionSlot, WsContext, WsError};
 
-/// The `handle` method is called when a client sends a subscription request
+/// The `handle` method is called when a client sends a subscription request.
+///
+/// The request is charged to the connection's budget per filter, because
+/// registering a filter is what takes the mint-wide topic lock. A flat charge
+/// would leave subscribe and unsubscribe churn as cheap as any other frame.
+/// The frame itself was already charged one unit by the read loop, so only the
+/// filters are charged here.
 pub(crate) async fn handle(
     context: &mut WsContext,
     params: Params,
@@ -15,23 +24,43 @@ pub(crate) async fn handle(
         return Err(WsError::InvalidParams);
     }
 
-    if context.subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+    let limits = context.state.ws_limiter.limits();
+
+    if context.subscriptions.len() >= limits.max_subscriptions_per_connection {
         tracing::warn!(
             "WebSocket subscription request exceeds per-connection limit: {} >= {}",
             context.subscriptions.len(),
-            MAX_SUBSCRIPTIONS_PER_CONNECTION
+            limits.max_subscriptions_per_connection
+        );
+        return Err(WsError::ServerBusy);
+    }
+
+    if params.filters.len() > limits.max_filters_per_subscription {
+        tracing::warn!(
+            "WebSocket subscription request exceeds max filters limit: {} > {}",
+            params.filters.len(),
+            limits.max_filters_per_subscription
         );
         return Err(WsError::InvalidParams);
     }
 
-    let max_filters = MAX_FILTERS_PER_SUBSCRIPTION;
-    if params.filters.len() > max_filters {
+    // Each filter registers one topic, so the filter count is what this
+    // subscription will claim from the connection's topic budget.
+    let requested = params.filters.len();
+    let topics_in_use = context.topics_in_use.saturating_add(requested);
+    if topics_in_use > limits.max_topics_per_connection {
         tracing::warn!(
-            "WebSocket subscription request exceeds max filters limit: {} > {}",
-            params.filters.len(),
-            max_filters
+            "WebSocket subscription request exceeds per-connection topic budget: {} > {}",
+            topics_in_use,
+            limits.max_topics_per_connection
         );
-        return Err(WsError::InvalidParams);
+        return Err(WsError::ServerBusy);
+    }
+
+    let units = u32::try_from(requested).unwrap_or(u32::MAX);
+    if context.budget.charge(units, Instant::now()) != Charge::Accepted {
+        tracing::debug!("WebSocket subscription request exceeds the connection's request budget");
+        return Err(WsError::ServerBusy);
     }
 
     let mut subscription = context
@@ -39,18 +68,40 @@ pub(crate) async fn handle(
         .mint
         .pubsub_manager()
         .subscribe(params)
-        .map_err(|_| WsError::ParseError)?;
+        .map_err(|err| match err {
+            PubSubError::ParsingError(_) => WsError::InvalidParams,
+            PubSubError::TooManyTopics => {
+                tracing::warn!("Mint-wide subscription topic budget exhausted: {err}");
+                WsError::ServerBusy
+            }
+            err => {
+                tracing::warn!("Could not create subscription: {err}");
+                WsError::InternalError
+            }
+        })?;
 
     let publisher = context.publisher.clone();
     let sub_id_for_sender = sub_id.clone();
     context.subscriptions.insert(
         sub_id.clone(),
-        tokio::spawn(async move {
-            while let Some(response) = subscription.recv().await {
-                let _ = publisher.try_send((sub_id_for_sender.clone(), response.into_inner()));
-            }
-        }),
+        SubscriptionSlot {
+            handle: tokio::spawn(async move {
+                while let Some(response) = subscription.recv().await {
+                    // Dropped rather than awaited on purpose: blocking here would
+                    // let one slow socket stall every other subscriber sharing
+                    // this connection's writer.
+                    if let Err(err) =
+                        publisher.try_send((sub_id_for_sender.clone(), response.into_inner()))
+                    {
+                        tracing::debug!("Dropping notification for a slow connection: {err}");
+                    }
+                }
+            }),
+            topics: requested,
+        },
     );
+    context.topics_in_use = topics_in_use;
+
     Ok(WsResponseResult {
         status: "OK".to_string(),
         sub_id,
