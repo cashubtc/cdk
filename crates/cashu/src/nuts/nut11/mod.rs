@@ -282,7 +282,10 @@ pub(crate) fn extract_signatures_from_witness(
 /// Per NUT-11, there are two spending pathways after locktime:
 /// 1. Primary path (data + pubkeys): ALWAYS available
 /// 2. Refund path (refund keys): available AFTER locktime
-pub(crate) fn verify_sig_all_p2pk(first_input: &Proof, msg_to_sign: String) -> Result<(), Error> {
+pub(crate) fn verify_sig_all_p2pk(
+    first_input: &Proof,
+    digests_to_sign: &[[u8; 32]],
+) -> Result<(), Error> {
     // Get the first input, as it's the one with the signatures
     let first_secret =
         Nut10Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
@@ -318,9 +321,7 @@ pub(crate) fn verify_sig_all_p2pk(first_input: &Proof, msg_to_sign: String) -> R
     {
         let primary_valid = extract_signatures_from_witness(first_witness)
             .ok()
-            .and_then(|sigs| {
-                valid_signatures(msg_to_sign.as_bytes(), &requirements.pubkeys, &sigs).ok()
-            })
+            .map(|sigs| valid_signatures_any_digest(digests_to_sign, &requirements.pubkeys, &sigs))
             .is_some_and(|count| count >= requirements.required_sigs);
 
         if primary_valid {
@@ -333,8 +334,7 @@ pub(crate) fn verify_sig_all_p2pk(first_input: &Proof, msg_to_sign: String) -> R
         if let Some(refund_path) = &requirements.refund_path {
             let signatures = extract_signatures_from_witness(first_witness)?;
             let valid_sig_count =
-                valid_signatures(msg_to_sign.as_bytes(), &refund_path.pubkeys, &signatures)
-                    .map_err(|_| Error::InvalidSignature)?;
+                valid_signatures_any_digest(digests_to_sign, &refund_path.pubkeys, &signatures);
 
             if valid_sig_count >= refund_path.required_sigs {
                 return Ok(());
@@ -369,6 +369,33 @@ pub(crate) fn valid_signatures(
     }
 
     Ok(verified_pubkeys.len() as u64)
+}
+
+/// Returns count of unique public keys with at least one valid signature over
+/// any accepted SIG_ALL message digest.
+///
+/// Signatures that do not verify under any format are ignored per NUT-11
+/// signature validation; counting each pubkey at most once makes double
+/// counting impossible, so no duplicate-signature error is needed.
+pub(crate) fn valid_signatures_any_digest(
+    digests: &[[u8; 32]],
+    pubkeys: &[PublicKey],
+    signatures: &[Signature],
+) -> u64 {
+    let mut verified_pubkeys = HashSet::new();
+
+    for pubkey in pubkeys {
+        let is_valid = signatures.iter().any(|signature| {
+            digests
+                .iter()
+                .any(|digest| pubkey.verify_digest(*digest, signature).is_ok())
+        });
+        if is_valid {
+            verified_pubkeys.insert(pubkey.x_only_public_key());
+        }
+    }
+
+    verified_pubkeys.len() as u64
 }
 
 impl BlindedMessage {
@@ -522,11 +549,16 @@ pub struct EnforceSigFlag {
 impl SwapRequest {
     /// Sign swap request with SIG_ALL
     pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
-        // Get message to sign
-        let msg = self.sig_all_msg_to_sign();
-        let signature = secret_key.sign(msg.as_bytes())?;
+        // One signature per accepted SIG_ALL message format (v1, current) so
+        // the request verifies on mints at any upgrade stage; mints ignore
+        // signatures that do not verify.
+        let signatures: Vec<String> = self
+            .sig_all_digests_to_verify()
+            .into_iter()
+            .map(|digest| secret_key.sign_digest(digest).to_string())
+            .collect();
 
-        // Add signature to first input witness
+        // Add signatures to first input witness
         let first_input = self
             .inputs_mut()
             .first_mut()
@@ -534,11 +566,11 @@ impl SwapRequest {
 
         match first_input.witness.as_mut() {
             Some(witness) => {
-                witness.add_signatures(vec![signature.to_string()]);
+                witness.add_signatures(signatures);
             }
             None => {
                 let mut p2pk_witness = Witness::P2PKWitness(P2PKWitness::default());
-                p2pk_witness.add_signatures(vec![signature.to_string()]);
+                p2pk_witness.add_signatures(signatures);
                 first_input.witness = Some(p2pk_witness);
             }
         };
@@ -553,11 +585,16 @@ where
 {
     /// Sign melt request with SIG_ALL
     pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
-        // Get message to sign
-        let msg = self.sig_all_msg_to_sign();
-        let signature = secret_key.sign(msg.as_bytes())?;
+        // One signature per accepted SIG_ALL message format (v1, current) so
+        // the request verifies on mints at any upgrade stage; mints ignore
+        // signatures that do not verify.
+        let signatures: Vec<String> = self
+            .sig_all_digests_to_verify()
+            .into_iter()
+            .map(|digest| secret_key.sign_digest(digest).to_string())
+            .collect();
 
-        // Add signature to first input witness
+        // Add signatures to first input witness
         let first_input = self
             .inputs_mut()
             .first_mut()
@@ -565,11 +602,11 @@ where
 
         match first_input.witness.as_mut() {
             Some(witness) => {
-                witness.add_signatures(vec![signature.to_string()]);
+                witness.add_signatures(signatures);
             }
             None => {
                 let mut p2pk_witness = Witness::P2PKWitness(P2PKWitness::default());
-                p2pk_witness.add_signatures(vec![signature.to_string()]);
+                p2pk_witness.add_signatures(signatures);
                 first_input.witness = Some(p2pk_witness);
             }
         };
@@ -586,6 +623,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+    use crate::nut10::sig_all_message_hash_v1;
     use crate::nuts::Id;
     use crate::quote_id::QuoteId;
     use crate::secret::Secret;
@@ -1386,6 +1424,87 @@ mod tests {
             valid_swap.verify_spending_conditions().is_ok(),
             "Valid SIG_ALL swap request should verify"
         );
+    }
+
+    #[test]
+    fn test_sig_all_v1_message_canonical_vector() {
+        // Canonical vectors from nuts tests/11-test.md ("SIG_ALL v1 Message
+        // Vectors"), pinned byte-for-byte in cashu-ts and nutshell too. The
+        // witness carries one signature per accepted message format (v1,
+        // current) by the well-known test key (privkey 0x...01).
+        let swap = r#"{
+          "inputs": [
+            {
+              "amount": 8,
+              "id": "009a1f293253e41e",
+              "secret": "[\"P2PK\",{\"nonce\":\"859d4935c4907062a6297cf4e663e2835d90d97ecdd510745d32f6816323a41f\",\"data\":\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]",
+              "C": "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+              "witness": "{\"signatures\":[\"55c4e0d72598a64af2a04d1d348af7beb97b35fe1af91711e205414a24c869ba047b5bd298b87c7b58b439833e244b5498136fd4cccdf9d41b0fe72db8279722\",\"947864cac6d9369f358257eece81c4aa9deb2e63899f2d868e7c243ff334ade5db1d8db010daa2b9f4407610458d9ffa3250eb778d1a0980f4de671627c8718e\"]}"
+            },
+            {
+              "amount": 2,
+              "id": "009a1f293253e41e",
+              "secret": "[\"P2PK\",{\"nonce\":\"16d937a29ae4e5d4a6e9f9959c4d4b9a8d6f2f7b2f0a1b3c4d5e6f708192a3b4\",\"data\":\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]",
+              "C": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+            }
+          ],
+          "outputs": [
+            {
+              "amount": 8,
+              "id": "009a1f293253e41e",
+              "B_": "035015e6d7ade60ba8426cefaf1832bbd27257636e44a76b922d78e79b47cb689d"
+            },
+            {
+              "amount": 2,
+              "id": "009a1f293253e41e",
+              "B_": "0288d7649652d0a83fc9c966c969fb217f15904431e61a44b14999fabc1b5d9ac6"
+            }
+          ]
+}"#;
+
+        let swap: SwapRequest = serde_json::from_str(swap).unwrap();
+
+        let v1_msg = swap.sig_all_msg_to_sign_v1();
+        assert_eq!(v1_msg.len(), 554);
+        // Swaps commit an empty quote field: the message opens with len32(0)
+        assert!(v1_msg.starts_with(b"\x00\x00\x00\x00"));
+        assert_eq!(
+            crate::util::hex::encode(sig_all_message_hash_v1(&v1_msg)),
+            "b2a0a8ee2d8911585d97adce15c8d7e664c712baa31c0f3d8a6e32b909fdda2b"
+        );
+
+        // The multi-format witness verifies end to end
+        assert!(
+            swap.verify_spending_conditions().is_ok(),
+            "Canonical SIG_ALL v1 swap vector should verify"
+        );
+
+        // Melt with the same inputs/outputs and the vector quote id
+        let melt = format!(
+            r#"{{"quote": "9d745270-1405-46de-b5c5-e2762b4f5e00", "inputs": {}, "outputs": {}}}"#,
+            serde_json::to_string(swap.inputs()).unwrap(),
+            serde_json::to_string(swap.outputs()).unwrap(),
+        );
+        let melt: MeltRequest<String> = serde_json::from_str(&melt).unwrap();
+
+        let v1_msg = melt.sig_all_msg_to_sign_v1();
+        assert_eq!(v1_msg.len(), 590);
+        let message_hash = sig_all_message_hash_v1(&v1_msg);
+        assert_eq!(
+            crate::util::hex::encode(message_hash),
+            "2cdffe8a0eed5d22da07adc0f149d49e0ddca5cdafa6d872630d0c52e167e548"
+        );
+
+        // Pinned melt signature by the test key
+        let pubkey = PublicKey::from_str(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        )
+        .unwrap();
+        let signature = Signature::from_str(
+            "b22645e507c51a37070402ccc36b5b41cc33fe5bdc2ff3f3ee12d0b7340f9742dfaf64c49e9b1243e7a71b31329a63d9c174fd82f133491b16723f8dcd3f7693",
+        )
+        .unwrap();
+        assert!(pubkey.verify_digest(message_hash, &signature).is_ok());
     }
 
     #[test]
