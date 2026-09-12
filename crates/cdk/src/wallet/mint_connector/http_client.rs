@@ -1,6 +1,7 @@
 //! HTTP Mint client with pluggable transport
 use std::collections::HashSet;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
@@ -13,6 +14,7 @@ use cdk_common::{
 use cdk_http_client::HttpError;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde_json::Value;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, timeout};
 use tracing::instrument;
@@ -26,9 +28,10 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut00::{KnownMethod, PaymentMethod};
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
-    AuthToken, BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse,
-    Id, KeySet, KeysResponse, KeysetResponse, MeltOnchainRequest, MeltRequest, MintInfo,
-    MintRequest, MintResponse, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    nut06, AuthToken, BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest,
+    CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse, MeltOnchainRequest, MeltRequest,
+    MintInfo, MintRequest, MintResponse, RestoreRequest, RestoreResponse, SwapRequest,
+    SwapResponse,
 };
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
 use crate::OidcClient;
@@ -91,6 +94,7 @@ where
     mint_url: MintUrl,
     cache_support: Arc<StdRwLock<Cache>>,
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
+    require_signed_mint_info: Arc<AtomicBool>,
 }
 
 impl<T> fmt::Debug for HttpClient<T>
@@ -103,6 +107,10 @@ where
             .field("mint_url", &self.mint_url)
             .field("cache_support", &"[INTERNAL]")
             .field("auth_wallet", &"[REDACTED]")
+            .field(
+                "require_signed_mint_info",
+                &self.require_signed_mint_info.load(Ordering::Relaxed),
+            )
             .finish()
     }
 }
@@ -215,6 +223,7 @@ where
             mint_url,
             auth_wallet: Arc::new(RwLock::new(auth_wallet)),
             cache_support: Default::default(),
+            require_signed_mint_info: Default::default(),
         }
     }
 
@@ -228,6 +237,37 @@ where
             mint_url,
             auth_wallet: Arc::new(RwLock::new(auth_wallet)),
             cache_support: Default::default(),
+            require_signed_mint_info: Default::default(),
+        }
+    }
+
+    /// Reject mint info that carries no NUT-06 signature.
+    ///
+    /// Off by default: a present signature is always verified and a bad one is
+    /// always rejected, but an unsigned response is only warned about, because
+    /// most deployed mints do not sign yet.
+    pub fn set_require_signed_mint_info(&self, required: bool) {
+        self.require_signed_mint_info
+            .store(required, Ordering::Relaxed);
+    }
+
+    /// Apply the NUT-06 signature policy to a response as it arrived.
+    ///
+    /// Runs on the raw JSON rather than a parsed [`MintInfo`], because
+    /// deserializing drops members this crate does not model and the mint
+    /// signed those too.
+    fn check_mint_info_signature(&self, response: &Value) -> Result<(), Error> {
+        match nut06::verify_response_signature(response) {
+            Err(nut06::Error::SignatureMissing) | Err(nut06::Error::PubkeyMissing)
+                if !self.require_signed_mint_info.load(Ordering::Relaxed) =>
+            {
+                tracing::warn!(
+                    mint_url = %self.mint_url,
+                    "Mint info is not signed, cannot verify it came from the mint"
+                );
+                Ok(())
+            }
+            other => Ok(other?),
         }
     }
 
@@ -270,6 +310,7 @@ where
             mint_url,
             auth_wallet: Arc::new(RwLock::new(None)),
             cache_support: Default::default(),
+            require_signed_mint_info: Default::default(),
         })
     }
 
@@ -935,7 +976,12 @@ where
     /// Helper to get mint info
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
         let url = self.mint_url.join_paths(&["v1", "info"])?;
-        let info: MintInfo = self.transport_http_get(url, None).await?;
+        let response: Value = self.transport_http_get(url, None).await?;
+
+        self.check_mint_info_signature(&response)?;
+
+        let info: MintInfo =
+            serde_json::from_value(response).map_err(|err| Error::Custom(err.to_string()))?;
 
         if let Ok(mut cache_support) = self.cache_support.write() {
             *cache_support = (
@@ -1770,5 +1816,155 @@ mod tests {
             get_urls.lock().expect("lock").is_empty(),
             "invalid LNURL callback must be rejected before transport"
         );
+    }
+
+    /// A `/v1/info` response signed by a throwaway identity key, built as a
+    /// raw `Value` so a test can add members `MintInfo` does not model.
+    fn signed_info_response(edit: impl FnOnce(&mut serde_json::Map<String, Value>)) -> String {
+        let secret_key = cdk_common::SecretKey::from_hex(
+            "0000000000000000000000000000000000000000000000000000000000000042",
+        )
+        .expect("secret key");
+
+        let info = MintInfo::new()
+            .name("Test mint")
+            .pubkey(secret_key.public_key())
+            .motd("hello");
+
+        let mut response = serde_json::to_value(info).expect("serialize");
+        let members = response.as_object_mut().expect("object");
+        edit(members);
+
+        let signature = secret_key
+            .sign(&nut06::signing_payload(&response).expect("payload"))
+            .expect("sign");
+        response
+            .as_object_mut()
+            .expect("object")
+            .insert("signature".to_string(), Value::from(signature.to_string()));
+
+        response.to_string()
+    }
+
+    fn client_for(canned_json: String) -> HttpClient<MockTransport> {
+        let transport = MockTransport {
+            get_response: Arc::new(Mutex::new(Some(canned_json))),
+            ..Default::default()
+        };
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+
+        HttpClient::with_transport(mint_url, transport, None)
+    }
+
+    #[tokio::test]
+    async fn a_signed_mint_info_is_accepted() {
+        let client = client_for(signed_info_response(|_| {}));
+
+        let info = client.get_mint_info().await.expect("mint info");
+
+        assert_eq!(info.name.as_deref(), Some("Test mint"));
+        assert!(info.signature.is_some());
+    }
+
+    /// The reason verification runs on the raw response: a mint advertising a
+    /// NUT this crate does not model signed those members too, and they do not
+    /// survive deserialization into `MintInfo`.
+    #[tokio::test]
+    async fn members_mint_info_does_not_model_do_not_break_verification() {
+        let client = client_for(signed_info_response(|members| {
+            members.insert("some_future_field".to_string(), Value::from("kept"));
+            members
+                .get_mut("nuts")
+                .and_then(Value::as_object_mut)
+                .expect("nuts")
+                .insert("99".to_string(), serde_json::json!({"supported": true}));
+        }));
+
+        client.get_mint_info().await.expect("mint info");
+    }
+
+    #[tokio::test]
+    async fn a_tampered_mint_info_is_rejected() {
+        let mut response: Value =
+            serde_json::from_str(&signed_info_response(|_| {})).expect("parse");
+        response
+            .as_object_mut()
+            .expect("object")
+            .insert("motd".to_string(), Value::from("tampered"));
+
+        let error = client_for(response.to_string())
+            .get_mint_info()
+            .await
+            .expect_err("tampered info must be rejected");
+
+        assert!(matches!(
+            error,
+            Error::NUT06(nut06::Error::InvalidSignature)
+        ));
+    }
+
+    /// Rejected before deserialization, so the wallet gets a NUT-06 error
+    /// rather than an opaque parse failure.
+    #[tokio::test]
+    async fn a_malformed_signature_is_rejected() {
+        let mut response: Value =
+            serde_json::from_str(&signed_info_response(|_| {})).expect("parse");
+        response
+            .as_object_mut()
+            .expect("object")
+            .insert("signature".to_string(), Value::from("zz".repeat(64)));
+
+        let error = client_for(response.to_string())
+            .get_mint_info()
+            .await
+            .expect_err("malformed signature must be rejected");
+
+        assert!(matches!(
+            error,
+            Error::NUT06(nut06::Error::MalformedSignature)
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_unsigned_mint_info_is_accepted_by_default_and_refused_when_required() {
+        let mut response: Value =
+            serde_json::from_str(&signed_info_response(|_| {})).expect("parse");
+        response
+            .as_object_mut()
+            .expect("object")
+            .remove("signature");
+
+        let client = client_for(response.to_string());
+        client.get_mint_info().await.expect("lenient by default");
+
+        client.set_require_signed_mint_info(true);
+        let error = client
+            .get_mint_info()
+            .await
+            .expect_err("unsigned info must be rejected when required");
+
+        assert!(matches!(
+            error,
+            Error::NUT06(nut06::Error::SignatureMissing)
+        ));
+    }
+
+    /// `time` is outside the signed payload so the mint can stamp it after
+    /// signing. A response that differs only there still verifies.
+    #[tokio::test]
+    async fn time_does_not_take_part_in_the_signature() {
+        let mut response: Value =
+            serde_json::from_str(&signed_info_response(|_| {})).expect("parse");
+        response
+            .as_object_mut()
+            .expect("object")
+            .insert("time".to_string(), Value::from(1_234_567_890_u64));
+
+        let info = client_for(response.to_string())
+            .get_mint_info()
+            .await
+            .expect("mint info");
+
+        assert_eq!(info.time, Some(1_234_567_890));
     }
 }

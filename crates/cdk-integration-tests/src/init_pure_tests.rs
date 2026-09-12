@@ -352,7 +352,12 @@ impl MintConnector for DirectMintConnection {
     }
 
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
-        Ok(self.mint.mint_info().await?.clone().time(unix_time()))
+        Ok(self
+            .mint
+            .signed_mint_info()
+            .await?
+            .clone()
+            .time(unix_time()))
     }
 
     async fn post_check_state(

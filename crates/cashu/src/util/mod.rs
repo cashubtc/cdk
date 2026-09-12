@@ -1,6 +1,7 @@
 //! Cashu utils
 
 pub mod hex;
+pub mod jcs;
 pub mod serde_helpers;
 
 use std::sync::LazyLock;
