@@ -47,6 +47,8 @@ env:
   TAG: ${{ inputs.release_tag }}
   CDK_REF: ${{ inputs.cdk_ref || inputs.release_tag }}
   CDK_CHECKOUT_REF: ${{ inputs.nightly && inputs.cdk_ref || format('refs/tags/{0}', inputs.release_tag) }}
+  CDK_SOURCE_TAG: ${{ inputs.cdk_version && format('refs/tags/v{0}', inputs.cdk_version) || format('refs/tags/{0}', inputs.release_tag) }}
+  CDK_SOURCE_MANIFEST: ${{ inputs.nightly && 'Cargo.toml' || 'cdk-src/Cargo.toml' }}
   RELEASE_BRANCH: release/${{ inputs.release_tag }}
 
 jobs:
@@ -82,6 +84,13 @@ jobs:
             exit 1
           fi
 
+      - name: Verify the cdk-ffi source tag exists
+        if: ${{ !inputs.nightly }}
+        run: |
+          git ls-remote --exit-code --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" "${CDK_SOURCE_TAG}" >/dev/null \
+            || { echo "::error::${CDK_SOURCE_TAG} does not exist; cdk_version must name a released CDK tag"; exit 1; }
+
       - name: Verify release source exists
         uses: actions/checkout@v5
         with:
@@ -105,6 +114,29 @@ jobs:
         with:
           ref: ${{ env.CDK_CHECKOUT_REF }}
           persist-credentials: false
+
+      # cdk-ffi is pinned to a published version, whose dependency requirements
+      # were frozen when it was released. Its own tag, not the release tag, is
+      # what the binding lockfile has to be seeded from.
+      - name: Checkout the cdk-ffi source tag
+        if: ${{ !inputs.nightly }}
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.CDK_SOURCE_TAG }}
+          path: cdk-src
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify the cdk-ffi source tag
+        if: ${{ !inputs.nightly }}
+        run: |
+          REF_VER=$(sed -n '/^\[workspace\.package\]/,/^\[/p' cdk-src/Cargo.toml \
+            | grep '^version ' | head -1 | cut -d'"' -f2)
+          if [[ "${REF_VER}" != "${CDK_VER}" ]]; then
+            echo "::error::${CDK_SOURCE_TAG} declares workspace version ${REF_VER}, not ${CDK_VER}"
+            exit 1
+          fi
+          echo "Seeding the binding lockfile from ${CDK_SOURCE_TAG}"
 
       - name: Clone cdk-dart
         env:
@@ -194,12 +226,20 @@ jobs:
           # Remove workspace lints reference
           sed -i '/^\[lints\]/,/^$/s/^workspace = true//' cdk-dart/rust/Cargo.toml
 
+          # Detach from the monorepo workspace: the release job clones
+          # cdk-dart inside the checkout, so cargo would otherwise walk up
+          # to the root Cargo.toml and reject a non-member package.
+          printf '\n[workspace]\n' >> cdk-dart/rust/Cargo.toml
+
           # Add release profile
           printf '\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-dart/rust/Cargo.toml
 
           cat cdk-dart/pubspec.yaml
           echo "---"
           cat cdk-dart/rust/Cargo.toml
+
+      - name: Seed Cargo.lock from the cdk-ffi source lockfile
+        run: ./.github/scripts/seed-binding-lockfile.sh cdk-dart/rust "${CDK_SOURCE_MANIFEST}"
 
       - name: Push to cdk-dart release branch
         working-directory: cdk-dart
@@ -246,7 +286,7 @@ jobs:
 
           # Windows
           - target: x86_64-pc-windows-msvc
-            runner: windows-latest
+            runner: windows-2022
             artifact: cdk_ffi_dart.dll
 
           # Android
@@ -280,24 +320,43 @@ jobs:
             clone --branch "${RELEASE_BRANCH}" \
             https://github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+      - name: Install pinned Rust toolchain
+        working-directory: cdk-dart
+        shell: bash
+        run: |
+          # rust-toolchain.toml is the single source of truth here; rustup
+          # installs it on demand. Never resolve to floating stable.
+          rustup show active-toolchain
+          rustup target add ${{ matrix.target }}
+          CHANNEL=$(grep '^channel' rust-toolchain.toml | cut -d'"' -f2)
+          # Captured rather than piped into grep -q: a short-circuiting grep
+          # kills rustc with SIGPIPE, which pipefail reports as a failure even
+          # when the version matched.
+          RUSTC_VV=$(rustc -vV)
+          echo "${RUSTC_VV}"
+          RUSTC_RELEASE=$(awk '/^release:/ { print $2 }' <<< "${RUSTC_VV}")
+          if [[ "${RUSTC_RELEASE}" != "${CHANNEL}" ]]; then
+            echo "::error::expected rustc ${CHANNEL} per rust-toolchain.toml; got ${RUSTC_RELEASE}"
+            exit 1
+          fi
 
       - name: Install cross (Android)
         if: contains(matrix.target, 'android')
+        # Deliberately not --locked: cross only drives the pinned
+        # ghcr.io/cross-rs/<target>:0.2.5 container, so its own dependency graph
+        # never reaches the released library, and its 2022-era lockfile does not
+        # reliably build on current rustc.
         run: cargo install cross --git https://github.com/cross-rs/cross --tag v0.2.5
 
       - name: Build (native)
         if: "!contains(matrix.target, 'android')"
         working-directory: cdk-dart/rust
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Build (cross / Android)
         if: contains(matrix.target, 'android')
         working-directory: cdk-dart/rust
-        run: cross build --release --target ${{ matrix.target }}
+        run: cross build --locked --release --target ${{ matrix.target }}
 
       - name: Strip debug symbols
         shell: bash
@@ -315,7 +374,7 @@ jobs:
         working-directory: cdk-dart/rust
         run: |
           mkdir -p ../generated-bindings
-          cargo run --release --bin uniffi-bindgen-dart -- \
+          cargo run --locked --release --bin uniffi-bindgen-dart -- \
             target/${{ matrix.target }}/release/${{ matrix.artifact }} \
             --out-dir ../generated-bindings
 
@@ -342,6 +401,10 @@ jobs:
   dart-publish:
     name: "dart: Publish to cdk-dart"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     needs: [dart-build-native]
     steps:
       - name: Clone cdk-dart
@@ -356,6 +419,14 @@ jobs:
           git -c "http.extraheader=$(auth_header)" \
             clone --branch "${RELEASE_BRANCH}" \
             https://github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
+
+      - name: Checkout monorepo (for the build manifest)
+        uses: actions/checkout@v5
+        with:
+          path: cdk
+          ref: ${{ env.CDK_CHECKOUT_REF }}
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: Download all native artifacts
         uses: actions/download-artifact@v8
@@ -385,6 +456,15 @@ jobs:
         with:
           name: dart-bindings-generated
           path: cdk-dart/lib/src/generated
+
+      - name: Write build manifest
+        working-directory: cdk
+        env:
+          CDK_VER: ${{ inputs.cdk_version }}
+          NIGHTLY: ${{ inputs.nightly }}
+        run: |
+          ./.github/scripts/write-build-manifest.sh dart \
+            ../cdk-dart ../cdk-dart/build-manifest.json
 
       - name: Commit to release branch
         working-directory: cdk-dart
@@ -428,7 +508,16 @@ jobs:
             # Clean up for next platform
             rm -rf staging/prebuilt
           done
+          ( cd release-archives && sha256sum -- * > SHA256SUMS )
+          cp cdk-dart/build-manifest.json release-archives/
           ls -lh release-archives/
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            release-archives/*.tar.gz
+            release-archives/*.zip
 
       - name: Create release on cdk-dart
         env:

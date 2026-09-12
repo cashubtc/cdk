@@ -102,6 +102,10 @@ jobs:
     name: "Publish Dart nightly"
     needs: prepare
     if: needs.prepare.outputs.dart == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/dart-publish.yml
     with:
       release_tag: ${{ needs.prepare.outputs.release_tag }}
@@ -115,6 +119,10 @@ jobs:
     name: "Publish Go nightly"
     needs: prepare
     if: needs.prepare.outputs.go == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/go-publish.yml
     with:
       release_tag: ${{ needs.prepare.outputs.release_tag }}
@@ -128,6 +136,10 @@ jobs:
     name: "Publish Kotlin nightly"
     needs: prepare
     if: needs.prepare.outputs.kotlin == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/kotlin-publish.yml
     with:
       release_tag: ${{ needs.prepare.outputs.release_tag }}
@@ -141,6 +153,10 @@ jobs:
     name: "Publish Swift nightly"
     needs: prepare
     if: needs.prepare.outputs.swift == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/swift-publish.yml
     with:
       release_tag: ${{ needs.prepare.outputs.release_tag }}

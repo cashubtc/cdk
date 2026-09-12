@@ -37,6 +37,10 @@ jobs:
   dart:
     name: "Trigger Dart bindings"
     needs: detect-prerelease
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/dart-publish.yml
     with:
       release_tag: ${{ inputs.release_tag }}
@@ -48,6 +52,10 @@ jobs:
   kotlin:
     name: "Trigger Kotlin bindings"
     needs: detect-prerelease
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/kotlin-publish.yml
     with:
       release_tag: ${{ inputs.release_tag }}
@@ -59,6 +67,10 @@ jobs:
   swift:
     name: "Trigger Swift bindings"
     needs: detect-prerelease
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/swift-publish.yml
     with:
       release_tag: ${{ inputs.release_tag }}
@@ -70,6 +82,10 @@ jobs:
   go:
     name: "Trigger Go bindings"
     needs: detect-prerelease
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/go-publish.yml
     with:
       release_tag: ${{ inputs.release_tag }}

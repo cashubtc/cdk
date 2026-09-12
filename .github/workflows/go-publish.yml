@@ -47,8 +47,12 @@ env:
   TAG: ${{ inputs.release_tag }}
   CDK_REF: ${{ inputs.cdk_ref || inputs.release_tag }}
   CDK_CHECKOUT_REF: ${{ inputs.nightly && inputs.cdk_ref || format('refs/tags/{0}', inputs.release_tag) }}
+  CDK_SOURCE_TAG: ${{ inputs.cdk_version && format('refs/tags/v{0}', inputs.cdk_version) || format('refs/tags/{0}', inputs.release_tag) }}
+  CDK_SOURCE_MANIFEST: ${{ inputs.nightly && 'Cargo.toml' || 'cdk-src/Cargo.toml' }}
   RELEASE_BRANCH: release/${{ inputs.release_tag }}
-  UNIFFI_BINDGEN_GO_TAG: v0.6.0+v0.30.0
+  # Tag v0.6.0+v0.30.0. Pinned by commit because a tag can be repointed
+  # upstream, and --locked only pins the tool's own dependencies.
+  UNIFFI_BINDGEN_GO_REV: 5ad642822ad3c52219bd7081c0e58c2ac22bd9f8
 
 jobs:
   validate-release-ref:
@@ -83,6 +87,13 @@ jobs:
             exit 1
           fi
 
+      - name: Verify the cdk-ffi source tag exists
+        if: ${{ !inputs.nightly }}
+        run: |
+          git ls-remote --exit-code --tags \
+            "https://github.com/${GITHUB_REPOSITORY}.git" "${CDK_SOURCE_TAG}" >/dev/null \
+            || { echo "::error::${CDK_SOURCE_TAG} does not exist; cdk_version must name a released CDK tag"; exit 1; }
+
       - name: Verify release source exists
         uses: actions/checkout@v5
         with:
@@ -105,6 +116,29 @@ jobs:
         uses: actions/checkout@v5
         with:
           ref: ${{ env.CDK_CHECKOUT_REF }}
+
+      # cdk-ffi is pinned to a published version, whose dependency requirements
+      # were frozen when it was released. Its own tag, not the release tag, is
+      # what the binding lockfile has to be seeded from.
+      - name: Checkout the cdk-ffi source tag
+        if: ${{ !inputs.nightly }}
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.CDK_SOURCE_TAG }}
+          path: cdk-src
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify the cdk-ffi source tag
+        if: ${{ !inputs.nightly }}
+        run: |
+          REF_VER=$(sed -n '/^\[workspace\.package\]/,/^\[/p' cdk-src/Cargo.toml \
+            | grep '^version ' | head -1 | cut -d'"' -f2)
+          if [[ "${REF_VER}" != "${CDK_VER}" ]]; then
+            echo "::error::${CDK_SOURCE_TAG} declares workspace version ${REF_VER}, not ${CDK_VER}"
+            exit 1
+          fi
+          echo "Seeding the binding lockfile from ${CDK_SOURCE_TAG}"
 
       - name: Clone cdk-go
         run: |
@@ -180,11 +214,19 @@ jobs:
           # Remove workspace lints reference
           sed -i '/^\[lints\]/,/^$/s/^workspace = true//' cdk-go/rust/Cargo.toml
 
+          # Detach from the monorepo workspace: the release job clones
+          # cdk-go inside the checkout, so cargo would otherwise walk up
+          # to the root Cargo.toml and reject a non-member package.
+          printf '\n[workspace]\n' >> cdk-go/rust/Cargo.toml
+
           # Add release profile
           printf '\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-go/rust/Cargo.toml
 
           echo "--- rust/Cargo.toml ---"
           cat cdk-go/rust/Cargo.toml
+
+      - name: Seed Cargo.lock from the cdk-ffi source lockfile
+        run: ./.github/scripts/seed-binding-lockfile.sh cdk-go/rust "${CDK_SOURCE_MANIFEST}"
 
       - name: Push to cdk-go release branch
         working-directory: cdk-go
@@ -212,64 +254,82 @@ jobs:
           # Linux
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
-            artifact: libcdk_ffi.so
+            artifact: libcdk_ffi_go.so
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
-            artifact: libcdk_ffi.so
+            artifact: libcdk_ffi_go.so
 
           # macOS
           - target: aarch64-apple-darwin
             runner: macos-14
-            artifact: libcdk_ffi.dylib
+            artifact: libcdk_ffi_go.dylib
           - target: x86_64-apple-darwin
             runner: macos-14
-            artifact: libcdk_ffi.dylib
+            artifact: libcdk_ffi_go.dylib
 
           # Windows
           - target: x86_64-pc-windows-msvc
-            runner: windows-latest
-            artifact: cdk_ffi.dll
+            runner: windows-2022
+            artifact: cdk_ffi_go.dll
 
     steps:
-      - name: Checkout monorepo
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ env.CDK_CHECKOUT_REF }}
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Build cdk-ffi
+      - name: Clone cdk-go
         shell: bash
         run: |
-          cargo build --release --package cdk-ffi \
-            --target ${{ matrix.target }}
+          git clone --branch "${RELEASE_BRANCH}" \
+            https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_GO_REPO }}.git cdk-go
+
+      - name: Install pinned Rust toolchain
+        working-directory: cdk-go
+        shell: bash
+        run: |
+          # rust-toolchain.toml is the single source of truth here; rustup
+          # installs it on demand. Never resolve to floating stable.
+          rustup show active-toolchain
+          rustup target add ${{ matrix.target }}
+          CHANNEL=$(grep '^channel' rust-toolchain.toml | cut -d'"' -f2)
+          # Captured rather than piped into grep -q: a short-circuiting grep
+          # kills rustc with SIGPIPE, which pipefail reports as a failure even
+          # when the version matched.
+          RUSTC_VV=$(rustc -vV)
+          echo "${RUSTC_VV}"
+          RUSTC_RELEASE=$(awk '/^release:/ { print $2 }' <<< "${RUSTC_VV}")
+          if [[ "${RUSTC_RELEASE}" != "${CHANNEL}" ]]; then
+            echo "::error::expected rustc ${CHANNEL} per rust-toolchain.toml; got ${RUSTC_RELEASE}"
+            exit 1
+          fi
+
+      - name: Build cdk-ffi-go
+        working-directory: cdk-go/rust
+        shell: bash
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Fix dylib install name
         if: endsWith(matrix.artifact, '.dylib')
+        working-directory: cdk-go/rust
         run: |
-          install_name_tool -id @rpath/libcdk_ffi.dylib \
+          install_name_tool -id @rpath/libcdk_ffi_go.dylib \
             target/${{ matrix.target }}/release/${{ matrix.artifact }}
 
       - name: Install uniffi-bindgen-go
         if: matrix.target == 'x86_64-unknown-linux-gnu'
+        working-directory: cdk-go
         run: |
           cargo install uniffi-bindgen-go \
             --git https://github.com/NordSecurity/uniffi-bindgen-go \
-            --tag ${{ env.UNIFFI_BINDGEN_GO_TAG }} \
+            --rev ${{ env.UNIFFI_BINDGEN_GO_REV }} \
             --locked --force
 
       - name: Generate Go bindings
         if: matrix.target == 'x86_64-unknown-linux-gnu'
+        working-directory: cdk-go/rust
         run: |
-          mkdir -p generated-bindings
+          mkdir -p ../../generated-bindings
           uniffi-bindgen-go \
             "target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
             --library \
-            --config bindings/go/uniffi.toml \
-            --out-dir generated-bindings
+            --config ../uniffi.toml \
+            --out-dir ../../generated-bindings
 
       - name: Upload generated bindings
         if: matrix.target == 'x86_64-unknown-linux-gnu'
@@ -279,6 +339,7 @@ jobs:
           path: generated-bindings/
 
       - name: Strip debug symbols
+        working-directory: cdk-go/rust
         shell: bash
         run: |
           FILE="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
@@ -292,7 +353,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
+          cp "cdk-go/rust/target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
              "dist/${{ matrix.target }}-${{ matrix.artifact }}"
 
       - name: Upload artifact
@@ -304,12 +365,24 @@ jobs:
   go-publish:
     name: "go: Publish to cdk-go"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     needs: [go-build-native]
     steps:
       - name: Clone cdk-go
         run: |
           git clone --branch "${RELEASE_BRANCH}" \
             https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_GO_REPO }}.git cdk-go
+
+      - name: Checkout monorepo (for the build manifest)
+        uses: actions/checkout@v5
+        with:
+          path: cdk
+          ref: ${{ env.CDK_CHECKOUT_REF }}
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: Download all native artifacts
         uses: actions/download-artifact@v8
@@ -328,6 +401,11 @@ jobs:
         run: |
           NATIVE_DIR="cdk-go/bindings/cdkffi/native"
 
+          # Regenerated wholesale: the sync rsync does not --delete, so a
+          # library renamed between releases would otherwise linger here and
+          # land in checksums.sha256.
+          rm -rf "${NATIVE_DIR}"
+
           declare -A TARGET_MAP
           TARGET_MAP[x86_64-unknown-linux-gnu]="linux_amd64"
           TARGET_MAP[aarch64-unknown-linux-gnu]="linux_arm64"
@@ -336,11 +414,11 @@ jobs:
           TARGET_MAP[x86_64-pc-windows-msvc]="windows_amd64"
 
           declare -A ARTIFACT_MAP
-          ARTIFACT_MAP[x86_64-unknown-linux-gnu]="libcdk_ffi.so"
-          ARTIFACT_MAP[aarch64-unknown-linux-gnu]="libcdk_ffi.so"
-          ARTIFACT_MAP[aarch64-apple-darwin]="libcdk_ffi.dylib"
-          ARTIFACT_MAP[x86_64-apple-darwin]="libcdk_ffi.dylib"
-          ARTIFACT_MAP[x86_64-pc-windows-msvc]="cdk_ffi.dll"
+          ARTIFACT_MAP[x86_64-unknown-linux-gnu]="libcdk_ffi_go.so"
+          ARTIFACT_MAP[aarch64-unknown-linux-gnu]="libcdk_ffi_go.so"
+          ARTIFACT_MAP[aarch64-apple-darwin]="libcdk_ffi_go.dylib"
+          ARTIFACT_MAP[x86_64-apple-darwin]="libcdk_ffi_go.dylib"
+          ARTIFACT_MAP[x86_64-pc-windows-msvc]="cdk_ffi_go.dll"
 
           for target in "${!TARGET_MAP[@]}"; do
             go_dir="${TARGET_MAP[$target]}"
@@ -383,7 +461,7 @@ jobs:
 
           package cdk_ffi
 
-          // #cgo LDFLAGS: -L${SRCDIR}/native/linux_amd64 -lcdk_ffi -Wl,-rpath,${SRCDIR}/native/linux_amd64 -lm -ldl
+          // #cgo LDFLAGS: -L${SRCDIR}/native/linux_amd64 -lcdk_ffi_go -Wl,-rpath,${SRCDIR}/native/linux_amd64 -lm -ldl
           import "C"
           EOF
 
@@ -392,7 +470,7 @@ jobs:
 
           package cdk_ffi
 
-          // #cgo LDFLAGS: -L${SRCDIR}/native/linux_arm64 -lcdk_ffi -Wl,-rpath,${SRCDIR}/native/linux_arm64 -lm -ldl
+          // #cgo LDFLAGS: -L${SRCDIR}/native/linux_arm64 -lcdk_ffi_go -Wl,-rpath,${SRCDIR}/native/linux_arm64 -lm -ldl
           import "C"
           EOF
 
@@ -401,7 +479,7 @@ jobs:
 
           package cdk_ffi
 
-          // #cgo LDFLAGS: -L${SRCDIR}/native/darwin_amd64 -lcdk_ffi -Wl,-rpath,${SRCDIR}/native/darwin_amd64 -lm
+          // #cgo LDFLAGS: -L${SRCDIR}/native/darwin_amd64 -lcdk_ffi_go -Wl,-rpath,${SRCDIR}/native/darwin_amd64 -lm
           import "C"
           EOF
 
@@ -410,7 +488,7 @@ jobs:
 
           package cdk_ffi
 
-          // #cgo LDFLAGS: -L${SRCDIR}/native/darwin_arm64 -lcdk_ffi -Wl,-rpath,${SRCDIR}/native/darwin_arm64 -lm
+          // #cgo LDFLAGS: -L${SRCDIR}/native/darwin_arm64 -lcdk_ffi_go -Wl,-rpath,${SRCDIR}/native/darwin_arm64 -lm
           import "C"
           EOF
 
@@ -419,7 +497,7 @@ jobs:
 
           package cdk_ffi
 
-          // #cgo LDFLAGS: -L${SRCDIR}/native/windows_amd64 -lcdk_ffi
+          // #cgo LDFLAGS: -L${SRCDIR}/native/windows_amd64 -lcdk_ffi_go
           import "C"
           EOF
 
@@ -430,7 +508,7 @@ jobs:
           LIBS=()
           while IFS= read -r -d '' f; do
             LIBS+=("${f}")
-          done < <(find "${NATIVE_DIR}" -type f \( -name "*.so" -o -name "*.dylib" \) -print0 | sort -z)
+          done < <(find "${NATIVE_DIR}" -type f \( -name "*.so" -o -name "*.dylib" -o -name "*.dll" \) -print0 | sort -z)
           {
             for abs_path in "${LIBS[@]}"; do
               rel_path="${abs_path#"${NATIVE_DIR}/"}"
@@ -440,6 +518,15 @@ jobs:
           } > "${CHECKSUM_FILE}"
           echo "Updated ${CHECKSUM_FILE}:"
           cat "${CHECKSUM_FILE}"
+
+      - name: Write build manifest
+        working-directory: cdk
+        env:
+          CDK_VER: ${{ inputs.cdk_version }}
+          NIGHTLY: ${{ inputs.nightly }}
+        run: |
+          ./.github/scripts/write-build-manifest.sh go \
+            ../cdk-go ../cdk-go/build-manifest.json
 
       - name: Commit to release branch
         working-directory: cdk-go
@@ -457,6 +544,12 @@ jobs:
       - name: Build release archive
         run: |
           tar -czf "cdk-go-bindings-${TAG}.tar.gz" -C cdk-go bindings/cdkffi
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            cdk-go-bindings-${{ inputs.release_tag }}.tar.gz
 
       - name: Create release on cdk-go (creates tag and uploads asset atomically)
         working-directory: cdk-go
@@ -480,7 +573,8 @@ jobs:
             --target "${COMMIT_SHA}" \
             --title "Release ${TAG}" \
             "${RELEASE_OPTIONS[@]}" \
-            "../cdk-go-bindings-${TAG}.tar.gz"
+            "../cdk-go-bindings-${TAG}.tar.gz" \
+            build-manifest.json
 
       - name: Merge to default branch
         if: ${{ !inputs.nightly }}
