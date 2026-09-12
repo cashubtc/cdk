@@ -386,16 +386,28 @@ max_outputs = 1000
 
 # Maximum concurrent WebSocket connections across the whole mint
 ws_max_connections = 512
-# Maximum concurrent WebSocket connections from one peer address.
-# Set this to 0 when running behind a reverse proxy: every connection then
-# arrives from the proxy's address, so the limit would apply to all clients at
-# once. Forwarded headers are not trusted, because a client can forge them.
-ws_max_connections_per_ip = 2
+# Maximum concurrent WebSocket connections from one client address. Disabled by
+# default: behind a reverse proxy every connection arrives from the proxy's
+# address, so the limit would apply to all clients at once, and shared NAT has
+# the same effect. Enable it on a directly exposed mint, or behind a proxy once
+# ws_trusted_client_ip_header below names the header carrying the real client.
+ws_max_connections_per_ip = 0
+# Header a trusted reverse proxy sets with the client's address, read by
+# ws_max_connections_per_ip in place of the TCP peer address. Unset by default,
+# so nothing a client sends is trusted. Set it only when the proxy in front of
+# the mint overwrites or appends to the header, since any client can send it
+# otherwise and the per-address limit becomes trivial to evade. The rightmost
+# address in the header is the one used, because that is the one the proxy saw;
+# with a second proxy in front (a CDN, for example) that address is the inner
+# proxy again and the limit is back to counting everyone as one client.
+# ws_trusted_client_ip_header = "X-Forwarded-For"
 # Maximum concurrent subscriptions on one WebSocket connection
 ws_max_subscriptions_per_connection = 100
 # Maximum filters accepted in a single subscription request
 ws_max_filters_per_subscription = 1000
-# Maximum topics one WebSocket connection may register across its subscriptions
+# Maximum topics one WebSocket connection may register across its subscriptions.
+# Must be at least ws_max_filters_per_subscription, since each filter registers
+# one topic, or a maximum-size subscription could never succeed.
 ws_max_topics_per_connection = 1000
 # Request units one WebSocket connection earns per second. A unit is roughly one
 # frame; a subscription costs one unit per filter, because registering a filter
@@ -408,7 +420,8 @@ ws_max_request_burst_units = 1024
 # Throttled requests tolerated before the connection is closed. Set to 0 to keep
 # a throttled connection open indefinitely.
 ws_max_throttled_requests = 20
-# Largest WebSocket message accepted from a client, in bytes
+# Largest WebSocket message accepted from a client, in bytes. At least 4096, below
+# which a legitimate subscribe frame would no longer fit.
 ws_max_message_bytes = 524288
 # Seconds a WebSocket may go without inbound traffic before it is closed
 ws_idle_timeout_secs = 120

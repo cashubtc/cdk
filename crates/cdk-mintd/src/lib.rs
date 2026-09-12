@@ -31,6 +31,7 @@ use cdk::nuts::{
     AuthRequired, ContactInfo, Method, MintVersion, PaymentMethod, ProtectedEndpoint, RoutePath,
 };
 use cdk_axum::cache::HttpCache;
+use cdk_axum::{WsLimitsError, WsLimitsField};
 use cdk_common::common::QuoteTTL;
 use cdk_common::database::DynMintDatabase;
 // internal crate modules
@@ -93,9 +94,6 @@ pub(crate) mod test_utils {
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 const DEFAULT_BATCH_MINT_SIZE: u64 = 100;
 const REQUEST_BODY_LIMIT_BYTES: usize = 1_048_576;
-/// Floor for `ws_max_message_bytes`, below which a legitimate subscribe frame
-/// would no longer fit.
-const MIN_WS_MESSAGE_BYTES: usize = 4096;
 
 type DynSignatory = Arc<dyn cdk_signatory::signatory::Signatory + Send + Sync>;
 
@@ -577,28 +575,16 @@ pub(crate) fn validate_settings(settings: &config::Settings) -> Result<()> {
     Ok(())
 }
 
+/// Rejects limits that would wedge the mint rather than protect it.
+///
+/// The WebSocket rules live in `WsLimits::validate`, so an embedder building the
+/// router directly gets the same guarantees; only the rest is checked here.
 fn validate_limits_config(settings: &config::Settings) -> Result<()> {
     let limits = &settings.limits;
 
-    // A zero here would wedge the mint rather than protect it, so it is rejected
-    // outright. `ws_max_connections_per_ip` is the exception: zero disables the
-    // per-address limit, which is what a mint behind a reverse proxy needs.
     for (name, value) in [
         ("max_inputs", limits.max_inputs),
         ("max_outputs", limits.max_outputs),
-        ("ws_max_connections", limits.ws_max_connections),
-        (
-            "ws_max_subscriptions_per_connection",
-            limits.ws_max_subscriptions_per_connection,
-        ),
-        (
-            "ws_max_filters_per_subscription",
-            limits.ws_max_filters_per_subscription,
-        ),
-        (
-            "ws_max_topics_per_connection",
-            limits.ws_max_topics_per_connection,
-        ),
         ("pubsub_max_topics", limits.pubsub_max_topics),
         (
             "pubsub_max_concurrent_backfills",
@@ -610,36 +596,58 @@ fn validate_limits_config(settings: &config::Settings) -> Result<()> {
         }
     }
 
-    if limits.ws_max_request_units_per_second > 0 {
-        let subscription_units = u32::try_from(limits.ws_max_filters_per_subscription)
-            .unwrap_or(u32::MAX)
-            .saturating_add(1);
-        if limits.ws_max_request_burst_units < subscription_units {
-            bail!(
-                "Invalid limits configuration: ws_max_request_burst_units must be at least {subscription_units} to cover the frame and every filter of one ws_max_filters_per_subscription request"
-            );
+    validate_ws_limits(limits)
+}
+
+/// The configuration key an operator edits to change a `WsLimits` field.
+///
+/// Spelled out rather than derived by prefixing, because the timeouts are
+/// configured in seconds and so do not share the library's field names.
+fn ws_config_key(field: WsLimitsField) -> &'static str {
+    match field {
+        WsLimitsField::MaxConnections => "ws_max_connections",
+        WsLimitsField::MaxSubscriptionsPerConnection => "ws_max_subscriptions_per_connection",
+        WsLimitsField::MaxFiltersPerSubscription => "ws_max_filters_per_subscription",
+        WsLimitsField::MaxTopicsPerConnection => "ws_max_topics_per_connection",
+        WsLimitsField::MaxRequestBurstUnits => "ws_max_request_burst_units",
+        WsLimitsField::MaxMessageBytes => "ws_max_message_bytes",
+        WsLimitsField::IdleTimeout => "ws_idle_timeout_secs",
+        WsLimitsField::PingInterval => "ws_ping_interval_secs",
+    }
+}
+
+/// Restates a WebSocket limits failure in the operator's vocabulary, since
+/// `WsLimits` names its fields without the `ws_` prefix.
+fn validate_ws_limits(limits: &config::Limits) -> Result<()> {
+    let ws_limits = limits.ws_limits().map_err(|err| {
+        anyhow!("Invalid limits configuration: ws_trusted_client_ip_header is not a valid HTTP header name: {err}")
+    })?;
+
+    let Err(err) = ws_limits.validate() else {
+        return Ok(());
+    };
+
+    let key = ws_config_key(err.field());
+    match err {
+        WsLimitsError::Zero { .. } => {
+            bail!("Invalid limits configuration: {key} must be greater than zero")
+        }
+        WsLimitsError::BurstTooSmall { required } => bail!(
+            "Invalid limits configuration: {key} must be at least {required} to cover the frame and every filter of one ws_max_filters_per_subscription request"
+        ),
+        WsLimitsError::TopicBudgetTooSmall { required } => bail!(
+            "Invalid limits configuration: {key} must be at least {required} to admit one ws_max_filters_per_subscription request"
+        ),
+        WsLimitsError::MessageTooSmall { required } => {
+            bail!("Invalid limits configuration: {key} must be at least {required}")
+        }
+        WsLimitsError::PingIntervalExceedsIdleTimeout => bail!(
+            "Invalid limits configuration: ws_ping_interval_secs must not exceed ws_idle_timeout_secs"
+        ),
+        WsLimitsError::TooManyConnections { maximum } => {
+            bail!("Invalid limits configuration: {key} must not exceed {maximum}")
         }
     }
-
-    if limits.ws_max_message_bytes < MIN_WS_MESSAGE_BYTES {
-        bail!(
-            "Invalid limits configuration: ws_max_message_bytes must be at least {MIN_WS_MESSAGE_BYTES}"
-        );
-    }
-
-    if limits.ws_idle_timeout_secs == 0 || limits.ws_ping_interval_secs == 0 {
-        bail!(
-            "Invalid limits configuration: ws_idle_timeout_secs and ws_ping_interval_secs must be greater than zero"
-        );
-    }
-
-    if limits.ws_ping_interval_secs > limits.ws_idle_timeout_secs {
-        bail!(
-            "Invalid limits configuration: ws_ping_interval_secs must not exceed ws_idle_timeout_secs"
-        );
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -672,6 +680,42 @@ mod limits_validation_tests {
             .expect_err("a burst that cannot cover one subscription must be rejected");
         assert!(
             err.to_string().contains("ws_max_request_burst_units"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A filter budget the topic budget cannot admit is reported against the
+    /// configuration key, not the library's field name.
+    #[test]
+    fn a_topic_budget_smaller_than_a_full_subscription_is_rejected() {
+        let limits = config::Limits {
+            ws_max_filters_per_subscription: 10,
+            ws_max_topics_per_connection: 9,
+            ..config::Limits::default()
+        };
+
+        let err = validate_limits_config(&settings_with(limits))
+            .expect_err("a topic budget that cannot admit one subscription must be rejected");
+        assert!(
+            err.to_string().contains("ws_max_topics_per_connection"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A header name the mint could never match is a typo worth failing on, not
+    /// a limit to enforce against the peer address behind the operator's back.
+    #[test]
+    fn an_invalid_trusted_client_ip_header_is_rejected() {
+        let limits = config::Limits {
+            ws_max_connections_per_ip: 2,
+            ws_trusted_client_ip_header: Some("X Forwarded For".to_string()),
+            ..config::Limits::default()
+        };
+
+        let err = validate_limits_config(&settings_with(limits))
+            .expect_err("a header name with a space must be rejected");
+        assert!(
+            err.to_string().contains("ws_trusted_client_ip_header"),
             "unexpected error: {err}"
         );
     }
@@ -2416,7 +2460,7 @@ impl PreparedMintd {
             cache,
             custom_methods,
             settings.info.enable_info_page.unwrap_or(true),
-            settings.limits.ws_limits(),
+            settings.limits.ws_limits()?,
         )
         .await?;
 
