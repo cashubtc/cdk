@@ -100,7 +100,7 @@ where
     /// Migrate
     async fn migrate(conn: PooledResource<RM>) -> Result<(), Error> {
         let tx = ConnectionWithTransaction::new(conn).await?;
-        migrate(&tx, RM::Connection::name(), MIGRATIONS).await?;
+        migrate(&tx, RM::Connection::name(), MIGRATIONS, Vec::new()).await?;
         tx.commit().await?;
         Ok(())
     }

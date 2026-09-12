@@ -74,10 +74,14 @@ impl<'a> MakeWriter<'a> for TraceWriter {
     }
 }
 
-/// Create test database
+/// Create test database with the test mint already stored
+///
+/// A mint is identified internally, so it has to exist before rows can point
+/// at it.
 pub async fn create_test_db() -> Arc<dyn WalletDatabase<cdk_common::database::Error> + Send + Sync>
 {
     let db = cdk_sqlite::wallet::memory::empty().await.unwrap();
+    db.add_mint(test_mint_url(), None).await.unwrap();
     Arc::new(db)
 }
 

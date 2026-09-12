@@ -542,6 +542,56 @@ mod test {
 
     wallet_db_test!(provide_wallet_db);
 
+    /// Checks the `mint_url` to `mint_id` conversion over real rows.
+    ///
+    /// The seed and the assertions are shared with the SQLite test. Postgres reaches the same end
+    /// state by a completely different route (an identity column and a primary-key swap, rather
+    /// than rebuilding the tables), so neither dialect is evidence for the other.
+    ///
+    /// Like every other test in this module, it needs a reachable Postgres and fails without one.
+    #[tokio::test]
+    async fn migrates_mint_url_to_mint_id() {
+        use cdk_sql_common::database::ConnectionWithTransaction;
+        use cdk_sql_common::pool::Pool;
+        use cdk_sql_common::wallet::test::{assert_mint_id_migrated, seed_pre_mint_id};
+
+        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .unwrap_or(
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned(),
+            );
+
+        let db_url = format!(
+            "{db_url} schema=test_mint_id_{}",
+            uuid::Uuid::new_v4().simple()
+        );
+
+        let pool = Pool::<PgConnectionPool>::new(db_url.as_str().into());
+
+        {
+            let conn = pool.get().await.expect("connection");
+            let tx = ConnectionWithTransaction::new(conn)
+                .await
+                .expect("transaction");
+
+            seed_pre_mint_id(&tx, "postgres").await.expect("seed");
+
+            tx.commit().await.expect("commit");
+        }
+
+        WalletPgDatabase::new(db_url.as_str())
+            .await
+            .expect("migration applies");
+
+        let conn = pool.get().await.expect("connection");
+        assert_mint_id_migrated(&*conn).await.expect("assertions");
+
+        WalletPgDatabase::new(db_url.as_str())
+            .await
+            .expect("migration is recorded and skipped on reopen");
+    }
+
     #[tokio::test]
     async fn failed_initial_connect_marks_connection_stale() {
         let stale = Arc::new(AtomicBool::new(false));

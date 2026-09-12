@@ -224,6 +224,9 @@ mod tests {
 
         let mint_b =
             MintUrl::from_str("https://other-mint.example.com").expect("mint URL should be valid");
+        db.add_mint(mint_b.clone(), None)
+            .await
+            .expect("other mint should be stored");
         let proof_b = test_proof(test_keyset_id(), 100);
         let proof_b_y = proof_b.y().expect("test proof should derive a Y value");
         let proof_info_b =

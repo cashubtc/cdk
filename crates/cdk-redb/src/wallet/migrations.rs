@@ -1,21 +1,23 @@
 //! Wallet Migrations
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use cdk_common::mint_url::MintUrl;
-use cdk_common::wallet::Transaction;
-use cdk_common::Id;
+use cdk_common::wallet::{self, MintQuote, ProofInfo, Transaction};
+use cdk_common::{Id, MintInfo};
 use redb::{
     Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable, ReadableTable,
     TableDefinition,
 };
 
 use super::Error;
+use crate::wallet::mint_index::{MintIndex, StoredMint, MINTS_TABLE as MINTS_BY_ID_TABLE};
 use crate::wallet::{
-    KEYSETS_TABLE, KEYSET_COUNTER, KEYSET_U32_MAPPING, MINT_KEYS_TABLE, P2PK_SIGNING_KEYS_TABLE,
-    TRANSACTIONS_TABLE,
+    KEYSETS_TABLE, KEYSET_COUNTER, KEYSET_U32_MAPPING, MELT_QUOTES_TABLE,
+    MINT_KEYSETS_TABLE as MINT_ID_KEYSETS_TABLE, MINT_KEYS_TABLE, MINT_QUOTES_TABLE,
+    P2PK_SIGNING_KEYS_TABLE, PROOFS_TABLE, SAGAS_TABLE, TRANSACTIONS_TABLE,
 };
 
 // <Mint_url, Info>
@@ -271,6 +273,176 @@ pub(crate) fn migrate_05_to_06(db: Arc<Database>) -> Result<u32, Error> {
     Ok(6)
 }
 
+/// Give every mint an internal id and point records at that id.
+///
+/// A mint URL is a mutable attribute, so keying records on it meant a mint that
+/// moved had to have every table rewritten. Records now carry a `mint_id` that
+/// never changes.
+///
+/// Records could reference a mint that was never added; those get an identity
+/// too, so nothing is stranded.
+pub(crate) fn migrate_06_to_07(db: Arc<Database>) -> Result<u32, Error> {
+    tracing::info!("Starting migration from version 6 to 7: Internal mint ids");
+    let write_txn = db.begin_write().map_err(Error::from)?;
+
+    {
+        let mut mint_urls: HashMap<MintUrl, Option<MintInfo>> = HashMap::new();
+
+        {
+            let table = write_txn.open_table(MINTS_TABLE)?;
+            for entry in table.iter()? {
+                let (mint_url, mint_info) = entry?;
+                let mint_url = MintUrl::from_str(mint_url.value())?;
+                mint_urls.insert(mint_url, serde_json::from_str(mint_info.value())?);
+            }
+        }
+
+        {
+            let table = write_txn.open_multimap_table(MINT_KEYSETS_TABLE)?;
+            for entry in table.iter()? {
+                let (mint_url, _) = entry?;
+                mint_urls
+                    .entry(MintUrl::from_str(mint_url.value())?)
+                    .or_default();
+            }
+        }
+        for referenced in [
+            referenced_mint_urls::<ProofInfo, &[u8]>(&write_txn, PROOFS_TABLE, |p| {
+                Some(p.mint_url)
+            })?,
+            referenced_mint_urls::<MintQuote, &str>(&write_txn, MINT_QUOTES_TABLE, |q| {
+                Some(q.mint_url)
+            })?,
+            referenced_mint_urls::<wallet::MeltQuote, &str>(&write_txn, MELT_QUOTES_TABLE, |q| {
+                q.mint_url
+            })?,
+            referenced_mint_urls::<Transaction, &[u8]>(&write_txn, TRANSACTIONS_TABLE, |t| {
+                Some(t.mint_url)
+            })?,
+            referenced_mint_urls::<wallet::WalletSaga, &str>(&write_txn, SAGAS_TABLE, |s| {
+                Some(s.mint_url)
+            })?,
+        ] {
+            for mint_url in referenced {
+                mint_urls.entry(mint_url).or_default();
+            }
+        }
+
+        let mut mints_by_id = write_txn.open_table(MINTS_BY_ID_TABLE)?;
+        let mut keyset_ids_by_mint = write_txn.open_multimap_table(MINT_ID_KEYSETS_TABLE)?;
+        let old_keyset_ids = write_txn.open_multimap_table(MINT_KEYSETS_TABLE)?;
+
+        for (mint_id, (mint_url, mint_info)) in (1u64..).zip(mint_urls) {
+            let old_key = mint_url.to_string();
+            let mint = StoredMint {
+                mint_url,
+                mint_info,
+            };
+
+            mints_by_id.insert(mint_id, serde_json::to_string(&mint)?.as_str())?;
+
+            for keyset_id in old_keyset_ids.get(old_key.as_str())?.flatten() {
+                keyset_ids_by_mint.insert(mint_id, keyset_id.value())?;
+            }
+        }
+    }
+
+    {
+        let mints = MintIndex::read(&write_txn.open_table(MINTS_BY_ID_TABLE)?)?;
+
+        rekey_bytes_records::<ProofInfo>(&write_txn, PROOFS_TABLE, &mints)?;
+        rekey_str_records::<MintQuote>(&write_txn, MINT_QUOTES_TABLE, &mints)?;
+        rekey_str_records::<wallet::MeltQuote>(&write_txn, MELT_QUOTES_TABLE, &mints)?;
+        rekey_bytes_records::<Transaction>(&write_txn, TRANSACTIONS_TABLE, &mints)?;
+        rekey_str_records::<wallet::WalletSaga>(&write_txn, SAGAS_TABLE, &mints)?;
+    }
+
+    write_txn.delete_table(MINTS_TABLE)?;
+    write_txn.delete_multimap_table(MINT_KEYSETS_TABLE)?;
+
+    write_txn.commit()?;
+    tracing::info!("Finished migration from version 6 to 7: Internal mint ids");
+
+    Ok(7)
+}
+
+/// Mint URLs named by the records of one table.
+fn referenced_mint_urls<T, K>(
+    write_txn: &redb::WriteTransaction,
+    table: TableDefinition<K, &str>,
+    mint_url: impl Fn(T) -> Option<MintUrl>,
+) -> Result<Vec<MintUrl>, Error>
+where
+    T: serde::de::DeserializeOwned,
+    K: redb::Key + 'static,
+{
+    let table = write_txn.open_table(table)?;
+    let mut mint_urls = Vec::new();
+
+    for entry in table.iter()? {
+        let (_, record) = entry?;
+        if let Some(mint_url) = mint_url(serde_json::from_str(record.value())?) {
+            mint_urls.push(mint_url);
+        }
+    }
+
+    Ok(mint_urls)
+}
+
+/// Rewrite a string-keyed table's records with `mint_id` in place of `mint_url`.
+fn rekey_str_records<T>(
+    write_txn: &redb::WriteTransaction,
+    table: TableDefinition<&str, &str>,
+    mints: &MintIndex,
+) -> Result<(), Error>
+where
+    T: serde::de::DeserializeOwned + serde::Serialize,
+{
+    let mut table = write_txn.open_table(table)?;
+
+    let rekeyed = table
+        .iter()?
+        .map(|entry| {
+            let (key, record) = entry?;
+            let record: T = serde_json::from_str(record.value())?;
+            Ok((key.value().to_owned(), mints.encode(&record)?))
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+
+    for (key, record) in rekeyed {
+        table.insert(key.as_str(), record.as_str())?;
+    }
+
+    Ok(())
+}
+
+/// Rewrite a byte-keyed table's records with `mint_id` in place of `mint_url`.
+fn rekey_bytes_records<T>(
+    write_txn: &redb::WriteTransaction,
+    table: TableDefinition<&[u8], &str>,
+    mints: &MintIndex,
+) -> Result<(), Error>
+where
+    T: serde::de::DeserializeOwned + serde::Serialize,
+{
+    let mut table = write_txn.open_table(table)?;
+
+    let rekeyed = table
+        .iter()?
+        .map(|entry| {
+            let (key, record) = entry?;
+            let record: T = serde_json::from_str(record.value())?;
+            Ok((key.value().to_vec(), mints.encode(&record)?))
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+
+    for (key, record) in rekeyed {
+        table.insert(key.as_slice(), record.as_str())?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -341,5 +513,110 @@ mod tests {
             .get(saga_transaction_id.as_slice())
             .expect("saga lookup")
             .is_some());
+    }
+
+    #[test]
+    fn migration_06_to_07_moves_records_onto_mint_ids() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let database_path = directory.path().join("wallet.redb");
+        let database = Arc::new(Database::create(database_path).expect("database"));
+
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("valid mint URL");
+        let orphan_url = MintUrl::from_str("https://orphan.example.com").expect("valid mint URL");
+        let keyset_id = Id::from_str("00916bbf7ef91a36").expect("valid keyset id");
+
+        let transaction = Transaction {
+            mint_url: orphan_url.clone(),
+            direction: TransactionDirection::Outgoing,
+            amount: Amount::from(10),
+            fee: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            ys: vec![SecretKey::generate().public_key()],
+            timestamp: 42,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
+            status: TransactionStatus::Completed,
+        };
+        let transaction_id = transaction.id();
+
+        let write_txn = database.begin_write().expect("write transaction");
+        {
+            let mut mints = write_txn.open_table(MINTS_TABLE).expect("mints table");
+            mints
+                .insert(mint_url.to_string().as_str(), "null")
+                .expect("insert mint");
+
+            let mut keysets = write_txn
+                .open_multimap_table(MINT_KEYSETS_TABLE)
+                .expect("mint keysets table");
+            keysets
+                .insert(
+                    mint_url.to_string().as_str(),
+                    keyset_id.to_bytes().as_slice(),
+                )
+                .expect("insert keyset id");
+
+            let mut transactions = write_txn
+                .open_table(TRANSACTIONS_TABLE)
+                .expect("transactions table");
+            transactions
+                .insert(
+                    transaction_id.as_slice(),
+                    serde_json::to_string(&transaction)
+                        .expect("serialize transaction")
+                        .as_str(),
+                )
+                .expect("insert transaction");
+        }
+        write_txn.commit().expect("commit transaction");
+
+        assert_eq!(
+            migrate_06_to_07(Arc::clone(&database)).expect("migration"),
+            7
+        );
+
+        let read_txn = database.begin_read().expect("read transaction");
+        let mints = MintIndex::read(
+            &read_txn
+                .open_table(MINTS_BY_ID_TABLE)
+                .expect("mints by id table"),
+        )
+        .expect("mint index");
+
+        let mint_id = mints.id(&mint_url).expect("mint id");
+        let orphan_id = mints.id(&orphan_url).expect("orphan mint id");
+
+        let keysets = read_txn
+            .open_multimap_table(MINT_ID_KEYSETS_TABLE)
+            .expect("mint id keysets table");
+        let stored_keysets = keysets
+            .get(mint_id)
+            .expect("keyset lookup")
+            .flatten()
+            .map(|id| id.value().to_vec())
+            .collect::<Vec<_>>();
+        assert_eq!(stored_keysets, vec![keyset_id.to_bytes().to_vec()]);
+
+        let transactions = read_txn
+            .open_table(TRANSACTIONS_TABLE)
+            .expect("transactions table");
+        let stored = transactions
+            .get(transaction_id.as_slice())
+            .expect("transaction lookup")
+            .expect("transaction");
+        let stored_json: serde_json::Value =
+            serde_json::from_str(stored.value()).expect("stored transaction");
+        assert_eq!(stored_json["mint_id"], serde_json::json!(orphan_id));
+        assert!(stored_json.get("mint_url").is_none());
+
+        let rebuilt: Transaction = mints.decode(stored.value()).expect("rebuilt transaction");
+        assert_eq!(rebuilt.mint_url, orphan_url);
+
+        assert!(read_txn.open_table(MINTS_TABLE).is_err());
     }
 }

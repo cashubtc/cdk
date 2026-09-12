@@ -773,6 +773,20 @@ mod tests {
 
     const TEST_BOLT11: &str = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq";
 
+    const TEST_MINT_URL: &str = "https://mint.example.com";
+
+    /// In-memory wallet database with the test mint already stored.
+    ///
+    /// A mint is identified internally, so it has to exist before rows can
+    /// point at it.
+    async fn test_localstore() -> Arc<cdk_sqlite::WalletSqliteDatabase> {
+        let db = cdk_sqlite::wallet::memory::empty().await.expect("db");
+        db.add_mint(MintUrl::from_str(TEST_MINT_URL).expect("mint url"), None)
+            .await
+            .expect("add mint");
+        Arc::new(db)
+    }
+
     #[tokio::test]
     async fn request_arguments_are_omitted_from_nwc_spans() {
         const MAKE_MARKER: &str = "private-make-invoice-description-hash";
@@ -781,7 +795,7 @@ mod tests {
         const MAKE_AMOUNT: u64 = 9_123_451;
         const LIST_LIMIT: u64 = 7_654_321;
 
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let wallet = Wallet::new(
             "https://mint.example.com",
             CurrencyUnit::Sat,
@@ -1046,7 +1060,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_transactions_keeps_newest_first_before_pagination() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let wallet = Wallet::new(
             "https://mint.example.com",
             CurrencyUnit::Sat,
@@ -1082,7 +1096,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_transactions_filters_unpaid_stored_transactions_by_default() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let wallet = Wallet::new(
             "https://mint.example.com",
             CurrencyUnit::Sat,
@@ -1134,7 +1148,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_transactions_omits_active_quotes_unless_unpaid_requested() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
         let wallet = Wallet::new(
             "https://mint.example.com",
@@ -1170,7 +1184,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_transactions_includes_paid_mint_quote_without_unpaid_flag() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
         let wallet = Wallet::new(
             "https://mint.example.com",
@@ -1213,7 +1227,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_mint_saga_does_not_duplicate_paid_quote() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
         let wallet = Wallet::new(
             "https://mint.example.com",
@@ -1279,7 +1293,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_transactions_includes_active_mint_quotes_when_unpaid_requested() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
         let wallet = Wallet::new(
             "https://mint.example.com",
@@ -1337,7 +1351,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_transactions_includes_active_melt_quotes_without_unpaid_flag() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
         let wallet = Wallet::new(
             "https://mint.example.com",
@@ -1401,7 +1415,7 @@ mod tests {
 
     #[tokio::test]
     async fn lookup_pending_invoice_uses_bolt11_created_at_and_quote_expiry() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
         let wallet = Wallet::new(
             "https://mint.example.com",
@@ -1450,7 +1464,7 @@ mod tests {
 
     #[tokio::test]
     async fn lookup_active_melt_quote_returns_pending_outgoing_invoice() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
         let wallet = Wallet::new(
             "https://mint.example.com",
@@ -1514,7 +1528,7 @@ mod tests {
 
     #[tokio::test]
     async fn make_invoice_rejects_description_hash() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let wallet = Wallet::new(
             "https://mint.example.com",
             CurrencyUnit::Sat,
@@ -1543,7 +1557,7 @@ mod tests {
 
     #[tokio::test]
     async fn make_invoice_rejects_expiry() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let wallet = Wallet::new(
             "https://mint.example.com",
             CurrencyUnit::Sat,
@@ -1572,7 +1586,7 @@ mod tests {
 
     #[tokio::test]
     async fn make_invoice_rejects_description_when_mint_does_not_support_it() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_mint_info_response(Ok(MintInfo::new().nuts(Nuts::new().nut04(
             NUT04Settings::new(
@@ -1618,7 +1632,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_info_advertises_supported_methods() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let wallet = Wallet::new(
             "https://mint.example.com",
             CurrencyUnit::Sat,
@@ -1640,7 +1654,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_balance_reports_zero_for_empty_wallet() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let wallet = Wallet::new(
             "https://mint.example.com",
             CurrencyUnit::Sat,
@@ -1660,7 +1674,7 @@ mod tests {
 
     #[tokio::test]
     async fn pay_invoice_rejects_amountless_invoice() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let wallet = Wallet::new(
             "https://mint.example.com",
             CurrencyUnit::Sat,
@@ -1687,7 +1701,7 @@ mod tests {
 
     #[tokio::test]
     async fn pay_invoice_rejects_amount_mismatch() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let wallet = Wallet::new(
             "https://mint.example.com",
             CurrencyUnit::Sat,
@@ -1715,7 +1729,7 @@ mod tests {
 
     #[tokio::test]
     async fn pay_invoice_rejects_over_max_payment_msat() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let wallet = Wallet::new(
             "https://mint.example.com",
             CurrencyUnit::Sat,
@@ -1742,7 +1756,7 @@ mod tests {
 
     #[tokio::test]
     async fn lookup_invoice_returns_not_found_for_unknown_hash() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let wallet = Wallet::new(
             "https://mint.example.com",
             CurrencyUnit::Sat,
@@ -1768,7 +1782,7 @@ mod tests {
 
     #[tokio::test]
     async fn lookup_invoice_requires_payment_hash_or_invoice() {
-        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let localstore = test_localstore().await;
         let wallet = Wallet::new(
             "https://mint.example.com",
             CurrencyUnit::Sat,
