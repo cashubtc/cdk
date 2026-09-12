@@ -2,6 +2,7 @@
 
 mod async_sqlite;
 mod common;
+mod u64_functions;
 
 pub use common::SqliteConnectionManager;
 

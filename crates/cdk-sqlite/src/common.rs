@@ -5,10 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cdk_sql_common::pool::{self, DatabasePool};
-use cdk_sql_common::value::Value;
+use cdk_sql_common::value::{amount_to_blob, Value};
+use cdk_sql_common::ConversionError;
 use rusqlite::Connection;
 
-use crate::async_sqlite;
+use crate::{async_sqlite, u64_functions};
 
 /// The config need to create a new SQLite connection
 #[derive(Clone)]
@@ -88,6 +89,8 @@ impl DatabasePool for SqliteConnectionManager {
 
         conn.busy_timeout(Duration::from_secs(10))?;
 
+        u64_functions::register(&conn)?;
+
         Ok(async_sqlite::AsyncSqlite::new(conn))
     }
 }
@@ -143,15 +146,27 @@ impl From<(&str, &str)> for Config {
 }
 
 /// Convert cdk_sql_common::value::Value to rusqlite Value
+///
+/// Statements narrow unsigned values before they reach a driver, so the
+/// unsigned arm refuses rather than truncates one that arrives another way.
+/// Amounts instead go to a blob column as their big endian bytes, which is the
+/// only SQLite representation that holds the whole `u64` range and still
+/// compares and sorts in numeric order. The statement already replaced the
+/// placeholder name with its 1-based `position` by the time a value gets here,
+/// so that is what the error can name.
 #[inline(always)]
-pub fn to_sqlite(v: Value) -> rusqlite::types::Value {
-    match v {
+pub fn to_sqlite(v: Value, position: usize) -> Result<rusqlite::types::Value, ConversionError> {
+    Ok(match v {
         Value::Blob(blob) => rusqlite::types::Value::Blob(blob),
         Value::Integer(i) => rusqlite::types::Value::Integer(i),
         Value::Null => rusqlite::types::Value::Null,
         Value::Text(t) => rusqlite::types::Value::Text(t),
         Value::Real(r) => rusqlite::types::Value::Real(r),
-    }
+        Value::Unsigned(n) => rusqlite::types::Value::Integer(i64::try_from(n).map_err(|_| {
+            ConversionError::ValueOutOfRange(format!("at placeholder ${position}"), n)
+        })?),
+        Value::Amount(n) => rusqlite::types::Value::Blob(amount_to_blob(n)),
+    })
 }
 
 /// Convert from rusqlite Valute to cdk_sql_common::value::Value

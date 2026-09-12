@@ -390,15 +390,6 @@ impl Amount<()> {
         self.value
     }
 
-    /// Convert to i64
-    pub fn to_i64(self) -> Option<i64> {
-        if self.value <= i64::MAX as u64 {
-            Some(self.value as i64)
-        } else {
-            None
-        }
-    }
-
     /// Create from i64, returning None if negative
     pub fn from_i64(value: i64) -> Option<Self> {
         if value >= 0 {
@@ -455,15 +446,6 @@ impl Amount<CurrencyUnit> {
     /// Convert to u64
     pub fn to_u64(self) -> u64 {
         self.value
-    }
-
-    /// Convert to i64
-    pub fn to_i64(self) -> Option<i64> {
-        if self.value <= i64::MAX as u64 {
-            Some(self.value as i64)
-        } else {
-            None
-        }
     }
 
     /// Get a reference to the unit
@@ -1521,91 +1503,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Tests that Amount::to_i64() returns the correct value.
-    ///
-    /// Mutant testing: Kills mutations that replace the return value with:
-    /// - None
-    /// - Some(0)
-    /// - Some(1)
-    /// - Some(-1)
-    ///
-    /// Also catches mutation that replaces <= with > in the comparison.
-    #[test]
-    fn test_amount_to_i64_returns_correct_value() {
-        // Test with value 100 (catches None, Some(0), Some(1), Some(-1) mutations)
-        let amount = Amount::from(100);
-        let result = amount.to_i64();
-        assert_eq!(result, Some(100));
-        assert!(result.is_some());
-        assert_ne!(result, Some(0));
-        assert_ne!(result, Some(1));
-        assert_ne!(result, Some(-1));
-
-        // Test with value 1000 (catches all constant mutations)
-        let amount = Amount::from(1000);
-        let result = amount.to_i64();
-        assert_eq!(result, Some(1000));
-        assert_ne!(result, None);
-        assert_ne!(result, Some(0));
-        assert_ne!(result, Some(1));
-        assert_ne!(result, Some(-1));
-
-        // Test with value 2 (specifically catches Some(1) mutation)
-        let amount = Amount::from(2);
-        let result = amount.to_i64();
-        assert_eq!(result, Some(2));
-        assert_ne!(result, Some(1));
-
-        // Test with i64::MAX (should return Some(i64::MAX))
-        // This catches the <= vs > mutation: if <= becomes >, this would return None
-        let amount = Amount::from(i64::MAX as u64);
-        let result = amount.to_i64();
-        assert_eq!(result, Some(i64::MAX));
-        assert!(result.is_some());
-
-        // Test with i64::MAX + 1 (should return None)
-        // This is the boundary case for the <= comparison
-        let amount = Amount::from(i64::MAX as u64 + 1);
-        let result = amount.to_i64();
-        assert!(result.is_none());
-
-        // Test with u64::MAX (should return None)
-        let amount = Amount::from(u64::MAX);
-        let result = amount.to_i64();
-        assert!(result.is_none());
-
-        // Edge case: 0 should return Some(0)
-        let amount = Amount::from(0);
-        let result = amount.to_i64();
-        assert_eq!(result, Some(0));
-
-        // Edge case: 1 should return Some(1)
-        let amount = Amount::from(1);
-        let result = amount.to_i64();
-        assert_eq!(result, Some(1));
-    }
-
-    /// Tests the boundary condition for Amount::to_i64() at i64::MAX.
-    ///
-    /// This specifically tests the <= vs > mutation in the condition
-    /// `if self.0 <= i64::MAX as u64`.
-    #[test]
-    fn test_amount_to_i64_boundary() {
-        // Exactly at i64::MAX - should succeed
-        let at_max = Amount::from(i64::MAX as u64);
-        assert!(at_max.to_i64().is_some());
-        assert_eq!(at_max.to_i64().unwrap(), i64::MAX);
-
-        // One above i64::MAX - should fail
-        let above_max = Amount::from(i64::MAX as u64 + 1);
-        assert!(above_max.to_i64().is_none());
-
-        // One below i64::MAX - should succeed
-        let below_max = Amount::from(i64::MAX as u64 - 1);
-        assert!(below_max.to_i64().is_some());
-        assert_eq!(below_max.to_i64().unwrap(), i64::MAX - 1);
-    }
-
     /// Tests Amount::from_i64 returns the correct value.
     ///
     /// Mutant testing: Catches mutations that:
@@ -2063,24 +1960,6 @@ mod tests {
                 Amount::from(100),
             ]
         );
-    }
-
-    #[test]
-    fn test_amount_currency_unit_to_i64() {
-        let amount = Amount::new(100, CurrencyUnit::Sat);
-        assert_eq!(amount.to_i64(), Some(100));
-
-        let amount = Amount::new(i64::MAX as u64, CurrencyUnit::Sat);
-        assert_eq!(amount.to_i64(), Some(i64::MAX));
-
-        let amount = Amount::new(i64::MAX as u64 + 1, CurrencyUnit::Sat);
-        assert_eq!(amount.to_i64(), None);
-
-        let amount = Amount::new(0, CurrencyUnit::Sat);
-        assert_eq!(amount.to_i64(), Some(0));
-
-        let amount = Amount::new(1, CurrencyUnit::Sat);
-        assert_eq!(amount.to_i64(), Some(1));
     }
 
     #[test]
