@@ -105,6 +105,39 @@ max_connections = 20
 # Connection timeout in seconds (optional, defaults to 10)
 connection_timeout_seconds = 10
 
+# Cross-instance NUT-17 notifications.
+#
+# When several mint instances share one database behind a load balancer, an
+# event published on one instance (for example an invoice being paid) only
+# reaches WebSocket subscribers on that same instance unless a transport is
+# configured. A single-instance mint needs none of this; the default keeps
+# notifications in-process.
+#
+# transport options:
+#   "in-memory" (default)      Keep notifications in-process. Correct for a
+#                              single instance.
+#   "postgres-listen-notify"   Postgres LISTEN/NOTIFY. Lowest latency, Postgres
+#                              only, and needs a session-pinned connection, so
+#                              a transaction-pooling proxy such as PgBouncer
+#                              needs a direct connection carved out for it.
+#
+# Before enabling "postgres-listen-notify", note that LISTEN and NOTIFY need no
+# privileges beyond connecting: pg_notify is executable by PUBLIC and neither
+# statement touches a table. Any role that can open a session to this database
+# can therefore read the channel (quote ids, invoices, amounts and payment
+# preimages) and publish on it, and what it publishes reaches wallets over
+# NUT-17 as if the mint had sent it. Enable it only on a database the mint has
+# to itself: give the mint its own role, keep other principals off the database,
+# run REVOKE EXECUTE ON FUNCTION pg_notify(text, text) FROM PUBLIC, and set a
+# channel name other than the default below. A shared database should stay on
+# "in-memory".
+#
+# Every field can also be set via environment variables:
+#   CDK_MINTD_PUBSUB_TRANSPORT, CDK_MINTD_PUBSUB_CHANNEL
+[database.pubsub]
+# transport = "in-memory"
+# channel = "cdk_mint_pubsub"        # postgres-listen-notify only; all instances must match
+
 # Auth database configuration (optional, only used when auth is enabled)
 [auth_database.postgres]
 # PostgreSQL connection URL for authentication database

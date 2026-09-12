@@ -1,0 +1,303 @@
+# Cross-process mint notifications via a pluggable bus
+
+* Status: accepted
+* Authors: Cesar Rodas
+* Date: 2026-07-31
+* Targeted modules: cdk-common (pub_sub), cdk-postgres (bus), cdk-mintd (config), cdk (mint)
+* Associated tickets/PRs: n/a
+
+## Context and Problem Statement
+
+The mint's NUT-17 notifications are in-process. Subscribers live in an
+in-memory index inside a single `Pubsub` instance and are fed over tokio `mpsc`
+channels (`crates/cdk-common/src/pub_sub/pubsub.rs`). When several mint
+instances run behind a load balancer sharing one database, the instance whose
+Lightning stream sees an invoice paid updates the shared quote row and publishes
+the event, but that live event only reaches WebSocket subscribers connected to
+that same instance. A wallet whose socket is pinned to another instance sees the
+change only on reconnect, through the database-backed `fetch_events` backfill.
+
+How does a published event reach subscribers on every instance without changing
+any publish call site or the WebSocket layer?
+
+## Decision Drivers
+
+* Quote and proof state is already consistent across instances through the
+  shared database and `SELECT ... FOR UPDATE` row locks. The gap is only the
+  real-time push, so the fix should target the fan-out, not storage.
+* Correctness must not depend on the transport. The mint reconciles state from
+  the database on every read (`fetch_events`), so a transport is a latency
+  optimization for the live push, never the source of truth.
+* The ~15 `PubSubManager` publish helpers, the mint spec, and the WS handlers
+  should not change. Distribution is a cross-cutting concern, not a per-event
+  one.
+* Local delivery must keep working even when the cross-process transport is
+  down. A distributed backend is an addition, never a dependency for the
+  single-instance case, which must stay the zero-configuration default.
+* Reuse what exists: `Spec::Event` and `Spec::Topic` already require
+  `Serialize + DeserializeOwned`; `cdk-postgres` already speaks `tokio-postgres`
+  with TLS handling.
+* Only a mint sharing one database across instances needs distribution at all.
+  SQLite cannot be shared that way, so this is a Postgres question.
+
+## Considered Options
+
+#### Sticky sessions at the load balancer
+
+Pin each WebSocket to one backend and rely on database reconciliation for
+correctness.
+
+**Pros:**
+
+* Good, because it needs no code change.
+
+**Cons:**
+
+* Bad, because a cross-instance flow (paid on A, subscribed on B) still misses
+  the live push; it only papers over the symptom for the connection's lifetime.
+* Bad, because it constrains the deployment and breaks on rebalancing.
+
+#### Redis pub/sub bus
+
+Fan events out through a Redis channel.
+
+**Pros:**
+
+* Good, because Redis pub/sub is purpose-built for fan-out.
+
+**Cons:**
+
+* Bad, because it adds an operational dependency most mints do not otherwise
+  run. Redis appears in the tree today only as an optional HTTP cache.
+* Bad, because a mint that already runs Postgres would take on a second
+  datastore purely for notifications.
+
+#### A portable SQL polling bus (outbox table)
+
+Append each published event to a shared table and have every instance poll rows
+newer than its cursor.
+
+**Pros:**
+
+* Good, because it uses only plain `INSERT`/`SELECT`, so it works through a
+  transaction-pooling proxy, where `LISTEN` cannot hold a session.
+* Good, because the event lives in a row, so it has no payload cap and survives
+  a missed poll within the retention window.
+
+**Cons:**
+
+* Bad, because latency is bounded by the poll interval rather than near-instant.
+* Bad, because it adds a table, a write per published event, and a periodic
+  prune, all to carry data that is never the source of truth.
+* Bad, because the engine it uniquely served is SQLite, which cannot be shared
+  across instances anyway, so most of its portability is theoretical.
+
+#### A `Bus` trait seam with a single wire transport
+
+Introduce a `Bus` trait between publish and local fan-out. The default keeps
+everything in-process; one wire implementation forwards events to peers over
+Postgres `LISTEN`/`NOTIFY`.
+
+**Pros:**
+
+* Good, because the trait keeps the in-process default unchanged and confines
+  distribution to one seam.
+* Good, because `LISTEN`/`NOTIFY` serves a directly-connected Postgres with no
+  new infrastructure and no new table.
+* Good, because a Redis or message-queue backend can be added later as another
+  `Bus` implementation without touching the seam.
+
+**Cons:**
+
+* Bad, because `NOTIFY` caps payloads at 8000 bytes, so the transport cannot
+  forward unusually large events verbatim.
+* Bad, because `LISTEN` needs a session-pinned connection, so a deployment
+  behind a transaction-pooling proxy has to carve out a direct connection for
+  it.
+
+## Decision Outcome
+
+Chosen option: "A `Bus` trait seam with a single wire transport". It distributes
+events without new infrastructure, keeps the single-instance path
+dependency-free, and leaves room for other backends.
+
+The outbox bus was built first and then removed. It bought a table, a write per
+published event and a prune loop, to serve a portability need that did not hold
+up: the engine it uniquely covered was SQLite, which cannot be shared across
+instances, and the pooled-Postgres case is answered by giving the bus a direct
+connection.
+
+### The seam
+
+`Pubsub::publish` previously fanned out directly to the in-memory subscriber
+index. That is split into local fan-out (unchanged) and distribution (behind a
+trait), in `crates/cdk-common/src/pub_sub/bus.rs`:
+
+```rust
+/// Distributes a published event. LocalBus keeps it in-process; a wire bus
+/// also forwards to peers and injects peer events through the same handle.
+pub trait Bus<S: Spec>: Send + Sync {
+    fn publish(&self, event: S::Event);
+}
+
+/// Handle a Bus uses to deliver into this process's subscribers.
+pub struct LocalDelivery<S: Spec> { /* wraps the subscriber index */ }
+impl<S: Spec> LocalDelivery<S> {
+    pub fn deliver(&self, event: S::Event); // the existing fan-out
+}
+```
+
+`publish` stays sync fire-and-forget (matching today's contract), so no publish
+call site changes. `Pubsub::new` keeps the in-process `LocalBus`; a distributed
+bus is opted into through `Pubsub::new_with_bus` and, for the mint,
+`PubSubManager::new_with_bus`. The builder is a closure
+`FnOnce(LocalDelivery<S>) -> Arc<dyn Bus<S>>` because a bus needs the delivery
+handle, which only exists once the subscriber index is created, and a wire bus
+spawns its inbound listener at that point.
+
+`LocalDelivery` feeds both local and peer events through one path, so remote
+events are indistinguishable from local ones downstream. Each instance carries a
+per-process `origin` id (a v4 UUID) so a bus can drop the copy of its own event
+that a transport hands back.
+
+### The Postgres `LISTEN`/`NOTIFY` transport
+
+`PostgresBus<S>` lives in `crates/cdk-postgres/src/bus.rs`, where the
+`tokio-postgres` client and TLS handling already exist. It is generic over any
+`Spec`, not tied to the mint, and reuses the crate's `PgConfig`/`SslMode`.
+
+Construction is two steps, keeping `new_with_bus`'s sync closure intact:
+
+* `PostgresBusConnector::connect(config, channel).await` opens a dedicated
+  connection, issues `LISTEN`, and returns only after the first connect and
+  `LISTEN` succeed, so an unreachable database fails here rather than silently
+  later. A background driver polls the connection with `poll_message`, forwards
+  `AsyncMessage::Notification` payloads to an inbound channel, and reconnects
+  with capped exponential backoff when the connection drops. It stops once every
+  bus handle is gone.
+* `connector.build(local)` spawns the inbound dispatcher and returns
+  `Arc<dyn Bus<S>>`.
+
+Delivery model:
+
+```text
+publish(event):                            // returns at once, like LocalBus
+  spawn:
+    serialize { origin, event: { kind, payload } } as JSON
+    local.deliver(event)                   // never blocked on Postgres
+    SELECT pg_notify(channel, payload)
+
+inbound payload:
+  parse { origin, event }
+  if origin == self: skip                  // Postgres echoes our own NOTIFY back
+  else: local.deliver(event)
+```
+
+Publishing delivers locally and forwards to peers; the origin check
+drops the copy Postgres echoes back, so a locally-published event is delivered
+exactly once on its own instance and once on every peer. Wire format is JSON,
+because cashu types do not round-trip through CBOR.
+
+The event itself is encoded as `{ kind, payload }`. NUT-17 payloads are not
+self-describing: quote responses for different payment methods share field
+names, so a payload can only be decoded with the subscription kind that produced
+it (`nut17::deserialize_payload_for_kind`). `MintEvent` therefore serializes the
+kind alongside the payload and decodes with it; without that tag every forwarded
+event is undecodable on the receiving instance. The `channel` name is
+validated as a Postgres identifier before it is interpolated into `LISTEN`
+(which cannot be parameterized); `NOTIFY` itself uses bound parameters. Events
+larger than the 8000-byte `NOTIFY` limit are delivered locally and skipped for
+peers with a warning; mint events (quote responses, proof states) are well under
+it, so this only concerns unusually large melts.
+
+### Trust model
+
+`LISTEN` and `NOTIFY` are not privileged operations. `pg_notify` is executable
+by `PUBLIC`, and neither statement needs rights on any table, so every role that
+can open a session to the mint's database can speak on the channel and read it,
+including roles created for monitoring, health checks, replica polling or
+another application sharing the server.
+
+Inbound events are delivered to local subscribers without re-validating them
+against the database. That is a deliberate trade (a re-read on every inbound
+event would query the database and ping the payment backend on every instance),
+but it means a payload from the channel reaches wallets over NUT-17 exactly as
+if the mint had published it. A wallet acts on those notifications: the melt
+flow finalizes on the state and preimage it receives. Reading the channel leaks
+the same data in the other direction: quote ids, invoices, amounts and payment
+preimages.
+
+Enabling this transport therefore makes the mint's database single-tenant. An
+operator who turns it on has to:
+
+* give the mint its own role and keep other principals off that database;
+* `REVOKE EXECUTE ON FUNCTION pg_notify(text, text) FROM PUBLIC` on it, so a
+  role added later cannot publish;
+* pick a channel name that is not the documented default, which costs nothing
+  and removes the obvious target.
+
+A deployment that cannot meet this (a shared database, an analytics role with
+connect rights) should stay on `in-memory` and let wallets pick state up from
+the `fetch_events` backfill.
+
+### Mint integration and transport selection
+
+```rust
+let connector = PostgresBusConnector::connect(pg_config, "cdk_mint_pubsub").await?;
+let manager = PubSubManager::new_with_bus(ctx, move |local| connector.build(local));
+```
+
+A mint left on the default `PubSubManager::new` behaves exactly as before.
+`cdk-mintd` selects a transport through `[database.pubsub].transport` (or
+`CDK_MINTD_PUBSUB_TRANSPORT`):
+
+* `in-memory` (default): `LocalBus`. Correct for a single instance.
+* `postgres-listen-notify`: `PostgresBus`. Postgres only, needs a session-pinned
+  connection. The channel is set by `channel` / `CDK_MINTD_PUBSUB_CHANNEL`.
+
+Choosing `postgres-listen-notify` on a non-Postgres engine is a startup error,
+and so is the removed `sql` value, which fails with a message naming both
+remaining transports rather than falling back to the default.
+
+When mintd runs from a database-backed configuration document, the bus is
+created while opening that database, before the document can be read. The
+transport therefore comes from the same bootstrap environment that selects the
+database (`CDK_MINTD_PUBSUB_*`), like `CDK_MINTD_DATABASE` and the Postgres URL.
+A `[database.pubsub]` block in the stored document is reported at startup and
+the bootstrap value is used.
+
+### Positive Consequences
+
+* A multi-instance mint on directly-connected Postgres gets real-time
+  notifications on every instance with no new infrastructure and no new table.
+* The single-instance path is unchanged and dependency-free; any bus is opt-in.
+* Publish call sites, the mint spec, and the WS handlers are untouched.
+* Another backend (Redis, a message queue) is a new `Bus` implementation, not a
+  change to the seam.
+* The operator states intent once (`transport = "..."`) instead of reasoning
+  about connection routing.
+
+### Negative Consequences
+
+* `NOTIFY`'s 8000-byte payload cap means the transport does not forward very
+  large events to peers; those subscribers fall back to the existing
+  on-read/reconnect backfill.
+* The transport holds a dedicated Postgres connection and a reconnect loop per
+  instance, plus one inbound dispatcher task.
+* Postgres reached through a transaction-pooling proxy has no cross-instance
+  transport unless the operator gives the bus a direct connection. Such a
+  deployment left on `in-memory` still serves correct state, but only through
+  the `fetch_events` backfill, not a live push.
+* A brief reconnect window or a bounded-inbound-queue overflow can drop the live
+  push. Subscribers recover current state on their next `fetch_events` backfill,
+  so state is not lost, only the live push during the gap.
+* The channel is as trusted as the database it runs on. See "Trust model"
+  above: with this transport enabled, the mint's database must be single-tenant,
+  because any session on it can both read the channel and speak on it.
+
+## Links
+
+* Builds on the pub/sub primitives in `crates/cdk-common/src/pub_sub/`
+* `PostgresBus` lives in `crates/cdk-postgres/src/bus.rs`
+* Reuses the reconnect pattern also used by the signatory client in
+  [ADR-0002](0002-signatory-keyset-subscription.md)

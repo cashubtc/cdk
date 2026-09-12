@@ -79,6 +79,11 @@ impl Settings {
             );
         }
 
+        // Parse the pub/sub transport for every engine, so an unknown name fails
+        // at startup instead of being ignored. postgres-listen-notify
+        // additionally requires the Postgres engine.
+        self.database.pubsub = self.database.pubsub.clone().from_env()?;
+
         // Parse auth database configuration from environment variables
         self.auth_database = Some(crate::config::AuthDatabase {
             postgres: Some(

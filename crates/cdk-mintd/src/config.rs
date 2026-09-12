@@ -962,6 +962,59 @@ impl std::str::FromStr for DatabaseEngine {
 pub struct Database {
     pub engine: DatabaseEngine,
     pub postgres: Option<PostgresConfig>,
+    pub pubsub: PubSubConfig,
+}
+
+/// Cross-instance NUT-17 notification transport.
+///
+/// A single mint instance never needs a transport; these matter only when
+/// several instances share one database behind a load balancer.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PubSubTransport {
+    /// Keep notifications in-process (the default). Correct for a single
+    /// instance; with several instances a subscriber only sees events from the
+    /// instance it is connected to (others arrive on the next backfill).
+    #[default]
+    InMemory,
+    /// Postgres `LISTEN`/`NOTIFY`. Lowest latency, Postgres only, and needs a
+    /// session-pinned connection (not a transaction-pooling proxy).
+    ///
+    /// Only for a database the mint has to itself: publishing on the channel
+    /// needs no privileges beyond connecting, and what a peer publishes reaches
+    /// wallets as if the mint had sent it.
+    PostgresListenNotify,
+}
+
+impl std::str::FromStr for PubSubTransport {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().replace('_', "-").as_str() {
+            "in-memory" | "memory" | "local" => Ok(PubSubTransport::InMemory),
+            "postgres-listen-notify" | "listen-notify" | "notify" => {
+                Ok(PubSubTransport::PostgresListenNotify)
+            }
+            "sql" | "polling" => Err(
+                "The 'sql' polling transport was removed; use 'in-memory' or \
+                 'postgres-listen-notify'. Postgres behind a transaction pooler needs a \
+                 direct connection for LISTEN"
+                    .to_string(),
+            ),
+            _ => Err(format!("Unknown pubsub transport: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct PubSubConfig {
+    /// Which transport distributes notifications across instances.
+    pub transport: PubSubTransport,
+    /// `LISTEN`/`NOTIFY` channel (postgres-listen-notify transport). Instances
+    /// that share notifications must use the same channel. Defaults to a
+    /// built-in name when unset.
+    pub channel: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1410,6 +1463,7 @@ mod tests {
                 url: url.clone(),
                 ..Default::default()
             }),
+            pubsub: Default::default(),
         };
         let auth_database = AuthDatabase {
             postgres: Some(PostgresAuthConfig {
@@ -1533,6 +1587,52 @@ listen_por = 8085
         // tests. `std::env` is global, so config.rs and lib.rs tests must
         // serialize on the *same* mutex or they race over env vars.
         crate::test_utils::env_lock()
+    }
+
+    #[test]
+    fn pubsub_transport_parses_names_and_aliases() {
+        use std::str::FromStr;
+
+        assert_eq!(
+            PubSubTransport::from_str("in-memory").unwrap(),
+            PubSubTransport::InMemory
+        );
+        assert_eq!(
+            PubSubTransport::from_str("memory").unwrap(),
+            PubSubTransport::InMemory
+        );
+        assert_eq!(
+            PubSubTransport::from_str("postgres-listen-notify").unwrap(),
+            PubSubTransport::PostgresListenNotify
+        );
+        // Underscores and case are normalized.
+        assert_eq!(
+            PubSubTransport::from_str("Postgres_Listen_Notify").unwrap(),
+            PubSubTransport::PostgresListenNotify
+        );
+        assert!(PubSubTransport::from_str("carrier-pigeon").is_err());
+    }
+
+    /// The removed transport gets a message naming its replacements, so an
+    /// operator carrying the old value is not left guessing.
+    #[test]
+    fn pubsub_transport_rejects_the_removed_sql_names() {
+        use std::str::FromStr;
+
+        for name in ["sql", "polling"] {
+            let err = PubSubTransport::from_str(name).expect_err("sql transport was removed");
+            assert!(err.contains("in-memory"), "unhelpful message: {err}");
+            assert!(err.contains("postgres-listen-notify"), "unhelpful: {err}");
+        }
+    }
+
+    #[test]
+    fn pubsub_transport_defaults_to_in_memory() {
+        assert_eq!(PubSubConfig::default().transport, PubSubTransport::InMemory);
+        assert_eq!(
+            Database::default().pubsub.transport,
+            PubSubTransport::InMemory
+        );
     }
 
     #[cfg(feature = "bdk")]
