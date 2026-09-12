@@ -449,6 +449,39 @@ impl Wallet {
         Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
     }
 
+    /// Prepare a melt operation with specific proofs and additional options
+    ///
+    /// Same as `prepare_melt_proofs`, with P2PK/HTLC-locked proofs signed
+    /// using `options.p2pk_signing_keys` plus any signing keys known to the
+    /// wallet, and HTLC preimages from `options.preimages` attached, before
+    /// the proofs are reserved.
+    ///
+    /// # Arguments
+    ///
+    /// * `quote_id` - The melt quote ID (obtained from `melt_quote`)
+    /// * `proofs` - The proofs to melt (can be external proofs not in the wallet's database)
+    /// * `options` - Signing keys, preimages, and metadata for the prepare step
+    ///
+    /// # Returns
+    ///
+    /// A `PreparedMelt` that can be confirmed or cancelled
+    pub async fn prepare_melt_proofs_with_options(
+        &self,
+        quote_id: String,
+        proofs: Proofs,
+        options: MeltPrepareOptions,
+    ) -> Result<PreparedMelt, FfiError> {
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.into_iter().map(|p| p.try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
+
+        let prepared = self
+            .inner
+            .prepare_melt_proofs_with_options(&quote_id, cdk_proofs, options.try_into()?)
+            .await?;
+        Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
+    }
+
     /// Prepare a melt operation from an encoded token
     ///
     /// Decodes the token internally (handling keyset state for v2 keysets),
@@ -470,6 +503,33 @@ impl Wallet {
         let prepared = self
             .inner
             .prepare_melt_token(&quote_id, &encoded_token, std::collections::HashMap::new())
+            .await?;
+        Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
+    }
+
+    /// Prepare a melt operation from an encoded token with additional options
+    ///
+    /// Same as `prepare_melt_token`, with locked inputs handled as described
+    /// in `prepare_melt_proofs_with_options`.
+    ///
+    /// # Arguments
+    ///
+    /// * `quote_id` - The melt quote ID (obtained from `melt_quote`)
+    /// * `encoded_token` - The encoded token string (cashuA or cashuB format)
+    /// * `options` - Signing keys, preimages, and metadata for the prepare step
+    ///
+    /// # Returns
+    ///
+    /// A `PreparedMelt` that can be confirmed or cancelled
+    pub async fn prepare_melt_token_with_options(
+        &self,
+        quote_id: String,
+        encoded_token: String,
+        options: MeltPrepareOptions,
+    ) -> Result<PreparedMelt, FfiError> {
+        let prepared = self
+            .inner
+            .prepare_melt_token_with_options(&quote_id, &encoded_token, options.try_into()?)
             .await?;
         Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
     }
