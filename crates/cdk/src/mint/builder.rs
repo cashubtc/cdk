@@ -131,6 +131,35 @@ impl From<&RotateKeyArguments> for RotationShape {
     }
 }
 
+/// The configured custom derivation paths that a keyset already sits on.
+///
+/// Read from the keystore because that is the only place an existing keyset's
+/// real derivation path survives: [`SignatoryKeySet`] does not carry it, and its
+/// `version` is the derivation index, which a custom-path keyset also has. A
+/// keyset read goes through a transaction, which takes the global keyset
+/// advisory lock, so the answer cannot be overtaken by a concurrent rotation
+/// while it is read.
+async fn occupied_custom_paths(
+    keystore: &(dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync),
+    custom_paths: &HashMap<CurrencyUnit, DerivationPath>,
+) -> Result<HashSet<DerivationPath>, Error> {
+    if custom_paths.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let configured: HashSet<&DerivationPath> = custom_paths.values().collect();
+
+    let mut tx = keystore.begin_transaction().await?;
+    let infos = tx.get_keyset_infos().await?;
+    tx.commit().await?;
+
+    Ok(infos
+        .into_iter()
+        .map(|info| info.derivation_path)
+        .filter(|path| configured.contains(path))
+        .collect())
+}
+
 /// The rotations a build has to run, in the order it has to run them.
 ///
 /// A configured rotation whose keyset already exists is dropped. Without that,
@@ -139,27 +168,30 @@ impl From<&RotateKeyArguments> for RotationShape {
 /// active one, since rotating is what makes a keyset active and the configured
 /// order is what decides which one a unit ends on.
 ///
-/// Fails when a unit pinned to a custom derivation path needs one. Keys derive
-/// from the xpriv and the derivation path alone, so a pinned unit keeps the keys
-/// it already has and no rotation can give it new ones. Each rotation is checked
-/// against the keysets the build will have produced by the time it runs, so the
-/// build is refused before anything is written rather than leaving a mint half
-/// rotated.
+/// Fails when a unit's configured custom derivation path already has a keyset on
+/// it. Keys derive from the xpriv and the derivation path alone, so a path that
+/// already produced a keyset produces the same keys again and the rotation would
+/// hand the unit back what it already has. A unit that gains a custom path it has
+/// never used is a migration, not a re-derivation, and rotates onto it normally.
+/// Each rotation is checked against the paths the build will have occupied by the
+/// time it runs, so the build is refused before anything is written rather than
+/// leaving a mint half rotated.
 ///
-/// `custom_paths` is only populated when the builder constructs the signatory
-/// itself. A caller that supplies its own signatory has nothing checked here,
-/// and a pinned unit is caught later by the signatory's own guard, part way
-/// through the rotations.
+/// `occupied_custom_paths` is only populated when the builder constructs the
+/// signatory itself and can read the keystore. A caller that supplies its own
+/// signatory has nothing checked here, even when it configured custom paths, and
+/// a re-derivation is caught later by the signatory's own guard, part way through
+/// the rotations.
 fn plan_rotations(
     mut planned: Vec<PlannedRotation>,
     configured: &[KeysetRotation],
     keysets: &[SignatoryKeySet],
     custom_paths: &HashMap<CurrencyUnit, DerivationPath>,
+    occupied_custom_paths: &HashSet<DerivationPath>,
 ) -> Result<Vec<RotateKeyArguments>, Error> {
     planned.sort_by(|a, b| a.unit.cmp(&b.unit));
 
-    let mut units_with_keysets: HashSet<CurrencyUnit> =
-        keysets.iter().map(|keyset| keyset.unit.clone()).collect();
+    let mut occupied: HashSet<DerivationPath> = occupied_custom_paths.clone();
     let mut shapes: Vec<RotationShape> = keysets.iter().map(RotationShape::from).collect();
     let mut active: HashMap<CurrencyUnit, RotationShape> = keysets
         .iter()
@@ -170,11 +202,12 @@ fn plan_rotations(
     let mut rotations: Vec<RotateKeyArguments> = Vec::new();
 
     for planned in planned {
-        if custom_paths.contains_key(&planned.unit) && units_with_keysets.contains(&planned.unit) {
-            unrotatable.push(format!("{} ({})", planned.unit, planned.reason));
+        if let Some(path) = custom_paths.get(&planned.unit) {
+            if !occupied.insert(path.clone()) {
+                unrotatable.push(format!("{} ({}) at {}", planned.unit, planned.reason, path));
+            }
         }
         let shape = RotationShape::from(&planned.args);
-        units_with_keysets.insert(planned.unit.clone());
         shapes.push(shape.clone());
         active.insert(planned.unit.clone(), shape);
         rotations.push(planned.args);
@@ -196,11 +229,14 @@ fn plan_rotations(
             continue;
         }
 
-        if custom_paths.contains_key(&rotation.unit) && units_with_keysets.contains(&rotation.unit)
-        {
-            unrotatable.push(format!("{} (configured keyset rotation)", rotation.unit));
+        if let Some(path) = custom_paths.get(&rotation.unit) {
+            if !occupied.insert(path.clone()) {
+                unrotatable.push(format!(
+                    "{} (configured keyset rotation) at {}",
+                    rotation.unit, path
+                ));
+            }
         }
-        units_with_keysets.insert(rotation.unit.clone());
         shapes.push(shape.clone());
         active.insert(rotation.unit.clone(), shape);
         rotations.push(args);
@@ -208,9 +244,10 @@ fn plan_rotations(
 
     if !unrotatable.is_empty() {
         return Err(Error::Custom(format!(
-            "cannot rotate {}: the unit has a custom derivation path and a keyset derived from \
-             it, so a rotation would re-derive the keys it already has. Drop the custom \
-             derivation path for the unit or restore its previous configuration.",
+            "cannot rotate {}: each of these units is pinned to a custom derivation path that \
+             already has a keyset on it, and keys derive from the xpriv and the derivation path \
+             alone, so the rotation would re-derive the keys that keyset already has. Drop the \
+             custom derivation path for the unit or restore its previous configuration.",
             unrotatable.join(", ")
         )));
     }
@@ -229,6 +266,10 @@ pub struct MintBuilder {
     payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
     supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
+    /// The entries of `custom_paths` that a keyset already occupies, read from
+    /// the keystore in [`MintBuilder::build_with_seed`]. Left empty for a
+    /// caller-supplied signatory, whose derivation paths the builder cannot see.
+    occupied_custom_paths: HashSet<DerivationPath>,
     use_keyset_v2: Option<bool>,
     keyset_rotations: Vec<KeysetRotation>,
     keyset_rotation_interval: Option<std::time::Duration>,
@@ -283,6 +324,7 @@ impl MintBuilder {
             payment_processors: HashMap::new(),
             supported_units: HashMap::new(),
             custom_paths: HashMap::new(),
+            occupied_custom_paths: HashSet::new(),
             use_keyset_v2: None,
             keyset_rotations: Vec::new(),
             keyset_rotation_interval: None,
@@ -502,12 +544,13 @@ impl MintBuilder {
 
     /// Set custom derivation paths for mint units
     ///
-    /// A unit given a fixed path is excluded from automatic keyset rotation,
-    /// and rotating it explicitly fails: keys derive from the path, so a
-    /// replacement would carry the keys it replaces. Building the mint is
-    /// refused outright when such a unit's fee, amounts or keyset version
-    /// differ from the keyset it already has, since that difference can only be
-    /// applied by rotating.
+    /// Once a keyset sits on the path, the unit is excluded from automatic
+    /// keyset rotation and rotating it explicitly fails: keys derive from the
+    /// path, so a replacement would carry the keys it replaces. Building the
+    /// mint is then refused outright when the unit's fee, amounts or keyset
+    /// version differ from that keyset, since that difference can only be
+    /// applied by rotating. Pinning a unit to a path no keyset uses yet is a
+    /// migration, and the unit rotates onto it normally.
     pub fn with_custom_derivation_paths(
         mut self,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
@@ -887,6 +930,7 @@ impl MintBuilder {
             &self.keyset_rotations,
             &active_keysets.keysets,
             &self.custom_paths,
+            &self.occupied_custom_paths,
         )? {
             signatory.rotate_keyset(rotation).await?;
         }
@@ -952,6 +996,9 @@ impl MintBuilder {
         keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
         seed: &[u8],
     ) -> Result<Mint, Error> {
+        self.occupied_custom_paths =
+            occupied_custom_paths(keystore.as_ref(), &self.custom_paths).await?;
+
         // Wrapped in an `Arc` so the auto-rotation spawner below can hold a weak
         // handle without keeping the signatory alive.
         let in_memory_signatory = Arc::new(

@@ -376,21 +376,30 @@ impl DbSignatory {
                 }
                 true
             })
-            // A fixed custom derivation path re-derives the same keys, so the
-            // replacement would be the keyset it replaces. Excluded here rather
-            // than left to fail in staging, for the same reason as above: the
-            // sweep is one transaction and this unit would never succeed.
-            .filter(|info| {
-                if self.custom_paths.contains_key(&info.unit) {
+            // A custom derivation path that already produced a keyset re-derives
+            // the same keys, so the replacement would be the keyset it replaces.
+            // A path no keyset uses yet is a migration and rotates normally.
+            // Excluded here rather than left to fail in staging, for the same
+            // reason as above: the sweep is one transaction and this unit would
+            // never succeed.
+            .filter(|info| match self.custom_paths.get(&info.unit) {
+                Some(path)
+                    if keysets
+                        .by_id
+                        .values()
+                        .any(|(existing, _)| &existing.derivation_path == path) =>
+                {
                     tracing::warn!(
-                        "Keyset {} for unit {} uses a fixed custom derivation path, so rotating \
-                         it would re-derive the same keys and it is not rotated automatically",
+                        "Keyset {} for unit {} is pinned to custom derivation path {}, which \
+                         already has a keyset, so rotating it would re-derive the same keys and \
+                         it is not rotated automatically",
                         info.id,
-                        info.unit
+                        info.unit,
+                        path
                     );
-                    return false;
+                    false
                 }
-                true
+                _ => true,
             })
             .cloned()
             .collect();
@@ -2625,6 +2634,69 @@ mod test {
             memory_active_keyset_id(&sig, &CurrencyUnit::Sat),
             Some(seeded),
             "the amountless keyset stays active rather than rotating"
+        );
+    }
+
+    /// A custom derivation path that no keyset uses can still produce new keys, so
+    /// the sweep moves the unit onto it once and leaves it alone from then on.
+    #[tokio::test]
+    async fn auto_rotation_moves_a_unit_onto_an_unused_custom_derivation_path() {
+        let (store, _fail_unit, transactions) = FailUnitDb::new().await;
+        let path: DerivationPath = "m/129372'/0'/9'".parse().expect("derivation path");
+        let sig = Arc::new(
+            DbSignatory::new(
+                store.clone(),
+                b"test-seed-custom-path-migration",
+                Default::default(),
+                HashMap::from([(CurrencyUnit::Sat, path.clone())]),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+
+        let seeded = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version01,
+            None,
+            120,
+        )
+        .await;
+
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        let active = memory_active_keyset_id(&sig, &CurrencyUnit::Sat).expect("an active keyset");
+        assert_ne!(
+            active, seeded,
+            "the unit rotated off the index-derived keyset"
+        );
+        assert_eq!(db_keyset_ids(&sig).await.len(), 2);
+        assert_eq!(
+            sig.keysets
+                .load()
+                .by_id
+                .get(&active)
+                .map(|(info, _)| info.derivation_path.clone()),
+            Some(path),
+            "the replacement was derived from the custom path"
+        );
+
+        age_active_keyset(&sig, &CurrencyUnit::Sat, 120).await;
+        let epoch_before = store.keysets_epoch().await.expect("epoch");
+        transactions.store(0, Ordering::SeqCst);
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        assert_eq!(
+            transactions.load(Ordering::SeqCst),
+            0,
+            "the custom path now has a keyset, so the unit is no longer due"
+        );
+        assert_eq!(
+            store.keysets_epoch().await.expect("epoch"),
+            epoch_before,
+            "nothing was written"
         );
     }
 

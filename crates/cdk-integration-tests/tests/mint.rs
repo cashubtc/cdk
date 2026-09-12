@@ -562,6 +562,101 @@ async fn keyset_count(localstore: &Arc<cdk_sqlite::mint::MintSqliteDatabase>) ->
     count
 }
 
+async fn keyset_derivation_paths(
+    localstore: &Arc<cdk_sqlite::mint::MintSqliteDatabase>,
+) -> Vec<DerivationPath> {
+    use cdk_common::database::mint::KeysDatabase;
+
+    let mut tx = KeysDatabase::begin_transaction(localstore.as_ref())
+        .await
+        .expect("keys transaction");
+    let paths = tx
+        .get_keyset_infos()
+        .await
+        .expect("keyset infos")
+        .into_iter()
+        .map(|info| info.derivation_path)
+        .collect();
+    tx.commit().await.expect("commit");
+    paths
+}
+
+/// Adding a custom derivation path to a unit that already has index-derived
+/// keysets is a migration, not a re-derivation: the path has never produced keys,
+/// so the rotation that applies the new fee lands on it. Only once it has a
+/// keyset does it stop being able to produce new ones.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_builder_moves_a_unit_onto_an_unused_custom_derivation_path() {
+    let mnemonic = Mnemonic::generate(12).unwrap();
+    let seed = mnemonic.to_seed_normalized("");
+    let localstore = Arc::new(memory::empty().await.expect("valid db instance"));
+
+    let mint = build_mint(
+        localstore.clone(),
+        &seed,
+        CurrencyUnit::Sat,
+        0,
+        None,
+        Vec::new(),
+    )
+    .await
+    .expect("the first build creates an index-derived keyset");
+    drop(mint);
+
+    assert_eq!(keyset_count(&localstore).await, 1);
+    assert!(
+        !keyset_derivation_paths(&localstore)
+            .await
+            .contains(&custom_path()),
+        "the custom path has not been used yet"
+    );
+
+    let mint2 = build_mint(
+        localstore.clone(),
+        &seed,
+        CurrencyUnit::Sat,
+        100,
+        Some(custom_path()),
+        Vec::new(),
+    )
+    .await
+    .expect("no keyset uses the custom path, so the fee change can be applied");
+
+    let active = mint2
+        .keysets()
+        .keysets
+        .into_iter()
+        .find(|keyset| keyset.active && keyset.unit == CurrencyUnit::Sat)
+        .expect("an active sat keyset");
+    assert_eq!(active.input_fee_ppk, 100);
+    drop(mint2);
+
+    assert_eq!(keyset_count(&localstore).await, 2);
+    assert!(
+        keyset_derivation_paths(&localstore)
+            .await
+            .contains(&custom_path()),
+        "the new keyset was derived from the custom path"
+    );
+
+    build_mint(
+        localstore.clone(),
+        &seed,
+        CurrencyUnit::Sat,
+        200,
+        Some(custom_path()),
+        Vec::new(),
+    )
+    .await
+    .expect_err("the custom path now has a keyset, so it cannot produce new keys");
+
+    assert_eq!(
+        keyset_count(&localstore).await,
+        2,
+        "the refused build wrote nothing"
+    );
+}
+
 /// A unit pinned to a fixed derivation path keeps the keys derived from it, so
 /// a fee change can only be applied by a rotation that cannot happen. The build
 /// is refused rather than run half way.
