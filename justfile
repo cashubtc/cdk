@@ -515,8 +515,12 @@ test-nutshell:
   # Serialize tests (--test-threads=1) to avoid concurrent writes against
   # Nutshell's SQLite backend, which can cause transient lock-acquisition
   # failures under parallel load.
+  # Skip the websocket subscription limit test: it asserts a cdk-mintd
+  # [limits] setting that Nutshell does not implement.
   echo "Running happy_path_mint_wallet test..."
-  if ! cargo test -p cdk-integration-tests --test happy_path_mint_wallet -- --test-threads=1; then
+  if ! cargo test -p cdk-integration-tests --test happy_path_mint_wallet -- \
+    --test-threads=1 \
+    --skip test_websocket_subscription_limit_is_enforced; then
     echo "ERROR: happy_path_mint_wallet test failed"
     test_exit_code=1
   fi
