@@ -52,6 +52,7 @@ own `uniffi.toml` controlling language-specific code generation.
 | **Swift** | `bindings/swift/` | Active | CI workflow | `just test-swift` |
 | **Kotlin** | `bindings/kotlin/` | Active | `just binding-kotlin` | `just test-kotlin` |
 | **Go** | `bindings/go/` | Active | `just binding-go` | `just test-go` |
+| **React Native** | `bindings/react-native/` | Active | `just nitro-bindings` | `just test-nitro` |
 
 ### Dart
 
@@ -71,12 +72,25 @@ own `uniffi.toml` controlling language-specific code generation.
 - `Package.swift` is generated during the CI publish workflow
 - Swift sources are generated into `bindings/swift/Sources/Cdk/`
 
+### React Native
+
+- **Package name:** `@cashu/cashu-native`
+- **Rust crate:** `cashu-ffi`, not `cdk-ffi`: the target is the `cashu` crate's
+  crypto primitives, so a mobile app links a small library rather than the whole
+  wallet
+- **Binding generator:** [`uniffi-bindgen-nitro`](../tools/uniffi-bindgen-nitro),
+  in this repository, feeding [Nitro Modules][nitro]
+- Everything between Rust and JavaScript is generated: the Nitro TypeScript
+  spec, the C++ that crosses the UniFFI ABI and the Nitro `HybridObject`
+  implementations
+- Exists so [cashu-ts][cashu-ts] can replace its slowest paths without changing
+  its public API
+
 ## Planned targets
 
 | Language | Status | Notes |
 |----------|--------|-------|
 | **Python** | Configured | UniFFI config exists in `crates/cdk-ffi/uniffi.toml` |
-| **React Native** | Planned | — |
 
 Python already has UniFFI configuration in the core FFI crate. Adding a new
 language binding involves creating a `bindings/<lang>/` directory with a thin
@@ -101,6 +115,13 @@ just test-kotlin     # Run tests
 # Go
 just binding-go      # Generate bindings
 just test-go         # Run tests
+
+# React Native (Nitro)
+just nitro-bindings  # Generate bindings
+just nitro-check     # Type-check the generated adapters
+just test-nitro      # Run the C++ harness over the generated bridge
+just test-nitro-node # Run the Node harness and the cashu-ts parity tests
+just bench-nitro     # Compare cashu-ts against Rust
 ```
 
 ## Releasing
@@ -205,8 +226,12 @@ just ffi-release-go 0.17.0
   from Rust
 - [uniffi-dart][uniffi-dart] — community Dart backend for UniFFI
 - uniffi-bindgen-swift — local Swift binding generator (in `bindings/swift/rust/`)
+- [Nitro Modules][nitro] — the React Native binding layer, driven by
+  `uniffi-bindgen-nitro` (in `tools/uniffi-bindgen-nitro/`)
 
 [cdk]: https://github.com/cashubtc/cdk
 [bark]: https://gitlab.com/ark-bitcoin/bark-ffi-bindings
 [uniffi]: https://github.com/mozilla/uniffi-rs
 [uniffi-dart]: https://github.com/Uniffi-Dart/uniffi-dart
+[nitro]: https://nitro.margelo.com
+[cashu-ts]: https://github.com/cashubtc/cashu-ts

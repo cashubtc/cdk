@@ -1,0 +1,12 @@
+[bindings.nitro]
+module_name = "CashuCrypto"
+cxx_namespace = "cashucrypto"
+cdylib_name = "cashu_ffi"
+
+[bindings.kotlin]
+package_name = "org.cashudevkit.crypto"
+cdylib_name = "cashu_ffi"
+
+[bindings.swift]
+module_name = "CashuCrypto"
+cdylib_name = "cashu_ffi"

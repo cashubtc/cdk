@@ -811,6 +811,29 @@ jobs:
       - name: Run Go tests
         run: nix develop --fallback -L .#bindings --command just test-go
 
+  nitro-binding-tests:
+    name: "Nitro binding tests"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: warm-nix-cache
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Generate the Nitro bindings
+        run: nix develop --fallback -L .#bindings --command just nitro-bindings
+      - name: Type-check the generated adapters
+        run: nix develop --fallback -L .#bindings --command just nitro-check
+      - name: Run the C++ bridge harness
+        run: nix develop --fallback -L .#bindings --command just test-nitro
+      - name: Run the Node harness and cashu-ts parity tests
+        run: nix develop --fallback -L .#bindings --command just test-nitro-node
+
   swift-binding-tests:
     name: "Swift binding tests"
     runs-on: macos-latest

@@ -1278,3 +1278,248 @@ test-swift:
   else
     DYLD_LIBRARY_PATH="$LIB_DIR" swift test
   fi
+
+# regenerate the React Native Nitro bindings from the UniFFI metadata
+nitro-bindings *ARGS="": _nitro-install
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  ROOT="$PWD"
+  RN="$ROOT/bindings/react-native"
+
+  echo "==> building cashu-ffi for the host"
+  cargo build -p cashu-ffi
+  LIB="$ROOT/target/debug/libcashu_ffi.$(just _ffi-lib-ext)"
+  if [ ! -f "$LIB" ]; then
+    echo "the cashu-ffi cdylib is not at $LIB" >&2
+    exit 1
+  fi
+
+  echo "==> generating the Nitro spec and the UniFFI bridge"
+  for dir in "$RN/src/generated" "$RN/cpp/generated" "$RN/test/generated"; do
+    rm -rf "$dir"
+    mkdir -p "$dir"
+  done
+  cargo run --quiet -p uniffi-bindgen-nitro -- spec \
+    --library "$LIB" \
+    --crate cashu_ffi \
+    --config "$ROOT/crates/cashu-ffi/uniffi.toml" \
+    --ts-out "$RN/src/generated" \
+    --cpp-out "$RN/cpp/generated" \
+    --node-out "$RN/test/generated"
+
+  if [[ "{{ARGS}}" == *"--spec-only"* ]]; then
+    echo "==> stopping before nitrogen (--spec-only)"
+    exit 0
+  fi
+
+  echo "==> running nitrogen"
+  NITROGEN="$RN/node_modules/nitrogen/lib/index.js"
+  NODE=$(just _nitro-node)
+  (cd "$RN" && "$NODE" "$NITROGEN")
+
+  echo "==> generating the Nitro adapters"
+  cargo run --quiet -p uniffi-bindgen-nitro -- hybrids \
+    --library "$LIB" \
+    --crate cashu_ffi \
+    --config "$ROOT/crates/cashu-ffi/uniffi.toml" \
+    --nitrogen "$RN/nitrogen" \
+    --cpp-out "$RN/cpp/generated"
+
+  echo "==> done"
+
+# type-check the generated Nitro adapters against the Nitro and JSI headers
+nitro-check: _nitro-install
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  ROOT="$PWD"
+  RN="$ROOT/bindings/react-native"
+  NITRO="$RN/node_modules/react-native-nitro-modules/cpp"
+  JSI="$RN/node_modules/react-native/ReactCommon/jsi"
+  for dir in "$NITRO" "$JSI"; do
+    if [ ! -d "$dir" ]; then
+      echo "the React Native dependencies are not at $dir" >&2
+      exit 1
+    fi
+  done
+
+  # Nitro headers are included as <NitroModules/...>, a layout only the
+  # CocoaPods and prefab builds produce, so give clang the same view.
+  SHIM="$ROOT/target/nitro-headers"
+  rm -rf "$SHIM/NitroModules"
+  mkdir -p "$SHIM/NitroModules"
+  find "$NITRO" \( -name '*.hpp' -o -name '*.h' \) -exec ln -sf {} "$SHIM/NitroModules/" \;
+
+  for source in "$RN"/cpp/generated/*.cpp; do
+    "${CXX:-c++}" -std=c++20 -fsyntax-only \
+      -I "$SHIM" \
+      -I "$JSI" \
+      -I "$RN/nitrogen/generated/shared/c++" \
+      -I "$RN/cpp/generated" \
+      "$source"
+  done
+  echo "==> the generated adapters type-check against Nitro and JSI"
+
+# run the C++ harness over the generated UniFFI bridge
+test-nitro:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  ROOT="$PWD"
+  cargo build -p cashu-ffi
+  BUILD="$ROOT/target/nitro-cpp-tests"
+  mkdir -p "$BUILD"
+  cmake -S "$ROOT/bindings/react-native/cpp/test" -B "$BUILD" \
+    -DCDK_TARGET_DIR="$ROOT/target/debug" \
+    -DCMAKE_BUILD_TYPE=Debug
+  cmake --build "$BUILD"
+  "$BUILD/bridge_tests"
+
+# run the Node harness and cashu-ts parity tests
+test-nitro-node: _nitro-install
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  cargo build -p cashu-ffi
+  NODE=$(just _nitro-node)
+  cd bindings/react-native
+  "$NODE" node_modules/typescript/bin/tsc
+  "$NODE" --test test/harness.test.mjs test/parity.test.mjs test/entrypoint.test.mjs
+
+# compare cashu-ts against the Rust implementation
+bench-nitro: _nitro-install
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  cargo build -p cashu-ffi --release
+  NODE=$(just _nitro-node)
+  cd bindings/react-native
+  "$NODE" test/benchmark.mjs
+
+# build the Rust library for iOS and assemble the XCFramework
+nitro-ios *ARGS="":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  ROOT="$PWD"
+  RN="$ROOT/bindings/react-native"
+
+  PROFILE="release"
+  RELEASE="--release"
+  if [[ "{{ARGS}}" == *"--debug"* ]]; then
+    PROFILE="debug"
+    RELEASE=""
+  fi
+
+  for target in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios; do
+    cargo build -p cashu-ffi --target "$target" $RELEASE
+  done
+
+  STAGING="$RN/ios/generated"
+  rm -rf "$STAGING"
+  mkdir -p "$STAGING/simulator/lib"
+
+  SIMULATOR="$STAGING/simulator/lib/libcashu_ffi.a"
+  lipo -create \
+    "$ROOT/target/aarch64-apple-ios-sim/$PROFILE/libcashu_ffi.a" \
+    "$ROOT/target/x86_64-apple-ios/$PROFILE/libcashu_ffi.a" \
+    -output "$SIMULATOR"
+
+  XCFRAMEWORK="$STAGING/cashu_ffi.xcframework"
+  xcodebuild -create-xcframework \
+    -library "$ROOT/target/aarch64-apple-ios/$PROFILE/libcashu_ffi.a" \
+    -library "$SIMULATOR" \
+    -output "$XCFRAMEWORK"
+
+  echo "==> $XCFRAMEWORK"
+
+# build the Rust library for every Android ABI
+nitro-android *ARGS="":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  ROOT="$PWD"
+
+  if ! cargo ndk --version >/dev/null 2>&1; then
+    echo "cargo-ndk is required: install it with 'cargo install cargo-ndk' and set ANDROID_NDK_HOME" >&2
+    exit 1
+  fi
+
+  RELEASE="--release"
+  if [[ "{{ARGS}}" == *"--debug"* ]]; then
+    RELEASE=""
+  fi
+
+  JNI_LIBS="$ROOT/bindings/react-native/android/src/main/jniLibs"
+  rm -rf "$JNI_LIBS"
+  mkdir -p "$JNI_LIBS"
+  cargo ndk -o "$JNI_LIBS" \
+    -t aarch64-linux-android \
+    -t armv7-linux-androideabi \
+    -t x86_64-linux-android \
+    -t i686-linux-android \
+    build -p cashu-ffi $RELEASE
+
+  echo "==> $JNI_LIBS"
+
+# build every artifact the npm package ships and pack the tarball
+nitro-package:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  just nitro-bindings
+  just nitro-ios
+  just nitro-android
+  NODE_BIN=$(dirname "$(command -v "$(just _nitro-node)")")
+  cd bindings/react-native
+  PATH="$NODE_BIN:$PATH" npm pack
+
+# print a Node 22 or newer for nitrogen, falling back to an nvm install
+_nitro-node:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  if command -v node >/dev/null 2>&1; then
+    major=$(node --version | sed 's/^v//' | cut -d. -f1)
+    case "$major" in
+      ''|*[!0-9]*) major=0 ;;
+    esac
+    if [ "$major" -ge 22 ]; then
+      echo node
+      exit 0
+    fi
+  fi
+
+  best=""
+  best_major=0
+  for dir in "$HOME"/.nvm/versions/node/*; do
+    [ -x "$dir/bin/node" ] || continue
+    major=$(basename "$dir" | sed 's/^v//' | cut -d. -f1)
+    case "$major" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    if [ "$major" -ge 22 ] && [ "$major" -gt "$best_major" ]; then
+      best_major="$major"
+      best="$dir/bin/node"
+    fi
+  done
+
+  if [ -z "$best" ]; then
+    echo "Node 22 or newer is required: nitrogen needs it, install with 'nvm install 22'" >&2
+    exit 1
+  fi
+  echo "$best"
+
+# install the React Native dev dependencies when nitrogen is missing
+_nitro-install:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/react-native"
+  if [ -f node_modules/nitrogen/lib/index.js ]; then
+    exit 0
+  fi
+  # npm ci, not npm install: no generated output is in git, so the lockfile is
+  # the only thing pinning which nitrogen version writes it.
+  NODE_BIN=$(dirname "$(command -v "$(just _nitro-node)")")
+  PATH="$NODE_BIN:$PATH" npm ci
