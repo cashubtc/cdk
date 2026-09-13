@@ -1198,10 +1198,17 @@ impl MintPayment for CdkLdkNode {
                         quote_id = %quote_id,
                         "Could not persist BOLT12 dispatch claim before sending: {err}"
                     );
-                    return Ok(outgoing_payment_failure_response(
-                        unit,
-                        quote_payment_identifier,
-                    ));
+                    if matches!(&err, Error::Bolt12QuoteAlreadyClaimed { .. }) {
+                        // A previous invocation may still settle. Resolve its
+                        // durable state instead of reporting a terminal failure.
+                        let mut response = self
+                            .check_outgoing_payment(&quote_payment_identifier)
+                            .await?;
+                        response.total_spent = response.total_spent.convert_to(unit)?;
+                        return Ok(response);
+                    }
+
+                    return Err(err.into());
                 }
 
                 // BOLT12 payment ids are assigned by `send`, so subscribe
@@ -1978,6 +1985,89 @@ mod tests {
 
     async fn test_kv_store() -> DynKVStore {
         std::sync::Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn duplicate_bolt12_claim_resolves_existing_state() {
+        use ldk_node::lightning::offers::offer::OfferBuilder;
+
+        let storage = tempfile::tempdir().unwrap();
+        let kv_store = test_kv_store().await;
+        let node = CdkLdkNodeBuilder::new(
+            Network::Regtest,
+            ChainSource::Esplora("http://127.0.0.1:1".to_string()),
+            GossipSource::P2P,
+            storage.path().to_str().unwrap().to_string(),
+            FeeReserve {
+                min_fee_reserve: 0.into(),
+                percent_fee_reserve: 0.0,
+            },
+            vec!["127.0.0.1:0".parse().unwrap()],
+            kv_store.clone(),
+        )
+        .build()
+        .unwrap();
+        let offer = OfferBuilder::new(node.inner.node_id())
+            .amount_msats(1_000)
+            .build()
+            .unwrap();
+
+        for (stored, expected) in [
+            (String::new(), Some(MeltQuoteState::Pending)),
+            ("corrupt".to_string(), Some(MeltQuoteState::Unknown)),
+            (hex::encode([7; 32]), None),
+        ] {
+            let quote_id = QuoteId::new();
+            let key = bolt12_quote_payment_id_key(&quote_id).unwrap();
+            let mut tx = kv_store.begin_transaction().await.unwrap();
+            tx.kv_write(
+                LDK_KV_PRIMARY_NAMESPACE,
+                LDK_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+                &key,
+                stored.as_bytes(),
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+
+            let result = node
+                .make_payment(
+                    &CurrencyUnit::Sat,
+                    OutgoingPaymentOptions::Bolt12(Box::new(Bolt12OutgoingPaymentOptions {
+                        offer: offer.clone(),
+                        max_fee_amount: None,
+                        timeout_secs: None,
+                        melt_options: None,
+                        quote_id: quote_id.clone(),
+                    })),
+                )
+                .await;
+
+            match expected {
+                Some(status) => {
+                    let response = result.unwrap();
+                    assert_eq!(response.status, status);
+                    assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Sat));
+                    assert_eq!(
+                        response.payment_lookup_id,
+                        PaymentIdentifier::QuoteId(quote_id)
+                    );
+                }
+                None => assert!(result.is_err(), "missing LDK payment must be indeterminate"),
+            }
+            assert_eq!(
+                kv_store
+                    .kv_read(
+                        LDK_KV_PRIMARY_NAMESPACE,
+                        LDK_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+                        &key,
+                    )
+                    .await
+                    .unwrap(),
+                Some(stored.into_bytes()),
+                "a duplicate must preserve the existing dispatch binding"
+            );
+        }
     }
 
     /// The mapping must resolve Missing before any dispatch, Dispatching
