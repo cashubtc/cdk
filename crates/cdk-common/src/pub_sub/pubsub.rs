@@ -193,7 +193,11 @@ where
                     return;
                 }
             };
-            inner.fetch_events(subscribed_to_for_spawn, sender).await;
+            if let Err(err) = inner.fetch_events(subscribed_to_for_spawn, sender).await {
+                tracing::warn!(
+                    "Backfill did not complete, the subscription stays live for new events: {err}"
+                );
+            }
         });
 
         Ok(ActiveSubscription::new(

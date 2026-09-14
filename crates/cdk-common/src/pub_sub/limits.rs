@@ -1,5 +1,7 @@
 //! Ceilings on the shared resources held by a pub/sub instance.
 
+use std::time::Duration;
+
 /// Ceilings on the shared resources one [`Pubsub`](super::Pubsub) may hold.
 ///
 /// These are per-process rather than per-subscriber: a public mint endpoint is
@@ -12,9 +14,16 @@ pub struct PubsubLimits {
     /// Maximum number of backfills running concurrently.
     pub max_concurrent_backfills: usize,
     /// Maximum number of payment-backend round trips a single backfill may
-    /// make. Bounds how long one backfill holds its concurrency slot. Quotes
-    /// already in a final state cost nothing against it.
+    /// make. Quotes already in a final state cost nothing against it.
     pub max_quote_checks_per_backfill: usize,
+    /// How long one backfill may hold its concurrency slot.
+    ///
+    /// The check budget bounds how many round trips a backfill makes, not how
+    /// long they take, so a stalled backend would otherwise let a handful of
+    /// subscriptions occupy every slot indefinitely. It is for the producer to
+    /// apply, and only to work it can abandon safely: a payment transaction
+    /// already begun runs to completion.
+    pub backfill_timeout: Duration,
 }
 
 impl PubsubLimits {
@@ -30,6 +39,12 @@ impl PubsubLimits {
 
     /// Payment-backend checks per backfill allowed when none is configured.
     pub const DEFAULT_MAX_QUOTE_CHECKS_PER_BACKFILL: usize = 64;
+
+    /// Time one backfill may hold its slot when none is configured.
+    ///
+    /// Well above what a healthy backend answers in, so it bounds a stall
+    /// rather than cutting ordinary work short.
+    pub const DEFAULT_BACKFILL_TIMEOUT: Duration = Duration::from_secs(30);
 }
 
 impl Default for PubsubLimits {
@@ -38,6 +53,7 @@ impl Default for PubsubLimits {
             max_topics: Self::DEFAULT_MAX_TOPICS,
             max_concurrent_backfills: Self::DEFAULT_MAX_CONCURRENT_BACKFILLS,
             max_quote_checks_per_backfill: Self::DEFAULT_MAX_QUOTE_CHECKS_PER_BACKFILL,
+            backfill_timeout: Self::DEFAULT_BACKFILL_TIMEOUT,
         }
     }
 }

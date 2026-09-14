@@ -394,21 +394,6 @@ max_outputs = 1000
 
 # Maximum concurrent WebSocket connections across the whole mint
 ws_max_connections = 512
-# Maximum concurrent WebSocket connections from one client address. Disabled by
-# default: behind a reverse proxy every connection arrives from the proxy's
-# address, so the limit would apply to all clients at once, and shared NAT has
-# the same effect. Enable it on a directly exposed mint, or behind a proxy once
-# ws_trusted_client_ip_header below names the header carrying the real client.
-ws_max_connections_per_ip = 0
-# Header a trusted reverse proxy sets with the client's address, read by
-# ws_max_connections_per_ip in place of the TCP peer address. Unset by default,
-# so nothing a client sends is trusted. Set it only when the proxy in front of
-# the mint overwrites or appends to the header, since any client can send it
-# otherwise and the per-address limit becomes trivial to evade. The rightmost
-# address in the header is the one used, because that is the one the proxy saw;
-# with a second proxy in front (a CDN, for example) that address is the inner
-# proxy again and the limit is back to counting everyone as one client.
-# ws_trusted_client_ip_header = "X-Forwarded-For"
 # Maximum concurrent subscriptions on one WebSocket connection
 ws_max_subscriptions_per_connection = 100
 # Maximum filters accepted in a single subscription request
@@ -433,7 +418,10 @@ ws_max_throttled_requests = 20
 ws_max_message_bytes = 524288
 # Seconds a WebSocket may go without inbound traffic before it is closed
 ws_idle_timeout_secs = 120
-# Seconds between keepalive pings on an otherwise silent WebSocket
+# Seconds between keepalive pings on an otherwise silent WebSocket. Must be
+# shorter than ws_idle_timeout_secs: the idle check runs on the same tick that
+# sends the ping and runs first, so the difference between the two is the window
+# a quiet client has to answer.
 ws_ping_interval_secs = 30
 
 # Maximum subscription topics registered across the whole mint
@@ -443,3 +431,10 @@ pubsub_max_concurrent_backfills = 32
 # Maximum payment-backend round trips performed by a single backfill. Quotes
 # already in a final state do not count against it.
 pubsub_max_quote_checks_per_backfill = 64
+# Seconds one backfill may hold a concurrency slot before it gives up. The check
+# budget above bounds how many round trips a backfill makes, not how long they
+# take, so without this a stalled payment backend could let a handful of
+# subscriptions occupy every slot. A backfill that runs out of time sends no
+# initial state; the subscription stays live and receives every later event. A
+# payment the backend has already reported is still committed.
+pubsub_backfill_timeout_secs = 30

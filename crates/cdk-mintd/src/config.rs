@@ -2,7 +2,6 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use axum::http::header::{HeaderName, InvalidHeaderName};
 use bitcoin::hashes::{sha256, Hash};
 use cdk::mint::MintLimits;
 use cdk::nuts::{CurrencyUnit, PublicKey};
@@ -1175,21 +1174,6 @@ pub struct Limits {
     /// Maximum concurrent WebSocket connections across the whole mint
     #[serde(default = "default_ws_max_connections")]
     pub ws_max_connections: usize,
-    /// Maximum concurrent WebSocket connections from one client address.
-    ///
-    /// Set to `0` behind a reverse proxy, unless
-    /// `ws_trusted_client_ip_header` names the header carrying the real client:
-    /// every connection otherwise arrives from the proxy's address and the cap
-    /// applies to all clients at once.
-    #[serde(default = "default_ws_max_connections_per_ip")]
-    pub ws_max_connections_per_ip: usize,
-    /// Header a trusted reverse proxy sets with the client's address, read by
-    /// `ws_max_connections_per_ip` in place of the TCP peer address.
-    ///
-    /// Unset by default, so nothing a client sends is trusted. Set it only when
-    /// a proxy in front of the mint overwrites or appends to the header.
-    #[serde(default)]
-    pub ws_trusted_client_ip_header: Option<String>,
     /// Maximum concurrent subscriptions on one WebSocket connection
     #[serde(default = "default_ws_max_subscriptions_per_connection")]
     pub ws_max_subscriptions_per_connection: usize,
@@ -1226,6 +1210,9 @@ pub struct Limits {
     /// Maximum payment-backend quote checks performed by a single backfill
     #[serde(default = "default_pubsub_max_quote_checks_per_backfill")]
     pub pubsub_max_quote_checks_per_backfill: usize,
+    /// Seconds one backfill may hold a concurrency slot before it gives up
+    #[serde(default = "default_pubsub_backfill_timeout_secs")]
+    pub pubsub_backfill_timeout_secs: u64,
 }
 
 impl Default for Limits {
@@ -1234,8 +1221,6 @@ impl Default for Limits {
             max_inputs: default_max_inputs(),
             max_outputs: default_max_outputs(),
             ws_max_connections: default_ws_max_connections(),
-            ws_max_connections_per_ip: default_ws_max_connections_per_ip(),
-            ws_trusted_client_ip_header: None,
             ws_max_subscriptions_per_connection: default_ws_max_subscriptions_per_connection(),
             ws_max_filters_per_subscription: default_ws_max_filters_per_subscription(),
             ws_max_topics_per_connection: default_ws_max_topics_per_connection(),
@@ -1248,25 +1233,16 @@ impl Default for Limits {
             pubsub_max_topics: default_pubsub_max_topics(),
             pubsub_max_concurrent_backfills: default_pubsub_max_concurrent_backfills(),
             pubsub_max_quote_checks_per_backfill: default_pubsub_max_quote_checks_per_backfill(),
+            pubsub_backfill_timeout_secs: default_pubsub_backfill_timeout_secs(),
         }
     }
 }
 
 impl Limits {
     /// Ceilings applied to the mint's WebSocket endpoint
-    ///
-    /// Fails when `ws_trusted_client_ip_header` is not a valid header name.
-    pub fn ws_limits(&self) -> Result<WsLimits, InvalidHeaderName> {
-        let trusted_client_ip_header = self
-            .ws_trusted_client_ip_header
-            .as_deref()
-            .map(HeaderName::try_from)
-            .transpose()?;
-
-        Ok(WsLimits {
+    pub fn ws_limits(&self) -> WsLimits {
+        WsLimits {
             max_connections: self.ws_max_connections,
-            max_connections_per_ip: self.ws_max_connections_per_ip,
-            trusted_client_ip_header,
             max_subscriptions_per_connection: self.ws_max_subscriptions_per_connection,
             max_filters_per_subscription: self.ws_max_filters_per_subscription,
             max_topics_per_connection: self.ws_max_topics_per_connection,
@@ -1276,7 +1252,7 @@ impl Limits {
             max_message_bytes: self.ws_max_message_bytes,
             idle_timeout: Duration::from_secs(self.ws_idle_timeout_secs),
             ping_interval: Duration::from_secs(self.ws_ping_interval_secs),
-        })
+        }
     }
 
     /// Ceilings applied to the mint's subscription manager
@@ -1285,6 +1261,7 @@ impl Limits {
             max_topics: self.pubsub_max_topics,
             max_concurrent_backfills: self.pubsub_max_concurrent_backfills,
             max_quote_checks_per_backfill: self.pubsub_max_quote_checks_per_backfill,
+            backfill_timeout: Duration::from_secs(self.pubsub_backfill_timeout_secs),
         }
     }
 }
@@ -1299,10 +1276,6 @@ fn default_max_outputs() -> usize {
 
 fn default_ws_max_connections() -> usize {
     WsLimits::DEFAULT_MAX_CONNECTIONS
-}
-
-fn default_ws_max_connections_per_ip() -> usize {
-    WsLimits::DEFAULT_MAX_CONNECTIONS_PER_IP
 }
 
 fn default_ws_max_subscriptions_per_connection() -> usize {
@@ -1351,6 +1324,10 @@ fn default_pubsub_max_concurrent_backfills() -> usize {
 
 fn default_pubsub_max_quote_checks_per_backfill() -> usize {
     PubsubLimits::DEFAULT_MAX_QUOTE_CHECKS_PER_BACKFILL
+}
+
+fn default_pubsub_backfill_timeout_secs() -> u64 {
+    PubsubLimits::DEFAULT_BACKFILL_TIMEOUT.as_secs()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -2919,7 +2896,6 @@ max_melt = 500000
 
         let settings = Settings::try_from_toml(section).expect("limits section parses");
 
-        assert_eq!(settings.limits.ws_max_connections_per_ip, 0);
         assert_eq!(settings.limits.ws_max_subscriptions_per_connection, 100);
         assert_eq!(
             settings.limits,

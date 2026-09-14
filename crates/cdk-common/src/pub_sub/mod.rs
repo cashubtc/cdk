@@ -91,7 +91,8 @@ mod test {
             self: &Arc<Self>,
             topics: Vec<<Self::Event as Event>::Topic>,
             reply_to: Subscriber<Self>,
-        ) where
+        ) -> Result<(), Error>
+        where
             Self: Sized,
         {
             let storage = self.storage.read().unwrap();
@@ -101,6 +102,8 @@ mod test {
                     let _ = reply_to.send(value.clone());
                 }
             }
+
+            Ok(())
         }
     }
 
@@ -194,7 +197,7 @@ mod test {
             self: &Arc<Self>,
             _topics: Vec<<Self::Event as Event>::Topic>,
             _reply_to: Subscriber<Self>,
-        ) {
+        ) -> Result<(), Error> {
             let running = self.running.fetch_add(1, Ordering::SeqCst) + 1;
             self.peak.fetch_max(running, Ordering::SeqCst);
 
@@ -202,6 +205,7 @@ mod test {
 
             self.running.fetch_sub(1, Ordering::SeqCst);
             self.completed.store(true, Ordering::SeqCst);
+            Ok(())
         }
     }
 

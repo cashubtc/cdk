@@ -7,7 +7,6 @@ use crate::config::Limits;
 pub const ENV_MAX_INPUTS: &str = "CDK_MINTD_MAX_INPUTS";
 pub const ENV_MAX_OUTPUTS: &str = "CDK_MINTD_MAX_OUTPUTS";
 pub const ENV_WS_MAX_CONNECTIONS: &str = "CDK_MINTD_WS_MAX_CONNECTIONS";
-pub const ENV_WS_MAX_CONNECTIONS_PER_IP: &str = "CDK_MINTD_WS_MAX_CONNECTIONS_PER_IP";
 pub const ENV_WS_MAX_SUBSCRIPTIONS_PER_CONNECTION: &str =
     "CDK_MINTD_WS_MAX_SUBSCRIPTIONS_PER_CONNECTION";
 pub const ENV_WS_MAX_FILTERS_PER_SUBSCRIPTION: &str = "CDK_MINTD_WS_MAX_FILTERS_PER_SUBSCRIPTION";
@@ -22,6 +21,7 @@ pub const ENV_PUBSUB_MAX_TOPICS: &str = "CDK_MINTD_PUBSUB_MAX_TOPICS";
 pub const ENV_PUBSUB_MAX_CONCURRENT_BACKFILLS: &str = "CDK_MINTD_PUBSUB_MAX_CONCURRENT_BACKFILLS";
 pub const ENV_PUBSUB_MAX_QUOTE_CHECKS_PER_BACKFILL: &str =
     "CDK_MINTD_PUBSUB_MAX_QUOTE_CHECKS_PER_BACKFILL";
+pub const ENV_PUBSUB_BACKFILL_TIMEOUT_SECS: &str = "CDK_MINTD_PUBSUB_BACKFILL_TIMEOUT_SECS";
 
 fn override_from_env<T: std::str::FromStr>(key: &str, target: &mut T) {
     if let Ok(raw) = env::var(key) {
@@ -40,10 +40,6 @@ impl Limits {
         override_from_env(ENV_MAX_INPUTS, &mut limits.max_inputs);
         override_from_env(ENV_MAX_OUTPUTS, &mut limits.max_outputs);
         override_from_env(ENV_WS_MAX_CONNECTIONS, &mut limits.ws_max_connections);
-        override_from_env(
-            ENV_WS_MAX_CONNECTIONS_PER_IP,
-            &mut limits.ws_max_connections_per_ip,
-        );
         override_from_env(
             ENV_WS_MAX_SUBSCRIPTIONS_PER_CONNECTION,
             &mut limits.ws_max_subscriptions_per_connection,
@@ -79,6 +75,11 @@ impl Limits {
         override_from_env(
             ENV_PUBSUB_MAX_QUOTE_CHECKS_PER_BACKFILL,
             &mut limits.pubsub_max_quote_checks_per_backfill,
+        );
+
+        override_from_env(
+            ENV_PUBSUB_BACKFILL_TIMEOUT_SECS,
+            &mut limits.pubsub_backfill_timeout_secs,
         );
 
         limits

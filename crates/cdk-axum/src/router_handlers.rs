@@ -1,11 +1,8 @@
-use std::net::SocketAddr;
-
 use anyhow::Result;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{ConnectInfo, Json, Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Json, Path, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Extension;
 use cdk::error::ErrorResponse;
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
@@ -17,7 +14,7 @@ use paste::paste;
 use tracing::instrument;
 
 use crate::auth::AuthHeader;
-use crate::ws::{client_ip, main_websocket, WsRejection};
+use crate::ws::main_websocket;
 use crate::MintState;
 
 /// Macro to add cache to endpoint
@@ -136,8 +133,6 @@ pub(crate) async fn get_keysets(
 pub(crate) async fn ws_handler(
     auth: AuthHeader,
     State(state): State<MintState>,
-    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
-    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, Response> {
     state
@@ -150,33 +145,13 @@ pub(crate) async fn ws_handler(
         .map_err(into_response)?;
 
     let limits = state.ws_limiter.limits().clone();
-    let peer = peer.map(|Extension(ConnectInfo(addr))| addr);
-    let client_ip = client_ip(limits.trusted_client_ip_header.as_ref(), &headers, peer);
-    if client_ip.is_none() {
-        tracing::debug!("WebSocket client address unavailable, per-IP limit not enforced");
-    }
-
-    let guard = state
-        .ws_limiter
-        .try_acquire(client_ip)
-        .map_err(|rejection| match rejection {
-            WsRejection::PerIpFull => {
-                tracing::debug!(
-                    "WebSocket upgrade refused: {:?} is at its per-address connection limit",
-                    client_ip
-                );
-                (
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "too many websocket connections from this address",
-                )
-                    .into_response()
-            }
-            WsRejection::ServerFull | WsRejection::Unavailable => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "websocket capacity reached",
-            )
-                .into_response(),
-        })?;
+    let guard = state.ws_limiter.try_acquire().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "websocket capacity reached",
+        )
+            .into_response()
+    })?;
 
     Ok(ws
         .max_message_size(limits.max_message_bytes)

@@ -37,6 +37,12 @@ pub enum Error {
     #[error("Channel is close")]
     ChannelClosed,
 
+    /// A subscription backfill did not finish, so the subscriber never got the
+    /// state it had at the moment it subscribed. The subscription itself stays
+    /// live and receives every later event.
+    #[error("Backfill failed: {0}")]
+    BackfillFailed(String),
+
     /// The pub/sub instance already holds its maximum number of topic
     /// registrations; the caller should narrow its filters or retry later.
     #[error("Topic budget exhausted")]

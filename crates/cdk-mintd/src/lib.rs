@@ -590,6 +590,10 @@ fn validate_limits_config(settings: &config::Settings) -> Result<()> {
             "pubsub_max_concurrent_backfills",
             limits.pubsub_max_concurrent_backfills,
         ),
+        (
+            "pubsub_backfill_timeout_secs",
+            usize::try_from(limits.pubsub_backfill_timeout_secs).unwrap_or(usize::MAX),
+        ),
     ] {
         if value == 0 {
             bail!("Invalid limits configuration: {name} must be greater than zero");
@@ -616,38 +620,30 @@ fn ws_config_key(field: WsLimitsField) -> &'static str {
     }
 }
 
-/// Restates a WebSocket limits failure in the operator's vocabulary, since
-/// `WsLimits` names its fields without the `ws_` prefix.
+/// A [`WsLimitsError`] paired with the configuration key an operator edits.
+///
+/// The rule itself is stated once, by cdk-axum. Only the key is added here,
+/// because `WsLimits` names its fields without the `ws_` prefix the `[limits]`
+/// section uses, so a new validation rule needs nothing beyond naming the field
+/// it blames.
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid limits configuration, check {key}")]
+struct InvalidWsLimit {
+    key: &'static str,
+    #[source]
+    source: WsLimitsError,
+}
+
 fn validate_ws_limits(limits: &config::Limits) -> Result<()> {
-    let ws_limits = limits.ws_limits().map_err(|err| {
-        anyhow!("Invalid limits configuration: ws_trusted_client_ip_header is not a valid HTTP header name: {err}")
-    })?;
+    limits
+        .ws_limits()
+        .validate()
+        .map_err(|err| InvalidWsLimit {
+            key: ws_config_key(err.field()),
+            source: err,
+        })?;
 
-    let Err(err) = ws_limits.validate() else {
-        return Ok(());
-    };
-
-    let key = ws_config_key(err.field());
-    match err {
-        WsLimitsError::Zero { .. } => {
-            bail!("Invalid limits configuration: {key} must be greater than zero")
-        }
-        WsLimitsError::BurstTooSmall { required } => bail!(
-            "Invalid limits configuration: {key} must be at least {required} to cover the frame and every filter of one ws_max_filters_per_subscription request"
-        ),
-        WsLimitsError::TopicBudgetTooSmall { required } => bail!(
-            "Invalid limits configuration: {key} must be at least {required} to admit one ws_max_filters_per_subscription request"
-        ),
-        WsLimitsError::MessageTooSmall { required } => {
-            bail!("Invalid limits configuration: {key} must be at least {required}")
-        }
-        WsLimitsError::PingIntervalExceedsIdleTimeout => bail!(
-            "Invalid limits configuration: ws_ping_interval_secs must not exceed ws_idle_timeout_secs"
-        ),
-        WsLimitsError::TooManyConnections { maximum } => {
-            bail!("Invalid limits configuration: {key} must not exceed {maximum}")
-        }
-    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -680,7 +676,11 @@ mod limits_validation_tests {
             .expect_err("a burst that cannot cover one subscription must be rejected");
         assert!(
             err.to_string().contains("ws_max_request_burst_units"),
-            "unexpected error: {err}"
+            "the operator must be told which key to edit: {err}"
+        );
+        assert!(
+            format!("{err:#}").contains("one unit for the frame"),
+            "cdk-axum's own explanation of the rule must survive as the cause: {err:#}"
         );
     }
 
@@ -698,25 +698,11 @@ mod limits_validation_tests {
             .expect_err("a topic budget that cannot admit one subscription must be rejected");
         assert!(
             err.to_string().contains("ws_max_topics_per_connection"),
-            "unexpected error: {err}"
+            "the operator must be told which key to edit: {err}"
         );
-    }
-
-    /// A header name the mint could never match is a typo worth failing on, not
-    /// a limit to enforce against the peer address behind the operator's back.
-    #[test]
-    fn an_invalid_trusted_client_ip_header_is_rejected() {
-        let limits = config::Limits {
-            ws_max_connections_per_ip: 2,
-            ws_trusted_client_ip_header: Some("X Forwarded For".to_string()),
-            ..config::Limits::default()
-        };
-
-        let err = validate_limits_config(&settings_with(limits))
-            .expect_err("a header name with a space must be rejected");
         assert!(
-            err.to_string().contains("ws_trusted_client_ip_header"),
-            "unexpected error: {err}"
+            format!("{err:#}").contains("must be at least 10"),
+            "cdk-axum's own explanation of the rule must survive as the cause: {err:#}"
         );
     }
 
@@ -2479,7 +2465,7 @@ impl PreparedMintd {
             cache,
             custom_methods,
             settings.info.enable_info_page.unwrap_or(true),
-            settings.limits.ws_limits()?,
+            settings.limits.ws_limits(),
         )
         .await?;
 
@@ -2616,14 +2602,8 @@ impl RunningMintd {
         };
 
         // Wait for axum server to complete with custom shutdown signal
-        // Connect info is what the WebSocket per-address limit keys on; without
-        // it every connection looks anonymous and that limit cannot apply.
-        let axum_result = axum::serve(
-            self.listener,
-            self.mint_service
-                .into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(axum_shutdown);
+        let axum_result =
+            axum::serve(self.listener, self.mint_service).with_graceful_shutdown(axum_shutdown);
 
         match axum_result.await {
             Ok(_) => {

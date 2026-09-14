@@ -108,29 +108,6 @@ pub async fn create_mint_router_with_custom_cache(
 ) -> Result<Router> {
     ws_limits.validate().context("Invalid WebSocket limits")?;
 
-    match (
-        ws_limits.max_connections_per_ip,
-        &ws_limits.trusted_client_ip_header,
-    ) {
-        (0, Some(header)) => tracing::info!(
-            "The trusted client address header {} is configured, but the per-address WebSocket \
-             connection limit is 0, so nothing reads it.",
-            header.as_str()
-        ),
-        (0, None) => {}
-        (max, Some(header)) => tracing::info!(
-            "WebSocket per-address connection limit active at {max}, keyed on the {} header. \
-             Make sure only a proxy in front of the mint can set it, or the limit is trivial to \
-             evade.",
-            header.as_str()
-        ),
-        (max, None) => tracing::info!(
-            "WebSocket per-address connection limit active at {max}, keyed on the TCP peer \
-             address. Behind a reverse proxy every connection arrives from the proxy, so either \
-             name the header carrying the client address or set the limit to 0."
-        ),
-    }
-
     let state = MintState {
         mint,
         cache: Arc::new(cache),

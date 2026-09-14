@@ -1,18 +1,14 @@
-use std::time::Instant;
-
 use cdk::subscription::Params;
 use cdk::ws::WsResponseResult;
 use cdk_common::pub_sub::Error as PubSubError;
 
-use super::{Charge, SubscriptionSlot, WsContext, WsError};
+use super::{SubscriptionSlot, WsContext, WsError};
 
 /// The `handle` method is called when a client sends a subscription request.
 ///
-/// The request is charged to the connection's budget per filter, because
-/// registering a filter is what takes the mint-wide topic lock. A flat charge
-/// would leave subscribe and unsubscribe churn as cheap as any other frame.
-/// The frame itself was already charged one unit by the read loop, so only the
-/// filters are charged here.
+/// The read loop has already charged the connection's request budget for this
+/// frame and its filters, so everything below is about what the mint can admit,
+/// not about what the client can afford.
 pub(crate) async fn handle(
     context: &mut WsContext,
     params: Params,
@@ -57,12 +53,6 @@ pub(crate) async fn handle(
         return Err(WsError::ServerBusy);
     }
 
-    let units = u32::try_from(requested).unwrap_or(u32::MAX);
-    if context.budget.charge(units, Instant::now()) != Charge::Accepted {
-        tracing::debug!("WebSocket subscription request exceeds the connection's request budget");
-        return Err(WsError::ServerBusy);
-    }
-
     let mut subscription = context
         .state
         .mint
@@ -81,20 +71,26 @@ pub(crate) async fn handle(
         })?;
 
     let publisher = context.publisher.clone();
+    let delivery_failed = context.delivery_failed.clone();
+    let delivery_timeout = limits.idle_timeout;
     let sub_id_for_sender = sub_id.clone();
     context.subscriptions.insert(
         sub_id.clone(),
         SubscriptionSlot {
             handle: tokio::spawn(async move {
                 while let Some(response) = subscription.recv().await {
-                    // Dropped rather than awaited on purpose: blocking here would
-                    // let one slow socket stall every other subscriber sharing
-                    // this connection's writer.
-                    if let Err(err) =
-                        publisher.try_send((sub_id_for_sender.clone(), response.into_inner()))
-                    {
-                        tracing::debug!("Dropping notification for a slow connection: {err}");
+                    let event = (sub_id_for_sender.clone(), response.into_inner());
+                    let Err(err) = publisher.send_timeout(event, delivery_timeout).await else {
+                        continue;
+                    };
+
+                    tracing::debug!("Could not deliver a notification, closing: {err}");
+                    if let Err(err) = delivery_failed.try_send(()) {
+                        tracing::debug!(
+                            "Delivery failure not signalled, the connection is already closing: {err}"
+                        );
                     }
+                    return;
                 }
             }),
             topics: requested,
