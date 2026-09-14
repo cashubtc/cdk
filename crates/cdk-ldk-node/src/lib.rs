@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bip39::Mnemonic;
-use cdk_common::amount::MSAT_IN_SAT;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::DynKVStore;
 use cdk_common::payment::{self, *};
@@ -458,12 +457,7 @@ impl CdkLdkNode {
                 .ok_or(Error::CouldNotGetAmountSpent)?
                 + payment_details.fee_paid_msat.unwrap_or_default();
             // Round the principal and routing fees together, only once.
-            match unit {
-                CurrencyUnit::Sat => {
-                    Amount::new(total_spent.div_ceil(MSAT_IN_SAT), CurrencyUnit::Sat)
-                }
-                _ => Amount::new(total_spent, CurrencyUnit::Msat).convert_to(unit)?,
-            }
+            Amount::new(total_spent, CurrencyUnit::Msat).convert_to_ceil(unit)?
         } else {
             Amount::new(0, unit.clone())
         };
@@ -998,14 +992,8 @@ impl MintPayment for CdkLdkNode {
                         .into(),
                 };
 
-                let amount = match unit {
-                    // The quote must cover the entire millisatoshi principal.
-                    CurrencyUnit::Sat => Amount::new(
-                        u64::from(amount_msat).div_ceil(MSAT_IN_SAT),
-                        CurrencyUnit::Sat,
-                    ),
-                    _ => Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?,
-                };
+                let amount =
+                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to_ceil(unit)?;
 
                 let relative_fee_reserve =
                     (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
@@ -1048,14 +1036,8 @@ impl MintPayment for CdkLdkNode {
                         }
                     }
                 };
-                let amount = match unit {
-                    // The quote must cover the entire millisatoshi principal.
-                    CurrencyUnit::Sat => Amount::new(
-                        u64::from(amount_msat).div_ceil(MSAT_IN_SAT),
-                        CurrencyUnit::Sat,
-                    ),
-                    _ => Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?,
-                };
+                let amount =
+                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to_ceil(unit)?;
 
                 let relative_fee_reserve =
                     (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
@@ -1223,7 +1205,7 @@ impl MintPayment for CdkLdkNode {
                         let mut response = self
                             .check_outgoing_payment(&quote_payment_identifier)
                             .await?;
-                        response.total_spent = response.total_spent.convert_to(unit)?;
+                        response.total_spent = response.total_spent.convert_to_ceil(unit)?;
                         return Ok(response);
                     }
 
@@ -2098,9 +2080,39 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_bolt12_claim_resolves_existing_state() {
-        use ldk_node::lightning::offers::offer::OfferBuilder;
+        use ldk_node::io::sqlite_store::{SqliteStore, KV_TABLE_NAME, SQLITE_DB_FILE_NAME};
+        use ldk_node::lightning::offers::offer::Offer;
+        use ldk_node::lightning::util::persist::KVStoreSync;
+        use ldk_node::lightning::util::ser::Writeable;
 
         let storage = tempfile::tempdir().unwrap();
+        let offer: Offer = "lno1zcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pksese"
+            .parse()
+            .unwrap();
+        let details = PaymentDetails {
+            kind: PaymentKind::Bolt12Offer {
+                hash: Some(PaymentHash([1; 32])),
+                preimage: None,
+                secret: None,
+                offer_id: offer.id(),
+                payer_note: None,
+                quantity: None,
+            },
+            fee_paid_msat: Some(1),
+            ..test_payment_details(PaymentStatus::Succeeded, Some(1_000))
+        };
+        // Seed a settled payment before constructing the node so the duplicate
+        // dispatch exercises recovery from LDK's persisted payment store.
+        let store = SqliteStore::new(
+            storage.path().to_path_buf(),
+            Some(SQLITE_DB_FILE_NAME.to_string()),
+            Some(KV_TABLE_NAME.to_string()),
+        )
+        .unwrap();
+        store
+            .write("payments", "", &hex::encode(details.id.0), details.encode())
+            .unwrap();
+        drop(store);
         let kv_store = test_kv_store().await;
         let node = CdkLdkNodeBuilder::new(
             Network::Regtest,
@@ -2116,15 +2128,11 @@ mod tests {
         )
         .build()
         .unwrap();
-        let offer = OfferBuilder::new(node.inner.node_id())
-            .amount_msats(1_000)
-            .build()
-            .unwrap();
-
         for (stored, expected) in [
             (String::new(), Some(MeltQuoteState::Pending)),
             ("corrupt".to_string(), Some(MeltQuoteState::Unknown)),
             (hex::encode([7; 32]), None),
+            (hex::encode(details.id.0), Some(MeltQuoteState::Paid)),
         ] {
             let quote_id = QuoteId::new();
             let key = bolt12_quote_payment_id_key(&quote_id).unwrap();
@@ -2156,7 +2164,14 @@ mod tests {
                 Some(status) => {
                     let response = result.unwrap();
                     assert_eq!(response.status, status);
-                    assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Sat));
+                    let expected_sat = match status {
+                        MeltQuoteState::Paid => 2,
+                        _ => 0,
+                    };
+                    assert_eq!(
+                        response.total_spent,
+                        Amount::new(expected_sat, CurrencyUnit::Sat)
+                    );
                     assert_eq!(
                         response.payment_lookup_id,
                         PaymentIdentifier::QuoteId(quote_id)

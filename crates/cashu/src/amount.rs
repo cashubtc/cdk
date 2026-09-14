@@ -542,6 +542,10 @@ impl Amount<CurrencyUnit> {
 
     /// Convert to a different unit
     ///
+    /// Millisatoshis converted to satoshis are rounded down. Use
+    /// [`Self::convert_to_ceil`] when the converted amount must cover the
+    /// entire original amount.
+    ///
     /// # Example
     /// ```
     /// # use cashu::{Amount, nuts::CurrencyUnit};
@@ -565,6 +569,35 @@ impl Amount<CurrencyUnit> {
         };
 
         Ok(Amount::new(converted_value, target_unit.clone()))
+    }
+
+    /// Convert to a different unit, rounding up any fractional target units.
+    ///
+    /// Millisatoshis converted to satoshis are rounded up. Same-unit
+    /// conversions and satoshi-to-millisatoshi conversions remain exact.
+    /// For outgoing payments, add the principal and fees before converting
+    /// so the combined total is rounded only once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported unit conversions or if the converted
+    /// amount would overflow.
+    ///
+    /// # Example
+    /// ```
+    /// # use cashu::{Amount, nuts::CurrencyUnit};
+    /// let msat = Amount::new(1_001, CurrencyUnit::Msat);
+    /// let sat = msat.convert_to_ceil(&CurrencyUnit::Sat).unwrap();
+    /// assert_eq!(sat, Amount::new(2, CurrencyUnit::Sat));
+    /// ```
+    pub fn convert_to_ceil(&self, target_unit: &CurrencyUnit) -> Result<Self, Error> {
+        match (&self.unit, target_unit) {
+            (CurrencyUnit::Msat, CurrencyUnit::Sat) => Ok(Self::new(
+                self.value.div_ceil(MSAT_IN_SAT),
+                CurrencyUnit::Sat,
+            )),
+            _ => self.convert_to(target_unit),
+        }
     }
 
     /// Returns a string representation that includes the unit
@@ -1063,6 +1096,61 @@ mod tests {
         let converted = amount.convert_to(&CurrencyUnit::Msat).unwrap();
         assert_eq!(converted.value(), 5000);
         assert_eq!(converted.unit(), &CurrencyUnit::Msat);
+    }
+
+    #[test]
+    fn test_amount_conversion_rounding() {
+        for (msat, floor, ceil) in [
+            (0, 0, 0),
+            (1, 0, 1),
+            (999, 0, 1),
+            (1_000, 1, 1),
+            (1_001, 1, 2),
+            (1_999, 1, 2),
+            (2_000, 2, 2),
+            (u64::MAX, u64::MAX / 1_000, u64::MAX / 1_000 + 1),
+        ] {
+            let amount = Amount::new(msat, CurrencyUnit::Msat);
+            assert_eq!(
+                amount.convert_to(&CurrencyUnit::Sat).unwrap(),
+                Amount::new(floor, CurrencyUnit::Sat)
+            );
+            assert_eq!(
+                amount.convert_to_ceil(&CurrencyUnit::Sat).unwrap(),
+                Amount::new(ceil, CurrencyUnit::Sat)
+            );
+        }
+    }
+
+    #[test]
+    fn test_amount_convert_to_ceil_exact_conversions_and_errors() {
+        for unit in [CurrencyUnit::Sat, CurrencyUnit::Msat, CurrencyUnit::Usd] {
+            let amount = Amount::new(u64::MAX, unit.clone());
+            assert_eq!(amount.convert_to_ceil(&unit).unwrap(), amount);
+        }
+
+        let largest_sat = u64::MAX / MSAT_IN_SAT;
+        for sat in [0, 1, largest_sat] {
+            assert_eq!(
+                Amount::new(sat, CurrencyUnit::Sat)
+                    .convert_to_ceil(&CurrencyUnit::Msat)
+                    .unwrap(),
+                Amount::new(sat * MSAT_IN_SAT, CurrencyUnit::Msat)
+            );
+        }
+        assert!(matches!(
+            Amount::new(largest_sat + 1, CurrencyUnit::Sat).convert_to_ceil(&CurrencyUnit::Msat),
+            Err(Error::AmountOverflow)
+        ));
+        for (from, to) in [
+            (CurrencyUnit::Msat, CurrencyUnit::Usd),
+            (CurrencyUnit::Usd, CurrencyUnit::Sat),
+        ] {
+            assert!(matches!(
+                Amount::new(1, from).convert_to_ceil(&to),
+                Err(Error::CannotConvertUnits)
+            ));
+        }
     }
 
     #[test]

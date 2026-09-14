@@ -46,7 +46,7 @@ impl Wallet {
                 .or_else(|| amount_for_offer(&offer, &CurrencyUnit::Msat).ok())
                 .ok_or(Error::AmountUndefined)?;
             let amount_quote_unit = Amount::new(amount_msat.into(), CurrencyUnit::Msat)
-                .convert_to(&self.unit)?
+                .convert_to_ceil(&self.unit)?
                 .into();
 
             if quote_res.amount != amount_quote_unit {

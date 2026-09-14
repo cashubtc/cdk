@@ -6,7 +6,6 @@
 //!
 //! The functions here ensure consistency between these two code paths.
 
-use cdk_common::amount::MSAT_IN_SAT;
 use cdk_common::database::mint::Acquired;
 use cdk_common::database::{self, DynMintDatabase, DynMintTransaction};
 use cdk_common::mint::{self as mint_types};
@@ -80,14 +79,7 @@ pub(crate) fn total_spent_for_quote_unit(
     total_spent: &Amount<CurrencyUnit>,
     quote_unit: &CurrencyUnit,
 ) -> Result<Amount<CurrencyUnit>, Error> {
-    match (total_spent.unit(), quote_unit) {
-        (spent_unit, quote_unit) if spent_unit == quote_unit => Ok(total_spent.clone()),
-        (CurrencyUnit::Msat, CurrencyUnit::Sat) => {
-            let rounded_sats = total_spent.value().div_ceil(MSAT_IN_SAT);
-            Ok(Amount::new(rounded_sats, CurrencyUnit::Sat))
-        }
-        _ => total_spent.convert_to(quote_unit).map_err(Error::from),
-    }
+    total_spent.convert_to_ceil(quote_unit).map_err(Error::from)
 }
 
 /// Persist a paid payment result as a durable finalization handoff.
@@ -736,7 +728,7 @@ pub(crate) async fn finalize_melt_core(
 
     // Convert total_spent to the same unit as net_inputs for comparison.
     // Backends should return total_spent in the quote's unit, but we convert defensively.
-    let total_spent = match total_spent.convert_to(net_inputs.unit()) {
+    let total_spent = match total_spent.convert_to_ceil(net_inputs.unit()) {
         Ok(total_spent) => total_spent,
         Err(err) => {
             tx.rollback().await?;

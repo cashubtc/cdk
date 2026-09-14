@@ -2263,6 +2263,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lightning_melt_quotes_validate_rounded_up_principals() {
+        let invoice = cdk_fake_wallet::create_fake_invoice(1_999, "rounding".to_owned());
+        let offer = lightning::offers::offer::OfferBuilder::new(invoice.recover_payee_pub_key())
+            .amount_msats(1_999)
+            .build()
+            .unwrap();
+
+        for (unit, expected) in [(CurrencyUnit::Sat, 2), (CurrencyUnit::Msat, 1_999)] {
+            let connector = Arc::new(MockMintConnector::new());
+            let wallet = crate::wallet::WalletBuilder::new()
+                .mint_url(test_mint_url())
+                .unit(unit.clone())
+                .localstore(create_test_db().await)
+                .seed([42; 64])
+                .shared_client(connector.clone())
+                .build()
+                .unwrap();
+
+            for method in [KnownMethod::Bolt11, KnownMethod::Bolt12] {
+                for options in [
+                    None,
+                    Some(MeltOptions::new_amountless(1_999)),
+                    Some(MeltOptions::new_mpp(1_999)),
+                ] {
+                    if method == KnownMethod::Bolt12
+                        && matches!(options, Some(MeltOptions::Mpp { .. }))
+                    {
+                        continue;
+                    }
+                    for reported in [expected - 1, expected, expected + 1] {
+                        let response = serde_json::json!({
+                            "quote": cdk_common::QuoteId::new().to_string(),
+                            "amount": reported,
+                            "fee_reserve": 1,
+                            "state": "UNPAID",
+                            "expiry": 2_000_000_000,
+                            "unit": unit,
+                            "method": PaymentMethod::Known(method),
+                        });
+                        let result = match method {
+                            KnownMethod::Bolt11 => {
+                                connector.push_post_melt_quote_response(Ok(
+                                    MeltQuoteCreateResponse::Bolt11(
+                                        serde_json::from_value(response).unwrap(),
+                                    ),
+                                ));
+                                wallet
+                                    .request_melt_bolt11_quote(invoice.to_string(), options)
+                                    .await
+                            }
+                            KnownMethod::Bolt12 => {
+                                connector.push_post_melt_quote_response(Ok(
+                                    MeltQuoteCreateResponse::Bolt12(
+                                        serde_json::from_value(response).unwrap(),
+                                    ),
+                                ));
+                                wallet.melt_bolt12_quote(offer.to_string(), options).await
+                            }
+                            _ => unreachable!(),
+                        };
+                        if reported == expected {
+                            assert_eq!(result.unwrap().amount, Amount::from(expected));
+                        } else {
+                            assert!(matches!(result, Err(Error::IncorrectQuoteAmount)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn cross_mint_transfer_quote_max_converges_with_melt_and_input_fees() {
         let fixture = CrossMintTransferTestFixture::new(CurrencyUnit::Sat, CurrencyUnit::Sat).await;
         fixture

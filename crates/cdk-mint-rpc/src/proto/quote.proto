@@ -4,12 +4,135 @@ package cdk_mint_quote_v1;
 
 // Quote administration for a mint.
 service QuoteService {
+    // Applies an operator-verified payment outcome to a specific operation.
+    // Does not send, cancel, or query the backend payment.
+    rpc ResolveMeltQuote(ResolveMeltQuoteRequest) returns (ResolveMeltQuoteResponse) {}
+    // Inspects stored melt quotes without checking or changing payment state.
+    rpc ListMeltQuotes(ListMeltQuotesRequest) returns (ListMeltQuotesResponse) {}
     // Returns the mint's quote time-to-live settings.
     rpc GetQuoteTtl(GetQuoteTtlRequest) returns (GetQuoteTtlResponse) {}
     // Updates the mint's quote time-to-live settings.
     rpc UpdateQuoteTtl(UpdateQuoteTtlRequest) returns (UpdateQuoteTtlResponse) {}
     // Force-marks a mint quote as paid.
     rpc UpdateMintQuoteState(UpdateMintQuoteStateRequest) returns (UpdateMintQuoteStateResponse) {}
+}
+
+message ResolveMeltQuoteRequest {
+    string quote_id = 1;
+    // Required operation ID from inspection; a later retry must not be resolved.
+    string operation_id = 2;
+    // Required persisted saga stage from inspection. A changed stage fails with
+    // FAILED_PRECONDITION. An identical retry resumes an already recorded decision.
+    string expected_saga_state = 3;
+    // Required operator reason/evidence, 1 to 4096 bytes, stored durably.
+    string reason = 4;
+    oneof resolution {
+        FinalizeMeltQuote finalize = 5;
+        CompensateMeltQuote compensate = 6;
+    }
+}
+
+message FinalizeMeltQuote {
+    // Actual total spent including payment fees, in the quote's unit. Must cover
+    // the quote amount and not exceed reserved inputs after input fees.
+    uint64 total_spent = 1;
+    string unit = 2;
+    // Actual backend payment identifier and kind, e.g. payment_hash or quote_id.
+    string payment_lookup_id = 3;
+    string payment_lookup_id_kind = 4;
+    optional string payment_proof = 5;
+}
+
+message CompensateMeltQuote {
+    // Must be true: the operator has established payment failed and no in-flight
+    // attempt or backend retry can subsequently pay. This RPC does not cancel it.
+    bool payment_failure_confirmed = 1;
+}
+
+message ResolveMeltQuoteResponse {
+    string quote_id = 1;
+    string operation_id = 2;
+    // PAID after finalization or UNPAID after compensation, with cleanup complete.
+    MeltQuoteState state = 3;
+}
+
+message ListMeltQuotesRequest {
+    // Optional quote ID. Unknown IDs return an empty list; malformed IDs fail
+    // with INVALID_ARGUMENT. All supplied filters must match.
+    optional string quote_id = 1;
+    // Exact, case-sensitive payment lookup ID in its display encoding (e.g.
+    // lowercase hex for payment hashes). Matches across identifier kinds.
+    // Empty filters fail with INVALID_ARGUMENT.
+    optional string request_lookup_id = 2;
+    // Maximum quotes to return. Zero uses 100; values above 1000 are rejected.
+    uint32 limit = 3;
+    // Number of matching quotes to skip, oldest first, with ties sorted by ID.
+    // Pages reflect current state and may shift as quotes change.
+    uint32 offset = 4;
+    // Optional state filter. Omit to inspect matching quotes in any state.
+    // UNSPECIFIED and unrecognized values fail with INVALID_ARGUMENT.
+    optional MeltQuoteState state = 5;
+    // Exact, case-sensitive original payment request: invoice, offer, address,
+    // or custom request. May match multiple attempts. Empty values are rejected.
+    optional string payment_request = 6;
+}
+
+enum MeltQuoteState {
+    MELT_QUOTE_STATE_UNSPECIFIED = 0;
+    MELT_QUOTE_STATE_UNPAID = 1;
+    MELT_QUOTE_STATE_PENDING = 2;
+    MELT_QUOTE_STATE_PAID = 3;
+    MELT_QUOTE_STATE_UNKNOWN = 4;
+    MELT_QUOTE_STATE_FAILED = 5;
+}
+
+// Stored quote and recovery details for operator investigation. Quote and saga
+// are read separately and may change during inspection. No live backend check
+// is performed, so these fields are not a diagnosis of backend payment state.
+message MeltQuoteInfo {
+    string quote_id = 1;
+    uint64 amount = 2;
+    uint64 fee_reserve = 3;
+    // Currency unit for amount and fee_reserve, e.g. "sat" or "msat".
+    string unit = 4;
+    // Payment method, e.g. "bolt11", "bolt12", or "onchain".
+    string payment_method = 5;
+    // Unix timestamp in seconds.
+    uint64 created_time = 6;
+    // Unix timestamp in seconds. Expiry does not mean payment has failed.
+    uint64 expiry = 7;
+    // Identifier used by the payment backend, when available.
+    optional string request_lookup_id = 8;
+    // Identifier kind, e.g. "payment_hash", "offer_id", or "label".
+    optional string request_lookup_id_kind = 9;
+    MeltQuoteState state = 10;
+    // Original invoice, offer, address, or custom payment request.
+    string request = 11;
+    // Recorded payment timestamp, in Unix seconds, when available.
+    optional uint64 paid_time = 12;
+    // Incomplete recovery operation, when present. Absence alone does not
+    // establish success or failure; completed operations have no saga.
+    MeltQuoteSaga saga = 13;
+    // Recorded payment proof (e.g. Lightning preimage or onchain outpoint).
+    optional string payment_proof = 14;
+}
+
+message MeltQuoteSaga {
+    // Correlation ID for locating the operation in mint logs.
+    string operation_id = 1;
+    // Persisted recovery stage: setup_complete, payment_attempted,
+    // payment_pending, payment_failed, or finalizing.
+    string state = 2;
+    // Unix timestamps in seconds; updated_at is the last persisted saga update,
+    // not the time of the last payment backend check.
+    uint64 created_at = 3;
+    uint64 updated_at = 4;
+}
+
+message ListMeltQuotesResponse {
+    repeated MeltQuoteInfo quotes = 1;
+    // Matching quotes before pagination.
+    uint64 total = 2;
 }
 
 // State of a mint quote, as defined by NUT-04. The mint derives it from the

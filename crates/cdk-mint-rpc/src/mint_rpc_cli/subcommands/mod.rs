@@ -2,6 +2,10 @@
 
 /// Module for fetching the mint's public metadata
 mod get_info;
+/// Module for inspecting melt quotes.
+mod list_melt_quotes;
+/// Module for applying operator melt resolutions.
+mod resolve_melt_quote;
 /// Module for rotating to the next keyset
 mod rotate_next_keyset;
 /// Module for updating mint contact information
@@ -52,3 +56,6 @@ pub use wallet::{
     create_wallet_deposit_address, get_wallet_balance, list_wallet_addresses,
     list_wallet_transactions, WalletPaginationCommand,
 };
+
+pub use self::list_melt_quotes::{list_melt_quotes, ListMeltQuotesCommand};
+pub use self::resolve_melt_quote::{resolve_melt_quote, ResolveMeltQuoteCommand};

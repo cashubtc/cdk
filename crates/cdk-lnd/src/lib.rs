@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cdk_common::amount::{Amount, MSAT_IN_SAT};
+use cdk_common::amount::Amount;
 use cdk_common::bitcoin::hashes::Hash;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::DynKVStore;
@@ -71,6 +71,53 @@ impl std::fmt::Debug for Lnd {
 }
 
 impl Lnd {
+    fn bolt11_payment_quote(
+        unit: &CurrencyUnit,
+        bolt11_options: payment::Bolt11OutgoingPaymentOptions,
+        fee_reserve: &FeeReserve,
+    ) -> Result<PaymentQuoteResponse, payment::Error> {
+        let amount_msat = match bolt11_options.melt_options {
+            Some(MeltOptions::Amountless { amountless }) => {
+                let amount_msat = amountless.amount_msat;
+
+                if let Some(invoice_amount) = bolt11_options.bolt11.amount_milli_satoshis() {
+                    if invoice_amount != u64::from(amount_msat) {
+                        return Err(payment::Error::AmountMismatch);
+                    }
+                }
+
+                amount_msat
+            }
+            Some(MeltOptions::Mpp { mpp }) => mpp.amount,
+            None => bolt11_options
+                .bolt11
+                .amount_milli_satoshis()
+                .ok_or(Error::UnknownInvoiceAmount)?
+                .into(),
+        };
+
+        // The quote must cover the entire millisatoshi principal.
+        let amount = Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to_ceil(unit)?;
+
+        let relative_fee_reserve = (fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
+
+        let absolute_fee_reserve: u64 = fee_reserve.min_fee_reserve.into();
+
+        let fee = max(relative_fee_reserve, absolute_fee_reserve);
+
+        Ok(PaymentQuoteResponse {
+            request_lookup_id: Some(PaymentIdentifier::PaymentHash(
+                *bolt11_options.bolt11.payment_hash().as_ref(),
+            )),
+            amount,
+            fee: Amount::new(fee, unit.clone()),
+            state: MeltQuoteState::Unpaid,
+            extra_json: None,
+            estimated_blocks: None,
+            fee_options: None,
+        })
+    }
+
     /// Maximum number of attempts at a partial payment
     pub const MAX_ROUTE_RETRIES: usize = 50;
 
@@ -196,22 +243,6 @@ fn lnrpc_payment_total_spent(payment: &lnrpc::Payment) -> Result<Amount<Currency
     let total_msat = u64::try_from(total_msat).map_err(|_| Error::AmountOverflow)?;
 
     Ok(Amount::new(total_msat, CurrencyUnit::Msat))
-}
-
-fn msat_total_spent_for_unit(
-    total_msat: u64,
-    unit: &CurrencyUnit,
-) -> Result<Amount<CurrencyUnit>, Error> {
-    match unit {
-        CurrencyUnit::Msat => Ok(Amount::new(total_msat, CurrencyUnit::Msat)),
-        CurrencyUnit::Sat => Ok(Amount::new(
-            total_msat.div_ceil(MSAT_IN_SAT),
-            CurrencyUnit::Sat,
-        )),
-        _ => Amount::new(total_msat, CurrencyUnit::Msat)
-            .convert_to(unit)
-            .map_err(Error::from),
-    }
 }
 
 /// Build an authoritative terminal-failure response for a payment that was
@@ -435,48 +466,7 @@ impl MintPayment for Lnd {
     ) -> Result<PaymentQuoteResponse, Self::Err> {
         match options {
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
-                let amount_msat = match bolt11_options.melt_options {
-                    Some(MeltOptions::Amountless { amountless }) => {
-                        let amount_msat = amountless.amount_msat;
-
-                        if let Some(invoice_amount) = bolt11_options.bolt11.amount_milli_satoshis()
-                        {
-                            if invoice_amount != u64::from(amount_msat) {
-                                return Err(payment::Error::AmountMismatch);
-                            }
-                        }
-
-                        amount_msat
-                    }
-                    Some(MeltOptions::Mpp { mpp }) => mpp.amount,
-                    None => bolt11_options
-                        .bolt11
-                        .amount_milli_satoshis()
-                        .ok_or(Error::UnknownInvoiceAmount)?
-                        .into(),
-                };
-
-                let amount =
-                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?;
-
-                let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
-
-                let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
-
-                let fee = max(relative_fee_reserve, absolute_fee_reserve);
-
-                Ok(PaymentQuoteResponse {
-                    request_lookup_id: Some(PaymentIdentifier::PaymentHash(
-                        *bolt11_options.bolt11.payment_hash().as_ref(),
-                    )),
-                    amount,
-                    fee: Amount::new(fee, unit.clone()),
-                    state: MeltQuoteState::Unpaid,
-                    extra_json: None,
-                    estimated_blocks: None,
-                    fee_options: None,
-                })
+                Self::bolt11_payment_quote(unit, *bolt11_options, &self.fee_reserve)
             }
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
@@ -677,7 +667,8 @@ impl MintPayment for Lnd {
                                     ),
                                     payment_proof: payment_preimage,
                                     status,
-                                    total_spent: msat_total_spent_for_unit(total_amt_msat, unit)?,
+                                    total_spent: Amount::new(total_amt_msat, CurrencyUnit::Msat)
+                                        .convert_to_ceil(unit)?,
                                 });
                             }
 
@@ -802,7 +793,7 @@ impl MintPayment for Lnd {
                                 payment_lookup_id: payment_identifier,
                                 payment_proof: payment_preimage,
                                 status: response_status,
-                                total_spent: msat_total_spent_for_unit(total_msat as u64, unit)?,
+                                total_spent: Amount::new(total_msat as u64, CurrencyUnit::Msat).convert_to_ceil(unit)?,
                             });
                         }
 
@@ -1034,16 +1025,60 @@ mod tests {
     use super::*;
 
     fn invoice_with_timestamp(timestamp: Duration) -> Bolt11Invoice {
+        invoice_with_amount(timestamp, None)
+    }
+
+    fn invoice_with_amount(timestamp: Duration, amount_msat: Option<u64>) -> Bolt11Invoice {
         let key = SecretKey::from_slice(&[1; 32]).unwrap();
-        InvoiceBuilder::new(Currency::Regtest)
+        let builder = InvoiceBuilder::new(Currency::Regtest)
             .description("expiry test".to_owned())
             .payment_hash(sha256::Hash::from_byte_array([42; 32]))
             .payment_secret(PaymentSecret([43; 32]))
             .duration_since_epoch(timestamp)
             .expiry_time(Duration::from_secs(3600))
-            .min_final_cltv_expiry_delta(144)
+            .min_final_cltv_expiry_delta(144);
+        let builder = match amount_msat {
+            Some(amount) => builder.amount_milli_satoshis(amount),
+            None => builder,
+        };
+        builder
             .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &key))
             .unwrap()
+    }
+
+    #[test]
+    fn payment_quotes_round_up_sat_principals() {
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: Amount::ZERO,
+            percent_fee_reserve: 0.0,
+        };
+        for (msat, sat) in [(1, 1), (999, 1), (1_000, 1), (1_999, 2), (2_000, 2)] {
+            for (unit, expected) in [(CurrencyUnit::Sat, sat), (CurrencyUnit::Msat, msat)] {
+                for melt_options in [
+                    None,
+                    Some(MeltOptions::new_mpp(msat)),
+                    Some(MeltOptions::new_amountless(msat)),
+                ] {
+                    let invoice_amount = melt_options.is_none().then_some(msat);
+                    let quote = Lnd::bolt11_payment_quote(
+                        &unit,
+                        payment::Bolt11OutgoingPaymentOptions {
+                            bolt11: invoice_with_amount(
+                                Duration::from_secs(unix_time()),
+                                invoice_amount,
+                            ),
+                            max_fee_amount: None,
+                            timeout_secs: None,
+                            melt_options,
+                            quote_id: cdk_common::QuoteId::new(),
+                        },
+                        &fee_reserve,
+                    )
+                    .unwrap();
+                    assert_eq!(quote.amount, Amount::new(expected, unit.clone()));
+                }
+            }
+        }
     }
 
     #[test]
@@ -1146,14 +1181,6 @@ mod tests {
             .expect_err("overflowing payment total should be rejected");
 
         assert!(matches!(err, Error::AmountOverflow));
-    }
-
-    #[test]
-    fn msat_total_spent_for_unit_rounds_up_sats() {
-        let total_spent = msat_total_spent_for_unit(1501, &CurrencyUnit::Sat)
-            .expect("msat total should convert to sat");
-
-        assert_eq!(total_spent, Amount::new(2, CurrencyUnit::Sat));
     }
 
     #[test]

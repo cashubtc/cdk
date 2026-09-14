@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bitcoin::hashes::sha256;
-use cdk_common::amount::{Amount, MSAT_IN_SAT};
+use cdk_common::amount::Amount;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::DynKVStore;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
@@ -365,14 +365,8 @@ impl MintPayment for Cln {
                         .into()
                 };
                 // Convert to target unit
-                let amount = match unit {
-                    // The quote must cover the entire millisatoshi principal.
-                    CurrencyUnit::Sat => Amount::new(
-                        u64::from(amount_msat).div_ceil(MSAT_IN_SAT),
-                        CurrencyUnit::Sat,
-                    ),
-                    _ => Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?,
-                };
+                let amount =
+                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to_ceil(unit)?;
 
                 // Calculate fee
                 let relative_fee_reserve =
@@ -410,13 +404,7 @@ impl MintPayment for Cln {
                 };
 
                 // Convert to target unit
-                let amount = match unit {
-                    // The quote must cover the entire millisatoshi principal.
-                    CurrencyUnit::Sat => {
-                        Amount::new(amount_msat.div_ceil(MSAT_IN_SAT), CurrencyUnit::Sat)
-                    }
-                    _ => Amount::new(amount_msat, CurrencyUnit::Msat).convert_to(unit)?,
-                };
+                let amount = Amount::new(amount_msat, CurrencyUnit::Msat).convert_to_ceil(unit)?;
 
                 // Calculate fee
                 let relative_fee_reserve =
@@ -656,13 +644,7 @@ impl MintPayment for Cln {
 
         // Both xpay and reconciliation report principal plus fees in Msat.
         // Return the quote unit and round the combined total only once.
-        response.total_spent = match unit {
-            CurrencyUnit::Sat => Amount::new(
-                response.total_spent.value().div_ceil(MSAT_IN_SAT),
-                CurrencyUnit::Sat,
-            ),
-            _ => response.total_spent.convert_to(unit)?,
-        };
+        response.total_spent = response.total_spent.convert_to_ceil(unit)?;
 
         Ok(response)
     }

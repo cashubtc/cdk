@@ -150,8 +150,9 @@ async fn convert_currency_amount(
 ) -> Result<Amount<CurrencyUnit>, Error> {
     use CurrencyUnit::*;
 
-    // Try basic unit conversion first (handles SAT/MSAT and same-unit conversions)
-    if let Ok(converted) = Amount::new(amount, from_unit.clone()).convert_to(target_unit) {
+    // Outgoing amounts must cover the full principal. Incoming Lightning
+    // requests convert to msat, which remains exact for sat/msat amounts.
+    if let Ok(converted) = Amount::new(amount, from_unit.clone()).convert_to_ceil(target_unit) {
         return Ok(converted);
     }
 
@@ -1113,6 +1114,50 @@ mod tests {
 
     fn test_wallet() -> FakeWallet {
         test_wallet_with_delay(0)
+    }
+
+    #[tokio::test]
+    async fn lightning_quotes_and_payments_round_up_sat_amounts() {
+        let wallet = test_wallet();
+        for (msat, sat) in [(1, 1), (999, 1), (1_000, 1), (1_999, 2), (2_000, 2)] {
+            let invoice = create_fake_invoice(msat, "rounding".to_owned());
+            let offer = OfferBuilder::new(invoice.recover_payee_pub_key())
+                .amount_msats(msat)
+                .build()
+                .unwrap();
+            for (unit, expected) in [(CurrencyUnit::Sat, sat), (CurrencyUnit::Msat, msat)] {
+                for options in [
+                    OutgoingPaymentOptions::Bolt11(Box::new(
+                        payment::Bolt11OutgoingPaymentOptions {
+                            bolt11: invoice.clone(),
+                            max_fee_amount: None,
+                            timeout_secs: None,
+                            melt_options: None,
+                            quote_id: cdk_common::QuoteId::new(),
+                        },
+                    )),
+                    OutgoingPaymentOptions::Bolt12(Box::new(
+                        payment::Bolt12OutgoingPaymentOptions {
+                            offer: offer.clone(),
+                            max_fee_amount: None,
+                            timeout_secs: None,
+                            melt_options: None,
+                            quote_id: cdk_common::QuoteId::new(),
+                        },
+                    )),
+                ] {
+                    let quote = wallet
+                        .get_payment_quote(&unit, options.clone())
+                        .await
+                        .unwrap();
+                    assert_eq!(quote.amount, Amount::new(expected, unit.clone()));
+                    let payment = wallet.make_payment(&unit, options).await.unwrap();
+                    assert_eq!(payment.status, MeltQuoteState::Paid);
+                    // The fake backend adds a fee of one quote unit.
+                    assert_eq!(payment.total_spent, Amount::new(expected + 1, unit.clone()));
+                }
+            }
+        }
     }
 
     fn custom_outgoing_options(

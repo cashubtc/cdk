@@ -16,5 +16,6 @@ extend-ignore-re = [
     "autheticator",
     "Gam",
     "flate2",
-    "lnbc[A-Za-z0-9-_]+"
+    "lnbc[A-Za-z0-9-_]+",
+    "Writeable"
 ]
