@@ -285,6 +285,8 @@ async def test_wallet_proofs_by_ys():
         mint_url = "https://example.com"
         keyset_id = "00deadbeef123456"
 
+        await db.add_mint(cdk_ffi.MintUrl(url=mint_url), None)
+
         proof_infos = []
         expected_ys = []
 
