@@ -192,7 +192,11 @@ pub trait WalletDatabase: Send + Sync {
         mint_info: Option<MintInfo>,
     ) -> Result<(), FfiError>;
 
-    /// Remove Mint from storage
+    /// Stop tracking a mint, without destroying anything it holds.
+    ///
+    /// The mint and everything attached to it disappear from every read, but
+    /// nothing is deleted: adding the same URL again restores the mint with its
+    /// proofs, keysets, quotes and history.
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), FfiError>;
 
     /// Add mint keyset to storage

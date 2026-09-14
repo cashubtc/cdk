@@ -70,11 +70,20 @@ pub enum Error {
     /// Duplicate
     #[error("Duplicate")]
     Duplicate,
+    /// Unknown Mint
+    #[error("Unknown mint: {0}")]
+    UnknownMint(String),
+    /// A stored record does not carry a usable mint reference
+    #[error("Invalid mint reference in stored record")]
+    MintReference,
 }
 
 impl From<Error> for cdk_common::database::Error {
     fn from(e: Error) -> Self {
-        Self::Database(Box::new(e))
+        match e {
+            Error::UnknownMint(mint) => Self::UnknownMint(mint),
+            e => Self::Database(Box::new(e)),
+        }
     }
 }
 

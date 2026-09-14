@@ -26,15 +26,16 @@ use crate::error::Error;
 use crate::migrations::migrate_00_to_01;
 use crate::wallet::migrations::{
     migrate_01_to_02, migrate_02_to_03, migrate_03_to_04, migrate_04_to_05, migrate_05_to_06,
+    migrate_06_to_07,
 };
+use crate::wallet::mint_index::{MintIndex, StoredMint, MINTS_TABLE};
 
 mod migrations;
+mod mint_index;
 
-// <Mint_url, Info>
-const MINTS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mints_table");
-// <Mint_Url, Keyset_id>
-const MINT_KEYSETS_TABLE: MultimapTableDefinition<&str, &[u8]> =
-    MultimapTableDefinition::new("mint_keysets");
+// <Mint_id, Keyset_id>
+const MINT_KEYSETS_TABLE: MultimapTableDefinition<u64, &[u8]> =
+    MultimapTableDefinition::new("mint_id_keysets");
 // <Keyset_id, KeysetInfo>
 const KEYSETS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("keysets");
 // <Quote_id, quote>
@@ -60,7 +61,7 @@ const KEYSET_U32_MAPPING: TableDefinition<u32, &str> = TableDefinition::new("key
 // <(primary_namespace, secondary_namespace, key), value>
 const KV_STORE_TABLE: TableDefinition<(&str, &str, &str), &[u8]> = TableDefinition::new("kv_store");
 
-const DATABASE_VERSION: u32 = 6;
+const DATABASE_VERSION: u32 = 7;
 
 /// Wallet Redb Database
 #[derive(Debug, Clone)]
@@ -130,6 +131,10 @@ impl WalletRedbDatabase {
 
                             if current_file_version == 5 {
                                 current_file_version = migrate_05_to_06(Arc::clone(&db))?;
+                            }
+
+                            if current_file_version == 6 {
+                                current_file_version = migrate_06_to_07(Arc::clone(&db))?;
                             }
 
                             if current_file_version != DATABASE_VERSION {
@@ -213,11 +218,13 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
 
-        if let Some(mint_info) = table
-            .get(mint_url.to_string().as_str())
-            .map_err(Error::from)?
-        {
-            return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
+        for entry in table.iter().map_err(Error::from)? {
+            let (_, mint) = entry.map_err(Error::from)?;
+            let mint: StoredMint = serde_json::from_str(mint.value()).map_err(Error::from)?;
+
+            if mint.mint_url == mint_url && mint.removed_at.is_none() {
+                return Ok(mint.mint_info);
+            }
         }
 
         Ok(None)
@@ -231,11 +238,9 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             .iter()
             .map_err(Error::from)?
             .flatten()
-            .filter_map(|(mint, mint_info)| {
-                MintUrl::from_str(mint.value())
-                    .ok()
-                    .map(|url| (url, serde_json::from_str(mint_info.value()).ok()))
-            })
+            .filter_map(|(_, mint)| serde_json::from_str::<StoredMint>(mint.value()).ok())
+            .filter(|mint| mint.removed_at.is_none())
+            .map(|mint| (mint.mint_url, mint.mint_info))
             .collect();
 
         Ok(mints)
@@ -247,12 +252,16 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         mint_url: MintUrl,
     ) -> Result<Option<Vec<KeySetInfo>>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
+        let mints = MintIndex::read(&read_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
+        let Some(mint_id) = mints.live_id(&mint_url) else {
+            return Ok(None);
+        };
         let table = read_txn
             .open_multimap_table(MINT_KEYSETS_TABLE)
             .map_err(Error::from)?;
 
         let keyset_ids = table
-            .get(mint_url.to_string().as_str())
+            .get(mint_id)
             .map_err(Error::from)?
             .flatten()
             .map(|k| Id::from_bytes(k.value()))
@@ -304,12 +313,13 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     #[instrument(skip_all)]
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
+        let mints = MintIndex::read(&read_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
         let table = read_txn
             .open_table(MINT_QUOTES_TABLE)
             .map_err(Error::from)?;
 
-        if let Some(mint_info) = table.get(quote_id).map_err(Error::from)? {
-            return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
+        if let Some(quote) = table.get(quote_id).map_err(Error::from)? {
+            return Ok(mints.decode_visible(quote.value())?);
         }
 
         Ok(None)
@@ -318,34 +328,48 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     #[instrument(skip_all)]
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
+        let mints = MintIndex::read(&read_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
         let table = read_txn
             .open_table(MINT_QUOTES_TABLE)
             .map_err(Error::from)?;
 
-        Ok(table
-            .iter()
-            .map_err(Error::from)?
-            .flatten()
-            .flat_map(|(_id, quote)| serde_json::from_str(quote.value()))
-            .collect())
+        let mut quotes = Vec::new();
+
+        for entry in table.iter().map_err(Error::from)? {
+            let (_id, quote) = entry.map_err(Error::from)?;
+
+            if let Some(quote) = mints.decode_visible::<MintQuote>(quote.value())? {
+                quotes.push(quote);
+            }
+        }
+
+        Ok(quotes)
     }
 
     async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
+        let mints = MintIndex::read(&read_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
         let table = read_txn
             .open_table(MINT_QUOTES_TABLE)
             .map_err(Error::from)?;
 
-        Ok(table
-            .iter()
-            .map_err(Error::from)?
-            .flatten()
-            .flat_map(|(_id, quote)| serde_json::from_str::<MintQuote>(quote.value()).ok())
-            .filter(|quote| {
-                quote.amount_issued == Amount::ZERO
-                    || quote.payment_method == PaymentMethod::Known(KnownMethod::Bolt12)
-            })
-            .collect())
+        let mut quotes = Vec::new();
+
+        for entry in table.iter().map_err(Error::from)? {
+            let (_id, quote) = entry.map_err(Error::from)?;
+
+            let Some(quote) = mints.decode_visible::<MintQuote>(quote.value())? else {
+                continue;
+            };
+
+            if quote.amount_issued == Amount::ZERO
+                || quote.payment_method == PaymentMethod::Known(KnownMethod::Bolt12)
+            {
+                quotes.push(quote);
+            }
+        }
+
+        Ok(quotes)
     }
 
     #[instrument(skip_all)]
@@ -354,12 +378,13 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         quote_id: &str,
     ) -> Result<Option<wallet::MeltQuote>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let mints = MintIndex::read(&read_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
         let table = read_txn
             .open_table(MELT_QUOTES_TABLE)
             .map_err(Error::from)?;
 
-        if let Some(mint_info) = table.get(quote_id).map_err(Error::from)? {
-            return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
+        if let Some(quote) = table.get(quote_id).map_err(Error::from)? {
+            return Ok(mints.decode_visible(quote.value())?);
         }
 
         Ok(None)
@@ -368,16 +393,22 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     #[instrument(skip_all)]
     async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let mints = MintIndex::read(&read_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
         let table = read_txn
             .open_table(MELT_QUOTES_TABLE)
             .map_err(Error::from)?;
 
-        Ok(table
-            .iter()
-            .map_err(Error::from)?
-            .flatten()
-            .flat_map(|(_id, quote)| serde_json::from_str(quote.value()))
-            .collect())
+        let mut quotes = Vec::new();
+
+        for entry in table.iter().map_err(Error::from)? {
+            let (_id, quote) = entry.map_err(Error::from)?;
+
+            if let Some(quote) = mints.decode_visible::<wallet::MeltQuote>(quote.value())? {
+                quotes.push(quote);
+            }
+        }
+
+        Ok(quotes)
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
@@ -404,26 +435,23 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let mints = MintIndex::read(&read_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
 
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
-        let proofs: Vec<ProofInfo> = table
-            .iter()
-            .map_err(Error::from)?
-            .flatten()
-            .filter_map(|(_k, v)| {
-                let mut proof = None;
+        let mut proofs = Vec::new();
 
-                if let Ok(proof_info) = serde_json::from_str::<ProofInfo>(v.value()) {
-                    if proof_info.matches_conditions(&mint_url, &unit, &state, &spending_conditions)
-                    {
-                        proof = Some(proof_info)
-                    }
-                }
+        for entry in table.iter().map_err(Error::from)? {
+            let (_k, v) = entry.map_err(Error::from)?;
 
-                proof
-            })
-            .collect();
+            let Some(proof_info) = mints.decode_visible::<ProofInfo>(v.value())? else {
+                continue;
+            };
+
+            if proof_info.matches_conditions(&mint_url, &unit, &state, &spending_conditions) {
+                proofs.push(proof_info);
+            }
+        }
 
         Ok(proofs)
     }
@@ -438,15 +466,16 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         }
 
         let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let mints = MintIndex::read(&read_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
         let mut proofs = Vec::new();
 
         for y in ys {
             if let Some(proof) = table.get(y.to_bytes().as_slice()).map_err(Error::from)? {
-                let proof_info =
-                    serde_json::from_str::<ProofInfo>(proof.value()).map_err(Error::from)?;
-                proofs.push(proof_info);
+                if let Some(proof) = mints.decode_visible::<ProofInfo>(proof.value())? {
+                    proofs.push(proof);
+                }
             }
         }
 
@@ -471,12 +500,13 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         transaction_id: TransactionId,
     ) -> Result<Option<Transaction>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let mints = MintIndex::read(&read_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
         let table = read_txn
             .open_table(TRANSACTIONS_TABLE)
             .map_err(Error::from)?;
 
         if let Some(transaction) = table.get(transaction_id.as_slice()).map_err(Error::from)? {
-            return Ok(serde_json::from_str(transaction.value()).map_err(Error::from)?);
+            return Ok(mints.decode_visible(transaction.value())?);
         }
 
         Ok(None)
@@ -490,27 +520,25 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         unit: Option<CurrencyUnit>,
     ) -> Result<Vec<Transaction>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let mints = MintIndex::read(&read_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
 
         let table = read_txn
             .open_table(TRANSACTIONS_TABLE)
             .map_err(Error::from)?;
 
-        let transactions: Vec<Transaction> = table
-            .iter()
-            .map_err(Error::from)?
-            .flatten()
-            .filter_map(|(_k, v)| {
-                let mut transaction = None;
+        let mut transactions = Vec::new();
 
-                if let Ok(tx) = serde_json::from_str::<Transaction>(v.value()) {
-                    if tx.matches_conditions(&mint_url, &direction, &unit) {
-                        transaction = Some(tx)
-                    }
-                }
+        for entry in table.iter().map_err(Error::from)? {
+            let (_k, v) = entry.map_err(Error::from)?;
 
-                transaction
-            })
-            .collect();
+            let Some(tx) = mints.decode_visible::<Transaction>(v.value())? else {
+                continue;
+            };
+
+            if tx.matches_conditions(&mint_url, &direction, &unit) {
+                transactions.push(tx);
+            }
+        }
 
         Ok(transactions)
     }
@@ -523,6 +551,8 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         {
+            let mints =
+                MintIndex::read_ensuring(&write_txn, added.iter().map(|proof| &proof.mint_url))?;
             let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
             for mut proof_info in added {
@@ -531,11 +561,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                         .get(proof_info.y.to_bytes().as_slice())
                         .map_err(Error::from)?
                     {
-                        Some(stored) => {
-                            serde_json::from_str::<ProofInfo>(stored.value())
-                                .map_err(Error::from)?
-                                .derivation_index
-                        }
+                        Some(stored) => mints.decode::<ProofInfo>(stored.value())?.derivation_index,
                         None => None,
                     };
                 }
@@ -543,9 +569,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                 table
                     .insert(
                         proof_info.y.to_bytes().as_slice(),
-                        serde_json::to_string(&proof_info)
-                            .map_err(Error::from)?
-                            .as_str(),
+                        mints.encode(&proof_info)?.as_str(),
                     )
                     .map_err(Error::from)?;
             }
@@ -565,6 +589,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         {
+            let mints = MintIndex::read(&write_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
             let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
             for y in ys {
@@ -574,19 +599,13 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                     .map_err(Error::from)?
                     .ok_or(Error::UnknownY)?;
 
-                let mut proof_info =
-                    serde_json::from_str::<ProofInfo>(proof.value()).map_err(Error::from)?;
+                let mut proof_info = mints.decode::<ProofInfo>(proof.value())?;
                 drop(proof);
 
                 proof_info.state = state;
 
                 table
-                    .insert(
-                        y_slice.as_slice(),
-                        serde_json::to_string(&proof_info)
-                            .map_err(Error::from)?
-                            .as_str(),
-                    )
+                    .insert(y_slice.as_slice(), mints.encode(&proof_info)?.as_str())
                     .map_err(Error::from)?;
             }
         }
@@ -608,16 +627,13 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         let id = transaction.id();
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         {
+            let mints = MintIndex::read_ensuring(&write_txn, [&transaction.mint_url])?;
+            let stored = mints.encode(&transaction)?;
             let mut table = write_txn
                 .open_table(TRANSACTIONS_TABLE)
                 .map_err(Error::from)?;
             table
-                .insert(
-                    id.as_slice(),
-                    serde_json::to_string(&transaction)
-                        .map_err(Error::from)?
-                        .as_str(),
-                )
+                .insert(id.as_slice(), stored.as_str())
                 .map_err(Error::from)?;
         }
         write_txn.commit().map_err(Error::from)?;
@@ -625,6 +641,10 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     }
 
     #[instrument(skip(self))]
+    /// Records reference the mint by its id, so only the mint itself moves.
+    /// Rejects a `new_mint_url` another mint already holds, removed or not.
+    /// The URL is data here rather than the table key, so nothing enforces that
+    /// on its own; the SQL backends get it from `UNIQUE (mint_url)`.
     async fn update_mint_url(
         &self,
         old_mint_url: MintUrl,
@@ -632,71 +652,41 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
-        // Update proofs table
         {
-            let read_table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
-            let proofs: Vec<ProofInfo> = read_table
-                .iter()
-                .map_err(Error::from)?
-                .flatten()
-                .filter_map(|(_k, v)| {
-                    let proof_info = serde_json::from_str::<ProofInfo>(v.value()).ok()?;
-                    if proof_info.mint_url == old_mint_url {
-                        Some(proof_info)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            drop(read_table);
+            let mut table = write_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
 
-            if !proofs.is_empty() {
-                let mut write_table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
-                for mut proof_info in proofs {
-                    proof_info.mint_url = new_mint_url.clone();
-                    write_table
-                        .insert(
-                            proof_info.y.to_bytes().as_slice(),
-                            serde_json::to_string(&proof_info)
-                                .map_err(Error::from)?
-                                .as_str(),
-                        )
-                        .map_err(Error::from)?;
+            let mut stored = None;
+            let mut taken = false;
+
+            for entry in table.iter().map_err(Error::from)? {
+                let (id, mint) = entry.map_err(Error::from)?;
+                let Ok(mint) = serde_json::from_str::<StoredMint>(mint.value()) else {
+                    continue;
+                };
+
+                if mint.mint_url == old_mint_url && mint.removed_at.is_none() {
+                    stored = Some((id.value(), mint));
+                } else if mint.mint_url == new_mint_url {
+                    taken = true;
                 }
             }
-        }
 
-        // Update mint quotes
-        {
-            let mut table = write_txn
-                .open_table(MINT_QUOTES_TABLE)
-                .map_err(Error::from)?;
-
-            let unix_time = unix_time();
-
-            let quotes: Vec<MintQuote> = table
-                .iter()
-                .map_err(Error::from)?
-                .flatten()
-                .filter_map(|(_, quote)| {
-                    let mut q: MintQuote = serde_json::from_str(quote.value()).ok()?;
-                    if q.mint_url == old_mint_url && q.expiry >= unix_time {
-                        q.mint_url = new_mint_url.clone();
-                        Some(q)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            for quote in quotes {
-                table
-                    .insert(
-                        quote.id.as_str(),
-                        serde_json::to_string(&quote).map_err(Error::from)?.as_str(),
-                    )
-                    .map_err(Error::from)?;
+            if taken {
+                return Err(Error::Duplicate.into());
             }
+
+            let Some((mint_id, mut mint)) = stored else {
+                return Err(database::Error::UnknownMint(old_mint_url.to_string()));
+            };
+
+            mint.mint_url = new_mint_url;
+
+            table
+                .insert(
+                    mint_id,
+                    serde_json::to_string(&mint).map_err(Error::from)?.as_str(),
+                )
+                .map_err(Error::from)?;
         }
 
         write_txn.commit().map_err(Error::from)?;
@@ -761,6 +751,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     }
 
     #[instrument(skip(self))]
+    /// A mint that is already stored keeps the id it has: rows point at it.
     async fn add_mint(
         &self,
         mint_url: MintUrl,
@@ -769,12 +760,33 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         {
             let mut table = write_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
+
+            let mut existing = None;
+            let mut highest = 0;
+
+            for entry in table.iter().map_err(Error::from)? {
+                let (id, stored) = entry.map_err(Error::from)?;
+                let stored: StoredMint =
+                    serde_json::from_str(stored.value()).map_err(Error::from)?;
+
+                highest = highest.max(id.value());
+
+                if stored.mint_url == mint_url {
+                    existing = Some(id.value());
+                }
+            }
+
+            let mint_id = existing.unwrap_or(highest + 1);
+            let mint = StoredMint {
+                mint_url,
+                mint_info,
+                removed_at: None,
+            };
+
             table
                 .insert(
-                    mint_url.to_string().as_str(),
-                    serde_json::to_string(&mint_info)
-                        .map_err(Error::from)?
-                        .as_str(),
+                    mint_id,
+                    serde_json::to_string(&mint).map_err(Error::from)?.as_str(),
                 )
                 .map_err(Error::from)?;
         }
@@ -783,12 +795,39 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     }
 
     #[instrument(skip(self))]
+    /// Stamps `removed_at` and clears the mint info, keeping the row, its id and
+    /// its URL. Dropping the row would take every proof with it, destroying
+    /// spendable e-cash; hiding it leaves the secrets recoverable, and
+    /// [`WalletDatabase::add_mint`] on the same URL brings the mint back whole.
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         {
             let mut table = write_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
+
+            let stored = table
+                .iter()
+                .map_err(Error::from)?
+                .flatten()
+                .find_map(|(id, mint)| {
+                    let mint: StoredMint = serde_json::from_str(mint.value()).ok()?;
+                    (mint.mint_url == mint_url && mint.removed_at.is_none()).then_some(id.value())
+                });
+
+            let Some(mint_id) = stored else {
+                return Ok(());
+            };
+
+            let mint = StoredMint {
+                mint_url,
+                mint_info: None,
+                removed_at: Some(unix_time()),
+            };
+
             table
-                .remove(mint_url.to_string().as_str())
+                .insert(
+                    mint_id,
+                    serde_json::to_string(&mint).map_err(Error::from)?.as_str(),
+                )
                 .map_err(Error::from)?;
         }
         write_txn.commit().map_err(Error::from)?;
@@ -803,6 +842,8 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         {
+            let mint_id = MintIndex::read_ensuring(&write_txn, [&mint_url])?.id(&mint_url)?;
+
             let mut table = write_txn
                 .open_multimap_table(MINT_KEYSETS_TABLE)
                 .map_err(Error::from)?;
@@ -850,10 +891,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                     existing_keyset
                 } else {
                     table
-                        .insert(
-                            mint_url.to_string().as_str(),
-                            keyset.id.to_bytes().as_slice(),
-                        )
+                        .insert(mint_id, keyset.id.to_bytes().as_slice())
                         .map_err(Error::from)?;
 
                     keyset
@@ -882,6 +920,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         {
+            let mints = MintIndex::read_ensuring(&write_txn, [&quote.mint_url])?;
             let mut table = write_txn
                 .open_table(MINT_QUOTES_TABLE)
                 .map_err(Error::from)?;
@@ -895,7 +934,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             let mut quote_to_save = quote.clone();
 
             if let Some(json) = existing_quote_json {
-                let existing_quote: MintQuote = serde_json::from_str(&json).map_err(Error::from)?;
+                let existing_quote: MintQuote = mints.decode(&json)?;
 
                 if existing_quote.version != quote.version {
                     return Err(database::Error::ConcurrentUpdate);
@@ -908,9 +947,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             table
                 .insert(
                     quote_to_save.id.as_str(),
-                    serde_json::to_string(&quote_to_save)
-                        .map_err(Error::from)?
-                        .as_str(),
+                    mints.encode(&quote_to_save)?.as_str(),
                 )
                 .map_err(Error::from)?;
         }
@@ -935,6 +972,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         {
+            let mints = MintIndex::read_ensuring(&write_txn, quote.mint_url.as_ref())?;
             let mut table = write_txn
                 .open_table(MELT_QUOTES_TABLE)
                 .map_err(Error::from)?;
@@ -948,8 +986,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             let mut quote_to_save = quote.clone();
 
             if let Some(json) = existing_quote_json {
-                let existing_quote: wallet::MeltQuote =
-                    serde_json::from_str(&json).map_err(Error::from)?;
+                let existing_quote: wallet::MeltQuote = mints.decode(&json)?;
 
                 if existing_quote.version != quote.version {
                     return Err(database::Error::ConcurrentUpdate);
@@ -962,9 +999,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             table
                 .insert(
                     quote_to_save.id.as_str(),
-                    serde_json::to_string(&quote_to_save)
-                        .map_err(Error::from)?
-                        .as_str(),
+                    mints.encode(&quote_to_save)?.as_str(),
                 )
                 .map_err(Error::from)?;
         }
@@ -1063,11 +1098,12 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
     #[instrument(skip(self))]
     async fn add_saga(&self, saga: wallet::WalletSaga) -> Result<(), database::Error> {
-        let saga_json = serde_json::to_string(&saga).map_err(Error::from)?;
         let id_str = saga.id.to_string();
 
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         {
+            let mints = MintIndex::read_ensuring(&write_txn, [&saga.mint_url])?;
+            let saga_json = mints.encode(&saga)?;
             let mut table = write_txn.open_table(SAGAS_TABLE).map_err(Error::from)?;
             table
                 .insert(id_str.as_str(), saga_json.as_str())
@@ -1083,14 +1119,16 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         id: &uuid::Uuid,
     ) -> Result<Option<wallet::WalletSaga>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let mints = MintIndex::read(&read_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
         let table = read_txn.open_table(SAGAS_TABLE).map_err(Error::from)?;
         let id_str = id.to_string();
 
         let result = table
             .get(id_str.as_str())
             .map_err(Error::from)?
-            .map(|saga| serde_json::from_str(saga.value()).map_err(Error::from))
-            .transpose()?;
+            .map(|saga| mints.decode_visible(saga.value()))
+            .transpose()?
+            .flatten();
 
         Ok(result)
     }
@@ -1105,6 +1143,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         let updated = {
+            let mints = MintIndex::read_ensuring(&write_txn, [&saga.mint_url])?;
             let mut table = write_txn.open_table(SAGAS_TABLE).map_err(Error::from)?;
 
             // Read existing saga to check version (optimistic locking)
@@ -1115,8 +1154,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
             match existing_saga_json {
                 Some(json) => {
-                    let existing_saga: wallet::WalletSaga =
-                        serde_json::from_str(&json).map_err(Error::from)?;
+                    let existing_saga: wallet::WalletSaga = mints.decode(&json)?;
 
                     // Check if version matches expected version
                     if existing_saga.version != expected_version {
@@ -1124,7 +1162,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                         false
                     } else {
                         // Version matches - safe to update
-                        let saga_json = serde_json::to_string(&saga).map_err(Error::from)?;
+                        let saga_json = mints.encode(&saga)?;
                         table
                             .insert(id_str.as_str(), saga_json.as_str())
                             .map_err(Error::from)?;
@@ -1156,18 +1194,19 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     #[instrument(skip(self))]
     async fn get_incomplete_sagas(&self) -> Result<Vec<wallet::WalletSaga>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let mints = MintIndex::read(&read_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
         let table = read_txn.open_table(SAGAS_TABLE).map_err(Error::from)?;
 
-        let mut sagas: Vec<wallet::WalletSaga> = table
-            .iter()
-            .map_err(Error::from)?
-            .flatten()
-            .filter_map(|(_, saga_json)| {
-                serde_json::from_str::<wallet::WalletSaga>(saga_json.value()).ok()
-            })
-            .collect();
+        let mut sagas = Vec::new();
 
-        // Sort by created_at ascending (oldest first)
+        for entry in table.iter().map_err(Error::from)? {
+            let (_, saga_json) = entry.map_err(Error::from)?;
+
+            if let Some(saga) = mints.decode_visible::<wallet::WalletSaga>(saga_json.value())? {
+                sagas.push(saga);
+            }
+        }
+
         sagas.sort_by_key(|saga| saga.created_at);
 
         Ok(sagas)
@@ -1182,6 +1221,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
+            let mints = MintIndex::read(&write_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
             let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
             for y in ys {
@@ -1197,8 +1237,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                     return Err(database::Error::ProofNotUnspent);
                 };
 
-                let mut proof: ProofInfo =
-                    serde_json::from_str(&proof_json_str).map_err(Error::from)?;
+                let mut proof: ProofInfo = mints.decode(&proof_json_str)?;
 
                 if proof.state != State::Unspent {
                     return Err(database::Error::ProofNotUnspent);
@@ -1207,7 +1246,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                 proof.state = State::Reserved;
                 proof.used_by_operation = Some(*operation_id);
 
-                let updated_json = serde_json::to_string(&proof).map_err(Error::from)?;
+                let updated_json = mints.encode(&proof)?;
                 table
                     .insert(y_bytes.as_slice(), updated_json.as_str())
                     .map_err(Error::from)?;
@@ -1223,20 +1262,18 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
+            let mints = MintIndex::read(&write_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
             let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
-            // Collect all proofs first to avoid borrowing issues
-            let all_proofs: Vec<(Vec<u8>, ProofInfo)> = table
-                .iter()
-                .map_err(Error::from)?
-                .flatten()
-                .filter_map(|(y, proof_json)| {
-                    let proof: ProofInfo = serde_json::from_str(proof_json.value()).ok()?;
-                    Some((y.value().to_vec(), proof))
-                })
-                .collect();
+            let mut all_proofs = Vec::new();
 
-            // Now update proofs that match the operation_id
+            for entry in table.iter().map_err(Error::from)? {
+                let (y, proof_json) = entry.map_err(Error::from)?;
+                let proof: ProofInfo = mints.decode(proof_json.value())?;
+
+                all_proofs.push((y.value().to_vec(), proof));
+            }
+
             for (y_bytes, mut proof) in all_proofs {
                 if proof.used_by_operation == Some(*operation_id)
                     && matches!(proof.state, State::Reserved | State::Pending)
@@ -1244,7 +1281,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                     proof.state = State::Unspent;
                     proof.used_by_operation = None;
 
-                    let updated_json = serde_json::to_string(&proof).map_err(Error::from)?;
+                    let updated_json = mints.encode(&proof)?;
                     table
                         .insert(y_bytes.as_slice(), updated_json.as_str())
                         .map_err(Error::from)?;
@@ -1262,17 +1299,22 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         operation_id: &uuid::Uuid,
     ) -> Result<Vec<ProofInfo>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let mints = MintIndex::read(&read_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
-        let proofs: Vec<ProofInfo> = table
-            .iter()
-            .map_err(Error::from)?
-            .flatten()
-            .filter_map(|(_, proof_json)| {
-                serde_json::from_str::<ProofInfo>(proof_json.value()).ok()
-            })
-            .filter(|proof| proof.used_by_operation == Some(*operation_id))
-            .collect();
+        let mut proofs = Vec::new();
+
+        for entry in table.iter().map_err(Error::from)? {
+            let (_, proof_json) = entry.map_err(Error::from)?;
+
+            let Some(proof) = mints.decode_visible::<ProofInfo>(proof_json.value())? else {
+                continue;
+            };
+
+            if proof.used_by_operation == Some(*operation_id) {
+                proofs.push(proof);
+            }
+        }
 
         Ok(proofs)
     }
@@ -1287,6 +1329,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         let operation_id_str = operation_id.to_string();
 
         {
+            let mints = MintIndex::read(&write_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
             let mut table = write_txn
                 .open_table(MELT_QUOTES_TABLE)
                 .map_err(Error::from)?;
@@ -1299,8 +1342,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
             match quote_json {
                 Some(json) => {
-                    let mut quote: wallet::MeltQuote =
-                        serde_json::from_str(&json).map_err(Error::from)?;
+                    let mut quote: wallet::MeltQuote = mints.decode(&json)?;
 
                     // Check if already reserved by another operation
                     if quote.used_by_operation.is_some() {
@@ -1309,7 +1351,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
                     // Reserve the quote
                     quote.used_by_operation = Some(operation_id_str);
-                    let updated_json = serde_json::to_string(&quote).map_err(Error::from)?;
+                    let updated_json = mints.encode(&quote)?;
                     table
                         .insert(quote_id, updated_json.as_str())
                         .map_err(Error::from)?;
@@ -1330,26 +1372,24 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         let operation_id_str = operation_id.to_string();
 
         {
+            let mints = MintIndex::read(&write_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
             let mut table = write_txn
                 .open_table(MELT_QUOTES_TABLE)
                 .map_err(Error::from)?;
 
-            // Collect all quotes first to avoid borrowing issues
-            let all_quotes: Vec<(String, wallet::MeltQuote)> = table
-                .iter()
-                .map_err(Error::from)?
-                .flatten()
-                .filter_map(|(id, quote_json)| {
-                    let quote: wallet::MeltQuote = serde_json::from_str(quote_json.value()).ok()?;
-                    Some((id.value().to_string(), quote))
-                })
-                .collect();
+            let mut all_quotes = Vec::new();
 
-            // Update quotes that match the operation_id
+            for entry in table.iter().map_err(Error::from)? {
+                let (id, quote_json) = entry.map_err(Error::from)?;
+                let quote: wallet::MeltQuote = mints.decode(quote_json.value())?;
+
+                all_quotes.push((id.value().to_string(), quote));
+            }
+
             for (quote_id, mut quote) in all_quotes {
                 if quote.used_by_operation.as_deref() == Some(&operation_id_str) {
                     quote.used_by_operation = None;
-                    let updated_json = serde_json::to_string(&quote).map_err(Error::from)?;
+                    let updated_json = mints.encode(&quote)?;
                     table
                         .insert(quote_id.as_str(), updated_json.as_str())
                         .map_err(Error::from)?;
@@ -1371,6 +1411,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         let operation_id_str = operation_id.to_string();
 
         {
+            let mints = MintIndex::read(&write_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
             let mut table = write_txn
                 .open_table(MINT_QUOTES_TABLE)
                 .map_err(Error::from)?;
@@ -1383,7 +1424,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
             match quote_json {
                 Some(json) => {
-                    let mut quote: MintQuote = serde_json::from_str(&json).map_err(Error::from)?;
+                    let mut quote: MintQuote = mints.decode(&json)?;
 
                     // Check if already reserved by another operation
                     if quote.used_by_operation.is_some() {
@@ -1392,7 +1433,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
                     // Reserve the quote
                     quote.used_by_operation = Some(operation_id_str);
-                    let updated_json = serde_json::to_string(&quote).map_err(Error::from)?;
+                    let updated_json = mints.encode(&quote)?;
                     table
                         .insert(quote_id, updated_json.as_str())
                         .map_err(Error::from)?;
@@ -1413,26 +1454,24 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         let operation_id_str = operation_id.to_string();
 
         {
+            let mints = MintIndex::read(&write_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
             let mut table = write_txn
                 .open_table(MINT_QUOTES_TABLE)
                 .map_err(Error::from)?;
 
-            // Collect all quotes first to avoid borrowing issues
-            let all_quotes: Vec<(String, MintQuote)> = table
-                .iter()
-                .map_err(Error::from)?
-                .flatten()
-                .filter_map(|(id, quote_json)| {
-                    let quote: MintQuote = serde_json::from_str(quote_json.value()).ok()?;
-                    Some((id.value().to_string(), quote))
-                })
-                .collect();
+            let mut all_quotes = Vec::new();
 
-            // Update quotes that match the operation_id
+            for entry in table.iter().map_err(Error::from)? {
+                let (id, quote_json) = entry.map_err(Error::from)?;
+                let quote: MintQuote = mints.decode(quote_json.value())?;
+
+                all_quotes.push((id.value().to_string(), quote));
+            }
+
             for (quote_id, mut quote) in all_quotes {
                 if quote.used_by_operation.as_deref() == Some(&operation_id_str) {
                     quote.used_by_operation = None;
-                    let updated_json = serde_json::to_string(&quote).map_err(Error::from)?;
+                    let updated_json = mints.encode(&quote)?;
                     table
                         .insert(quote_id.as_str(), updated_json.as_str())
                         .map_err(Error::from)?;
