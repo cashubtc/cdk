@@ -4,6 +4,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use cashu::nuts::nut02::Id;
+use cashu::util::wipe::ZeroOnDrop;
 
 use crate::crypto::check_keyset_id;
 use crate::error::CashuFfiError;
@@ -16,7 +17,7 @@ use crate::types::BlindedOutput;
 /// on every derivation.
 #[derive(uniffi::Object)]
 pub struct DeterministicOutputFactory {
-    seed: [u8; 64],
+    seed: ZeroOnDrop<[u8; 64]>,
     keyset_id: Id,
     keyset_id_text: String,
 }
@@ -27,7 +28,7 @@ impl DeterministicOutputFactory {
     #[uniffi::constructor]
     pub fn new(seed: Vec<u8>, keyset_id: String) -> Result<Arc<Self>, CashuFfiError> {
         Ok(Arc::new(Self {
-            seed: parse_seed(&seed)?,
+            seed: parse_seed(seed)?,
             keyset_id: check_keyset_id(&keyset_id)?,
             keyset_id_text: keyset_id,
         }))
@@ -88,12 +89,5 @@ impl fmt::Debug for DeterministicOutputFactory {
             .field("keyset_id", &self.keyset_id_text)
             .field("seed", &"<redacted>")
             .finish()
-    }
-}
-
-/// Clear the seed once the last foreign reference is released.
-impl Drop for DeterministicOutputFactory {
-    fn drop(&mut self) {
-        self.seed.fill(0);
     }
 }
