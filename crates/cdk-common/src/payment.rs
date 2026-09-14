@@ -591,6 +591,10 @@ pub struct MakePaymentResponse {
     pub status: MeltQuoteState,
     /// Total amount spent, including fees. Only authoritative when `status`
     /// is [`MeltQuoteState::Paid`]; otherwise backends return `0`.
+    /// Successful [`MintPayment::make_payment`] responses must use the requested
+    /// quote unit, rounding the combined principal and fees up when necessary.
+    /// [`MintPayment::check_outgoing_payment`] may return the backend's native
+    /// unit; the mint converts it conservatively for settlement.
     pub total_spent: Amount<CurrencyUnit>,
 }
 
