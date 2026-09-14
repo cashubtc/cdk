@@ -12,6 +12,7 @@ use cashu::nuts::nut02::Id;
 use cashu::nuts::nut12::{Error as Nut12Error, ProofDleq};
 use cashu::nuts::Proof;
 use cashu::secret::Secret;
+use cashu::util::wipe::ZeroOnDrop;
 use cashu::Amount;
 
 use crate::error::CashuFfiError;
@@ -39,15 +40,15 @@ pub fn blind_message(
     secret: Vec<u8>,
     blinding_factor: Option<Vec<u8>>,
 ) -> Result<BlindPair, CashuFfiError> {
+    let secret = ZeroOnDrop::new(secret);
     let factor = match blinding_factor {
-        Some(bytes) => Some(parse_secret_key("blindingFactor", &bytes)?),
+        Some(bytes) => {
+            let bytes = ZeroOnDrop::new(bytes);
+            Some(parse_secret_key("blindingFactor", &bytes)?)
+        }
         None => None,
     };
-    let (blinded, r) = dhke_blind(&secret, factor)?;
-    Ok(BlindPair {
-        blinded_secret: blinded.to_hex(),
-        blinding_factor: r.to_secret_hex(),
-    })
+    blind_one(&secret, factor)
 }
 
 /// Blind a batch of secrets in one crossing.
@@ -56,10 +57,23 @@ pub fn blind_message(
 /// costs more than the blinding for a single one.
 #[uniffi::export]
 pub fn blind_messages(secrets: Vec<Vec<u8>>) -> Result<Vec<BlindPair>, CashuFfiError> {
+    let secrets: Vec<ZeroOnDrop<Vec<u8>>> = secrets.into_iter().map(ZeroOnDrop::new).collect();
     secrets
-        .into_iter()
-        .map(|secret| blind_message(secret, None))
+        .iter()
+        .map(|secret| blind_one(secret, None))
         .collect()
+}
+
+/// Blind one guarded secret, shared by the single and batch entry points.
+fn blind_one(
+    secret: &ZeroOnDrop<Vec<u8>>,
+    blinding_factor: Option<SecretKey>,
+) -> Result<BlindPair, CashuFfiError> {
+    let (blinded, r) = dhke_blind(secret, blinding_factor)?;
+    Ok(BlindPair {
+        blinded_secret: blinded.to_hex(),
+        blinding_factor: r.to_secret_hex(),
+    })
 }
 
 /// NUT-00 unblinding: `C = C_ - r * K`.

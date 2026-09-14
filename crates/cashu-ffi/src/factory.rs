@@ -27,8 +27,9 @@ impl DeterministicOutputFactory {
     /// Bind a 64 byte BIP39 seed to one keyset.
     #[uniffi::constructor]
     pub fn new(seed: Vec<u8>, keyset_id: String) -> Result<Arc<Self>, CashuFfiError> {
+        let seed = ZeroOnDrop::new(seed);
         Ok(Arc::new(Self {
-            seed: parse_seed(seed)?,
+            seed: parse_seed(&seed)?,
             keyset_id: check_keyset_id(&keyset_id)?,
             keyset_id_text: keyset_id,
         }))

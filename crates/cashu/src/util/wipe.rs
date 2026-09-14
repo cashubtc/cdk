@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::hint::black_box;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::sync::atomic::{compiler_fence, Ordering};
 
 /// Bytes that can be overwritten in place.
@@ -29,8 +29,8 @@ impl<const N: usize> Wipe for [u8; N] {
 }
 
 impl Wipe for Vec<u8> {
-    /// Safe code cannot reach past the length, so a buffer that grew by
-    /// reallocating may have left copies of the secret in freed memory.
+    /// Leaves the vector empty. Safe code cannot reach past the length, so a
+    /// buffer that grew by reallocating may have left copies behind.
     fn wipe(&mut self) {
         self.as_mut_slice().wipe();
         self.clear();
@@ -38,6 +38,9 @@ impl Wipe for Vec<u8> {
 }
 
 /// Owns a secret and overwrites it when it goes out of scope.
+///
+/// Read-only by design: handing out `&mut T` would let a caller replace or move
+/// the secret out, leaving the original copy for the allocator.
 pub struct ZeroOnDrop<T: Wipe>(T);
 
 impl<T: Wipe> ZeroOnDrop<T> {
@@ -61,12 +64,6 @@ impl<T: Wipe> Deref for ZeroOnDrop<T> {
     }
 }
 
-impl<T: Wipe> DerefMut for ZeroOnDrop<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
 impl<T: Wipe> Drop for ZeroOnDrop<T> {
     fn drop(&mut self) {
         self.0.wipe();
@@ -82,7 +79,18 @@ impl<T: Wipe> fmt::Debug for ZeroOnDrop<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use super::*;
+
+    struct Tracked(Rc<Cell<bool>>);
+
+    impl Wipe for Tracked {
+        fn wipe(&mut self) {
+            self.0.set(true);
+        }
+    }
 
     #[test]
     fn wipes_a_slice() {
@@ -103,6 +111,13 @@ mod tests {
         let mut seed = vec![9u8; 64];
         seed.wipe();
         assert!(seed.is_empty());
+    }
+
+    #[test]
+    fn drop_wipes_the_value() {
+        let wiped = Rc::new(Cell::new(false));
+        drop(ZeroOnDrop::new(Tracked(Rc::clone(&wiped))));
+        assert!(wiped.get());
     }
 
     #[test]

@@ -8,11 +8,11 @@ use cashu::nuts::nut00::PreMintSecrets;
 use cashu::nuts::nut01::{PublicKey, SecretKey};
 use cashu::nuts::nut02::Id;
 use cashu_ffi::{
-    blind_message, create_deterministic_outputs, create_random_outputs, create_restore_outputs,
-    create_single_deterministic_output, create_single_p2pk_output, create_single_random_output,
-    hash_to_curve, keyset_id_v1, sha256_digest, split_amount, unblind_signature, verify_proof_dleq,
-    CashuFfiError, DeterministicOutputFactory, DleqProof, KeyEntry, P2pkOptions, SigFlag,
-    MAX_RESTORE_COUNTERS,
+    blind_message, blind_messages, create_deterministic_outputs, create_random_outputs,
+    create_restore_outputs, create_single_deterministic_output, create_single_p2pk_output,
+    create_single_random_output, hash_to_curve, keyset_id_v1, sha256_digest, split_amount,
+    unblind_signature, verify_proof_dleq, CashuFfiError, DeterministicOutputFactory, DleqProof,
+    KeyEntry, P2pkOptions, SigFlag, MAX_RESTORE_COUNTERS,
 };
 
 const MNEMONIC: &str =
@@ -86,6 +86,25 @@ fn blind_then_unblind_recovers_the_mint_signature() {
     let expected = sign_message(&mint_key, &core_hash_to_curve(&secret).expect("point"))
         .expect("expected signature");
     assert_eq!(unblinded, expected.to_hex());
+}
+
+#[test]
+fn a_batch_blinds_each_secret_on_its_own() {
+    let secrets = vec![b"first".to_vec(), b"second".to_vec()];
+    let batch = blind_messages(secrets.clone()).expect("batch blinding");
+    assert_eq!(batch.len(), secrets.len());
+
+    for (pair, secret) in batch.iter().zip(&secrets) {
+        let factor = SecretKey::from_hex(&pair.blinding_factor).expect("hex factor");
+        let again = blind_message(secret.clone(), Some(factor.to_secret_bytes().to_vec()))
+            .expect("blinding");
+        assert_eq!(again.blinded_secret, pair.blinded_secret);
+    }
+
+    assert_ne!(batch[0].blinding_factor, batch[1].blinding_factor);
+
+    let empty = blind_messages(Vec::new()).expect("an empty batch is allowed");
+    assert!(empty.is_empty());
 }
 
 #[test]
@@ -408,6 +427,29 @@ fn errors_keep_their_fields() {
     match err {
         CashuFfiError::InvalidKeysetId { id, .. } => assert_eq!(id, "not-a-keyset"),
         other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[test]
+fn a_bad_keyset_id_is_rejected_with_a_valid_seed() {
+    let bad = "not-a-keyset".to_string();
+
+    let calls: Vec<CashuFfiError> = vec![
+        create_deterministic_outputs(vec![1], seed(), 0, bad.clone())
+            .expect_err("batch rejects the keyset id"),
+        create_single_deterministic_output(1, seed(), 0, bad.clone())
+            .expect_err("single output rejects the keyset id"),
+        create_restore_outputs(seed(), bad.clone(), 0, 1)
+            .expect_err("restore rejects the keyset id"),
+        DeterministicOutputFactory::new(seed(), bad.clone())
+            .expect_err("factory rejects the keyset id"),
+    ];
+
+    for err in calls {
+        match err {
+            CashuFfiError::InvalidKeysetId { id, .. } => assert_eq!(id, bad),
+            other => panic!("unexpected error: {other}"),
+        }
     }
 }
 

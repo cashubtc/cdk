@@ -20,9 +20,12 @@ each output gets.
 across the FFI once instead of on every derivation. The seed is redacted from
 `Debug` and zeroed on drop.
 
-Every entry point that takes a seed wipes the buffer UniFFI allocated for the
-argument before it is freed, including on a length error. The copy on the
-foreign side (the JavaScript `ArrayBuffer`, the Swift `Data`, the Kotlin
+Every entry point that takes a seed or a secret binds the buffer UniFFI
+allocated for the argument into a zero-on-drop guard before doing anything
+else, so it is wiped when the call returns, whether it succeeded or failed. The
+wipe is best effort: the workspace forbids `unsafe`, so it cannot use volatile
+writes, and copies the compiler makes along the way are not tracked. The copy
+on the foreign side (the JavaScript `ArrayBuffer`, the Swift `Data`, the Kotlin
 `ByteArray`) is the caller's to clear, and prefer the factory over the
 seed-taking free functions so the seed crosses once.
 

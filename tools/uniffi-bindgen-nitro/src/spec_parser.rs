@@ -89,6 +89,8 @@ fn parse_declaration(path: &str, declaration: &str) -> Result<SpecMethod> {
         }
     };
 
+    check_brackets(path, &return_type)?;
+
     let params = split_params(&declaration[open + 1..close])
         .into_iter()
         .map(|text| parse_param(path, &text))
@@ -109,10 +111,42 @@ fn parse_param(path: &str, text: &str) -> Result<SpecParam> {
             path: path.to_string(),
             reason: format!("unnamed parameter `{text}`"),
         })?;
+    let ty = text[..=split].trim().to_string();
+    check_brackets(path, &ty)?;
     Ok(SpecParam {
-        ty: text[..=split].trim().to_string(),
+        ty,
         name: text[split + 1..].trim().to_string(),
     })
+}
+
+/// Reject a type whose angle brackets do not pair up.
+///
+/// Catching it here means the emitters can read a spec type structurally
+/// without each of them re-checking that nitrogen wrote something well formed.
+fn check_brackets(path: &str, ty: &str) -> Result<()> {
+    let mut depth = 0usize;
+    for character in ty.chars() {
+        match character {
+            '<' => depth += 1,
+            '>' => match depth.checked_sub(1) {
+                Some(next) => depth = next,
+                None => return Err(unbalanced(path, ty)),
+            },
+            _ => {}
+        }
+    }
+    if depth == 0 {
+        Ok(())
+    } else {
+        Err(unbalanced(path, ty))
+    }
+}
+
+fn unbalanced(path: &str, ty: &str) -> Error {
+    Error::SpecParse {
+        path: path.to_string(),
+        reason: format!("unbalanced angle brackets in `{ty}`"),
+    }
 }
 
 fn split_params(text: &str) -> Vec<String> {
@@ -178,6 +212,22 @@ mod tests {
         assert_eq!(methods.len(), 1);
         assert_eq!(methods[0].name, "keysetId");
         assert_eq!(methods[0].return_type, "std::string");
+    }
+
+    #[test]
+    fn an_unbalanced_return_type_is_refused() {
+        let source = "virtual std::shared_ptr<Promise<double> compute() = 0;";
+        let err = parse("spec.hpp", source).expect_err("the return type is truncated");
+
+        assert!(matches!(err, Error::SpecParse { .. }));
+    }
+
+    #[test]
+    fn an_unbalanced_parameter_type_is_refused() {
+        let source = "virtual void take(const std::vector<double& items) = 0;";
+        let err = parse("spec.hpp", source).expect_err("the parameter type is truncated");
+
+        assert!(matches!(err, Error::SpecParse { .. }));
     }
 
     #[test]

@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use cdk_common::util::wipe::{Wipe, ZeroOnDrop};
+use cdk_common::util::wipe::ZeroOnDrop;
 use cdk_nostr::npubcash::{JwtAuthProvider, NpubCashClient as CdkNpubCashClient};
 
 use crate::error::FfiError;
@@ -279,17 +279,18 @@ impl From<cdk_nostr::npubcash::UserResponse> for NpubCashUserResponse {
 ///
 /// Returns an error if the seed is too short or key derivation fails
 #[uniffi::export]
-pub fn npubcash_derive_secret_key_from_seed(mut seed: Vec<u8>) -> Result<String, FfiError> {
-    let parsed: Result<[u8; 64], FfiError> = seed
-        .get(..64)
-        .ok_or_else(|| FfiError::internal("Seed must be at least 64 bytes".to_string()))
-        .and_then(|head| {
-            head.try_into()
-                .map_err(|_| FfiError::internal("Failed to read wallet seed bytes".to_string()))
-        });
-    seed.wipe();
+pub fn npubcash_derive_secret_key_from_seed(seed: Vec<u8>) -> Result<String, FfiError> {
+    let seed = ZeroOnDrop::new(seed);
+    if seed.len() < 64 {
+        return Err(FfiError::internal(
+            "Seed must be at least 64 bytes".to_string(),
+        ));
+    }
 
-    let seed = ZeroOnDrop::new(parsed?);
+    let seed: [u8; 64] = seed[..64]
+        .try_into()
+        .map_err(|_| FfiError::internal("Failed to read wallet seed bytes".to_string()))?;
+    let seed = ZeroOnDrop::new(seed);
     let secret_key = cdk::wallet::derive_npubcash_secret_key_from_seed(&seed)
         .map_err(|e| FfiError::internal(format!("Failed to derive secret key: {}", e)))?;
 

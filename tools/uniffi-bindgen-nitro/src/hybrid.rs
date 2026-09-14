@@ -502,11 +502,7 @@ fn build_call_body(
 
     let returns_value = method.returns.is_some();
     if is_async {
-        let inner_return = declared
-            .return_type
-            .trim_start_matches("std::shared_ptr<Promise<")
-            .trim_end_matches(">>")
-            .to_string();
+        let inner_return = promise_payload(&declared.name, &declared.return_type)?;
         let captures = call_args
             .iter()
             .map(|name| format!("{name} = std::move({name})"))
@@ -526,17 +522,20 @@ fn build_call_body(
             Some(_) => format!("inner->{}({})", method.js_name, call_args.join(", ")),
             None => call.clone(),
         };
+        let returned = if returns_value {
+            Some(emit_return(model, method, true)?)
+        } else {
+            None
+        };
         out.line(format!(
             "return Promise<{inner_return}>::async([{capture_self}]() {{"
         ));
-        out.indented(|out| {
-            if returns_value {
+        out.indented(|out| match &returned {
+            Some(expr) => {
                 out.line(format!("auto result = {call};"));
-                match emit_return(model, method, true) {
-                    Ok(expr) => out.line(format!("return {expr};")),
-                    Err(_) => out.line("return;"),
-                };
-            } else {
+                out.line(format!("return {expr};"));
+            }
+            None => {
                 out.line(format!("{call};"));
             }
         });
@@ -551,6 +550,45 @@ fn build_call_body(
         out.line(format!("{call};"));
     }
     Ok(())
+}
+
+/// Unwraps the `T` out of a spec return type such as
+/// `std::shared_ptr<Promise<T>>`.
+///
+/// Matching the `Promise<` itself rather than the wrapper around it keeps this
+/// working whichever way nitrogen qualifies the name, and scanning to the
+/// bracket that closes it leaves a nested container's own brackets alone. The
+/// parser has already refused a type whose brackets do not pair up.
+fn promise_payload<'a>(method: &str, return_type: &'a str) -> Result<&'a str> {
+    payload_of(return_type).ok_or_else(|| Error::AsyncReturn {
+        method: method.to_string(),
+        return_type: return_type.to_string(),
+    })
+}
+
+fn payload_of(return_type: &str) -> Option<&str> {
+    const OPEN: &str = "Promise<";
+    let start = return_type.find(OPEN)? + OPEN.len();
+    let rest = return_type.get(start..)?;
+
+    let mut depth = 0usize;
+    for (offset, ch) in rest.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => match depth.checked_sub(1) {
+                Some(next) => depth = next,
+                None => {
+                    let tail = rest.get(offset + 1..)?;
+                    if !tail.chars().all(|ch| ch == '>' || ch.is_whitespace()) {
+                        return None;
+                    }
+                    return rest.get(..offset).filter(|payload| !payload.is_empty());
+                }
+            },
+            _ => {}
+        }
+    }
+    None
 }
 
 fn emit_return(model: &Model, method: &CallableModel, owned: bool) -> Result<String> {
@@ -737,14 +775,22 @@ fn cpp_union_member(literal: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{FieldModel, RecordModel};
+    use crate::model::{Arg, CallableKind, FieldModel, ObjectModel, RecordModel};
+    use crate::spec_parser::SpecParam;
 
     fn model_with(record: RecordModel) -> Model {
+        Model {
+            records: vec![record],
+            ..model()
+        }
+    }
+
+    fn model() -> Model {
         Model {
             module: "CashuCrypto".to_string(),
             cxx_namespace: "cashucrypto".to_string(),
             cdylib: "cashu_ffi".to_string(),
-            records: vec![record],
+            records: Vec::new(),
             enums: Vec::new(),
             errors: Vec::new(),
             objects: Vec::new(),
@@ -774,6 +820,191 @@ mod tests {
         let mut out = Source::default();
         emit_converters(&mut out, &model_with(record), &wanted)?;
         Ok(out.finish())
+    }
+
+    fn async_body(return_type: &str, ty: Option<Type>) -> Result<String> {
+        async_body_of(return_type, ty, Vec::new(), None)
+    }
+
+    fn async_body_of(
+        return_type: &str,
+        ty: Option<Type>,
+        args: Vec<Type>,
+        owner: Option<&ObjectModel>,
+    ) -> Result<String> {
+        let returns = ty.map(|ty| {
+            let mapped = map(&ty, "outputs").expect("the type map accepts this return");
+            (ty, mapped)
+        });
+        let args: Vec<Arg> = args
+            .into_iter()
+            .enumerate()
+            .map(|(index, ty)| {
+                let name = format!("arg{index}");
+                let mapped = map(&ty, &name).expect("the type map accepts this argument");
+                Arg {
+                    rust_name: name.clone(),
+                    js_name: name,
+                    ty,
+                    mapped,
+                }
+            })
+            .collect();
+        let params = args
+            .iter()
+            .map(|arg| SpecParam {
+                ty: "double".to_string(),
+                name: arg.js_name.clone(),
+            })
+            .collect();
+        let kind = match owner {
+            Some(object) => CallableKind::Method {
+                object: object.name.clone(),
+            },
+            None => CallableKind::Function,
+        };
+        let method = CallableModel {
+            rust_name: "outputs".to_string(),
+            js_name: "outputs".to_string(),
+            bridge_name: "outputs".to_string(),
+            symbol: "uniffi_outputs".to_string(),
+            args,
+            returns,
+            throws: None,
+            has_status: false,
+            kind,
+            docs: None,
+        };
+        let declared = SpecMethod {
+            return_type: return_type.to_string(),
+            name: "outputs".to_string(),
+            params,
+        };
+
+        let mut out = Source::default();
+        build_call_body(&mut out, &model(), &method, &declared, owner, true)?;
+        Ok(out.finish())
+    }
+
+    fn object() -> ObjectModel {
+        ObjectModel {
+            name: "Factory".to_string(),
+            free_symbol: "uniffi_factory_free".to_string(),
+            clone_symbol: "uniffi_factory_clone".to_string(),
+            methods: Vec::new(),
+            docs: None,
+        }
+    }
+
+    fn optional_doubles() -> Type {
+        Type::Sequence {
+            inner_type: Box::new(Type::Optional {
+                inner_type: Box::new(Type::Float64),
+            }),
+        }
+    }
+
+    /// Trimming every trailing `>>` used to eat the payload's own brackets,
+    /// emitting a `Promise<std::vector<std::optional<double>::async` that no
+    /// compiler accepts.
+    #[test]
+    fn an_async_return_keeps_the_payloads_own_brackets() {
+        let body = async_body(
+            "std::shared_ptr<Promise<std::vector<std::optional<double>>>>",
+            Some(optional_doubles()),
+        )
+        .expect("a nested container is a valid payload");
+
+        assert!(body.contains("return Promise<std::vector<std::optional<double>>>::async("));
+    }
+
+    /// nitrogen may qualify the name, and the wrapper around it is not ours to
+    /// predict, so only the `Promise<` itself is matched.
+    #[test]
+    fn a_qualified_promise_is_still_recognised() {
+        let body = async_body(
+            "std::shared_ptr<margelo::nitro::Promise<std::vector<std::optional<double>>>>",
+            Some(optional_doubles()),
+        )
+        .expect("a qualified Promise is still a Promise");
+
+        assert!(body.contains("return Promise<std::vector<std::optional<double>>>::async("));
+    }
+
+    #[test]
+    fn a_non_promise_async_return_is_refused() {
+        let err = async_body("std::vector<double>", Some(optional_doubles()))
+            .expect_err("an async method must return a Promise");
+
+        assert!(matches!(err, Error::AsyncReturn { .. }));
+    }
+
+    #[test]
+    fn an_unclosed_promise_return_is_refused() {
+        let err = async_body(
+            "std::shared_ptr<Promise<std::vector<double>",
+            Some(optional_doubles()),
+        )
+        .expect_err("an unterminated Promise is refused");
+
+        assert!(matches!(err, Error::AsyncReturn { .. }));
+    }
+
+    /// A `Promise` that is not the last thing in the type is not one this
+    /// generator can emit a task for.
+    #[test]
+    fn a_promise_buried_in_the_return_type_is_refused() {
+        let err = async_body("std::pair<Promise<double>, double>", Some(Type::Float64))
+            .expect_err("a buried Promise is refused");
+
+        assert!(matches!(err, Error::AsyncReturn { .. }));
+    }
+
+    #[test]
+    fn an_async_argument_is_moved_into_the_task() {
+        let body = async_body_of(
+            "std::shared_ptr<Promise<double>>",
+            Some(Type::Float64),
+            vec![Type::Float64],
+            None,
+        )
+        .expect("a double argument is representable");
+
+        assert!(body.contains("[bridge_arg0 = std::move(bridge_arg0)]"));
+    }
+
+    /// The task must outlive the call, so it holds its own handle rather than
+    /// reaching back through `this`.
+    #[test]
+    fn an_async_method_captures_its_own_handle() {
+        let owner = object();
+        let body = async_body_of(
+            "std::shared_ptr<Promise<double>>",
+            Some(Type::Float64),
+            Vec::new(),
+            Some(&owner),
+        )
+        .expect("an object method is representable");
+
+        assert!(body.contains("[inner = inner_]"));
+        assert!(body.contains("inner->outputs()"));
+    }
+
+    #[test]
+    fn a_void_async_method_calls_without_returning() {
+        let body = async_body("std::shared_ptr<Promise<void>>", None)
+            .expect("a void return is representable");
+
+        assert!(body.contains("return Promise<void>::async("));
+        assert!(!body.contains("auto result"));
+    }
+
+    #[test]
+    fn a_plain_async_return_unwraps() {
+        let payload = promise_payload("outputs", "std::shared_ptr<Promise<std::string>>")
+            .expect("a plain payload unwraps");
+
+        assert_eq!(payload, "std::string");
     }
 
     #[test]

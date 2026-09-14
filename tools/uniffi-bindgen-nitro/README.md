@@ -117,7 +117,9 @@ async_methods = ["expensive_operation"]
 `async_methods` names exported functions whose Rust signature stays
 synchronous but whose generated Nitro method returns a `Promise`, resolved from
 a background thread. It is a list of names rather than a second API definition,
-so the Rust signature remains the only description of the call.
+so the Rust signature remains the only description of the call. A spec return
+type the generator cannot read as a `Promise` stops the run with an error rather
+than emitting C++ that would not compile.
 
 ## Not supported
 

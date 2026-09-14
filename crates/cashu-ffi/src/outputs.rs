@@ -13,7 +13,7 @@ use cashu::nuts::nut02::Id;
 use cashu::nuts::nut10::{Conditions, SpendingConditions};
 use cashu::nuts::nut11::SigFlag as CashuSigFlag;
 use cashu::secret::Secret;
-use cashu::util::wipe::{Wipe, ZeroOnDrop};
+use cashu::util::wipe::ZeroOnDrop;
 
 use crate::crypto::check_keyset_id;
 use crate::error::CashuFfiError;
@@ -85,8 +85,9 @@ pub fn create_deterministic_outputs(
     counter: u32,
     keyset_id: String,
 ) -> Result<Vec<BlindedOutput>, CashuFfiError> {
+    let seed = ZeroOnDrop::new(seed);
     let id = check_keyset_id(&keyset_id)?;
-    let seed = parse_seed(seed)?;
+    let seed = parse_seed(&seed)?;
     derive_range(&keyset_id, id, &seed, counter, &amounts)
 }
 
@@ -98,8 +99,9 @@ pub fn create_single_deterministic_output(
     counter: u32,
     keyset_id: String,
 ) -> Result<BlindedOutput, CashuFfiError> {
+    let seed = ZeroOnDrop::new(seed);
     let id = check_keyset_id(&keyset_id)?;
-    let seed = parse_seed(seed)?;
+    let seed = parse_seed(&seed)?;
     derive_output(&keyset_id, id, amount, &seed, counter)
 }
 
@@ -111,8 +113,9 @@ pub fn create_restore_outputs(
     start_counter: u32,
     count: u32,
 ) -> Result<Vec<BlindedOutput>, CashuFfiError> {
+    let seed = ZeroOnDrop::new(seed);
     let id = check_keyset_id(&keyset_id)?;
-    let seed = parse_seed(seed)?;
+    let seed = parse_seed(&seed)?;
     let amounts = restore_amounts(count)?;
     derive_range(&keyset_id, id, &seed, start_counter, &amounts)
 }
@@ -175,16 +178,17 @@ pub(crate) fn derive_output(
 
 /// NUT-13 needs the full 64 byte BIP39 seed, not the 32 byte entropy.
 ///
-/// Takes the caller's buffer by value and wipes it: the master seed crosses the
-/// FFI in a `Vec` UniFFI allocated for the argument, and nothing else would
-/// clear it before it is freed.
-pub(crate) fn parse_seed(mut seed: Vec<u8>) -> Result<ZeroOnDrop<[u8; 64]>, CashuFfiError> {
-    let length = seed.len() as u64;
-    let parsed: Result<[u8; 64], _> = seed.as_slice().try_into();
-    seed.wipe();
-    parsed
+/// Takes the guard rather than a slice so a seed cannot be parsed unless the
+/// caller's buffer is already bound to one, whatever an entry point does next.
+pub(crate) fn parse_seed(
+    seed: &ZeroOnDrop<Vec<u8>>,
+) -> Result<ZeroOnDrop<[u8; 64]>, CashuFfiError> {
+    seed.as_slice()
+        .try_into()
         .map(ZeroOnDrop::new)
-        .map_err(|_| CashuFfiError::InvalidSeedLength { length })
+        .map_err(|_| CashuFfiError::InvalidSeedLength {
+            length: seed.len() as u64,
+        })
 }
 
 fn build_output(

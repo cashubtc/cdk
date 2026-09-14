@@ -37,6 +37,14 @@ pub enum Error {
         /// The feature name.
         feature: String,
     },
+    /// An async method's spec return type was not a `Promise`.
+    #[error("{method}: expected a Promise return type, found `{return_type}`")]
+    AsyncReturn {
+        /// Method being generated.
+        method: String,
+        /// Return type exactly as nitrogen spelled it.
+        return_type: String,
+    },
     /// A nitrogen spec header could not be understood.
     #[error("could not parse nitrogen spec {path}: {reason}")]
     SpecParse {
