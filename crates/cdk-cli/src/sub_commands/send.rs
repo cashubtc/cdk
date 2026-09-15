@@ -71,8 +71,8 @@ pub async fn send(
     let selected_mint = if let Some(mint_url) = &sub_command_args.mint_url {
         MintUrl::from_str(mint_url)?
     } else {
-        // Get all mints with their balances
-        let balances_map = wallet_repository.get_balances().await?;
+        // Get all mints with their balances for the selected unit
+        let balances_map = wallet_repository.get_balances_for_unit(unit).await?;
         if balances_map.is_empty() {
             return Err(anyhow!("No mints available in the wallet"));
         }
