@@ -1711,7 +1711,8 @@ mod tests {
 
     #[tokio::test]
     async fn restore_rejects_invalid_returned_signatures() {
-        use crate::nuts::{nut12::BlindSignatureDleq, RestoreResponse};
+        use crate::nuts::nut12::BlindSignatureDleq;
+        use crate::nuts::RestoreResponse;
         use crate::wallet::test_utils::{
             create_test_db, create_test_wallet_with_mock_seed, test_keyset_id, test_mint_info,
             MockMintConnector,

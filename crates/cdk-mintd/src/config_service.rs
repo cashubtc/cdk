@@ -838,6 +838,79 @@ engine = "sqlite"
         )
     }
 
+    #[cfg(all(feature = "postgres", feature = "fakewallet"))]
+    #[tokio::test]
+    async fn config_validate_checks_postgres_tls_without_connecting() {
+        let mnemonic_path = crate::test_utils::unique_temp_path("validate_tls_mnemonic");
+        let primary_path = crate::test_utils::unique_temp_path("validate_tls_primary_url");
+        let auth_path = crate::test_utils::unique_temp_path("validate_tls_auth_url");
+        std::fs::write(&mnemonic_path, TEST_MNEMONIC_ONE).expect("write mnemonic");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let url = format!("postgres://mint:secret-password@127.0.0.1:{port}/cdk");
+        let base = document(&format!("file:{}", mnemonic_path.display()), "validate TLS")
+            .replace("engine = \"sqlite\"", "engine = \"postgres\"");
+
+        for section in ["database.postgres", "auth_database.postgres"] {
+            for (explicit, suffix, valid) in [
+                ("tls_mode = \"verify-full\"", "", true),
+                ("tls_mode = \"requre\"", "", false), // typos: ignore
+                ("", "?sslmode=requre", false),       // typos: ignore
+            ] {
+                let (primary_mode, auth_mode) = match section {
+                    "database.postgres" => {
+                        std::fs::write(&primary_path, format!("{url}{suffix}"))
+                            .expect("primary URL");
+                        std::fs::write(&auth_path, &url).expect("auth URL");
+                        (explicit, "")
+                    }
+                    _ => {
+                        std::fs::write(&primary_path, &url).expect("primary URL");
+                        std::fs::write(&auth_path, format!("{url}{suffix}")).expect("auth URL");
+                        ("", explicit)
+                    }
+                };
+                let document = format!(
+                    r#"{base}
+[database.postgres]
+url = "file:{}"
+{primary_mode}
+
+[auth]
+auth_enabled = true
+openid_discovery = "https://issuer.example.com/.well-known/openid-configuration"
+openid_client_id = "mint"
+
+[auth_database.postgres]
+url = "file:{}"
+{auth_mode}
+"#,
+                    primary_path.display(),
+                    auth_path.display(),
+                );
+                let result = crate::validate_configuration_document(&document).await;
+                match valid {
+                    true => result.expect("valid PostgreSQL settings require no connection"),
+                    false => {
+                        let message = result.expect_err("invalid PostgreSQL settings").to_string();
+                        assert!(message.contains(&format!("[{section}]")), "{message}");
+                        assert!(!message.contains("secret-password"), "{message}");
+                    }
+                }
+                let error = listener
+                    .accept()
+                    .expect_err("validation must not connect to PostgreSQL");
+                assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+            }
+        }
+        for path in [mnemonic_path, primary_path, auth_path] {
+            std::fs::remove_file(path).expect("remove test secret");
+        }
+    }
+
     #[cfg(feature = "fakewallet")]
     fn remote_signatory_document(info_fields: &str, extra_sections: &str) -> String {
         format!(

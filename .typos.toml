@@ -7,6 +7,8 @@ extend-exclude = [
 
 [default]
 extend-ignore-re = [
+    # Explicitly marked test fixtures may contain intentional misspellings.
+    '(?m)^.*// typos: ignore$',
     # Ignore cashu tokens
     "cashuA[A-Za-z0-9-_]+",
     "cashuB[A-Za-z0-9-_]+",
