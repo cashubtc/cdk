@@ -469,6 +469,10 @@ pub struct NostrWaitInfo {
 }
 
 impl NostrWaitInfo {
+    pub(crate) fn from_inner(inner: cdk::wallet::NostrWaitInfo) -> Self {
+        Self { inner }
+    }
+
     /// Get inner reference
     #[allow(dead_code)]
     pub(crate) fn inner(&self) -> &cdk::wallet::payment_request::NostrWaitInfo {
@@ -490,12 +494,17 @@ impl NostrWaitInfo {
 
     /// Get the mint URLs accepted or preferred by the original payment request
     pub fn mints(&self) -> Vec<String> {
-        self.inner.mints.iter().map(|m| m.to_string()).collect()
+        self.inner
+            .request
+            .mints
+            .iter()
+            .map(|m| m.to_string())
+            .collect()
     }
 
     /// Get whether the original request's mint list is preferred instead of strict
     pub fn mint_preferred(&self) -> Option<bool> {
-        self.inner.mint_preferred
+        self.inner.request.mint_preferred
     }
 }
 
@@ -517,6 +526,12 @@ pub struct CreateRequestResult {
 #[derive(uniffi::Object)]
 pub struct PaymentRequestPayload {
     inner: cdk::nuts::PaymentRequestPayload,
+}
+
+impl PaymentRequestPayload {
+    pub(crate) fn inner(&self) -> &cdk::nuts::PaymentRequestPayload {
+        &self.inner
+    }
 }
 
 #[uniffi::export]

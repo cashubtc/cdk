@@ -14,6 +14,10 @@ pub(super) struct StoredNostrWaitInfo {
     pub(super) mints: Vec<MintUrl>,
     #[serde(default)]
     pub(super) mint_preferred: Option<bool>,
+    #[serde(default)]
+    pub(super) request: Option<cdk::nuts::PaymentRequest>,
+    #[serde(default)]
+    pub(super) trusted_mints: Vec<MintUrl>,
 }
 
 impl StoredNostrWaitInfo {
@@ -28,8 +32,10 @@ impl From<NostrWaitInfo> for StoredNostrWaitInfo {
             secret_key_hex: info.keys.secret_key().to_secret_hex(),
             relays: info.relays,
             pubkey_hex: info.pubkey.to_hex(),
-            mints: info.mints,
-            mint_preferred: info.mint_preferred,
+            mints: info.request.mints.clone(),
+            mint_preferred: info.request.mint_preferred,
+            request: Some(info.request),
+            trusted_mints: info.trusted_mints,
         }
     }
 }
@@ -196,6 +202,7 @@ mod tests {
 
         assert!(info.mints.is_empty());
         assert!(info.mint_preferred.is_none());
+        assert!(info.request.is_none());
     }
 
     #[test]
@@ -213,6 +220,8 @@ mod tests {
 
     fn stored_info(mints: Vec<MintUrl>, mint_preferred: Option<bool>) -> StoredNostrWaitInfo {
         StoredNostrWaitInfo {
+            request: None,
+            trusted_mints: vec![],
             secret_key_hex: "secret".to_string(),
             relays: vec![],
             pubkey_hex: "pubkey".to_string(),

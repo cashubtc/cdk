@@ -3,15 +3,13 @@ use std::time::Duration;
 
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
-use cdk::nuts::Token;
-use cdk::wallet::{ReceiveOptions, WalletRepository};
+use cdk::wallet::{NostrWaitInfo, WalletRepository};
 use cdk_common::PaymentRequestPayload;
 use nostr::prelude::{Filter, Keys, Kind, PublicKey, SecretKey, UnwrappedGift};
 use nostr_sdk::prelude::{Client, SignerAuthenticator};
 
 use super::create_request::StoredNostrWaitInfo;
 use crate::terminal::escape_control;
-use crate::utils::get_or_create_wallet;
 
 fn unaccepted_mint_warning(request_id: &str, mint_url: &MintUrl) -> String {
     format!(
@@ -45,6 +43,10 @@ pub async fn check_requests(wallet_repository: &WalletRepository) -> Result<()> 
             {
                 let info: StoredNostrWaitInfo = serde_json::from_slice(&val)?;
 
+                let Some(request) = info.request.clone() else {
+                    tracing::warn!(request_id = %escape_control(&key), "Stored request has no validation constraints; recreate it");
+                    continue;
+                };
                 let secret_key = SecretKey::from_str(&info.secret_key_hex)?;
                 let keys = Keys::new(secret_key);
                 let pubkey = PublicKey::from_hex(&info.pubkey_hex)?;
@@ -63,6 +65,14 @@ pub async fn check_requests(wallet_repository: &WalletRepository) -> Result<()> 
                     .timeout(Duration::from_secs(10))
                     .await?;
 
+                client.disconnect().await;
+                let wait_info = NostrWaitInfo {
+                    keys: keys.clone(),
+                    relays: info.relays.clone(),
+                    pubkey,
+                    request,
+                    trusted_mints: info.trusted_mints.clone(),
+                };
                 for event in events {
                     if let Ok(unwrapped) = UnwrappedGift::from_gift_wrap(&keys, &event) {
                         if let Ok(payload) =
@@ -73,22 +83,10 @@ pub async fn check_requests(wallet_repository: &WalletRepository) -> Result<()> 
                                 continue;
                             }
 
-                            let token = Token::new(
-                                payload.mint.clone(),
-                                payload.proofs,
-                                payload.memo,
-                                payload.unit.clone(),
-                            );
-
-                            let token_str = token.to_string();
-                            let mint_url = token.mint_url()?;
-                            let unit = token.unit().unwrap_or_default();
-
-                            // Get or create wallet for the token's mint
-                            let wallet =
-                                get_or_create_wallet(wallet_repository, &mint_url, &unit).await?;
-
-                            match wallet.receive(&token_str, ReceiveOptions::default()).await {
+                            match wallet_repository
+                                .receive_nostr_payment(&wait_info, payload)
+                                .await
+                            {
                                 Ok(amount) => {
                                     if amount > cdk::Amount::ZERO {
                                         println!("Received {} from request {}", amount, key);

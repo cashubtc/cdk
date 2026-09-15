@@ -320,6 +320,43 @@ impl WalletRepository {
         Ok(backup.into())
     }
 
+    /// Create a payment request and its in-memory Nostr listener information.
+    pub async fn create_request(
+        &self,
+        params: CreateRequestParams,
+    ) -> Result<CreateRequestResult, FfiError> {
+        let (request, info) = self.inner.create_request(params.into()).await?;
+        Ok(CreateRequestResult {
+            payment_request: Arc::new(PaymentRequest::from_inner(request)),
+            nostr_wait_info: info.map(|info| Arc::new(NostrWaitInfo::from_inner(info))),
+        })
+    }
+
+    /// Validate and redeem one payload against the original request without persisting it.
+    pub async fn receive_nostr_payment(
+        &self,
+        info: Arc<NostrWaitInfo>,
+        payload: Arc<PaymentRequestPayload>,
+    ) -> Result<Amount, FfiError> {
+        Ok(self
+            .inner
+            .receive_nostr_payment(info.inner(), payload.inner().clone())
+            .await?
+            .into())
+    }
+
+    /// Listen with full request validation. Retain the wait information to resume listening.
+    pub async fn wait_for_nostr_payment(
+        &self,
+        info: Arc<NostrWaitInfo>,
+    ) -> Result<Amount, FfiError> {
+        self.inner
+            .wait_for_nostr_payment(info.inner().clone())
+            .await
+            .map(Into::into)
+            .map_err(FfiError::internal)
+    }
+
     /// Get wallet balances for all mints
     pub async fn get_balances(&self) -> Result<HashMap<WalletKey, Amount>, FfiError> {
         let balances = self.inner.get_balances().await?;

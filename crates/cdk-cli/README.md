@@ -231,6 +231,13 @@ cdk-cli melt --mpp --invoice <bolt11_invoice> \
 
 ### Payment Requests
 
+Live Nostr reception validates the original request's ID, unit, spending
+conditions, mint policy, and amount after fees. Only explicitly listed or
+locally configured mints are trusted. The existing
+`wait_for_nostr_payment(info)` API always performs these checks. The CLI saves
+the original request and mint trust for `check-requests`. Older records without
+these constraints must be recreated.
+
 ```bash
 # Create a payment request (interactive via Nostr)
 cdk-cli create-request
