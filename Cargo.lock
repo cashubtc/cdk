@@ -1768,6 +1768,7 @@ dependencies = [
  "futures-util",
  "native-tls",
  "paste",
+ "percent-encoding",
  "postgres-native-tls",
  "tokio",
  "tokio-postgres",
