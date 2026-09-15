@@ -26,7 +26,7 @@ use cdk::nuts::{
     PreMintSecrets, Proofs, SecretKey, State, SwapRequest,
 };
 use cdk::wallet::types::TransactionDirection;
-use cdk::wallet::{HttpClient, MintConnector, Wallet};
+use cdk::wallet::{HttpClient, MeltOutcome, MintConnector, Wallet};
 use cdk::StreamExt;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_sqlite::wallet::memory;
@@ -89,8 +89,7 @@ async fn test_fake_tokens_pending() {
         .is_empty());
 }
 
-/// Tests that if the pay error fails and the check returns unknown or failed,
-/// the input proofs should be unset as spending (returned to unspent state)
+/// Tests that a definitive payment failure releases proofs even when the follow-up is unknown
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_fail() {
     let wallet = Wallet::new(
@@ -116,33 +115,9 @@ async fn test_fake_melt_payment_fail() {
         .expect("no error");
 
     let fake_description = FakeInvoiceDescription {
-        pay_invoice_state: MeltQuoteState::Unknown,
-        check_payment_state: MeltQuoteState::Unknown,
-        pay_err: true,
-        check_err: false,
-    };
-
-    let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
-
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
-
-    // The melt should error at the payment invoice command
-    let melt = async {
-        let prepared = wallet
-            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-            .await?;
-        prepared.confirm().await
-    }
-    .await;
-    assert!(melt.is_err());
-
-    let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Failed,
-        check_payment_state: MeltQuoteState::Failed,
-        pay_err: true,
+        check_payment_state: MeltQuoteState::Unknown,
+        pay_err: false,
         check_err: false,
     };
 
@@ -281,121 +256,90 @@ async fn test_fake_melt_payment_return_fail_status() {
         .unwrap();
 
     assert!(pending.is_empty());
-
-    let fake_description = FakeInvoiceDescription {
-        pay_invoice_state: MeltQuoteState::Unknown,
-        check_payment_state: MeltQuoteState::Unknown,
-        pay_err: false,
-        check_err: false,
-    };
-
-    let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
-
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
-
-    // The melt should error at the payment invoice command
-    let melt = async {
-        let prepared = wallet
-            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-            .await?;
-        prepared.confirm().await
-    }
-    .await;
-    assert!(melt.is_err());
-
-    wallet.check_all_pending_proofs().await.unwrap();
-
-    assert!(wallet
-        .localstore
-        .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await
-        .unwrap()
-        .is_empty());
 }
 
-/// Tests that when the ln backend returns an error with unknown status,
-/// the mint should do a second check, then remove proofs from pending state
+/// Tests that unknown payment outcomes keep proofs pending, including after a payment error
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_payment_error_unknown() {
-    let wallet = Wallet::new(
-        MINT_URL,
-        CurrencyUnit::Sat,
-        Arc::new(memory::empty().await.unwrap()),
-        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
-        None,
-    )
-    .unwrap();
+    for (pay_invoice_state, check_payment_state, pay_err) in [
+        (MeltQuoteState::Failed, MeltQuoteState::Unknown, true),
+        (MeltQuoteState::Unknown, MeltQuoteState::Unknown, true),
+        (MeltQuoteState::Unknown, MeltQuoteState::Unknown, false),
+        // A generic payment error does not acknowledge this payment attempt,
+        // so a follow-up failure cannot safely release its proofs either.
+        (MeltQuoteState::Failed, MeltQuoteState::Failed, true),
+        (MeltQuoteState::Unknown, MeltQuoteState::Unpaid, true),
+    ] {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let wallet = Wallet::new(
+                MINT_URL,
+                CurrencyUnit::Sat,
+                Arc::new(memory::empty().await.unwrap()),
+                Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+                None,
+            )
+            .unwrap();
 
-    let mint_quote = wallet
-        .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+            let mint_quote = wallet
+                .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
+                .await
+                .unwrap();
+
+            let mut proof_streams =
+                wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
+
+            let _proofs = proof_streams
+                .next()
+                .await
+                .expect("payment")
+                .expect("no error");
+
+            let fake_description = FakeInvoiceDescription {
+                pay_invoice_state,
+                check_payment_state,
+                pay_err,
+                check_err: false,
+            };
+
+            let invoice =
+                create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
+            let melt_quote = wallet
+                .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+                .await
+                .unwrap();
+            let prepared = wallet
+                .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+                .await
+                .unwrap();
+
+            // UNKNOWN is not a definitive failure. Waiting for settlement with
+            // confirm() would never finish for this permanently unknown invoice.
+            let outcome = prepared.confirm_prefer_async().await.unwrap();
+            assert!(matches!(outcome, MeltOutcome::Pending(_)));
+
+            let client = HttpClient::new(MINT_URL.parse().unwrap(), None);
+            let quote = client
+                .get_melt_quote_status(PaymentMethod::BOLT11, &melt_quote.id)
+                .await
+                .unwrap();
+            assert_eq!(quote.state(), MeltQuoteState::Pending);
+
+            let pending = wallet.get_pending_proofs().await.unwrap();
+            assert!(!pending.is_empty());
+            let states = wallet.check_proofs_spent(pending.clone()).await.unwrap();
+            assert_eq!(states.len(), pending.len());
+            assert!(states.iter().all(|proof| proof.state == State::Pending));
+
+            // Wallet reconciliation must not make these proofs spendable again.
+            assert!(wallet.finalize_pending_melts().await.unwrap().is_empty());
+            wallet.check_all_pending_proofs().await.unwrap();
+            let still_pending = wallet.get_pending_proofs().await.unwrap();
+            assert_eq!(still_pending.len(), pending.len());
+            assert!(pending.iter().all(|proof| still_pending.contains(proof)));
+        })
         .await
-        .unwrap();
-
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let _proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let fake_description = FakeInvoiceDescription {
-        pay_invoice_state: MeltQuoteState::Failed,
-        check_payment_state: MeltQuoteState::Unknown,
-        pay_err: true,
-        check_err: false,
-    };
-
-    let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
-
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
-
-    // The melt should error at the payment invoice command
-    let melt = async {
-        let prepared = wallet
-            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-            .await?;
-        prepared.confirm().await
+        .expect("unknown payment should return pending without waiting for settlement");
     }
-    .await;
-    assert!(melt.is_err());
-
-    let fake_description = FakeInvoiceDescription {
-        pay_invoice_state: MeltQuoteState::Unknown,
-        check_payment_state: MeltQuoteState::Unknown,
-        pay_err: true,
-        check_err: false,
-    };
-
-    let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
-
-    let melt_quote = wallet
-        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
-        .await
-        .unwrap();
-
-    // The melt should error at the payment invoice command
-    let melt = async {
-        let prepared = wallet
-            .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
-            .await?;
-        prepared.confirm().await
-    }
-    .await;
-    assert!(melt.is_err());
-
-    assert!(wallet
-        .localstore
-        .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await
-        .unwrap()
-        .is_empty());
 }
 
 /// Tests that when the ln backend returns an error but the second check returns paid,
@@ -1850,9 +1794,9 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
 
     // Create a melt quote that will fail
     let fake_description = FakeInvoiceDescription {
-        pay_invoice_state: MeltQuoteState::Unknown,
+        pay_invoice_state: MeltQuoteState::Failed,
         check_payment_state: MeltQuoteState::Unpaid,
-        pay_err: true,
+        pay_err: false,
         check_err: false,
     };
 
