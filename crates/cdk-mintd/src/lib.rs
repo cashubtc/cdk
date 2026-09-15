@@ -599,6 +599,13 @@ fn validate_database_config(settings: &config::Settings) -> Result<()> {
         if pg_config.url.is_empty() {
             bail!("PostgreSQL URL is required. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
         }
+
+        #[cfg(feature = "postgres")]
+        cdk_postgres::PgConfig::new(&pg_config.url, pg_config.tls_mode.as_deref(), None, None)
+            .validate()
+            .map_err(|err| {
+                anyhow!("Invalid PostgreSQL configuration [database.postgres]: {err}")
+            })?;
     }
 
     Ok(())
@@ -807,6 +814,18 @@ fn validate_auth_config(settings: &config::Settings) -> Result<()> {
         if auth_pg_config.url.is_empty() {
             bail!("Auth database PostgreSQL URL is required. Set [auth_database.postgres].url to an env: or file: secret reference");
         }
+
+        #[cfg(feature = "postgres")]
+        cdk_postgres::PgConfig::new(
+            &auth_pg_config.url,
+            auth_pg_config.tls_mode.as_deref(),
+            None,
+            None,
+        )
+        .validate()
+        .map_err(|err| {
+            anyhow!("Invalid PostgreSQL configuration [auth_database.postgres]: {err}")
+        })?;
     }
 
     Ok(())
