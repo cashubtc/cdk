@@ -91,8 +91,12 @@ where
         .execute(&self.inner)
         .await?;
 
-        // Update keyset_amounts with fee_collected from the breakdown
-        for (keyset_id, fee) in fee_by_keyset {
+        // Acquire fee row locks in keyset ID order so concurrent fee updates
+        // cannot deadlock by visiting shared keysets in opposite orders.
+        let mut fees = fee_by_keyset.iter().collect::<Vec<_>>();
+        fees.sort_unstable_by_key(|(keyset_id, _)| *keyset_id);
+
+        for (keyset_id, fee) in fees {
             if fee.to_u64() > 0 {
                 query(
                     r#"
