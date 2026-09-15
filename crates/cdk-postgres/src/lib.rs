@@ -19,6 +19,7 @@ use tokio::time::timeout;
 use tokio_postgres::{connect, Client, Error as PgError, NoTls};
 
 mod db;
+mod numeric;
 mod value;
 
 #[derive(Debug)]

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cashu::nut00::KnownMethod;
+use cashu::nuts::nut30::MeltQuoteOnchainFeeOption;
 use cashu::quote_id::QuoteId;
 use cashu::{Amount, BlindSignature, CurrencyUnit, Id, SecretKey};
 
@@ -766,6 +767,92 @@ where
     assert_eq!(retrieved.amount(), melt_quote.amount());
     assert_eq!(retrieved.fee_reserve(), melt_quote.fee_reserve());
     assert_eq!(retrieved.extra_json, melt_quote.extra_json);
+}
+
+/// An onchain quote's `fee_index` and `estimated_blocks` are u32 values the
+/// payment backend picks, so both must survive a round trip at the top of that
+/// range rather than only at the signed 32-bit limit.
+pub async fn melt_quote_onchain_u32_column_bounds<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let largest = u32::MAX;
+    let mut melt_quote = MeltQuote::new_onchain(
+        None,
+        MeltPaymentRequest::Onchain {
+            address: "bcrt1qgnr8y0dyexpaydsuz3fmuxls77wc6d0trmajxc".to_string(),
+        },
+        CurrencyUnit::Sat,
+        Amount::new(100, CurrencyUnit::Sat),
+        0,
+        None,
+        None,
+        vec![MeltQuoteOnchainFeeOption {
+            fee_index: largest,
+            fee_reserve: Amount::from(10),
+            estimated_blocks: largest,
+        }],
+    )
+    .unwrap();
+    melt_quote.select_onchain_fee_option(largest).unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_melt_quote(melt_quote.clone()).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let retrieved = db.get_melt_quote(&melt_quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.selected_fee_index, Some(largest));
+    assert_eq!(retrieved.estimated_blocks, Some(largest));
+    assert_eq!(
+        retrieved
+            .fee_options()
+            .first()
+            .map(|option| option.fee_index),
+        Some(largest)
+    );
+}
+
+/// Amounts are `u64` on the wire, and every amount column is wide enough to
+/// hold one. `i64::MAX` used to be the ceiling, so a peer could name an amount
+/// the mint had to refuse rather than store.
+///
+/// The accounting columns are left to their default on insert, which the wide
+/// representation has to spell out rather than write a bare zero, so they are
+/// asserted here too.
+pub async fn mint_quote_amounts_hold_the_whole_u64_range<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let mint_quote = MintQuote::new(
+        None,
+        unique_string(),
+        CurrencyUnit::Sat,
+        Some(Amount::new(u64::MAX, CurrencyUnit::Sat)),
+        0,
+        PaymentIdentifier::CustomId(unique_string()),
+        None,
+        Amount::new(0, CurrencyUnit::Sat),
+        Amount::new(0, CurrencyUnit::Sat),
+        cashu::PaymentMethod::Known(KnownMethod::Bolt12),
+        0,
+        0,
+        vec![],
+        vec![],
+        None,
+    );
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_mint_quote(mint_quote.clone()).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let retrieved = db.get_mint_quote(&mint_quote.id).await.unwrap().unwrap();
+    assert_eq!(
+        retrieved.amount.as_ref().map(|amount| amount.value()),
+        Some(u64::MAX)
+    );
+
+    assert_eq!(retrieved.amount_paid().to_u64(), 0);
+    assert_eq!(retrieved.amount_issued().to_u64(), 0);
 }
 
 /// Test adding duplicate melt quotes fails

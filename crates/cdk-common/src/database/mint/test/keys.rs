@@ -77,6 +77,9 @@ where
     assert_eq!(retrieved.active, keyset_info.active);
     assert_eq!(retrieved.amounts, keyset_info.amounts);
     assert_eq!(retrieved.issuer_version, keyset_info.issuer_version);
+    assert_eq!(retrieved.valid_from, keyset_info.valid_from);
+    assert_eq!(retrieved.final_expiry, keyset_info.final_expiry);
+    assert_eq!(retrieved.input_fee_ppk, keyset_info.input_fee_ppk);
 }
 
 /// Test adding duplicate keyset info is idempotent
@@ -328,4 +331,76 @@ where
     // Try to get active keyset when none is set
     let active_id = active_keyset_id(&db, &CurrencyUnit::Sat).await;
     assert!(active_id.is_none());
+}
+
+/// The keyset `u64` fields live in signed 64-bit columns.
+///
+/// Everything up to `i64::MAX` must round trip, and anything past it must be
+/// refused on write: it used to be narrowed silently, committing a negative
+/// value that no later read could decode, which failed every keyset read in
+/// the table rather than only its own row.
+pub async fn keyset_u64_column_bounds<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let largest = i64::MAX as u64;
+    let keyset_info = MintKeySetInfo {
+        id: Id::from_str("00916bbf7ef91a36").unwrap(),
+        unit: CurrencyUnit::Sat,
+        active: false,
+        valid_from: largest,
+        final_expiry: Some(largest),
+        derivation_path: DerivationPath::from_str("m/0'/0'/0'").unwrap(),
+        derivation_path_index: Some(0),
+        input_fee_ppk: largest,
+        amounts: standard_keyset_amounts(32),
+        issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
+    };
+
+    let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
+    tx.add_keyset_info(keyset_info.clone()).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let retrieved = find_keyset_info(&db, &keyset_info.id).await.unwrap();
+    assert_eq!(retrieved.valid_from, largest);
+    assert_eq!(retrieved.final_expiry, Some(largest));
+    assert_eq!(retrieved.input_fee_ppk, largest);
+
+    let oversized = largest + 1;
+    let rejected_id = Id::from_str("00916bbf7ef91a37").unwrap();
+    let rejected = [
+        MintKeySetInfo {
+            id: rejected_id,
+            valid_from: oversized,
+            final_expiry: None,
+            input_fee_ppk: 0,
+            ..keyset_info.clone()
+        },
+        MintKeySetInfo {
+            id: rejected_id,
+            valid_from: 0,
+            final_expiry: Some(oversized),
+            input_fee_ppk: 0,
+            ..keyset_info.clone()
+        },
+        MintKeySetInfo {
+            id: rejected_id,
+            valid_from: 0,
+            final_expiry: None,
+            input_fee_ppk: oversized,
+            ..keyset_info.clone()
+        },
+    ];
+
+    for case in rejected {
+        let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
+        assert!(tx.add_keyset_info(case).await.is_err());
+        tx.rollback().await.unwrap();
+
+        assert!(find_keyset_info(&db, &rejected_id).await.is_none());
+        assert_eq!(
+            find_keyset_info(&db, &keyset_info.id).await.unwrap().id,
+            keyset_info.id
+        );
+    }
 }

@@ -22,10 +22,11 @@ async-trait.workspace = true
 cdk-common.workspace = true
 cdk-prometheus = { workspace = true, optional = true }
 cdk-sql-common = { workspace = true }
-rusqlite = { version = "0.31", features = ["bundled"]}
+rusqlite = { version = "0.31", features = ["bundled", "functions"]}
 tokio = { workspace = true, features = ["rt-multi-thread"]}
 tracing.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

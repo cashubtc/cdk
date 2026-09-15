@@ -283,3 +283,63 @@ where
     assert!(result.is_err());
     tx.rollback().await.unwrap();
 }
+
+/// Amounts are `u64`, and totalling them is the one place a database has to do
+/// arithmetic on one. The columns on both sides are wide enough to hold
+/// operands whose sum leaves the signed range, and SQLite cannot add them
+/// natively at all: its only integer is signed and it promotes an overflow to a
+/// float.
+///
+/// A total past `u64::MAX` has to be refused rather than committed, or the one
+/// row that holds it fails every later read of the table. The two backends
+/// refuse it by different means, a check constraint against a registered rust
+/// function, so the same write has to fail on both.
+pub async fn total_issued_sums_past_the_signed_range<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error> + MintSignaturesDatabase<Err = Error>,
+{
+    let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
+    let half = Amount::from(i64::MAX as u64);
+
+    for amount in [half, Amount::from(i64::MAX as u64 + 1)] {
+        let signature = BlindSignature {
+            amount,
+            keyset_id,
+            c: SecretKey::generate().public_key(),
+            dleq: None,
+        };
+
+        let mut tx = Database::begin_transaction(&db).await.unwrap();
+        tx.add_blind_signatures(&[SecretKey::generate().public_key()], &[signature], None)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    let totals = db.get_total_issued().await.unwrap();
+    assert_eq!(
+        totals.get(&keyset_id).copied(),
+        Some(Amount::from(u64::MAX))
+    );
+
+    let overflowing = BlindSignature {
+        amount: Amount::from(1u64),
+        keyset_id,
+        c: SecretKey::generate().public_key(),
+        dleq: None,
+    };
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let refused = tx
+        .add_blind_signatures(&[SecretKey::generate().public_key()], &[overflowing], None)
+        .await
+        .is_err();
+    tx.rollback().await.unwrap();
+    assert!(refused, "a total past u64::MAX must not commit");
+
+    let totals = db.get_total_issued().await.unwrap();
+    assert_eq!(
+        totals.get(&keyset_id).copied(),
+        Some(Amount::from(u64::MAX))
+    );
+}
