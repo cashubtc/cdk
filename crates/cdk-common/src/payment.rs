@@ -661,6 +661,34 @@ impl fmt::Debug for MakePaymentResponse {
 }
 
 impl MakePaymentResponse {
+    /// Build a payment response without BOLT 12 payer-proof inputs.
+    ///
+    /// Downstream `MintPayment` backends that do not capture a paid BOLT 12
+    /// invoice should use this constructor instead of a struct literal so a
+    /// new optional field on [`MakePaymentResponse`] does not break their
+    /// source. Call [`Self::with_bolt12_payer_proof_inputs`] when the backend
+    /// can persist construction inputs.
+    pub fn new(
+        payment_lookup_id: PaymentIdentifier,
+        payment_proof: Option<String>,
+        status: MeltQuoteState,
+        total_spent: Amount<CurrencyUnit>,
+    ) -> Self {
+        Self {
+            payment_lookup_id,
+            payment_proof,
+            bolt12_payer_proof_inputs: None,
+            status,
+            total_spent,
+        }
+    }
+
+    /// Attach BOLT 12 payer-proof construction inputs to this response.
+    pub fn with_bolt12_payer_proof_inputs(mut self, inputs: Bolt12PayerProofInputs) -> Self {
+        self.bolt12_payer_proof_inputs = Some(inputs);
+        self
+    }
+
     /// Get the currency unit
     pub fn unit(&self) -> &CurrencyUnit {
         self.total_spent.unit()
@@ -1004,6 +1032,29 @@ mod tests {
         assert!(debug.contains("[REDACTED]"));
         assert!(!debug.contains(invoice));
         assert!(!debug.contains(&payment_id));
+    }
+
+    #[test]
+    fn make_payment_response_new_leaves_bolt12_payer_proof_inputs_unset() {
+        let response = MakePaymentResponse::new(
+            PaymentIdentifier::CustomId("public-lookup-id".to_string()),
+            Some("preimage".to_string()),
+            MeltQuoteState::Paid,
+            Amount::new(10, CurrencyUnit::Sat),
+        );
+
+        assert!(response.bolt12_payer_proof_inputs.is_none());
+        assert_eq!(
+            response
+                .with_bolt12_payer_proof_inputs(Bolt12PayerProofInputs {
+                    bolt12_invoice: "lni1".to_string(),
+                    payment_id: "aa".repeat(32),
+                })
+                .bolt12_payer_proof_inputs
+                .as_ref()
+                .map(|inputs| inputs.bolt12_invoice.as_str()),
+            Some("lni1"),
+        );
     }
 
     #[test]
