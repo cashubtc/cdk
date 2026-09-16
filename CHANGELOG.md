@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- cdk-common: `MakePaymentResponse` gained optional `bolt12_payer_proof_inputs`. Downstream `MintPayment` backends that construct the struct with a literal must set the field, or use `MakePaymentResponse::new(...)` which leaves it unset.
+
 ### Fixed
 
 - cashu: P2BK V4 tokens now encode `pe` as CBOR bytes. Wallets using CDK 0.16–0.18 must upgrade to receive these tokens. Updated wallets continue to accept legacy hex-encoded tokens (#2712).
