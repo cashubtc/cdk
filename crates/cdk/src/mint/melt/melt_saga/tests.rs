@@ -552,6 +552,7 @@ async fn test_msat_total_spent_rounds_up_when_recording_sat_melt() {
         Some("rounded_msat_preimage".to_string()),
         &payment_lookup_id,
         Some(operation_id),
+        None,
     )
     .await
     .unwrap()
@@ -591,6 +592,7 @@ async fn test_finalizing_recovery_uses_persisted_payment_fee() {
         total_spent: total_spent.clone(),
         payment_lookup_id: PaymentIdentifier::CustomId("recovery_lookup".to_string()),
         payment_proof: Some("recovery_preimage".to_string()),
+        bolt12_payer_proof_inputs: None,
     };
 
     let mut tx = mint.localstore.begin_transaction().await.unwrap();
@@ -3160,6 +3162,7 @@ async fn test_finalize_melt_quote_duplicate_success_is_idempotent() {
         payment_result.payment_proof.clone(),
         &payment_result.payment_lookup_id,
         Some(operation_id),
+        None,
     )
     .await
     .unwrap();
@@ -3212,6 +3215,7 @@ async fn test_concurrent_duplicate_melt_finalization_is_idempotent() {
         payment_result.payment_proof.clone(),
         &payment_result.payment_lookup_id,
         Some(operation_id),
+        None,
     );
     let second = finalize_melt_quote(
         &mint,
@@ -3222,6 +3226,7 @@ async fn test_concurrent_duplicate_melt_finalization_is_idempotent() {
         payment_result.payment_proof,
         &payment_result.payment_lookup_id,
         Some(operation_id),
+        None,
     );
 
     let (first_change, second_change) =
@@ -3305,6 +3310,7 @@ async fn test_stale_melt_cleanup_observes_completed_finalization() {
         payment_result.payment_proof,
         &payment_result.payment_lookup_id,
         Some(operation_id),
+        None,
     )
     .await
     .unwrap();
@@ -3384,6 +3390,7 @@ async fn test_finalize_melt_quote_conflicting_success_is_rejected() {
         payment_result.total_spent,
         Some("different-proof".to_string()),
         &payment_result.payment_lookup_id,
+        None,
         None,
     )
     .await
@@ -4953,4 +4960,20 @@ async fn test_different_lookup_ids_allow_concurrent_pending() {
     );
 
     // SUCCESS: Different lookup_ids allow concurrent pending!
+}
+
+#[tokio::test]
+async fn create_bolt12_payer_proof_unavailable_without_stored_inputs() {
+    let mint = create_test_mint().await.unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+
+    let err = mint
+        .create_bolt12_payer_proof(&quote.id)
+        .await
+        .expect_err("bolt11 quotes cannot produce a bolt12 payer proof");
+
+    assert!(matches!(
+        err,
+        cdk_common::Error::Payment(cdk_common::payment::Error::Bolt12PayerProofUnavailable)
+    ));
 }

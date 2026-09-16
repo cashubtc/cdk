@@ -290,7 +290,9 @@ where
             request_lookup_id_kind,
             extra_json,
             fee_options,
-            selected_fee_index
+            selected_fee_index,
+            bolt12_invoice,
+            bolt12_payment_id
         FROM
             melt_quote
         WHERE
@@ -404,7 +406,9 @@ where
             request_lookup_id_kind,
             extra_json,
             fee_options,
-            selected_fee_index
+            selected_fee_index,
+            bolt12_invoice,
+            bolt12_payment_id
         FROM
             melt_quote
         WHERE
@@ -462,7 +466,9 @@ where
             request_lookup_id_kind,
             extra_json,
             fee_options,
-            selected_fee_index
+            selected_fee_index,
+            bolt12_invoice,
+            bolt12_payment_id
         FROM
             melt_quote
         WHERE
@@ -579,7 +585,9 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
                 request_lookup_id_kind,
                 extra_json,
                 fee_options,
-                selected_fee_index
+                selected_fee_index,
+                bolt12_invoice,
+                bolt12_payment_id
         ) = row
     );
 
@@ -600,6 +608,17 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
         .and_then(|value| serde_json::from_str::<Vec<MeltQuoteOnchainFeeOption>>(&value).ok())
         .unwrap_or_default();
     let selected_fee_index: Option<u32> = column_as_nullable_number!(selected_fee_index);
+    let bolt12_invoice = column_as_nullable_string!(bolt12_invoice);
+    let bolt12_payment_id = column_as_nullable_string!(bolt12_payment_id);
+    let bolt12_payer_proof_inputs = match (bolt12_invoice, bolt12_payment_id) {
+        (Some(bolt12_invoice), Some(payment_id)) => {
+            Some(cdk_common::payment::Bolt12PayerProofInputs {
+                bolt12_invoice,
+                payment_id,
+            })
+        }
+        _ => None,
+    };
 
     let state =
         MeltQuoteState::from_str(&column_as_string!(&state)).map_err(ConversionError::from)?;
@@ -650,6 +669,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
         state,
         expiry,
         payment_proof,
+        bolt12_payer_proof_inputs,
         request_lookup_id,
         options,
         created_time as u64,
@@ -1053,14 +1073,14 @@ where
                 id, unit, amount, request, fee_reserve, state,
                 expiry, payment_proof, estimated_blocks, fee_options, selected_fee_index,
                 request_lookup_id, created_time, paid_time, options, request_lookup_id_kind,
-                payment_method, extra_json
+                payment_method, extra_json, bolt12_invoice, bolt12_payment_id
             )
             VALUES
             (
                 :id, :unit, :amount, :request, :fee_reserve, :state,
                 :expiry, :payment_proof, :estimated_blocks, :fee_options, :selected_fee_index,
                 :request_lookup_id, :created_time, :paid_time, :options, :request_lookup_id_kind,
-                :payment_method, :extra_json
+                :payment_method, :extra_json, :bolt12_invoice, :bolt12_payment_id
             )
         "#,
         )?
@@ -1097,6 +1117,20 @@ where
             "extra_json",
             quote.extra_json.as_ref().map(|value| value.to_string()),
         )
+        .bind(
+            "bolt12_invoice",
+            quote
+                .bolt12_payer_proof_inputs
+                .as_ref()
+                .map(|inputs| inputs.bolt12_invoice.clone()),
+        )
+        .bind(
+            "bolt12_payment_id",
+            quote
+                .bolt12_payer_proof_inputs
+                .as_ref()
+                .map(|inputs| inputs.payment_id.clone()),
+        )
         .execute(&self.inner)
         .await?;
 
@@ -1132,19 +1166,33 @@ where
         // queries below. Per the NUT spec the returned `fee_options` are
         // fixed for the lifetime of the quote, so we never rewrite them
         // after insert. Only state/paid_time/payment_proof/fee_reserve/
-        // estimated_blocks/selected_fee_index may change over the
-        // quote's lifetime.
+        // estimated_blocks/selected_fee_index/bolt12 payer-proof inputs may
+        // change over the quote's lifetime.
         let rec = if state == MeltQuoteState::Paid {
             let current_time = unix_time();
             quote.paid_time = Some(current_time);
             quote.payment_proof = payment_proof.clone();
-            query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time, payment_proof = :payment_proof, fee_reserve = :fee_reserve, estimated_blocks = :estimated_blocks, selected_fee_index = :selected_fee_index WHERE id = :id"#)?
+            query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time, payment_proof = :payment_proof, fee_reserve = :fee_reserve, estimated_blocks = :estimated_blocks, selected_fee_index = :selected_fee_index, bolt12_invoice = :bolt12_invoice, bolt12_payment_id = :bolt12_payment_id WHERE id = :id"#)?
                 .bind("state", state.to_string())
                 .bind("paid_time", current_time as i64)
                 .bind("payment_proof", payment_proof)
                 .bind("fee_reserve", quote.fee_reserve().value() as i64)
                 .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
                 .bind("selected_fee_index", quote.selected_fee_index.map(i64::from))
+                .bind(
+                    "bolt12_invoice",
+                    quote
+                        .bolt12_payer_proof_inputs
+                        .as_ref()
+                        .map(|inputs| inputs.bolt12_invoice.clone()),
+                )
+                .bind(
+                    "bolt12_payment_id",
+                    quote
+                        .bolt12_payer_proof_inputs
+                        .as_ref()
+                        .map(|inputs| inputs.payment_id.clone()),
+                )
                 .bind("id", quote.id.to_string())
                 .execute(&self.inner)
                 .await
@@ -1432,7 +1480,9 @@ where
                 request_lookup_id_kind,
                 extra_json,
                 fee_options,
-                selected_fee_index
+                selected_fee_index,
+                bolt12_invoice,
+                bolt12_payment_id
             FROM
                 melt_quote
             "#,

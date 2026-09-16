@@ -124,6 +124,7 @@ where
         total_spent: Amount::from(9_123).with_unit(CurrencyUnit::Sat),
         payment_lookup_id: PaymentIdentifier::CustomId("lookup_123".to_string()),
         payment_proof: Some("proof_123".to_string()),
+        bolt12_payer_proof_inputs: None,
     };
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -175,6 +176,7 @@ where
         total_spent: Amount::from(9_123).with_unit(CurrencyUnit::Sat),
         payment_lookup_id: PaymentIdentifier::CustomId("lookup_123".to_string()),
         payment_proof: Some("proof_123".to_string()),
+        bolt12_payer_proof_inputs: None,
     };
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();

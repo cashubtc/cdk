@@ -328,6 +328,7 @@ impl Mint {
                     payment.payment_proof.clone(),
                     &payment.payment_lookup_id,
                     Some(request.operation_id),
+                    payment.bolt12_payer_proof_inputs.clone(),
                 )
                 .await?;
             }
@@ -445,6 +446,7 @@ mod tests {
                 total_spent: Amount::new(925, CurrencyUnit::Sat),
                 payment_lookup_id: quote.request_lookup_id.unwrap(),
                 payment_proof: Some("operator-supplied-proof".to_owned()),
+                bolt12_payer_proof_inputs: None,
             }),
         };
         (mint, request, input_ys)
@@ -741,6 +743,7 @@ mod tests {
                         request.quote_id.clone(),
                     ),
                     payment_proof: None,
+                    bolt12_payer_proof_inputs: None,
                 }),
                 false => MeltQuoteResolutionAction::Compensate {
                     payment_failure_confirmed: true,

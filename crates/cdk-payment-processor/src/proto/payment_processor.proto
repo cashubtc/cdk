@@ -261,6 +261,13 @@ message MakePaymentRequest {
   string unit = 4;
 }
 
+message Bolt12PayerProofInputs {
+  // Paid BOLT 12 invoice as returned by the payment backend (hex or bech32).
+  string bolt12_invoice = 1;
+  // Local payment identifier assigned by the Lightning node (hex).
+  string payment_id = 2;
+}
+
 message MakePaymentResponse {
   PaymentIdentifier payment_identifier = 1;
   optional string payment_proof = 2;
@@ -269,6 +276,9 @@ message MakePaymentResponse {
   // Extra payment-method-specific fields as JSON string
   // For custom payment methods, these fields are flattened into the response
   optional string extra_json = 5;
+  // Optional BOLT 12 payer-proof construction inputs. Unset when the backend
+  // cannot capture a paid invoice.
+  optional Bolt12PayerProofInputs bolt12_payer_proof_inputs = 6;
 }
 
 message CheckIncomingPaymentRequest {

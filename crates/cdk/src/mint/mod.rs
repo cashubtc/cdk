@@ -2315,6 +2315,7 @@ mod tests {
         let payment_result = MakePaymentResponse {
             payment_lookup_id: PaymentIdentifier::CustomId(quote.id.to_string()),
             payment_proof: None,
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Paid,
             total_spent: quote.amount(),
         };
@@ -2335,6 +2336,7 @@ mod tests {
             payment_result.payment_proof.clone(),
             &payment_result.payment_lookup_id,
             Some(operation_id),
+            None,
         )
         .await
         .unwrap();
@@ -2375,6 +2377,7 @@ mod tests {
         let payment_result = MakePaymentResponse {
             payment_lookup_id: PaymentIdentifier::CustomId(quote.id.to_string()),
             payment_proof: None,
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Paid,
             total_spent: Amount::from(9_000).with_unit(CurrencyUnit::Sat),
         };
