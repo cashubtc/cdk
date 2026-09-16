@@ -122,6 +122,16 @@ impl PgConfig {
         tls::configure(&self.url, self.tls_mode.as_deref()).map(|_| ())
     }
 
+    /// Compare effective TLS policies, including certificate verification requirements.
+    ///
+    /// Resolves explicit modes, URL modes, and defaults using the connection policy.
+    /// Invalid settings return an error. Does not connect or construct TLS connectors.
+    pub fn has_same_tls_policy(&self, other: &Self) -> Result<bool, Error> {
+        let (_, policy) = tls::resolve(&self.url, self.tls_mode.as_deref())?;
+        let (_, other_policy) = tls::resolve(&other.url, other.tls_mode.as_deref())?;
+        Ok(policy == other_policy)
+    }
+
     /// strip schema from the connection string
     fn strip_schema(input: &str) -> (Option<String>, String) {
         let mut schema: Option<String> = None;
