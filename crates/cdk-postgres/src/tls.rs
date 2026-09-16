@@ -8,8 +8,8 @@ use tokio_postgres::{Config, NoTls};
 
 use crate::SslMode;
 
-#[derive(Clone, Copy)]
-enum TlsPolicy {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum TlsPolicy {
     Disable,
     Prefer,
     Require,
@@ -55,6 +55,11 @@ impl TlsPolicy {
 }
 
 pub(super) fn configure(input: &str, explicit: Option<&str>) -> Result<(Config, SslMode), Error> {
+    let (config, policy) = resolve(input, explicit)?;
+    Ok((config, policy.build_connector(|builder| builder.build())?))
+}
+
+pub(super) fn resolve(input: &str, explicit: Option<&str>) -> Result<(Config, TlsPolicy), Error> {
     let (normalized, url_policy) = normalize(input)?;
     let policy = match explicit {
         Some(mode) => TlsPolicy::parse(mode)?,
@@ -64,7 +69,7 @@ pub(super) fn configure(input: &str, explicit: Option<&str>) -> Result<(Config, 
         .parse()
         .map_err(|err| Error::Database(Box::new(err)))?;
     config.ssl_mode(policy.negotiation());
-    Ok((config, policy.build_connector(|builder| builder.build())?))
+    Ok((config, policy))
 }
 
 // tokio-postgres only parses disable/prefer/require. Extract the complete mode
