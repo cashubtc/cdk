@@ -98,7 +98,11 @@ engine = "sqlite"
 # The referenced variable is also the bootstrap URL used to open the
 # authoritative database before its stored configuration can be read.
 url = "env:CDK_MINTD_POSTGRES_URL"
-# TLS mode: "disable", "prefer", "require" (optional, defaults to "disable")
+# TLS mode: "disable", "prefer", "allow", "require", "verify-ca", "verify-full".
+# Explicit settings override sslmode in the URL; otherwise sslmode is used.
+# Without either setting, defaults to "disable". "allow" behaves like "prefer".
+# "require" encrypts without certificate verification; "verify-full" also
+# verifies the certificate and hostname. Invalid modes fail config validation.
 tls_mode = "disable"
 # Maximum total number of connections (optional, defaults to 20).
 max_connections = 20
@@ -110,7 +114,11 @@ connection_timeout_seconds = 10
 # PostgreSQL connection URL for authentication database
 # This secret is resolved at runtime and the resolved URL is never persisted.
 url = "env:CDK_MINTD_AUTH_POSTGRES_URL"
-# TLS mode: "disable", "prefer", "require" (optional, defaults to "disable")
+# TLS mode: "disable", "prefer", "allow", "require", "verify-ca", "verify-full".
+# Explicit settings override sslmode in the URL; otherwise sslmode is used.
+# Without either setting, defaults to "disable". "allow" behaves like "prefer".
+# "require" encrypts without certificate verification; "verify-full" also
+# verifies the certificate and hostname. Invalid modes fail config validation.
 tls_mode = "disable"
 # Maximum number of connections in the pool (optional, defaults to 20)
 max_connections = 20
