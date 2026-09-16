@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+## [0.17.7](https://github.com/cashubtc/cdk/releases/tag/v0.17.7)
+
+### Fixed
+
+- cdk: Limit payment status checks during mint recovery to ten seconds, deferring timed-out sagas without releasing reserved proofs ([thesimplekid]).
+- cdk-lnd: Reject expired Bolt11 invoices before payment dispatch as definitive failures, while preserving existing paid or pending payment results ([thesimplekid]).
+- cdk-integration-tests: Correct fake-wallet tests to keep proofs pending for uncertain payment outcomes, use definitive failures for refund checks, and bound uncertain-payment cases to prevent hangs ([thesimplekid]).
+- release: Run FFI release workflows from the release tag so backport releases use their matching workflow definitions ([thesimplekid]).
+- release: Check for release tags on the upstream remote before publishing crates ([thesimplekid]).
+
 ## [0.17.6](https://github.com/cashubtc/cdk/releases/tag/v0.17.6)
 
 ### Added
