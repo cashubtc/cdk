@@ -131,7 +131,10 @@ where
     /// Atomically increment a namespaced derivation counter and return its new value.
     async fn increment_derivation_counter(&self, namespace: &str, count: u32) -> Result<u32, Err>;
 
-    /// Add Mint to storage
+    /// Attach metadata to a mint.
+    ///
+    /// Not a precondition for anything: writes that refer to a mint register it
+    /// on demand when its URL is not stored yet.
     async fn add_mint(&self, mint_url: MintUrl, mint_info: Option<MintInfo>) -> Result<(), Err>;
 
     /// Stop tracking a mint, without destroying anything it holds.
