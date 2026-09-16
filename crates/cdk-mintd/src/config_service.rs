@@ -561,8 +561,20 @@ fn same_primary_database(configured: &Database, bootstrap: &Database) -> bool {
     }
     match (&configured.postgres, &bootstrap.postgres) {
         (Some(configured), Some(bootstrap)) => {
+            #[cfg(feature = "postgres")]
+            let same_tls_policy = {
+                let connection = |config: &crate::config::PostgresConfig| {
+                    cdk_postgres::PgConfig::new(&config.url, config.tls_mode.as_deref(), None, None)
+                };
+                connection(configured)
+                    .has_same_tls_policy(&connection(bootstrap))
+                    .unwrap_or(false)
+            };
+            #[cfg(not(feature = "postgres"))]
+            let same_tls_policy = configured.tls_mode == bootstrap.tls_mode;
+
             configured.url == bootstrap.url
-                && configured.tls_mode == bootstrap.tls_mode
+                && same_tls_policy
                 && configured.max_connections == bootstrap.max_connections
                 && configured.connection_timeout_seconds == bootstrap.connection_timeout_seconds
         }
@@ -1840,6 +1852,74 @@ engine = "sqlite"
             }
         ));
         assert!(!same_primary_database(&sqlite, &left));
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn same_primary_database_compares_effective_tls_policies() {
+        for (url_mode, stored_mode, bootstrap_mode, expected) in [
+            ("", Some("disable"), None, true),
+            ("?sslmode=require", Some("require"), None, true),
+            ("?sslmode=require", Some("disable"), None, false),
+            ("", Some("REQUIRE"), Some("require"), true),
+            ("", Some("require"), Some("verify-ca"), false),
+            ("", Some("verify-ca"), Some("verify-full"), false),
+            ("", Some("invalid"), Some("invalid"), false),
+            ("?sslmode=invalid", Some("disable"), Some("disable"), false),
+        ] {
+            let database = |mode: Option<&str>| Database {
+                engine: DatabaseEngine::Postgres,
+                postgres: Some(crate::config::PostgresConfig {
+                    url: format!("postgresql://localhost/cdk{url_mode}"),
+                    tls_mode: mode.map(str::to_owned),
+                    ..Default::default()
+                }),
+            };
+            assert_eq!(
+                same_primary_database(&database(stored_mode), &database(bootstrap_mode)),
+                expected,
+                "URL {url_mode}, stored {stored_mode:?}, bootstrap {bootstrap_mode:?}"
+            );
+        }
+    }
+
+    #[cfg(all(feature = "postgres", feature = "sqlite", feature = "fakewallet"))]
+    #[tokio::test]
+    async fn startup_accepts_stored_explicit_disable_with_unset_bootstrap_tls() {
+        let mnemonic_path = crate::test_utils::unique_temp_path("tls_upgrade_mnemonic");
+        let url_path = crate::test_utils::unique_temp_path("tls_upgrade_url");
+        std::fs::write(&mnemonic_path, TEST_MNEMONIC_ONE).expect("write mnemonic");
+        std::fs::write(&url_path, "postgresql://localhost/cdk").expect("write URL");
+        let document = format!(
+            r#"
+[info]
+mnemonic = "file:{}"
+[payment_backend]
+backend = "fakewallet"
+[fake_wallet]
+[database]
+engine = "postgres"
+[database.postgres]
+url = "file:{}"
+tls_mode = "disable"
+"#,
+            mnemonic_path.display(),
+            url_path.display()
+        );
+        let resolved = ConfigurationService::validate_document(&document).expect("legacy document");
+        let identity = discover_signing_identity(&resolved.settings).expect("identity");
+        let mut bootstrap = resolved.settings.database;
+        bootstrap.postgres.as_mut().expect("postgres").tls_mode = None;
+        let database = Arc::new(memory::empty().await.expect("in-memory config store"));
+        let repository = ConfigRepository::new(database);
+        repository
+            .initialize(ConfigEnvelope::new(document, identity.fingerprint))
+            .await
+            .expect("store legacy configuration");
+        let service = ConfigurationService::new(repository, bootstrap);
+        service.startup().await.expect("compatible startup");
+        std::fs::remove_file(mnemonic_path).expect("remove mnemonic");
+        std::fs::remove_file(url_path).expect("remove URL");
     }
 
     #[test]
