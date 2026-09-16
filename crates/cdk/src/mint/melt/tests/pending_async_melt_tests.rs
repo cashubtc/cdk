@@ -581,6 +581,7 @@ async fn pending_melt_wait_resolves_via_external_successful_event() {
         let payment_result = MakePaymentResponse {
             payment_lookup_id: lookup_id,
             payment_proof: Some("external_event_preimage".to_string()),
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Paid,
             total_spent,
         };
