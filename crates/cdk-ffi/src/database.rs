@@ -24,6 +24,13 @@ where
 
 /// FFI-compatible wallet database trait with all read and write operations
 /// This trait mirrors the CDK WalletDatabase trait structure
+///
+/// A mint is identified internally, not by its URL: the URL is one mutable
+/// attribute of a stored mint. Writing a row that refers to a mint (keysets,
+/// proofs, quotes, transactions, sagas) stores the mint first if the URL is not
+/// known yet, so a wallet handed an empty database can write straight away.
+/// `add_mint` attaches metadata to that identity and is not a precondition for
+/// anything.
 #[uniffi::export(with_foreign)]
 #[async_trait::async_trait]
 pub trait WalletDatabase: Send + Sync {
@@ -168,7 +175,13 @@ pub trait WalletDatabase: Send + Sync {
     /// Remove transaction from storage
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), FfiError>;
 
-    /// Update mint url
+    /// Change the URL a stored mint is reached at.
+    ///
+    /// The mint keeps its identity, so every row attached to it (keysets,
+    /// proofs, mint and melt quotes, transactions, sagas) is reachable under
+    /// `new_mint_url` afterwards and nothing is left behind under
+    /// `old_mint_url`. Fails with `Unknown mint: <old_mint_url>` if
+    /// `old_mint_url` is not stored, a case that used to succeed silently.
     async fn update_mint_url(
         &self,
         old_mint_url: MintUrl,
@@ -185,7 +198,10 @@ pub trait WalletDatabase: Send + Sync {
         count: u32,
     ) -> Result<u32, FfiError>;
 
-    /// Add Mint to storage
+    /// Attach metadata to a mint.
+    ///
+    /// Not a precondition for anything: writes that refer to a mint register it
+    /// on demand when its URL is not stored yet.
     async fn add_mint(
         &self,
         mint_url: MintUrl,
