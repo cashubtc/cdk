@@ -27,7 +27,7 @@ mod subscriber;
 mod types;
 
 pub use self::error::Error;
-pub use self::limits::PubsubLimits;
+pub use self::limits::{PubsubLimits, PubsubLimitsError, PubsubLimitsField};
 pub use self::pubsub::Pubsub;
 pub use self::subscriber::{Subscriber, SubscriptionCounters, SubscriptionRequest};
 pub use self::types::*;

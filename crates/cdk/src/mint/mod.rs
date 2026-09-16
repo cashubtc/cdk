@@ -295,6 +295,8 @@ impl Mint {
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
         limits: MintLimits,
     ) -> Result<Self, Error> {
+        limits.pubsub.validate()?;
+
         // Subscribe up front and bootstrap the in-memory snapshot from the same
         // receiver that keeps it fresh. `borrow_and_update` pins the receiver
         // cursor to this snapshot, so any signatory rotation that lands before

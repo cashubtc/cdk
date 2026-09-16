@@ -34,6 +34,7 @@ use cdk_axum::cache::HttpCache;
 use cdk_axum::{WsLimitsError, WsLimitsField};
 use cdk_common::common::QuoteTTL;
 use cdk_common::database::DynMintDatabase;
+use cdk_common::pub_sub::{PubsubLimitsError, PubsubLimitsField};
 // internal crate modules
 #[cfg(feature = "prometheus")]
 use cdk_common::payment::MetricsMintPayment;
@@ -577,29 +578,23 @@ pub(crate) fn validate_settings(settings: &config::Settings) -> Result<()> {
 
 /// Rejects limits that would wedge the mint rather than protect it.
 ///
-/// The WebSocket rules live in `WsLimits::validate`, so an embedder building the
-/// router directly gets the same guarantees; only the rest is checked here.
+/// The WebSocket and pub/sub rules live in `WsLimits::validate` and
+/// `PubsubLimits::validate`, so an embedder building the router or the mint
+/// directly gets the same guarantees; only the transaction limits are checked
+/// here.
 fn validate_limits_config(settings: &config::Settings) -> Result<()> {
     let limits = &settings.limits;
 
     for (name, value) in [
         ("max_inputs", limits.max_inputs),
         ("max_outputs", limits.max_outputs),
-        ("pubsub_max_topics", limits.pubsub_max_topics),
-        (
-            "pubsub_max_concurrent_backfills",
-            limits.pubsub_max_concurrent_backfills,
-        ),
-        (
-            "pubsub_backfill_timeout_secs",
-            usize::try_from(limits.pubsub_backfill_timeout_secs).unwrap_or(usize::MAX),
-        ),
     ] {
         if value == 0 {
             bail!("Invalid limits configuration: {name} must be greater than zero");
         }
     }
 
+    validate_pubsub_limits(limits)?;
     validate_ws_limits(limits)
 }
 
@@ -632,6 +627,44 @@ struct InvalidWsLimit {
     key: &'static str,
     #[source]
     source: WsLimitsError,
+}
+
+/// The configuration key an operator edits to change a `PubsubLimits` field.
+///
+/// Spelled out rather than derived by prefixing, because the timeout is
+/// configured in seconds and so does not share the library's field name.
+fn pubsub_config_key(field: PubsubLimitsField) -> &'static str {
+    match field {
+        PubsubLimitsField::MaxTopics => "pubsub_max_topics",
+        PubsubLimitsField::MaxConcurrentBackfills => "pubsub_max_concurrent_backfills",
+        PubsubLimitsField::MaxQuoteChecksPerBackfill => "pubsub_max_quote_checks_per_backfill",
+        PubsubLimitsField::BackfillTimeout => "pubsub_backfill_timeout_secs",
+    }
+}
+
+/// A [`PubsubLimitsError`] paired with the configuration key an operator edits.
+///
+/// The rule itself is stated once, by cdk-common. Only the key is added here,
+/// because `PubsubLimits` names its fields without the `pubsub_` prefix the
+/// `[limits]` section uses.
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid limits configuration, check {key}")]
+struct InvalidPubsubLimit {
+    key: &'static str,
+    #[source]
+    source: PubsubLimitsError,
+}
+
+fn validate_pubsub_limits(limits: &config::Limits) -> Result<()> {
+    limits
+        .pubsub_limits()
+        .validate()
+        .map_err(|err| InvalidPubsubLimit {
+            key: pubsub_config_key(err.field()),
+            source: err,
+        })?;
+
+    Ok(())
 }
 
 fn validate_ws_limits(limits: &config::Limits) -> Result<()> {
@@ -704,6 +737,55 @@ mod limits_validation_tests {
             format!("{err:#}").contains("must be at least 10"),
             "cdk-axum's own explanation of the rule must survive as the cause: {err:#}"
         );
+    }
+
+    /// A zero on any pub/sub budget leaves no work possible, so mintd refuses to
+    /// start and names the key. The quote-check budget matters most: a zero
+    /// there serves every backfill from storage without asking the payment
+    /// backend, which only shows up as a warning in the log.
+    #[test]
+    fn a_zero_pubsub_budget_is_rejected_and_names_its_key() {
+        for (limits, key) in [
+            (
+                config::Limits {
+                    pubsub_max_topics: 0,
+                    ..config::Limits::default()
+                },
+                "pubsub_max_topics",
+            ),
+            (
+                config::Limits {
+                    pubsub_max_concurrent_backfills: 0,
+                    ..config::Limits::default()
+                },
+                "pubsub_max_concurrent_backfills",
+            ),
+            (
+                config::Limits {
+                    pubsub_max_quote_checks_per_backfill: 0,
+                    ..config::Limits::default()
+                },
+                "pubsub_max_quote_checks_per_backfill",
+            ),
+            (
+                config::Limits {
+                    pubsub_backfill_timeout_secs: 0,
+                    ..config::Limits::default()
+                },
+                "pubsub_backfill_timeout_secs",
+            ),
+        ] {
+            let err = validate_limits_config(&settings_with(limits))
+                .expect_err("a zero pub/sub budget must be rejected");
+            assert!(
+                err.to_string().contains(key),
+                "the operator must be told which key to edit: {err}"
+            );
+            assert!(
+                format!("{err:#}").contains("must be greater than zero"),
+                "cdk-common's own explanation of the rule must survive as the cause: {err:#}"
+            );
+        }
     }
 
     /// With the throttle off the burst is never charged, so an undersized one is

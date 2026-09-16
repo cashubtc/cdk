@@ -424,12 +424,17 @@ ws_idle_timeout_secs = 120
 # a quiet client has to answer.
 ws_ping_interval_secs = 30
 
+# Every pubsub key below must be greater than zero; a zero leaves no
+# subscription, backfill or payment check possible and the mint refuses to start.
+
 # Maximum subscription topics registered across the whole mint
 pubsub_max_topics = 100000
 # Maximum subscription backfills running concurrently
 pubsub_max_concurrent_backfills = 32
 # Maximum payment-backend round trips performed by a single backfill. Quotes
-# already in a final state do not count against it.
+# already in a final state do not count against it. A backfill that runs out of
+# round trips serves the rest from storage, so a client can see quote state that
+# the payment backend has already moved on from.
 pubsub_max_quote_checks_per_backfill = 64
 # Seconds one backfill may hold a concurrency slot before it gives up. The check
 # budget above bounds how many round trips a backfill makes, not how long they
