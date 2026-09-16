@@ -169,14 +169,15 @@ that a transport hands back.
 Construction is two steps, keeping `new_with_bus`'s sync closure intact:
 
 * `PostgresBusConnector::connect(config, channel).await` opens a dedicated
-  connection, issues `LISTEN`, and returns only after the first connect and
-  `LISTEN` succeed, so an unreachable database fails here rather than silently
-  later. A background driver polls the connection with `poll_message`, forwards
-  `AsyncMessage::Notification` payloads to an inbound channel, and reconnects
-  with capped exponential backoff when the connection drops. It stops once every
-  bus handle is gone.
-* `connector.build(local)` spawns the inbound dispatcher and returns
-  `Arc<dyn Bus<S>>`.
+  connection and issues `LISTEN`, returning only once both succeed, so an
+  unreachable database fails here rather than silently later. The attempt is
+  bounded by the configured connection timeout.
+* `connector.build(local)` takes that connection over and spawns the supervised
+  listener, then returns `Arc<dyn Bus<S>>`. The listener is a
+  `SupervisedStream` whose items are the wire payloads: one task polls the
+  connection with `poll_message`, decodes each payload and delivers it through
+  `local`, and reconnects with capped exponential backoff when the connection
+  drops. It stops once every bus handle is gone.
 
 Delivery model:
 
@@ -230,11 +231,24 @@ preimages.
 Enabling this transport therefore makes the mint's database single-tenant. An
 operator who turns it on has to:
 
-* give the mint its own role and keep other principals off that database;
-* `REVOKE EXECUTE ON FUNCTION pg_notify(text, text) FROM PUBLIC` on it, so a
-  role added later cannot publish;
+* give the mint its own role and keep other principals off that database, which
+  is the only control that holds: `NOTIFY` is a statement, not a function call,
+  and no privilege stands in front of it;
 * pick a channel name that is not the documented default, which costs nothing
   and removes the obvious target.
+
+Revoking the function from `PUBLIC` is still worth doing, but it closes only the
+`pg_notify()` form: a session that issues `NOTIFY channel, 'payload'` directly
+succeeds after the revoke. The revoke also takes the privilege away from the
+mint's own role, which publishes with `SELECT pg_notify($1, $2)`, so it has to
+be granted back or cross-instance delivery stops. Neither statement can live in
+a migration, since migrations run as the mint's role and it does not own the
+function. A superuser runs them once on the mint's database:
+
+```sql
+REVOKE EXECUTE ON FUNCTION pg_notify(text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION pg_notify(text, text) TO <mint_role>;
+```
 
 A deployment that cannot meet this (a shared database, an analytics role with
 connect rights) should stay on `in-memory` and let wallets pick state up from
@@ -282,15 +296,16 @@ the bootstrap value is used.
 * `NOTIFY`'s 8000-byte payload cap means the transport does not forward very
   large events to peers; those subscribers fall back to the existing
   on-read/reconnect backfill.
-* The transport holds a dedicated Postgres connection and a reconnect loop per
-  instance, plus one inbound dispatcher task.
+* The transport holds a dedicated Postgres connection per instance, read and
+  reconnected by a single supervised task.
 * Postgres reached through a transaction-pooling proxy has no cross-instance
   transport unless the operator gives the bus a direct connection. Such a
   deployment left on `in-memory` still serves correct state, but only through
   the `fetch_events` backfill, not a live push.
-* A brief reconnect window or a bounded-inbound-queue overflow can drop the live
-  push. Subscribers recover current state on their next `fetch_events` backfill,
-  so state is not lost, only the live push during the gap.
+* A brief reconnect window can drop the live push. Subscribers recover current
+  state on their next `fetch_events` backfill, so state is not lost, only the
+  live push during the gap. Past that window the per-subscriber channel bounds
+  what a flood can buffer, exactly as it does for in-process events.
 * The channel is as trusted as the database it runs on. See "Trust model"
   above: with this transport enabled, the mint's database must be single-tenant,
   because any session on it can both read the channel and speak on it.

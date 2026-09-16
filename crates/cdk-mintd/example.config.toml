@@ -132,9 +132,16 @@ connection_timeout_seconds = 10
 # preimages) and publish on it, and what it publishes reaches wallets over
 # NUT-17 as if the mint had sent it. Enable it only on a database the mint has
 # to itself: give the mint its own role, keep other principals off the database,
-# run REVOKE EXECUTE ON FUNCTION pg_notify(text, text) FROM PUBLIC, and set a
-# channel name other than the default below. A shared database should stay on
-# "in-memory".
+# and set a channel name other than the default below. Who can connect is the
+# only control that holds, because a bare NOTIFY statement needs no privileges
+# at all. Revoking the function from PUBLIC still closes one path, but it also
+# takes the privilege from the mint, which publishes with SELECT pg_notify(...),
+# so grant it back. A superuser runs both once on the mint's database:
+#
+#   REVOKE EXECUTE ON FUNCTION pg_notify(text, text) FROM PUBLIC;
+#   GRANT EXECUTE ON FUNCTION pg_notify(text, text) TO <mint_role>;
+#
+# A shared database should stay on "in-memory".
 #
 # Every field can also be set via environment variables:
 #   CDK_MINTD_PUBSUB_TRANSPORT, CDK_MINTD_PUBSUB_CHANNEL

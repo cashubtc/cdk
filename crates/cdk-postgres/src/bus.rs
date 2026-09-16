@@ -12,13 +12,15 @@
 //! them into its own local fan-out. Messages carry the origin instance id so a
 //! bus skips the copy of its own event that Postgres echoes back.
 //!
+//! Inbound work is one supervised loop: [`PgListen`] is a
+//! [`SupervisedStream`] whose items are the payloads themselves, so reading,
+//! decoding and local delivery happen in the task that also owns reconnects.
+//! Decoding and fan-out do not await, so they do not hold the read up. A slow
+//! peer is absorbed by the connection rather than by a queue.
+//!
 //! Wire format is JSON. `NOTIFY` payloads are capped by Postgres at 8000 bytes;
 //! oversized events are delivered locally but not forwarded (a warning is
 //! logged). Mint events are small; this only concerns unusually large melts.
-//!
-//! Inbound notifications flow through a bounded queue: if a peer floods faster
-//! than they can be dispatched, the excess is dropped (those subscribers
-//! recover on their next backfill) rather than growing memory without bound.
 //!
 //! Inbound payloads are trusted: they are decoded and handed to local
 //! subscribers without being re-validated against the database. `LISTEN` and
@@ -28,11 +30,11 @@
 //! bus must own its database; see the trust model in
 //! `docs/adr/0005-cross-process-mint-notifications-bus.md`.
 //!
-//! The background connection and its tasks are tied to the bus lifetime: when
-//! the built [`PostgresBus`] (or an unbuilt [`PostgresBusConnector`]) is
-//! dropped, the driver and dispatcher stop and the connection is released.
+//! The connection is tied to the bus lifetime: dropping the built
+//! [`PostgresBus`] stops the supervisor, which drops the stream the connection
+//! lives in. An unbuilt [`PostgresBusConnector`] holds that stream directly, so
+//! dropping it releases the connection just the same.
 
-use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
@@ -43,16 +45,14 @@ use cdk_common::database::Error;
 use cdk_common::pub_sub::{Bus, LocalDelivery, Spec};
 use cdk_common::stream::{BackoffPolicy, SupervisedStream};
 use cdk_sql_common::pool::DatabaseConfig;
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{mpsc, oneshot, watch};
-use tokio::task::JoinHandle;
+use tokio::sync::watch;
 use tokio::time::timeout;
-use tokio_postgres::{AsyncMessage, Client, Connection};
+use tokio_postgres::Client;
 
-use crate::connection::{connect_and_drive, DriveConnection};
+use crate::connection::{connect_listening, Payloads};
 use crate::PgConfig;
 
 /// Backoff before the first reconnect attempt.
@@ -64,12 +64,9 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Maximum `NOTIFY` payload Postgres accepts is 8000 bytes; stay under it.
 const MAX_NOTIFY_PAYLOAD: usize = 7999;
 
-/// Bound on buffered inbound notifications awaiting dispatch. Mirrors the local
-/// pub/sub channel size; excess is dropped rather than buffered without bound.
-const INBOUND_CHANNEL_SIZE: usize = 10_000;
-
-/// A live Postgres client shared between the publisher and the connection
-/// driver. `None` while disconnected; the driver swaps it on (re)connect.
+/// A live Postgres client shared between the publisher and the listener.
+/// `None` while disconnected; a successful connect installs it and dropping the
+/// connection clears it.
 type SharedClient = Arc<RwLock<Option<Arc<Client>>>>;
 
 /// Envelope written to the wire. Borrows the event to avoid a clone.
@@ -92,7 +89,7 @@ enum Inbound<E> {
     Deliver(E),
     /// This instance's own event echoed back by Postgres; ignore it.
     SelfEcho,
-    /// Undecodable payload; ignore it. Carries the decode error so the dispatcher
+    /// Undecodable payload; ignore it. Carries the decode error so the listener
     /// can say why a peer's event was dropped.
     Malformed(serde_json::Error),
 }
@@ -116,117 +113,82 @@ fn classify<E: DeserializeOwned>(payload: &str, our_origin: &str) -> Inbound<E> 
 /// [`Pubsub`](cdk_common::pub_sub::Pubsub) via its [`LocalDelivery`] handle.
 #[allow(missing_debug_implementations)]
 pub struct PostgresBusConnector {
-    inbound: mpsc::Receiver<String>,
-    client: SharedClient,
+    connect: PgConnect,
+    /// The connection [`PostgresBusConnector::connect`] opened, handed to the
+    /// supervisor's first connect attempt by [`PostgresBusConnector::build`].
+    /// Dropping the connector instead drops it, which closes the connection.
+    notifications: Notifications,
     channel: Arc<str>,
     origin: Arc<str>,
-    /// Dropping this sender signals the background tasks to stop. Held here
-    /// until `build` moves it into the [`PostgresBus`], so a connector dropped
-    /// before `build` also shuts the connection down.
-    shutdown: watch::Sender<()>,
 }
 
 impl PostgresBusConnector {
     /// Connect to Postgres and start listening on `channel`.
     ///
-    /// Returns once the first connection is established and the `LISTEN` is in
-    /// place, so a failure to reach Postgres surfaces here rather than silently
-    /// later. After that the connection is maintained in the background and
-    /// reconnects with backoff until the bus is dropped.
+    /// Returns once the connection is established and the `LISTEN` is in place,
+    /// so a failure to reach Postgres surfaces here rather than silently later.
+    /// That same connection is handed to the supervisor by
+    /// [`build`](Self::build), which keeps it alive and reconnects with backoff
+    /// until the bus is dropped.
     ///
     /// `channel` must be a valid Postgres identifier (letters, digits and
     /// underscores, not starting with a digit, at most 63 bytes) because it is
     /// interpolated into the `LISTEN` statement, which cannot be parameterized.
     pub async fn connect(config: PgConfig, channel: &str) -> Result<Self, Error> {
         let channel = validate_channel(channel)?;
-        let connect_timeout = config.default_timeout();
 
-        let (inbound_tx, inbound) = mpsc::channel(INBOUND_CHANNEL_SIZE);
-        let (ready_tx, ready_rx) = oneshot::channel();
-        let (shutdown, mut supervise_shutdown) = watch::channel(());
-        let client: SharedClient = Arc::new(RwLock::new(None));
-
-        let mut listener = PgListen {
+        let connect = PgConnect {
             config,
             listen_sql: format!("LISTEN \"{channel}\""),
-            client: client.clone(),
-            inbound_tx,
+            client: Arc::new(RwLock::new(None)),
+        };
+        let notifications = connect.open().await.map_err(Error::Internal)?;
+
+        Ok(Self {
+            connect,
+            notifications,
+            channel: Arc::from(channel),
+            origin: Arc::from(new_origin_id().as_str()),
+        })
+    }
+
+    /// Attach the bus to a subscriber set and return it as a [`Bus`].
+    ///
+    /// Spawns the supervised listener, which delivers peer events through
+    /// `local`, skipping this instance's own echoed events, and reconnects with
+    /// backoff until the returned bus is dropped.
+    pub fn build<S>(self, local: LocalDelivery<S>) -> Arc<dyn Bus<S>>
+    where
+        S: Spec + 'static,
+    {
+        let PostgresBusConnector {
+            connect,
+            notifications,
+            channel,
+            origin,
+        } = self;
+
+        let (shutdown, mut supervise_shutdown) = watch::channel(());
+        let client = connect.client.clone();
+
+        let mut listener = PgListen {
             name: format!("postgres bus:{channel}"),
-            ready: Some(ready_tx),
+            connect,
+            local: local.clone(),
+            origin: origin.clone(),
+            first: Some(notifications),
         };
 
         // The reconnect, backoff, and shutdown loop is provided by
-        // `SupervisedStream`. It stops once the `watch::Sender` held by the built
-        // `PostgresBus` (or by this connector on an early error) is dropped, which
-        // the receiver's `changed()` observes.
+        // `SupervisedStream`. It stops once the `watch::Sender` held by the
+        // returned `PostgresBus` is dropped, which the receiver's `changed()`
+        // observes.
         cdk_common::task::spawn(async move {
             listener
                 .supervise(async move {
                     let _ = supervise_shutdown.changed().await;
                 })
                 .await;
-        });
-
-        match timeout(connect_timeout, ready_rx).await {
-            Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(err))) => return Err(Error::Internal(err)),
-            Ok(Err(_)) => {
-                return Err(Error::Internal(
-                    "postgres bus supervisor stopped".to_string(),
-                ))
-            }
-            Err(_) => {
-                return Err(Error::Internal(
-                    "timeout connecting postgres bus".to_string(),
-                ))
-            }
-        }
-
-        Ok(Self {
-            inbound,
-            client,
-            channel: Arc::from(channel),
-            origin: Arc::from(new_origin_id().as_str()),
-            shutdown,
-        })
-    }
-
-    /// Attach the bus to a subscriber set and return it as a [`Bus`].
-    ///
-    /// Spawns the inbound dispatcher that delivers peer events through `local`,
-    /// skipping this instance's own echoed events.
-    pub fn build<S>(self, local: LocalDelivery<S>) -> Arc<dyn Bus<S>>
-    where
-        S: Spec + 'static,
-    {
-        let PostgresBusConnector {
-            mut inbound,
-            client,
-            channel,
-            origin,
-            shutdown,
-        } = self;
-
-        let dispatch_local = local.clone();
-        let dispatch_origin = origin.clone();
-        let mut dispatch_shutdown = shutdown.subscribe();
-        cdk_common::task::spawn(async move {
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = dispatch_shutdown.changed() => break,
-                    payload = inbound.recv() => match payload {
-                        Some(payload) => match classify::<S::Event>(&payload, &dispatch_origin) {
-                            Inbound::Deliver(event) => dispatch_local.deliver(event),
-                            Inbound::SelfEcho => {}
-                            Inbound::Malformed(err) => {
-                                tracing::warn!("postgres bus: dropping malformed payload: {err}");
-                            }
-                        },
-                        None => break,
-                    },
-                }
-            }
         });
 
         Arc::new(PostgresBus {
@@ -308,89 +270,140 @@ where
     }
 }
 
-/// Drives a bus connection by forwarding its notification payloads. Bridges the
-/// shared [`connect_and_drive`] helper to [`drive_connection`].
-struct NotifyDrive {
-    inbound_tx: mpsc::Sender<String>,
-}
-
-impl DriveConnection for NotifyDrive {
-    fn drive<S, T>(self, connection: Connection<S, T>) -> Pin<Box<dyn Future<Output = ()> + Send>>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    {
-        Box::pin(drive_connection(connection, self.inbound_tx))
-    }
-}
-
-/// The connection half of the Postgres bus.
+/// How to open a listening connection.
 ///
-/// Opens a `LISTEN` connection and, through [`NotifyDrive`], forwards every
-/// notification into the shared inbound channel. The reconnect, backoff, and
-/// shutdown loop is provided by [`SupervisedStream`]; this type only says how to
-/// (re)open a listening connection and where the payloads go. Decoding and
-/// delivery run in the dispatcher spawned by [`PostgresBusConnector::build`], so
-/// transport supervision stays separate from per-payload handling.
-///
-/// `LISTEN` runs inside [`connect`](SupervisedStream::connect), so a failed
-/// `LISTEN` is a failed connect: the supervisor backs off and reconnects rather
-/// than serving a connection that is up but not listening.
-struct PgListen {
+/// Not generic over the subscriber set, so [`PostgresBusConnector::connect`]
+/// can open the first connection before a [`LocalDelivery`] handle exists, and
+/// so the supervisor can reopen one on every reconnect.
+struct PgConnect {
     config: PgConfig,
     listen_sql: String,
     /// Shared with the publisher: each successful connect installs its client
     /// here so `pg_notify` reuses the live connection.
     client: SharedClient,
-    /// Every connection's driver forwards notifications here; the dispatcher in
-    /// `build` reads them. Held across reconnects so the channel outlives any
-    /// single connection.
-    inbound_tx: mpsc::Sender<String>,
-    name: String,
-    /// Fired once, carrying the first connect attempt's outcome, so
-    /// [`PostgresBusConnector::connect`] can surface a startup failure and keep
-    /// the fail-fast contract.
-    ready: Option<oneshot::Sender<Result<(), String>>>,
 }
 
-impl PgListen {
-    /// Open a fresh connection, `LISTEN`, and install its client for the publish
-    /// path. `LISTEN` runs before the client is installed, so the publish path
-    /// never sees a connection that is not listening; a failed `LISTEN` aborts
-    /// the driver and returns an error so the supervisor reconnects.
-    async fn open(&self) -> Result<ConnectionLiveness, String> {
-        let (client, driver) = connect_and_drive(
-            &self.config,
-            NotifyDrive {
-                inbound_tx: self.inbound_tx.clone(),
-            },
-        )
-        .await
-        .map_err(|err| err.to_string())?;
+impl PgConnect {
+    /// Open a fresh connection and `LISTEN` on it, bounded by the configured
+    /// connection timeout as one budget for the whole attempt. An attempt that
+    /// never returns would otherwise park the supervisor and stop it from ever
+    /// reconnecting.
+    async fn open(&self) -> Result<Notifications, String> {
+        match timeout(self.config.default_timeout(), self.listen()).await {
+            Ok(result) => result,
+            Err(_) => Err("timeout opening postgres bus connection".to_string()),
+        }
+    }
+
+    /// `LISTEN` runs before the client is installed, so the publish path never
+    /// sees a connection that is not listening. [`Notifications`] is built
+    /// first, so every later exit path (a failed `LISTEN`, the caller's timeout,
+    /// a shutdown that drops this future) closes the connection and leaves the
+    /// client uninstalled through its `Drop`.
+    async fn listen(&self) -> Result<Notifications, String> {
+        let (client, payloads) = connect_listening(&self.config)
+            .await
+            .map_err(|err| err.to_string())?;
+
+        let mut notifications = Notifications {
+            payloads,
+            client: self.client.clone(),
+        };
 
         let client = Arc::new(client);
-        if let Err(err) = client.batch_execute(&self.listen_sql).await {
-            driver.abort();
-            return Err(err.to_string());
-        }
+        notifications
+            .drive(client.batch_execute(&self.listen_sql))
+            .await?
+            .map_err(|err| err.to_string())?;
 
         if let Ok(mut slot) = self.client.write() {
             *slot = Some(client);
         }
 
-        Ok(ConnectionLiveness {
-            driver: Some(driver),
-            client: self.client.clone(),
-        })
+        Ok(notifications)
     }
 }
 
+/// The notification payloads of one connection.
+///
+/// The connection lives inside the stream, so dropping this closes it, and the
+/// `Drop` also uninstalls the client so the publish path stops using a
+/// connection that is gone.
+#[allow(missing_debug_implementations)]
+struct Notifications {
+    payloads: Payloads,
+    client: SharedClient,
+}
+
+impl Notifications {
+    /// Await a request on this connection's client while polling the
+    /// connection, which is what makes the request progress. Payloads arriving
+    /// meanwhile are dropped: this only runs before the `LISTEN` is in place, so
+    /// there are none to lose.
+    async fn drive<T>(&mut self, request: impl Future<Output = T>) -> Result<T, String> {
+        tokio::pin!(request);
+
+        loop {
+            tokio::select! {
+                result = &mut request => return Ok(result),
+                payload = self.next() => match payload {
+                    Some(Ok(_)) => {}
+                    Some(Err(err)) => return Err(err),
+                    None => return Err("connection closed".to_string()),
+                },
+            }
+        }
+    }
+}
+
+impl Stream for Notifications {
+    type Item = Result<String, String>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.get_mut().payloads.as_mut().poll_next(cx)
+    }
+}
+
+impl Drop for Notifications {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = self.client.write() {
+            *slot = None;
+        }
+    }
+}
+
+/// The listening half of the Postgres bus.
+///
+/// Carries the wire payloads as its items, so one supervised loop reads them,
+/// decodes them and hands them to the local fan-out. The reconnect, backoff and
+/// shutdown loop is provided by [`SupervisedStream`].
+///
+/// `LISTEN` runs inside [`connect`](SupervisedStream::connect), so a failed
+/// `LISTEN` is a failed connect: the supervisor backs off and reconnects rather
+/// than serving a connection that is up but not listening.
+#[allow(missing_debug_implementations)]
+struct PgListen<S>
+where
+    S: Spec + 'static,
+{
+    connect: PgConnect,
+    local: LocalDelivery<S>,
+    origin: Arc<str>,
+    /// The connection [`PostgresBusConnector::connect`] already opened, taken by
+    /// the first attempt so startup opens exactly one.
+    first: Option<Notifications>,
+    name: String,
+}
+
 #[async_trait::async_trait]
-impl SupervisedStream for PgListen {
-    type Item = Infallible;
+impl<S> SupervisedStream for PgListen<S>
+where
+    S: Spec + 'static,
+{
+    type Item = String;
     type ConnectError = String;
-    type StreamError = Infallible;
-    type Stream = ConnectionLiveness;
+    type StreamError = String;
+    type Stream = Notifications;
 
     fn name(&self) -> &str {
         &self.name
@@ -404,89 +417,21 @@ impl SupervisedStream for PgListen {
     }
 
     async fn connect(&mut self) -> Result<Self::Stream, Self::ConnectError> {
-        let result = self.open().await;
-        if let Some(ready) = self.ready.take() {
-            let _ = ready.send(result.as_ref().map(|_| ()).map_err(|err| err.clone()));
-        }
-        result
-    }
-
-    /// Never called: the stream carries no items (`Infallible`), it only signals
-    /// connection liveness. Payloads travel the driver-to-inbound-to-dispatcher
-    /// path instead.
-    async fn on_message(&mut self, item: Self::Item) {
-        match item {}
-    }
-}
-
-/// A stream that yields no items and completes when its connection ends.
-///
-/// The bus does not carry notifications through the supervisor's item channel
-/// (the driver forwards them into the inbound channel directly); the supervisor
-/// only needs to know when a connection dies so it can reconnect. This stream
-/// yields `None` once the connection's driver task finishes, and on drop (on
-/// reconnect or shutdown) aborts that task and uninstalls the client so the
-/// publish path stops using a connection that is no longer listening.
-#[allow(missing_debug_implementations)]
-struct ConnectionLiveness {
-    driver: Option<JoinHandle<()>>,
-    client: SharedClient,
-}
-
-impl Stream for ConnectionLiveness {
-    type Item = Result<Infallible, Infallible>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.driver.as_mut() {
-            Some(driver) => match Pin::new(driver).poll(cx) {
-                Poll::Ready(_) => {
-                    self.driver = None;
-                    Poll::Ready(None)
-                }
-                Poll::Pending => Poll::Pending,
-            },
-            None => Poll::Ready(None),
+        match self.first.take() {
+            Some(notifications) => Ok(notifications),
+            None => self.connect.open().await,
         }
     }
-}
 
-impl Drop for ConnectionLiveness {
-    fn drop(&mut self) {
-        if let Some(driver) = self.driver.take() {
-            driver.abort();
-        }
-        if let Ok(mut slot) = self.client.write() {
-            *slot = None;
-        }
-    }
-}
-
-/// Poll a Postgres connection, forwarding notification payloads. Returns when
-/// the connection closes or errors. When the inbound queue is full the
-/// notification is dropped rather than stalling the connection.
-async fn drive_connection<S, T>(connection: Connection<S, T>, inbound_tx: mpsc::Sender<String>)
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-    T: AsyncRead + AsyncWrite + Unpin,
-{
-    tokio::pin!(connection);
-    loop {
-        match std::future::poll_fn(|cx| connection.as_mut().poll_message(cx)).await {
-            Some(Ok(AsyncMessage::Notification(notification))) => {
-                match inbound_tx.try_send(notification.payload().to_string()) {
-                    Ok(()) => {}
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        tracing::warn!("postgres bus: inbound queue full, dropping notification");
-                    }
-                    Err(mpsc::error::TrySendError::Closed(_)) => return,
-                }
+    /// Decode one payload and fan it out locally. Neither step awaits, so the
+    /// read loop is not held up.
+    async fn on_message(&mut self, payload: String) {
+        match classify::<S::Event>(&payload, &self.origin) {
+            Inbound::Deliver(event) => self.local.deliver(event),
+            Inbound::SelfEcho => {}
+            Inbound::Malformed(err) => {
+                tracing::warn!("postgres bus: dropping malformed payload: {err}");
             }
-            Some(Ok(_)) => {}
-            Some(Err(err)) => {
-                tracing::warn!("postgres bus: connection error: {err}");
-                return;
-            }
-            None => return,
         }
     }
 }
@@ -612,6 +557,57 @@ mod tests {
         assert!(sub_a.try_recv().is_none());
     }
 
+    /// Delivery survives losing the connection. The first supervised attempt
+    /// reuses the connection opened at startup, so a reconnect is the first time
+    /// the supervisor opens one itself, installs a new client for the publish
+    /// path, and resumes listening.
+    ///
+    /// The drop is forced by terminating the listening backends from a separate
+    /// connection, matched on this test's unique channel so no other test's
+    /// connection is touched.
+    #[tokio::test]
+    async fn delivery_resumes_after_the_connection_drops() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let channel = pg_channel(&format!("test_{nanos}_reconnect"));
+
+        let instance_a = pg_pubsub::<CustomPubSub>(&channel).await;
+        let instance_b = pg_pubsub::<CustomPubSub>(&channel).await;
+        let mut sub_b = instance_b.subscribe(SubscriptionReq::Foo(3)).unwrap();
+
+        let (admin, connection) = tokio_postgres::connect(&test_db_url(), tokio_postgres::NoTls)
+            .await
+            .expect("admin connect");
+        cdk_common::task::spawn(async move {
+            let _ = connection.await;
+        });
+        let listening = format!("%{channel}%");
+        let terminated = admin
+            .execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+                 WHERE query LIKE $1 AND pid <> pg_backend_pid()",
+                &[&listening],
+            )
+            .await
+            .expect("terminate the listening backends");
+        // Otherwise the test would pass without a reconnect ever happening.
+        assert_eq!(terminated, 2, "both listening backends must be terminated");
+
+        // Long enough for the supervisor to notice and reconnect at its floor.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        instance_a.publish(Message { foo: 3, bar: 11 });
+
+        let received = timeout(Duration::from_secs(5), sub_b.recv())
+            .await
+            .expect("event delivered after the reconnect");
+        assert_eq!(received.map(|m| m.bar), Some(11));
+    }
+
     /// A failed `LISTEN` on an otherwise healthy connection must surface as a
     /// failed connect, so `SupervisedStream` backs off and reconnects rather
     /// than serving a connection that is up but not listening. It must also
@@ -623,19 +619,15 @@ mod tests {
     #[tokio::test]
     async fn listen_failure_errors_connect_and_leaves_client_uninstalled() {
         let client_slot: SharedClient = Arc::new(RwLock::new(None));
-        let (inbound_tx, _inbound) = mpsc::channel(16);
 
-        let mut listener = PgListen {
+        let connect = PgConnect {
             config: PgConfig::from(test_db_url().as_str()),
             // Missing channel name: opens a healthy connection, then errors.
             listen_sql: "LISTEN".to_string(),
             client: client_slot.clone(),
-            inbound_tx,
-            name: "postgres bus test".to_string(),
-            ready: None,
         };
 
-        let result = listener.connect().await;
+        let result = connect.open().await;
 
         assert!(
             result.is_err(),
@@ -643,6 +635,81 @@ mod tests {
         );
         // The client is never installed, so publishers do not use a
         // non-listening connection.
+        assert!(client_slot.read().unwrap().is_none());
+    }
+
+    /// A `LISTEN` that never returns must fail the attempt on the configured
+    /// timeout. Without it the supervisor parks inside `connect` and the bus
+    /// never reconnects.
+    ///
+    /// The hang is forced with a statement that sleeps on the server far longer
+    /// than the one-second timeout the config carries.
+    #[tokio::test]
+    async fn listen_hang_times_out_connect_and_leaves_client_uninstalled() {
+        let client_slot: SharedClient = Arc::new(RwLock::new(None));
+
+        let connect = PgConnect {
+            config: PgConfig::new(&test_db_url(), None, None, Some(1)),
+            listen_sql: "SELECT pg_sleep(30)".to_string(),
+            client: client_slot.clone(),
+        };
+
+        let started = std::time::Instant::now();
+        let result = connect.open().await;
+
+        assert!(
+            result.is_err(),
+            "a hung LISTEN must surface as a connect error"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "connect must give up on the configured timeout, not wait out the statement"
+        );
+        assert!(client_slot.read().unwrap().is_none());
+    }
+
+    /// A connect that hangs before the handshake finishes must time out too, and
+    /// must release the connection instead of leaving a driver task holding it.
+    ///
+    /// The fake server accepts and then stays silent, so the client waits on a
+    /// startup response that never comes; once the attempt gives up, the server
+    /// side sees EOF.
+    #[tokio::test]
+    async fn connect_hang_times_out_and_releases_the_socket() {
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+
+        let server = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = server.local_addr().expect("local addr").port();
+        let served = cdk_common::task::spawn(async move {
+            let (mut socket, _) = server.accept().await.expect("accept");
+            let mut buf = [0u8; 1024];
+            while socket.read(&mut buf).await.unwrap_or(0) > 0 {}
+        });
+
+        let client_slot: SharedClient = Arc::new(RwLock::new(None));
+
+        let connect = PgConnect {
+            config: PgConfig::new(
+                &format!("host=127.0.0.1 port={port} user=cdk_user dbname=cdk_mint"),
+                None,
+                None,
+                Some(1),
+            ),
+            listen_sql: "LISTEN \"cdk_bus_test\"".to_string(),
+            client: client_slot.clone(),
+        };
+
+        let result = connect.open().await;
+
+        assert!(
+            result.is_err(),
+            "a silent server must surface as a connect error"
+        );
+        timeout(Duration::from_secs(5), served)
+            .await
+            .expect("the timed-out attempt released its socket")
+            .expect("server task");
         assert!(client_slot.read().unwrap().is_none());
     }
 
