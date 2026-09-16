@@ -738,6 +738,7 @@ impl MeltSaga<SetupComplete> {
             status: MeltQuoteState::Paid,
             total_spent: amount,
             payment_proof: None,
+            bolt12_payer_proof_inputs: None,
             payment_lookup_id: self
                 .state_data
                 .quote
@@ -1189,6 +1190,11 @@ impl MeltSaga<PaymentConfirmed> {
             )?;
 
         let payment_proof = self.state_data.payment_result.payment_proof.clone();
+        let bolt12_payer_proof_inputs = self
+            .state_data
+            .payment_result
+            .bolt12_payer_proof_inputs
+            .clone();
         let payment_lookup_id = &self.state_data.payment_result.payment_lookup_id;
 
         // Persist Finalizing state so crash recovery knows TX1 may have completed.
@@ -1199,6 +1205,7 @@ impl MeltSaga<PaymentConfirmed> {
                 total_spent: total_spent.clone(),
                 payment_lookup_id: payment_lookup_id.clone(),
                 payment_proof: payment_proof.clone(),
+                bolt12_payer_proof_inputs: bolt12_payer_proof_inputs.clone(),
             };
             let mut saga = tx
                 .get_saga_for_update(&self.operation_id)
@@ -1236,6 +1243,7 @@ impl MeltSaga<PaymentConfirmed> {
             payment_proof.clone(),
             payment_lookup_id,
             Some(self.operation_id),
+            bolt12_payer_proof_inputs.clone(),
         )
         .await
         .map_err(|err| {
@@ -1259,6 +1267,7 @@ impl MeltSaga<PaymentConfirmed> {
         }
 
         self.state_data.quote.payment_proof = payment_proof;
+        self.state_data.quote.bolt12_payer_proof_inputs = bolt12_payer_proof_inputs;
         self.state_data.quote.state = MeltQuoteState::Paid;
         let response = self.state_data.quote.into_response(change);
 

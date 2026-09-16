@@ -2508,6 +2508,7 @@ impl MintPayment for CustomPaymentProcessor {
         Ok(cdk_common::payment::MakePaymentResponse {
             payment_lookup_id: payment_identifier.clone(),
             payment_proof: Some("proof".to_string()),
+            bolt12_payer_proof_inputs: None,
             status: cdk_common::nuts::MeltQuoteState::Paid,
             total_spent: Amount::new(24, CurrencyUnit::Sat),
         })
