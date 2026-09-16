@@ -13,6 +13,7 @@ pub const ENV_LND_CERT_FILE: &str = "CDK_MINTD_LND_CERT_FILE";
 pub const ENV_LND_MACAROON_FILE: &str = "CDK_MINTD_LND_MACAROON_FILE";
 pub const ENV_LND_FEE_PERCENT: &str = "CDK_MINTD_LND_FEE_PERCENT";
 pub const ENV_LND_RESERVE_FEE_MIN: &str = "CDK_MINTD_LND_RESERVE_FEE_MIN";
+pub const ENV_LND_ALLOW_SELF_PAYMENT: &str = "CDK_MINTD_LND_ALLOW_SELF_PAYMENT";
 
 impl Lnd {
     pub fn from_env(mut self) -> Result<Self> {
@@ -44,6 +45,10 @@ impl Lnd {
             if let Ok(reserve_fee) = reserve_fee_str.parse::<u64>() {
                 self.reserve_fee_min = reserve_fee.into();
             }
+        }
+
+        if let Some(allow_self_payment) = super::bool_override(ENV_LND_ALLOW_SELF_PAYMENT) {
+            self.allow_self_payment = allow_self_payment;
         }
 
         Ok(self)
