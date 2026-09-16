@@ -1,0 +1,2 @@
+ALTER TABLE melt_quote ADD COLUMN IF NOT EXISTS bolt12_invoice TEXT;
+ALTER TABLE melt_quote ADD COLUMN IF NOT EXISTS bolt12_payment_id TEXT;

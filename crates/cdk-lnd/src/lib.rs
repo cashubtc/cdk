@@ -382,6 +382,7 @@ fn outgoing_payment_failure_response(
     MakePaymentResponse {
         payment_lookup_id,
         payment_proof: None,
+        bolt12_payer_proof_inputs: None,
         status: MeltQuoteState::Failed,
         total_spent: Amount::new(0, unit.clone()),
     }
@@ -805,6 +806,7 @@ impl MintPayment for Lnd {
                                         payment_hash.to_byte_array(),
                                     ),
                                     payment_proof: payment_preimage,
+                                    bolt12_payer_proof_inputs: None,
                                     status,
                                     total_spent: Amount::new(total_amt_msat, CurrencyUnit::Msat)
                                         .convert_to_ceil(unit)?,
@@ -926,6 +928,7 @@ impl MintPayment for Lnd {
                             return Ok(MakePaymentResponse {
                                 payment_lookup_id: payment_identifier,
                                 payment_proof: payment_preimage,
+                                bolt12_payer_proof_inputs: None,
                                 status: response_status,
                                 total_spent: Amount::new(total_msat as u64, CurrencyUnit::Msat).convert_to_ceil(unit)?,
                             });
@@ -1064,6 +1067,7 @@ impl MintPayment for Lnd {
                     return Ok(MakePaymentResponse {
                         payment_lookup_id: payment_identifier.clone(),
                         payment_proof: None,
+                        bolt12_payer_proof_inputs: None,
                         status: MeltQuoteState::Unknown,
                         total_spent: Amount::new(0, self.unit.clone()),
                     });
@@ -1089,6 +1093,7 @@ impl MintPayment for Lnd {
                         PaymentStatus::Unknown => MakePaymentResponse {
                             payment_lookup_id: payment_identifier.clone(),
                             payment_proof: Some(update.payment_preimage),
+                            bolt12_payer_proof_inputs: None,
                             status: MeltQuoteState::Unknown,
                             total_spent: Amount::new(0, self.unit.clone()),
                         },
@@ -1102,6 +1107,7 @@ impl MintPayment for Lnd {
                             MakePaymentResponse {
                                 payment_lookup_id: payment_identifier.clone(),
                                 payment_proof: Some(update.payment_preimage),
+                                bolt12_payer_proof_inputs: None,
                                 status: MeltQuoteState::Paid,
                                 total_spent,
                             }
@@ -1118,6 +1124,7 @@ impl MintPayment for Lnd {
                             MakePaymentResponse {
                                 payment_lookup_id: payment_identifier.clone(),
                                 payment_proof: Some(update.payment_preimage),
+                                bolt12_payer_proof_inputs: None,
                                 status: MeltQuoteState::Failed,
                                 total_spent: Amount::new(0, self.unit.clone()),
                             }
@@ -1624,6 +1631,7 @@ mod tests {
                         let pay_state = MakePaymentResponse {
                             payment_lookup_id: payment_lookup_id.clone(),
                             payment_proof: Some("existing preimage".to_owned()),
+                            bolt12_payer_proof_inputs: None,
                             status,
                             total_spent: Amount::new(total_msat, CurrencyUnit::Msat),
                         };
@@ -1636,7 +1644,6 @@ mod tests {
                         )
                         .unwrap()
                         .unwrap();
-
                         assert_eq!(response.status, status);
                         assert_eq!(response.payment_lookup_id, payment_lookup_id);
                         assert_eq!(response.total_spent, Amount::new(expected, unit));
