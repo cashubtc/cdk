@@ -8,6 +8,12 @@
 
 LND (Lightning Network Daemon) backend implementation for the Cashu Development Kit (CDK).
 
+Full BOLT11 payments can optionally allow circular payments back to the same LND
+node, including payments between applications sharing a node. These require a
+viable route and liquidity, and peers must permit the selected circular route.
+Routing fees remain subject to the payment's fee limit. This does not enable
+partial self-payments through the separate MPP routing path.
+
 ## Installation
 
 Add this to your `Cargo.toml`:
@@ -31,6 +37,7 @@ cert_file = "/path/to/.lnd/tls.cert"
 macaroon_file = "/path/to/.lnd/data/chain/bitcoin/mainnet/admin.macaroon"
 fee_percent = 0.02       # Optional, defaults to 2%
 reserve_fee_min = 2      # Optional, defaults to 2 sats
+allow_self_payment = false # Optional, defaults to false
 ```
 
 ### Environment Variables
@@ -45,6 +52,7 @@ All configuration can be set via environment variables:
 | `CDK_MINTD_LND_MACAROON_FILE` | Path to LND macaroon file | Yes |
 | `CDK_MINTD_LND_FEE_PERCENT` | Fee percentage (default: `0.02`) | No |
 | `CDK_MINTD_LND_RESERVE_FEE_MIN` | Minimum fee in sats (default: `2`) | No |
+| `CDK_MINTD_LND_ALLOW_SELF_PAYMENT` | Allow circular payments back to this LND node (default: `false`) | No |
 
 ### Example
 

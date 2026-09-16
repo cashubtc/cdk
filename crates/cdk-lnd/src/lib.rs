@@ -55,6 +55,7 @@ pub struct Lnd {
     _macaroon_file: PathBuf,
     lnd_client: client::Client,
     fee_reserve: FeeReserve,
+    allow_self_payment: bool,
     kv_store: DynKVStore,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
@@ -66,6 +67,7 @@ impl std::fmt::Debug for Lnd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Lnd")
             .field("fee_reserve", &self.fee_reserve)
+            .field("allow_self_payment", &self.allow_self_payment)
             .finish_non_exhaustive()
     }
 }
@@ -167,6 +169,7 @@ impl Lnd {
             _macaroon_file: macaroon_file,
             lnd_client,
             fee_reserve,
+            allow_self_payment: false,
             kv_store,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
@@ -183,6 +186,12 @@ impl Lnd {
             },
             unit,
         })
+    }
+
+    /// Enable or disable circular payments back to this LND node.
+    pub fn with_allow_self_payment(mut self, allow_self_payment: bool) -> Self {
+        self.allow_self_payment = allow_self_payment;
+        self
     }
 
     /// Get last add and settle indices from KV store
@@ -724,6 +733,7 @@ impl MintPayment for Lnd {
                             payment_request: bolt11.to_string(),
                             fee_limit_msat,
                             amt_msat: amount_msat as i64,
+                            allow_self_payment: self.allow_self_payment,
                             ..Default::default()
                         };
 
