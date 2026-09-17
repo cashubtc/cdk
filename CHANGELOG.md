@@ -7,6 +7,43 @@
 
 ## [Unreleased]
 
+## [0.18.1](https://github.com/cashubtc/cdk/releases/tag/v0.18.1)
+
+### Summary
+
+Version 0.18.1 improves wallet signature validation and recovery, payment-backend reliability, and PostgreSQL TLS enforcement.
+It also restores compatibility with existing mints using shorter legacy seeds and adds more detailed payment lifecycle logging.
+Operators upgrading from v0.17 must still follow the [v0.18 migration guide](docs/migrations/v0.18.md).
+
+### Added
+
+- cdk/cdk-mintd: Structured logs for quote creation, incoming payments, issuance, melt transitions, fees, and returned change, plus incomplete melt saga counts, ages, and idle times.
+
+### Changed
+
+- dependencies: Refreshed the workspace and MSRV dependency lockfiles.
+
+### Fixed
+
+- cdk: Receive and restore responses validate signature counts, requested amounts, keysets, and supplied DLEQ proofs before storing spendable proofs; optional DLEQ proofs and seed-restore amount placeholders remain supported (#2547).
+- cdk: Swap, issuance, and receive recovery retain saga state until all expected outputs are restored, rejecting incomplete, duplicate, unknown, or mismatched responses while preserving optional partial melt change recovery (#2548).
+- cdk-mint: Recovery payment-status checks time out after ten seconds and defer stalled sagas without releasing reserved proofs.
+- cdk-cln/cdk-ldk-node/cdk-mint: Sat-denominated quotes round payment principals up, payment totals round principal plus actual fees up once, and paid-response unit validation preserves recovery state on mismatches (#2537).
+- cdk-cln: Payment event streams reconnect after RPC failures and resume from the persisted payment index (#2514).
+- cdk-lnd: Already-expired invoices fail before payment dispatch, while existing paid or pending payments retain their status (#2497).
+- cdk-ldk-node: Repeated BOLT12 dispatch claims resolve through existing payment status, and claim errors no longer incorrectly report terminal payment failure (#2529).
+- cdk-bdk: Replayed outgoing payments return durable paid or pending state before balance validation and fee estimation, including when no spendable UTXOs remain (#2523).
+- cdk-bdk: Bitcoin Core synchronization handles replacement blocks during reorganizations, retries staged wallet writes, and moves blocking block fetches and broadcasts off async workers (#2526).
+- cdk-bdk: Esplora requests have a ten-second timeout, zero request concurrency is rejected, and chain backends skip missed polling ticks to avoid catch-up bursts (#2527).
+- cdk-axum: Batch issuance and status requests enforce size limits and reject duplicate quote IDs before per-quote database lookups (#2536).
+- cdk-sql-common: Keyset fee updates acquire row locks in a consistent order to avoid deadlocks between concurrent completed operations (#2542).
+- cdk-postgres/cdk-mintd: PostgreSQL connections enforce configured TLS policies, reject invalid modes and connector failures, and preserve URL TLS settings when no explicit mode is supplied. Startup compares effective stored and bootstrap TLS policies so equivalent settings do not prevent restarts (#2553).
+- cdk-mintd: Malformed management RPC and signatory security overrides resolve to false, including non-Unicode values (#2553).
+- cdk-mintd: The 32-byte seed minimum applies only when initializing a new mint with a local signatory. Existing mints retain support for nonempty legacy seeds during migration, configuration changes, and restart; remote signatories skip local seed checks (#2501).
+- cdk-mintd: Logging honors the most verbose configured output so TRACE events remain available (#2509).
+- bindings: Android releases include `armeabi-v7a` and `x86` native libraries again.
+- release: FFI release workflows run from the selected release tag, and release tag checks use the upstream repository (#2494).
+
 ## [0.18.0](https://github.com/cashubtc/cdk/releases/tag/v0.18.0)
 
 ### Summary
