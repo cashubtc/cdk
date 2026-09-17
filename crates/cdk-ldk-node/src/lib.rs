@@ -1223,7 +1223,15 @@ impl MintPayment for CdkLdkNode {
                         let mut response = self
                             .check_outgoing_payment(&quote_payment_identifier)
                             .await?;
-                        response.total_spent = response.total_spent.convert_to(unit)?;
+                        // Status lookups return the combined principal and fees
+                        // in msat. Round up once, as on the initial payment path.
+                        response.total_spent = match (response.total_spent.unit(), unit) {
+                            (CurrencyUnit::Msat, CurrencyUnit::Sat) => Amount::new(
+                                response.total_spent.value().div_ceil(MSAT_IN_SAT),
+                                CurrencyUnit::Sat,
+                            ),
+                            _ => response.total_spent.convert_to(unit)?,
+                        };
                         return Ok(response);
                     }
 
@@ -2177,6 +2185,121 @@ mod tests {
                 "a duplicate must preserve the existing dispatch binding"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn duplicate_paid_bolt12_claim_rounds_total_once() {
+        use ldk_node::bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+        use ldk_node::io::sqlite_store::{SqliteStore, KV_TABLE_NAME, SQLITE_DB_FILE_NAME};
+        use ldk_node::lightning::offers::offer::OfferBuilder;
+        use ldk_node::lightning::util::persist::KVStoreSync;
+        use ldk_node::lightning::util::ser::Writeable;
+        use ldk_node::lightning_types::payment::PaymentPreimage;
+
+        let storage = tempfile::tempdir().unwrap();
+        let kv_store = test_kv_store().await;
+        let signer = PublicKey::from_secret_key(
+            &Secp256k1::new(),
+            &SecretKey::from_slice(&[1; 32]).unwrap(),
+        );
+        let offer = OfferBuilder::new(signer)
+            .amount_msats(1_000)
+            .build()
+            .unwrap();
+        let preimage = PaymentPreimage([42; 32]);
+        let mut cases = Vec::new();
+        {
+            let store = SqliteStore::new(
+                storage.path().to_path_buf(),
+                Some(SQLITE_DB_FILE_NAME.to_owned()),
+                Some(KV_TABLE_NAME.to_owned()),
+            )
+            .unwrap();
+            for (index, (principal, fee, expected_sat)) in
+                [(10_000, 1, 11), (1_999, 1, 2), (1_999, 0, 2), (2_000, 0, 2)]
+                    .into_iter()
+                    .enumerate()
+            {
+                let payment_id = PaymentId([index as u8 + 1; 32]);
+                let details = PaymentDetails {
+                    id: payment_id,
+                    kind: PaymentKind::Bolt12Offer {
+                        hash: Some(PaymentHash(
+                            ldk_node::bitcoin::hashes::sha256::Hash::hash(&preimage.0)
+                                .to_byte_array(),
+                        )),
+                        preimage: Some(preimage),
+                        secret: None,
+                        offer_id: offer.id(),
+                        payer_note: None,
+                        quantity: None,
+                    },
+                    fee_paid_msat: Some(fee),
+                    ..test_payment_details(PaymentStatus::Succeeded, Some(principal))
+                };
+                // Seed LDK's persisted payment history before the node loads it.
+                store
+                    .write("payments", "", &hex::encode(payment_id.0), details.encode())
+                    .unwrap();
+                let quote_id = QuoteId::new();
+                write_bolt12_quote_payment_id(&kv_store, &quote_id, None)
+                    .await
+                    .unwrap();
+                write_bolt12_quote_payment_id(&kv_store, &quote_id, Some(&payment_id))
+                    .await
+                    .unwrap();
+                cases.push((quote_id, payment_id, principal + fee, expected_sat));
+            }
+        }
+        let node = CdkLdkNodeBuilder::new(
+            Network::Regtest,
+            ChainSource::Esplora("http://127.0.0.1:1".to_owned()),
+            GossipSource::P2P,
+            storage.path().to_str().unwrap().to_owned(),
+            FeeReserve {
+                min_fee_reserve: 0.into(),
+                percent_fee_reserve: 0.0,
+            },
+            vec!["127.0.0.1:0".parse().unwrap()],
+            kv_store.clone(),
+        )
+        .build()
+        .unwrap();
+
+        for (quote_id, payment_id, total_msat, expected_sat) in cases {
+            for (unit, expected) in [
+                (CurrencyUnit::Sat, expected_sat),
+                (CurrencyUnit::Msat, total_msat),
+            ] {
+                let response = node
+                    .make_payment(
+                        &unit,
+                        OutgoingPaymentOptions::Bolt12(Box::new(Bolt12OutgoingPaymentOptions {
+                            offer: offer.clone(),
+                            max_fee_amount: None,
+                            timeout_secs: None,
+                            melt_options: None,
+                            quote_id: quote_id.clone(),
+                        })),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status, MeltQuoteState::Paid);
+                assert_eq!(response.total_spent, Amount::new(expected, unit));
+                assert_eq!(response.payment_proof, Some(preimage.to_string()));
+                assert_eq!(
+                    response.payment_lookup_id,
+                    PaymentIdentifier::QuoteId(quote_id.clone())
+                );
+                assert_eq!(
+                    read_bolt12_quote_payment_id(&kv_store, &quote_id)
+                        .await
+                        .unwrap(),
+                    Bolt12QuotePaymentIdLookup::Found(payment_id),
+                );
+            }
+        }
+        assert_eq!(node.inner.list_payments().len(), 4);
     }
 
     /// The mapping must resolve Missing before any dispatch, Dispatching
