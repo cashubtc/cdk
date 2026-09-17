@@ -12,6 +12,9 @@ use crate::nuts::{
 };
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
+#[cfg(test)]
+mod inactive_fee_tests;
+
 impl Wallet {
     pub(crate) async fn unspent_proof_derivation_indices(
         &self,
@@ -314,7 +317,20 @@ impl Wallet {
             // Still need to filter to minimum set, not return all of them
             let mut inactive_selected = selected_proofs.into_iter().collect::<Vec<_>>();
             Self::sort_proofs_by_amount_and_age(&mut inactive_selected, derivation_indices);
-            return Self::select_least_amount_over(inactive_selected, amount, derivation_indices);
+            let selected =
+                Self::select_least_amount_over(inactive_selected, amount, derivation_indices)?;
+            return if include_fees {
+                Self::include_fees(
+                    amount,
+                    proofs,
+                    selected,
+                    active_keyset_ids,
+                    fees_and_keyset_amounts,
+                    derivation_indices,
+                )
+            } else {
+                Ok(selected)
+            };
         }
         let mut remaining_amounts: Vec<Amount> = Vec::new();
 
