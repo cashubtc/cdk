@@ -5,6 +5,10 @@ extend-exclude = [
     "Cargo.lock.msrv"
 ]
 
+[default.extend-identifiers]
+# Upstream Lightning serialization trait.
+Writeable = "Writeable"
+
 [default]
 extend-ignore-re = [
     # Explicitly marked test fixtures may contain intentional misspellings.
