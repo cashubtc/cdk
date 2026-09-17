@@ -106,7 +106,7 @@ fn test_mint_quote(mint_url: MintUrl) -> MintQuote {
         Some(Amount::from(1000)),
         CurrencyUnit::Sat,
         "lnbc1000...".to_string(),
-        9999999999,
+        2000000000,
         None,
     )
 }
@@ -121,7 +121,7 @@ fn test_melt_quote() -> MeltQuote {
         request: "lnbc1000...".to_string(),
         fee_reserve: Amount::from(10),
         state: cashu::MeltQuoteState::Unpaid,
-        expiry: 9999999999,
+        expiry: 2000000000,
         payment_proof: None,
         estimated_blocks: None,
         fee_index: None,

@@ -163,11 +163,14 @@ where
         .bind("id", keyset.id.to_string())
         .bind("unit", keyset.unit.to_string())
         .bind("active", keyset.active)
-        .bind("valid_from", keyset.valid_from as i64)
-        .bind("valid_to", keyset.final_expiry.map(|v| v as i64))
+        .bind("valid_from", i64::try_from(keyset.valid_from)?)
+        .bind(
+            "valid_to",
+            keyset.final_expiry.map(i64::try_from).transpose()?,
+        )
         .bind("derivation_path", keyset.derivation_path.to_string())
         .bind("amounts", serde_json::to_string(&keyset.amounts).ok())
-        .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
+        .bind("input_fee_ppk", i64::try_from(keyset.input_fee_ppk)?)
         .bind("derivation_path_index", keyset.derivation_path_index)
         .bind(
             "issuer_version",

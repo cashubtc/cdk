@@ -81,12 +81,12 @@ where
         )?
         .bind("operation_id", operation.id().to_string())
         .bind("operation_kind", operation.kind().to_string())
-        .bind("completed_at", operation.completed_at().unwrap_or(unix_time()) as i64)
-        .bind("total_issued", operation.total_issued().to_u64() as i64)
-        .bind("total_redeemed", operation.total_redeemed().to_u64() as i64)
-        .bind("fee_collected", operation.fee_collected().to_u64() as i64)
-        .bind("payment_amount", operation.payment_amount().map(|a| a.to_u64() as i64))
-        .bind("payment_fee", operation.payment_fee().map(|a| a.to_u64() as i64))
+        .bind("completed_at", i64::try_from(operation.completed_at().unwrap_or(unix_time()))?)
+        .bind("total_issued", i64::try_from(operation.total_issued().to_u64())?)
+        .bind("total_redeemed", i64::try_from(operation.total_redeemed().to_u64())?)
+        .bind("fee_collected", i64::try_from(operation.fee_collected().to_u64())?)
+        .bind("payment_amount", operation.payment_amount().map(|a| i64::try_from(a.to_u64())).transpose()?)
+        .bind("payment_fee", operation.payment_fee().map(|a| i64::try_from(a.to_u64())).transpose()?)
         .bind("payment_method", operation.payment_method().map(|m| m.to_string()))
         .execute(&self.inner)
         .await?;
@@ -107,7 +107,7 @@ where
                     "#,
                 )?
                 .bind("keyset_id", keyset_id.to_string())
-                .bind("fee", fee.to_u64() as i64)
+                .bind("fee", i64::try_from(fee.to_u64())?)
                 .execute(&self.inner)
                 .await?;
             }

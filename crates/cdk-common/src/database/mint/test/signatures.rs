@@ -283,3 +283,30 @@ where
     assert!(result.is_err());
     tx.rollback().await.unwrap();
 }
+
+/// Test that an amount too large for the signed column is refused, not stored
+pub async fn reject_blind_signature_amount_over_i64_max<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error> + MintSignaturesDatabase<Err = Error>,
+{
+    let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
+    let blinded_message = SecretKey::generate().public_key();
+
+    let sig = BlindSignature {
+        amount: Amount::from(u64::MAX),
+        keyset_id,
+        c: SecretKey::generate().public_key(),
+        dleq: None,
+    };
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let err = tx
+        .add_blind_signatures(&[blinded_message], std::slice::from_ref(&sig), None)
+        .await
+        .expect_err("amount does not fit the column");
+    assert!(matches!(err, Error::ValueOutOfRange(_)), "{err:?}");
+    tx.rollback().await.unwrap();
+
+    let retrieved = db.get_blind_signatures(&[blinded_message]).await.unwrap();
+    assert!(retrieved[0].is_none());
+}

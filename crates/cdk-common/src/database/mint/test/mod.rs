@@ -383,6 +383,7 @@ macro_rules! mint_db_test {
             get_total_issued,
             get_nonexistent_blind_signatures,
             add_duplicate_blind_signatures,
+            reject_blind_signature_amount_over_i64_max,
             add_and_get_keyset_info,
             add_duplicate_keyset_info,
             get_all_keyset_infos,
