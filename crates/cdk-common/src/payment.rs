@@ -45,6 +45,9 @@ pub enum Error {
     /// Invalid expiry
     #[error("Invalid expiry")]
     InvalidExpiry,
+    /// BOLT 12 payer proof is not available for this payment
+    #[error("BOLT12 payer proof is not available")]
+    Bolt12PayerProofUnavailable,
     /// Payment backend error
     #[error(transparent)]
     Backend(Box<dyn std::error::Error + Send + Sync>),
@@ -508,6 +511,19 @@ pub trait MintPayment {
         &self,
         payment_identifier: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err>;
+
+    /// Construct a BOLT 12 payer proof from stored melt inputs.
+    ///
+    /// Default implementation returns [`Error::Bolt12PayerProofUnavailable`].
+    /// Backends that can sign a proof (for example LDK after a version bump)
+    /// override this using the paid invoice, preimage, and `payment_id`.
+    async fn create_bolt12_payer_proof(
+        &self,
+        _inputs: &Bolt12PayerProofInputs,
+        _payment_preimage: &str,
+    ) -> Result<String, Self::Err> {
+        Err(Error::Bolt12PayerProofUnavailable.into())
+    }
 }
 
 /// An event emitted which should be handled by the mint
@@ -568,6 +584,31 @@ pub struct CreateIncomingPaymentResponse {
     pub extra_json: Option<serde_json::Value>,
 }
 
+/// Inputs required to construct a BOLT 12 payer proof after a successful melt.
+///
+/// The paid invoice and Lightning `payment_id` are stored on the mint so it
+/// can later build a signed `lnp1...` proof. The payment preimage remains in
+/// [`MakePaymentResponse::payment_proof`]. Backends that cannot capture a
+/// paid invoice leave these unset.
+#[derive(Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bolt12PayerProofInputs {
+    /// Paid BOLT 12 invoice as returned by the payment backend.
+    ///
+    /// Encoding is backend-defined (hex or bech32).
+    pub bolt12_invoice: String,
+    /// Local payment identifier assigned by the Lightning node (hex).
+    pub payment_id: String,
+}
+
+impl fmt::Debug for Bolt12PayerProofInputs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Bolt12PayerProofInputs")
+            .field("bolt12_invoice", &"[REDACTED]")
+            .field("payment_id", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// Payment response
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct MakePaymentResponse {
@@ -581,6 +622,12 @@ pub struct MakePaymentResponse {
     pub payment_lookup_id: PaymentIdentifier,
     /// Payment proof
     pub payment_proof: Option<String>,
+    /// Optional BOLT 12 payer-proof construction inputs.
+    ///
+    /// Present only after a successful BOLT 12 melt when the backend captured
+    /// the paid invoice. Absent for BOLT11, onchain, custom, and backends that
+    /// cannot produce a proof.
+    pub bolt12_payer_proof_inputs: Option<Bolt12PayerProofInputs>,
     /// Status.
     ///
     /// When this response is returned by [`MintPayment::make_payment`],
@@ -606,6 +653,7 @@ impl fmt::Debug for MakePaymentResponse {
                 "payment_proof",
                 &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("bolt12_payer_proof_inputs", &self.bolt12_payer_proof_inputs)
             .field("status", &self.status)
             .field("total_spent", &self.total_spent)
             .finish()
@@ -613,6 +661,34 @@ impl fmt::Debug for MakePaymentResponse {
 }
 
 impl MakePaymentResponse {
+    /// Build a payment response without BOLT 12 payer-proof inputs.
+    ///
+    /// Downstream `MintPayment` backends that do not capture a paid BOLT 12
+    /// invoice should use this constructor instead of a struct literal so a
+    /// new optional field on [`MakePaymentResponse`] does not break their
+    /// source. Call [`Self::with_bolt12_payer_proof_inputs`] when the backend
+    /// can persist construction inputs.
+    pub fn new(
+        payment_lookup_id: PaymentIdentifier,
+        payment_proof: Option<String>,
+        status: MeltQuoteState,
+        total_spent: Amount<CurrencyUnit>,
+    ) -> Self {
+        Self {
+            payment_lookup_id,
+            payment_proof,
+            bolt12_payer_proof_inputs: None,
+            status,
+            total_spent,
+        }
+    }
+
+    /// Attach BOLT 12 payer-proof construction inputs to this response.
+    pub fn with_bolt12_payer_proof_inputs(mut self, inputs: Bolt12PayerProofInputs) -> Self {
+        self.bolt12_payer_proof_inputs = Some(inputs);
+        self
+    }
+
     /// Get the currency unit
     pub fn unit(&self) -> &CurrencyUnit {
         self.total_spent.unit()
@@ -889,6 +965,23 @@ where
 
         result
     }
+
+    async fn create_bolt12_payer_proof(
+        &self,
+        inputs: &Bolt12PayerProofInputs,
+        payment_preimage: &str,
+    ) -> Result<String, Self::Err> {
+        let metrics = MintMetricGuard::new("create_bolt12_payer_proof");
+
+        let result = self
+            .inner
+            .create_bolt12_payer_proof(inputs, payment_preimage)
+            .await;
+
+        metrics.record(result.is_ok());
+
+        result
+    }
 }
 
 /// Type alias for Mint Payment trait
@@ -907,6 +1000,7 @@ mod tests {
         let response = MakePaymentResponse {
             payment_lookup_id: PaymentIdentifier::CustomId("public-lookup-id".to_string()),
             payment_proof: Some(secret.to_string()),
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Paid,
             total_spent: Amount::new(10, CurrencyUnit::Sat),
         };
@@ -916,6 +1010,51 @@ mod tests {
         assert!(debug.contains("public-lookup-id"));
         assert!(debug.contains("[REDACTED]"));
         assert!(!debug.contains(secret));
+    }
+
+    #[test]
+    fn make_payment_response_debug_redacts_bolt12_payer_proof_inputs() {
+        let invoice = "lni1secret-bolt12-invoice";
+        let payment_id = "aa".repeat(32);
+        let response = MakePaymentResponse {
+            payment_lookup_id: PaymentIdentifier::CustomId("public-lookup-id".to_string()),
+            payment_proof: Some("preimage".to_string()),
+            bolt12_payer_proof_inputs: Some(Bolt12PayerProofInputs {
+                bolt12_invoice: invoice.to_string(),
+                payment_id: payment_id.clone(),
+            }),
+            status: MeltQuoteState::Paid,
+            total_spent: Amount::new(10, CurrencyUnit::Sat),
+        };
+
+        let debug = format!("{response:?}");
+
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains(invoice));
+        assert!(!debug.contains(&payment_id));
+    }
+
+    #[test]
+    fn make_payment_response_new_leaves_bolt12_payer_proof_inputs_unset() {
+        let response = MakePaymentResponse::new(
+            PaymentIdentifier::CustomId("public-lookup-id".to_string()),
+            Some("preimage".to_string()),
+            MeltQuoteState::Paid,
+            Amount::new(10, CurrencyUnit::Sat),
+        );
+
+        assert!(response.bolt12_payer_proof_inputs.is_none());
+        assert_eq!(
+            response
+                .with_bolt12_payer_proof_inputs(Bolt12PayerProofInputs {
+                    bolt12_invoice: "lni1".to_string(),
+                    payment_id: "aa".repeat(32),
+                })
+                .bolt12_payer_proof_inputs
+                .as_ref()
+                .map(|inputs| inputs.bolt12_invoice.as_str()),
+            Some("lni1"),
+        );
     }
 
     #[test]

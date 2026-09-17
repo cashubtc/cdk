@@ -166,6 +166,12 @@ impl TryFrom<MakePaymentResponse> for CdkMakePaymentResponse {
             payment_proof,
             status,
             total_spent,
+            bolt12_payer_proof_inputs: value.bolt12_payer_proof_inputs.map(|inputs| {
+                cdk_common::payment::Bolt12PayerProofInputs {
+                    bolt12_invoice: inputs.bolt12_invoice,
+                    payment_id: inputs.payment_id,
+                }
+            }),
         })
     }
 }
@@ -175,6 +181,12 @@ impl From<CdkMakePaymentResponse> for MakePaymentResponse {
         Self {
             payment_identifier: Some(value.payment_lookup_id.into()),
             payment_proof: value.payment_proof,
+            bolt12_payer_proof_inputs: value.bolt12_payer_proof_inputs.map(|inputs| {
+                Bolt12PayerProofInputs {
+                    bolt12_invoice: inputs.bolt12_invoice,
+                    payment_id: inputs.payment_id,
+                }
+            }),
             status: QuoteState::from(value.status).into(),
             total_spent: Some(value.total_spent.into()),
             extra_json: None,
@@ -544,6 +556,7 @@ mod tests {
             details: MakePaymentResponse {
                 payment_lookup_id: PaymentIdentifier::CustomId("outgoing-lookup".to_string()),
                 payment_proof: Some("deadbeef".to_string()),
+                bolt12_payer_proof_inputs: None,
                 status: MeltQuoteState::Paid,
                 total_spent: Amount::new(1_000, CurrencyUnit::Sat),
             },

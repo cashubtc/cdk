@@ -860,6 +860,7 @@ mod tests {
         let response = MakePaymentResponse {
             payment_lookup_id,
             payment_proof: Some(tombstone.outpoint.clone()),
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Paid,
             total_spent: Amount::new(tombstone.total_spent_sat, CurrencyUnit::Sat),
         };

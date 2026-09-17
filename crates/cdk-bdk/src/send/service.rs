@@ -62,6 +62,7 @@ impl CdkBdk {
             let details = MakePaymentResponse {
                 payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                 payment_proof: Some(outpoint),
+                bolt12_payer_proof_inputs: None,
                 status: MeltQuoteState::Paid,
                 total_spent: Amount::new(amount + fee, CurrencyUnit::Sat),
             };

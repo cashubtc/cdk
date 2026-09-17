@@ -751,6 +751,7 @@ impl MintPayment for FakeWallet {
                         *bolt11.payment_hash().as_ref(),
                     ),
                     payment_proof: Some("".to_string()),
+                    bolt12_payer_proof_inputs: None,
                     status: payment_status,
                     total_spent: Amount::new(total_spent.value() + 1, unit.clone()),
                 })
@@ -779,6 +780,7 @@ impl MintPayment for FakeWallet {
                 Ok(MakePaymentResponse {
                     payment_lookup_id: PaymentIdentifier::CustomId(Uuid::new_v4().to_string()),
                     payment_proof: Some("".to_string()),
+                    bolt12_payer_proof_inputs: None,
                     status: MeltQuoteState::Paid,
                     total_spent: Amount::new(total_spent.value() + 1, unit.clone()),
                 })
@@ -797,6 +799,7 @@ impl MintPayment for FakeWallet {
                 Ok(MakePaymentResponse {
                     payment_lookup_id: PaymentIdentifier::CustomId(Uuid::new_v4().to_string()),
                     payment_proof: Some(custom_options.request),
+                    bolt12_payer_proof_inputs: None,
                     status: MeltQuoteState::Paid,
                     total_spent: Amount::new(total_spent.value() + 1, unit.clone()),
                 })
@@ -817,6 +820,7 @@ impl MintPayment for FakeWallet {
                 Ok(MakePaymentResponse {
                     payment_lookup_id: PaymentIdentifier::QuoteId(quote_id),
                     payment_proof: Some(payment_proof),
+                    bolt12_payer_proof_inputs: None,
                     status: MeltQuoteState::Paid,
                     total_spent,
                 })
@@ -1019,6 +1023,7 @@ impl MintPayment for FakeWallet {
         Ok(MakePaymentResponse {
             payment_lookup_id: request_lookup_id.clone(),
             payment_proof,
+            bolt12_payer_proof_inputs: None,
             status,
             total_spent,
         })

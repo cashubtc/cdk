@@ -964,6 +964,7 @@ impl QuoteService for MintRPCServer {
                     total_spent: Amount::new(payment.total_spent, unit),
                     payment_lookup_id,
                     payment_proof: payment.payment_proof,
+                    bolt12_payer_proof_inputs: None,
                 })
             }
             Some(Resolution::Compensate(compensation)) => MeltQuoteResolutionAction::Compensate {
