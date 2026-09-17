@@ -244,11 +244,18 @@ fn bolt11_pre_dispatch_response(
     unit: &CurrencyUnit,
     bolt11: &Bolt11Invoice,
     pay_state: MakePaymentResponse,
-) -> Option<MakePaymentResponse> {
+) -> Result<Option<MakePaymentResponse>, payment::Error> {
     let payment_lookup_id = PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref());
-    match pay_state.status {
+    Ok(match pay_state.status {
         MeltQuoteState::Paid | MeltQuoteState::Pending => Some(MakePaymentResponse {
             payment_lookup_id,
+            total_spent: match (pay_state.total_spent.unit(), unit) {
+                (CurrencyUnit::Msat, CurrencyUnit::Sat) => Amount::new(
+                    pay_state.total_spent.value().div_ceil(MSAT_IN_SAT),
+                    CurrencyUnit::Sat,
+                ),
+                _ => pay_state.total_spent.convert_to(unit)?,
+            },
             ..pay_state
         }),
         MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => {
@@ -259,7 +266,7 @@ fn bolt11_pre_dispatch_response(
                 .is_expired()
                 .then(|| outgoing_payment_failure_response(unit, payment_lookup_id))
         }
-    }
+    })
 }
 
 #[async_trait]
@@ -505,7 +512,7 @@ impl MintPayment for Lnd {
                 // as an ambiguous dispatch failure.
                 let pay_state = self.check_outgoing_payment(&payment_lookup_id).await?;
 
-                if let Some(response) = bolt11_pre_dispatch_response(unit, &bolt11, pay_state) {
+                if let Some(response) = bolt11_pre_dispatch_response(unit, &bolt11, pay_state)? {
                     return Ok(response);
                 }
 
@@ -1060,8 +1067,9 @@ mod tests {
                 status,
                 ..outgoing_payment_failure_response(&CurrencyUnit::Msat, payment_lookup_id.clone())
             };
-            let response =
-                bolt11_pre_dispatch_response(&CurrencyUnit::Sat, &invoice, pay_state).unwrap();
+            let response = bolt11_pre_dispatch_response(&CurrencyUnit::Sat, &invoice, pay_state)
+                .unwrap()
+                .unwrap();
 
             assert_eq!(response.status, MeltQuoteState::Failed);
             assert_eq!(response.payment_lookup_id, payment_lookup_id);
@@ -1071,24 +1079,35 @@ mod tests {
     }
 
     #[test]
-    fn expired_invoice_preserves_existing_paid_or_pending_payment() {
-        let invoice = invoice_with_timestamp(Duration::from_secs(1));
-        let payment_lookup_id = PaymentIdentifier::PaymentHash(*invoice.payment_hash().as_ref());
+    fn existing_payment_response_uses_requested_unit() {
+        for timestamp in [Duration::from_secs(1), Duration::from_secs(unix_time())] {
+            let invoice = invoice_with_timestamp(timestamp);
+            let payment_lookup_id =
+                PaymentIdentifier::PaymentHash(*invoice.payment_hash().as_ref());
 
-        for status in [MeltQuoteState::Paid, MeltQuoteState::Pending] {
-            let pay_state = MakePaymentResponse {
-                payment_lookup_id: payment_lookup_id.clone(),
-                payment_proof: Some("existing preimage".to_owned()),
-                status,
-                total_spent: Amount::new(1234, CurrencyUnit::Msat),
-            };
-            let response =
-                bolt11_pre_dispatch_response(&CurrencyUnit::Sat, &invoice, pay_state).unwrap();
+            for status in [MeltQuoteState::Paid, MeltQuoteState::Pending] {
+                for (total_msat, total_sat) in [(0, 0), (1_234, 2), (2_000, 2)] {
+                    for (unit, expected) in [
+                        (CurrencyUnit::Sat, total_sat),
+                        (CurrencyUnit::Msat, total_msat),
+                    ] {
+                        let pay_state = MakePaymentResponse {
+                            payment_lookup_id: payment_lookup_id.clone(),
+                            payment_proof: Some("existing preimage".to_owned()),
+                            status,
+                            total_spent: Amount::new(total_msat, CurrencyUnit::Msat),
+                        };
+                        let response = bolt11_pre_dispatch_response(&unit, &invoice, pay_state)
+                            .unwrap()
+                            .unwrap();
 
-            assert_eq!(response.status, status);
-            assert_eq!(response.payment_lookup_id, payment_lookup_id);
-            assert_eq!(response.total_spent, Amount::new(1234, CurrencyUnit::Msat));
-            assert_eq!(response.payment_proof.as_deref(), Some("existing preimage"));
+                        assert_eq!(response.status, status);
+                        assert_eq!(response.payment_lookup_id, payment_lookup_id);
+                        assert_eq!(response.total_spent, Amount::new(expected, unit));
+                        assert_eq!(response.payment_proof.as_deref(), Some("existing preimage"));
+                    }
+                }
+            }
         }
     }
 
@@ -1107,7 +1126,9 @@ mod tests {
                 ..outgoing_payment_failure_response(&CurrencyUnit::Msat, payment_lookup_id.clone())
             };
             assert!(
-                bolt11_pre_dispatch_response(&CurrencyUnit::Sat, &invoice, pay_state).is_none()
+                bolt11_pre_dispatch_response(&CurrencyUnit::Sat, &invoice, pay_state)
+                    .unwrap()
+                    .is_none()
             );
         }
     }
