@@ -61,6 +61,8 @@ use crate::{ensure_cdk, Amount, Error, Wallet};
 #[cfg(test)]
 mod change_fee_tests;
 pub(crate) mod compensation;
+#[cfg(test)]
+mod quote_change_tests;
 pub(crate) mod resume;
 pub(crate) mod state;
 

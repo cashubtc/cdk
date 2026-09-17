@@ -22,7 +22,10 @@ use cdk_common::BlindedMessage;
 use tracing::instrument;
 
 use crate::dhke::construct_proofs;
-use crate::nuts::{CheckStateRequest, PreMintSecrets, Proofs, RestoreRequest, State, SwapRequest};
+use crate::nuts::{
+    BlindSignature, CheckStateRequest, PreMintSecrets, Proofs, RestoreRequest, RestoreResponse,
+    State, SwapRequest,
+};
 use crate::wallet::blind_signature::{
     validate_mint_response_signatures, SignatureAmountValidation,
 };
@@ -348,6 +351,36 @@ impl Wallet {
             .await
     }
 
+    /// Recover NUT-08 change signatures already included in a paid quote.
+    pub(crate) async fn recover_melt_change_signatures(
+        &self,
+        saga_id: &uuid::Uuid,
+        blinded_messages: &[BlindedMessage],
+        counter_start: u32,
+        counter_end: u32,
+        signatures: Vec<BlindSignature>,
+    ) -> Result<OutputRecoveryResult, Error> {
+        // NUT-08 returns the signed prefix in the original output order.
+        let outputs = blinded_messages.get(..signatures.len()).ok_or_else(|| {
+            Error::InvalidMintResponse("melt change exceeds the requested output count".to_owned())
+        })?;
+        self.construct_recovered_outputs(
+            saga_id,
+            "Melt",
+            OutputRecoveryParams {
+                blinded_messages,
+                counter_start,
+                counter_end,
+            },
+            OutputRecoveryMode::Partial,
+            RestoreResponse {
+                outputs: outputs.to_vec(),
+                signatures,
+            },
+        )
+        .await
+    }
+
     /// Recover from incomplete operations after a crash. Call on startup.
     ///
     /// Handles interrupted swap, send, receive, and melt operations to prevent
@@ -493,27 +526,42 @@ impl Wallet {
             }
         };
 
-        // Validate coverage before constructing or saving any proofs. A nonempty
-        // subset is not enough to finish an operation with fixed outputs.
-        if mode == OutputRecoveryMode::Complete {
-            let mut expected: HashSet<_> = params
-                .blinded_messages
+        self.construct_recovered_outputs(saga_id, saga_type, params, mode, restore_response)
+            .await
+    }
+
+    /// Validate and construct proofs identically for restore and quote responses.
+    async fn construct_recovered_outputs(
+        &self,
+        saga_id: &uuid::Uuid,
+        saga_type: &str,
+        params: OutputRecoveryParams<'_>,
+        mode: OutputRecoveryMode,
+        restore_response: RestoreResponse,
+    ) -> Result<OutputRecoveryResult, Error> {
+        // Even partial change must map each signature to a distinct requested
+        // output. Counting the same proof twice would overstate recovered value.
+        let mut expected: HashSet<_> = params
+            .blinded_messages
+            .iter()
+            .map(|output| output.blinded_secret)
+            .collect();
+        if expected.len() != params.blinded_messages.len()
+            || restore_response.outputs.len() != restore_response.signatures.len()
+            || !restore_response
+                .outputs
                 .iter()
-                .map(|output| output.blinded_secret)
-                .collect();
-            if expected.len() != params.blinded_messages.len()
-                || restore_response.outputs.len() != restore_response.signatures.len()
-                || restore_response.outputs.len() != expected.len()
-                || !restore_response
-                    .outputs
-                    .iter()
-                    .all(|output| expected.remove(&output.blinded_secret))
-                || !expected.is_empty()
-            {
-                return Err(Error::InvalidMintResponse(
-                    "restore response does not cover every expected output exactly once".to_owned(),
-                ));
-            }
+                .all(|output| expected.remove(&output.blinded_secret))
+        {
+            return Err(Error::InvalidMintResponse(
+                "restore response contains duplicate, unrequested, or unpaired outputs".to_owned(),
+            ));
+        }
+        // A subset is not enough to finish an operation with fixed outputs.
+        if mode == OutputRecoveryMode::Complete && !expected.is_empty() {
+            return Err(Error::InvalidMintResponse(
+                "restore response does not cover every expected output exactly once".to_owned(),
+            ));
         }
 
         if restore_response.signatures.is_empty() {
@@ -782,6 +830,109 @@ mod tests {
     use cdk_common::Amount;
 
     use crate::wallet::test_utils::*;
+
+    #[tokio::test]
+    async fn test_partial_output_recovery_validates_response_identities() {
+        use crate::nuts::{BlindSignature, PreMintSecrets, RestoreResponse};
+
+        let db = create_test_db().await;
+        let client = Arc::new(MockMintConnector::new());
+        client.enable_mint_signing();
+        let keyset_id = client.keysets.lock().unwrap()[0].id;
+        let wallet = create_test_wallet_with_mock(db, client.clone()).await;
+        let premints = PreMintSecrets::restore_batch(keyset_id, &wallet.seed, 5, 9).unwrap();
+        let outputs = premints.blinded_messages();
+        let amount = Amount::from(8);
+        let signatures: Vec<_> = outputs
+            .iter()
+            .map(|output| BlindSignature {
+                amount,
+                keyset_id,
+                c: crate::dhke::sign_message(
+                    &client.mint_signing_keys.lock().unwrap().as_ref().unwrap()[&amount],
+                    &output.blinded_secret,
+                )
+                .unwrap(),
+                dleq: None,
+            })
+            .collect();
+        let saga_id = uuid::Uuid::new_v4();
+        let recover = || {
+            wallet.restore_outputs_with_result(
+                &saga_id,
+                "Melt",
+                Some(&outputs[..3]),
+                Some(5),
+                Some(8),
+                super::OutputRecoveryMode::Partial,
+            )
+        };
+        for (case, response) in [
+            (
+                "duplicate outputs with valid signatures",
+                RestoreResponse {
+                    outputs: vec![outputs[0].clone(); 3],
+                    signatures: vec![signatures[0].clone(); 3],
+                },
+            ),
+            (
+                "unrequested output",
+                RestoreResponse {
+                    outputs: vec![outputs[3].clone()],
+                    signatures: vec![signatures[3].clone()],
+                },
+            ),
+            (
+                "unrequested output must not be filtered out",
+                RestoreResponse {
+                    outputs: vec![outputs[3].clone(), outputs[0].clone()],
+                    signatures: vec![signatures[0].clone()],
+                },
+            ),
+            (
+                "output without a signature",
+                RestoreResponse {
+                    outputs: vec![outputs[0].clone()],
+                    signatures: vec![],
+                },
+            ),
+        ] {
+            client._set_restore_response(Ok(response));
+            assert!(
+                matches!(recover().await, Err(crate::Error::InvalidMintResponse(_))),
+                "accepted {case}"
+            );
+        }
+
+        // A genuine subset may arrive in any order. Each proof must retain the
+        // secret and derivation index belonging to its corresponding output.
+        client._set_restore_response(Ok(RestoreResponse {
+            outputs: vec![outputs[2].clone(), outputs[0].clone()],
+            signatures: vec![signatures[2].clone(), signatures[0].clone()],
+        }));
+        let super::OutputRecoveryResult::Restored(proofs) = recover().await.unwrap() else {
+            panic!("valid subset must restore");
+        };
+        assert_eq!(proofs.len(), 2);
+        for (proof, index) in proofs.iter().zip([2, 0]) {
+            assert_eq!(proof.derivation_index, Some(5 + index as u32));
+            assert_eq!(proof.proof.secret, premints.secrets[index].secret);
+            crate::dhke::verify_message(
+                &client.mint_signing_keys.lock().unwrap().as_ref().unwrap()[&amount],
+                proof.proof.c,
+                &proof.proof.secret.to_bytes(),
+            )
+            .unwrap();
+        }
+        client._set_restore_response(Ok(RestoreResponse {
+            outputs: vec![],
+            signatures: vec![],
+        }));
+        assert!(matches!(
+            recover().await.unwrap(),
+            super::OutputRecoveryResult::EmptyResponse
+        ));
+    }
 
     #[tokio::test]
     async fn test_fixed_output_recovery_rejects_incomplete_responses_and_retries() {

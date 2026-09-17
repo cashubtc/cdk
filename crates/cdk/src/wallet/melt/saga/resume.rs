@@ -8,7 +8,7 @@ use cdk_common::wallet::{
     MeltOperationData, MeltSagaState, OperationData, Transaction, TransactionDirection,
     TransactionId, TransactionStatus, WalletSaga, WalletSagaState,
 };
-use cdk_common::{Amount, MeltQuoteState};
+use cdk_common::{Amount, BlindedMessage, MeltQuoteState};
 use tracing::instrument;
 
 use crate::nuts::State;
@@ -204,6 +204,57 @@ impl Wallet {
         }
     }
 
+    /// Prefer quote signatures, but try restore if valid change is incomplete.
+    async fn recover_melt_change(
+        &self,
+        saga_id: &uuid::Uuid,
+        data: &MeltOperationData,
+        quote_status: &MeltQuoteStatusResponse,
+        blinded_messages: &[BlindedMessage],
+    ) -> Result<OutputRecoveryResult, Error> {
+        if let Some(signatures) = quote_status.change() {
+            let recovered = self
+                .recover_melt_change_signatures(
+                    saga_id,
+                    blinded_messages,
+                    data.counter_start.ok_or(Error::InvalidOperationState)?,
+                    data.counter_end.ok_or(Error::InvalidOperationState)?,
+                    signatures,
+                )
+                .await?;
+            let recovered_amount = match &recovered {
+                OutputRecoveryResult::Restored(proofs) => {
+                    Amount::try_sum(proofs.iter().map(|info| info.proof.amount))?
+                }
+                OutputRecoveryResult::EmptyResponse | OutputRecoveryResult::Unavailable => {
+                    Amount::ZERO
+                }
+            };
+            let insufficient_change = data
+                .change_amount
+                .and_then(|maximum| maximum.checked_sub(recovered_amount))
+                .is_some_and(|fee| fee > data.fee_reserve);
+            if !insufficient_change {
+                // Excessive change is rejected by the caller's fee-bound check.
+                return Ok(recovered);
+            }
+            tracing::warn!(
+                "Melt saga {} - quote change is incomplete; trying restore before finalizing",
+                saga_id
+            );
+        }
+
+        self.restore_outputs_with_result(
+            saga_id,
+            "Melt",
+            Some(blinded_messages),
+            data.counter_start,
+            data.counter_end,
+            OutputRecoveryMode::Partial,
+        )
+        .await
+    }
+
     /// Complete a melt by marking proofs as spent and restoring change.
     async fn complete_melt_from_restore(
         &self,
@@ -309,17 +360,10 @@ impl Wallet {
         let change_proof_infos = if expects_change {
             match data.change_blinded_messages.as_ref() {
                 Some(change_blinded_messages) if !change_blinded_messages.is_empty() => {
-                    match self
-                        .restore_outputs_with_result(
-                            saga_id,
-                            "Melt",
-                            Some(change_blinded_messages.as_slice()),
-                            data.counter_start,
-                            data.counter_end,
-                            OutputRecoveryMode::Partial,
-                        )
-                        .await
-                    {
+                    let restored = self
+                        .recover_melt_change(saga_id, data, quote_status, change_blinded_messages)
+                        .await;
+                    match restored {
                         Ok(OutputRecoveryResult::Restored(change_proof_infos)) => {
                             Some(change_proof_infos)
                         }
@@ -372,9 +416,11 @@ impl Wallet {
         // The saved maximum change excludes input fees. Missing signatures may
         // account for the quoted payment fee, but never a larger fee.
         if let Some(maximum_change) = data.change_amount {
-            let payment_fee = maximum_change
-                .checked_sub(change_amount)
-                .ok_or(Error::AmountOverflow)?;
+            let payment_fee = maximum_change.checked_sub(change_amount).ok_or_else(|| {
+                Error::InvalidMintResponse(
+                    "recovered melt change exceeds maximum expected change".to_owned(),
+                )
+            })?;
             if payment_fee > data.fee_reserve {
                 return Err(Error::InvalidMintResponse(
                     "recovered melt change implies a fee above the quoted reserve".to_owned(),
