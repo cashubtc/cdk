@@ -922,26 +922,19 @@
         regtestBuildInputs =
           (with pkgsUnstable; [
             lnd
-            # Apple Clang treats certain warnings as errors via -Werror, breaking
-            # the clightning build on macOS. These are fixed upstream in commit
-            # c22538ec (milestone v26.04) but not yet released. The override is
-            # Darwin-only so Linux builds still use the binary cache unmodified.
-            # TODO: Remove this override once clightning >= 26.04 lands in nixpkgs.
-            (
-              if pkgs.stdenv.hostPlatform.isDarwin then
-                (clightning.overrideAttrs (old: {
-                  env = (old.env or { }) // {
-                    NIX_CFLAGS_COMPILE =
-                      (old.env.NIX_CFLAGS_COMPILE or "")
-                      + " -Wno-error=uninitialized-const-pointer"
-                      + " -Wno-error=gnu-folding-constant"
-                      + " -Wno-error=default-const-init-var-unsafe"
-                      + " -Wno-error=sometimes-uninitialized";
-                  };
-                }))
-              else
-                clightning
-            )
+            # TODO: Drop this override once nixpkgs ships CLN >= 26.06.7.
+            (clightning.overrideAttrs (finalAttrs: old: {
+              version = "26.06.7";
+              src = fetchurl {
+                url = "https://github.com/ElementsProject/lightning/releases/download/v${finalAttrs.version}/clightning-v${finalAttrs.version}.zip";
+                hash = "sha256-sxPSB+U/Hi2/n7rHnVr0jDUuh0plM5C924G1J5WhU9w=";
+              };
+              # The release archive omits the executable bit on this doc helper.
+              postPatch = (old.postPatch or "") + ''
+                chmod +x devtools/blockreplace.py
+                patchShebangs devtools/blockreplace.py
+              '';
+            }))
             bitcoind
           ])
           ++ (with pkgs; [
