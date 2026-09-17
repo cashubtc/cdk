@@ -965,56 +965,57 @@ pub struct Database {
     pub pubsub: PubSubConfig,
 }
 
-/// Cross-instance NUT-17 notification transport.
+/// Cross-instance NUT-17 notifications.
 ///
-/// A single mint instance never needs a transport; these matter only when
-/// several instances share one database behind a load balancer.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum PubSubTransport {
-    /// Keep notifications in-process (the default). Correct for a single
-    /// instance; with several instances a subscriber only sees events from the
-    /// instance it is connected to (others arrive on the next backfill).
-    #[default]
-    InMemory,
-    /// Postgres `LISTEN`/`NOTIFY`. Lowest latency, Postgres only, and needs a
-    /// session-pinned connection (not a transaction-pooling proxy).
+/// The transport follows the database engine: SQLite spans a single host and
+/// keeps notifications in-process, Postgres additionally forwards them to peer
+/// instances over `LISTEN`/`NOTIFY`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PubSubConfig {
+    /// Forward notifications to the other instances sharing this database.
     ///
-    /// Only for a database the mint has to itself: publishing on the channel
-    /// needs no privileges beyond connecting, and what a peer publishes reaches
-    /// wallets as if the mint had sent it.
-    PostgresListenNotify,
+    /// Postgres only, on by default. `LISTEN` needs a session-pinned
+    /// connection, so a mint reaching Postgres through a transaction-pooling
+    /// proxy sets this to false. It also assumes the mint has the database to
+    /// itself; see the trust model in the example config.
+    pub cross_instance: bool,
+    /// Removed: the transport now follows the database engine. Kept so a config
+    /// that still sets it fails at startup instead of silently changing
+    /// behaviour.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    /// Removed: the channel is internal to the mint. See `transport`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
 }
 
-impl std::str::FromStr for PubSubTransport {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().replace('_', "-").as_str() {
-            "in-memory" | "memory" | "local" => Ok(PubSubTransport::InMemory),
-            "postgres-listen-notify" | "listen-notify" | "notify" => {
-                Ok(PubSubTransport::PostgresListenNotify)
-            }
-            "sql" | "polling" => Err(
-                "The 'sql' polling transport was removed; use 'in-memory' or \
-                 'postgres-listen-notify'. Postgres behind a transaction pooler needs a \
-                 direct connection for LISTEN"
-                    .to_string(),
-            ),
-            _ => Err(format!("Unknown pubsub transport: {s}")),
+impl Default for PubSubConfig {
+    fn default() -> Self {
+        Self {
+            cross_instance: true,
+            transport: None,
+            channel: None,
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(default)]
-pub struct PubSubConfig {
-    /// Which transport distributes notifications across instances.
-    pub transport: PubSubTransport,
-    /// `LISTEN`/`NOTIFY` channel (postgres-listen-notify transport). Instances
-    /// that share notifications must use the same channel. Defaults to a
-    /// built-in name when unset.
-    pub channel: Option<String>,
+impl PubSubConfig {
+    /// Reject a config still carrying the removed settings, naming what
+    /// replaced them.
+    pub fn validate(&self) -> Result<(), String> {
+        let removed = match (&self.transport, &self.channel) {
+            (Some(_), _) => "transport",
+            (_, Some(_)) => "channel",
+            _ => return Ok(()),
+        };
+
+        Err(format!(
+            "[database.pubsub] {removed} was removed: cross-instance notifications now follow \
+             the database engine, on a channel internal to the mint. Set cross_instance = false \
+             to keep notifications in-process"
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1606,50 +1607,36 @@ listen_por = 8085
         crate::test_utils::env_lock()
     }
 
+    /// Cross-instance notifications follow the engine, so a Postgres mint gets
+    /// them without saying anything in its config.
     #[test]
-    fn pubsub_transport_parses_names_and_aliases() {
-        use std::str::FromStr;
-
-        assert_eq!(
-            PubSubTransport::from_str("in-memory").unwrap(),
-            PubSubTransport::InMemory
-        );
-        assert_eq!(
-            PubSubTransport::from_str("memory").unwrap(),
-            PubSubTransport::InMemory
-        );
-        assert_eq!(
-            PubSubTransport::from_str("postgres-listen-notify").unwrap(),
-            PubSubTransport::PostgresListenNotify
-        );
-        // Underscores and case are normalized.
-        assert_eq!(
-            PubSubTransport::from_str("Postgres_Listen_Notify").unwrap(),
-            PubSubTransport::PostgresListenNotify
-        );
-        assert!(PubSubTransport::from_str("carrier-pigeon").is_err());
+    fn pubsub_defaults_to_cross_instance() {
+        assert!(PubSubConfig::default().cross_instance);
+        assert!(Database::default().pubsub.cross_instance);
     }
 
-    /// The removed transport gets a message naming its replacements, so an
-    /// operator carrying the old value is not left guessing.
+    /// A config carrying a removed setting is rejected with the replacement
+    /// named, so an operator who had turned the transport off does not silently
+    /// get it back on.
     #[test]
-    fn pubsub_transport_rejects_the_removed_sql_names() {
-        use std::str::FromStr;
+    fn pubsub_rejects_the_removed_settings() {
+        let with_transport = PubSubConfig {
+            transport: Some("in-memory".to_string()),
+            ..Default::default()
+        };
+        let with_channel = PubSubConfig {
+            channel: Some("cdk_mint_pubsub".to_string()),
+            ..Default::default()
+        };
 
-        for name in ["sql", "polling"] {
-            let err = PubSubTransport::from_str(name).expect_err("sql transport was removed");
-            assert!(err.contains("in-memory"), "unhelpful message: {err}");
-            assert!(err.contains("postgres-listen-notify"), "unhelpful: {err}");
+        for config in [with_transport, with_channel] {
+            let err = config
+                .validate()
+                .expect_err("removed setting must be rejected");
+            assert!(err.contains("cross_instance"), "unhelpful message: {err}");
         }
-    }
 
-    #[test]
-    fn pubsub_transport_defaults_to_in_memory() {
-        assert_eq!(PubSubConfig::default().transport, PubSubTransport::InMemory);
-        assert_eq!(
-            Database::default().pubsub.transport,
-            PubSubTransport::InMemory
-        );
+        assert!(PubSubConfig::default().validate().is_ok());
     }
 
     #[cfg(feature = "bdk")]

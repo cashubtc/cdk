@@ -111,43 +111,41 @@ connection_timeout_seconds = 10
 
 # Cross-instance NUT-17 notifications.
 #
-# When several mint instances share one database behind a load balancer, an
-# event published on one instance (for example an invoice being paid) only
-# reaches WebSocket subscribers on that same instance unless a transport is
-# configured. A single-instance mint needs none of this; the default keeps
-# notifications in-process.
+# The transport follows the database engine, so there is nothing to select.
+# SQLite spans a single host and keeps notifications in-process. Postgres also
+# forwards them to the other instances sharing the database with LISTEN/NOTIFY,
+# so an event published on one instance (an invoice being paid, say) reaches
+# WebSocket subscribers on all of them. A single Postgres instance behaves the
+# same as before: it skips the copy Postgres echoes back to it.
 #
-# transport options:
-#   "in-memory" (default)      Keep notifications in-process. Correct for a
-#                              single instance.
-#   "postgres-listen-notify"   Postgres LISTEN/NOTIFY. Lowest latency, Postgres
-#                              only, and needs a session-pinned connection, so
-#                              a transaction-pooling proxy such as PgBouncer
-#                              needs a direct connection carved out for it.
-#
-# Before enabling "postgres-listen-notify", note that LISTEN and NOTIFY need no
+# This assumes the mint has its database to itself. LISTEN and NOTIFY need no
 # privileges beyond connecting: pg_notify is executable by PUBLIC and neither
 # statement touches a table. Any role that can open a session to this database
 # can therefore read the channel (quote ids, invoices, amounts and payment
 # preimages) and publish on it, and what it publishes reaches wallets over
-# NUT-17 as if the mint had sent it. Enable it only on a database the mint has
-# to itself: give the mint its own role, keep other principals off the database,
-# and set a channel name other than the default below. Who can connect is the
-# only control that holds, because a bare NOTIFY statement needs no privileges
-# at all. Revoking the function from PUBLIC still closes one path, but it also
-# takes the privilege from the mint, which publishes with SELECT pg_notify(...),
-# so grant it back. A superuser runs both once on the mint's database:
+# NUT-17 as if the mint had sent it. Give the mint its own role and keep other
+# principals off the database. Who can connect is the only control that holds,
+# because a bare NOTIFY statement needs no privileges at all. Revoking the
+# function from PUBLIC still closes one path, but it also takes the privilege
+# from the mint, which publishes with SELECT pg_notify(...), so grant it back.
+# A superuser runs both once on the mint's database:
 #
 #   REVOKE EXECUTE ON FUNCTION pg_notify(text, text) FROM PUBLIC;
 #   GRANT EXECUTE ON FUNCTION pg_notify(text, text) TO <mint_role>;
 #
-# A shared database should stay on "in-memory".
+# Set cross_instance = false on a database the mint shares with anything else,
+# and on Postgres reached through a transaction-pooling proxy such as PgBouncer,
+# which cannot hold the session LISTEN needs. Notifications then stay
+# in-process, and a subscriber sees only the events of the instance it is
+# connected to (the rest arrive on its next backfill).
 #
-# Every field can also be set via environment variables:
-#   CDK_MINTD_PUBSUB_TRANSPORT, CDK_MINTD_PUBSUB_CHANNEL
+# A database the mint cannot reach is not fatal: it serves notifications
+# locally, logs a warning, and keeps retrying in the background.
+#
+# Can also be set via environment variable:
+#   CDK_MINTD_PUBSUB_CROSS_INSTANCE
 [database.pubsub]
-# transport = "in-memory"
-# channel = "cdk_mint_pubsub"        # postgres-listen-notify only; all instances must match
+# cross_instance = true              # postgres only; false keeps events in-process
 
 # Auth database configuration (optional, only used when auth is enabled)
 [auth_database.postgres]

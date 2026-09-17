@@ -228,14 +228,12 @@ flow finalizes on the state and preimage it receives. Reading the channel leaks
 the same data in the other direction: quote ids, invoices, amounts and payment
 preimages.
 
-Enabling this transport therefore makes the mint's database single-tenant. An
-operator who turns it on has to:
-
-* give the mint its own role and keep other principals off that database, which
-  is the only control that holds: `NOTIFY` is a statement, not a function call,
-  and no privilege stands in front of it;
-* pick a channel name that is not the documented default, which costs nothing
-  and removes the obvious target.
+This transport therefore makes the mint's database single-tenant, and since it
+is on by default for Postgres, that requirement applies to every Postgres mint
+that has not opted out. The operator has to give the mint its own role and keep
+other principals off that database. It is the only control that holds: `NOTIFY`
+is a statement, not a function call, and no privilege stands in front of it. A
+mint that cannot meet this sets `cross_instance = false`.
 
 Revoking the function from `PUBLIC` is still worth doing, but it closes only the
 `pg_notify()` form: a session that issues `NOTIFY channel, 'payload'` directly
@@ -251,8 +249,8 @@ GRANT EXECUTE ON FUNCTION pg_notify(text, text) TO <mint_role>;
 ```
 
 A deployment that cannot meet this (a shared database, an analytics role with
-connect rights) should stay on `in-memory` and let wallets pick state up from
-the `fetch_events` backfill.
+connect rights) sets `cross_instance = false` and lets wallets pick state up
+from the `fetch_events` backfill.
 
 ### Mint integration and transport selection
 
@@ -262,46 +260,58 @@ let manager = PubSubManager::new_with_bus(ctx, move |local| connector.build(loca
 ```
 
 A mint left on the default `PubSubManager::new` behaves exactly as before.
-`cdk-mintd` selects a transport through `[database.pubsub].transport` (or
-`CDK_MINTD_PUBSUB_TRANSPORT`):
+`cdk-mintd` does not ask the operator to pick a transport: the database engine
+already implies it. SQLite spans a single host, so it gets `LocalBus`. Postgres
+reaches peers, so it gets `PostgresBus` on a channel internal to the mint. The
+single setting is the opt-out, `[database.pubsub].cross_instance` (or
+`CDK_MINTD_PUBSUB_CROSS_INSTANCE`), for a database the mint shares with anything
+else and for Postgres behind a transaction-pooling proxy, which cannot hold the
+session `LISTEN` needs. On SQLite the flag is simply not applicable, so it is
+ignored rather than being a startup error.
 
-* `in-memory` (default): `LocalBus`. Correct for a single instance.
-* `postgres-listen-notify`: `PostgresBus`. Postgres only, needs a session-pinned
-  connection. The channel is set by `channel` / `CDK_MINTD_PUBSUB_CHANNEL`.
-
-Choosing `postgres-listen-notify` on a non-Postgres engine is a startup error,
-and so is the removed `sql` value, which fails with a message naming both
-remaining transports rather than falling back to the default.
+A database the mint cannot reach does not stop it starting. The failure is
+logged once with its cause and the bus is built disconnected
+(`PostgresBusConnector::new`), so local delivery works immediately and the
+supervisor keeps retrying. Events published meanwhile reach local subscribers
+but not peers, which pick them up on their next backfill.
 
 When mintd runs from a database-backed configuration document, the bus is
 created while opening that database, before the document can be read. The
-transport therefore comes from the same bootstrap environment that selects the
-database (`CDK_MINTD_PUBSUB_*`), like `CDK_MINTD_DATABASE` and the Postgres URL.
-A `[database.pubsub]` block in the stored document is reported at startup and
-the bootstrap value is used.
+opt-out therefore comes from the same bootstrap environment that selects the
+database (`CDK_MINTD_PUBSUB_CROSS_INSTANCE`), like `CDK_MINTD_DATABASE` and the
+Postgres URL. A `[database.pubsub]` block in the stored document is reported at
+startup and the bootstrap value is used.
+
+The earlier `transport` and `channel` settings are rejected at startup, from the
+config file and the environment alike, naming `cross_instance`. Ignoring them
+would silently turn cross-instance notifications on for an operator who had
+chosen `in-memory`.
 
 ### Positive Consequences
 
 * A multi-instance mint on directly-connected Postgres gets real-time
   notifications on every instance with no new infrastructure and no new table.
-* The single-instance path is unchanged and dependency-free; any bus is opt-in.
+* The single-instance path on SQLite is unchanged and dependency-free.
 * Publish call sites, the mint spec, and the WS handlers are untouched.
 * Another backend (Redis, a message queue) is a new `Bus` implementation, not a
   change to the seam.
-* The operator states intent once (`transport = "..."`) instead of reasoning
-  about connection routing.
+* There is no transport to choose, no channel to agree on across instances,
+  and no engine/transport combination that fails at startup.
 
 ### Negative Consequences
 
 * `NOTIFY`'s 8000-byte payload cap means the transport does not forward very
   large events to peers; those subscribers fall back to the existing
   on-read/reconnect backfill.
-* The transport holds a dedicated Postgres connection per instance, read and
-  reconnected by a single supervised task.
-* Postgres reached through a transaction-pooling proxy has no cross-instance
-  transport unless the operator gives the bus a direct connection. Such a
-  deployment left on `in-memory` still serves correct state, but only through
-  the `fetch_events` backfill, not a live push.
+* Every Postgres mint holds a dedicated connection per instance, read and
+  reconnected by a single supervised task, including a single-instance mint that
+  gains nothing from it beyond the cost of an extra connection and one
+  `pg_notify` per event.
+* Postgres reached through a transaction-pooling proxy cannot hold the session
+  `LISTEN` needs, so it either gets a direct connection carved out for the bus
+  or sets `cross_instance = false`. Left on, it logs the failure and retries
+  while serving notifications locally; state stays correct, delivered through
+  the `fetch_events` backfill rather than a live push.
 * A brief reconnect window can drop the live push. Subscribers recover current
   state on their next `fetch_events` backfill, so state is not lost, only the
   live push during the gap. Past that window the per-subscriber channel bounds

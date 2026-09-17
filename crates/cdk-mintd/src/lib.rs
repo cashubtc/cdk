@@ -40,16 +40,17 @@ use cdk_common::payment::MintPayment;
 #[cfg(feature = "postgres")]
 use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase, PgConfig, PostgresBusConnector};
 
-/// Default `LISTEN`/`NOTIFY` channel for the cross-instance pub/sub bus when the
-/// Postgres config does not set one.
+/// `LISTEN`/`NOTIFY` channel for the cross-instance pub/sub bus. Internal to the
+/// mint: every instance sharing a database must name the same channel, and no
+/// deployment has a reason to name a different one.
 #[cfg(feature = "postgres")]
-const DEFAULT_PUBSUB_CHANNEL: &str = "cdk_mint_pubsub";
+const PUBSUB_CHANNEL: &str = "cdk_mint_pubsub";
 #[cfg(feature = "sqlite")]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 #[cfg(feature = "sqlite")]
 use cdk_sqlite::MintSqliteDatabase;
 use cli::CLIArgs;
-use config::{AuthType, DatabaseEngine, PaymentBackendType, PubSubTransport};
+use config::{AuthType, DatabaseEngine, PaymentBackendType};
 use env_vars::ENV_WORK_DIR;
 use setup::PaymentBackendSetup;
 use tower::ServiceBuilder;
@@ -614,11 +615,11 @@ fn validate_database_config(settings: &config::Settings) -> Result<()> {
             })?;
     }
 
-    if settings.database.pubsub.transport == PubSubTransport::PostgresListenNotify
-        && settings.database.engine != DatabaseEngine::Postgres
-    {
-        bail!("pubsub transport 'postgres-listen-notify' requires the Postgres database engine");
-    }
+    settings
+        .database
+        .pubsub
+        .validate()
+        .map_err(|err| anyhow!(err))?;
 
     Ok(())
 }
@@ -958,18 +959,31 @@ enum PubSubBusPlan {
     PostgresListenNotify {
         /// Settings for the dedicated listening session.
         config: PgConfig,
-        /// Channel both `LISTEN` and `NOTIFY` name.
-        channel: String,
     },
 }
 
 impl PubSubBusPlan {
     /// Open the bus and return the builder the mint installs.
+    ///
+    /// A bus that cannot be reached is not fatal: notifications keep flowing to
+    /// local subscribers while the bus reconnects in the background, so a mint
+    /// whose peers are unreachable still serves its own.
     async fn connect(self) -> Result<MintPubSubBusBuilder> {
         match self {
             #[cfg(feature = "postgres")]
-            Self::PostgresListenNotify { config, channel } => {
-                let connector = PostgresBusConnector::connect(config, &channel).await?;
+            Self::PostgresListenNotify { config } => {
+                let connector =
+                    match PostgresBusConnector::connect(config.clone(), PUBSUB_CHANNEL).await {
+                        Ok(connector) => connector,
+                        Err(err) => {
+                            tracing::warn!(
+                                "Cross-instance notifications unavailable: {err}. Serving \
+                                 notifications locally and retrying in the background; set \
+                                 [database.pubsub] cross_instance = false to stop trying."
+                            );
+                            PostgresBusConnector::new(config, PUBSUB_CHANNEL)?
+                        }
+                    };
                 Ok(Box::new(move |local| connector.build(local)))
             }
         }
@@ -994,13 +1008,9 @@ async fn setup_database(
         DatabaseEngine::Sqlite => {
             let db = setup_sqlite_database(_work_dir, _db_password).await?;
 
-            // SQLite spans a single host, so no cross-instance transport applies.
-            let bus: Option<PubSubBusPlan> = match pubsub.transport {
-                PubSubTransport::InMemory => None,
-                PubSubTransport::PostgresListenNotify => {
-                    bail!("pubsub transport 'postgres-listen-notify' requires the Postgres database engine");
-                }
-            };
+            // SQLite spans a single host, so there are no peers to reach and
+            // `cross_instance` does not apply.
+            let bus: Option<PubSubBusPlan> = None;
 
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync> = db.clone();
@@ -1030,24 +1040,19 @@ async fn setup_database(
             let pg_db = Arc::new(MintPgDatabase::new(db_config).await?);
             tracing::info!("PostgreSQL database connection established");
 
-            let bus: Option<PubSubBusPlan> = match pubsub.transport {
-                PubSubTransport::InMemory => None,
-                PubSubTransport::PostgresListenNotify => {
-                    Some(PubSubBusPlan::PostgresListenNotify {
+            // Postgres reaches peers, so instances sharing this database share
+            // notifications unless the operator opted out.
+            let bus: Option<PubSubBusPlan> =
+                pubsub
+                    .cross_instance
+                    .then(|| PubSubBusPlan::PostgresListenNotify {
                         config: PgConfig::new(
                             pg_config.url.as_str(),
                             pg_config.tls_mode.as_deref(),
                             pg_config.max_connections,
                             pg_config.connection_timeout_seconds,
                         ),
-                        channel: pubsub
-                            .channel
-                            .as_deref()
-                            .unwrap_or(DEFAULT_PUBSUB_CHANNEL)
-                            .to_string(),
-                    })
-                }
-            };
+                    });
 
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
                 pg_db.clone();
@@ -2898,11 +2903,12 @@ pub async fn run_mintd_from_database(
     let mut settings = startup.resolved.settings;
     if settings.database.pubsub != bootstrap.database.pubsub {
         tracing::warn!(
-            "Stored configuration sets [database.pubsub] to {:?}, but the notification bus is \
-             created while opening the database, before that document is read. Running with \
-             {:?} from the environment; set CDK_MINTD_PUBSUB_TRANSPORT to change it.",
-            settings.database.pubsub.transport,
-            bootstrap.database.pubsub.transport
+            "Stored configuration sets [database.pubsub] cross_instance to {}, but the \
+             notification bus is created while opening the database, before that document is \
+             read. Running with {} from the environment; set \
+             CDK_MINTD_PUBSUB_CROSS_INSTANCE to change it.",
+            settings.database.pubsub.cross_instance,
+            bootstrap.database.pubsub.cross_instance
         );
         settings.database.pubsub = bootstrap.database.pubsub.clone();
     }
@@ -3464,6 +3470,28 @@ engine = "sqlite"
         let _ = fs::remove_dir_all(&work_dir);
     }
 
+    /// Cross-instance notifications are on by default now, so a database that
+    /// refuses the listening session must not stop the mint from starting. The
+    /// bus is built disconnected and retries; notifications stay local until it
+    /// reconnects.
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn an_unreachable_bus_does_not_fail_startup() {
+        let plan = PubSubBusPlan::PostgresListenNotify {
+            config: PgConfig::new(
+                "host=127.0.0.1 port=1 user=nobody dbname=nothing",
+                None,
+                None,
+                Some(1),
+            ),
+        };
+
+        assert!(
+            plan.connect().await.is_ok(),
+            "an unreachable bus must degrade to local delivery, not abort startup"
+        );
+    }
+
     #[test]
     fn load_database_bootstrap_settings_defaults_to_sqlite() {
         let _env_lock = crate::test_utils::env_lock();
@@ -3473,10 +3501,7 @@ engine = "sqlite"
         let settings = load_database_bootstrap_settings().expect("default bootstrap");
         assert_eq!(settings.database.engine, DatabaseEngine::Sqlite);
         assert!(settings.database.postgres.is_none());
-        assert_eq!(
-            settings.database.pubsub.transport,
-            config::PubSubTransport::InMemory
-        );
+        assert!(settings.database.pubsub.cross_instance);
         clear_mintd_env();
     }
 
@@ -3485,31 +3510,37 @@ engine = "sqlite"
         let _env_lock = crate::test_utils::env_lock();
         clear_mintd_env();
         std::env::remove_var(env_vars::DATABASE_ENV_VAR);
-        std::env::set_var(env_vars::ENV_PUBSUB_CHANNEL, "cdk_test_channel");
 
+        // The opt-out is read, and SQLite tolerates either value: the engine
+        // decides whether there are peers at all.
+        std::env::set_var(env_vars::ENV_PUBSUB_CROSS_INSTANCE, "false");
         let settings = load_database_bootstrap_settings().expect("bootstrap with pubsub");
-        assert_eq!(
-            settings.database.pubsub.transport,
-            config::PubSubTransport::InMemory
-        );
-        assert_eq!(
-            settings.database.pubsub.channel.as_deref(),
-            Some("cdk_test_channel")
-        );
+        assert!(!settings.database.pubsub.cross_instance);
 
-        // A removed transport name must fail here rather than fall back to the
-        // default, which would silently drop cross-instance notifications.
-        std::env::set_var(env_vars::ENV_PUBSUB_TRANSPORT, "sql");
+        std::env::set_var(env_vars::ENV_PUBSUB_CROSS_INSTANCE, "true");
+        let settings = load_database_bootstrap_settings().expect("sqlite ignores cross_instance");
+        assert_eq!(settings.database.engine, DatabaseEngine::Sqlite);
+        assert!(settings.database.pubsub.cross_instance);
+
+        std::env::set_var(env_vars::ENV_PUBSUB_CROSS_INSTANCE, "maybe");
         assert!(
             load_database_bootstrap_settings().is_err(),
-            "the removed sql transport must be rejected"
+            "an unparseable value must be rejected, not defaulted"
         );
+        std::env::remove_var(env_vars::ENV_PUBSUB_CROSS_INSTANCE);
 
-        std::env::set_var(env_vars::ENV_PUBSUB_TRANSPORT, "postgres-listen-notify");
-        assert!(
-            load_database_bootstrap_settings().is_err(),
-            "listen/notify without the postgres engine must be rejected"
-        );
+        // The removed variables must fail here rather than be ignored, which
+        // would silently turn cross-instance notifications back on.
+        for removed in [env_vars::ENV_PUBSUB_TRANSPORT, env_vars::ENV_PUBSUB_CHANNEL] {
+            std::env::set_var(removed, "in-memory");
+            let err = load_database_bootstrap_settings()
+                .expect_err("a removed pubsub variable must be rejected");
+            assert!(
+                err.to_string().contains("CDK_MINTD_PUBSUB_CROSS_INSTANCE"),
+                "unhelpful message: {err}"
+            );
+            std::env::remove_var(removed);
+        }
 
         clear_mintd_env();
     }
@@ -4343,6 +4374,8 @@ backend = "fakewallet"
             "CDK_MINTD_POSTGRES_TLS_MODE",
             "CDK_MINTD_POSTGRES_MAX_CONNECTIONS",
             "CDK_MINTD_POSTGRES_CONNECTION_TIMEOUT_SECONDS",
+            "CDK_MINTD_PUBSUB_CROSS_INSTANCE",
+            // Removed, cleared so a leftover value cannot fail another test.
             "CDK_MINTD_PUBSUB_TRANSPORT",
             "CDK_MINTD_PUBSUB_CHANNEL",
             "CDK_MINTD_SEED",

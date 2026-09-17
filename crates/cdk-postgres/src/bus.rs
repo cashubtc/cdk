@@ -106,7 +106,7 @@ fn classify<E: DeserializeOwned>(payload: &str, our_origin: &str) -> Inbound<E> 
     }
 }
 
-/// A connected Postgres bus, not yet bound to a subscriber set.
+/// A Postgres bus, not yet bound to a subscriber set.
 ///
 /// [`PostgresBusConnector::connect`] establishes the connection and starts
 /// listening; [`PostgresBusConnector::build`] then attaches it to a
@@ -115,9 +115,11 @@ fn classify<E: DeserializeOwned>(payload: &str, our_origin: &str) -> Inbound<E> 
 pub struct PostgresBusConnector {
     connect: PgConnect,
     /// The connection [`PostgresBusConnector::connect`] opened, handed to the
-    /// supervisor's first connect attempt by [`PostgresBusConnector::build`].
-    /// Dropping the connector instead drops it, which closes the connection.
-    notifications: Notifications,
+    /// supervisor's first attempt by [`PostgresBusConnector::build`]. Dropping
+    /// the connector instead drops it, which closes the connection. `None` from
+    /// [`PostgresBusConnector::new`], which leaves the first attempt to the
+    /// supervisor.
+    notifications: Option<Notifications>,
     channel: Arc<str>,
     origin: Arc<str>,
 }
@@ -135,18 +137,30 @@ impl PostgresBusConnector {
     /// underscores, not starting with a digit, at most 63 bytes) because it is
     /// interpolated into the `LISTEN` statement, which cannot be parameterized.
     pub async fn connect(config: PgConfig, channel: &str) -> Result<Self, Error> {
+        let mut connector = Self::new(config, channel)?;
+        connector.notifications = Some(connector.connect.open().await.map_err(Error::Internal)?);
+        Ok(connector)
+    }
+
+    /// Build a bus without waiting for Postgres.
+    ///
+    /// The supervisor opens the first connection in the background, so local
+    /// delivery works from the start and a database that is not reachable yet is
+    /// retried with backoff instead of being fatal. Events published while it is
+    /// disconnected reach local subscribers but not peers, which recover them on
+    /// their next backfill.
+    ///
+    /// `channel` has the same requirements as in [`connect`](Self::connect).
+    pub fn new(config: PgConfig, channel: &str) -> Result<Self, Error> {
         let channel = validate_channel(channel)?;
 
-        let connect = PgConnect {
-            config,
-            listen_sql: format!("LISTEN \"{channel}\""),
-            client: Arc::new(RwLock::new(None)),
-        };
-        let notifications = connect.open().await.map_err(Error::Internal)?;
-
         Ok(Self {
-            connect,
-            notifications,
+            connect: PgConnect {
+                config,
+                listen_sql: format!("LISTEN \"{channel}\""),
+                client: Arc::new(RwLock::new(None)),
+            },
+            notifications: None,
             channel: Arc::from(channel),
             origin: Arc::from(new_origin_id().as_str()),
         })
@@ -176,7 +190,7 @@ impl PostgresBusConnector {
             connect,
             local: local.clone(),
             origin: origin.clone(),
-            first: Some(notifications),
+            first: notifications,
         };
 
         // The reconnect, backoff, and shutdown loop is provided by
@@ -555,6 +569,36 @@ mod tests {
         // Wait long enough for a round-trip through the database.
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert!(sub_a.try_recv().is_none());
+    }
+
+    /// A bus built without a reachable database still serves local subscribers,
+    /// which is what lets a mint start when its peers are unreachable instead of
+    /// refusing to start. The supervisor retries the connection in the
+    /// background.
+    #[tokio::test]
+    async fn local_delivery_works_without_a_reachable_database() {
+        let connector = PostgresBusConnector::new(
+            PgConfig::new(
+                "host=127.0.0.1 port=1 user=nobody dbname=nothing",
+                None,
+                None,
+                Some(1),
+            ),
+            "cdk_bus_unreachable",
+        )
+        .expect("a bus is built without connecting");
+
+        let pubsub = Pubsub::new_with_bus(CustomPubSub::new_instance(()), move |local| {
+            connector.build(local)
+        });
+        let mut subscriber = pubsub.subscribe(SubscriptionReq::Foo(5)).unwrap();
+
+        pubsub.publish(Message { foo: 5, bar: 13 });
+
+        let received = timeout(Duration::from_secs(5), subscriber.recv())
+            .await
+            .expect("event delivered locally while the bus is disconnected");
+        assert_eq!(received.map(|m| m.bar), Some(13));
     }
 
     /// Delivery survives losing the connection. The first supervised attempt

@@ -1,18 +1,20 @@
 //! Database environment variables
 
 use std::env;
-use std::str::FromStr;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 
-use crate::config::{PostgresAuthConfig, PostgresConfig, PubSubConfig, PubSubTransport};
+use crate::config::{PostgresAuthConfig, PostgresConfig, PubSubConfig};
 
 pub const ENV_POSTGRES_URL: &str = "CDK_MINTD_POSTGRES_URL";
 pub const ENV_POSTGRES_TLS_MODE: &str = "CDK_MINTD_POSTGRES_TLS_MODE";
 pub const ENV_POSTGRES_MAX_CONNECTIONS: &str = "CDK_MINTD_POSTGRES_MAX_CONNECTIONS";
 pub const ENV_POSTGRES_CONNECTION_TIMEOUT: &str = "CDK_MINTD_POSTGRES_CONNECTION_TIMEOUT_SECONDS";
 
+pub const ENV_PUBSUB_CROSS_INSTANCE: &str = "CDK_MINTD_PUBSUB_CROSS_INSTANCE";
+/// Removed, kept to fail a deployment that still sets it.
 pub const ENV_PUBSUB_TRANSPORT: &str = "CDK_MINTD_PUBSUB_TRANSPORT";
+/// Removed, kept to fail a deployment that still sets it.
 pub const ENV_PUBSUB_CHANNEL: &str = "CDK_MINTD_PUBSUB_CHANNEL";
 
 pub const ENV_AUTH_POSTGRES_URL: &str = "CDK_MINTD_AUTH_POSTGRES_URL";
@@ -52,17 +54,25 @@ impl PostgresConfig {
 }
 
 impl PubSubConfig {
-    /// Returns an error on an unusable transport name rather than falling back
-    /// to the default, so an operator carrying a removed value learns at
-    /// startup instead of silently losing cross-instance notifications.
+    /// Returns an error on an unusable value, and on either removed variable,
+    /// rather than falling back to the default, so an operator carrying an old
+    /// setting learns at startup instead of silently getting the other
+    /// behaviour.
     pub fn from_env(mut self) -> Result<Self> {
-        if let Ok(transport) = env::var(ENV_PUBSUB_TRANSPORT) {
-            self.transport = PubSubTransport::from_str(&transport)
-                .map_err(|err| anyhow!("{ENV_PUBSUB_TRANSPORT}: {err}"))?;
+        for removed in [ENV_PUBSUB_TRANSPORT, ENV_PUBSUB_CHANNEL] {
+            if env::var(removed).is_ok() {
+                bail!(
+                    "{removed} was removed: cross-instance notifications now follow the database \
+                     engine, on a channel internal to the mint. Set \
+                     {ENV_PUBSUB_CROSS_INSTANCE}=false to keep notifications in-process"
+                );
+            }
         }
 
-        if let Ok(channel) = env::var(ENV_PUBSUB_CHANNEL) {
-            self.channel = Some(channel);
+        if let Ok(cross_instance) = env::var(ENV_PUBSUB_CROSS_INSTANCE) {
+            self.cross_instance = cross_instance
+                .parse()
+                .map_err(|err| anyhow!("{ENV_PUBSUB_CROSS_INSTANCE}: {err}"))?;
         }
 
         Ok(self)
