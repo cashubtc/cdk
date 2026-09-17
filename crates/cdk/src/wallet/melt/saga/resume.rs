@@ -309,17 +309,30 @@ impl Wallet {
         let change_proofs = if expects_change {
             match data.change_blinded_messages.as_ref() {
                 Some(change_blinded_messages) if !change_blinded_messages.is_empty() => {
-                    match self
-                        .restore_outputs_with_result(
-                            saga_id,
-                            "Melt",
-                            Some(change_blinded_messages.as_slice()),
-                            data.counter_start,
-                            data.counter_end,
-                            OutputRecoveryMode::Partial,
-                        )
-                        .await
-                    {
+                    let restored = match quote_status.change() {
+                        Some(signatures) => {
+                            self.recover_melt_change_signatures(
+                                saga_id,
+                                change_blinded_messages,
+                                data.counter_start.ok_or(Error::InvalidOperationState)?,
+                                data.counter_end.ok_or(Error::InvalidOperationState)?,
+                                signatures,
+                            )
+                            .await
+                        }
+                        None => {
+                            self.restore_outputs_with_result(
+                                saga_id,
+                                "Melt",
+                                Some(change_blinded_messages.as_slice()),
+                                data.counter_start,
+                                data.counter_end,
+                                OutputRecoveryMode::Partial,
+                            )
+                            .await
+                        }
+                    };
+                    match restored {
                         Ok(OutputRecoveryResult::Restored(change_proof_infos)) => {
                             let proofs: Vec<_> =
                                 change_proof_infos.iter().map(|p| p.proof.clone()).collect();

@@ -59,6 +59,8 @@ use crate::wallet::saga::{add_compensation, new_compensations, Compensations};
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
 pub(crate) mod compensation;
+#[cfg(test)]
+mod quote_change_tests;
 pub(crate) mod resume;
 pub(crate) mod state;
 
