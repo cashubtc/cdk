@@ -516,8 +516,19 @@ where
         self.transport_http_get(parsed_url, None).await
     }
 
+    /// NUT-18 leaves `Transport.target` free-form, but this connector can only
+    /// reach a receiver over http(s), so any other scheme is a refusal the
+    /// wallet can make before it swaps.
     fn ensure_payment_request_deliverable(&self, url: &str) -> Result<(), Error> {
         let url = Url::parse(url)?;
+
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(Error::Custom(format!(
+                "Payment request target scheme {} cannot be reached over HTTP",
+                url.scheme()
+            )));
+        }
+
         self.ensure_verified_tls(&url)
     }
 
@@ -1809,6 +1820,17 @@ mod tests {
         client
             .ensure_payment_request_deliverable("receiver.example.com/pay")
             .expect_err("a target without a scheme is not a receiver URL");
+    }
+
+    /// The url crate parses any scheme, so a target this transport has no verb
+    /// for still reaches the swap unless the scheme itself is checked.
+    #[test]
+    fn ensure_payment_request_deliverable_rejects_a_non_http_scheme() {
+        let client = delivery_client(RecordingPostTransport::with_response(200, ""));
+
+        client
+            .ensure_payment_request_deliverable("ftp://receiver.example.com/pay")
+            .expect_err("an http transport cannot post to an ftp target");
     }
 
     #[test]
