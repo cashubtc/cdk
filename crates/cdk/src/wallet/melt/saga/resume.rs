@@ -306,7 +306,7 @@ impl Wallet {
                 .change_blinded_messages
                 .as_ref()
                 .is_some_and(|messages| !messages.is_empty());
-        let change_proofs = if expects_change {
+        let change_proof_infos = if expects_change {
             match data.change_blinded_messages.as_ref() {
                 Some(change_blinded_messages) if !change_blinded_messages.is_empty() => {
                     match self
@@ -321,25 +321,20 @@ impl Wallet {
                         .await
                     {
                         Ok(OutputRecoveryResult::Restored(change_proof_infos)) => {
-                            let proofs: Vec<_> =
-                                change_proof_infos.iter().map(|p| p.proof.clone()).collect();
-                            self.localstore
-                                .update_proofs(change_proof_infos, vec![])
-                                .await?;
-                            Some(proofs)
+                            Some(change_proof_infos)
                         }
                         Ok(OutputRecoveryResult::EmptyResponse) => {
                             tracing::warn!(
                                 "Melt saga {} - mint returned no change signatures on restore; \
-                                 finalizing with no recovered change.",
+                                 checking fee bound with no recovered change.",
                                 saga_id
                             );
                             None
                         }
                         Ok(OutputRecoveryResult::Unavailable) => {
                             tracing::warn!(
-                                "Melt saga {} - couldn't restore change proofs; finalizing \
-                                 paid melt with no recovered change.",
+                                "Melt saga {} - couldn't restore change proofs; checking \
+                                 fee bound with no recovered change.",
                                 saga_id
                             );
                             None
@@ -358,7 +353,7 @@ impl Wallet {
                 _ => {
                     tracing::warn!(
                         "Melt saga {} - payment succeeded but no change blinded messages stored; \
-                         finalizing paid melt with no recovered change.",
+                         checking fee bound with no recovered change.",
                         saga_id
                     );
                     None
@@ -366,6 +361,33 @@ impl Wallet {
             }
         } else {
             None
+        };
+
+        let change_amount = Amount::try_sum(
+            change_proof_infos
+                .iter()
+                .flatten()
+                .map(|info| info.proof.amount),
+        )?;
+        // The saved maximum change excludes input fees. Missing signatures may
+        // account for the quoted payment fee, but never a larger fee.
+        if let Some(maximum_change) = data.change_amount {
+            let payment_fee = maximum_change
+                .checked_sub(change_amount)
+                .ok_or(Error::AmountOverflow)?;
+            if payment_fee > data.fee_reserve {
+                return Err(Error::InvalidMintResponse(
+                    "recovered melt change implies a fee above the quoted reserve".to_owned(),
+                ));
+            }
+        }
+        let change_proofs = match change_proof_infos {
+            Some(infos) => {
+                let proofs = infos.iter().map(|info| info.proof.clone()).collect();
+                self.localstore.update_proofs(infos, vec![]).await?;
+                Some(proofs)
+            }
+            None => None,
         };
 
         let pending_proof_ys: Vec<_> = melt_input_proofs
@@ -380,10 +402,6 @@ impl Wallet {
         }
 
         // Calculate fee paid
-        let change_amount = change_proofs
-            .as_ref()
-            .and_then(|p| Amount::try_sum(p.iter().map(|proof| proof.amount)).ok())
-            .unwrap_or(Amount::ZERO);
         let fee_paid = input_amount
             .checked_sub(data.amount.checked_add(change_amount).unwrap_or_default())
             .unwrap_or(Amount::ZERO);
@@ -1658,7 +1676,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recover_melt_paid_finalizes_when_restore_returns_no_change_signatures() {
+    async fn test_recover_melt_paid_keeps_saga_when_empty_restore_exceeds_fee_reserve() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
@@ -1720,24 +1738,20 @@ mod tests {
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let result = wallet
             .resume_melt_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await;
+        assert!(result.is_err());
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+        assert!(db
+            .list_transactions(None, None, None)
             .await
-            .unwrap();
-
-        let finalized = result.expect("empty restore should finalize");
-        assert_eq!(finalized.fee_paid(), Amount::from(200));
-        assert!(finalized.change().is_none());
-        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
-        let transactions = db.list_transactions(None, None, None).await.unwrap();
-        assert_eq!(transactions.len(), 1);
-        assert_eq!(transactions[0].fee, Amount::from(200));
-
+            .unwrap()
+            .is_empty());
         let stored_input = db.get_proofs_by_ys(vec![pending_input_y]).await.unwrap();
         assert_eq!(stored_input.len(), 1);
-        assert_eq!(stored_input[0].state, State::Spent);
-
+        assert_eq!(stored_input[0].state, State::Pending);
         let quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
-        assert_eq!(quote.state, MeltQuoteState::Paid);
-        assert_eq!(quote.payment_proof.as_deref(), Some("preimage123"));
+        assert_eq!(quote.state, MeltQuoteState::Unpaid);
+        assert!(quote.payment_proof.is_none());
     }
 
     #[tokio::test]
@@ -1820,7 +1834,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recover_melt_paid_finalizes_when_change_recovery_data_is_missing() {
+    async fn test_recover_melt_paid_keeps_saga_when_change_recovery_data_is_missing() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
@@ -1875,35 +1889,24 @@ mod tests {
         let result = wallet
             .resume_melt_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
             .await;
-
-        let finalized = result
-            .expect("missing recovery data should still finalize paid melt")
-            .expect("paid melt should finalize");
-        assert_eq!(finalized.state(), MeltQuoteState::Paid);
-        assert_eq!(finalized.fee_paid(), Amount::from(200));
-        assert!(finalized.change().is_none());
-        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
-
-        let transactions = db.list_transactions(None, None, None).await.unwrap();
-        assert_eq!(transactions.len(), 1);
-        assert_eq!(transactions[0].fee, Amount::from(200));
-        assert_eq!(
-            transactions[0].payment_proof.as_deref(),
-            Some("preimage123")
-        );
-
+        assert!(result.is_err());
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+        assert!(db
+            .list_transactions(None, None, None)
+            .await
+            .unwrap()
+            .is_empty());
         let stored_input = db.get_proofs_by_ys(vec![pending_input_y]).await.unwrap();
         assert_eq!(stored_input.len(), 1);
-        assert_eq!(stored_input[0].state, State::Spent);
-
+        assert_eq!(stored_input[0].state, State::Pending);
         let quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
-        assert_eq!(quote.state, MeltQuoteState::Paid);
-        assert_eq!(quote.payment_proof.as_deref(), Some("preimage123"));
-        assert!(quote.used_by_operation.is_none());
+        assert_eq!(quote.state, MeltQuoteState::Unpaid);
+        assert!(quote.payment_proof.is_none());
+        assert_eq!(quote.used_by_operation, Some(saga_id.to_string()));
     }
 
     #[tokio::test]
-    async fn test_recover_incomplete_sagas_recovers_paid_melt_with_definitive_restore_failure() {
+    async fn test_recover_incomplete_sagas_retains_paid_melt_with_definitive_restore_failure() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
@@ -1966,28 +1969,23 @@ mod tests {
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let report = wallet.recover_incomplete_sagas().await.unwrap();
 
-        assert_eq!(report.recovered, 1);
+        assert_eq!(report.recovered, 0);
         assert_eq!(report.compensated, 0);
         assert_eq!(report.skipped, 0);
-        assert_eq!(report.failed, 0);
-        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
-
-        let transactions = db.list_transactions(None, None, None).await.unwrap();
-        assert_eq!(transactions.len(), 1);
-        assert_eq!(transactions[0].fee, Amount::from(200));
-        assert_eq!(
-            transactions[0].payment_proof.as_deref(),
-            Some("preimage123")
-        );
-
+        assert_eq!(report.failed, 1);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+        assert!(db
+            .list_transactions(None, None, None)
+            .await
+            .unwrap()
+            .is_empty());
         let stored_input = db.get_proofs_by_ys(vec![pending_input_y]).await.unwrap();
         assert_eq!(stored_input.len(), 1);
-        assert_eq!(stored_input[0].state, State::Spent);
-
+        assert_eq!(stored_input[0].state, State::Pending);
         let quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
-        assert_eq!(quote.state, MeltQuoteState::Paid);
-        assert_eq!(quote.payment_proof.as_deref(), Some("preimage123"));
-        assert!(quote.used_by_operation.is_none());
+        assert_eq!(quote.state, MeltQuoteState::Unpaid);
+        assert!(quote.payment_proof.is_none());
+        assert_eq!(quote.used_by_operation, Some(saga_id.to_string()));
     }
 
     #[tokio::test]
