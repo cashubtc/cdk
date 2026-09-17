@@ -1,5 +1,6 @@
 //! A paid melt must retain recovery until change fits its original fee budget.
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use cdk_common::wallet::{
     MeltOperationData, MeltQuote, MeltSagaState, OperationData, TransactionStatus, WalletSaga,
