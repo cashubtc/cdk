@@ -1,5 +1,6 @@
 //! Paid quotes already contain enough information to recover their change.
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use cdk_common::wallet::{
     MeltOperationData, MeltQuote, MeltSagaState, OperationData, WalletSaga, WalletSagaState,
