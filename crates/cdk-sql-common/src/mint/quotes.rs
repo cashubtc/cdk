@@ -25,8 +25,7 @@ use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
 use super::{SQLMintDatabase, SQLTransaction};
-use crate::database::DatabaseExecutor;
-use crate::pool::DatabasePool;
+use crate::database::{DatabaseExecutor, SqlBackend};
 use crate::stmt::{query, Column};
 use crate::{
     column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string,
@@ -666,7 +665,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
 #[async_trait]
 impl<RM> MintQuotesTransaction for SQLTransaction<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     type Err = Error;
 
@@ -1246,7 +1245,7 @@ where
 #[async_trait]
 impl<RM> MintQuotesDatabase for SQLMintDatabase<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     type Err = Error;
 
@@ -1255,12 +1254,8 @@ where
         let metrics = MintMetricGuard::new("get_mint_quote");
 
         let result = async {
-            let conn = self
-                .pool
-                .get()
-                .await
-                .map_err(|e| Error::Database(Box::new(e)))?;
-            get_mint_quote_inner(&*conn, quote_id, false).await
+            let conn = self.pool.acquire().await?;
+            get_mint_quote_inner(&conn, quote_id, false).await
         }
         .await;
 
@@ -1278,11 +1273,7 @@ where
         last_checked: u64,
         min_interval: u64,
     ) -> Result<bool, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         let threshold = last_checked.saturating_sub(min_interval);
         let rows_affected = query(
             r#"
@@ -1295,7 +1286,7 @@ where
         .bind("quote_id", quote_id.to_string())
         .bind("last_checked", last_checked as i64)
         .bind("threshold", threshold as i64)
-        .execute(&*conn)
+        .execute(&conn)
         .await?;
 
         Ok(rows_affected > 0)
@@ -1305,44 +1296,28 @@ where
         &self,
         quote_ids: &[QuoteId],
     ) -> Result<Vec<Option<MintQuote>>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        get_mint_quotes_inner(&*conn, quote_ids, false).await
+        let conn = self.pool.acquire().await?;
+        get_mint_quotes_inner(&conn, quote_ids, false).await
     }
 
     async fn get_mint_quote_by_request(
         &self,
         request: &str,
     ) -> Result<Option<MintQuote>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        get_mint_quote_by_request_inner(&*conn, request, false).await
+        let conn = self.pool.acquire().await?;
+        get_mint_quote_by_request_inner(&conn, request, false).await
     }
 
     async fn get_mint_quote_by_request_lookup_id(
         &self,
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<MintQuote>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        get_mint_quote_by_request_lookup_id_inner(&*conn, request_lookup_id, false).await
+        let conn = self.pool.acquire().await?;
+        get_mint_quote_by_request_lookup_id_inner(&conn, request_lookup_id, false).await
     }
 
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         let mut mint_quotes = query(
             r#"
             SELECT
@@ -1365,15 +1340,15 @@ where
                 mint_quote
             "#,
         )?
-        .fetch_all(&*conn)
+        .fetch_all(&conn)
         .await?
         .into_iter()
         .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
         .collect::<Result<Vec<_>, _>>()?;
 
         for quote in mint_quotes.as_mut_slice() {
-            let payments = get_mint_quote_payments(&*conn, &quote.id).await?;
-            let issuance = get_mint_quote_issuance(&*conn, &quote.id).await?;
+            let payments = get_mint_quote_payments(&conn, &quote.id).await?;
+            let issuance = get_mint_quote_issuance(&conn, &quote.id).await?;
             quote.issuance = issuance;
             quote.payments = payments;
         }
@@ -1389,12 +1364,8 @@ where
         let metrics = MintMetricGuard::new("get_melt_quote");
 
         let result = async {
-            let conn = self
-                .pool
-                .get()
-                .await
-                .map_err(|e| Error::Database(Box::new(e)))?;
-            get_melt_quote_inner(&*conn, quote_id, false).await
+            let conn = self.pool.acquire().await?;
+            get_melt_quote_inner(&conn, quote_id, false).await
         }
         .await;
 
@@ -1407,11 +1378,7 @@ where
     }
 
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         Ok(query(
             r#"
             SELECT
@@ -1437,7 +1404,7 @@ where
                 melt_quote
             "#,
         )?
-        .fetch_all(&*conn)
+        .fetch_all(&conn)
         .await?
         .into_iter()
         .map(sql_row_to_melt_quote)

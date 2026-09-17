@@ -1135,27 +1135,10 @@ impl Wallet {
         namespace: DerivationCounterNamespace,
         minimum_index: u32,
     ) -> Result<u32, Error> {
-        let namespace = namespace.as_str();
-        let current_counter = self
+        Ok(self
             .localstore
-            .increment_derivation_counter(namespace, 0)
-            .await?;
-        let catch_up = minimum_index.saturating_sub(current_counter);
-        let reservation_count = catch_up.checked_add(1).ok_or_else(|| {
-            Error::Custom(format!(
-                "Derivation counter namespace `{namespace}` has been exhausted"
-            ))
-        })?;
-        let next_counter = self
-            .localstore
-            .increment_derivation_counter(namespace, reservation_count)
-            .await?;
-
-        next_counter.checked_sub(1).ok_or_else(|| {
-            Error::Custom(format!(
-                "Derivation counter namespace `{namespace}` did not advance after reservation"
-            ))
-        })
+            .reserve_derivation_index(namespace.as_str(), minimum_index)
+            .await?)
     }
 
     /// gets public key by it's hex value

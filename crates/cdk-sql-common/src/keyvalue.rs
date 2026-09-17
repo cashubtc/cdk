@@ -3,29 +3,23 @@
 //! This module provides generic implementations of KVStore traits that can be
 //! used by both mint and wallet database implementations.
 
-use std::sync::Arc;
-
 use cdk_common::database::{validate_kvstore_params, Error};
 use cdk_common::util::unix_time;
 
 use crate::column_as_string;
-#[cfg(feature = "mint")]
-use crate::database::ConnectionWithTransaction;
-#[cfg(feature = "mint")]
-use crate::pool::PooledResource;
-use crate::pool::{DatabasePool, Pool};
+use crate::database::{DatabaseExecutor, SqlBackend};
 use crate::stmt::{query, Column};
 
 /// Generic implementation of KVStoreTransaction for SQL databases
 #[cfg(feature = "mint")]
 pub(crate) async fn kv_read_in_transaction<RM>(
-    conn: &ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
+    conn: &RM,
     primary_namespace: &str,
     secondary_namespace: &str,
     key: &str,
 ) -> Result<Option<Vec<u8>>, Error>
 where
-    RM: DatabasePool,
+    RM: DatabaseExecutor,
 {
     // Validate parameters according to KV store requirements
     validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
@@ -52,14 +46,14 @@ where
 /// Generic implementation of kv_write for transactions
 #[cfg(feature = "mint")]
 pub(crate) async fn kv_write_in_transaction<RM>(
-    conn: &ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
+    conn: &RM,
     primary_namespace: &str,
     secondary_namespace: &str,
     key: &str,
     value: &[u8],
 ) -> Result<(), Error>
 where
-    RM: DatabasePool,
+    RM: DatabaseExecutor,
 {
     // Validate parameters according to KV store requirements
     validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
@@ -92,14 +86,14 @@ where
 /// Generic implementation of kv_write_if_absent for transactions
 #[cfg(feature = "mint")]
 pub(crate) async fn kv_write_if_absent_in_transaction<RM>(
-    conn: &ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
+    conn: &RM,
     primary_namespace: &str,
     secondary_namespace: &str,
     key: &str,
     value: &[u8],
 ) -> Result<bool, Error>
 where
-    RM: DatabasePool,
+    RM: DatabaseExecutor,
 {
     // Validate parameters according to KV store requirements
     validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
@@ -129,13 +123,13 @@ where
 /// Generic implementation of kv_remove for transactions
 #[cfg(feature = "mint")]
 pub(crate) async fn kv_remove_in_transaction<RM>(
-    conn: &ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
+    conn: &RM,
     primary_namespace: &str,
     secondary_namespace: &str,
     key: &str,
 ) -> Result<(), Error>
 where
-    RM: DatabasePool,
+    RM: DatabaseExecutor,
 {
     // Validate parameters according to KV store requirements
     validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
@@ -159,7 +153,7 @@ where
 /// Generic implementation of kv_write_if_equals for transactions
 #[cfg(feature = "mint")]
 pub(crate) async fn kv_write_if_equals_in_transaction<RM>(
-    conn: &ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
+    conn: &RM,
     primary_namespace: &str,
     secondary_namespace: &str,
     key: &str,
@@ -167,7 +161,7 @@ pub(crate) async fn kv_write_if_equals_in_transaction<RM>(
     replacement: &[u8],
 ) -> Result<bool, Error>
 where
-    RM: DatabasePool,
+    RM: DatabaseExecutor,
 {
     // Validate parameters according to KV store requirements
     validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
@@ -197,12 +191,12 @@ where
 /// Generic implementation of kv_list for transactions
 #[cfg(feature = "mint")]
 pub(crate) async fn kv_list_in_transaction<RM>(
-    conn: &ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
+    conn: &RM,
     primary_namespace: &str,
     secondary_namespace: &str,
 ) -> Result<Vec<String>, Error>
 where
-    RM: DatabasePool,
+    RM: DatabaseExecutor,
 {
     // Validate namespace parameters according to KV store requirements
     validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
@@ -226,18 +220,18 @@ where
 
 /// Generic implementation of kv_read for database (non-transactional)
 pub(crate) async fn kv_read<RM>(
-    pool: &Arc<Pool<RM>>,
+    pool: &RM,
     primary_namespace: &str,
     secondary_namespace: &str,
     key: &str,
 ) -> Result<Option<Vec<u8>>, Error>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     // Validate parameters according to KV store requirements
     validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
 
-    let conn = pool.get().await.map_err(|e| Error::Database(Box::new(e)))?;
+    let conn = pool.acquire().await?;
     Ok(query(
         r#"
         SELECT value
@@ -250,7 +244,7 @@ where
     .bind("primary_namespace", primary_namespace.to_owned())
     .bind("secondary_namespace", secondary_namespace.to_owned())
     .bind("key", key.to_owned())
-    .pluck(&*conn)
+    .pluck(&conn)
     .await?
     .and_then(|col| match col {
         Column::Blob(data) => Some(data),
@@ -261,7 +255,7 @@ where
 /// Atomically inserts or replaces a key-value store entry.
 #[cfg(feature = "mint")]
 pub(crate) async fn kv_compare_and_swap<RM>(
-    pool: &Arc<Pool<RM>>,
+    pool: &RM,
     primary_namespace: &str,
     secondary_namespace: &str,
     key: &str,
@@ -269,12 +263,12 @@ pub(crate) async fn kv_compare_and_swap<RM>(
     replacement: &[u8],
 ) -> Result<bool, Error>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     validate_kvstore_params(primary_namespace, secondary_namespace, Some(key))?;
 
     let current_time = unix_time() as i64;
-    let conn = pool.get().await.map_err(|e| Error::Database(Box::new(e)))?;
+    let conn = pool.acquire().await?;
     let affected = match expected {
         Some(expected) => {
             query(
@@ -294,7 +288,7 @@ where
             .bind("secondary_namespace", secondary_namespace.to_owned())
             .bind("key", key.to_owned())
             .bind("expected", expected.to_vec())
-            .execute(&*conn)
+            .execute(&conn)
             .await?
         }
         None => {
@@ -319,7 +313,7 @@ where
             .bind("replacement", replacement.to_vec())
             .bind("created_time", current_time)
             .bind("updated_time", current_time)
-            .execute(&*conn)
+            .execute(&conn)
             .await?
         }
     };
@@ -329,17 +323,17 @@ where
 
 /// Generic implementation of kv_list for database (non-transactional)
 pub(crate) async fn kv_list<RM>(
-    pool: &Arc<Pool<RM>>,
+    pool: &RM,
     primary_namespace: &str,
     secondary_namespace: &str,
 ) -> Result<Vec<String>, Error>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     // Validate namespace parameters according to KV store requirements
     validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
 
-    let conn = pool.get().await.map_err(|e| Error::Database(Box::new(e)))?;
+    let conn = pool.acquire().await?;
     query(
         r#"
         SELECT key
@@ -351,7 +345,7 @@ where
     )?
     .bind("primary_namespace", primary_namespace.to_owned())
     .bind("secondary_namespace", secondary_namespace.to_owned())
-    .fetch_all(&*conn)
+    .fetch_all(&conn)
     .await?
     .into_iter()
     .map(|row| Ok(column_as_string!(&row[0])))

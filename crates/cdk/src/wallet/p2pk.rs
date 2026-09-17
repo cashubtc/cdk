@@ -180,5 +180,15 @@ mod tests {
             .collect::<Vec<_>>();
         indexes.sort_unstable();
         assert_eq!(indexes, (6..14).collect::<Vec<_>>());
+        let next = wallet
+            .generate_public_key()
+            .await
+            .expect("next key should derive");
+        let next = db
+            .get_p2pk_key(&next)
+            .await
+            .expect("key lookup")
+            .expect("stored key");
+        assert_eq!(next.derivation_index, 14);
     }
 }

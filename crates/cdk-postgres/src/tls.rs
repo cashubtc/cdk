@@ -4,9 +4,7 @@ use cdk_common::database::Error;
 use native_tls::{TlsConnector, TlsConnectorBuilder};
 use postgres_native_tls::MakeTlsConnector;
 use tokio_postgres::config::SslMode as PgSslMode;
-use tokio_postgres::{Config, NoTls};
-
-use crate::SslMode;
+use tokio_postgres::Config;
 
 #[derive(Clone, Copy)]
 enum TlsPolicy {
@@ -38,142 +36,49 @@ impl TlsPolicy {
         }
     }
 
-    fn build_connector<F>(self, build: F) -> Result<SslMode, Error>
+    fn build_connector<F>(self, build: F) -> Result<Option<MakeTlsConnector>, Error>
     where
         F: FnOnce(TlsConnectorBuilder) -> Result<TlsConnector, native_tls::Error>,
     {
         if matches!(self, Self::Disable) {
-            return Ok(SslMode::NoTls(NoTls));
+            return Ok(None);
         }
 
         let mut builder = TlsConnector::builder();
         builder.danger_accept_invalid_certs(matches!(self, Self::Prefer | Self::Require));
         builder.danger_accept_invalid_hostnames(!matches!(self, Self::VerifyFull));
         let connector = build(builder).map_err(|err| Error::Database(Box::new(err)))?;
-        Ok(SslMode::NativeTls(MakeTlsConnector::new(connector)))
+        Ok(Some(MakeTlsConnector::new(connector)))
     }
 }
 
-pub(super) fn configure(input: &str, explicit: Option<&str>) -> Result<(Config, SslMode), Error> {
-    let (normalized, url_policy) = normalize(input)?;
-    let policy = match explicit {
-        Some(mode) => TlsPolicy::parse(mode)?,
-        None => url_policy.unwrap_or(TlsPolicy::Disable),
-    };
-    let mut config: Config = normalized
-        .parse()
-        .map_err(|err| Error::Database(Box::new(err)))?;
+pub(super) fn configure(
+    config: &mut Config,
+    mode: &str,
+) -> Result<Option<MakeTlsConnector>, Error> {
+    let policy = TlsPolicy::parse(mode)?;
     config.ssl_mode(policy.negotiation());
-    Ok((config, policy.build_connector(|builder| builder.build())?))
-}
-
-// tokio-postgres only parses disable/prefer/require. Extract the complete mode
-// and replace it with a supported placeholder before invoking its parser. All
-// modes, including overridden values, are validated to catch configuration typos.
-fn normalize(input: &str) -> Result<(String, Option<TlsPolicy>), Error> {
-    let mut policy = None;
-    let mut output = String::new();
-    if input.starts_with("postgres://") || input.starts_with("postgresql://") {
-        let Some((base, query)) = input.split_once('?') else {
-            return Ok((input.to_owned(), None));
-        };
-        if query.is_empty() {
-            return Ok((input.to_owned(), None));
-        }
-        output.push_str(base);
-        output.push('?');
-        for (index, parameter) in query.split('&').enumerate() {
-            if index != 0 {
-                output.push('&');
-            }
-            let (key, value) = parameter.split_once('=').ok_or_else(invalid_parameters)?;
-            let key = percent_encoding::percent_decode_str(key)
-                .decode_utf8()
-                .map_err(|_| invalid_parameters())?;
-            if key == "sslmode" {
-                let value = percent_encoding::percent_decode_str(value)
-                    .decode_utf8()
-                    .map_err(|_| invalid_parameters())?;
-                policy = Some(TlsPolicy::parse(&value)?);
-                output.push_str("sslmode=disable");
-            } else {
-                output.push_str(parameter);
-            }
-        }
-    } else {
-        // Respect libpq keyword syntax: whitespace around '=', quoted values,
-        // and backslash escapes. Never search inside passwords or other values.
-        let mut rest = input;
-        while !rest.trim_start().is_empty() {
-            rest = rest.trim_start();
-            let start = rest;
-            let key_end = rest
-                .find(|ch: char| ch == '=' || ch.is_whitespace())
-                .ok_or_else(invalid_parameters)?;
-            let key = &rest[..key_end];
-            rest = rest[key_end..].trim_start();
-            rest = rest
-                .strip_prefix('=')
-                .ok_or_else(invalid_parameters)?
-                .trim_start();
-            let quoted = rest.starts_with('\'');
-            if quoted {
-                rest = &rest[1..];
-            }
-            let mut value = String::new();
-            let mut chars = rest.char_indices();
-            let mut end = rest.len();
-            let mut closed = !quoted;
-            while let Some((index, ch)) = chars.next() {
-                match ch {
-                    '\\' => {
-                        let (_, escaped) = chars.next().ok_or_else(invalid_parameters)?;
-                        value.push(escaped);
-                    }
-                    '\'' if quoted => {
-                        end = index + 1;
-                        closed = true;
-                        break;
-                    }
-                    ch if !quoted && ch.is_whitespace() => {
-                        end = index;
-                        break;
-                    }
-                    ch => value.push(ch),
-                }
-            }
-            if !closed || (!quoted && value.is_empty()) {
-                return Err(invalid_parameters());
-            }
-            rest = &rest[end..];
-            if key == "sslmode" {
-                policy = Some(TlsPolicy::parse(&value)?);
-                output.push_str("sslmode=disable");
-            } else {
-                output.push_str(&start[..start.len() - rest.len()]);
-            }
-            output.push(' ');
-        }
-    }
-    Ok((output, policy))
-}
-
-fn invalid_parameters() -> Error {
-    Error::Internal("Invalid PostgreSQL connection parameters".to_owned())
+    policy.build_connector(|builder| builder.build())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
     use std::time::Duration;
 
+    use cdk_sql_common::database::SqlBackend;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::time::timeout;
 
     use super::*;
-    use crate::{PgConfig, PostgresConnection};
+    use crate::{PgConfig, PostgresBackend};
+
+    fn configure(
+        input: &str,
+        explicit: Option<&str>,
+    ) -> Result<(Config, Option<MakeTlsConnector>), Error> {
+        PgConfig::new(input, explicit, None, None).driver_config()
+    }
 
     #[test]
     fn tls_connector_construction_errors_never_disable_tls() {
@@ -200,7 +105,7 @@ mod tests {
             let (config, connector) = configure("host=localhost sslmode=verify-full", Some(mode))
                 .expect("explicit TLS mode");
             assert_eq!(config.get_ssl_mode(), negotiation, "{mode}");
-            assert_eq!(matches!(connector, SslMode::NoTls(_)), mode == "disable");
+            assert_eq!(connector.is_none(), mode == "disable");
         }
         assert_eq!(
             configure("host=localhost", None)
@@ -253,7 +158,7 @@ mod tests {
         let (config, connector) =
             configure("host=localhost password=sslmode=require", None).expect("password");
         assert_eq!(config.get_ssl_mode(), PgSslMode::Disable);
-        assert!(matches!(connector, SslMode::NoTls(_)));
+        assert!(connector.is_none());
     }
 
     #[tokio::test]
@@ -291,14 +196,12 @@ mod tests {
                     format!("postgres://cdk@127.0.0.1:{port}/db?sslmode={mode}").as_str(),
                 ),
             };
-            let stale = Arc::new(AtomicBool::new(false));
-            let connection = PostgresConnection::new(config, Duration::from_secs(3), stale.clone());
-            assert!(connection.inner().await.is_err(), "{source}: {mode}");
+            let backend = PostgresBackend::new(config).expect("valid TLS configuration");
+            assert!(backend.acquire().await.is_err(), "{source}: {mode}");
             timeout(Duration::from_secs(3), server)
                 .await
                 .expect("server completed")
                 .expect("server task");
-            assert!(stale.load(Ordering::Acquire));
         }
     }
 
@@ -312,11 +215,8 @@ mod tests {
             None,
             None,
         );
-        let stale = Arc::new(AtomicBool::new(false));
-        let connection = PostgresConnection::new(config, Duration::from_secs(3), stale.clone());
-        let error = connection.inner().await.expect_err("invalid TLS mode");
+        let error = PostgresBackend::new(config).expect_err("invalid TLS mode");
         assert!(error.to_string().contains("Invalid PostgreSQL TLS mode"));
-        assert!(stale.load(Ordering::Acquire));
         assert!(timeout(Duration::from_millis(50), listener.accept())
             .await
             .is_err());

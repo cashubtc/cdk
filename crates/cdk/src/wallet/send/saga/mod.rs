@@ -371,10 +371,45 @@ impl<'a> SendSaga<'a, Initial> {
     /// Registers compensation to revert proof reservation on failure.
     #[instrument(skip_all)]
     pub async fn prepare(
-        self,
+        mut self,
         amount: Amount,
         opts: SendOptions,
     ) -> Result<SendSaga<'a, Prepared>, Error> {
+        let prepared = self
+            .wallet
+            .select_and_reserve_proofs(&self.state_data.operation_id, || async {
+                let prepared = self.select(amount, opts.clone()).await?;
+                let mut ys = prepared.proofs_to_swap.ys()?;
+                ys.extend(prepared.proofs_to_send.ys()?);
+                Ok((prepared, ys))
+            })
+            .await?;
+
+        self.wallet
+            .localstore
+            .add_saga(prepared.saga.clone())
+            .await?;
+        let mut proof_ys = prepared.proofs_to_swap.ys()?;
+        proof_ys.extend(prepared.proofs_to_send.ys()?);
+        add_compensation(
+            &mut self.compensations,
+            Box::new(RevertProofReservation {
+                localstore: self.wallet.localstore.clone(),
+                proof_ys,
+                saga_id: self.state_data.operation_id,
+            }),
+        )
+        .await;
+
+        Ok(SendSaga {
+            wallet: self.wallet,
+            compensations: self.compensations,
+            state_data: prepared,
+        })
+    }
+
+    #[instrument(skip_all)]
+    async fn select(&self, amount: Amount, opts: SendOptions) -> Result<Prepared, Error> {
         tracing::info!(
             "Preparing send for {} with operation {}",
             amount,
@@ -538,7 +573,7 @@ impl<'a> SendSaga<'a, Initial> {
 
         if selected_total == amount + send_fee {
             return self
-                .internal_prepare(amount, opts, selected_proofs, force_swap, keyset_policy)
+                .split_selected_proofs(amount, opts, selected_proofs, force_swap, keyset_policy)
                 .await;
         } else if opts.send_kind == SendKind::OfflineExact {
             return Err(Error::InsufficientFunds);
@@ -555,18 +590,18 @@ impl<'a> SendSaga<'a, Initial> {
             }
         }
 
-        self.internal_prepare(amount, opts, selected_proofs, force_swap, keyset_policy)
+        self.split_selected_proofs(amount, opts, selected_proofs, force_swap, keyset_policy)
             .await
     }
 
-    async fn internal_prepare(
-        mut self,
+    async fn split_selected_proofs(
+        &self,
         amount: Amount,
         opts: SendOptions,
         proofs: Proofs,
         force_swap: bool,
         keyset_policy: KeysetLoadPolicy,
-    ) -> Result<SendSaga<'a, Prepared>, Error> {
+    ) -> Result<Prepared, Error> {
         let active_keyset_id = self
             .wallet
             .active_keyset_with_policy(keyset_policy)
@@ -630,14 +665,6 @@ impl<'a> SendSaga<'a, Initial> {
             },
         )?;
 
-        let mut proof_ys = split_result.proofs_to_swap.ys()?;
-        proof_ys.extend(split_result.proofs_to_send.ys()?);
-
-        self.wallet
-            .localstore
-            .reserve_proofs(proof_ys.clone(), &self.state_data.operation_id)
-            .await?;
-
         let memo_text = opts.memo.as_ref().map(|m| m.memo.clone());
         let saga = WalletSaga::new(
             self.state_data.operation_id,
@@ -655,31 +682,15 @@ impl<'a> SendSaga<'a, Initial> {
             }),
         );
 
-        self.wallet.localstore.add_saga(saga.clone()).await?;
-
-        add_compensation(
-            &mut self.compensations,
-            Box::new(RevertProofReservation {
-                localstore: self.wallet.localstore.clone(),
-                proof_ys,
-                saga_id: self.state_data.operation_id,
-            }),
-        )
-        .await;
-
-        Ok(SendSaga {
-            wallet: self.wallet,
-            compensations: self.compensations,
-            state_data: Prepared {
-                operation_id: self.state_data.operation_id,
-                amount,
-                options: opts,
-                proofs_to_swap: split_result.proofs_to_swap,
-                swap_fee: split_result.swap_fee,
-                proofs_to_send: split_result.proofs_to_send,
-                send_fee: send_fee.total,
-                saga,
-            },
+        Ok(Prepared {
+            operation_id: self.state_data.operation_id,
+            amount,
+            options: opts,
+            proofs_to_swap: split_result.proofs_to_swap,
+            swap_fee: split_result.swap_fee,
+            proofs_to_send: split_result.proofs_to_send,
+            send_fee: send_fee.total,
+            saga,
         })
     }
 }
@@ -1248,7 +1259,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_internal_prepare_reserves_only_split_proofs_for_operation() {
+    async fn test_prepare_reserves_only_split_proofs_for_operation() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
@@ -1291,14 +1302,24 @@ mod tests {
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let saga = SendSaga::new(&wallet);
-        let prepared = saga
-            .internal_prepare(
+        let selection = saga
+            .split_selected_proofs(
                 Amount::from(10),
                 SendOptions::default(),
                 vec![unused_proof, send_8_proof, send_2_proof],
                 false,
                 KeysetLoadPolicy::default(),
             )
+            .await
+            .unwrap();
+        assert!(selection.proofs_to_swap.is_empty());
+        let mut selected_amounts: Vec<_> =
+            selection.proofs_to_send.iter().map(|p| p.amount).collect();
+        selected_amounts.sort();
+        assert_eq!(selected_amounts, vec![Amount::from(2), Amount::from(8)]);
+
+        let prepared = saga
+            .prepare(Amount::from(10), SendOptions::default())
             .await
             .unwrap();
 

@@ -927,6 +927,57 @@ where
     assert_eq!(counters, (1..=8).collect::<Vec<_>>());
 }
 
+/// Catch-up and reservation are a single atomic operation, without skipped indexes.
+pub async fn reserve_derivation_index_is_atomic<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + Sync,
+{
+    let (a, b, c, d, e, f, g, h) = tokio::join!(
+        db.reserve_derivation_index("p2pk", 6),
+        db.reserve_derivation_index("p2pk", 6),
+        db.reserve_derivation_index("p2pk", 6),
+        db.reserve_derivation_index("p2pk", 6),
+        db.reserve_derivation_index("p2pk", 6),
+        db.reserve_derivation_index("p2pk", 6),
+        db.reserve_derivation_index("p2pk", 6),
+        db.reserve_derivation_index("p2pk", 6),
+    );
+    let mut indexes = [a, b, c, d, e, f, g, h].map(Result::unwrap);
+    indexes.sort_unstable();
+    assert_eq!(indexes, [6, 7, 8, 9, 10, 11, 12, 13]);
+    assert_eq!(db.reserve_derivation_index("p2pk", 6).await.unwrap(), 14);
+    assert_eq!(db.reserve_derivation_index("p2pk", 30).await.unwrap(), 30);
+    assert_eq!(db.reserve_derivation_index("p2pk", 0).await.unwrap(), 31);
+    assert_eq!(db.reserve_derivation_index("other", 0).await.unwrap(), 0);
+}
+
+/// Exhaustion must fail without advancing or wrapping the persisted counter.
+pub async fn derivation_reservation_exhaustion_preserves_counter<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    use crate::database::Error;
+    assert!(matches!(
+        db.reserve_derivation_index("test", u32::MAX).await,
+        Err(Error::AmountOverflow)
+    ));
+    assert_eq!(db.increment_derivation_counter("test", 0).await.unwrap(), 0);
+    assert_eq!(
+        db.reserve_derivation_index("test", u32::MAX - 1)
+            .await
+            .unwrap(),
+        u32::MAX - 1
+    );
+    assert!(matches!(
+        db.reserve_derivation_index("test", 0).await,
+        Err(Error::AmountOverflow)
+    ));
+    assert_eq!(
+        db.increment_derivation_counter("test", 0).await.unwrap(),
+        u32::MAX
+    );
+}
+
 // =============================================================================
 // Transaction Tests
 // =============================================================================
@@ -1779,6 +1830,8 @@ macro_rules! wallet_db_test {
             increment_derivation_counter,
             derivation_counters_are_independent,
             derivation_counter_is_atomic,
+            reserve_derivation_index_is_atomic,
+            derivation_reservation_exhaustion_preserves_counter,
             add_and_get_transaction,
             update_transaction_status,
             same_proofs_in_different_sagas,

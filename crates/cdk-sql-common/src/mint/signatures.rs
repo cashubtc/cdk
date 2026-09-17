@@ -11,7 +11,7 @@ use cdk_common::{Amount, BlindSignature, BlindSignatureDleq, Id, PublicKey, Secr
 
 use super::proofs::sql_row_to_hashmap_amount;
 use super::{SQLMintDatabase, SQLTransaction};
-use crate::pool::DatabasePool;
+use crate::database::SqlBackend;
 use crate::stmt::{query, Column};
 use crate::{column_as_nullable_string, column_as_number, column_as_string, unpack_into};
 
@@ -46,7 +46,7 @@ pub(crate) fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignat
 #[async_trait]
 impl<RM> MintSignatureTransaction for SQLTransaction<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     type Err = Error;
 
@@ -264,7 +264,7 @@ where
 #[async_trait]
 impl<RM> MintSignaturesDatabase for SQLMintDatabase<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     type Err = Error;
 
@@ -272,11 +272,7 @@ where
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         let mut blinded_signatures = query(
             r#"SELECT
                 keyset_id,
@@ -297,7 +293,7 @@ where
                 .map(|b_| b_.to_bytes().to_vec())
                 .collect(),
         )?
-        .fetch_all(&*conn)
+        .fetch_all(&conn)
         .await?
         .into_iter()
         .map(|mut row| {
@@ -321,11 +317,7 @@ where
         &self,
         keyset_id: &Id,
     ) -> Result<Vec<BlindSignature>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         Ok(query(
             r#"
             SELECT
@@ -341,7 +333,7 @@ where
             "#,
         )?
         .bind("keyset_id", keyset_id.to_string())
-        .fetch_all(&*conn)
+        .fetch_all(&conn)
         .await?
         .into_iter()
         .map(sql_row_to_blind_signature)
@@ -353,11 +345,7 @@ where
         &self,
         quote_id: &QuoteId,
     ) -> Result<Vec<BlindSignature>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         Ok(query(
             r#"
             SELECT
@@ -374,7 +362,7 @@ where
             "#,
         )?
         .bind("quote_id", quote_id.to_string())
-        .fetch_all(&*conn)
+        .fetch_all(&conn)
         .await?
         .into_iter()
         .map(sql_row_to_blind_signature)
@@ -383,11 +371,7 @@ where
 
     /// Get total proofs redeemed by keyset id
     async fn get_total_issued(&self) -> Result<HashMap<Id, Amount>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         query(
             r#"
             SELECT
@@ -397,7 +381,7 @@ where
                 keyset_amounts
         "#,
         )?
-        .fetch_all(&*conn)
+        .fetch_all(&conn)
         .await?
         .into_iter()
         .map(sql_row_to_hashmap_amount)
@@ -408,11 +392,7 @@ where
         &self,
         operation_id: &uuid::Uuid,
     ) -> Result<Vec<PublicKey>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.acquire().await?;
         query(
             r#"
             SELECT
@@ -424,7 +404,7 @@ where
             "#,
         )?
         .bind("operation_id", operation_id.to_string())
-        .fetch_all(&*conn)
+        .fetch_all(&conn)
         .await?
         .into_iter()
         .map(|row| -> Result<PublicKey, Error> {

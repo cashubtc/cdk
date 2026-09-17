@@ -243,7 +243,7 @@ impl SupabaseWalletDatabase {
     /// This must match the latest `schema_version` value set in the migration files.
     /// When adding new migrations, update this constant and set the same value
     /// in the new migration's `INSERT INTO schema_info` statement.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 10;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 11;
 
     /// Get the full database schema SQL
     ///
@@ -1611,6 +1611,64 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
         Err(DatabaseError::Internal(format!(
             "increment_derivation_counter RPC failed: HTTP {}. Ensure migrations have been run.",
+            status
+        )))
+    }
+
+    async fn reserve_derivation_index(
+        &self,
+        namespace: &str,
+        minimum_index: u32,
+    ) -> Result<u32, DatabaseError> {
+        minimum_index
+            .checked_add(1)
+            .ok_or(DatabaseError::AmountOverflow)?;
+        let rpc_body = serde_json::json!({
+            "p_namespace": namespace,
+            "p_minimum_index": minimum_index
+        });
+        let url = self.join_url("rest/v1/rpc/reserve_derivation_index")?;
+        let auth_bearer = self.get_auth_bearer().await;
+
+        let res = self
+            .client
+            .post(url)
+            .header("apikey", &self.api_key)
+            .header("Authorization", format!("Bearer {}", auth_bearer))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "return=representation")
+            .json(&rpc_body)
+            .send()
+            .await
+            .map_err(Error::Reqwest)?;
+        let status = res.status();
+        let text = res.text().await.map_err(Error::Reqwest)?;
+
+        if status.is_success() {
+            let new_counter: i64 = serde_json::from_str(&text).map_err(|err| {
+                DatabaseError::Internal(format!(
+                    "Failed to parse derivation counter response: {}",
+                    err
+                ))
+            })?;
+            return u32::try_from(new_counter).map_err(|_| DatabaseError::AmountOverflow);
+        }
+
+        if serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("code")
+                    .and_then(|code| code.as_str())
+                    .map(str::to_owned)
+            })
+            .as_deref()
+            == Some("22003")
+        {
+            return Err(DatabaseError::AmountOverflow);
+        }
+        Err(DatabaseError::Internal(format!(
+            "reserve_derivation_index RPC failed: HTTP {}. Ensure migrations have been run.",
             status
         )))
     }
@@ -3337,6 +3395,45 @@ mod tests {
         assert_wallet_database::<SupabaseWalletDatabase>();
     }
 
+    #[tokio::test]
+    async fn reserve_derivation_index_uses_atomic_rpc_and_maps_exhaustion() {
+        let mut server = mockito::Server::new_async().await;
+        let db =
+            SupabaseWalletDatabase::new(Url::parse(&server.url()).unwrap(), "anon-key".to_owned())
+                .await
+                .unwrap();
+        let success = server
+            .mock("POST", "/rest/v1/rpc/reserve_derivation_index")
+            .match_header("authorization", "Bearer anon-key")
+            .match_body(Matcher::Json(
+                serde_json::json!({"p_namespace": "p2pk", "p_minimum_index": 6}),
+            ))
+            .with_status(200)
+            .with_body("6")
+            .create_async()
+            .await;
+        assert_eq!(db.reserve_derivation_index("p2pk", 6).await.unwrap(), 6);
+        success.assert_async().await;
+        let exhausted = server
+            .mock("POST", "/rest/v1/rpc/reserve_derivation_index")
+            .match_body(Matcher::Json(
+                serde_json::json!({"p_namespace": "p2pk", "p_minimum_index": 0}),
+            ))
+            .with_status(400)
+            .with_body(r#"{"code":"22003","message":"Derivation counter exhausted"}"#)
+            .create_async()
+            .await;
+        assert!(matches!(
+            db.reserve_derivation_index("p2pk", 0).await,
+            Err(DatabaseError::AmountOverflow)
+        ));
+        exhausted.assert_async().await;
+        assert!(matches!(
+            db.reserve_derivation_index("p2pk", u32::MAX).await,
+            Err(DatabaseError::AmountOverflow)
+        ));
+    }
+
     #[test]
     fn schema_sql_tracks_required_schema_version() {
         let schema_sql = SupabaseWalletDatabase::get_schema_sql();
@@ -3351,6 +3448,7 @@ mod tests {
         assert!(schema_sql.contains("CREATE TABLE IF NOT EXISTS wallet_encryption_metadata"));
         assert!(schema_sql.contains("CREATE TABLE IF NOT EXISTS derivation_counter"));
         assert!(schema_sql.contains("CREATE OR REPLACE FUNCTION increment_derivation_counter"));
+        assert!(schema_sql.contains("CREATE OR REPLACE FUNCTION public.reserve_derivation_index"));
         assert!(schema_sql
             .contains("ALTER TABLE proof ADD COLUMN IF NOT EXISTS derivation_index INTEGER"));
         assert!(schema_sql.contains("ALTER TABLE proof ADD COLUMN IF NOT EXISTS p2pk_e TEXT"));

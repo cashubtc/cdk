@@ -1,12 +1,10 @@
 //! Database traits definition
 
 use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
 
 use cdk_common::database::Error;
 
-use crate::stmt::{query, Column, Statement};
+use crate::stmt::{Column, Statement};
 
 /// Database Executor
 ///
@@ -32,173 +30,131 @@ pub trait DatabaseExecutor: Debug + Sync + Send {
     async fn batch(&self, statement: Statement) -> Result<(), Error>;
 }
 
-/// Database transaction trait
+/// An owned SQL transaction. The backend is responsible for rollback on drop.
 #[async_trait::async_trait]
-pub trait DatabaseTransaction<DB>
-where
-    DB: DatabaseExecutor,
-{
-    /// Consumes the current transaction committing the changes
-    async fn commit(conn: &mut DB) -> Result<(), Error>;
+pub trait SqlTransaction: DatabaseExecutor + Sized + 'static {
+    /// Commit and release this transaction's connection.
+    async fn commit(self) -> Result<(), Error>;
 
-    /// Begin a transaction
-    async fn begin(conn: &mut DB) -> Result<(), Error>;
-
-    /// Consumes the transaction rolling back all changes
-    async fn rollback(conn: &mut DB) -> Result<(), Error>;
+    /// Roll back and release this transaction's connection.
+    async fn rollback(self) -> Result<(), Error>;
 }
 
-/// Database connection with a transaction
-#[derive(Debug)]
-pub struct ConnectionWithTransaction<DB, W>
-where
-    DB: DatabaseConnector + 'static,
-    W: Debug + Deref<Target = DB> + DerefMut<Target = DB> + Send + Sync + 'static,
-{
-    inner: Option<W>,
+/// An owned connection checked out from a library-managed pool.
+#[async_trait::async_trait]
+pub trait SqlConnection: DatabaseExecutor + Sized + 'static {
+    /// Transaction owning this connection.
+    type Transaction: SqlTransaction;
+
+    /// Begin a transaction without acquiring another connection.
+    async fn begin_transaction(self) -> Result<Self::Transaction, Error>;
 }
 
-impl<DB, W> ConnectionWithTransaction<DB, W>
-where
-    DB: DatabaseConnector,
-    W: Debug + Deref<Target = DB> + DerefMut<Target = DB> + Send + Sync + 'static,
-{
-    /// Creates a new transaction
-    pub async fn new(mut inner: W) -> Result<Self, Error> {
-        DB::Transaction::begin(inner.deref_mut()).await?;
-        Ok(Self { inner: Some(inner) })
+/// Backend adapter for a library-managed SQL pool.
+///
+/// Implementations delegate all connection capacity, waiting, and recycling to
+/// their pool library. This interface only connects that library to CDK's SQL.
+#[async_trait::async_trait]
+pub trait SqlBackend: Clone + Debug + Send + Sync + 'static {
+    /// Backend configuration accepted by database constructors.
+    type Config;
+    /// Owned connection returned by the pool adapter.
+    type Connection: SqlConnection<Transaction = Self::Transaction>;
+    /// Owned transaction returned by the backend.
+    type Transaction: SqlTransaction;
+
+    /// Construct the library pool, validating configuration without connecting.
+    fn new(config: Self::Config) -> Result<Self, Error>;
+
+    /// Acquire an owned connection using the library's timeout policy.
+    async fn acquire(&self) -> Result<Self::Connection, Error>;
+
+    /// Acquire a connection and begin a transaction.
+    async fn begin_transaction(&self) -> Result<Self::Transaction, Error> {
+        self.acquire().await?.begin_transaction().await
     }
 
-    /// Commits the transaction consuming it and releasing the connection back to the pool (or
-    /// disconnecting)
-    pub async fn commit(mut self) -> Result<(), Error> {
-        let mut conn = self
-            .inner
-            .take()
-            .ok_or(Error::Internal("Missing connection".to_owned()))?;
-
-        DB::Transaction::commit(&mut conn).await?;
-
-        Ok(())
-    }
-
-    /// Rollback the transaction consuming it and releasing the connection back to the pool (or
-    /// disconnecting)
-    pub async fn rollback(mut self) -> Result<(), Error> {
-        let mut conn = self
-            .inner
-            .take()
-            .ok_or(Error::Internal("Missing connection".to_owned()))?;
-
-        DB::Transaction::rollback(&mut conn).await?;
-
-        Ok(())
+    /// Begin a transaction for bootstrap and migrations.
+    async fn begin_migration(&self) -> Result<Self::Transaction, Error> {
+        self.begin_transaction().await
     }
 }
 
-impl<DB, W> Drop for ConnectionWithTransaction<DB, W>
-where
-    DB: DatabaseConnector,
-    W: Debug + Deref<Target = DB> + DerefMut<Target = DB> + Send + Sync + 'static,
-{
-    fn drop(&mut self) {
-        if let Some(mut conn) = self.inner.take() {
-            tokio::spawn(async move {
-                let _ = DB::Transaction::rollback(conn.deref_mut()).await;
-            });
+/// Bounded diagnostic reasons for transaction cleanup and connection disposal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanupOutcome {
+    /// Rollback was acknowledged and the connection returned to the pool.
+    RolledBack,
+    /// The cleanup deadline elapsed.
+    Timeout,
+    /// The database rejected rollback or its connection was lost.
+    RollbackError,
+    /// SQLite's blocking worker failed.
+    WorkerError,
+    /// No runtime was available to schedule cleanup.
+    RuntimeUnavailable,
+    /// The runtime cancelled the cleanup task before completion.
+    TaskCancelled,
+}
+
+impl CleanupOutcome {
+    fn label(self) -> &'static str {
+        match self {
+            Self::RolledBack => "rolled_back",
+            Self::Timeout => "timeout",
+            Self::RollbackError => "rollback_error",
+            Self::WorkerError => "worker_error",
+            Self::RuntimeUnavailable => "runtime_unavailable",
+            Self::TaskCancelled => "task_cancelled",
         }
     }
-}
 
-#[async_trait::async_trait]
-impl<DB, W> DatabaseExecutor for ConnectionWithTransaction<DB, W>
-where
-    DB: DatabaseConnector,
-    W: Debug + Deref<Target = DB> + DerefMut<Target = DB> + Send + Sync + 'static,
-{
-    fn name() -> &'static str {
-        "Transaction"
-    }
-
-    /// Executes a query and returns the affected rows
-    async fn execute(&self, statement: Statement) -> Result<usize, Error> {
-        self.inner
-            .as_ref()
-            .ok_or(Error::Internal("Missing internal connection".to_owned()))?
-            .execute(statement)
-            .await
-    }
-
-    /// Runs the query and returns the first row or None
-    async fn fetch_one(&self, statement: Statement) -> Result<Option<Vec<Column>>, Error> {
-        self.inner
-            .as_ref()
-            .ok_or(Error::Internal("Missing internal connection".to_owned()))?
-            .fetch_one(statement)
-            .await
-    }
-
-    /// Runs the query and returns the first row or None
-    async fn fetch_all(&self, statement: Statement) -> Result<Vec<Vec<Column>>, Error> {
-        self.inner
-            .as_ref()
-            .ok_or(Error::Internal("Missing internal connection".to_owned()))?
-            .fetch_all(statement)
-            .await
-    }
-
-    /// Fetches the first row and column from a query
-    async fn pluck(&self, statement: Statement) -> Result<Option<Column>, Error> {
-        self.inner
-            .as_ref()
-            .ok_or(Error::Internal("Missing internal connection".to_owned()))?
-            .pluck(statement)
-            .await
-    }
-
-    /// Batch execution
-    async fn batch(&self, statement: Statement) -> Result<(), Error> {
-        self.inner
-            .as_ref()
-            .ok_or(Error::Internal("Missing internal connection".to_owned()))?
-            .batch(statement)
-            .await
+    /// Record the outcome exactly once, when the connection is returned or detached.
+    pub fn record(self, backend: &'static str) {
+        let discarded = self != Self::RolledBack;
+        if discarded {
+            tracing::warn!(
+                backend,
+                reason = self.label(),
+                "Discarding connection after unsuccessful cleanup"
+            );
+        }
+        #[cfg(feature = "prometheus")]
+        cdk_prometheus::METRICS.record_db_connection_cleanup(backend, self.label(), discarded);
     }
 }
 
-/// Generic transaction handler for SQLite
-#[allow(missing_debug_implementations)]
-pub struct GenericTransactionHandler<W>(PhantomData<W>);
+/// Metrics for the lifetime of a successful connection checkout.
+///
+/// Move this guard with the connection into asynchronous cleanup so cleanup is
+/// included in the checkout duration. It does not manage pooled resources.
+#[derive(Debug, Default)]
+pub struct ConnectionMetrics {
+    #[cfg(feature = "prometheus")]
+    started: Option<std::time::Instant>,
+}
 
-#[async_trait::async_trait]
-impl<W> DatabaseTransaction<W> for GenericTransactionHandler<W>
-where
-    W: DatabaseExecutor,
-{
-    /// Consumes the current transaction committing the changes
-    async fn commit(conn: &mut W) -> Result<(), Error> {
-        query("COMMIT")?.execute(conn).await?;
-        Ok(())
-    }
-
-    /// Begin a transaction
-    async fn begin(conn: &mut W) -> Result<(), Error> {
-        query("START TRANSACTION")?.execute(conn).await?;
-        Ok(())
-    }
-
-    /// Consumes the transaction rolling back all changes
-    async fn rollback(conn: &mut W) -> Result<(), Error> {
-        query("ROLLBACK")?.execute(conn).await?;
-        Ok(())
+impl ConnectionMetrics {
+    /// Record a successful checkout.
+    pub fn acquired() -> Self {
+        #[cfg(feature = "prometheus")]
+        {
+            cdk_prometheus::METRICS.increment_db_connections_active();
+            Self {
+                started: Some(std::time::Instant::now()),
+            }
+        }
+        #[cfg(not(feature = "prometheus"))]
+        Self {}
     }
 }
 
-/// Database connector
-#[async_trait::async_trait]
-pub trait DatabaseConnector: Debug + DatabaseExecutor + Send + Sync {
-    /// Database static trait for the database
-    type Transaction: DatabaseTransaction<Self>
-    where
-        Self: Sized;
+impl Drop for ConnectionMetrics {
+    fn drop(&mut self) {
+        #[cfg(feature = "prometheus")]
+        if let Some(started) = self.started.take() {
+            cdk_prometheus::METRICS.decrement_db_connections_active();
+            cdk_prometheus::METRICS.record_db_operation(started.elapsed().as_secs_f64(), "drop");
+        }
+    }
 }

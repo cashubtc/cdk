@@ -309,6 +309,44 @@ impl<'a> MeltSaga<'a, Initial> {
 
         let quote_info = self.initialize_melt(quote_id).await?;
 
+        let prepared = self
+            .wallet
+            .select_and_reserve_proofs(&self.state_data.operation_id, || async {
+                let prepared = self.select_proofs(&quote_info, &metadata).await?;
+                let mut ys = prepared.proofs.ys()?;
+                ys.extend(prepared.proofs_to_swap.ys()?);
+                Ok((prepared, ys))
+            })
+            .await?;
+
+        self.wallet
+            .localstore
+            .add_saga(prepared.saga.clone())
+            .await?;
+        let mut proof_ys = prepared.proofs.ys()?;
+        proof_ys.extend(prepared.proofs_to_swap.ys()?);
+        add_compensation(
+            &mut self.compensations,
+            Box::new(RevertProofReservation {
+                localstore: self.wallet.localstore.clone(),
+                proof_ys,
+                saga_id: self.state_data.operation_id,
+            }),
+        )
+        .await;
+
+        Ok(MeltSaga {
+            wallet: self.wallet,
+            compensations: self.compensations,
+            state_data: prepared,
+        })
+    }
+
+    async fn select_proofs(
+        &self,
+        quote_info: &MeltQuote,
+        metadata: &HashMap<String, String>,
+    ) -> Result<Prepared, Error> {
         let inputs_needed_amount = quote_info
             .amount
             .checked_add(quote_info.fee_reserve)
@@ -343,13 +381,7 @@ impl<'a> MeltSaga<'a, Initial> {
         let proofs_total = exact_input_proofs.total_amount()?;
 
         if proofs_total == inputs_needed_amount {
-            let proof_ys = exact_input_proofs.ys()?;
             let operation_id = self.state_data.operation_id;
-
-            self.wallet
-                .localstore
-                .reserve_proofs(proof_ys.clone(), &operation_id)
-                .await?;
 
             let saga = WalletSaga::new(
                 operation_id,
@@ -358,7 +390,7 @@ impl<'a> MeltSaga<'a, Initial> {
                 self.wallet.mint_url.clone(),
                 self.wallet.unit.clone(),
                 OperationData::Melt(MeltOperationData {
-                    quote_id: quote_id.to_string(),
+                    quote_id: quote_info.id.clone(),
                     amount: quote_info.amount,
                     fee_reserve: quote_info.fee_reserve,
                     counter_start: None,
@@ -370,34 +402,18 @@ impl<'a> MeltSaga<'a, Initial> {
                 }),
             );
 
-            self.wallet.localstore.add_saga(saga.clone()).await?;
-
-            add_compensation(
-                &mut self.compensations,
-                Box::new(RevertProofReservation {
-                    localstore: self.wallet.localstore.clone(),
-                    proof_ys,
-                    saga_id: operation_id,
-                }),
-            )
-            .await;
-
             let input_fee = self.wallet.get_proofs_fee(&exact_input_proofs).await?.total;
 
-            return Ok(MeltSaga {
-                wallet: self.wallet,
-                compensations: self.compensations,
-                state_data: Prepared {
-                    operation_id: self.state_data.operation_id,
-                    quote: quote_info,
-                    proofs: exact_input_proofs,
-                    proofs_to_swap: Proofs::new(),
-                    swap_fee: Amount::ZERO,
-                    input_fee,
-                    input_fee_without_swap: input_fee,
-                    keyset_policy,
-                    saga,
-                },
+            return Ok(Prepared {
+                operation_id: self.state_data.operation_id,
+                quote: quote_info.clone(),
+                proofs: exact_input_proofs,
+                proofs_to_swap: Proofs::new(),
+                swap_fee: Amount::ZERO,
+                input_fee,
+                input_fee_without_swap: input_fee,
+                keyset_policy,
+                saga,
             });
         }
 
@@ -440,15 +456,7 @@ impl<'a> MeltSaga<'a, Initial> {
         let proofs_to_swap = input_proofs;
         let swap_fee = self.wallet.get_proofs_fee(&proofs_to_swap).await?.total;
 
-        let proof_ys = proofs_to_swap.ys()?;
         let operation_id = self.state_data.operation_id;
-
-        if !proof_ys.is_empty() {
-            self.wallet
-                .localstore
-                .reserve_proofs(proof_ys.clone(), &operation_id)
-                .await?;
-        }
 
         let saga = WalletSaga::new(
             operation_id,
@@ -457,46 +465,30 @@ impl<'a> MeltSaga<'a, Initial> {
             self.wallet.mint_url.clone(),
             self.wallet.unit.clone(),
             OperationData::Melt(MeltOperationData {
-                quote_id: quote_id.to_string(),
+                quote_id: quote_info.id.clone(),
                 amount: quote_info.amount,
                 fee_reserve: quote_info.fee_reserve,
                 counter_start: None,
                 counter_end: None,
                 change_amount: None,
-                metadata,
+                metadata: metadata.clone(),
                 final_proof_ys: None,
                 change_blinded_messages: None, // Will be set when melt is requested
             }),
         );
 
-        self.wallet.localstore.add_saga(saga.clone()).await?;
-
-        add_compensation(
-            &mut self.compensations,
-            Box::new(RevertProofReservation {
-                localstore: self.wallet.localstore.clone(),
-                proof_ys,
-                saga_id: operation_id,
-            }),
-        )
-        .await;
-
         let input_fee_without_swap = swap_fee;
 
-        Ok(MeltSaga {
-            wallet: self.wallet,
-            compensations: self.compensations,
-            state_data: Prepared {
-                operation_id: self.state_data.operation_id,
-                quote: quote_info,
-                proofs: proofs_to_send,
-                proofs_to_swap,
-                swap_fee,
-                input_fee,
-                input_fee_without_swap,
-                keyset_policy,
-                saga,
-            },
+        Ok(Prepared {
+            operation_id: self.state_data.operation_id,
+            quote: quote_info.clone(),
+            proofs: proofs_to_send,
+            proofs_to_swap,
+            swap_fee,
+            input_fee,
+            input_fee_without_swap,
+            keyset_policy,
+            saga,
         })
     }
 

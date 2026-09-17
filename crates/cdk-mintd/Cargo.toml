@@ -25,7 +25,7 @@ bdk = ["dep:cdk-bdk", "cdk-bdk/bitcoin-rpc", "cdk-bdk/electrum", "cdk-bdk/esplor
 grpc-processor = ["dep:cdk-payment-processor", "cdk-signatory/grpc"]
 sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
 redis = ["cdk-axum/redis"]
-prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-axum/prometheus"]
+prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-postgres?/prometheus", "cdk-axum/prometheus"]
 info-page = ["cdk-axum/info-page"]
 
 [dependencies]

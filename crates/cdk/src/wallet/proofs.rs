@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 
 use cdk_common::amount::KeysetFeeAndAmounts;
 use cdk_common::wallet::ProofInfo;
@@ -13,6 +14,36 @@ use crate::nuts::{
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
 impl Wallet {
+    /// Select again when another operation wins an all-or-nothing reservation.
+    ///
+    /// Only `ProofNotUnspent` from the reservation itself is retried. Other
+    /// database errors, including uncertain commit outcomes, are propagated.
+    /// Selection must not reserve proofs, persist a saga, or execute payments.
+    pub(crate) async fn select_and_reserve_proofs<T, F, Fut>(
+        &self,
+        operation_id: &uuid::Uuid,
+        mut select: F,
+    ) -> Result<T, Error>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<(T, Vec<PublicKey>), Error>>,
+    {
+        // Bound contention without serializing independent wallet operations.
+        const MAX_ATTEMPTS: usize = 8;
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let (selection, ys) = select().await?;
+            match self.localstore.reserve_proofs(ys, operation_id).await {
+                Ok(()) => return Ok(selection),
+                Err(cdk_common::database::Error::ProofNotUnspent) if attempt < MAX_ATTEMPTS => {
+                    tracing::debug!(attempt, "Proof selection changed before reservation");
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
     pub(crate) async fn unspent_proof_derivation_indices(
         &self,
     ) -> Result<HashMap<Proof, u32>, Error> {
@@ -642,6 +673,124 @@ mod tests {
     use cdk_common::{Amount, Id, Proof, PublicKey};
 
     use crate::Wallet;
+
+    #[tokio::test]
+    async fn reservation_reselects_after_synchronized_conflict() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use tokio::sync::Barrier;
+        use uuid::Uuid;
+
+        use crate::nuts::nut00::ProofsMethods;
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url,
+            test_proof_info, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let proof_a = test_proof_info(test_keyset_id(), 8, test_mint_url());
+        let proof_b = test_proof_info(test_keyset_id(), 8, test_mint_url());
+        db.update_proofs(vec![proof_a, proof_b], vec![])
+            .await
+            .unwrap();
+        let wallet_a =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        let wallet_b =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        let barrier = Barrier::new(2);
+        let attempts_a = AtomicUsize::new(0);
+        let attempts_b = AtomicUsize::new(0);
+        let operation_a = Uuid::new_v4();
+        let operation_b = Uuid::new_v4();
+
+        let select = async |wallet: &Wallet, attempts: &AtomicUsize| {
+            let mut ys = wallet.get_unspent_proofs().await?.ys()?;
+            ys.sort();
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                // Both operations must read the same snapshot before either reserves it.
+                barrier.wait().await;
+            }
+            Ok((ys[0], vec![ys[0]]))
+        };
+        let (selected_a, selected_b) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::try_join!(
+                wallet_a.select_and_reserve_proofs(&operation_a, || select(&wallet_a, &attempts_a)),
+                wallet_b.select_and_reserve_proofs(&operation_b, || select(&wallet_b, &attempts_b)),
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_ne!(selected_a, selected_b);
+        assert_eq!(
+            attempts_a.load(Ordering::SeqCst) + attempts_b.load(Ordering::SeqCst),
+            3
+        );
+        assert_eq!(
+            db.get_reserved_proofs(&operation_a).await.unwrap()[0].y,
+            selected_a
+        );
+        assert_eq!(
+            db.get_reserved_proofs(&operation_b).await.unwrap()[0].y,
+            selected_b
+        );
+    }
+
+    #[tokio::test]
+    async fn reservation_contention_is_bounded_and_selection_errors_are_not_retried() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        use uuid::Uuid;
+
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url,
+            test_proof_info, MockMintConnector,
+        };
+        use crate::Error;
+
+        let db = create_test_db().await;
+        let proof = test_proof_info(test_keyset_id(), 8, test_mint_url());
+        let y = proof.y;
+        db.update_proofs(vec![proof], vec![]).await.unwrap();
+        let owner = Uuid::new_v4();
+        db.reserve_proofs(vec![y], &owner).await.unwrap();
+        let wallet =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        let attempts = AtomicUsize::new(0);
+        let contender = Uuid::new_v4();
+        let error = wallet
+            .select_and_reserve_proofs(&contender, || async {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Ok(((), vec![y]))
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::Database(cdk_common::database::Error::ProofNotUnspent)
+        ));
+        assert_eq!(attempts.load(Ordering::SeqCst), 8);
+        assert!(db.get_reserved_proofs(&contender).await.unwrap().is_empty());
+        assert_eq!(db.get_reserved_proofs(&owner).await.unwrap()[0].y, y);
+
+        attempts.store(0, Ordering::SeqCst);
+        let error = wallet
+            .select_and_reserve_proofs::<(), _, _>(&contender, || async {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Err(cdk_common::database::Error::ProofNotUnspent.into())
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::Database(cdk_common::database::Error::ProofNotUnspent)
+        ));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
 
     fn id() -> Id {
         Id::from_bytes(&[0; 8]).unwrap()
