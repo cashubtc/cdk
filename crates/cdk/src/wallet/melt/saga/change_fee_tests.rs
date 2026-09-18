@@ -40,6 +40,8 @@ impl Fixture {
                 unit: keyset.unit.clone(),
                 active: true,
                 input_fee_ppk: 0,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             }],
         )

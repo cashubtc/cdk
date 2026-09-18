@@ -54,6 +54,8 @@ fn to_keyset_infos(keysets: &[KeySet]) -> Vec<KeySetInfo> {
             unit: ks.unit.clone(),
             active: ks.active.unwrap_or(true),
             input_fee_ppk: ks.input_fee_ppk,
+            active_from: None,
+            active_until: None,
             final_expiry: ks.final_expiry,
         })
         .collect()
@@ -658,6 +660,8 @@ async fn test_swap_overpay_underpay_fee() {
             1,
             true,
             None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -737,6 +741,8 @@ async fn test_mint_enforce_fee() {
             cdk_integration_tests::standard_keyset_amounts(32),
             1,
             true,
+            None,
+            None,
             None,
         )
         .await
@@ -1114,6 +1120,8 @@ async fn test_mint_change_with_fee_melt() {
             cdk_integration_tests::standard_keyset_amounts(32),
             1,
             true,
+            None,
+            None,
             None,
         )
         .await
@@ -2351,9 +2359,17 @@ async fn test_restore_after_keyset_rotation() {
     // Rotate the keyset — the original keyset becomes inactive
     let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
 
-    mint.rotate_keyset(CurrencyUnit::Sat, amounts.clone(), 0, true, None)
-        .await
-        .expect("Failed to rotate keyset");
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        amounts.clone(),
+        0,
+        true,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("Failed to rotate keyset");
 
     // Mint 50 sats under the new active keyset
     let amount_after_rotation = 50;
@@ -2382,7 +2398,7 @@ async fn test_restore_after_keyset_rotation() {
 
     // A fixed past timestamp makes the third keyset expired without waiting.
     let third_keyset = mint
-        .rotate_keyset(CurrencyUnit::Sat, amounts, 0, true, Some(1))
+        .rotate_keyset(CurrencyUnit::Sat, amounts, 0, true, None, None, Some(1))
         .await
         .expect("Failed to rotate keyset");
 

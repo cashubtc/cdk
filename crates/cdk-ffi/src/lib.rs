@@ -572,6 +572,9 @@ mod tests {
             unit: CurrencyUnit::Sat,
             active: true,
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
+            final_expiry: None,
         })
         .expect_err("invalid keyset ID should return an error");
 
@@ -585,6 +588,9 @@ mod tests {
             unit: CurrencyUnit::Sat,
             active: true,
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
+            final_expiry: None,
         })
         .expect_err("empty keyset ID should return an error");
 

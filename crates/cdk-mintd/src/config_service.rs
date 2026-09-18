@@ -633,6 +633,8 @@ fn verify_local_keysets(
             active: Some(info.active),
             keys: derived.keys.into(),
             input_fee_ppk: info.input_fee_ppk,
+            active_from: info.active_from,
+            active_until: info.active_until,
             final_expiry: info.final_expiry,
         }
         .verify_id_for_legacy_nutshell_migration()
@@ -1555,6 +1557,8 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
             derivation_path_index: Some(1),
             amounts: vec![1, 2, 4],
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
             issuer_version: None,
         }]
@@ -2130,6 +2134,8 @@ engine = "sqlite"
             derivation_path_index: None,
             amounts: vec![1, 2, 4],
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
             issuer_version: None,
         };
@@ -2174,6 +2180,8 @@ engine = "sqlite"
             derivation_path_index: None,
             amounts: (0..64).map(|i| 1_u64 << i).collect(),
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
             issuer_version: Some(
                 cdk_common::common::IssuerVersion::from_str("nutshell/0.20.3")
@@ -2261,6 +2269,8 @@ engine = "sqlite"
                 derivation_path_index: None,
                 amounts: vec![1, 2, 4],
                 input_fee_ppk: fee,
+                active_from: None,
+                active_until: None,
                 final_expiry: expiry,
                 issuer_version: None,
             });

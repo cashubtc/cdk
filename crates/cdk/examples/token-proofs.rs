@@ -97,6 +97,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             unit: ks.unit.clone(),
             active: ks.active.unwrap_or(true),
             input_fee_ppk: ks.input_fee_ppk,
+            active_from: None,
+            active_until: None,
             final_expiry: ks.final_expiry,
         })
         .collect();

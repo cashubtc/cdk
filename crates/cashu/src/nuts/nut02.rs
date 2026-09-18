@@ -508,6 +508,12 @@ pub struct KeySet {
     /// Input Fee PPK
     #[serde(default)]
     pub input_fee_ppk: u64,
+    /// Unix time from which the mint intends to sign with this keyset
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_from: Option<u64>,
+    /// Unix time until which the mint intends to keep this keyset active
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_until: Option<u64>,
     /// Expiry
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_expiry: Option<u64>,
@@ -574,6 +580,15 @@ pub struct KeySetInfo {
         default = "default_input_fee_ppk"
     )]
     pub input_fee_ppk: u64,
+    /// Unix time from which the mint intends to sign with this keyset
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_from: Option<u64>,
+    /// Unix time until which the mint intends to keep this keyset active.
+    ///
+    /// None means the keyset stays active for at least 30 more days, so it
+    /// sorts as the latest value, never as zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_until: Option<u64>,
     /// Expiry of the keyset
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_expiry: Option<u64>,
@@ -1120,6 +1135,8 @@ mod test {
             unit: CurrencyUnit::Sat,
             active: true,
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         };
         let keysets = vec![v1_info];
@@ -1143,6 +1160,8 @@ mod test {
             unit: CurrencyUnit::Sat,
             active: true,
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         };
         let keysets = vec![v2_info];
@@ -1167,6 +1186,8 @@ mod test {
             unit: CurrencyUnit::Sat,
             active: true,
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         };
 
@@ -1179,6 +1200,8 @@ mod test {
             unit: CurrencyUnit::Sat,
             active: true,
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         };
 
@@ -1205,6 +1228,8 @@ mod test {
                 unit: CurrencyUnit::Sat,
                 active: true,
                 input_fee_ppk: 0,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             },
             KeySetInfo {
@@ -1212,6 +1237,8 @@ mod test {
                 unit: CurrencyUnit::Sat,
                 active: true,
                 input_fee_ppk: 0,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             },
         ];
@@ -1239,6 +1266,8 @@ mod test {
             unit: CurrencyUnit::Sat,
             active: true,
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         }];
 
@@ -1260,6 +1289,8 @@ mod test {
             unit: CurrencyUnit::Sat,
             active: true,
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         }];
 
@@ -1315,6 +1346,8 @@ mod test {
             active: Some(true),
             keys: keys.clone(),
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         };
         assert!(keyset.verify_id().is_ok(), "valid v1 keyset should verify");
@@ -1330,6 +1363,8 @@ mod test {
             active: Some(true),
             keys,
             input_fee_ppk,
+            active_from: None,
+            active_until: None,
             final_expiry: expiry,
         };
         assert!(
@@ -1356,6 +1391,8 @@ mod test {
             active: Some(false),
             keys,
             input_fee_ppk: 100,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         };
         for expiry in [None, Some(0)] {
@@ -1384,6 +1421,8 @@ mod test {
             active: Some(false),
             keys,
             input_fee_ppk: 100,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         };
         for expiry in [None, Some(0)] {
@@ -1436,6 +1475,8 @@ mod test {
             active: Some(true),
             keys,
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         };
 
@@ -1461,6 +1502,8 @@ mod test {
                 unit: CurrencyUnit::Sat,
                 active: true,
                 input_fee_ppk: 0,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             },
             KeySetInfo {
@@ -1468,6 +1511,8 @@ mod test {
                 unit: CurrencyUnit::Sat,
                 active: false,
                 input_fee_ppk: 0,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             },
             KeySetInfo {
@@ -1475,6 +1520,8 @@ mod test {
                 unit: CurrencyUnit::Usd,
                 active: true,
                 input_fee_ppk: 0,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             },
         ];
@@ -1500,6 +1547,8 @@ mod test {
                 unit: CurrencyUnit::Sat,
                 active: true,
                 input_fee_ppk: 0,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             },
             KeySetInfo {
@@ -1507,6 +1556,8 @@ mod test {
                 unit: CurrencyUnit::Usd,
                 active: true,
                 input_fee_ppk: 0,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             },
             KeySetInfo {
@@ -1514,6 +1565,8 @@ mod test {
                 unit: CurrencyUnit::Sat,
                 active: false,
                 input_fee_ppk: 0,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             },
         ];
@@ -1544,5 +1597,28 @@ mod test {
             r#"{"id":"009a1f293253e41e","unit":"sat","active":true,"input_fee_ppk":null}"#;
         let info_null: KeySetInfo = serde_json::from_str(json_null).unwrap();
         assert_eq!(info_null.input_fee_ppk, 0);
+    }
+
+    #[test]
+    fn test_active_window_round_trip() {
+        let json = r#"{"id":"009a1f293253e41e","unit":"sat","active":true,"input_fee_ppk":0,"active_from":1700000000,"active_until":1800000000}"#;
+        let info: KeySetInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.active_from, Some(1700000000));
+        assert_eq!(info.active_until, Some(1800000000));
+
+        let encoded = serde_json::to_value(&info).unwrap();
+        assert_eq!(encoded["active_from"], 1700000000);
+        assert_eq!(encoded["active_until"], 1800000000);
+
+        // Absent in the response means absent on the wire, as for final_expiry.
+        let bare: KeySetInfo =
+            serde_json::from_str(r#"{"id":"009a1f293253e41e","unit":"sat","active":true}"#)
+                .unwrap();
+        assert_eq!(bare.active_from, None);
+        assert_eq!(bare.active_until, None);
+
+        let encoded = serde_json::to_value(&bare).unwrap();
+        assert!(encoded.get("active_from").is_none());
+        assert!(encoded.get("active_until").is_none());
     }
 }

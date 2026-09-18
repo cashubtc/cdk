@@ -65,6 +65,8 @@ impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
             input_fee_ppk: self.input_fee_ppk,
             amounts: keys.keys().map(|x| x.to_u64()).collect::<Vec<_>>(),
             keys: cdk_common::Keys::new(keys),
+            active_from: self.active_from,
+            active_until: self.active_until,
             final_expiry: self.final_expiry,
             version: self.version,
             issuer_version: self
@@ -90,6 +92,8 @@ impl From<crate::signatory::SignatoryKeySet> for KeySet {
                     .map(|(key, value)| ((*key).into(), value.to_bytes().to_vec()))
                     .collect(),
             }),
+            active_from: keyset.active_from,
+            active_until: keyset.active_until,
             final_expiry: keyset.final_expiry,
             version: Default::default(),
             issuer_version: keyset.issuer_version.map(|v| v.to_string()),
@@ -337,6 +341,8 @@ impl TryInto<cdk_common::KeySet> for KeySet {
                     .collect::<Result<BTreeMap<cdk_common::Amount, cdk_common::PublicKey>, _>>()?,
             ),
             input_fee_ppk: self.input_fee_ppk,
+            active_from: self.active_from,
+            active_until: self.active_until,
             final_expiry: self.final_expiry,
         })
     }
@@ -349,6 +355,8 @@ impl From<crate::signatory::RotateKeyArguments> for RotationRequest {
             amounts: value.amounts,
             input_fee_ppk: value.input_fee_ppk,
             keyset_id_type: value.keyset_id_type.to_proto_i32(),
+            active_from: value.active_from,
+            active_until: value.active_until,
             final_expiry: value.final_expiry,
         }
     }
@@ -365,6 +373,8 @@ impl TryInto<crate::signatory::RotateKeyArguments> for RotationRequest {
                 .try_into()?,
             amounts: self.amounts,
             input_fee_ppk: self.input_fee_ppk,
+            active_from: self.active_from,
+            active_until: self.active_until,
             final_expiry: self.final_expiry,
             keyset_id_type: KeySetVersion::from_proto_i32(self.keyset_id_type)
                 .map_err(|err| Status::invalid_argument(err.to_string()))?,
@@ -380,6 +390,8 @@ impl From<cdk_common::KeySetInfo> for KeySet {
             active: value.active,
             input_fee_ppk: value.input_fee_ppk,
             keys: Default::default(),
+            active_from: value.active_from,
+            active_until: value.active_until,
             final_expiry: value.final_expiry,
             version: Default::default(),
             issuer_version: None,
@@ -400,6 +412,8 @@ impl TryInto<cdk_common::KeySetInfo> for KeySet {
                 .map_err(|_| cdk_common::Error::Custom("Invalid unit encoding".to_owned()))?,
             active: self.active,
             input_fee_ppk: self.input_fee_ppk,
+            active_from: self.active_from,
+            active_until: self.active_until,
             final_expiry: self.final_expiry,
         })
     }
