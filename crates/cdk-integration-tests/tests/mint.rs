@@ -83,6 +83,8 @@ async fn test_correct_keyset() {
         0,
         true,
         None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -102,6 +104,8 @@ async fn test_correct_keyset() {
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
         true,
+        None,
+        None,
         None,
     )
     .await
@@ -356,6 +360,8 @@ async fn test_rotate_keyset_with_expiry() {
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
         true,
+        None,
+        None,
         Some(past_expiry),
     )
     .await
@@ -383,6 +389,8 @@ async fn test_rotate_keyset_with_expiry() {
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
         true,
+        None,
+        None,
         None,
     )
     .await
@@ -451,6 +459,8 @@ async fn test_builder_does_not_replace_all_expired_keysets() {
             cdk_integration_tests::standard_keyset_amounts(32),
             0,
             true,
+            None,
+            None,
             Some(future_expiry),
         )
         .await

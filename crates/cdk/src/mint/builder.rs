@@ -56,6 +56,10 @@ pub struct KeysetRotation {
     pub input_fee_ppk: u64,
     /// Whether to use keyset V2 (Version01) or V1 (Version00)
     pub use_keyset_v2: bool,
+    /// Unix time from which the mint intends to sign with this keyset
+    pub active_from: Option<u64>,
+    /// Unix time until which the mint intends to keep this keyset active
+    pub active_until: Option<u64>,
     /// Optional expiry timestamp (unix seconds)
     pub final_expiry: Option<u64>,
 }
@@ -676,6 +680,8 @@ impl MintBuilder {
                         } else {
                             cdk_common::nut02::KeySetVersion::Version00
                         },
+                        active_from: None,
+                        active_until: None,
                         final_expiry: None,
                     })
                     .await?;
@@ -694,6 +700,8 @@ impl MintBuilder {
                     } else {
                         cdk_common::nut02::KeySetVersion::Version00
                     },
+                    active_from: rotation.active_from,
+                    active_until: rotation.active_until,
                     final_expiry: rotation.final_expiry,
                 })
                 .await?;

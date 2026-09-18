@@ -286,6 +286,8 @@ mod tests {
                     amounts: amounts.clone(),
                     input_fee_ppk: *fee,
                     keyset_id_type: KeySetVersion::Version00,
+                    active_from: None,
+                    active_until: None,
                     final_expiry: None,
                 })
                 .await
