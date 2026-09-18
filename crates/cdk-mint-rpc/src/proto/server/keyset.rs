@@ -28,6 +28,8 @@ impl MintRPCServer {
                 amounts,
                 input_fee_ppk.unwrap_or(0),
                 keyset_version,
+                None,
+                None,
                 final_expiry,
             )
             .await
@@ -216,7 +218,15 @@ mod tests {
         ] {
             let keyset = server
                 .mint
-                .rotate_keyset(CurrencyUnit::Sat, vec![1, 2, 4], 0, legacy, None)
+                .rotate_keyset(
+                    CurrencyUnit::Sat,
+                    vec![1, 2, 4],
+                    0,
+                    legacy,
+                    None,
+                    None,
+                    None,
+                )
                 .await
                 .unwrap();
             assert_eq!(keyset.id.get_version(), expected);

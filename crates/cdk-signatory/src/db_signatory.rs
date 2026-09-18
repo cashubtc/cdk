@@ -470,6 +470,8 @@ impl Signatory for DbSignatory {
             args.unit.clone(),
             &amounts,
             args.input_fee_ppk,
+            args.active_from,
+            args.active_until,
             args.final_expiry,
             args.keyset_id_type,
         );
@@ -533,6 +535,8 @@ mod test {
             amounts: vec![1, 2, 4, 8],
             input_fee_ppk: 0,
             keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         };
 
@@ -602,6 +606,8 @@ mod test {
             amounts: vec![1, 2, 4, 8],
             input_fee_ppk: 0,
             keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         };
 
@@ -659,6 +665,8 @@ mod test {
             amounts,
             input_fee_ppk: 0,
             keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         };
 
@@ -710,6 +718,8 @@ mod test {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                active_from: None,
+                active_until: None,
                 final_expiry: Some(unix_time() - 1),
             })
             .await
@@ -752,6 +762,8 @@ mod test {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                active_from: None,
+                active_until: None,
                 final_expiry: Some(unix_time() + 1_000),
             })
             .await
@@ -811,6 +823,8 @@ mod test {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             })
             .await
@@ -864,6 +878,8 @@ mod test {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             })
             .await
@@ -922,6 +938,8 @@ mod test {
                         amounts: vec![1, 2, 4, 8],
                         input_fee_ppk: 0,
                         keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                        active_from: None,
+                        active_until: None,
                         final_expiry: None,
                     })
                     .await
@@ -1004,6 +1022,8 @@ mod test {
                         amounts: vec![1, 2, 4, 8],
                         input_fee_ppk: 0,
                         keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                        active_from: None,
+                        active_until: None,
                         final_expiry: None,
                     })
                     .await
@@ -1061,6 +1081,8 @@ mod test {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             })
             .await
@@ -1076,6 +1098,8 @@ mod test {
                             amounts: vec![1, 2, 4, 8],
                             input_fee_ppk: 0,
                             keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                            active_from: None,
+                            active_until: None,
                             final_expiry: None,
                         })
                         .await

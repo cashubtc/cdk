@@ -52,6 +52,8 @@ impl Mint {
                     unit: k.unit.clone(),
                     active: k.active,
                     input_fee_ppk: k.input_fee_ppk,
+                    active_from: k.active_from,
+                    active_until: k.active_until,
                     final_expiry: k.final_expiry,
                 })
                 .collect(),
@@ -71,12 +73,15 @@ impl Mint {
     /// Add current keyset to inactive keysets
     /// Generate new keyset
     #[instrument(skip(self))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn rotate_keyset(
         &self,
         unit: CurrencyUnit,
         amounts: Vec<u64>,
         input_fee_ppk: u64,
         use_keyset_v2: bool,
+        active_from: Option<u64>,
+        active_until: Option<u64>,
         final_expiry: Option<u64>,
     ) -> Result<MintKeySetInfo, Error> {
         let keyset_id_type = if use_keyset_v2 {
@@ -84,19 +89,30 @@ impl Mint {
         } else {
             cdk_common::nut02::KeySetVersion::Version00
         };
-        self.rotate_keyset_by_version(unit, amounts, input_fee_ppk, keyset_id_type, final_expiry)
-            .await
+        self.rotate_keyset_by_version(
+            unit,
+            amounts,
+            input_fee_ppk,
+            keyset_id_type,
+            active_from,
+            active_until,
+            final_expiry,
+        )
+        .await
     }
 
     /// Add current keyset to inactive keysets and generate a new keyset
     /// with the specified keyset version.
     #[instrument(skip(self))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn rotate_keyset_by_version(
         &self,
         unit: CurrencyUnit,
         amounts: Vec<u64>,
         input_fee_ppk: u64,
         keyset_id_type: cdk_common::nut02::KeySetVersion,
+        active_from: Option<u64>,
+        active_until: Option<u64>,
         final_expiry: Option<u64>,
     ) -> Result<MintKeySetInfo, Error> {
         let result = self
@@ -106,6 +122,8 @@ impl Mint {
                 amounts,
                 input_fee_ppk,
                 keyset_id_type,
+                active_from,
+                active_until,
                 final_expiry,
             })
             .await?;

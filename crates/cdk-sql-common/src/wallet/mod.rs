@@ -284,6 +284,8 @@ where
                 unit,
                 active,
                 input_fee_ppk,
+                active_from,
+                active_until,
                 final_expiry
             FROM
                 keyset
@@ -320,6 +322,8 @@ where
                 unit,
                 active,
                 input_fee_ppk,
+                active_from,
+                active_until,
                 final_expiry
             FROM
                 keyset
@@ -1209,12 +1213,14 @@ where
             query(
                 r#"
         INSERT INTO keyset
-        (mint_url, id, unit, active, input_fee_ppk, final_expiry, keyset_u32)
+        (mint_url, id, unit, active, input_fee_ppk, active_from, active_until, final_expiry, keyset_u32)
         VALUES
-        (:mint_url, :id, :unit, :active, :input_fee_ppk, :final_expiry, :keyset_u32)
+        (:mint_url, :id, :unit, :active, :input_fee_ppk, :active_from, :active_until, :final_expiry, :keyset_u32)
         ON CONFLICT(id) DO UPDATE SET
             active = excluded.active,
-            input_fee_ppk = excluded.input_fee_ppk
+            input_fee_ppk = excluded.input_fee_ppk,
+            active_from = excluded.active_from,
+            active_until = excluded.active_until
         "#,
             )?
             .bind("mint_url", mint_url.to_string())
@@ -1222,6 +1228,8 @@ where
             .bind("unit", keyset.unit.to_string())
             .bind("active", keyset.active)
             .bind("input_fee_ppk", i64::try_from(keyset.input_fee_ppk)?)
+            .bind("active_from", keyset.active_from.map(i64::try_from).transpose()?)
+            .bind("active_until", keyset.active_until.map(i64::try_from).transpose()?)
             .bind(
                 "final_expiry",
                 keyset.final_expiry.map(i64::try_from).transpose()?,
@@ -2060,6 +2068,8 @@ fn sql_row_to_keyset(row: Vec<Column>) -> Result<KeySetInfo, Error> {
             unit,
             active,
             input_fee_ppk,
+            active_from,
+            active_until,
             final_expiry
         ) = row
     );
@@ -2069,6 +2079,8 @@ fn sql_row_to_keyset(row: Vec<Column>) -> Result<KeySetInfo, Error> {
         unit: column_as_string!(unit, CurrencyUnit::from_str),
         active: matches!(active, Column::Integer(1)),
         input_fee_ppk: column_as_nullable_number!(input_fee_ppk).unwrap_or(0),
+        active_from: column_as_nullable_number!(active_from),
+        active_until: column_as_nullable_number!(active_until),
         final_expiry: column_as_nullable_number!(final_expiry),
     })
 }
