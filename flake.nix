@@ -714,7 +714,7 @@
               uniffiBindgenGo
             ];
             buildPhaseCargoCommand = ''
-              cargo build --release -p cdk-ffi-go
+              cargo build --locked --release -p cdk-ffi-go
 
               LIB_EXT="${if isDarwin then "dylib" else "so"}"
               CDK_FFI_LIB="target/release/libcdk_ffi_go.$LIB_EXT"
