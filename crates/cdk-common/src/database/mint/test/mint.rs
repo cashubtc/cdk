@@ -1996,3 +1996,294 @@ pub async fn concurrent_mint_quote_batches_use_consistent_lock_order(db: DynMint
     assert_eq!(second_quotes[0].as_ref().unwrap().id, quote2.id);
     assert_eq!(second_quotes[1].as_ref().unwrap().id, quote1.id);
 }
+
+/// Test that mint quotes with multiple payments and multiple issuances are reconstructed
+/// accurately without duplicate payments or issuances across single and batch fetches.
+pub async fn mint_quotes_load_payments_and_issuance_without_duplicates<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    // Quote 1: 3 payments, 2 issuances (multiple payments AND multiple issuance)
+    let quote1 = MintQuote::new(
+        None,
+        unique_string(),
+        cashu::CurrencyUnit::Sat,
+        None,
+        0,
+        PaymentIdentifier::CustomId(unique_string()),
+        None,
+        Amount::new(1000, cashu::CurrencyUnit::Sat),
+        Amount::new(0, cashu::CurrencyUnit::Sat),
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        0,
+        0,
+        vec![],
+        vec![],
+        None,
+    );
+
+    // Quote 2: 0 payments, 0 issuances (zero payments + zero issuance)
+    let quote2 = MintQuote::new(
+        None,
+        unique_string(),
+        cashu::CurrencyUnit::Sat,
+        None,
+        0,
+        PaymentIdentifier::CustomId(unique_string()),
+        None,
+        Amount::new(500, cashu::CurrencyUnit::Sat),
+        Amount::new(0, cashu::CurrencyUnit::Sat),
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        0,
+        0,
+        vec![],
+        vec![],
+        None,
+    );
+
+    // Quote 3: 2 payments, 0 issuances (multiple payments)
+    let quote3 = MintQuote::new(
+        None,
+        unique_string(),
+        cashu::CurrencyUnit::Sat,
+        None,
+        0,
+        PaymentIdentifier::CustomId(unique_string()),
+        None,
+        Amount::new(400, cashu::CurrencyUnit::Sat),
+        Amount::new(0, cashu::CurrencyUnit::Sat),
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        0,
+        0,
+        vec![],
+        vec![],
+        None,
+    );
+
+    // Quote 4: 0 payments, 2 issuances (multiple issuance)
+    let quote4 = MintQuote::new(
+        None,
+        unique_string(),
+        cashu::CurrencyUnit::Sat,
+        None,
+        0,
+        PaymentIdentifier::CustomId(unique_string()),
+        None,
+        Amount::new(600, cashu::CurrencyUnit::Sat),
+        Amount::new(0, cashu::CurrencyUnit::Sat),
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        0,
+        0,
+        vec![],
+        vec![],
+        None,
+    );
+
+    // Insert quote1, quote2, quote3, quote4
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let quote1 = tx.add_mint_quote(quote1).await.unwrap();
+    let quote2 = tx.add_mint_quote(quote2).await.unwrap();
+    let quote3 = tx.add_mint_quote(quote3).await.unwrap();
+    let quote4 = tx.add_mint_quote(quote4).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // Add 3 payments and 2 issuances to quote1
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut q1 = tx.get_mint_quote(&quote1.id).await.unwrap().unwrap();
+    q1.add_payment(
+        Amount::from(500).with_unit(CurrencyUnit::Sat),
+        "quote1_pay_1".to_string(),
+        Some(100),
+    )
+    .unwrap();
+    q1.add_payment(
+        Amount::from(300).with_unit(CurrencyUnit::Sat),
+        "quote1_pay_2".to_string(),
+        Some(200),
+    )
+    .unwrap();
+    q1.add_payment(
+        Amount::from(200).with_unit(CurrencyUnit::Sat),
+        "quote1_pay_3".to_string(),
+        Some(300),
+    )
+    .unwrap();
+    tx.update_mint_quote(&mut q1).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut q1 = tx.get_mint_quote(&quote1.id).await.unwrap().unwrap();
+    q1.add_issuance(Amount::from(400).with_unit(CurrencyUnit::Sat))
+        .unwrap();
+    q1.add_issuance(Amount::from(600).with_unit(CurrencyUnit::Sat))
+        .unwrap();
+    tx.update_mint_quote(&mut q1).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // Add 2 payments to quote3
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut q3 = tx.get_mint_quote(&quote3.id).await.unwrap().unwrap();
+    q3.add_payment(
+        Amount::from(250).with_unit(CurrencyUnit::Sat),
+        "quote3_pay_1".to_string(),
+        Some(110),
+    )
+    .unwrap();
+    q3.add_payment(
+        Amount::from(150).with_unit(CurrencyUnit::Sat),
+        "quote3_pay_2".to_string(),
+        Some(210),
+    )
+    .unwrap();
+    tx.update_mint_quote(&mut q3).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // Add 1 payment and 2 issuances to quote4
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut q4 = tx.get_mint_quote(&quote4.id).await.unwrap().unwrap();
+    q4.add_payment(
+        Amount::from(600).with_unit(CurrencyUnit::Sat),
+        "quote4_pay_1".to_string(),
+        Some(120),
+    )
+    .unwrap();
+    tx.update_mint_quote(&mut q4).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut q4 = tx.get_mint_quote(&quote4.id).await.unwrap().unwrap();
+    q4.add_issuance(Amount::from(350).with_unit(CurrencyUnit::Sat))
+        .unwrap();
+    q4.add_issuance(Amount::from(250).with_unit(CurrencyUnit::Sat))
+        .unwrap();
+    tx.update_mint_quote(&mut q4).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // Verifiers
+    let verify_q1 = |q: &MintQuote| {
+        assert_eq!(q.id, quote1.id);
+        assert_eq!(q.payments.len(), 3, "quote1 must have exactly 3 payments");
+        assert_eq!(q.payments[0].payment_id, "quote1_pay_1");
+        assert_eq!(q.payments[0].amount.value(), 500);
+        assert_eq!(q.payments[1].payment_id, "quote1_pay_2");
+        assert_eq!(q.payments[1].amount.value(), 300);
+        assert_eq!(q.payments[2].payment_id, "quote1_pay_3");
+        assert_eq!(q.payments[2].amount.value(), 200);
+
+        assert_eq!(q.issuance.len(), 2, "quote1 must have exactly 2 issuances");
+        assert_eq!(q.issuance[0].amount.value(), 400);
+        assert_eq!(q.issuance[1].amount.value(), 600);
+    };
+
+    let verify_q2 = |q: &MintQuote| {
+        assert_eq!(q.id, quote2.id);
+        assert_eq!(q.payments.len(), 0, "quote2 must have 0 payments");
+        assert_eq!(q.issuance.len(), 0, "quote2 must have 0 issuances");
+    };
+
+    let verify_q3 = |q: &MintQuote| {
+        assert_eq!(q.id, quote3.id);
+        assert_eq!(q.payments.len(), 2, "quote3 must have exactly 2 payments");
+        assert_eq!(q.payments[0].payment_id, "quote3_pay_1");
+        assert_eq!(q.payments[0].amount.value(), 250);
+        assert_eq!(q.payments[1].payment_id, "quote3_pay_2");
+        assert_eq!(q.payments[1].amount.value(), 150);
+        assert_eq!(q.issuance.len(), 0, "quote3 must have 0 issuances");
+    };
+
+    let verify_q4 = |q: &MintQuote| {
+        assert_eq!(q.id, quote4.id);
+        assert_eq!(q.payments.len(), 1, "quote4 must have 1 payment");
+        assert_eq!(q.payments[0].payment_id, "quote4_pay_1");
+        assert_eq!(q.payments[0].amount.value(), 600);
+        assert_eq!(q.issuance.len(), 2, "quote4 must have exactly 2 issuances");
+        assert_eq!(q.issuance[0].amount.value(), 350);
+        assert_eq!(q.issuance[1].amount.value(), 250);
+    };
+
+    // 1. Single quote lookups (zero payments/issuance, multiple payments, multiple issuance, multiple of both)
+    let retrieved1 = db.get_mint_quote(&quote1.id).await.unwrap().unwrap();
+    verify_q1(&retrieved1);
+
+    let retrieved2 = db.get_mint_quote(&quote2.id).await.unwrap().unwrap();
+    verify_q2(&retrieved2);
+
+    let retrieved3 = db.get_mint_quote(&quote3.id).await.unwrap().unwrap();
+    verify_q3(&retrieved3);
+
+    let retrieved4 = db.get_mint_quote(&quote4.id).await.unwrap().unwrap();
+    verify_q4(&retrieved4);
+
+    // 2. Transactional get_mint_quote still loads relations correctly (for_update = true)
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let tx_q1 = tx.get_mint_quote(&quote1.id).await.unwrap().unwrap();
+    verify_q1(&tx_q1);
+    tx.commit().await.unwrap();
+
+    // 3. get_mint_quote_by_request
+    let by_req = db
+        .get_mint_quote_by_request(&quote1.request)
+        .await
+        .unwrap()
+        .unwrap();
+    verify_q1(&by_req);
+
+    // 4. get_mint_quote_by_request_lookup_id
+    let by_lookup = db
+        .get_mint_quote_by_request_lookup_id(&quote1.request_lookup_id)
+        .await
+        .unwrap()
+        .unwrap();
+    verify_q1(&by_lookup);
+
+    // 5. get_mint_quotes_by_ids:
+    // - checks several different quotes do not mix related records
+    // - requested ID ordering is preserved
+    // - missing IDs remain None
+    // - repeated IDs preserve upstream semantics
+    let missing_id = QuoteId::new();
+    let ids = vec![
+        quote3.id.clone(),
+        missing_id,
+        quote1.id.clone(),
+        quote4.id.clone(),
+        quote2.id.clone(),
+        quote1.id.clone(),
+    ];
+    let batch = db.get_mint_quotes_by_ids(&ids).await.unwrap();
+    assert_eq!(batch.len(), 6);
+
+    // quote3 at index 0
+    verify_q3(batch[0].as_ref().unwrap());
+
+    // missing at index 1
+    assert!(batch[1].is_none());
+
+    // quote1 at index 2
+    verify_q1(batch[2].as_ref().unwrap());
+
+    // quote4 at index 3
+    verify_q4(batch[3].as_ref().unwrap());
+
+    // quote2 at index 4
+    verify_q2(batch[4].as_ref().unwrap());
+
+    // repeated quote1 at index 5 is None per upstream quote_map.remove semantics
+    assert!(batch[5].is_none());
+
+    // Check another ordering to verify requested ID ordering is preserved
+    let ids_reverse = vec![quote4.id.clone(), quote3.id.clone()];
+    let batch_reverse = db.get_mint_quotes_by_ids(&ids_reverse).await.unwrap();
+    assert_eq!(batch_reverse.len(), 2);
+    verify_q4(batch_reverse[0].as_ref().unwrap());
+    verify_q3(batch_reverse[1].as_ref().unwrap());
+
+    // 6. get_mint_quotes() returns all quotes and does not mix records
+    let all = db.get_mint_quotes().await.unwrap();
+    let all_map: std::collections::HashMap<_, _> =
+        all.into_iter().map(|q| (q.id.clone(), q)).collect();
+    verify_q1(all_map.get(&quote1.id).expect("quote1 found"));
+    verify_q2(all_map.get(&quote2.id).expect("quote2 found"));
+    verify_q3(all_map.get(&quote3.id).expect("quote3 found"));
+    verify_q4(all_map.get(&quote4.id).expect("quote4 found"));
+}
