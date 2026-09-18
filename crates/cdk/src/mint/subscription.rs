@@ -68,9 +68,7 @@ impl MintPubSubSpec {
         &self,
         quote_id: &QuoteId,
     ) -> Result<Option<MeltQuoteResponse<QuoteId>>, String> {
-        let quote = match self
-            .db
-            .get_melt_quote(quote_id)
+        let quote = match Mint::load_melt_quote_for_response(&self.db, quote_id)
             .await
             .map_err(|e| e.to_string())?
         {
@@ -580,6 +578,54 @@ mod tests {
         };
         tx.commit().await.expect("commit transaction");
         change
+    }
+
+    #[tokio::test]
+    async fn melt_snapshot_stays_pending_until_finalization_commits() {
+        use cdk_common::nut00::KnownMethod;
+        use cdk_common::PaymentMethod;
+
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
+        let spec = MintPubSubSpec::new_instance((db.clone(), Arc::new(HashMap::new())));
+        for method in [
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            PaymentMethod::Known(KnownMethod::Bolt12),
+            PaymentMethod::Known(KnownMethod::Onchain),
+            PaymentMethod::Custom("test_method".to_owned()),
+        ] {
+            let quote = melt_quote(method, MeltQuoteState::Paid);
+            add_melt_quote(&db, quote.clone(), false).await;
+            let mut tx = db.begin_transaction().await.unwrap();
+            tx.add_melt_request(
+                &quote.id,
+                Amount::new(23, CurrencyUnit::Sat),
+                Amount::new(0, CurrencyUnit::Sat),
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+
+            let response = spec
+                .get_melt_quote_response(&quote.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(response.state(), MeltQuoteState::Pending);
+            assert!(response.change().is_none());
+
+            // Zero-change finalization is complete once cleanup commits too.
+            let mut tx = db.begin_transaction().await.unwrap();
+            tx.delete_melt_request(&quote.id).await.unwrap();
+            tx.commit().await.unwrap();
+            let response = spec
+                .get_melt_quote_response(&quote.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(response.state(), MeltQuoteState::Paid);
+            assert!(response.change().is_none());
+        }
     }
 
     #[tokio::test]
