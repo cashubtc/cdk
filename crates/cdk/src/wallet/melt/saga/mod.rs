@@ -58,6 +58,8 @@ use crate::wallet::blind_signature::{
 use crate::wallet::saga::{add_compensation, new_compensations, Compensations};
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
+#[cfg(test)]
+mod change_fee_tests;
 pub(crate) mod compensation;
 pub(crate) mod resume;
 pub(crate) mod state;
