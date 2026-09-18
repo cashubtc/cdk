@@ -10,3 +10,4 @@ than editing an old one.
 | [0002](0002-signatory-keyset-subscription.md) | Signatory keyset subscription and push injection | Accepted |
 | [0003](0003-signatory-database-persistence-only.md) | Signatory database as persistence only | Accepted |
 | [0004](0004-signatory-multi-instance-sharing.md) | Multiple signatory instances sharing one database | Accepted |
+| [0005](0005-signatory-identity-signing-key.md) | Signatory signing with the NUT-06 mint identity key | Accepted |
