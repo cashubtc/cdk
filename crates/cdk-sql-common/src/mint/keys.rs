@@ -31,7 +31,9 @@ pub(crate) fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo,
             derivation_path_index,
             amounts,
             row_keyset_ppk,
-            issuer_version
+            issuer_version,
+            active_from,
+            active_until
         ) = row
     );
 
@@ -48,6 +50,8 @@ pub(crate) fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo,
         derivation_path_index: column_as_nullable_number!(derivation_path_index),
         amounts,
         input_fee_ppk: column_as_nullable_number!(row_keyset_ppk).unwrap_or(0),
+        active_from: column_as_nullable_number!(active_from),
+        active_until: column_as_nullable_number!(active_until),
         final_expiry: column_as_nullable_number!(valid_to),
         issuer_version: column_as_nullable_string!(issuer_version).and_then(|v| {
             match IssuerVersion::from_str(&v) {
@@ -76,7 +80,9 @@ const KEYSET_INFO_COLUMNS: &str = r#"
     derivation_path_index,
     amounts,
     input_fee_ppk,
-    issuer_version
+    issuer_version,
+    active_from,
+    active_until
 "#;
 
 /// Read the active keyset pointer for each unit, over any executor.
@@ -142,11 +148,13 @@ where
         INSERT INTO
             keyset (
                 id, unit, active, valid_from, valid_to, derivation_path,
-                amounts, input_fee_ppk, derivation_path_index, issuer_version
+                amounts, input_fee_ppk, derivation_path_index, issuer_version,
+                active_from, active_until
             )
         VALUES (
             :id, :unit, :active, :valid_from, :valid_to, :derivation_path,
-            :amounts, :input_fee_ppk, :derivation_path_index, :issuer_version
+            :amounts, :input_fee_ppk, :derivation_path_index, :issuer_version,
+            :active_from, :active_until
         )
         ON CONFLICT(id) DO UPDATE SET
             unit = excluded.unit,
@@ -157,7 +165,9 @@ where
             amounts = excluded.amounts,
             input_fee_ppk = excluded.input_fee_ppk,
             derivation_path_index = excluded.derivation_path_index,
-            issuer_version = excluded.issuer_version
+            issuer_version = excluded.issuer_version,
+            active_from = excluded.active_from,
+            active_until = excluded.active_until
         "#,
         )?
         .bind("id", keyset.id.to_string())
@@ -173,6 +183,8 @@ where
             "issuer_version",
             keyset.issuer_version.map(|v| v.to_string()),
         )
+        .bind("active_from", keyset.active_from.map(|v| v as i64))
+        .bind("active_until", keyset.active_until.map(|v| v as i64))
         .execute(&self.inner)
         .await?;
 
@@ -234,7 +246,9 @@ where
                 derivation_path_index,
                 amounts,
                 input_fee_ppk,
-                issuer_version
+                issuer_version,
+                active_from,
+                active_until
             FROM
                 keyset
                 WHERE unit = :unit"#,
@@ -371,6 +385,8 @@ mod test {
                 Column::Text(serde_json::to_string(&amounts).expect("valid json")),
                 Column::Integer(0),
                 Column::Text("cdk/0.1.0".to_owned()),
+                Column::Null,
+                Column::Null,
             ]);
             assert!(result.is_ok());
             let keyset = result.unwrap();
