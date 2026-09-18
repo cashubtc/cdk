@@ -1,0 +1,693 @@
+name: "FFI - Python Bindings"
+
+permissions:
+  contents: read
+  actions: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag to create for release (e.g. v0.17.0)"
+        required: true
+      cdk_version:
+        description: 'CDK dependency version (e.g. 0.17.0). Defaults to release_tag without the "v" prefix.'
+        required: false
+      cdk_ref:
+        description: "CDK git ref to publish from. Must match release_tag unless this is a nightly."
+        required: false
+      prerelease:
+        description: 'Mark the GitHub release as a pre-release'
+        type: boolean
+        default: false
+      nightly:
+        description: "Build an immutable nightly prerelease from an exact CDK commit."
+        type: boolean
+        default: false
+      publish_target:
+        description: "Where cdk-python should publish the wheels"
+        required: false
+        default: none
+        type: choice
+        options:
+          - none
+          - test-pypi
+          - pypi
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        required: true
+      cdk_version:
+        type: string
+        required: false
+      cdk_ref:
+        type: string
+        required: false
+      prerelease:
+        type: boolean
+        required: false
+        default: false
+      nightly:
+        type: boolean
+        required: false
+        default: false
+      publish_target:
+        type: string
+        required: false
+        default: none
+
+env:
+  CARGO_TERM_COLOR: ${{ vars.CARGO_TERM_COLOR }}
+  TAG: ${{ inputs.release_tag }}
+  CDK_REF: ${{ inputs.cdk_ref || inputs.release_tag }}
+  CDK_CHECKOUT_REF: ${{ inputs.nightly && inputs.cdk_ref || format('refs/tags/{0}', inputs.release_tag) }}
+  RELEASE_BRANCH: release/${{ inputs.release_tag }}
+
+jobs:
+  #release-ci:
+  #  uses: ./.github/workflows/release-ci.yml
+  #  with:
+  #    ref: ${{ inputs.nightly && inputs.cdk_ref || inputs.release_tag }}
+
+  validate-release-ref:
+  #  needs: release-ci
+    name: "python: Validate release ref"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release ref
+        shell: bash
+        run: |
+          if [[ "${{ inputs.nightly }}" == "true" ]]; then
+            if [[ "${{ inputs.prerelease }}" != "true" ]]; then
+              echo "::error::Nightly releases must be marked as prereleases"
+              exit 1
+            fi
+
+            if [[ ! "${CDK_REF}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Nightly cdk_ref must be an exact 40-character commit SHA; got ${CDK_REF}"
+              exit 1
+            fi
+
+            if [[ ! "${TAG}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+-nightly[.][0-9]{8}[.]g[0-9a-f]{7}$ ]]; then
+              echo "::error::Nightly release_tag must look like v0.18.0-nightly.20260801.g1a2b3c4; got ${TAG}"
+              exit 1
+            fi
+          elif [[ "${CDK_REF}" != "${TAG}" ]]; then
+            echo "::error::cdk_ref must match release_tag (${TAG}); got ${CDK_REF}"
+            exit 1
+          fi
+
+          if [[ ! "${TAG}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::release_tag must be a version tag such as v0.17.0; got ${TAG}"
+            exit 1
+          fi
+
+      - name: Verify release source exists
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.CDK_CHECKOUT_REF }}
+          fetch-depth: 1
+          persist-credentials: false
+
+  resolve-version:
+    name: "python: Resolve version"
+    needs: [validate-release-ref]
+    runs-on: ubuntu-latest
+    outputs:
+      cdk_ver: ${{ steps.resolve.outputs.cdk_ver }}
+      release_ver: ${{ steps.resolve.outputs.release_ver }}
+      pep440_ver: ${{ steps.resolve.outputs.pep440_ver }}
+    steps:
+      # SemVer tags are not valid PEP 440 versions, and a wheel filename must
+      # carry a PEP 440 version, so the tag is translated here once and the
+      # result is reused by every downstream job.
+      - name: Derive versions
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CDK_VER="${{ inputs.cdk_version }}"
+          CDK_VER="${CDK_VER:-${TAG#v}}"
+          RELEASE_VER="${TAG#v}"
+
+          CORE="${RELEASE_VER%%-*}"
+          SUFFIX=""
+          if [[ "${RELEASE_VER}" == *-* ]]; then
+            SUFFIX="${RELEASE_VER#*-}"
+          fi
+
+          if [[ -z "${SUFFIX}" ]]; then
+            PEP440="${CORE}"
+          elif [[ "${SUFFIX}" =~ ^nightly[.]([0-9]{8})[.]g([0-9a-f]{7})$ ]]; then
+            PEP440="${CORE}.dev${BASH_REMATCH[1]}+g${BASH_REMATCH[2]}"
+          elif [[ "${SUFFIX}" =~ ^(alpha|beta|rc)[.]?([0-9]+)$ ]]; then
+            case "${BASH_REMATCH[1]}" in
+              alpha) MARK="a" ;;
+              beta)  MARK="b" ;;
+              rc)    MARK="rc" ;;
+            esac
+            PEP440="${CORE}${MARK}${BASH_REMATCH[2]}"
+          else
+            echo "::error::Cannot translate tag ${TAG} into a PEP 440 version; add a rule for the '${SUFFIX}' suffix"
+            exit 1
+          fi
+
+          {
+            echo "cdk_ver=${CDK_VER}"
+            echo "release_ver=${RELEASE_VER}"
+            echo "pep440_ver=${PEP440}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "CDK version:    ${CDK_VER}"
+          echo "Release version: ${RELEASE_VER}"
+          echo "PEP 440 version: ${PEP440}"
+
+  python-sync-sources:
+    name: "python: Sync sources to cdk-python"
+    needs: [resolve-version]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.CDK_CHECKOUT_REF }}
+
+      - name: Clone cdk-python
+        run: |
+          git clone https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_PYTHON_REPO }}.git cdk-python
+
+      - name: Copy bindings/python to cdk-python
+        run: |
+          rsync -av --delete \
+            --exclude='.git' \
+            --exclude='dist' \
+            --exclude='build' \
+            --exclude='*.egg-info' \
+            --exclude='.build-venv' \
+            --exclude='generated-bindings' \
+            --exclude='wheelhouse' \
+            --exclude='__pycache__' \
+            --exclude='.pytest_cache' \
+            --exclude='*.pyc' \
+            --exclude='target' \
+            bindings/python/ cdk-python/
+
+      - name: Set package version
+        working-directory: cdk-python
+        env:
+          PEP440_VER: ${{ needs.resolve-version.outputs.pep440_ver }}
+        run: |
+          set -euo pipefail
+          sed -i "s/^version = \"0\\.0\\.0\"$/version = \"${PEP440_VER}\"/" pyproject.toml
+          if ! grep -qF "version = \"${PEP440_VER}\"" pyproject.toml; then
+            echo "::error::Failed to set the package version in pyproject.toml"
+            exit 1
+          fi
+          echo "--- pyproject.toml ---"
+          cat pyproject.toml
+
+      - name: Resolve workspace references in rust/Cargo.toml
+        env:
+          CDK_VER: ${{ needs.resolve-version.outputs.cdk_ver }}
+        run: |
+          set -euo pipefail
+
+          # Helper: extract a value from [workspace.package] in root Cargo.toml
+          ws_pkg() {
+            sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+              | grep "^$1 " | head -1 | sed 's/.*= *"\(.*\)"/\1/'
+          }
+
+          # Helper: extract a workspace dependency version
+          ws_dep_ver() {
+            local line
+            line=$(sed -n '/^\[workspace\.dependencies\]/,/^\[/p' Cargo.toml \
+              | grep "^$1 " | head -1)
+            if echo "$line" | grep -q 'version *= *"'; then
+              echo "$line" | sed 's/.*version *= *"\([^"]*\)".*/\1/'
+            else
+              echo "$line" | sed 's/.*= *"\([^"]*\)".*/\1/'
+            fi
+          }
+
+          WS_EDITION=$(ws_pkg edition)
+          WS_RUST_VERSION=$(ws_pkg rust-version)
+          WS_LICENSE=$(ws_pkg license)
+          WS_HOMEPAGE=$(ws_pkg homepage)
+          WS_REPOSITORY=$(ws_pkg repository)
+          WS_README=$(ws_pkg readme)
+          WS_UNIFFI_VER=$(ws_dep_ver uniffi)
+
+          sed -i \
+            -e "s/^edition\.workspace = true/edition = \"${WS_EDITION}\"/" \
+            -e "s/^rust-version\.workspace = true/rust-version = \"${WS_RUST_VERSION}\"/" \
+            -e "s/^license\.workspace = true/license = \"${WS_LICENSE}\"/" \
+            -e "s|^homepage\.workspace = true|homepage = \"${WS_HOMEPAGE}\"|" \
+            -e "s|^repository\.workspace = true|repository = \"${WS_REPOSITORY}\"|" \
+            -e "s/^version\.workspace = true/version = \"${CDK_VER}\"/" \
+            -e "s/^readme\.workspace = true/readme = \"${WS_README}\"/" \
+            cdk-python/rust/Cargo.toml
+
+          if [[ "${{ inputs.nightly }}" == "true" ]]; then
+            CDK_FFI_SOURCE="git = \"https://github.com/${GITHUB_REPOSITORY}\", rev = \"${CDK_REF}\""
+          else
+            CDK_FFI_SOURCE="version = \"=${CDK_VER}\""
+          fi
+
+          # Nightlies point at the exact source commit because that cdk-ffi
+          # version is not on crates.io.
+          sed -i \
+            -e "s|cdk-ffi = { workspace = true|cdk-ffi = { ${CDK_FFI_SOURCE}|" \
+            -e "s/uniffi = { workspace = true/uniffi = { version = \"${WS_UNIFFI_VER}\"/" \
+            cdk-python/rust/Cargo.toml
+
+          sed -i '/^\[lints\]/,/^$/s/^workspace = true//' cdk-python/rust/Cargo.toml
+
+          # No strip here: uniffi reads binding metadata out of the ELF .symtab,
+          # which strip deletes, and generation would silently emit nothing.
+          # The workflow strips the artifact after generating instead.
+          printf '\n[profile.release]\nlto = true\ncodegen-units = 1\n' \
+            >> cdk-python/rust/Cargo.toml
+
+          if grep -q 'workspace = true' cdk-python/rust/Cargo.toml; then
+            echo "::error::rust/Cargo.toml still references the workspace"
+            grep -n 'workspace = true' cdk-python/rust/Cargo.toml
+            exit 1
+          fi
+
+          echo "--- rust/Cargo.toml ---"
+          cat cdk-python/rust/Cargo.toml
+
+      - name: Push to cdk-python release branch
+        working-directory: cdk-python
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git show-ref --verify --quiet "refs/remotes/origin/${RELEASE_BRANCH}"; then
+            git checkout -B "${RELEASE_BRANCH}" "origin/${RELEASE_BRANCH}"
+          else
+            git checkout -b "${RELEASE_BRANCH}"
+          fi
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No source changes to commit"
+          else
+            git commit -m "sync: update sources for ${TAG}"
+          fi
+          git push origin "${RELEASE_BRANCH}"
+
+  python-build-native:
+    name: "python: Build ${{ matrix.target }}"
+    needs: [python-sync-sources]
+    runs-on: ${{ matrix.runner }}
+    # Linux builds run inside the manylinux image so the shared object links
+    # against glibc 2.28 rather than the runner's much newer glibc.
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            container: quay.io/pypa/manylinux_2_28_x86_64
+            artifact: libcdk_ffi_python.so
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            container: quay.io/pypa/manylinux_2_28_aarch64
+            artifact: libcdk_ffi_python.so
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            container: ""
+            artifact: libcdk_ffi_python.dylib
+          - target: x86_64-apple-darwin
+            runner: macos-14
+            container: ""
+            artifact: libcdk_ffi_python.dylib
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            container: ""
+            artifact: cdk_ffi_python.dll
+
+    steps:
+      # Build the synced clone rather than the monorepo, so CI compiles exactly
+      # what a downstream user compiles: rust/ pinned to a published cdk-ffi.
+      - name: Clone cdk-python
+        shell: bash
+        env:
+          FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
+        run: |
+          auth_header() {
+            printf 'AUTHORIZATION: basic '
+            printf 'x-access-token:%s' "${FFI_DEPLOY_KEY}" | base64 | tr -d '\n'
+          }
+
+          git -c "http.extraheader=$(auth_header)" \
+            clone --branch "${RELEASE_BRANCH}" \
+            https://github.com/${{ vars.CDK_PYTHON_REPO }}.git cdk-python
+
+      # The manylinux images ship no Rust toolchain and dtolnay/rust-toolchain
+      # needs one already present, so bootstrap rustup by hand there.
+      - name: Install Rust toolchain (manylinux)
+        if: matrix.container != ''
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "${HOME}/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install Rust toolchain
+        if: matrix.container == ''
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build cdk-ffi-python
+        working-directory: cdk-python/rust
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Fix dylib install name
+        if: endsWith(matrix.artifact, '.dylib')
+        run: |
+          install_name_tool -id @rpath/libcdk_ffi.dylib \
+            cdk-python/rust/target/${{ matrix.target }}/release/${{ matrix.artifact }}
+
+      # Write to the workspace root, the same place the native artifact is
+      # staged, rather than a path relative to the crate.
+      - name: Generate Python bindings
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        working-directory: cdk-python/rust
+        run: |
+          set -euo pipefail
+          OUT="${GITHUB_WORKSPACE}/generated-bindings"
+          rm -rf "$OUT" && mkdir -p "$OUT"
+          cargo run --release --bin uniffi-bindgen-python -- generate \
+            --library "target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
+            --language python \
+            --out-dir "$OUT" \
+            --no-format
+          echo "Generated into $OUT:"
+          ls -la "$OUT"
+          test -s "$OUT/cdk_ffi.py"
+
+      - name: Upload generated bindings
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-bindings-generated
+          path: generated-bindings/
+          if-no-files-found: error
+
+      - name: Strip debug symbols
+        shell: bash
+        run: |
+          FILE="cdk-python/rust/target/${{ matrix.target }}/release/${{ matrix.artifact }}"
+          case "${{ matrix.target }}" in
+            *windows*)  strip --strip-all "$FILE" ;;
+            *apple*)    strip -S "$FILE" ;;
+            *)          strip --strip-all "$FILE" ;;
+          esac
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir -p dist-native
+          cp "cdk-python/rust/target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
+             "dist-native/${{ matrix.target }}-${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-native-${{ matrix.target }}
+          path: dist-native/
+          if-no-files-found: error
+
+  python-package:
+    name: "python: Build wheels"
+    needs: [python-build-native]
+    runs-on: ubuntu-latest
+    steps:
+      # Assemble from the synced clone too, so the wheel metadata is the
+      # pyproject.toml that cdk-python actually ships. The sync already set its
+      # version, so there is nothing to rewrite here.
+      - name: Clone cdk-python
+        shell: bash
+        env:
+          FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
+        run: |
+          auth_header() {
+            printf 'AUTHORIZATION: basic '
+            printf 'x-access-token:%s' "${FFI_DEPLOY_KEY}" | base64 | tr -d '\n'
+          }
+
+          git -c "http.extraheader=$(auth_header)" \
+            clone --branch "${RELEASE_BRANCH}" \
+            https://github.com/${{ vars.CDK_PYTHON_REPO }}.git cdk-python
+
+      - name: Install build tooling
+        run: |
+          set -euo pipefail
+          python3 -m venv .build-venv
+          .build-venv/bin/pip install --quiet --upgrade pip build "wheel>=0.42"
+
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: ./artifacts
+          pattern: python-native-*
+          merge-multiple: true
+
+      - name: Download generated Python bindings
+        uses: actions/download-artifact@v8
+        with:
+          name: python-bindings-generated
+          path: ./generated-bindings
+
+      # The native library is loaded with ctypes, so a wheel is valid for any
+      # CPython 3: build it once per target and retag it py3-none-<platform>.
+      - name: Build wheels
+        run: |
+          set -euo pipefail
+
+          declare -A ARTIFACT_MAP
+          ARTIFACT_MAP[x86_64-unknown-linux-gnu]="libcdk_ffi_python.so"
+          ARTIFACT_MAP[aarch64-unknown-linux-gnu]="libcdk_ffi_python.so"
+          ARTIFACT_MAP[aarch64-apple-darwin]="libcdk_ffi_python.dylib"
+          ARTIFACT_MAP[x86_64-apple-darwin]="libcdk_ffi_python.dylib"
+          ARTIFACT_MAP[x86_64-pc-windows-msvc]="cdk_ffi_python.dll"
+
+          # uniffi names the loaded library after the cdk-ffi namespace rather
+          # than the wrapper crate, so each artifact is renamed on the way in.
+          declare -A INSTALLED_MAP
+          INSTALLED_MAP[x86_64-unknown-linux-gnu]="libcdk_ffi.so"
+          INSTALLED_MAP[aarch64-unknown-linux-gnu]="libcdk_ffi.so"
+          INSTALLED_MAP[aarch64-apple-darwin]="libcdk_ffi.dylib"
+          INSTALLED_MAP[x86_64-apple-darwin]="libcdk_ffi.dylib"
+          INSTALLED_MAP[x86_64-pc-windows-msvc]="cdk_ffi.dll"
+
+          declare -A PLATFORM_MAP
+          PLATFORM_MAP[x86_64-unknown-linux-gnu]="manylinux_2_28_x86_64"
+          PLATFORM_MAP[aarch64-unknown-linux-gnu]="manylinux_2_28_aarch64"
+          PLATFORM_MAP[aarch64-apple-darwin]="macosx_11_0_arm64"
+          PLATFORM_MAP[x86_64-apple-darwin]="macosx_10_12_x86_64"
+          PLATFORM_MAP[x86_64-pc-windows-msvc]="win_amd64"
+
+          PKG_DIR="cdk-python/src/cdk"
+          OUT_DIR="${PWD}/wheelhouse"
+          PYBIN="${PWD}/.build-venv/bin/python"
+          mkdir -p "${OUT_DIR}"
+
+          for target in "${!PLATFORM_MAP[@]}"; do
+            artifact="${ARTIFACT_MAP[$target]}"
+            installed="${INSTALLED_MAP[$target]}"
+            platform="${PLATFORM_MAP[$target]}"
+
+            echo "::group::Building wheel for ${target} (${platform})"
+            rm -rf cdk-python/build cdk-python/dist
+            find cdk-python -name '*.egg-info' -type d -prune -exec rm -rf {} +
+            find "${PKG_DIR}" -type f \
+              \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) -delete
+
+            cp generated-bindings/cdk_ffi.py "${PKG_DIR}/cdk_ffi.py"
+            cp "artifacts/${target}-${artifact}" "${PKG_DIR}/${installed}"
+
+            STAGE=$(mktemp -d)
+            ( cd cdk-python && "${PYBIN}" -m build --wheel --outdir "${STAGE}" )
+
+            "${PYBIN}" -m wheel tags \
+              --python-tag py3 \
+              --abi-tag none \
+              --platform-tag "${platform}" \
+              --remove \
+              "${STAGE}"/*.whl
+
+            mv "${STAGE}"/*.whl "${OUT_DIR}/"
+            rm -rf "${STAGE}"
+            echo "::endgroup::"
+          done
+
+          echo "Wheels built:"
+          ls -1 "${OUT_DIR}"
+
+      - name: Verify wheel contents
+        run: |
+          set -euo pipefail
+          COUNT=$(ls -1 wheelhouse/*.whl | wc -l)
+          if [[ "${COUNT}" -ne 5 ]]; then
+            echo "::error::Expected 5 wheels, found ${COUNT}"
+            exit 1
+          fi
+          if ls wheelhouse/*0.0.0* >/dev/null 2>&1; then
+            echo "::error::A wheel still carries the placeholder version 0.0.0"
+            exit 1
+          fi
+          for whl in wheelhouse/*.whl; do
+            echo "--- ${whl} ---"
+            NAMES=$(python3 -c \
+              'import sys, zipfile; print("\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))' \
+              "${whl}")
+            echo "${NAMES}"
+
+            LIBS=$(grep -cE '^cdk/[^/]+\.(so|dylib|dll)$' <<< "${NAMES}" || true)
+            if [[ "${LIBS}" -ne 1 ]]; then
+              echo "::error::${whl} contains ${LIBS} native libraries, expected exactly 1"
+              exit 1
+            fi
+            grep -qx 'cdk/__init__.py' <<< "${NAMES}"
+            grep -qx 'cdk/cdk_ffi.py' <<< "${NAMES}"
+          done
+
+      - name: Generate checksums
+        working-directory: wheelhouse
+        run: |
+          sha256sum *.whl > checksums.sha256
+          cat checksums.sha256
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-wheels
+          path: wheelhouse/
+          if-no-files-found: error
+
+  python-publish-pypi:
+    name: "python: Publish to PyPI"
+    needs: [python-package]
+    if: ${{ inputs.publish_target == 'pypi' || inputs.publish_target == 'test-pypi' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@v8
+        with:
+          name: python-wheels
+          path: ./wheelhouse
+
+      - name: Drop the checksum file
+        # PyPI rejects anything that is not a distribution.
+        run: rm -f wheelhouse/checksums.sha256
+
+      - name: Publish to TestPyPI
+        if: ${{ inputs.publish_target == 'test-pypi' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: wheelhouse/
+          password: ${{ secrets.PYPI_TOKEN }}
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: ${{ inputs.publish_target == 'pypi' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: wheelhouse/
+          password: ${{ secrets.PYPI_TOKEN }}
+
+  python-publish:
+    name: "python: Publish to cdk-python"
+    runs-on: ubuntu-latest
+    needs: [python-package]
+    steps:
+      - name: Clone cdk-python
+        run: |
+          git clone --branch "${RELEASE_BRANCH}" \
+            https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_PYTHON_REPO }}.git cdk-python
+
+      - name: Download wheels
+        uses: actions/download-artifact@v8
+        with:
+          name: python-wheels
+          path: ./wheelhouse
+
+      - name: Download generated Python bindings
+        uses: actions/download-artifact@v8
+        with:
+          name: python-bindings-generated
+          path: ./generated-bindings
+
+      # The built artifacts are committed into the repo, the way cdk-go commits
+      # its native libraries, so a clone carries everything it needs.
+      - name: Add artifacts to the repository
+        run: |
+          set -euo pipefail
+          cp generated-bindings/cdk_ffi.py cdk-python/src/cdk/cdk_ffi.py
+          rm -rf cdk-python/wheels
+          mkdir -p cdk-python/wheels
+          cp wheelhouse/*.whl wheelhouse/checksums.sha256 cdk-python/wheels/
+          echo "Artifacts staged:"
+          find cdk-python/wheels cdk-python/src/cdk/cdk_ffi.py -type f
+
+      - name: Commit to release branch
+        working-directory: cdk-python
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "release: ${TAG} build artifacts"
+          fi
+          git push origin "${RELEASE_BRANCH}"
+
+      - name: Create release on cdk-python (creates tag and uploads assets atomically)
+        working-directory: cdk-python
+        env:
+          GH_TOKEN: ${{ secrets.FFI_DEPLOY_KEY }}
+        run: |
+          COMMIT_SHA=$(git rev-parse HEAD)
+          RELEASE_OPTIONS=(--generate-notes)
+          if [[ "${{ inputs.nightly }}" == "true" ]]; then
+            RELEASE_OPTIONS+=(
+              --prerelease
+              --latest=false
+              --notes "Nightly bindings built from CDK commit ${CDK_REF}: https://github.com/${GITHUB_REPOSITORY}/commit/${CDK_REF}"
+            )
+          elif [[ "${{ inputs.prerelease }}" == "true" ]]; then
+            RELEASE_OPTIONS+=(--prerelease)
+          fi
+
+          gh release create "${TAG}" \
+            --repo ${{ vars.CDK_PYTHON_REPO }} \
+            --target "${COMMIT_SHA}" \
+            --title "Release ${TAG}" \
+            "${RELEASE_OPTIONS[@]}" \
+            ../wheelhouse/*.whl \
+            ../wheelhouse/checksums.sha256
+
+      - name: Merge to default branch
+        if: ${{ !inputs.nightly }}
+        working-directory: cdk-python
+        run: |
+          set -euo pipefail
+          DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+          git checkout "${DEFAULT_BRANCH}"
+          git merge "${RELEASE_BRANCH}" --squash
+          git commit -m "release: ${TAG}"
+          git push origin "${DEFAULT_BRANCH}"
+
+      - name: Clean up release branch
+        working-directory: cdk-python
+        run: git push origin --delete "${RELEASE_BRANCH}"

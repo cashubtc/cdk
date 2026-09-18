@@ -1,0 +1,8 @@
+include LICENSE.md
+include LICENSE-APACHE
+include LICENSE-MIT
+include README.md
+include src/cdk/cdk_ffi.py
+include src/cdk/*.so
+include src/cdk/*.dylib
+include src/cdk/*.dll
