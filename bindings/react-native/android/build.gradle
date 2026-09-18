@@ -1,0 +1,54 @@
+// The Rust libraries under src/main/jniLibs come from `just nitro-android`.
+buildscript {
+  repositories {
+    google()
+    mavenCentral()
+  }
+  dependencies {
+    classpath "com.android.tools.build:gradle:8.7.2"
+  }
+}
+
+apply plugin: "com.android.library"
+
+android {
+  namespace "com.cashu.native"
+  compileSdk 35
+
+  defaultConfig {
+    minSdk 24
+    externalNativeBuild {
+      cmake {
+        cppFlags "-std=c++20", "-frtti", "-fexceptions"
+        arguments "-DANDROID_STL=c++_shared"
+      }
+    }
+  }
+
+  externalNativeBuild {
+    cmake {
+      path "CMakeLists.txt"
+    }
+  }
+
+  sourceSets {
+    main {
+      jniLibs.srcDirs = ["src/main/jniLibs"]
+    }
+  }
+
+  packagingOptions {
+    excludes = ["META-INF", "META-INF/**", "**/libc++_shared.so", "**/libjsi.so"]
+  }
+}
+
+repositories {
+  google()
+  mavenCentral()
+}
+
+dependencies {
+  implementation "com.facebook.react:react-android"
+}
+
+apply from: "../nitrogen/generated/android/CashuNative+autolinking.gradle"

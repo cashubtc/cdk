@@ -1176,6 +1176,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cashu-ffi"
+version = "0.18.0"
+dependencies = [
+ "bip39",
+ "bitcoin",
+ "cashu",
+ "thiserror 2.0.20",
+ "uniffi",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9168,6 +9179,18 @@ dependencies = [
  "uniffi_core",
  "uniffi_macros",
  "uniffi_pipeline",
+]
+
+[[package]]
+name = "uniffi-bindgen-nitro"
+version = "0.18.0"
+dependencies = [
+ "anyhow",
+ "camino",
+ "clap",
+ "thiserror 2.0.20",
+ "toml 0.9.12+spec-1.1.0",
+ "uniffi_bindgen",
 ]
 
 [[package]]

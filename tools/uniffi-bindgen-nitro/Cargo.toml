@@ -1,0 +1,30 @@
+[package]
+name = "uniffi-bindgen-nitro"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+description = "Generates Nitro Modules React Native bindings from UniFFI metadata"
+publish = false
+
+[lib]
+name = "uniffi_bindgen_nitro"
+path = "src/lib.rs"
+
+[[bin]]
+name = "uniffi-bindgen-nitro"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+camino = "1"
+clap = { workspace = true }
+thiserror = { workspace = true }
+toml = "0.9"
+uniffi_bindgen = "0.30"
+
+[lints]
+workspace = true
