@@ -599,6 +599,8 @@ mod tests {
             active: None,
             keys: mint_keyset.keys.into(),
             input_fee_ppk: mint_keyset.input_fee_ppk,
+            active_from: None,
+            active_until: None,
             final_expiry: mint_keyset.final_expiry,
         }
     }
@@ -640,6 +642,8 @@ mod tests {
                         unit: CurrencyUnit::Auth,
                         active: true,
                         input_fee_ppk: 0,
+                        active_from: None,
+                        active_until: None,
                         final_expiry: None,
                     },
                     KeySetInfo {
@@ -647,6 +651,8 @@ mod tests {
                         unit: CurrencyUnit::Auth,
                         active: false,
                         input_fee_ppk: 0,
+                        active_from: None,
+                        active_until: None,
                         final_expiry: None,
                     },
                 ],

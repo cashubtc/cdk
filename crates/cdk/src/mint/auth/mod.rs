@@ -365,7 +365,7 @@ mod tests {
         let mint = create_auth_enabled_mint().await;
 
         for rotation in 1..=10 {
-            mint.rotate_keyset(CurrencyUnit::Auth, vec![1], 0, true, None)
+            mint.rotate_keyset(CurrencyUnit::Auth, vec![1], 0, true, None, None, None)
                 .await
                 .expect("rotate auth keyset");
 

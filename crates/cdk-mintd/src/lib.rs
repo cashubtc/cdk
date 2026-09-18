@@ -1420,6 +1420,8 @@ fn configure_fake_wallet_keyset_rotations_once(
             amounts,
             input_fee_ppk: rotation_cfg.input_fee_ppk,
             use_keyset_v2: rotation_cfg.version == "v2",
+            active_from: None,
+            active_until: None,
             final_expiry,
         });
     }
