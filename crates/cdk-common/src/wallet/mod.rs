@@ -33,24 +33,12 @@ pub use saga::{
 };
 
 /// Wallet Key
-#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct WalletKey {
     /// Mint Url
     pub mint_url: MintUrl,
     /// Currency Unit
     pub unit: CurrencyUnit,
-}
-
-impl fmt::Debug for WalletKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WalletKey")
-            .field(
-                "mint_url",
-                &crate::redact::url_for_logs(&self.mint_url.to_string()),
-            )
-            .field("unit", &self.unit)
-            .finish()
-    }
 }
 
 impl fmt::Display for WalletKey {
@@ -102,18 +90,14 @@ impl fmt::Debug for ProofInfo {
         f.debug_struct("ProofInfo")
             .field("amount", &self.proof.amount)
             .field("keyset_id", &self.proof.keyset_id)
-            .field("proof", &"[REDACTED]")
             .field("y", &self.y)
-            .field(
-                "mint_url",
-                &crate::redact::url_for_logs(&self.mint_url.to_string()),
-            )
+            .field("mint_url", &self.mint_url)
             .field("state", &self.state)
             .field("spending_condition", &self.spending_condition)
             .field("unit", &self.unit)
             .field("used_by_operation", &self.used_by_operation)
             .field("created_by_operation", &self.created_by_operation)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -304,29 +288,19 @@ impl fmt::Debug for MeltQuote {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MeltQuote")
             .field("id", &self.id)
-            .field(
-                "mint_url",
-                &self
-                    .mint_url
-                    .as_ref()
-                    .map(|url| crate::redact::url_for_logs(&url.to_string())),
-            )
+            .field("mint_url", &self.mint_url)
             .field("unit", &self.unit)
             .field("amount", &self.amount)
             .field("request", &self.request)
             .field("fee_reserve", &self.fee_reserve)
             .field("state", &self.state)
             .field("expiry", &self.expiry)
-            .field(
-                "payment_proof",
-                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
-            )
             .field("estimated_blocks", &self.estimated_blocks)
             .field("fee_index", &self.fee_index)
             .field("payment_method", &self.payment_method)
             .field("used_by_operation", &self.used_by_operation)
             .field("version", &self.version)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -680,10 +654,7 @@ pub struct Transaction {
 impl fmt::Debug for Transaction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Transaction")
-            .field(
-                "mint_url",
-                &crate::redact::url_for_logs(&self.mint_url.to_string()),
-            )
+            .field("mint_url", &self.mint_url)
             .field("direction", &self.direction)
             .field("amount", &self.amount)
             .field("fee", &self.fee)
@@ -694,14 +665,10 @@ impl fmt::Debug for Transaction {
             .field("metadata", &self.metadata)
             .field("quote_id", &self.quote_id)
             .field("payment_request", &self.payment_request)
-            .field(
-                "payment_proof",
-                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
-            )
             .field("payment_method", &self.payment_method)
             .field("saga_id", &self.saga_id)
             .field("status", &self.status)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -1707,7 +1674,8 @@ mod tests {
             format!("{melt_quote:?}"),
             format!("{transaction:?}"),
         ] {
-            assert!(debug.contains("[REDACTED]"));
+            assert!(!debug.contains("payment_proof"));
+            assert!(!debug.contains("proof:"));
             assert!(!debug.contains(proof_secret));
             assert!(!debug.contains(payment_proof));
         }

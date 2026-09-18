@@ -26,8 +26,6 @@
 //! Instance A updates successfully, version becomes 2
 //! Instance B's update fails (version mismatch) - it knows to skip
 
-use core::fmt;
-
 use serde::{Deserialize, Serialize};
 
 use crate::mint_url::MintUrl;
@@ -160,7 +158,7 @@ impl OperationData {
 /// Instance B reads saga with version=1
 /// Instance A updates successfully, version becomes 2
 /// Instance B's update fails (version mismatch) - it knows to skip
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WalletSaga {
     /// Unique operation ID
     pub id: uuid::Uuid,
@@ -191,27 +189,6 @@ pub struct WalletSaga {
     /// Recovery code should treat version conflicts as "someone else handled it"
     /// and skip to the next saga rather than retrying.
     pub version: u32,
-}
-
-impl fmt::Debug for WalletSaga {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WalletSaga")
-            .field("id", &self.id)
-            .field("kind", &self.kind)
-            .field("state", &self.state)
-            .field("amount", &self.amount)
-            .field(
-                "mint_url",
-                &crate::redact::url_for_logs(&self.mint_url.to_string()),
-            )
-            .field("unit", &self.unit)
-            .field("quote_id", &self.quote_id)
-            .field("created_at", &self.created_at)
-            .field("updated_at", &self.updated_at)
-            .field("data", &self.data)
-            .field("version", &self.version)
-            .finish()
-    }
 }
 
 impl WalletSaga {

@@ -213,15 +213,9 @@ pub struct AuthResponse {
 impl fmt::Debug for AuthResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AuthResponse")
-            .field("access_token", &"[REDACTED]")
             .field("token_type", &self.token_type)
             .field("expires_in", &self.expires_in)
-            .field(
-                "refresh_token",
-                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field("user_json", &"[REDACTED]")
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

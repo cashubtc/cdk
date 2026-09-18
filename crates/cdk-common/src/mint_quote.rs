@@ -41,8 +41,7 @@ impl fmt::Debug for MintQuoteRequest {
                 .field("method", method)
                 .field("amount", &request.amount)
                 .field("unit", &request.unit)
-                .field("request", &"[REDACTED]")
-                .finish(),
+                .finish_non_exhaustive(),
         }
     }
 }

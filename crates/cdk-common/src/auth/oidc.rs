@@ -109,8 +109,7 @@ impl fmt::Debug for OidcHttpResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OidcHttpResponse")
             .field("status", &self.status)
-            .field("body", &"[REDACTED]")
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -226,8 +225,7 @@ impl fmt::Debug for RefreshTokenRequest {
         f.debug_struct("RefreshTokenRequest")
             .field("grant_type", &self.grant_type)
             .field("client_id", &self.client_id)
-            .field("refresh_token", &"[REDACTED]")
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -249,14 +247,9 @@ pub struct TokenResponse {
 impl fmt::Debug for TokenResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TokenResponse")
-            .field("access_token", &"[REDACTED]")
-            .field(
-                "refresh_token",
-                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
-            )
             .field("expires_in", &self.expires_in)
             .field("token_type", &self.token_type)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -448,6 +441,49 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn debug_omits_tokens_without_changing_wire_data() {
+        let request = RefreshTokenRequest {
+            grant_type: GrantType::RefreshToken,
+            client_id: "public-client".to_owned(),
+            refresh_token: "refresh-secret".to_owned(),
+        };
+        let response: TokenResponse = serde_json::from_value(json!({
+            "access_token": "access-secret",
+            "refresh_token": "refresh-secret",
+            "expires_in": 3600,
+            "token_type": "Bearer"
+        }))
+        .expect("valid token response");
+        let raw = OidcHttpResponse::new(200, b"access-secret".to_vec());
+
+        for debug in [
+            format!("{request:?}"),
+            format!("{request:#?}"),
+            format!("{response:?}"),
+            format!("{response:#?}"),
+            format!("{raw:?}"),
+            format!("{raw:#?}"),
+        ] {
+            for secret in [
+                "access-secret",
+                "refresh-secret",
+                "access_token:",
+                "refresh_token:",
+                "body:",
+            ] {
+                assert!(!debug.contains(secret));
+            }
+        }
+        assert_eq!(
+            serde_json::to_value(request).expect("serializable request"),
+            json!({"grant_type": "refresh_token", "client_id": "public-client", "refresh_token": "refresh-secret"})
+        );
+        assert_eq!(response.access_token, "access-secret");
+        assert_eq!(response.refresh_token.as_deref(), Some("refresh-secret"));
+    }
 
     fn claims(value: serde_json::Value) -> HashMap<String, serde_json::Value> {
         serde_json::from_value(value).expect("claims should be an object")
