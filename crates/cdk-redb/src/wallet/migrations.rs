@@ -13,7 +13,9 @@ use redb::{
 };
 
 use super::Error;
-use crate::wallet::mint_index::{MintIndex, StoredMint, MINTS_TABLE as MINTS_BY_ID_TABLE};
+use crate::wallet::mint_index::{
+    MintIndex, MintScoped, StoredMint, MINTS_TABLE as MINTS_BY_ID_TABLE, MINT_IDS_TABLE,
+};
 use crate::wallet::{
     KEYSETS_TABLE, KEYSET_COUNTER, KEYSET_U32_MAPPING, MELT_QUOTES_TABLE,
     MINT_KEYSETS_TABLE as MINT_ID_KEYSETS_TABLE, MINT_KEYS_TABLE, MINT_QUOTES_TABLE,
@@ -336,6 +338,7 @@ pub(crate) fn migrate_06_to_07(db: Arc<Database>) -> Result<u32, Error> {
         }
 
         let mut mints_by_id = write_txn.open_table(MINTS_BY_ID_TABLE)?;
+        let mut mint_ids_by_url = write_txn.open_table(MINT_IDS_TABLE)?;
         let mut keyset_ids_by_mint = write_txn.open_multimap_table(MINT_ID_KEYSETS_TABLE)?;
         let old_keyset_ids = write_txn.open_multimap_table(MINT_KEYSETS_TABLE)?;
 
@@ -348,6 +351,7 @@ pub(crate) fn migrate_06_to_07(db: Arc<Database>) -> Result<u32, Error> {
             };
 
             mints_by_id.insert(mint_id, serde_json::to_string(&mint)?.as_str())?;
+            mint_ids_by_url.insert(old_key.as_str(), mint_id)?;
 
             for keyset_id in old_keyset_ids.get(old_key.as_str())?.flatten() {
                 keyset_ids_by_mint.insert(mint_id, keyset_id.value())?;
@@ -404,7 +408,7 @@ fn rekey_str_records<T>(
     mints: &MintIndex,
 ) -> Result<(), Error>
 where
-    T: serde::de::DeserializeOwned + serde::Serialize,
+    T: serde::de::DeserializeOwned + serde::Serialize + MintScoped,
 {
     let mut table = write_txn.open_table(table)?;
 
@@ -431,7 +435,7 @@ fn rekey_bytes_records<T>(
     mints: &MintIndex,
 ) -> Result<(), Error>
 where
-    T: serde::de::DeserializeOwned + serde::Serialize,
+    T: serde::de::DeserializeOwned + serde::Serialize + MintScoped,
 {
     let mut table = write_txn.open_table(table)?;
 
@@ -621,9 +625,27 @@ mod tests {
             serde_json::from_str(stored.value()).expect("stored transaction");
         assert_eq!(stored_json["mint_id"], serde_json::json!(orphan_id));
         assert!(stored_json.get("mint_url").is_none());
+        assert!(stored_json["record"].get("mint_url").is_some());
 
         let rebuilt: Transaction = mints.decode(stored.value()).expect("rebuilt transaction");
         assert_eq!(rebuilt.mint_url, orphan_url);
+
+        let mint_ids = read_txn
+            .open_table(MINT_IDS_TABLE)
+            .expect("mint ids by url table");
+        for (url, id) in [(&mint_url, mint_id), (&orphan_url, orphan_id)] {
+            let indexed = mint_ids
+                .get(url.to_string().as_str())
+                .expect("mint id lookup")
+                .expect("indexed mint")
+                .value();
+            assert_eq!(indexed, id);
+        }
+        assert_eq!(
+            mint_ids.iter().expect("mint id scan").count(),
+            2,
+            "every mint is indexed exactly once"
+        );
 
         assert!(read_txn.open_table(MINTS_TABLE).is_err());
     }
