@@ -22,7 +22,10 @@ use cdk_common::BlindedMessage;
 use tracing::instrument;
 
 use crate::dhke::construct_proofs;
-use crate::nuts::{CheckStateRequest, PreMintSecrets, Proofs, RestoreRequest, State, SwapRequest};
+use crate::nuts::{
+    BlindSignature, CheckStateRequest, PreMintSecrets, Proofs, RestoreRequest, RestoreResponse,
+    State, SwapRequest,
+};
 use crate::wallet::blind_signature::{
     validate_mint_response_signatures, SignatureAmountValidation,
 };
@@ -348,6 +351,36 @@ impl Wallet {
             .await
     }
 
+    /// Recover NUT-08 change signatures already included in a paid quote.
+    pub(crate) async fn recover_melt_change_signatures(
+        &self,
+        saga_id: &uuid::Uuid,
+        blinded_messages: &[BlindedMessage],
+        counter_start: u32,
+        counter_end: u32,
+        signatures: Vec<BlindSignature>,
+    ) -> Result<OutputRecoveryResult, Error> {
+        // NUT-08 returns the signed prefix in the original output order.
+        let outputs = blinded_messages.get(..signatures.len()).ok_or_else(|| {
+            Error::InvalidMintResponse("melt change exceeds the requested output count".to_owned())
+        })?;
+        self.construct_recovered_outputs(
+            saga_id,
+            "Melt",
+            OutputRecoveryParams {
+                blinded_messages,
+                counter_start,
+                counter_end,
+            },
+            OutputRecoveryMode::Partial,
+            RestoreResponse {
+                outputs: outputs.to_vec(),
+                signatures,
+            },
+        )
+        .await
+    }
+
     /// Recover from incomplete operations after a crash. Call on startup.
     ///
     /// Handles interrupted swap, send, receive, and melt operations to prevent
@@ -493,6 +526,19 @@ impl Wallet {
             }
         };
 
+        self.construct_recovered_outputs(saga_id, saga_type, params, mode, restore_response)
+            .await
+    }
+
+    /// Validate and construct proofs identically for restore and quote responses.
+    async fn construct_recovered_outputs(
+        &self,
+        saga_id: &uuid::Uuid,
+        saga_type: &str,
+        params: OutputRecoveryParams<'_>,
+        mode: OutputRecoveryMode,
+        restore_response: RestoreResponse,
+    ) -> Result<OutputRecoveryResult, Error> {
         // Validate coverage before constructing or saving any proofs. A nonempty
         // subset is not enough to finish an operation with fixed outputs.
         if mode == OutputRecoveryMode::Complete {
