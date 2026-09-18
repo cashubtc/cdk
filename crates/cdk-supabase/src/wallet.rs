@@ -2514,6 +2514,7 @@ impl TryInto<MintInfo> for MintTable {
         }
 
         Ok(MintInfo {
+            signature: None,
             name: self.name,
             pubkey: self
                 .pubkey

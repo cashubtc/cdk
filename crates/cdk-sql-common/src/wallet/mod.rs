@@ -1098,6 +1098,10 @@ where
                     tos_url,
                     // Not persisted: a runtime hint the mint recomputes, refreshed with /v1/info.
                     max_array_length: _,
+                    // Not persisted: it covers a payload that includes fields
+                    // this table drops, so a stored signature could never
+                    // verify. Wallets check it on the response as received.
+                    signature: _,
                 } = mint_info;
 
                 (
@@ -2021,6 +2025,7 @@ fn sql_row_to_mint_info(row: Vec<Column>) -> Result<MintInfo, Error> {
     );
 
     Ok(MintInfo {
+        signature: None,
         name: column_as_nullable_string!(&name),
         pubkey: column_as_nullable_binary!(&pubkey)
             .map(|bytes| cdk_common::nuts::PublicKey::from_slice(&bytes))
