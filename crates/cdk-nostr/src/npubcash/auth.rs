@@ -22,9 +22,8 @@ struct CachedToken {
 impl fmt::Debug for CachedToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CachedToken")
-            .field("token", &"[REDACTED]")
             .field("expires_at", &self.expires_at)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -43,10 +42,9 @@ impl fmt::Debug for JwtAuthProvider {
                 "base_url",
                 &cdk_common::redact::url_for_logs(&self.base_url),
             )
-            .field("keys", &"[REDACTED]")
             .field("http_client", &self.http_client)
             .field("cached_token", &self.cached_token)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -236,7 +234,7 @@ mod tests {
         let debug = format!("{token:?}");
 
         assert!(!debug.contains(secret));
-        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("token:"));
     }
 
     #[test]
@@ -248,6 +246,6 @@ mod tests {
         let debug = format!("{provider:?}");
 
         assert!(!debug.contains(&secret));
-        assert!(debug.contains("keys: \"[REDACTED]\""));
+        assert!(!debug.contains("keys:"));
     }
 }

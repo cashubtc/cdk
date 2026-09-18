@@ -19,7 +19,7 @@ use crate::wallet::WalletKey;
 use crate::Amount;
 
 /// CDK Error
-#[derive(Debug, Error)]
+#[derive(Error)]
 pub enum Error {
     /// Mint does not have a key for amount
     #[error("No Key for Amount")]
@@ -422,7 +422,7 @@ pub enum Error {
     PreimageNotProvided,
 
     /// Unknown mint
-    #[error("Unknown mint: {mint_url}")]
+    #[error("Unknown mint: {}", crate::redact::url_for_logs(.mint_url))]
     UnknownMint {
         /// URL of the unknown mint
         mint_url: String,
@@ -599,9 +599,61 @@ pub enum Error {
     Payment(#[from] crate::payment::Error),
 }
 
+// Reuse Display's redaction while escaping control characters in diagnostics.
+// Structured error fields remain intact for callers.
+impl fmt::Debug for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.to_string(), f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_mint_redacts_diagnostics_without_changing_url() {
+        for (url, logged_url) in [
+            ("https://mint.example", "https://mint.example/"),
+            (
+                "https://alice:password@mint.example/api?token=secret#fragment",
+                "https://mint.example/api",
+            ),
+            ("invalid URL with secret", "[INVALID URL]"),
+        ] {
+            let error = Error::UnknownMint {
+                mint_url: url.to_owned(),
+            };
+            let expected = format!("Unknown mint: {logged_url}");
+            assert_eq!(error.to_string(), expected);
+            assert_eq!(format!("{error:?}"), format!("{expected:?}"));
+            assert_eq!(format!("{error:#?}"), format!("{expected:#?}"));
+            match error {
+                Error::UnknownMint { mint_url } => assert_eq!(mint_url, url),
+                _ => panic!("expected UnknownMint"),
+            }
+        }
+    }
+
+    #[test]
+    fn error_debug_escapes_remote_control_characters() {
+        let message = "remote error\nforged log\r\t\u{1b}[31m\u{7}";
+        let error = Error::HttpError(Some(503), message.to_owned());
+
+        for debug in [format!("{error:?}"), format!("{error:#?}")] {
+            assert!(!debug.chars().any(char::is_control));
+            assert!(debug.contains("remote error\\nforged log\\r\\t"));
+            assert!(debug.contains("\\u{1b}[31m\\u{7}"));
+            assert!(debug.contains("503"));
+        }
+        match error {
+            Error::HttpError(status, original) => {
+                assert_eq!(status, Some(503));
+                assert_eq!(original, message);
+            }
+            _ => panic!("expected HttpError"),
+        }
+    }
 
     #[test]
     fn test_is_definitive_failure() {

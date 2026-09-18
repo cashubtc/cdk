@@ -137,10 +137,7 @@ pub struct MintMetadataCache {
 impl std::fmt::Debug for MintMetadataCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MintMetadataCache")
-            .field(
-                "mint_url",
-                &cdk_common::redact::url_for_logs(&self.mint_url.to_string()),
-            )
+            .field("mint_url", &self.mint_url)
             .field("is_populated", &self.metadata.load().status.is_populated)
             .field("keyset_count", &self.metadata.load().keysets.len())
             .finish()
