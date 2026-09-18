@@ -62,6 +62,9 @@ FROM mint;
 ALTER TABLE mint RENAME TO mint_old;
 ALTER TABLE mint_new RENAME TO mint;
 
+-- The foreign key below restricts rather than cascades. A mint row is only
+-- ever soft deleted (removed_at), so a DELETE FROM mint is a mistake, and
+-- failing it loudly beats taking every proof of that mint with it.
 CREATE TABLE keyset_new (
     id TEXT PRIMARY KEY,
     mint_id INTEGER NOT NULL,
@@ -70,7 +73,7 @@ CREATE TABLE keyset_new (
     active BOOL NOT NULL,
     input_fee_ppk INTEGER,
     final_expiry INTEGER DEFAULT NULL,
-    FOREIGN KEY(mint_id) REFERENCES mint(id) ON DELETE CASCADE
+    FOREIGN KEY(mint_id) REFERENCES mint(id) ON DELETE RESTRICT
 );
 
 INSERT INTO keyset_new (id, mint_id, keyset_u32, unit, active, input_fee_ppk, final_expiry)

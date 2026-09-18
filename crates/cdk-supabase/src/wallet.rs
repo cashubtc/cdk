@@ -123,6 +123,18 @@ impl fmt::Debug for SupabaseTokenResponse {
     }
 }
 
+/// Mint ids resolved under the current identity, with the generation they were
+/// resolved in.
+///
+/// The generation exists because a lookup can be preempted: a sign-in can land
+/// between the request that resolved an id and the store that caches it, and an
+/// id resolved under one wallet id means nothing under another.
+#[derive(Debug, Default)]
+struct MintIdCache {
+    generation: u64,
+    ids: HashMap<MintUrl, i64>,
+}
+
 /// Supabase wallet database implementation
 ///
 /// This database uses two types of authentication:
@@ -151,6 +163,9 @@ pub struct SupabaseWalletDatabase {
     auth_provider: Arc<RwLock<AuthProvider>>,
     client: Client,
     encryption_key: Arc<RwLock<Option<Key<Aes256Gcm>>>>,
+    /// Mint ids already resolved, so a write does not spend a round trip
+    /// re-deriving the id of a mint this instance has seen.
+    mint_ids: Arc<RwLock<MintIdCache>>,
 }
 
 impl fmt::Debug for SupabaseWalletDatabase {
@@ -164,6 +179,7 @@ impl fmt::Debug for SupabaseWalletDatabase {
             .field("auth_provider", &"[REDACTED]")
             .field("client", &"Client")
             .field("encryption_key", &"[REDACTED]")
+            .field("mint_ids", &"[REDACTED]")
             .finish()
     }
 }
@@ -187,6 +203,7 @@ impl SupabaseWalletDatabase {
             auth_provider: Arc::new(RwLock::new(AuthProvider::None)),
             client: Client::new(),
             encryption_key: Arc::new(RwLock::new(None)),
+            mint_ids: Arc::new(RwLock::new(MintIdCache::default())),
         })
     }
 
@@ -209,6 +226,7 @@ impl SupabaseWalletDatabase {
             auth_provider: Arc::new(RwLock::new(AuthProvider::SupabaseAuth)),
             client: Client::new(),
             encryption_key: Arc::new(RwLock::new(None)),
+            mint_ids: Arc::new(RwLock::new(MintIdCache::default())),
         })
     }
 
@@ -235,6 +253,7 @@ impl SupabaseWalletDatabase {
             auth_provider: Arc::new(RwLock::new(AuthProvider::Oidc(oidc_client))),
             client: Client::new(),
             encryption_key: Arc::new(RwLock::new(None)),
+            mint_ids: Arc::new(RwLock::new(MintIdCache::default())),
         })
     }
 
@@ -332,8 +351,25 @@ impl SupabaseWalletDatabase {
         }
     }
 
+    /// Forget every resolved mint id.
+    ///
+    /// `mint.wallet_id` comes from the JWT, server side, so an id resolved under
+    /// one token means nothing under another. Bumping the generation also tells
+    /// a resolution already in flight that its result belongs to an identity
+    /// that is gone.
+    async fn clear_mint_ids(&self) {
+        let mut cache = self.mint_ids.write().await;
+        cache.ids.clear();
+        cache.generation = cache.generation.wrapping_add(1);
+    }
+
     /// Set or update the JWT token for authentication
+    ///
+    /// Every path that changes the token comes through here, so this is where
+    /// the resolved mint ids are dropped.
     pub async fn set_jwt_token(&self, token: Option<String>) {
+        self.clear_mint_ids().await;
+
         let mut jwt = self.jwt_token.write().await;
         *jwt = token.clone();
 
@@ -921,17 +957,49 @@ impl SupabaseWalletDatabase {
         }
     }
 
-    /// Upsert the mint URL and return the internal id it is stored under.
+    /// The internal id the mint URL is stored under, resolving it if this
+    /// instance has not seen it yet.
     ///
     /// Rows reference this id, never the URL, so a write has to have an id to
-    /// point at. A wallet is built synchronously and can be handed an empty
-    /// database, so it has no opportunity to register its mint before its first
-    /// write; the store upserts it on demand instead.
+    /// point at. Deriving it over the network on every write is what the cache
+    /// avoids: a mint keeps its id for life, so one resolution serves every
+    /// later write.
+    ///
+    /// The one mapping this instance cannot see change is a rename made on
+    /// another device. A write then lands on the mint under its new URL, where
+    /// before the cache it would have started a second mint at the old one.
+    async fn mint_id_for_write(&self, mint_url: &MintUrl) -> Result<i64, DatabaseError> {
+        let (generation, cached) = {
+            let cache = self.mint_ids.read().await;
+            (cache.generation, cache.ids.get(mint_url).copied())
+        };
+
+        if let Some(mint_id) = cached {
+            return Ok(mint_id);
+        }
+
+        let mint_id = self.resolve_mint_id(mint_url).await?;
+
+        let mut cache = self.mint_ids.write().await;
+        if cache.generation == generation {
+            cache.ids.insert(mint_url.clone(), mint_id);
+        }
+
+        Ok(mint_id)
+    }
+
+    /// Ask the database for the id of a mint URL, storing the mint if it is new.
+    ///
+    /// A wallet is built synchronously and can be handed an empty database, so
+    /// it has no opportunity to register its mint before its first write; the
+    /// store upserts it on demand instead.
     ///
     /// The body carries only the URL, so an existing mint keeps the metadata
     /// [`SupabaseWalletDatabase::add_mint`] owns, and one request covers both
-    /// the mint that is already stored and the one that is not.
-    async fn mint_id_for_write(&self, mint_url: &MintUrl) -> Result<i64, DatabaseError> {
+    /// the mint that is already stored and the one that is not. That also
+    /// settles the race between two clients that both find the mint missing:
+    /// the conflict arm returns the row the other one inserted.
+    async fn resolve_mint_id(&self, mint_url: &MintUrl) -> Result<i64, DatabaseError> {
         let row = MintUrlRow {
             mint_url: mint_url.to_string(),
         };
@@ -944,7 +1012,7 @@ impl SupabaseWalletDatabase {
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "mint_id_for_write failed: HTTP {} - {}",
+                "resolve_mint_id failed: HTTP {} - {}",
                 status, text
             )));
         }
@@ -1438,17 +1506,9 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         // Convert proofs to table format for the RPC call
 
         // Re-do serialization loop properly to allow await
-        let mut mint_ids: HashMap<MintUrl, i64> = HashMap::new();
         let mut proofs_json: Vec<serde_json::Value> = Vec::with_capacity(added.len());
         for p in added {
-            let mint_id = match mint_ids.get(&p.mint_url) {
-                Some(mint_id) => *mint_id,
-                None => {
-                    let mint_id = self.mint_id_for_write(&p.mint_url).await?;
-                    mint_ids.insert(p.mint_url.clone(), mint_id);
-                    mint_id
-                }
-            };
+            let mint_id = self.mint_id_for_write(&p.mint_url).await?;
             let mut table = ProofTable::from_proof(mint_id, p)?;
 
             // Encrypt secret
@@ -1580,6 +1640,11 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     /// Every other table references the mint by its internal id, so the URL
     /// lives only here and nothing else needs rewriting.
+    ///
+    /// The row keeps that id but is no longer reachable under the old URL, so
+    /// the old URL's cached id is dropped: left in place it would point a later
+    /// write at a mint that moved. Nothing is needed for `new_mint_url`, which
+    /// can have no entry, since the rename only succeeds when no row holds it.
     async fn update_mint_url(
         &self,
         old_mint_url: MintUrl,
@@ -1604,6 +1669,8 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         if updated.as_array().map(|rows| rows.len()).unwrap_or(0) == 0 {
             return Err(DatabaseError::UnknownMint(old_mint_url.to_string()));
         }
+
+        self.mint_ids.write().await.ids.remove(&old_mint_url);
 
         Ok(())
     }
@@ -3399,6 +3466,7 @@ mod tests {
     use bitcoin::base64::engine::general_purpose;
     use bitcoin::base64::Engine as _;
     use cdk_common::database::{Error as DatabaseError, WalletDatabase};
+    use cdk_common::nuts::SecretKey;
     #[cfg(feature = "integration-tests")]
     use cdk_common::wallet_db_test;
     use mockito::Matcher;
@@ -3941,6 +4009,252 @@ mod tests {
         assert_eq!(key.as_slice(), expected.as_slice());
 
         get_mock.assert_async().await;
+    }
+
+    async fn cache_test_db(server: &mockito::Server) -> SupabaseWalletDatabase {
+        SupabaseWalletDatabase::new(
+            Url::parse(&server.url()).expect("mock server URL should parse"),
+            "anon-key".to_string(),
+        )
+        .await
+        .expect("database should initialize")
+    }
+
+    fn cache_test_transaction(mint_url: &MintUrl) -> Transaction {
+        Transaction {
+            mint_url: mint_url.clone(),
+            direction: TransactionDirection::Incoming,
+            amount: cdk_common::Amount::from(100),
+            fee: cdk_common::Amount::from(1),
+            unit: CurrencyUnit::Sat,
+            ys: vec![SecretKey::generate().public_key()],
+            timestamp: 1234567890,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
+            status: TransactionStatus::Completed,
+        }
+    }
+
+    fn cache_test_mint_url() -> MintUrl {
+        MintUrl::from_str("https://cache-test-mint.example.com").expect("mint URL should parse")
+    }
+
+    #[tokio::test]
+    async fn mint_id_is_resolved_once_per_mint() {
+        let mut server = mockito::Server::new_async().await;
+        let mint_mock = server
+            .mock("POST", "/rest/v1/mint")
+            .match_query(Matcher::Any)
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"[{"mint_id":7}]"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let transaction_mock = server
+            .mock("POST", "/rest/v1/transactions")
+            .match_query(Matcher::Any)
+            .match_body(Matcher::PartialJson(json!({ "mint_id": 7 })))
+            .with_status(201)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let db = cache_test_db(&server).await;
+        let mint_url = cache_test_mint_url();
+
+        for _ in 0..2 {
+            db.add_transaction(cache_test_transaction(&mint_url))
+                .await
+                .expect("transaction should be stored");
+        }
+
+        mint_mock.assert_async().await;
+        transaction_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn unknown_mint_is_upserted_on_the_first_write() {
+        let mut server = mockito::Server::new_async().await;
+        let mint_url = cache_test_mint_url();
+        let mint_mock = server
+            .mock("POST", "/rest/v1/mint")
+            .match_query(Matcher::Any)
+            .match_query(Matcher::Exact(
+                "on_conflict=mint_url,wallet_id&select=mint_id".to_string(),
+            ))
+            .match_header(
+                "prefer",
+                "resolution=merge-duplicates,missing=default,return=representation",
+            )
+            .match_body(Matcher::Json(json!({ "mint_url": mint_url.to_string() })))
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"[{"mint_id":9}]"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let transaction_mock = server
+            .mock("POST", "/rest/v1/transactions")
+            .match_query(Matcher::Any)
+            .match_body(Matcher::PartialJson(json!({ "mint_id": 9 })))
+            .with_status(201)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let db = cache_test_db(&server).await;
+
+        db.add_transaction(cache_test_transaction(&mint_url))
+            .await
+            .expect("transaction should be stored");
+
+        mint_mock.assert_async().await;
+        transaction_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn mint_ids_are_forgotten_when_the_jwt_changes() {
+        let mut server = mockito::Server::new_async().await;
+        let mint_mock = server
+            .mock("POST", "/rest/v1/mint")
+            .match_query(Matcher::Any)
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"[{"mint_id":7}]"#)
+            .expect(2)
+            .create_async()
+            .await;
+        let transaction_mock = server
+            .mock("POST", "/rest/v1/transactions")
+            .match_query(Matcher::Any)
+            .with_status(201)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let db = cache_test_db(&server).await;
+        let mint_url = cache_test_mint_url();
+
+        db.add_transaction(cache_test_transaction(&mint_url))
+            .await
+            .expect("transaction should be stored");
+
+        db.set_jwt_token(Some("another-identity".to_string())).await;
+
+        db.add_transaction(cache_test_transaction(&mint_url))
+            .await
+            .expect("transaction should be stored");
+
+        mint_mock.assert_async().await;
+        transaction_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn a_renamed_mint_url_is_forgotten() {
+        let mut server = mockito::Server::new_async().await;
+        let mint_url = cache_test_mint_url();
+        let mint_mock = server
+            .mock("POST", "/rest/v1/mint")
+            .match_query(Matcher::Any)
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"[{"mint_id":7}]"#)
+            .expect(2)
+            .create_async()
+            .await;
+        let rename_mock = server
+            .mock("PATCH", "/rest/v1/mint")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"[{"mint_id":7,"mint_url":"https://moved.example.com"}]"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let transaction_mock = server
+            .mock("POST", "/rest/v1/transactions")
+            .match_query(Matcher::Any)
+            .with_status(201)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let db = cache_test_db(&server).await;
+
+        db.add_transaction(cache_test_transaction(&mint_url))
+            .await
+            .expect("transaction should be stored");
+
+        db.update_mint_url(
+            mint_url.clone(),
+            MintUrl::from_str("https://moved.example.com").expect("mint URL should parse"),
+        )
+        .await
+        .expect("rename should succeed");
+
+        db.add_transaction(cache_test_transaction(&mint_url))
+            .await
+            .expect("transaction should be stored");
+
+        mint_mock.assert_async().await;
+        rename_mock.assert_async().await;
+        transaction_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn update_proofs_resolves_each_mint_once() {
+        let mut server = mockito::Server::new_async().await;
+        let mint_mock = server
+            .mock("POST", "/rest/v1/mint")
+            .match_query(Matcher::Any)
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"[{"mint_id":7}]"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let rpc_mock = server
+            .mock("POST", "/rest/v1/rpc/update_proofs_atomic")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("{}")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let db = cache_test_db(&server).await;
+        *db.encryption_key.write().await = Some(Key::<Aes256Gcm>::from([7u8; 32]));
+
+        let mint_url = cache_test_mint_url();
+        let keyset_id = Id::from_str("00916bbf7ef91a36").expect("keyset id should parse");
+        let proofs = (0..2)
+            .map(|_| {
+                let proof = cdk_common::nuts::Proof {
+                    amount: cdk_common::Amount::from(1),
+                    keyset_id,
+                    secret: Secret::generate(),
+                    c: SecretKey::generate().public_key(),
+                    witness: None,
+                    dleq: None,
+                    p2pk_e: None,
+                };
+                ProofInfo::new(proof, mint_url.clone(), State::Unspent, CurrencyUnit::Sat)
+                    .expect("proof info should build")
+            })
+            .collect();
+
+        db.update_proofs(proofs, vec![])
+            .await
+            .expect("proofs should be stored");
+
+        mint_mock.assert_async().await;
+        rpc_mock.assert_async().await;
     }
 
     // -------------------------------------------------------------------------

@@ -28,7 +28,9 @@ use crate::wallet::migrations::{
     migrate_01_to_02, migrate_02_to_03, migrate_03_to_04, migrate_04_to_05, migrate_05_to_06,
     migrate_06_to_07,
 };
-use crate::wallet::mint_index::{MintIndex, StoredMint, MINTS_TABLE};
+use crate::wallet::mint_index::{
+    next_mint_id, MintIdProbe, MintIndex, StoredMint, MINTS_TABLE, MINT_IDS_TABLE,
+};
 
 mod migrations;
 mod mint_index;
@@ -175,6 +177,7 @@ impl WalletRedbDatabase {
                         let mut table = write_txn.open_table(CONFIG_TABLE)?;
                         // Open all tables to init a new db
                         let _ = write_txn.open_table(MINTS_TABLE)?;
+                        let _ = write_txn.open_table(MINT_IDS_TABLE)?;
                         let _ = write_txn.open_multimap_table(MINT_KEYSETS_TABLE)?;
                         let _ = write_txn.open_table(KEYSETS_TABLE)?;
                         let _ = write_txn.open_table(MINT_QUOTES_TABLE)?;
@@ -183,6 +186,8 @@ impl WalletRedbDatabase {
                         let _ = write_txn.open_table(PROOFS_TABLE)?;
                         let _ = write_txn.open_table(KEYSET_COUNTER)?;
                         let _ = write_txn.open_table(TRANSACTIONS_TABLE)?;
+                        let _ = write_txn.open_table(SAGAS_TABLE)?;
+                        let _ = write_txn.open_table(DERIVATION_COUNTER)?;
                         let _ = write_txn.open_table(KEYSET_U32_MAPPING)?;
                         let _ = write_txn.open_table(KV_STORE_TABLE)?;
                         let _ = write_txn.open_table(P2PK_SIGNING_KEYS_TABLE)?;
@@ -216,32 +221,44 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     #[instrument(skip(self))]
     async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
+        let mint_ids = read_txn.open_table(MINT_IDS_TABLE).map_err(Error::from)?;
+
+        let Some(mint_id) = mint_ids
+            .get(mint_url.to_string().as_str())
+            .map_err(Error::from)?
+        else {
+            return Ok(None);
+        };
+
         let table = read_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
 
-        for entry in table.iter().map_err(Error::from)? {
-            let (_, mint) = entry.map_err(Error::from)?;
-            let mint: StoredMint = serde_json::from_str(mint.value()).map_err(Error::from)?;
+        let Some(mint) = table.get(mint_id.value()).map_err(Error::from)? else {
+            return Ok(None);
+        };
 
-            if mint.mint_url == mint_url && mint.removed_at.is_none() {
-                return Ok(mint.mint_info);
-            }
-        }
+        let mint: StoredMint = serde_json::from_str(mint.value()).map_err(Error::from)?;
 
-        Ok(None)
+        Ok(mint
+            .removed_at
+            .is_none()
+            .then_some(mint.mint_info)
+            .flatten())
     }
 
     #[instrument(skip(self))]
     async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
-        let mints = table
-            .iter()
-            .map_err(Error::from)?
-            .flatten()
-            .filter_map(|(_, mint)| serde_json::from_str::<StoredMint>(mint.value()).ok())
-            .filter(|mint| mint.removed_at.is_none())
-            .map(|mint| (mint.mint_url, mint.mint_info))
-            .collect();
+        let mut mints = HashMap::new();
+
+        for entry in table.iter().map_err(Error::from)? {
+            let (_, mint) = entry.map_err(Error::from)?;
+            let mint: StoredMint = serde_json::from_str(mint.value()).map_err(Error::from)?;
+
+            if mint.removed_at.is_none() {
+                mints.insert(mint.mint_url, mint.mint_info);
+            }
+        }
 
         Ok(mints)
     }
@@ -252,7 +269,11 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         mint_url: MintUrl,
     ) -> Result<Option<Vec<KeySetInfo>>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
-        let mints = MintIndex::read(&read_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
+        let mints = MintIndex::for_urls(
+            &read_txn.open_table(MINTS_TABLE).map_err(Error::from)?,
+            &read_txn.open_table(MINT_IDS_TABLE).map_err(Error::from)?,
+            [&mint_url],
+        )?;
         let Some(mint_id) = mints.live_id(&mint_url) else {
             return Ok(None);
         };
@@ -427,6 +448,9 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
+    /// A proof for a mint the caller did not ask for is skipped on its stored
+    /// id, before it costs a [`ProofInfo`]: a wallet asking for one mint would
+    /// otherwise deserialize every other mint's proofs only to discard them.
     async fn get_proofs(
         &self,
         mint_url: Option<MintUrl>,
@@ -435,7 +459,23 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
-        let mints = MintIndex::read(&read_txn.open_table(MINTS_TABLE).map_err(Error::from)?)?;
+        let stored_mints = read_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
+
+        let (mints, wanted) = match &mint_url {
+            Some(mint_url) => {
+                let mints = MintIndex::for_urls(
+                    &stored_mints,
+                    &read_txn.open_table(MINT_IDS_TABLE).map_err(Error::from)?,
+                    [mint_url],
+                )?;
+                let Some(mint_id) = mints.live_id(mint_url) else {
+                    return Ok(Vec::new());
+                };
+
+                (mints, Some(mint_id))
+            }
+            None => (MintIndex::read(&stored_mints)?, None),
+        };
 
         let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
 
@@ -443,6 +483,14 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
         for entry in table.iter().map_err(Error::from)? {
             let (_k, v) = entry.map_err(Error::from)?;
+
+            if let Some(wanted) = wanted {
+                let probe: MintIdProbe = serde_json::from_str(v.value()).map_err(Error::from)?;
+
+                if probe.mint_id != Some(wanted) {
+                    continue;
+                }
+            }
 
             let Some(proof_info) = mints.decode_visible::<ProofInfo>(v.value())? else {
                 continue;
@@ -645,6 +693,11 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     /// Rejects a `new_mint_url` another mint already holds, removed or not.
     /// The URL is data here rather than the table key, so nothing enforces that
     /// on its own; the SQL backends get it from `UNIQUE (mint_url)`.
+    ///
+    /// The mint being moved is resolved first. A removed mint still owns its
+    /// URL, so testing the target before the source reported a taken URL for a
+    /// mint that is simply gone, where the contract and the SQL backends say
+    /// [`database::Error::UnknownMint`].
     async fn update_mint_url(
         &self,
         old_mint_url: MintUrl,
@@ -653,39 +706,55 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
-            let mut table = write_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
+            let mut mints = write_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
+            let mut mint_ids = write_txn.open_table(MINT_IDS_TABLE).map_err(Error::from)?;
 
-            let mut stored = None;
-            let mut taken = false;
+            let old_key = old_mint_url.to_string();
+            let new_key = new_mint_url.to_string();
 
-            for entry in table.iter().map_err(Error::from)? {
-                let (id, mint) = entry.map_err(Error::from)?;
-                let Ok(mint) = serde_json::from_str::<StoredMint>(mint.value()) else {
-                    continue;
+            let unknown_mint = || database::Error::UnknownMint(old_mint_url.to_string());
+
+            let Some(mint_id) = mint_ids
+                .get(old_key.as_str())
+                .map_err(Error::from)?
+                .map(|mint_id| mint_id.value())
+            else {
+                return Err(unknown_mint());
+            };
+
+            let mut mint: StoredMint = {
+                let Some(stored) = mints.get(mint_id).map_err(Error::from)? else {
+                    return Err(unknown_mint());
                 };
 
-                if mint.mint_url == old_mint_url && mint.removed_at.is_none() {
-                    stored = Some((id.value(), mint));
-                } else if mint.mint_url == new_mint_url {
-                    taken = true;
-                }
+                serde_json::from_str(stored.value()).map_err(Error::from)?
+            };
+
+            if mint.removed_at.is_some() {
+                return Err(unknown_mint());
             }
 
-            if taken {
+            let taken = mint_ids
+                .get(new_key.as_str())
+                .map_err(Error::from)?
+                .map(|id| id.value());
+
+            if taken.is_some_and(|taken| taken != mint_id) {
                 return Err(Error::Duplicate.into());
             }
 
-            let Some((mint_id, mut mint)) = stored else {
-                return Err(database::Error::UnknownMint(old_mint_url.to_string()));
-            };
-
             mint.mint_url = new_mint_url;
 
-            table
+            mints
                 .insert(
                     mint_id,
                     serde_json::to_string(&mint).map_err(Error::from)?.as_str(),
                 )
+                .map_err(Error::from)?;
+
+            mint_ids.remove(old_key.as_str()).map_err(Error::from)?;
+            mint_ids
+                .insert(new_key.as_str(), mint_id)
                 .map_err(Error::from)?;
         }
 
@@ -759,35 +828,35 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         {
-            let mut table = write_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
+            let mut mints = write_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
+            let mut mint_ids = write_txn.open_table(MINT_IDS_TABLE).map_err(Error::from)?;
 
-            let mut existing = None;
-            let mut highest = 0;
+            let key = mint_url.to_string();
+            let existing = mint_ids
+                .get(key.as_str())
+                .map_err(Error::from)?
+                .map(|mint_id| mint_id.value());
 
-            for entry in table.iter().map_err(Error::from)? {
-                let (id, stored) = entry.map_err(Error::from)?;
-                let stored: StoredMint =
-                    serde_json::from_str(stored.value()).map_err(Error::from)?;
+            let mint_id = match existing {
+                Some(mint_id) => mint_id,
+                None => next_mint_id(&mints)?,
+            };
 
-                highest = highest.max(id.value());
-
-                if stored.mint_url == mint_url {
-                    existing = Some(id.value());
-                }
-            }
-
-            let mint_id = existing.unwrap_or(highest + 1);
             let mint = StoredMint {
                 mint_url,
                 mint_info,
                 removed_at: None,
             };
 
-            table
+            mints
                 .insert(
                     mint_id,
                     serde_json::to_string(&mint).map_err(Error::from)?.as_str(),
                 )
+                .map_err(Error::from)?;
+
+            mint_ids
+                .insert(key.as_str(), mint_id)
                 .map_err(Error::from)?;
         }
         write_txn.commit().map_err(Error::from)?;
@@ -802,20 +871,31 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         {
-            let mut table = write_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
+            let mut mints = write_txn.open_table(MINTS_TABLE).map_err(Error::from)?;
+            let mint_ids = write_txn.open_table(MINT_IDS_TABLE).map_err(Error::from)?;
 
-            let stored = table
-                .iter()
+            let Some(mint_id) = mint_ids
+                .get(mint_url.to_string().as_str())
                 .map_err(Error::from)?
-                .flatten()
-                .find_map(|(id, mint)| {
-                    let mint: StoredMint = serde_json::from_str(mint.value()).ok()?;
-                    (mint.mint_url == mint_url && mint.removed_at.is_none()).then_some(id.value())
-                });
-
-            let Some(mint_id) = stored else {
+                .map(|mint_id| mint_id.value())
+            else {
                 return Ok(());
             };
+
+            let already_removed = {
+                let Some(stored) = mints.get(mint_id).map_err(Error::from)? else {
+                    return Ok(());
+                };
+
+                serde_json::from_str::<StoredMint>(stored.value())
+                    .map_err(Error::from)?
+                    .removed_at
+                    .is_some()
+            };
+
+            if already_removed {
+                return Ok(());
+            }
 
             let mint = StoredMint {
                 mint_url,
@@ -823,7 +903,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                 removed_at: Some(unix_time()),
             };
 
-            table
+            mints
                 .insert(
                     mint_id,
                     serde_json::to_string(&mint).map_err(Error::from)?.as_str(),
@@ -1678,6 +1758,7 @@ mod test {
     use std::str::FromStr;
 
     use cdk_common::database::{self, WalletDatabase};
+    use cdk_common::mint_url::MintUrl;
     use cdk_common::{wallet_db_test, Id};
 
     use super::WalletRedbDatabase;
@@ -1704,6 +1785,28 @@ mod test {
             Err(database::Error::AmountOverflow) => {}
             Ok(counter) => panic!("counter should not wrap, got {counter}"),
             Err(err) => panic!("expected amount overflow, got {err}"),
+        }
+    }
+
+    /// A removed mint is not a mint that can be moved, whatever it is moved to.
+    ///
+    /// Its URL is still its own, so testing "is the target taken" before "is the
+    /// source there" reported a taken URL for a mint that is simply gone.
+    #[tokio::test]
+    async fn renaming_a_removed_mint_reports_it_unknown() {
+        let db = provide_db(format!("removed-rename-{}", uuid::Uuid::new_v4())).await;
+        let first = MintUrl::from_str("https://first.example.com").expect("valid mint URL");
+        let second = MintUrl::from_str("https://second.example.com").expect("valid mint URL");
+
+        db.add_mint(first.clone(), None).await.expect("add first");
+        db.add_mint(second.clone(), None).await.expect("add second");
+        db.remove_mint(first.clone()).await.expect("remove first");
+
+        for target in [&first, &second] {
+            match db.update_mint_url(first.clone(), target.clone()).await {
+                Err(database::Error::UnknownMint(url)) => assert_eq!(url, first.to_string()),
+                other => panic!("expected the removed mint to be unknown, got {other:?}"),
+            }
         }
     }
 }

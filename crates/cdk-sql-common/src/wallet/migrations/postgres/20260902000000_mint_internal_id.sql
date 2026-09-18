@@ -35,12 +35,15 @@ ALTER TABLE mint ADD CONSTRAINT mint_mint_url_key UNIQUE (mint_url);
 -- are not destroyed with it; it is hidden from every read instead.
 ALTER TABLE mint ADD COLUMN removed_at BIGINT;
 
+-- The foreign keys below restrict rather than cascade. A mint row is only
+-- ever soft deleted (removed_at), so a DELETE FROM mint is a mistake, and
+-- failing it loudly beats taking every proof of that mint with it.
 ALTER TABLE keyset ADD COLUMN mint_id BIGINT;
 UPDATE keyset SET mint_id = mint.id FROM mint WHERE mint.mint_url = keyset.mint_url;
 ALTER TABLE keyset ALTER COLUMN mint_id SET NOT NULL;
 ALTER TABLE keyset DROP COLUMN mint_url;
 ALTER TABLE keyset ADD CONSTRAINT keyset_mint_id_fkey
-    FOREIGN KEY (mint_id) REFERENCES mint(id) ON DELETE CASCADE;
+    FOREIGN KEY (mint_id) REFERENCES mint(id) ON DELETE RESTRICT;
 CREATE INDEX IF NOT EXISTS keyset_mint_id_index ON keyset(mint_id);
 
 ALTER TABLE proof ADD COLUMN mint_id BIGINT;
@@ -48,7 +51,7 @@ UPDATE proof SET mint_id = mint.id FROM mint WHERE mint.mint_url = proof.mint_ur
 ALTER TABLE proof ALTER COLUMN mint_id SET NOT NULL;
 ALTER TABLE proof DROP COLUMN mint_url;
 ALTER TABLE proof ADD CONSTRAINT proof_mint_id_fkey
-    FOREIGN KEY (mint_id) REFERENCES mint(id) ON DELETE CASCADE;
+    FOREIGN KEY (mint_id) REFERENCES mint(id) ON DELETE RESTRICT;
 CREATE INDEX IF NOT EXISTS proof_mint_id_index ON proof(mint_id);
 
 ALTER TABLE mint_quote ADD COLUMN mint_id BIGINT;
@@ -56,7 +59,7 @@ UPDATE mint_quote SET mint_id = mint.id FROM mint WHERE mint.mint_url = mint_quo
 ALTER TABLE mint_quote ALTER COLUMN mint_id SET NOT NULL;
 ALTER TABLE mint_quote DROP COLUMN mint_url;
 ALTER TABLE mint_quote ADD CONSTRAINT mint_quote_mint_id_fkey
-    FOREIGN KEY (mint_id) REFERENCES mint(id) ON DELETE CASCADE;
+    FOREIGN KEY (mint_id) REFERENCES mint(id) ON DELETE RESTRICT;
 CREATE INDEX IF NOT EXISTS mint_quote_mint_id_index ON mint_quote(mint_id);
 
 -- melt_quote.mint_url was nullable, so its mint_id takes no NOT NULL: the rows
@@ -65,7 +68,7 @@ ALTER TABLE melt_quote ADD COLUMN mint_id BIGINT;
 UPDATE melt_quote SET mint_id = mint.id FROM mint WHERE mint.mint_url = melt_quote.mint_url;
 ALTER TABLE melt_quote DROP COLUMN mint_url;
 ALTER TABLE melt_quote ADD CONSTRAINT melt_quote_mint_id_fkey
-    FOREIGN KEY (mint_id) REFERENCES mint(id) ON DELETE CASCADE;
+    FOREIGN KEY (mint_id) REFERENCES mint(id) ON DELETE RESTRICT;
 CREATE INDEX IF NOT EXISTS melt_quote_mint_id_index ON melt_quote(mint_id);
 
 ALTER TABLE transactions ADD COLUMN mint_id BIGINT;
@@ -73,7 +76,7 @@ UPDATE transactions SET mint_id = mint.id FROM mint WHERE mint.mint_url = transa
 ALTER TABLE transactions ALTER COLUMN mint_id SET NOT NULL;
 ALTER TABLE transactions DROP COLUMN mint_url;
 ALTER TABLE transactions ADD CONSTRAINT transactions_mint_id_fkey
-    FOREIGN KEY (mint_id) REFERENCES mint(id) ON DELETE CASCADE;
+    FOREIGN KEY (mint_id) REFERENCES mint(id) ON DELETE RESTRICT;
 CREATE INDEX IF NOT EXISTS transactions_mint_id_index ON transactions(mint_id);
 
 ALTER TABLE wallet_sagas ADD COLUMN mint_id BIGINT;
@@ -81,5 +84,5 @@ UPDATE wallet_sagas SET mint_id = mint.id FROM mint WHERE mint.mint_url = wallet
 ALTER TABLE wallet_sagas ALTER COLUMN mint_id SET NOT NULL;
 ALTER TABLE wallet_sagas DROP COLUMN mint_url;
 ALTER TABLE wallet_sagas ADD CONSTRAINT wallet_sagas_mint_id_fkey
-    FOREIGN KEY (mint_id) REFERENCES mint(id) ON DELETE CASCADE;
+    FOREIGN KEY (mint_id) REFERENCES mint(id) ON DELETE RESTRICT;
 CREATE INDEX IF NOT EXISTS wallet_sagas_mint_id_index ON wallet_sagas(mint_id);
