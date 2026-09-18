@@ -272,6 +272,9 @@ impl Mint {
 
                     let description = bolt12_request.description;
 
+                    let mint_ttl = self.quote_ttl().await?.mint_ttl;
+                    let quote_expiry = unix_time() + mint_ttl;
+
                     // Check that the backend supports offer descriptions
                     let settings = payment_backend.get_settings().await?;
 
@@ -285,7 +288,7 @@ impl Mint {
                     let bolt12_options = Bolt12IncomingPaymentOptions {
                         description,
                         amount: amount.map(|a| a.with_unit(unit.clone())),
-                        unix_expiry: None,
+                        unix_expiry: Some(quote_expiry),
                     };
 
                     IncomingPaymentOptions::Bolt12(Box::new(bolt12_options))
@@ -1053,6 +1056,7 @@ impl Mint {
 mod batch_mint_tests {
     use std::collections::{HashMap, HashSet};
     use std::pin::Pin;
+    use std::str::FromStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -1069,11 +1073,12 @@ mod batch_mint_tests {
     };
     use cdk_common::{
         Amount, BatchMintRequest, CurrencyUnit, Error, MintQuoteBolt11Request,
-        MintQuoteBolt11Response, MintQuoteCustomRequest, MintQuoteState, MintRequest,
-        PaymentMethod, PublicKey, QuoteId,
+        MintQuoteBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response,
+        MintQuoteCustomRequest, MintQuoteState, MintRequest, PaymentMethod, PublicKey, QuoteId,
     };
     use cdk_fake_wallet::FakeWallet;
     use futures::Stream;
+    use lightning::offers::offer::Offer;
     use tokio::time::sleep;
 
     use crate::mint::payment_backend::MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS;
@@ -1209,20 +1214,30 @@ mod batch_mint_tests {
             percent_fee_reserve: 1.0,
         };
 
-        let fake_payment_backend = FakeWallet::new(
+        let fake_payment_backend = Arc::new(FakeWallet::new(
             fee_reserve.clone(),
             HashMap::default(),
             HashSet::default(),
             2,
             CurrencyUnit::Sat,
-        );
+        ));
 
         mint_builder
             .add_payment_processor(
                 CurrencyUnit::Sat,
                 PaymentMethod::Known(KnownMethod::Bolt11),
                 MintMeltLimits::new(1, 10_000),
-                Arc::new(fake_payment_backend),
+                fake_payment_backend.clone(),
+            )
+            .await
+            .unwrap();
+
+        mint_builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt12),
+                MintMeltLimits::new(1, 10_000),
+                fake_payment_backend,
             )
             .await
             .unwrap();
@@ -2162,5 +2177,42 @@ mod batch_mint_tests {
             result.unwrap_err(),
             Error::UnsupportedPaymentMethod
         ));
+    }
+
+    #[tokio::test]
+    async fn bolt12_mint_quote_sets_offer_absolute_expiry_from_mint_ttl() {
+        let mint = create_test_mint().await;
+        let mint_ttl = mint.quote_ttl().await.unwrap().mint_ttl;
+        let before = cdk_common::util::unix_time();
+
+        let quote: MintQuoteBolt12Response<QuoteId> = mint
+            .get_mint_quote(
+                MintQuoteBolt12Request {
+                    amount: Some(Amount::from(32)),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: PublicKey::from_hex(
+                        "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+                    )
+                    .expect("test public key"),
+                }
+                .into(),
+            )
+            .await
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        let after = cdk_common::util::unix_time();
+        let offer = Offer::from_str(&quote.request).expect("BOLT12 offer");
+        let offer_expiry = offer
+            .absolute_expiry()
+            .expect("offer must include absolute_expiry")
+            .as_secs();
+        let quote_expiry = quote.expiry.expect("quote must include expiry");
+
+        assert_eq!(offer_expiry, quote_expiry);
+        assert!(offer_expiry >= before + mint_ttl);
+        assert!(offer_expiry <= after + mint_ttl);
     }
 }
