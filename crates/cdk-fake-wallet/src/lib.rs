@@ -841,6 +841,13 @@ impl MintPayment for FakeWallet {
                 let offer_builder = OfferBuilder::new(secret_key.public_key(&secp_ctx))
                     .description(description.clone());
 
+                let offer_builder = match expiry {
+                    Some(unix_expiry) => {
+                        offer_builder.absolute_expiry(Duration::from_secs(unix_expiry))
+                    }
+                    None => offer_builder,
+                };
+
                 let (offer_builder, final_amount) = match amount {
                     Some(ref amt) => {
                         let amount_msat = convert_currency_amount(
@@ -1092,10 +1099,13 @@ fn fake_secret_key(seed: &str) -> SecretKey {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use cdk_common::payment::{
         CustomIncomingPaymentOptions, CustomOutgoingPaymentOptions, IncomingPaymentOptions,
         MintPayment, OnchainOutgoingPaymentOptions, OutgoingPaymentOptions, PaymentIdentifier,
     };
+    use lightning::offers::offer::Offer;
 
     use super::*;
 
@@ -1114,6 +1124,29 @@ mod tests {
 
     fn test_wallet() -> FakeWallet {
         test_wallet_with_delay(0)
+    }
+
+    #[tokio::test]
+    async fn bolt12_incoming_offer_includes_absolute_expiry() {
+        let wallet = test_wallet();
+        let unix_expiry = 2_000_000_000;
+        let response = wallet
+            .create_incoming_payment_request(IncomingPaymentOptions::Bolt12(Box::new(
+                payment::Bolt12IncomingPaymentOptions {
+                    description: Some("ttl".to_string()),
+                    amount: Some(Amount::new(32, CurrencyUnit::Sat)),
+                    unix_expiry: Some(unix_expiry),
+                },
+            )))
+            .await
+            .unwrap();
+
+        assert_eq!(response.expiry, Some(unix_expiry));
+        let offer = Offer::from_str(&response.request).expect("BOLT12 offer");
+        assert_eq!(
+            offer.absolute_expiry().map(|d| d.as_secs()),
+            Some(unix_expiry)
+        );
     }
 
     #[tokio::test]
