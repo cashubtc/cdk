@@ -1558,6 +1558,8 @@ mod tests {
                 unit: keyset.unit.clone(),
                 active: keyset.active.unwrap_or(true),
                 input_fee_ppk: keyset.input_fee_ppk,
+                active_from: None,
+                active_until: None,
                 final_expiry: keyset.final_expiry,
             }],
         )

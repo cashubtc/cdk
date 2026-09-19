@@ -357,6 +357,8 @@ impl MintRPCServer {
                 amounts,
                 input_fee_ppk.unwrap_or(0),
                 use_keyset_v2.unwrap_or(true),
+                None,
+                None,
                 final_expiry,
             )
             .await

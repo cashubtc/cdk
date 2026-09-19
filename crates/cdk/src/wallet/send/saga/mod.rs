@@ -408,10 +408,7 @@ impl<'a> SendSaga<'a, Initial> {
             .map(|k| k.id)
             .collect();
 
-        let active_keyset = all_keysets
-            .into_iter()
-            .filter(|k| k.active.unwrap_or(false))
-            .min_by_key(|k| k.input_fee_ppk)
+        let active_keyset = crate::wallet::keysets::select_active_keyset(all_keysets)
             .ok_or(Error::NoActiveKeyset)?;
 
         let active_keyset_id = active_keyset.id;

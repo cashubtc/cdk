@@ -238,6 +238,8 @@ pub fn test_keyset() -> KeySet {
         active: Some(true),
         keys: crate::nuts::Keys::new(keys),
         input_fee_ppk: 101,
+        active_from: None,
+        active_until: None,
         final_expiry: None,
     }
 }
@@ -784,6 +786,8 @@ impl MockMintConnector {
             active: Some(true),
             keys,
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         });
         *self.mint_signing_keys.lock().unwrap() = Some(signing_keys);
@@ -930,6 +934,8 @@ impl MintConnector for MockMintConnector {
                     unit: ks.unit.clone(),
                     active: ks.active.unwrap_or(true),
                     input_fee_ppk: ks.input_fee_ppk,
+                    active_from: None,
+                    active_until: None,
                     final_expiry: ks.final_expiry,
                 })
                 .collect(),
