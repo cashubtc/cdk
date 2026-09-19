@@ -362,9 +362,12 @@ impl MintQuote {
         self.state = self.state_from_amounts();
     }
 
-    /// Check if the quote has expired
+    /// Check if the quote has expired.
+    ///
+    /// `expiry == 0` is the no-expiry sentinel used by long-lived quotes
+    /// (BOLT12 mint offers without `absolute_expiry`).
     pub fn is_expired(&self, current_time: u64) -> bool {
-        current_time > self.expiry
+        self.expiry != 0 && current_time > self.expiry
     }
 
     /// Amount that can be minted
@@ -1463,6 +1466,23 @@ mod tests {
     use super::*;
     use crate::nuts::Id;
     use crate::secret::Secret;
+
+    #[test]
+    fn mint_quote_zero_expiry_is_not_expired() {
+        let quote = MintQuote::new(
+            "quote-id".to_string(),
+            MintUrl::from_str("https://mint.example.com").expect("valid mint url"),
+            PaymentMethod::BOLT12,
+            Some(Amount::from(32)),
+            CurrencyUnit::Sat,
+            "lno1".to_string(),
+            0,
+            None,
+        );
+
+        assert!(!quote.is_expired(0));
+        assert!(!quote.is_expired(u64::MAX));
+    }
 
     #[test]
     fn test_transaction_id_from_hex() {

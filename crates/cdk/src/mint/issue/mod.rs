@@ -282,6 +282,9 @@ impl Mint {
                         }
                     }
 
+                    // BOLT12 mint quotes are long-lived reusable offers. Do not
+                    // bind them to mint_ttl; quote expiry follows the offer
+                    // (`create_invoice_response.expiry`, none when perpetual).
                     let bolt12_options = Bolt12IncomingPaymentOptions {
                         description,
                         amount: amount.map(|a| a.with_unit(unit.clone())),
@@ -1053,6 +1056,7 @@ impl Mint {
 mod batch_mint_tests {
     use std::collections::{HashMap, HashSet};
     use std::pin::Pin;
+    use std::str::FromStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -1069,11 +1073,12 @@ mod batch_mint_tests {
     };
     use cdk_common::{
         Amount, BatchMintRequest, CurrencyUnit, Error, MintQuoteBolt11Request,
-        MintQuoteBolt11Response, MintQuoteCustomRequest, MintQuoteState, MintRequest,
-        PaymentMethod, PublicKey, QuoteId,
+        MintQuoteBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response,
+        MintQuoteCustomRequest, MintQuoteState, MintRequest, PaymentMethod, PublicKey, QuoteId,
     };
     use cdk_fake_wallet::FakeWallet;
     use futures::Stream;
+    use lightning::offers::offer::Offer;
     use tokio::time::sleep;
 
     use crate::mint::payment_backend::MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS;
@@ -1209,20 +1214,30 @@ mod batch_mint_tests {
             percent_fee_reserve: 1.0,
         };
 
-        let fake_payment_backend = FakeWallet::new(
+        let fake_payment_backend = Arc::new(FakeWallet::new(
             fee_reserve.clone(),
             HashMap::default(),
             HashSet::default(),
             2,
             CurrencyUnit::Sat,
-        );
+        ));
 
         mint_builder
             .add_payment_processor(
                 CurrencyUnit::Sat,
                 PaymentMethod::Known(KnownMethod::Bolt11),
                 MintMeltLimits::new(1, 10_000),
-                Arc::new(fake_payment_backend),
+                fake_payment_backend.clone(),
+            )
+            .await
+            .unwrap();
+
+        mint_builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt12),
+                MintMeltLimits::new(1, 10_000),
+                fake_payment_backend,
             )
             .await
             .unwrap();
@@ -2162,5 +2177,39 @@ mod batch_mint_tests {
             result.unwrap_err(),
             Error::UnsupportedPaymentMethod
         ));
+    }
+
+    #[tokio::test]
+    async fn bolt12_mint_quote_follows_long_lived_offer_expiry() {
+        let mint = create_test_mint().await;
+
+        let quote: MintQuoteBolt12Response<QuoteId> = mint
+            .get_mint_quote(
+                MintQuoteBolt12Request {
+                    amount: Some(Amount::from(32)),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: PublicKey::from_hex(
+                        "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+                    )
+                    .expect("test public key"),
+                }
+                .into(),
+            )
+            .await
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        let offer = Offer::from_str(&quote.request).expect("BOLT12 offer");
+
+        assert!(
+            offer.absolute_expiry().is_none(),
+            "BOLT12 mint offers are long-lived and must not inherit mint_ttl"
+        );
+        assert_eq!(
+            quote.expiry, None,
+            "quote expiry must follow the offer (none when the offer has no absolute_expiry)"
+        );
     }
 }
