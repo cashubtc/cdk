@@ -4,6 +4,8 @@ use std::array::TryFromSliceError;
 use std::fmt;
 
 #[cfg(feature = "mint")]
+use bitcoin::bip32::DerivationPath;
+#[cfg(feature = "mint")]
 use cashu::quote_id::QuoteId;
 use cashu::{CurrencyUnit, PaymentMethod};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -367,6 +369,61 @@ pub enum Error {
     /// Unit String collision
     #[error("Unit string picked collided: `{0}`")]
     UnitStringCollision(CurrencyUnit),
+    /// Two units pinned to one custom derivation path
+    #[cfg(feature = "mint")]
+    #[error(
+        "units {first} and {second} are both pinned to custom derivation path {path}; keys \
+             derive from the xpriv and the derivation path alone, so both units would sign with \
+             identical keys. Give each unit its own derivation path."
+    )]
+    CustomPathCollision {
+        /// Unit that claimed the path first
+        first: CurrencyUnit,
+        /// Unit that claimed the same path
+        second: CurrencyUnit,
+        /// The contested derivation path
+        path: DerivationPath,
+    },
+    /// Custom derivation path pinned inside another unit's branch
+    #[cfg(feature = "mint")]
+    #[error(
+        "unit {unit} is pinned to custom derivation path {path}, which sits in another unit's \
+             branch of the m/129372' tree and can be reached by that unit's index derivation. Pin \
+             the unit inside its own branch or outside m/129372'."
+    )]
+    CustomPathOutsideUnitBranch {
+        /// Unit carrying the pin
+        unit: CurrencyUnit,
+        /// The offending derivation path
+        path: DerivationPath,
+    },
+    /// Rotation would re-derive the keys of an existing keyset
+    #[cfg(feature = "mint")]
+    #[error(
+        "rotating unit {unit} re-derives keyset {existing} from derivation path {path}; keys \
+             derive from the xpriv and the derivation path alone, so the rotation cannot produce \
+             new keys"
+    )]
+    DerivationPathReuse {
+        /// Unit being rotated
+        unit: CurrencyUnit,
+        /// The path that already produced a keyset
+        path: DerivationPath,
+        /// The keyset already sitting on the path
+        existing: Id,
+    },
+    /// Two units staged onto one derivation path in a single rotation
+    #[cfg(feature = "mint")]
+    #[error(
+        "rotating unit {unit} onto derivation path {path} re-derives the keys of another unit \
+             staged into this same rotation; two units cannot share a derivation path"
+    )]
+    DerivationPathContention {
+        /// Unit being rotated
+        unit: CurrencyUnit,
+        /// The contested derivation path
+        path: DerivationPath,
+    },
     // Wallet Errors
     /// P2PK spending conditions not met
     #[error("P2PK condition not met `{0}`")]

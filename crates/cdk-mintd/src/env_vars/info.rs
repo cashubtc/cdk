@@ -3,13 +3,14 @@
 use std::env;
 use std::str::FromStr;
 
+use anyhow::{Context, Result};
 use cdk_common::common::QuoteTTL;
 
 use super::common::*;
 use crate::config::{Info, LoggingOutput};
 
 impl Info {
-    pub fn from_env(mut self) -> Self {
+    pub fn from_env(mut self) -> Result<Self> {
         // Required fields
         if let Ok(url) = env::var(ENV_URL) {
             self.url = url;
@@ -63,6 +64,15 @@ impl Info {
             }
         }
 
+        if let Ok(interval_str) = env::var(ENV_KEYSET_ROTATION_INTERVAL_SECONDS) {
+            self.keyset_rotation_interval_seconds = interval_str.parse().with_context(|| {
+                format!(
+                    "{ENV_KEYSET_ROTATION_INTERVAL_SECONDS} must be a whole number of seconds; \
+                     0 disables keyset auto-rotation"
+                )
+            })?;
+        }
+
         // Logging configuration
         if let Ok(output_str) = env::var(ENV_LOGGING_OUTPUT) {
             if let Ok(output) = LoggingOutput::from_str(&output_str) {
@@ -106,6 +116,49 @@ impl Info {
             });
         }
 
-        self
+        Ok(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clear_env_vars() {
+        env::remove_var(ENV_KEYSET_ROTATION_INTERVAL_SECONDS);
+    }
+
+    #[test]
+    fn info_from_env_reads_the_keyset_rotation_interval() {
+        let _guard = crate::test_utils::env_lock();
+        clear_env_vars();
+
+        env::set_var(ENV_KEYSET_ROTATION_INTERVAL_SECONDS, "3600");
+
+        let info = Info::default().from_env().expect("valid env");
+        assert_eq!(info.keyset_rotation_interval_seconds, 3600);
+
+        clear_env_vars();
+    }
+
+    /// An operator writing `off` means "disable rotation". Falling back to the
+    /// 90-day default would silently rotate keys instead, so the parse fails.
+    #[test]
+    fn info_from_env_rejects_an_unparsable_keyset_rotation_interval() {
+        let _guard = crate::test_utils::env_lock();
+        clear_env_vars();
+
+        env::set_var(ENV_KEYSET_ROTATION_INTERVAL_SECONDS, "off");
+
+        let err = Info::default()
+            .from_env()
+            .expect_err("an unparsable rotation interval must fail configuration");
+        assert!(
+            err.to_string()
+                .contains(ENV_KEYSET_ROTATION_INTERVAL_SECONDS),
+            "the error must name the offending variable, got: {err}"
+        );
+
+        clear_env_vars();
     }
 }
