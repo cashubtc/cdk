@@ -89,8 +89,8 @@ own `uniffi.toml` controlling language-specific code generation.
   this monorepo. Because CI builds that same pinned crate, the published wheel
   and a local rebuild come from the same source
 - Wheels go to PyPI and are attached to the cdk-python GitHub release, for
-  Linux (`manylinux_2_28`, x86_64 and aarch64), macOS (arm64 and x86_64) and
-  Windows (x86_64)
+  Linux (`manylinux_2_28`, x86_64 and aarch64), macOS (arm64 on 11, x86_64 on
+  10.12) and Windows (x86_64)
 - Every wheel is tagged `py3-none-<platform>`: the library is loaded with
   `ctypes`, not linked against the CPython ABI
 - uniffi names the loaded library after the `cdk-ffi` namespace, so the built
