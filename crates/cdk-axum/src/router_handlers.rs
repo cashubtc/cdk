@@ -123,6 +123,12 @@ pub(crate) async fn get_keysets(
     Ok(Json(state.mint.keysets()))
 }
 
+/// Upgrades a connection to the mint's NUT-17 WebSocket endpoint.
+///
+/// Authentication runs before the connection slot is claimed, so a mint that
+/// protects this endpoint cannot have its whole connection budget squatted by
+/// clients that never authenticate. The guard is released on drop, so a
+/// connection ending at any later point hands the slot straight back.
 #[instrument(skip_all)]
 pub(crate) async fn ws_handler(
     auth: AuthHeader,
@@ -138,7 +144,19 @@ pub(crate) async fn ws_handler(
         .await
         .map_err(into_response)?;
 
-    Ok(ws.on_upgrade(|ws| main_websocket(ws, state)))
+    let limits = state.ws_limiter.limits().clone();
+    let guard = state.ws_limiter.try_acquire().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "websocket capacity reached",
+        )
+            .into_response()
+    })?;
+
+    Ok(ws
+        .max_message_size(limits.max_message_bytes)
+        .max_frame_size(limits.max_message_bytes)
+        .on_upgrade(move |ws| main_websocket(ws, state, guard)))
 }
 
 /// Check whether a proof is spent already or is pending in a transaction

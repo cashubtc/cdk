@@ -1,9 +1,10 @@
 //! Active subscription
 use std::fmt::Debug;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use super::pubsub::{SubReceiver, TopicTree};
 use super::{Error, Spec};
@@ -23,6 +24,15 @@ pub trait SubscriptionRequest {
     fn subscription_name(&self) -> Arc<Self::SubscriptionId>;
 }
 
+/// Shared counters a subscription claims on creation and releases on drop.
+#[derive(Debug, Default)]
+pub struct SubscriptionCounters {
+    /// Number of live subscriptions.
+    pub active_subscribers: AtomicUsize,
+    /// Number of topic registrations held across all live subscriptions.
+    pub registered_topics: AtomicUsize,
+}
+
 /// Active Subscription
 #[allow(missing_debug_implementations)]
 pub struct ActiveSubscription<S>
@@ -31,10 +41,11 @@ where
 {
     id: usize,
     name: Arc<S::SubscriptionId>,
-    active_subscribers: Arc<AtomicUsize>,
+    counters: Arc<SubscriptionCounters>,
     topics: TopicTree<S>,
     subscribed_to: Vec<S::Topic>,
     receiver: Option<SubReceiver<S>>,
+    backfill: JoinHandle<()>,
 }
 
 impl<S> ActiveSubscription<S>
@@ -45,18 +56,20 @@ where
     pub fn new(
         id: usize,
         name: Arc<S::SubscriptionId>,
-        active_subscribers: Arc<AtomicUsize>,
+        counters: Arc<SubscriptionCounters>,
         topics: TopicTree<S>,
         subscribed_to: Vec<S::Topic>,
         receiver: Option<SubReceiver<S>>,
+        backfill: JoinHandle<()>,
     ) -> Self {
         Self {
             id,
             name,
-            active_subscribers,
+            counters,
             subscribed_to,
             topics,
             receiver,
+            backfill,
         }
     }
 
@@ -85,15 +98,26 @@ where
     S: Spec + 'static,
 {
     fn drop(&mut self) {
-        // remove the listener
+        // The backfill walks the database and the payment backend on behalf of a
+        // listener that is now gone. Aborted first so it cannot observe a
+        // half-removed index; it only ever awaits between statements, so a
+        // dropped database transaction rolls back rather than half-committing.
+        self.backfill.abort();
+
+        let released = self.subscribed_to.len();
+
         let mut topics = self.topics.write();
         for index in self.subscribed_to.drain(..) {
             topics.remove(&(index, self.id));
         }
+        drop(topics);
 
-        // decrement the number of active subscribers
-        self.active_subscribers
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        self.counters
+            .registered_topics
+            .fetch_sub(released, Ordering::AcqRel);
+        self.counters
+            .active_subscribers
+            .fetch_sub(1, Ordering::Relaxed);
     }
 }
 

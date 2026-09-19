@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use cdk_common::common::PaymentProcessorKey;
@@ -7,6 +8,7 @@ use cdk_common::mint::MintQuote;
 use cdk_common::payment::DynMintPayment;
 use cdk_common::util::unix_time;
 use cdk_common::MintQuoteState;
+use tokio::time::{timeout_at, Instant};
 use tracing::instrument;
 
 use super::subscription::PubSubManager;
@@ -16,14 +18,46 @@ use crate::Error;
 /// Minimum delay between payment backend status checks for the same mint quote.
 pub(super) const MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS: u64 = 10;
 
+/// Whether checking a mint quote reached the payment backend.
+///
+/// Callers that budget backend round trips, such as a subscription backfill,
+/// count only the checks that actually cost one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaymentCheck {
+    /// The payment backend was queried.
+    Queried,
+    /// The quote was already final, or another check holds the rate limit.
+    Skipped,
+}
+
+/// Runs a step the caller may abandon under its deadline, if it set one.
+///
+/// Only reads and the backend status query are run this way. A transaction that
+/// records a payment is deliberately left outside, so a payment the backend has
+/// already reported is committed even once the deadline has passed.
+pub(super) async fn before<F>(deadline: Option<Instant>, work: F) -> Result<F::Output, Error>
+where
+    F: Future,
+{
+    let Some(deadline) = deadline else {
+        return Ok(work.await);
+    };
+
+    timeout_at(deadline, work).await.map_err(|_| Error::Timeout)
+}
+
 impl Mint {
     /// Static implementation of check_mint_quote_paid to avoid circular dependency to the Mint
+    /// `deadline` bounds the rate-limit claim and the backend status query, the
+    /// two steps that can stall. Once the backend has reported a payment the
+    /// transaction recording it runs to completion regardless.
     pub(crate) async fn check_mint_quote_payments(
         localstore: DynMintDatabase,
         payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
         pubsub_manager: Option<Arc<PubSubManager>>,
         quote: &mut MintQuote,
-    ) -> Result<(), Error> {
+        deadline: Option<Instant>,
+    ) -> Result<PaymentCheck, Error> {
         let state = quote.state();
 
         // We can just return here and do not need to check with the payment
@@ -32,7 +66,7 @@ impl Mint {
         if quote.payment_method.is_bolt11()
             && (state == MintQuoteState::Issued || state == MintQuoteState::Paid)
         {
-            return Ok(());
+            return Ok(PaymentCheck::Skipped);
         }
 
         // Claim this check before contacting the backend. The conditional update prevents
@@ -40,13 +74,15 @@ impl Mint {
         // mint processes, from issuing duplicate backend calls. Recording the attempt first also
         // throttles retries while a payment backend is failing.
         let now = unix_time();
-        let claimed = localstore
-            .try_update_mint_quote_last_checked(
+        let claimed = before(
+            deadline,
+            localstore.try_update_mint_quote_last_checked(
                 &quote.id,
                 now,
                 MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS,
-            )
-            .await?;
+            ),
+        )
+        .await??;
         if !claimed {
             tracing::trace!(
                 quote_id = %quote.id,
@@ -54,7 +90,7 @@ impl Mint {
                 check_interval_seconds = MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS,
                 "mint quote payment check skipped because another recent check holds the rate limit",
             );
-            return Ok(());
+            return Ok(PaymentCheck::Skipped);
         }
         quote.set_last_checked(now);
 
@@ -70,19 +106,21 @@ impl Mint {
             }
         };
 
-        let payment_status = payment_backend
-            .check_incoming_payment_status(&quote.request_lookup_id)
-            .await
-            .inspect_err(|err| {
-                tracing::warn!(
+        let payment_status = before(
+            deadline,
+            payment_backend.check_incoming_payment_status(&quote.request_lookup_id),
+        )
+        .await?
+        .inspect_err(|err| {
+            tracing::warn!(
                     quote_id = %quote.id,
                     method = %quote.payment_method,
                     unit = %quote.unit,
                     request_lookup_id = %quote.request_lookup_id,
                     error = %err,
-                    "mint quote payment status check failed; quote state is unchanged",
-                );
-            })?;
+                "mint quote payment status check failed; quote state is unchanged",
+            );
+        })?;
 
         if payment_status.is_empty() {
             tracing::trace!(
@@ -93,7 +131,7 @@ impl Mint {
                 quote_state = %quote.state(),
                 "mint quote payment check found no new payments",
             );
-            return Ok(());
+            return Ok(PaymentCheck::Queried);
         }
 
         let mut tx = localstore.begin_transaction().await?;
@@ -110,7 +148,7 @@ impl Mint {
             && (current_state == MintQuoteState::Issued || current_state == MintQuoteState::Paid)
         {
             *quote = new_quote.inner();
-            return Ok(());
+            return Ok(PaymentCheck::Queried);
         }
 
         let mut should_notify = false;
@@ -175,7 +213,7 @@ impl Mint {
 
         *quote = new_quote.inner();
 
-        Ok(())
+        Ok(PaymentCheck::Queried)
     }
 
     /// Check the status of a payment for a quote with the payment backend
@@ -186,7 +224,10 @@ impl Mint {
             self.payment_processors.clone(),
             Some(self.pubsub_manager.clone()),
             quote,
+            None,
         )
-        .await
+        .await?;
+
+        Ok(())
     }
 }

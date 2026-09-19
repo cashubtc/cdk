@@ -314,6 +314,9 @@ pub enum Error {
         /// Maximum allowed outputs
         max: usize,
     },
+    /// Pub/sub limits the instance could not serve, so it was never built.
+    #[error(transparent)]
+    PubsubLimits(#[from] crate::pub_sub::PubsubLimitsError),
     /// Duplicate quote IDs provided in a batch request (NUT-29)
     #[error("Duplicate quote IDs")]
     DuplicateQuoteIds,

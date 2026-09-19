@@ -31,8 +31,10 @@ use cdk::nuts::{
     AuthRequired, ContactInfo, Method, MintVersion, PaymentMethod, ProtectedEndpoint, RoutePath,
 };
 use cdk_axum::cache::HttpCache;
+use cdk_axum::{WsLimitsError, WsLimitsField};
 use cdk_common::common::QuoteTTL;
 use cdk_common::database::DynMintDatabase;
+use cdk_common::pub_sub::{PubsubLimitsError, PubsubLimitsField};
 // internal crate modules
 #[cfg(feature = "prometheus")]
 use cdk_common::payment::MetricsMintPayment;
@@ -569,8 +571,236 @@ pub(crate) fn validate_settings(settings: &config::Settings) -> Result<()> {
     validate_auth_config(settings)?;
     validate_management_rpc_config(settings)?;
     validate_prometheus_config(settings)?;
+    validate_limits_config(settings)?;
 
     Ok(())
+}
+
+/// Rejects limits that would wedge the mint rather than protect it.
+///
+/// The WebSocket and pub/sub rules live in `WsLimits::validate` and
+/// `PubsubLimits::validate`, so an embedder building the router or the mint
+/// directly gets the same guarantees; only the transaction limits are checked
+/// here.
+fn validate_limits_config(settings: &config::Settings) -> Result<()> {
+    let limits = &settings.limits;
+
+    for (name, value) in [
+        ("max_inputs", limits.max_inputs),
+        ("max_outputs", limits.max_outputs),
+    ] {
+        if value == 0 {
+            bail!("Invalid limits configuration: {name} must be greater than zero");
+        }
+    }
+
+    validate_pubsub_limits(limits)?;
+    validate_ws_limits(limits)
+}
+
+/// The configuration key an operator edits to change a `WsLimits` field.
+///
+/// Spelled out rather than derived by prefixing, because the timeouts are
+/// configured in seconds and so do not share the library's field names.
+fn ws_config_key(field: WsLimitsField) -> &'static str {
+    match field {
+        WsLimitsField::MaxConnections => "ws_max_connections",
+        WsLimitsField::MaxSubscriptionsPerConnection => "ws_max_subscriptions_per_connection",
+        WsLimitsField::MaxFiltersPerSubscription => "ws_max_filters_per_subscription",
+        WsLimitsField::MaxTopicsPerConnection => "ws_max_topics_per_connection",
+        WsLimitsField::MaxRequestBurstUnits => "ws_max_request_burst_units",
+        WsLimitsField::MaxMessageBytes => "ws_max_message_bytes",
+        WsLimitsField::IdleTimeout => "ws_idle_timeout_secs",
+        WsLimitsField::PingInterval => "ws_ping_interval_secs",
+    }
+}
+
+/// A [`WsLimitsError`] paired with the configuration key an operator edits.
+///
+/// The rule itself is stated once, by cdk-axum. Only the key is added here,
+/// because `WsLimits` names its fields without the `ws_` prefix the `[limits]`
+/// section uses, so a new validation rule needs nothing beyond naming the field
+/// it blames.
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid limits configuration, check {key}")]
+struct InvalidWsLimit {
+    key: &'static str,
+    #[source]
+    source: WsLimitsError,
+}
+
+/// The configuration key an operator edits to change a `PubsubLimits` field.
+///
+/// Spelled out rather than derived by prefixing, because the timeout is
+/// configured in seconds and so does not share the library's field name.
+fn pubsub_config_key(field: PubsubLimitsField) -> &'static str {
+    match field {
+        PubsubLimitsField::MaxTopics => "pubsub_max_topics",
+        PubsubLimitsField::MaxConcurrentBackfills => "pubsub_max_concurrent_backfills",
+        PubsubLimitsField::MaxQuoteChecksPerBackfill => "pubsub_max_quote_checks_per_backfill",
+        PubsubLimitsField::BackfillTimeout => "pubsub_backfill_timeout_secs",
+    }
+}
+
+/// A [`PubsubLimitsError`] paired with the configuration key an operator edits.
+///
+/// The rule itself is stated once, by cdk-common. Only the key is added here,
+/// because `PubsubLimits` names its fields without the `pubsub_` prefix the
+/// `[limits]` section uses.
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid limits configuration, check {key}")]
+struct InvalidPubsubLimit {
+    key: &'static str,
+    #[source]
+    source: PubsubLimitsError,
+}
+
+fn validate_pubsub_limits(limits: &config::Limits) -> Result<()> {
+    limits
+        .pubsub_limits()
+        .validate()
+        .map_err(|err| InvalidPubsubLimit {
+            key: pubsub_config_key(err.field()),
+            source: err,
+        })?;
+
+    Ok(())
+}
+
+fn validate_ws_limits(limits: &config::Limits) -> Result<()> {
+    limits
+        .ws_limits()
+        .validate()
+        .map_err(|err| InvalidWsLimit {
+            key: ws_config_key(err.field()),
+            source: err,
+        })?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod limits_validation_tests {
+    use super::*;
+
+    fn settings_with(limits: config::Limits) -> config::Settings {
+        config::Settings {
+            limits,
+            ..config::Settings::default()
+        }
+    }
+
+    #[test]
+    fn defaults_are_valid() {
+        validate_limits_config(&settings_with(config::Limits::default()))
+            .expect("the shipped defaults must validate");
+    }
+
+    #[test]
+    fn a_burst_smaller_than_a_full_subscription_is_rejected() {
+        let limits = config::Limits {
+            ws_max_filters_per_subscription: 100,
+            ws_max_request_units_per_second: 32,
+            ws_max_request_burst_units: 100,
+            ..config::Limits::default()
+        };
+
+        let err = validate_limits_config(&settings_with(limits))
+            .expect_err("a burst that cannot cover one subscription must be rejected");
+        assert!(
+            err.to_string().contains("ws_max_request_burst_units"),
+            "the operator must be told which key to edit: {err}"
+        );
+        assert!(
+            format!("{err:#}").contains("one unit for the frame"),
+            "cdk-axum's own explanation of the rule must survive as the cause: {err:#}"
+        );
+    }
+
+    /// A filter budget the topic budget cannot admit is reported against the
+    /// configuration key, not the library's field name.
+    #[test]
+    fn a_topic_budget_smaller_than_a_full_subscription_is_rejected() {
+        let limits = config::Limits {
+            ws_max_filters_per_subscription: 10,
+            ws_max_topics_per_connection: 9,
+            ..config::Limits::default()
+        };
+
+        let err = validate_limits_config(&settings_with(limits))
+            .expect_err("a topic budget that cannot admit one subscription must be rejected");
+        assert!(
+            err.to_string().contains("ws_max_topics_per_connection"),
+            "the operator must be told which key to edit: {err}"
+        );
+        assert!(
+            format!("{err:#}").contains("must be at least 10"),
+            "cdk-axum's own explanation of the rule must survive as the cause: {err:#}"
+        );
+    }
+
+    /// A zero on any pub/sub budget leaves no work possible, so mintd refuses to
+    /// start and names the key. The quote-check budget matters most: a zero
+    /// there serves every backfill from storage without asking the payment
+    /// backend, which only shows up as a warning in the log.
+    #[test]
+    fn a_zero_pubsub_budget_is_rejected_and_names_its_key() {
+        for (limits, key) in [
+            (
+                config::Limits {
+                    pubsub_max_topics: 0,
+                    ..config::Limits::default()
+                },
+                "pubsub_max_topics",
+            ),
+            (
+                config::Limits {
+                    pubsub_max_concurrent_backfills: 0,
+                    ..config::Limits::default()
+                },
+                "pubsub_max_concurrent_backfills",
+            ),
+            (
+                config::Limits {
+                    pubsub_max_quote_checks_per_backfill: 0,
+                    ..config::Limits::default()
+                },
+                "pubsub_max_quote_checks_per_backfill",
+            ),
+            (
+                config::Limits {
+                    pubsub_backfill_timeout_secs: 0,
+                    ..config::Limits::default()
+                },
+                "pubsub_backfill_timeout_secs",
+            ),
+        ] {
+            let err = validate_limits_config(&settings_with(limits))
+                .expect_err("a zero pub/sub budget must be rejected");
+            assert!(
+                err.to_string().contains(key),
+                "the operator must be told which key to edit: {err}"
+            );
+            assert!(
+                format!("{err:#}").contains("must be greater than zero"),
+                "cdk-common's own explanation of the rule must survive as the cause: {err:#}"
+            );
+        }
+    }
+
+    /// With the throttle off the burst is never charged, so an undersized one is
+    /// not a misconfiguration.
+    #[test]
+    fn a_disabled_throttle_ignores_the_burst_rule() {
+        let limits = config::Limits {
+            ws_max_filters_per_subscription: 100,
+            ws_max_request_units_per_second: 0,
+            ws_max_request_burst_units: 1,
+            ..config::Limits::default()
+        };
+
+        validate_limits_config(&settings_with(limits)).expect("a disabled throttle validates");
+    }
 }
 
 fn validate_payment_backends(settings: &config::Settings) -> Result<()> {
@@ -1101,8 +1331,9 @@ async fn configure_mint_builder_with_wallet_info(
     let mint_builder = configure_cache(settings, mint_builder, &payment_methods).await?;
 
     // Configure transaction limits
-    let mint_builder =
-        mint_builder.with_limits(settings.limits.max_inputs, settings.limits.max_outputs);
+    let mint_builder = mint_builder
+        .with_limits(settings.limits.max_inputs, settings.limits.max_outputs)
+        .with_pubsub_limits(settings.limits.pubsub_limits());
 
     // Verify at least one payment processor is configured
     if mint_builder
@@ -2316,6 +2547,7 @@ impl PreparedMintd {
             cache,
             custom_methods,
             settings.info.enable_info_page.unwrap_or(true),
+            settings.limits.ws_limits(),
         )
         .await?;
 
