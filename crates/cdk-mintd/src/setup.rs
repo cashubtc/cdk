@@ -134,7 +134,8 @@ impl PaymentBackendSetup for config::Lnd {
             fee_reserve,
             kv_store.expect("Lnd needs kv store"),
         )
-        .await?;
+        .await?
+        .with_allow_self_payment(self.allow_self_payment);
 
         Ok(lnd)
     }
