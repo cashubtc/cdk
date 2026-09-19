@@ -308,7 +308,10 @@ pub struct CustomOutgoingPaymentOptions {
     pub method: String,
     /// Payment request string (method-specific format)
     pub request: String,
-    /// Optional amount the wallet would like to pay (from the melt quote request)
+    /// Optional payment amount.
+    ///
+    /// During quoting this is the amount requested by the wallet. During payment
+    /// execution this is the amount selected and persisted in the melt quote.
     pub amount: Option<Amount<CurrencyUnit>>,
     /// Maximum fee amount allowed for the payment
     pub max_fee_amount: Option<Amount<CurrencyUnit>>,
@@ -408,8 +411,9 @@ impl OutgoingPaymentOptions {
                 Box::new(CustomOutgoingPaymentOptions {
                     method: method.to_string(),
                     request: request.to_string(),
-                    // Payment is already quoted; correlation is via quote_id.
-                    amount: None,
+                    // Use the amount selected by the backend when the quote was
+                    // created. The original request amount may have differed.
+                    amount: Some(melt_quote.amount()),
                     max_fee_amount: Some(fee_reserve),
                     timeout_secs: None,
                     melt_options: melt_quote.options,
