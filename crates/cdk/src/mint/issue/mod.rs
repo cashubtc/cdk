@@ -268,9 +268,6 @@ impl Mint {
 
                     let description = bolt12_request.description;
 
-                    let mint_ttl = self.quote_ttl().await?.mint_ttl;
-                    let quote_expiry = unix_time() + mint_ttl;
-
                     // Check that the backend supports offer descriptions
                     let settings = payment_backend.get_settings().await?;
 
@@ -281,10 +278,13 @@ impl Mint {
                         }
                     }
 
+                    // BOLT12 mint quotes are long-lived reusable offers. Do not
+                    // bind them to mint_ttl; quote expiry follows the offer
+                    // (`create_invoice_response.expiry`, none when perpetual).
                     let bolt12_options = Bolt12IncomingPaymentOptions {
                         description,
                         amount: amount.map(|a| a.with_unit(unit.clone())),
-                        unix_expiry: Some(quote_expiry),
+                        unix_expiry: None,
                     };
 
                     IncomingPaymentOptions::Bolt12(Box::new(bolt12_options))
@@ -2176,10 +2176,8 @@ mod batch_mint_tests {
     }
 
     #[tokio::test]
-    async fn bolt12_mint_quote_sets_offer_absolute_expiry_from_mint_ttl() {
+    async fn bolt12_mint_quote_follows_long_lived_offer_expiry() {
         let mint = create_test_mint().await;
-        let mint_ttl = mint.quote_ttl().await.unwrap().mint_ttl;
-        let before = cdk_common::util::unix_time();
 
         let quote: MintQuoteBolt12Response<QuoteId> = mint
             .get_mint_quote(
@@ -2199,16 +2197,15 @@ mod batch_mint_tests {
             .try_into()
             .unwrap();
 
-        let after = cdk_common::util::unix_time();
         let offer = Offer::from_str(&quote.request).expect("BOLT12 offer");
-        let offer_expiry = offer
-            .absolute_expiry()
-            .expect("offer must include absolute_expiry")
-            .as_secs();
-        let quote_expiry = quote.expiry.expect("quote must include expiry");
 
-        assert_eq!(offer_expiry, quote_expiry);
-        assert!(offer_expiry >= before + mint_ttl);
-        assert!(offer_expiry <= after + mint_ttl);
+        assert!(
+            offer.absolute_expiry().is_none(),
+            "BOLT12 mint offers are long-lived and must not inherit mint_ttl"
+        );
+        assert_eq!(
+            quote.expiry, None,
+            "quote expiry must follow the offer (none when the offer has no absolute_expiry)"
+        );
     }
 }
