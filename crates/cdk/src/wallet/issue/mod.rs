@@ -677,7 +677,7 @@ impl Wallet {
             quote.mint_url == self.mint_url
                 && quote.unit == self.unit
                 && quote.state != MintQuoteState::Issued
-                && quote.expiry > unix_time
+                && !quote.is_expired(unix_time)
         });
         Ok(mint_quotes)
     }
