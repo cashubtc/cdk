@@ -102,6 +102,7 @@ impl<'a> SwapSaga<'a, Initial> {
         use_p2bk: bool,
         include_fees: bool,
         proof_reservation: ProofReservation,
+        send_split_target: Option<SplitTarget>,
     ) -> Result<SwapSaga<'a, Prepared>, Error> {
         tracing::info!(
             "Preparing swap with operation {}",
@@ -137,6 +138,7 @@ impl<'a> SwapSaga<'a, Initial> {
                 use_p2bk,
                 &fee_breakdown,
                 proof_reservation,
+                send_split_target.as_ref(),
             )
             .await?;
 
@@ -192,7 +194,7 @@ impl<'a> SwapSaga<'a, Initial> {
             state_data: Prepared {
                 operation_id: self.state_data.operation_id,
                 amount,
-                amount_split_target,
+                amount_split_target: send_split_target.unwrap_or(amount_split_target),
                 input_ys,
                 spending_conditions,
                 pre_swap,
@@ -437,6 +439,7 @@ mod tests {
                 false,
                 false,
                 ProofReservation::Reserve,
+                None,
             )
             .await
             .unwrap();
@@ -500,6 +503,7 @@ mod tests {
                 false,
                 false,
                 ProofReservation::Reserve,
+                None,
             )
             .await;
 
@@ -556,6 +560,7 @@ mod tests {
                 false,
                 false,
                 ProofReservation::Skip,
+                None,
             )
             .await
             .unwrap();
@@ -601,6 +606,7 @@ mod tests {
                 false,
                 false,
                 ProofReservation::Reserve,
+                None,
             )
             .await
             .expect("prepare swap saga");
