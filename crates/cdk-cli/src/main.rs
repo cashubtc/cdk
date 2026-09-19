@@ -99,6 +99,11 @@ enum Commands {
     CheckPending,
     /// Check incoming payments for stored payment requests.
     CheckRequests,
+    /// Cancel a saved Nostr payment request by payment ID.
+    CancelRequest {
+        /// Payment ID printed by decode-request or check-requests.
+        id: String,
+    },
     /// View mint info
     MintInfo(sub_commands::mint_info::MintInfoSubcommand),
     /// Mint proofs via bolt11
@@ -298,6 +303,11 @@ async fn main() -> Result<()> {
         }
         Commands::CheckPending => {
             sub_commands::check_pending::check_pending(&wallet_repository).await
+        }
+        Commands::CancelRequest { id } => {
+            wallet_repository.cancel_nostr_request(id).await?;
+            println!("Request cancelled");
+            Ok(())
         }
         Commands::CheckRequests => {
             sub_commands::check_requests::check_requests(&wallet_repository).await

@@ -27,8 +27,23 @@ impl Wallet {
         memo: Option<String>,
         token: Option<String>,
     ) -> Result<Amount, Error> {
+        self.receive_proofs_with_operation_id(proofs, opts, memo, token, None)
+            .await
+    }
+
+    async fn receive_proofs_with_operation_id(
+        &self,
+        proofs: Proofs,
+        opts: ReceiveOptions,
+        memo: Option<String>,
+        token: Option<String>,
+        operation_id: Option<uuid::Uuid>,
+    ) -> Result<Amount, Error> {
         self.retry_on_inactive_keyset(|| async {
-            let saga = ReceiveSaga::new(self);
+            let saga = match operation_id {
+                Some(id) => ReceiveSaga::with_operation_id(self, id),
+                None => ReceiveSaga::new(self),
+            };
             let saga = saga
                 .prepare(proofs.clone(), opts.clone(), memo.clone(), token.clone())
                 .await?;
@@ -68,6 +83,17 @@ impl Wallet {
         encoded_token: &str,
         opts: ReceiveOptions,
     ) -> Result<Amount, Error> {
+        self.receive_with_operation_id(encoded_token, opts, None)
+            .await
+    }
+
+    /// Receive a token with the operation ID already saved by a payment request.
+    pub(crate) async fn receive_with_operation_id(
+        &self,
+        encoded_token: &str,
+        opts: ReceiveOptions,
+        operation_id: Option<uuid::Uuid>,
+    ) -> Result<Amount, Error> {
         let token = Token::from_str(encoded_token)?;
 
         let unit = token.unit().unwrap_or_default();
@@ -83,11 +109,12 @@ impl Wallet {
         ensure_cdk!(self.mint_url == token.mint_url()?, Error::IncorrectMint);
 
         let amount = self
-            .receive_proofs(
+            .receive_proofs_with_operation_id(
                 proofs,
                 opts,
                 token.memo().clone(),
                 Some(encoded_token.to_string()),
+                operation_id,
             )
             .await?;
 
