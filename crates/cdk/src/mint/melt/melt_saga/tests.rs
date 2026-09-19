@@ -24,6 +24,7 @@ use cdk_common::{
     Amount, CurrencyUnit, MintQuoteBolt11Request, PaymentMethod, ProofsMethods, State,
 };
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
+use cdk_signatory::signatory::SignatoryKeySet;
 
 use crate::mint::melt::melt_saga::{MeltSaga, PaymentOutcome};
 use crate::mint::melt::shared::{
@@ -3241,6 +3242,96 @@ async fn test_concurrent_duplicate_melt_finalization_is_idempotent() {
         .unwrap();
     assert_eq!(finalized_quote.state, MeltQuoteState::Paid);
     assert_saga_not_exists(&mint, &operation_id).await;
+}
+
+/// A keyset that rotates out between the melt request and settlement must
+/// still sign the change, using its own denominations rather than the fallback
+/// set. The inactive-keyset carve-out exists for exactly this case.
+#[tokio::test]
+async fn test_melt_change_signed_on_keyset_that_went_inactive() {
+    use crate::test_helpers::mint::create_test_blinded_messages;
+
+    let mint = create_test_mint().await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let (change_outputs, _premint) = create_test_blinded_messages(&mint, Amount::from(1_023))
+        .await
+        .unwrap();
+    let melt_request = MeltRequest::new(quote.id.clone(), proofs, Some(change_outputs));
+
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup_saga = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+
+    let operation_id = setup_saga.operation_id;
+    let (payment_saga, decision) = setup_saga
+        .attempt_internal_settlement(&melt_request)
+        .await
+        .unwrap();
+    let PaymentOutcome::Confirmed(confirmed_saga) =
+        payment_saga.make_payment(decision).await.unwrap()
+    else {
+        panic!("Expected Confirmed")
+    };
+    let payment_result = confirmed_saga.state_data.payment_result.clone();
+
+    let rotated_out: Vec<SignatoryKeySet> = mint
+        .keysets
+        .load()
+        .as_ref()
+        .clone()
+        .into_iter()
+        .map(|mut ks| {
+            ks.active = false;
+            ks.amounts.retain(|amount| *amount <= 64);
+            ks
+        })
+        .collect();
+    mint.keysets.store(std::sync::Arc::new(rotated_out));
+
+    let db = mint.localstore();
+    let change = finalize_melt_quote(
+        &mint,
+        &db,
+        &mint.pubsub_manager(),
+        &quote,
+        payment_result.total_spent,
+        payment_result.payment_proof,
+        &payment_result.payment_lookup_id,
+        Some(operation_id),
+    )
+    .await
+    .unwrap()
+    .expect("change signed on the rotated-out keyset");
+
+    assert!(!change.is_empty());
+    assert!(
+        change.iter().all(|sig| sig.amount <= Amount::from(64)),
+        "change must be split with the keyset's own amounts, got: {:?}",
+        change.iter().map(|sig| sig.amount).collect::<Vec<_>>()
+    );
+
+    let keyset_id = mint.keysets.load()[0].id;
+    assert!(change.iter().all(|sig| sig.keyset_id == keyset_id));
+
+    let finalized = mint
+        .localstore
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(finalized.state, MeltQuoteState::Paid);
 }
 
 #[tokio::test]

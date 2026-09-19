@@ -145,6 +145,10 @@ pub trait Signatory {
     /// Blind sign a message.
     ///
     /// The message can be for a coin or an auth token.
+    ///
+    /// Expired keysets are refused here. A rotated-out keyset still signs:
+    /// whether an inactive keyset may issue depends on what the request is
+    /// for, which only the mint knows.
     async fn blind_sign(
         &self,
         blinded_messages: Vec<BlindedMessage>,
