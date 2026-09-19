@@ -85,8 +85,8 @@ impl ToSql for PgValue<'_> {
             PgValue::Real(r) => r.to_sql(ty, out),
             PgValue::Integer(i) => match *ty {
                 types::Type::BOOL => (*i != 0).to_sql(ty, out),
-                types::Type::INT2 => (*i as i16).to_sql(ty, out),
-                types::Type::INT4 => (*i as i32).to_sql(ty, out),
+                types::Type::INT2 => i16::try_from(*i)?.to_sql(ty, out),
+                types::Type::INT4 => i32::try_from(*i)?.to_sql(ty, out),
                 _ => i.to_sql_checked(ty, out),
             },
         }
@@ -121,10 +121,39 @@ impl ToSql for PgValue<'_> {
             PgValue::Real(r) => r.to_sql_checked(ty, out),
             PgValue::Integer(i) => match *ty {
                 types::Type::BOOL => (*i != 0).to_sql_checked(ty, out),
-                types::Type::INT2 => (*i as i16).to_sql_checked(ty, out),
-                types::Type::INT4 => (*i as i32).to_sql_checked(ty, out),
+                types::Type::INT2 => i16::try_from(*i)?.to_sql_checked(ty, out),
+                types::Type::INT4 => i32::try_from(*i)?.to_sql_checked(ty, out),
                 _ => i.to_sql_checked(ty, out),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio_postgres::types::private::BytesMut;
+    use tokio_postgres::types::{ToSql, Type};
+
+    use super::PgValue;
+
+    #[test]
+    fn int4_refuses_a_value_it_cannot_hold() {
+        let mut out = BytesMut::new();
+        assert!(PgValue::Integer(i64::from(i32::MAX))
+            .to_sql_checked(&Type::INT4, &mut out)
+            .is_ok());
+
+        let mut out = BytesMut::new();
+        assert!(PgValue::Integer(i64::from(i32::MAX) + 1)
+            .to_sql_checked(&Type::INT4, &mut out)
+            .is_err());
+    }
+
+    #[test]
+    fn int2_refuses_a_value_it_cannot_hold() {
+        let mut out = BytesMut::new();
+        assert!(PgValue::Integer(i64::from(i16::MAX) + 1)
+            .to_sql_checked(&Type::INT2, &mut out)
+            .is_err());
     }
 }
