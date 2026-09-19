@@ -44,6 +44,11 @@ impl Clnd {
             self.bitcoin_data_dir.to_string_lossy()
         ));
         cmd.arg("--network=regtest");
+        // Temporary regtest workaround: lightning 0.2.6 drops the advertised
+        // final CLTV delta for single-hop blinded paths, making BOLT12 payments
+        // fail depending on the random shadow-route offset. Remove once LDK
+        // honors that delta; zero is only appropriate for this test environment.
+        cmd.arg("--cltv-final=0");
         cmd.arg(format!(
             "--lightning-dir={}",
             self.data_dir.to_string_lossy()
