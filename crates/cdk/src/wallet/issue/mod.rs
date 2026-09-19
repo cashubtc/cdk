@@ -1021,6 +1021,7 @@ mod tests {
                 amount_paid: Amount::from(1_000),
                 amount_issued: Amount::from(250),
                 updated_at: 0,
+                payjoin: None,
             });
 
         assert_eq!(mint_quote_response_amount(&response), None);

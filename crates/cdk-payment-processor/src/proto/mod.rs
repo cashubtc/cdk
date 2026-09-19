@@ -472,7 +472,13 @@ mod tests {
             extra_json: Some(serde_json::json!({
                 "method": "custom",
                 "redirect_url": "https://example.com/pay",
-                "nested": { "attempt": 1 }
+                "nested": { "attempt": 1 },
+                "payjoin": {
+                    "endpoint": "https://payjoin.example/pj",
+                    "ohttp_keys": "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+                    "receiver_key": "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
+                    "expires_at": 1780000000
+                }
             })),
             fee_options: Some(vec![MeltQuoteOnchainFeeOption {
                 fee_index: 0,
