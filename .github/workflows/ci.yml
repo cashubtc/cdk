@@ -746,6 +746,23 @@ jobs:
           files: lcov.info
           fail_ci_if_error: true
 
+  python-binding-tests:
+    name: "Python binding tests"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: warm-nix-cache
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Build the wheel and test it
+        run: nix develop --fallback -i -L .#ffi --command just test-python
+
   dart-binding-tests:
     name: "Dart binding tests"
     runs-on: self-hosted
@@ -861,7 +878,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [pre-commit-checks, fuzz-check, warm-nix-cache, warm-msrv-nix-cache, quick-check, discover_ci_groups, examples, clippy-and-test, build-itest-binaries, postgres-tests, supabase-tests, redis-tests, regtest-ln-itest, regtest-onchain-itest, fake-mint-itest, pure-itest, payment-processor-itests, msrv-build, check-wasm, fake-mint-auth-itest, docs, ffi-tests, coverage, dart-binding-tests, kotlin-binding-tests, go-binding-tests, swift-binding-tests]
+    needs: [pre-commit-checks, fuzz-check, warm-nix-cache, warm-msrv-nix-cache, quick-check, discover_ci_groups, examples, clippy-and-test, build-itest-binaries, postgres-tests, supabase-tests, redis-tests, regtest-ln-itest, regtest-onchain-itest, fake-mint-itest, pure-itest, payment-processor-itests, msrv-build, check-wasm, fake-mint-auth-itest, docs, ffi-tests, coverage, python-binding-tests, dart-binding-tests, kotlin-binding-tests, go-binding-tests, swift-binding-tests]
     steps:
       - name: Verify required jobs
         uses: actions/github-script@v8

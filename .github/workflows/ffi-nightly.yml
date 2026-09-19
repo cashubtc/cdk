@@ -25,6 +25,7 @@ jobs:
       go: ${{ steps.prepare.outputs.go }}
       kotlin: ${{ steps.prepare.outputs.kotlin }}
       swift: ${{ steps.prepare.outputs.swift }}
+      python: ${{ steps.prepare.outputs.python }}
     steps:
       - name: Checkout main
         uses: actions/checkout@v5
@@ -42,6 +43,7 @@ jobs:
           GO_REPO: ${{ vars.CDK_GO_REPO }}
           KOTLIN_REPO: ${{ vars.CDK_KOTLIN_REPO }}
           SWIFT_REPO: ${{ vars.CDK_SWIFT_REPO }}
+          PYTHON_REPO: ${{ vars.CDK_PYTHON_REPO }}
         run: |
           set -euo pipefail
 
@@ -98,6 +100,7 @@ jobs:
           check_binding go "${GO_REPO}"
           check_binding kotlin "${KOTLIN_REPO}"
           check_binding swift "${SWIFT_REPO}"
+          check_binding python "${PYTHON_REPO}"
 
   dart:
     name: "Publish Dart nightly"
@@ -143,6 +146,19 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.swift == 'true'
     uses: ./.github/workflows/swift-publish.yml
+    with:
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+      cdk_version: ${{ needs.prepare.outputs.cdk_version }}
+      cdk_ref: ${{ needs.prepare.outputs.cdk_ref }}
+      prerelease: true
+      nightly: true
+    secrets: inherit
+
+  python:
+    name: "Publish Python nightly"
+    needs: prepare
+    if: needs.prepare.outputs.python == 'true'
+    uses: ./.github/workflows/python-publish.yml
     with:
       release_tag: ${{ needs.prepare.outputs.release_tag }}
       cdk_version: ${{ needs.prepare.outputs.cdk_version }}

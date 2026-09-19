@@ -1472,6 +1472,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdk-ffi-python"
+version = "0.18.0"
+dependencies = [
+ "cdk-ffi",
+ "uniffi",
+]
+
+[[package]]
 name = "cdk-ffi-swift"
 version = "0.18.0"
 dependencies = [

@@ -1318,3 +1318,72 @@ test-swift:
   else
     DYLD_LIBRARY_PATH="$LIB_DIR" swift test
   fi
+
+# Build the Python wheel for the host platform
+binding-python:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  # build.sh is the same script cdk-python ships, so the local wheel and the
+  # one a downstream user builds come from one path.
+  "{{justfile_directory()}}/bindings/python/build.sh"
+
+# Run Python binding tests against the built wheel
+test-python: binding-python
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/python"
+
+  VENV=$(mktemp -d)
+  trap 'rm -rf "$VENV"' EXIT
+  python3 -m venv "$VENV"
+
+  echo "🧪 Installing wheel into a clean venv..."
+  "$VENV/bin/pip" install --quiet --no-index dist/*.whl
+  "$VENV/bin/pip" install --quiet -r requirements-dev.txt
+
+  # Run from the venv so the tests import the installed package, never the
+  # source tree next to them.
+  echo "🧪 Running Python binding tests..."
+  PYTEST_ARGS=("$PWD/tests" "-c" "$PWD/pytest.ini" "--rootdir" "$PWD")
+  (cd "$VENV" && "$VENV/bin/python" -m pytest "${PYTEST_ARGS[@]}" -q)
+
+  just examples-python "$VENV/bin/python"
+  echo "✅ Python binding tests passed!"
+
+# Run the offline Python examples as a smoke check
+examples-python PYTHON="python3":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/python"
+
+  if ! "{{PYTHON}}" -c "import cdk" 2>/dev/null; then
+    echo "❌ The cdk package is not installed for {{PYTHON}}."
+    echo "   Run 'just test-python', which builds the wheel and runs these in a venv,"
+    echo "   or install the wheel yourself: pip install bindings/python/dist/*.whl"
+    exit 1
+  fi
+
+  echo "🧪 Running offline Python examples..."
+  for example in examples/wallet_setup.py examples/token_inspect.py examples/transaction_history.py; do
+    echo "  → $example"
+    "{{PYTHON}}" "$example" > /dev/null
+  done
+  echo "✅ Offline examples ran successfully!"
+
+# Trigger Python Bindings release workflow
+ffi-release-python VERSION:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  echo "🚀 Triggering Python bindings workflow..."
+  echo "   Version: {{VERSION}}"
+  echo "   Tag: v{{VERSION}}"
+
+  gh workflow run "FFI - Python Bindings" \
+    --repo cashubtc/cdk \
+    --ref "v{{VERSION}}" \
+    --field release_tag="v{{VERSION}}" \
+    --field cdk_version="{{VERSION}}" \
+    --field cdk_ref="v{{VERSION}}"
+
+  echo "✅ Python workflow triggered successfully!"
