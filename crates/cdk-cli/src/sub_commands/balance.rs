@@ -59,7 +59,7 @@ pub async fn mint_balances(
         let WalletKey { mint_url, unit } = wallet_key.clone();
         println!(
             "{i}: {} {amount} {}",
-            escape_control(&mint_url.to_string()),
+            escape_control(&cdk_common::redact::url_for_logs(&mint_url.to_string())),
             escape_control(&unit.to_string())
         );
         wallets_vec.push((mint_url, unit, *amount))

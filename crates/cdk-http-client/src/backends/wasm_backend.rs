@@ -173,18 +173,18 @@ impl WasmRequestBuilder {
         }
 
         let request = web_sys::Request::new_with_str_and_init(&self.url, &opts)
-            .map_err(|e| HttpError::Other(format!("Failed to create request: {:?}", e)))?;
+            .map_err(|_| HttpError::Other("Failed to create request".to_string()))?;
 
         let headers = request.headers();
         for (key, value) in &self.headers {
             headers
                 .set(key, value)
-                .map_err(|e| HttpError::Other(format!("Failed to set header: {:?}", e)))?;
+                .map_err(|_| HttpError::Other("Failed to set header".to_string()))?;
         }
 
         let resp_value = JsFuture::from(js_fetch(&request))
             .await
-            .map_err(|e| HttpError::Connection(format!("Fetch failed: {:?}", e)))?;
+            .map_err(|_| HttpError::Connection("Fetch failed".to_string()))?;
 
         let resp: web_sys::Response = resp_value
             .dyn_into()
@@ -194,11 +194,11 @@ impl WasmRequestBuilder {
 
         let body_promise = resp
             .array_buffer()
-            .map_err(|e| HttpError::Other(format!("Failed to read body: {:?}", e)))?;
+            .map_err(|_| HttpError::Other("Failed to read body".to_string()))?;
 
         let body_value = JsFuture::from(body_promise)
             .await
-            .map_err(|e| HttpError::Other(format!("Failed to read body: {:?}", e)))?;
+            .map_err(|_| HttpError::Other("Failed to read body".to_string()))?;
 
         let body_array = js_sys::Uint8Array::new(&body_value);
         let body = body_array.to_vec();

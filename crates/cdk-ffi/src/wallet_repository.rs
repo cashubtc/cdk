@@ -148,7 +148,7 @@ impl WalletRepository {
         } else {
             Err(FfiError::internal(format!(
                 "Mint not found: {}",
-                cdk_mint_url
+                cdk_common::redact::url_for_logs(&cdk_mint_url.to_string())
             )))
         }
     }

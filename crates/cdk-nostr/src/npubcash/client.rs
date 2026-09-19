@@ -24,7 +24,10 @@ pub struct NpubCashClient {
 impl std::fmt::Debug for NpubCashClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NpubCashClient")
-            .field("base_url", &self.base_url)
+            .field(
+                "base_url",
+                &cdk_common::redact::url_for_logs(&self.base_url),
+            )
             .field("auth_provider", &self.auth_provider)
             .finish_non_exhaustive()
     }

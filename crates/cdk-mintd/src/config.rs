@@ -1060,7 +1060,7 @@ impl std::str::FromStr for AuthType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Auth {
     #[serde(default)]
@@ -1089,6 +1089,30 @@ pub struct Auth {
     /// Enable WebSocket authentication support
     #[serde(default = "default_blind")]
     pub websocket_auth: AuthType,
+}
+
+impl fmt::Debug for Auth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Auth")
+            .field("auth_enabled", &self.auth_enabled)
+            .field(
+                "openid_discovery",
+                &cdk_common::redact::url_for_logs(&self.openid_discovery),
+            )
+            .field("openid_client_id", &self.openid_client_id)
+            .field("mint_max_bat", &self.mint_max_bat)
+            .field("mint", &self.mint)
+            .field("get_mint_quote", &self.get_mint_quote)
+            .field("check_mint_quote", &self.check_mint_quote)
+            .field("melt", &self.melt)
+            .field("get_melt_quote", &self.get_melt_quote)
+            .field("check_melt_quote", &self.check_melt_quote)
+            .field("swap", &self.swap)
+            .field("restore", &self.restore)
+            .field("check_proof_state", &self.check_proof_state)
+            .field("websocket_auth", &self.websocket_auth)
+            .finish()
+    }
 }
 
 fn default_blind() -> AuthType {
