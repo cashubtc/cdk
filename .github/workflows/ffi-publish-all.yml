@@ -88,4 +88,7 @@ jobs:
       cdk_version: ${{ inputs.cdk_version }}
       cdk_ref: ${{ inputs.cdk_ref }}
       prerelease: ${{ needs.detect-prerelease.outputs.prerelease == 'true' }}
+      # A pre-release still gets wheels on the cdk-python release, just not a
+      # PyPI version that cannot be taken back.
+      publish_target: ${{ needs.detect-prerelease.outputs.prerelease == 'true' && 'none' || 'pypi' }}
     secrets: inherit

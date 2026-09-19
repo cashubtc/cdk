@@ -69,4 +69,4 @@ For production use, see language-specific repositories:
 - [cdk-kotlin](https://github.com/cashubtc/cdk-kotlin) - Android/JVM packages  
 - [cdk-go](https://github.com/cashubtc/cdk-go) - Golang packages
 - [cdk-python](https://github.com/cashubtc/cdk-python) - Python wheels,
-  published as release assets rather than to PyPI
+  published to PyPI and attached to the cdk-python release

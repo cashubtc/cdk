@@ -65,13 +65,13 @@ env:
   RELEASE_BRANCH: release/${{ inputs.release_tag }}
 
 jobs:
-  #release-ci:
-  #  uses: ./.github/workflows/release-ci.yml
-  #  with:
-  #    ref: ${{ inputs.nightly && inputs.cdk_ref || inputs.release_tag }}
+  release-ci:
+    uses: ./.github/workflows/release-ci.yml
+    with:
+      ref: ${{ inputs.nightly && inputs.cdk_ref || inputs.release_tag }}
 
   validate-release-ref:
-  #  needs: release-ci
+    needs: release-ci
     name: "python: Validate release ref"
     runs-on: ubuntu-latest
     steps:
@@ -318,14 +318,20 @@ jobs:
             runner: ubuntu-24.04-arm
             container: quay.io/pypa/manylinux_2_28_aarch64
             artifact: libcdk_ffi_python.so
+          # deployment_target must match the wheel's platform tag in
+          # python-package's PLATFORM_MAP. Without it the linker stamps the
+          # dylib with the runner's own macOS version, and pip would hand the
+          # wheel to older macOS where the import fails at ctypes load time.
           - target: aarch64-apple-darwin
             runner: macos-14
             container: ""
             artifact: libcdk_ffi_python.dylib
+            deployment_target: "11.0"
           - target: x86_64-apple-darwin
             runner: macos-14
             container: ""
             artifact: libcdk_ffi_python.dylib
+            deployment_target: "10.12"
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             container: ""
@@ -366,6 +372,9 @@ jobs:
 
       - name: Build cdk-ffi-python
         working-directory: cdk-python/rust
+        env:
+          # Empty on every non-macOS leg, where it is ignored.
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Fix dylib install name
@@ -488,6 +497,11 @@ jobs:
           INSTALLED_MAP[x86_64-apple-darwin]="libcdk_ffi.dylib"
           INSTALLED_MAP[x86_64-pc-windows-msvc]="cdk_ffi.dll"
 
+          # A tag is a compatibility claim pip acts on, so each one has to be
+          # backed by how the artifact was actually built: the manylinux legs by
+          # their container, the macOS legs by python-build-native's
+          # deployment_target. Changing one without the other serves a wheel to
+          # a machine that cannot load it.
           declare -A PLATFORM_MAP
           PLATFORM_MAP[x86_64-unknown-linux-gnu]="manylinux_2_28_x86_64"
           PLATFORM_MAP[aarch64-unknown-linux-gnu]="manylinux_2_28_aarch64"
@@ -589,8 +603,23 @@ jobs:
         # PyPI rejects anything that is not a distribution.
         run: rm -f wheelhouse/checksums.sha256
 
+      - name: Check for a PyPI token
+        # A release that cannot reach PyPI should still ship the wheels it built,
+        # so a missing token is a warning rather than a failed release. Read
+        # through the environment so the secret is never spliced into a command.
+        id: pypi_token
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          if [ -n "${PYPI_TOKEN}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::PYPI_TOKEN is not set, skipping the upload. The wheels are still committed to cdk-python and attached to its release."
+          fi
+
       - name: Publish to TestPyPI
-        if: ${{ inputs.publish_target == 'test-pypi' }}
+        if: ${{ inputs.publish_target == 'test-pypi' && steps.pypi_token.outputs.present == 'true' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: wheelhouse/
@@ -598,7 +627,7 @@ jobs:
           repository-url: https://test.pypi.org/legacy/
 
       - name: Publish to PyPI
-        if: ${{ inputs.publish_target == 'pypi' }}
+        if: ${{ inputs.publish_target == 'pypi' && steps.pypi_token.outputs.present == 'true' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: wheelhouse/

@@ -42,7 +42,7 @@ Each release carries a `checksums.sha256` asset to verify the download against.
 - Python 3.10 or higher
 - Supported platforms:
   - Linux (x86_64, ARM64) — `manylinux_2_28`, so glibc 2.28 or newer
-  - macOS (Apple Silicon, Intel)
+  - macOS — Apple Silicon on 11 or newer, Intel on 10.12 or newer
   - Windows (x86_64)
 
 One wheel covers every supported Python version: the native library is loaded
