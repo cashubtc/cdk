@@ -14,7 +14,6 @@ use dnssec_prover::rr::TXT_TYPE;
 use http::header::{self, HeaderName, HeaderValue};
 use hyper::http::{Method, Request, Uri};
 use hyper::{Body, Client};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tls_api::{TlsConnector as _, TlsConnectorBuilder as _};
 use tokio::sync::OnceCell;
@@ -221,21 +220,6 @@ impl TorAsync {
 
         Ok(RawResponse::new(status, bytes.to_vec()))
     }
-
-    async fn request<R>(
-        &self,
-        method: http::Method,
-        url: Url,
-        auth: Option<AuthToken>,
-        body: Option<(Vec<u8>, &'static str)>,
-    ) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned,
-    {
-        self.raw_request(method, url, auth, body)
-            .await?
-            .json_or_status_error()
-    }
 }
 
 #[async_trait]
@@ -307,34 +291,22 @@ impl Transport for TorAsync {
         crate::ws::connect_tor(pool[idx].clone(), url, headers).await
     }
 
-    async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned,
-    {
-        self.request::<R>(Method::GET, url, auth, None).await
-    }
-
-    async fn http_get_raw(
-        &self,
-        url: Url,
-        auth: Option<AuthToken>,
-    ) -> Result<RawResponse, HttpError> {
+    async fn http_get(&self, url: Url, auth: Option<AuthToken>) -> Result<RawResponse, HttpError> {
         self.raw_request(Method::GET, url, auth, None).await
     }
 
-    async fn http_post<P, R>(
+    async fn http_post<P>(
         &self,
         url: Url,
         auth_token: Option<AuthToken>,
         payload: &P,
-    ) -> Result<R, HttpError>
+    ) -> Result<RawResponse, HttpError>
     where
         P: Serialize + Send + Sync,
-        R: DeserializeOwned,
     {
         let body =
             serde_json::to_vec(payload).map_err(|e| HttpError::Serialization(e.to_string()))?;
-        self.request::<R>(
+        self.raw_request(
             Method::POST,
             url,
             auth_token,
@@ -343,7 +315,7 @@ impl Transport for TorAsync {
         .await
     }
 
-    async fn http_post_form_raw<P>(
+    async fn http_post_form<P>(
         &self,
         url: Url,
         auth_token: Option<AuthToken>,
