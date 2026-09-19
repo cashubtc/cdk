@@ -5,6 +5,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
 use serde::{Deserialize, Serialize};
 
 use super::nut01::PublicKey;
@@ -269,6 +271,44 @@ pub(crate) fn get_pubkeys_and_required_sigs(
 
 use super::Proofs;
 
+/// BIP-340 tag for the NUT-11 v1 SIG_ALL message hash (P2PK and HTLC).
+const SIG_ALL_SIG_TAG: &[u8] = b"Cashu_SigAllSig_v1";
+
+/// NUT-11 v1 SIG_ALL message: length-framed bytes.
+///
+/// Commits to the quote id (empty for swaps), each input's secret and C, then
+/// each output's amount (minimal big-endian bytes) and B_.
+pub(crate) fn sig_all_msg_to_sign_v1(
+    quote_id: Option<&str>,
+    inputs: &Proofs,
+    outputs: &[super::BlindedMessage],
+) -> Vec<u8> {
+    use super::nut20::{amount_to_minimal_bytes, append_len_prefixed};
+
+    let mut msg = Vec::new();
+    append_len_prefixed(&mut msg, quote_id.unwrap_or("").as_bytes());
+    for proof in inputs {
+        append_len_prefixed(&mut msg, proof.secret.to_string().as_bytes());
+        append_len_prefixed(&mut msg, &proof.c.to_bytes());
+    }
+    for output in outputs {
+        append_len_prefixed(&mut msg, &amount_to_minimal_bytes(output.amount));
+        append_len_prefixed(&mut msg, &output.blinded_secret.to_bytes());
+    }
+    msg
+}
+
+/// NUT-11 v1 SIG_ALL message hash: the BIP-340 tagged hash
+/// `SHA256(SHA256(tag) || SHA256(tag) || message)`, signed without further hashing.
+pub(crate) fn sig_all_message_hash_v1(message: &[u8]) -> [u8; 32] {
+    let tag_hash = Sha256Hash::hash(SIG_ALL_SIG_TAG).to_byte_array();
+    let mut preimage = Vec::with_capacity(64 + message.len());
+    preimage.extend_from_slice(&tag_hash);
+    preimage.extend_from_slice(&tag_hash);
+    preimage.extend_from_slice(message);
+    Sha256Hash::hash(&preimage).to_byte_array()
+}
+
 /// Trait for requests that spend proofs (SwapRequest, MeltRequest)
 pub trait SpendingConditionVerification {
     /// Get the input proofs
@@ -280,6 +320,23 @@ pub trait SpendingConditionVerification {
     /// For swap: input secrets + output blinded messages
     /// For melt: input secrets + quote/payment request
     fn sig_all_msg_to_sign(&self) -> String;
+
+    /// Construct the NUT-11 v1 (length-framed) SIG_ALL message
+    fn sig_all_msg_to_sign_v1(&self) -> Vec<u8>;
+
+    /// Digests of the SIG_ALL message formats accepted during verification, newest first.
+    ///
+    /// Each digest is signed directly with Schnorr: the v1 tagged hash, then the
+    /// SHA-256 of the current string format. Signatures that do not verify under
+    /// any format are ignored; only unique pubkeys with valid signatures count
+    /// towards thresholds (NUT-11). The pre-0.14 format (secrets then B_ values)
+    /// is not accepted: it does not commit to input C values or output amounts.
+    fn sig_all_digests_to_verify(&self) -> Vec<[u8; 32]> {
+        vec![
+            sig_all_message_hash_v1(&self.sig_all_msg_to_sign_v1()),
+            Sha256Hash::hash(self.sig_all_msg_to_sign().as_bytes()).to_byte_array(),
+        ]
+    }
 
     /// Check if at least one proof in the set has SIG_ALL flag set
     ///
@@ -394,12 +451,13 @@ pub trait SpendingConditionVerification {
             Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
 
         // Dispatch based on secret kind
+        let digests_to_verify = self.sig_all_digests_to_verify();
         match first_secret.kind() {
             Kind::P2PK => {
-                nut11::verify_sig_all_p2pk(first_input, self.sig_all_msg_to_sign())?;
+                nut11::verify_sig_all_p2pk(first_input, &digests_to_verify)?;
             }
             Kind::HTLC => {
-                nut14::verify_sig_all_htlc(first_input, self.sig_all_msg_to_sign())?;
+                nut14::verify_sig_all_htlc(first_input, &digests_to_verify)?;
             }
         }
 
@@ -465,6 +523,10 @@ mod tests {
         fn sig_all_msg_to_sign(&self) -> String {
             "test message".to_string()
         }
+
+        fn sig_all_msg_to_sign_v1(&self) -> Vec<u8> {
+            sig_all_msg_to_sign_v1(None, &self.inputs, &[])
+        }
     }
 
     fn p2pk_proof_with_sig_flag(sig_flag: SigFlag) -> Proof {
@@ -489,6 +551,33 @@ mod tests {
             dleq: None,
             p2pk_e: None,
         }
+    }
+
+    #[test]
+    fn test_sig_all_digests_to_verify_lists_accepted_formats() {
+        let request = TestSpendRequest {
+            inputs: vec![p2pk_proof_with_sig_flag(SigFlag::SigAll)],
+        };
+        let digests = request.sig_all_digests_to_verify();
+        assert_eq!(digests.len(), 2);
+        // Newest first: the tagged hash of the v1 message, then sha256 of the current format
+        assert_eq!(
+            digests[0],
+            sig_all_message_hash_v1(&request.sig_all_msg_to_sign_v1())
+        );
+        assert_eq!(
+            digests[1],
+            Sha256Hash::hash(b"test message").to_byte_array()
+        );
+    }
+
+    #[test]
+    fn test_sig_all_message_hash_v1_uses_the_nut11_tag_hash() {
+        // SHA256("Cashu_SigAllSig_v1") as published in NUT-11
+        assert_eq!(
+            Sha256Hash::hash(SIG_ALL_SIG_TAG).to_string(),
+            "c83c413c874b6f3da4c6310558d0d174c56f1a0a034023ae225ab3648e9626b3"
+        );
     }
 
     #[test]
