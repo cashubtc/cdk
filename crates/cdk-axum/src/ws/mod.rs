@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use cdk::mint::QuoteId;
+use cdk::nuts::nut17::ws::{WsErrorResponse, JSON_RPC_VERSION};
 use cdk::nuts::nut17::NotificationPayload;
 use cdk::subscription::SubId;
 use cdk::ws::{
@@ -11,6 +12,7 @@ use cdk::ws::{
 };
 use cdk_common::terminal::escape_control;
 use futures::StreamExt;
+use serde_json::error::Category;
 use tokio::sync::mpsc;
 
 use crate::MintState;
@@ -37,21 +39,97 @@ async fn process(
     serde_json::to_value(response)
 }
 
-fn deserialize_request(text: &str) -> Result<WsRequest, (serde_json::Error, Option<usize>)> {
-    let value = serde_json::from_str::<serde_json::Value>(text).map_err(|err| (err, None))?;
-    let request_id = value
-        .get("id")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|id| usize::try_from(id).ok());
+/// Why a frame is not processed, and whether the client hears about it.
+#[derive(Debug)]
+enum Rejection {
+    /// A notification, which JSON-RPC 2.0 section 4.1 forbids answering.
+    Ignored,
+    /// An error to send back, with the request id when one could be recovered.
+    Answered(WsError, Option<usize>),
+}
 
-    serde_json::from_value(value).map_err(|err| (err, request_id))
+/// Parse a request, and on failure say whether the client is answered at all,
+/// with which JSON-RPC error, and which request id can still be echoed back.
+///
+/// The happy path deserializes straight from the text. Only a rejected frame
+/// pays for the `serde_json::Value` tree, which is several times the size of the
+/// message and is needed solely to classify the failure and recover the id. Any
+/// category but [`Category::Data`] means the bytes were not JSON at all, so
+/// there is no document to read an id out of.
+fn deserialize_request(text: &str) -> Result<WsRequest, Rejection> {
+    let err = match serde_json::from_str::<WsRequest>(text) {
+        Ok(request) => return Ok(request),
+        Err(err) => err,
+    };
+
+    if err.classify() != Category::Data {
+        return Err(Rejection::Answered(WsError::ParseError, None));
+    }
+
+    let value = match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) => value,
+        Err(reparse_err) => {
+            tracing::debug!("Could not re-read a rejected ws request: {reparse_err}");
+            return Err(Rejection::Answered(WsError::ParseError, None));
+        }
+    };
+
+    Err(classify_request(&value, &err))
+}
+
+/// Decide what a frame that is valid JSON but not a valid request earns.
+///
+/// The envelope is judged structurally rather than from serde's wording, and the
+/// order is load-bearing: only a well-formed 2.0 request object can be a
+/// notification, so a bad envelope is still answered with -32600 instead of
+/// being dropped. An `id` that is present but cannot be a `usize` is a request
+/// this server cannot answer by id, so it earns -32600 as well.
+///
+/// The one thing the document cannot answer is whether a well-formed method name
+/// is one the enum knows, since the variants live in `cashu`; serde reports that
+/// as an `unknown variant` error, and `unknown_method_is_reported_as_unknown_variant`
+/// pins that wording so a serde change cannot quietly turn -32601 back into
+/// -32602.
+fn classify_request(value: &serde_json::Value, err: &serde_json::Error) -> Rejection {
+    let invalid_request = Rejection::Answered(WsError::InvalidRequest, None);
+
+    let Some(object) = value.as_object() else {
+        return invalid_request;
+    };
+
+    if object.get("jsonrpc").and_then(serde_json::Value::as_str) != Some(JSON_RPC_VERSION) {
+        return invalid_request;
+    }
+
+    if object
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .is_none()
+    {
+        return invalid_request;
+    }
+
+    let Some(id) = object.get("id") else {
+        return Rejection::Ignored;
+    };
+
+    let Some(request_id) = id.as_u64().and_then(|id| usize::try_from(id).ok()) else {
+        return invalid_request;
+    };
+
+    if err.to_string().starts_with("unknown variant") {
+        Rejection::Answered(WsError::MethodNotFound, Some(request_id))
+    } else {
+        Rejection::Answered(WsError::InvalidParams, Some(request_id))
+    }
 }
 
 fn error_response(
-    request_id: usize,
+    request_id: Option<usize>,
     error: WsError,
 ) -> Result<serde_json::Value, serde_json::Error> {
-    let response: WsMessageOrResponse = (request_id, Err(WsErrorBody::from(error))).into();
+    let response: WsMessageOrResponse =
+        WsErrorResponse::new(request_id, WsErrorBody::from(error)).into();
     serde_json::to_value(response)
 }
 
@@ -155,14 +233,10 @@ pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
 
                 let result = match deserialize_request(&text) {
                     Ok(request) => process(&mut context, request).await,
-                    Err((err, request_id)) => {
-                        tracing::error!("Could not parse request: {}", err);
-                        match request_id {
-                            Some(request_id) => {
-                                error_response(request_id, WsError::InvalidParams)
-                            }
-                            None => continue,
-                        }
+                    Err(Rejection::Ignored) => continue,
+                    Err(Rejection::Answered(err, request_id)) => {
+                        tracing::error!("Rejected ws request: {err:?}");
+                        error_response(request_id, err)
                     }
                 };
 
@@ -198,7 +272,7 @@ mod tests {
 
     use cdk::mint::{Mint, QuoteId};
     use cdk::nuts::nut02::KeySetVersion;
-    use cdk::nuts::nut17::{MAX_CUSTOM_KIND_LEN, MAX_SUBSCRIPTION_ID_LEN};
+    use cdk::nuts::nut17::{MAX_CUSTOM_KIND_LEN, MAX_FILTER_LEN, MAX_SUBSCRIPTION_ID_LEN};
     use cdk::nuts::{CurrencyUnit, MintInfo};
     use cdk::subscription::{Params, SubId};
     use cdk::ws::WsUnsubscribeRequest;
@@ -208,6 +282,182 @@ mod tests {
 
     use super::*;
     use crate::cache::HttpCache;
+
+    fn rejection_of(text: &str) -> serde_json::Value {
+        match deserialize_request(text).expect_err("a rejected request") {
+            Rejection::Answered(err, request_id) => {
+                error_response(request_id, err).expect("error response")
+            }
+            Rejection::Ignored => panic!("{text} should have been answered"),
+        }
+    }
+
+    fn is_ignored(text: &str) -> bool {
+        matches!(
+            deserialize_request(text).expect_err("a rejected request"),
+            Rejection::Ignored
+        )
+    }
+
+    /// JSON-RPC 2.0 wants the `id` member present and null here, not absent.
+    #[test]
+    fn malformed_json_is_a_parse_error() {
+        for text in ["{not json", "", "[1, 2", "{\"jsonrpc\": }"] {
+            let response = rejection_of(text);
+            assert_eq!(
+                response["error"]["code"],
+                serde_json::json!(-32700),
+                "{text:?} should be a parse error"
+            );
+            assert_eq!(
+                response["error"]["message"],
+                serde_json::json!("Parse error")
+            );
+            assert_eq!(response["id"], serde_json::Value::Null);
+            assert!(response.get("id").is_some(), "id member must be present");
+        }
+    }
+
+    #[test]
+    fn unknown_method_is_method_not_found() {
+        let response = rejection_of(
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "resubscribe",
+                "params": {},
+                "id": 4,
+            })
+            .to_string(),
+        );
+        assert_eq!(response["error"]["code"], serde_json::json!(-32601));
+        assert_eq!(
+            response["error"]["message"],
+            serde_json::json!("Method not found")
+        );
+        assert_eq!(response["id"], serde_json::json!(4));
+    }
+
+    /// `classify_request` leans on this wording to tell an unknown method from
+    /// bad params, since only serde knows the enum's variants.
+    #[test]
+    fn unknown_method_is_reported_as_unknown_variant() {
+        let err = serde_json::from_str::<WsRequest>(
+            r#"{"jsonrpc":"2.0","method":"resubscribe","params":{},"id":1}"#,
+        )
+        .expect_err("unknown method");
+        assert!(
+            err.to_string().starts_with("unknown variant"),
+            "serde changed its unknown-variant wording: {err}"
+        );
+    }
+
+    #[test]
+    fn a_malformed_envelope_is_an_invalid_request() {
+        for request in [
+            serde_json::json!({"jsonrpc": "2.0", "params": {}, "id": 5}),
+            serde_json::json!({"jsonrpc": "2.0", "method": 7, "params": {}, "id": 5}),
+            serde_json::json!({"jsonrpc": "1.0", "method": "subscribe", "params": {}, "id": 5}),
+            serde_json::json!({"method": "subscribe", "params": {}, "id": 5}),
+            serde_json::json!([1, 2, 3]),
+        ] {
+            let response = rejection_of(&request.to_string());
+            assert_eq!(
+                response["error"]["code"],
+                serde_json::json!(-32600),
+                "{request} should be an invalid request"
+            );
+            assert_eq!(
+                response["error"]["message"],
+                serde_json::json!("Invalid Request")
+            );
+        }
+    }
+
+    /// JSON-RPC 2.0 section 4.1: the server must not reply to a notification,
+    /// whatever else is wrong with it.
+    #[test]
+    fn a_notification_gets_no_reply() {
+        for request in [
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "subscribe",
+                "params": {
+                    "kind": "bolt11_mint_quote",
+                    "filters": ["quote-id"],
+                    "subId": "sub-1",
+                },
+            }),
+            serde_json::json!({"jsonrpc": "2.0", "method": "resubscribe", "params": {}}),
+            serde_json::json!({"jsonrpc": "2.0", "method": "subscribe", "params": {}}),
+        ] {
+            assert!(
+                is_ignored(&request.to_string()),
+                "{request} should get no reply"
+            );
+        }
+    }
+
+    /// A frame that is not a well-formed request object is not a notification.
+    #[test]
+    fn an_id_less_malformed_envelope_is_still_answered() {
+        for request in [
+            serde_json::json!({"method": "subscribe", "params": {}}),
+            serde_json::json!({"jsonrpc": "2.0", "params": {}}),
+            serde_json::json!({"jsonrpc": "1.0", "method": "subscribe", "params": {}}),
+        ] {
+            let response = rejection_of(&request.to_string());
+            assert_eq!(
+                response["error"]["code"],
+                serde_json::json!(-32600),
+                "{request} should be an invalid request"
+            );
+        }
+    }
+
+    /// An id this server cannot echo makes the frame an invalid request, not a
+    /// params failure.
+    #[test]
+    fn an_unusable_id_is_an_invalid_request() {
+        for id in [
+            serde_json::json!("abc"),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::Value::Null,
+        ] {
+            let request = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "subscribe",
+                "params": {},
+                "id": id,
+            });
+            let response = rejection_of(&request.to_string());
+            assert_eq!(
+                response["error"]["code"],
+                serde_json::json!(-32600),
+                "{request} should be an invalid request"
+            );
+            assert_eq!(response["id"], serde_json::Value::Null);
+            assert!(response.get("id").is_some(), "id member must be present");
+        }
+    }
+
+    /// The envelope and method checks must not reject good traffic.
+    #[test]
+    fn a_valid_subscribe_still_parses() {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "subscribe",
+            "params": {
+                "kind": "bolt11_mint_quote",
+                "filters": ["quote-id"],
+                "subId": "sub-1",
+            },
+            "id": 6,
+        });
+        let parsed = deserialize_request(&request.to_string()).expect("a valid subscribe");
+        assert_eq!(parsed.id, 6);
+        assert!(matches!(parsed.method, WsMethodRequest::Subscribe(_)));
+    }
 
     #[test]
     fn oversized_subscription_fields_return_invalid_params() {
@@ -241,15 +491,7 @@ mod tests {
                 "id": 3,
             }),
         ] {
-            let (err, request_id) =
-                deserialize_request(&request.to_string()).expect_err("oversized request");
-            assert!(
-                err.to_string().contains("exceeds"),
-                "unexpected error: {err}"
-            );
-
-            let response = error_response(request_id.expect("request ID"), WsError::InvalidParams)
-                .expect("error response");
+            let response = rejection_of(&request.to_string());
             assert_eq!(response["error"]["code"], serde_json::json!(-32602));
             assert_eq!(
                 response["error"]["message"],
@@ -476,5 +718,28 @@ mod tests {
             "subscription filter count must not be capped by mint max_inputs; got {:?}",
             result.as_ref().err()
         );
+    }
+
+    #[tokio::test]
+    async fn test_bad_filters_are_invalid_params_not_internal_error() {
+        let mint = create_test_mint().await;
+        let mut context = make_context(mint);
+
+        for (name, filter) in [
+            ("unparsable", "not-a-quote-id".to_string()),
+            ("oversized", "a".repeat(MAX_FILTER_LEN + 1)),
+        ] {
+            let params = Params {
+                kind: cdk::nuts::nut17::Kind::Bolt11MintQuote,
+                filters: vec![filter],
+                id: Arc::new(SubId::from(name)),
+            };
+
+            let err = subscribe::handle(&mut context, params)
+                .await
+                .expect_err("a client-supplied bad filter should be rejected");
+            let body: WsErrorBody = err.into();
+            assert_eq!(body.code, -32602, "{name} filter should be invalid params");
+        }
     }
 }
