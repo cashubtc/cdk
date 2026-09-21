@@ -16,7 +16,7 @@ pub struct UpdateMintMethodCommand {
     #[arg(short, long)]
     #[arg(default_value = "sat")]
     unit: String,
-    /// The payment method for minting (e.g., "bolt11" for Lightning payments)
+    /// The payment method for minting (e.g., "bolt11" or "bolt12" for Lightning payments)
     #[arg(short, long)]
     #[arg(default_value = "bolt11")]
     method: String,
@@ -29,7 +29,7 @@ pub struct UpdateMintMethodCommand {
     /// Human-readable name for this payment method
     #[arg(long)]
     method_name: Option<String>,
-    /// Whether the mint should include description fields in Lightning invoices
+    /// Whether the mint should include description fields in Lightning invoices or offers
     #[arg(long)]
     description: Option<bool>,
 }
@@ -83,7 +83,10 @@ pub async fn update_mint_method(
         response.method_name.unwrap_or_else(|| "none".to_string())
     );
     if let Some(options) = response.options {
-        println!("  Bolt11 description: {}", options.description);
+        match response.method.to_ascii_lowercase().as_str() {
+            "bolt12" => println!("  Bolt12 description: {}", options.description),
+            _ => println!("  Bolt11 description: {}", options.description),
+        }
     }
 
     Ok(())
