@@ -2060,7 +2060,7 @@ where
         None,
     );
 
-    // Quote 4: 0 payments, 2 issuances (multiple issuance)
+    // Quote 4: 1 payment, 2 issuances (single payment, multiple issuance)
     let quote4 = MintQuote::new(
         None,
         unique_string(),
@@ -2201,7 +2201,7 @@ where
         assert_eq!(q.issuance[1].amount.value(), 250);
     };
 
-    // 1. Single quote lookups (zero payments/issuance, multiple payments, multiple issuance, multiple of both)
+    // 1. Single quote lookups (zero payments/issuance, multiple payments without issuance, single payment with multiple issuance, multiple of both)
     let retrieved1 = db.get_mint_quote(&quote1.id).await.unwrap().unwrap();
     verify_q1(&retrieved1);
 

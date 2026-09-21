@@ -42,7 +42,7 @@ struct RawQuotePayment {
 
 #[derive(Debug)]
 struct RawQuoteIssuance {
-    amount: i64,
+    amount: Amount,
     timestamp: u64,
 }
 
@@ -109,12 +109,11 @@ where
     .into_iter()
     .map(|row| {
         let time: u64 = column_as_number!(row[1].clone());
-        Ok(Issuance::new(
-            Amount::from_i64(column_as_number!(row[0].clone()))
-                .expect("Is amount when put into db")
-                .with_unit(unit.clone()),
-            time,
-        ))
+        let amount_i64: i64 = column_as_number!(row[0].clone());
+        let amount = Amount::from_i64(amount_i64).ok_or_else(|| {
+            ConversionError::InvalidConversion("amount".to_owned(), "Amount".to_owned())
+        })?;
+        Ok(Issuance::new(amount.with_unit(unit.clone()), time))
     })
     .collect()
 }
@@ -145,7 +144,10 @@ fn rows_to_issuance_map(
     let mut map: HashMap<String, Vec<RawQuoteIssuance>> = HashMap::new();
     for row in rows {
         let quote_id = column_as_string!(&row[0]);
-        let amount: i64 = column_as_number!(row[1].clone());
+        let amount_i64: i64 = column_as_number!(row[1].clone());
+        let amount = Amount::from_i64(amount_i64).ok_or_else(|| {
+            ConversionError::InvalidConversion("amount".to_owned(), "Amount".to_owned())
+        })?;
         let timestamp: u64 = column_as_number!(row[2].clone());
 
         map.entry(quote_id)
@@ -180,14 +182,7 @@ fn attach_relations_to_quotes<'a, I>(
         if let Some(raw_issuances) = issuance.remove(&quote_id_str) {
             quote.issuance = raw_issuances
                 .into_iter()
-                .map(|i| {
-                    Issuance::new(
-                        Amount::from_i64(i.amount)
-                            .expect("Is amount when put into db")
-                            .with_unit(quote.unit.clone()),
-                        i.timestamp,
-                    )
-                })
+                .map(|i| Issuance::new(i.amount.with_unit(quote.unit.clone()), i.timestamp))
                 .collect();
         }
     }
