@@ -8,7 +8,7 @@ use cashu::secret::Secret;
 use cashu::{Amount, Id, SecretKey, State};
 use tokio::sync::Barrier;
 
-use crate::database::mint::test::setup_keyset;
+use crate::database::mint::test::{seed_issuance, setup_keyset};
 use crate::database::mint::{Database, DynMintDatabase, Error, KeysDatabase, Proof, QuoteId};
 use crate::mint::Operation;
 use crate::state::check_state_transition;
@@ -42,6 +42,8 @@ where
     ];
 
     // Add proofs to database
+    seed_issuance(&db, &proofs).await;
+
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_proofs(
         proofs,
@@ -102,6 +104,8 @@ where
     ];
 
     // Add proofs to database
+    seed_issuance(&db, &proofs).await;
+
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_proofs(
         proofs.clone(),
@@ -152,6 +156,8 @@ where
     ];
 
     // Add proofs to database
+    seed_issuance(&db, &proofs).await;
+
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_proofs(
         proofs.clone(),
@@ -277,6 +283,7 @@ where
     }];
 
     let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+    seed_issuance(&db, &proofs).await;
 
     // Add proofs and verify initial state
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -349,6 +356,13 @@ pub async fn concurrent_multi_keyset_spends_use_consistent_lock_order(db: DynMin
         .iter()
         .map(|proof| proof.y().unwrap())
         .collect();
+
+    let issued = first_proofs
+        .iter()
+        .chain(second_proofs.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    seed_issuance(&*db, &issued).await;
 
     let mut tx = db.begin_transaction().await.unwrap();
     tx.add_proofs(
@@ -641,6 +655,8 @@ where
     let ys: Vec<_> = proofs.iter().map(|p| p.c).collect();
 
     // Add proofs
+    seed_issuance(&db, &proofs).await;
+
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_proofs(
         proofs.clone(),
@@ -726,6 +742,8 @@ where
     assert!(proofs_before[0].is_none());
 
     // Start a transaction and add proof but don't commit
+    seed_issuance(&db, std::slice::from_ref(&proof)).await;
+
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_proofs(
         vec![proof.clone()],
@@ -765,6 +783,8 @@ where
     let y = proof.c;
 
     // Start a transaction, add proof, then rollback
+    seed_issuance(&db, std::slice::from_ref(&proof)).await;
+
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_proofs(
         vec![proof.clone()],
@@ -801,6 +821,8 @@ where
         .collect();
 
     // Add all proofs
+    seed_issuance(&db, &proofs).await;
+
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_proofs(
         proofs.clone(),
@@ -857,6 +879,7 @@ where
     ];
 
     let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+    seed_issuance(&db, &proofs).await;
 
     // Add proofs to database (initial state is Unspent)
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -993,6 +1016,8 @@ where
     let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
 
     // Add all proofs (initial state is Unspent)
+    seed_issuance(&db, &proofs).await;
+
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_proofs(
         proofs,
@@ -1091,6 +1116,8 @@ where
     let non_existent_y = non_existent_proof.y().unwrap();
 
     // Add only the first two proofs
+    seed_issuance(&db, &stored_proofs).await;
+
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_proofs(
         stored_proofs,
@@ -1122,4 +1149,513 @@ where
     );
 
     tx.rollback().await.unwrap();
+}
+
+/// A keyset cannot be drawn on past what it issued.
+///
+/// This is the safeguard against a leaked signing key: forged proofs carry
+/// valid signatures and fresh secrets, so the only thing separating them from
+/// honest ones is that the keyset has already paid out everything it took in.
+/// The refusal lands when the mint takes custody, before it acts on them.
+pub async fn reserving_beyond_issuance_is_refused<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = setup_keyset(&db).await;
+
+    let make_proof = || Proof {
+        amount: Amount::from(100),
+        keyset_id,
+        secret: Secret::generate(),
+        c: SecretKey::generate().public_key(),
+        witness: None,
+        dleq: None,
+        p2pk_e: None,
+    };
+
+    let issued = vec![make_proof()];
+    let forged = vec![make_proof()];
+
+    seed_issuance(&db, &issued).await;
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut records = tx
+        .add_proofs(
+            issued.clone(),
+            None,
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+        )
+        .await
+        .unwrap();
+    tx.update_proofs_state(&mut records, State::Spent)
+        .await
+        .expect("redeeming what the keyset issued is allowed");
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let refusal = tx
+        .add_proofs(
+            forged.clone(),
+            None,
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+        )
+        .await
+        .err();
+    tx.rollback().await.unwrap();
+
+    assert!(
+        matches!(refusal, Some(Error::KeysetOverRedeemed(id)) if id == keyset_id),
+        "a keyset that has paid out everything it issued must refuse custody, got {refusal:?}"
+    );
+
+    let ys: Vec<_> = forged.iter().map(|p| p.y().unwrap()).collect();
+    let states = db.get_proofs_states(&ys).await.unwrap();
+    assert!(
+        states[0].is_none(),
+        "a refused proof must not be left in the database"
+    );
+}
+
+/// Burning proofs moves their amount out of the keyset's reservation and into
+/// its redeemed total, leaving what it issued alone.
+pub async fn spending_moves_reserved_to_redeemed<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = setup_keyset(&db).await;
+
+    let proofs = vec![Proof {
+        amount: Amount::from(100),
+        keyset_id,
+        secret: Secret::generate(),
+        c: SecretKey::generate().public_key(),
+        witness: None,
+        dleq: None,
+        p2pk_e: None,
+    }];
+
+    seed_issuance(&db, &proofs).await;
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut records = tx
+        .add_proofs(
+            proofs.clone(),
+            None,
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        db.get_total_reserved()
+            .await
+            .unwrap()
+            .get(&keyset_id)
+            .copied(),
+        Some(Amount::from(100)),
+        "taking custody reserves the amount"
+    );
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.update_proofs_state(&mut records, State::Spent)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        db.get_total_reserved()
+            .await
+            .unwrap()
+            .get(&keyset_id)
+            .copied(),
+        Some(Amount::ZERO),
+        "burning the proofs releases the reservation"
+    );
+    assert_eq!(
+        db.get_total_redeemed()
+            .await
+            .unwrap()
+            .get(&keyset_id)
+            .copied(),
+        Some(Amount::from(100))
+    );
+    assert_eq!(
+        db.get_total_issued()
+            .await
+            .unwrap()
+            .get(&keyset_id)
+            .copied(),
+        Some(Amount::from(100)),
+        "what the keyset issued does not move"
+    );
+}
+
+/// A failed swap or melt hands the proofs back, and the keyset gets its float
+/// back with them.
+pub async fn removing_proofs_returns_the_reservation<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = setup_keyset(&db).await;
+
+    let make_proofs = || {
+        vec![Proof {
+            amount: Amount::from(100),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        }]
+    };
+
+    let first = make_proofs();
+    let second = make_proofs();
+
+    seed_issuance(&db, &first).await;
+
+    let ys: Vec<_> = first.iter().map(|p| p.y().unwrap()).collect();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_proofs(
+        first.clone(),
+        None,
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.remove_proofs(&ys, None).await.unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        db.get_total_reserved()
+            .await
+            .unwrap()
+            .get(&keyset_id)
+            .copied(),
+        Some(Amount::ZERO),
+        "removing the proofs returns the reservation"
+    );
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_proofs(
+        second,
+        None,
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .expect("the returned float can be reserved again");
+    tx.commit().await.unwrap();
+}
+
+/// This layer applies no state-machine validation of its own, so a repeated
+/// spend in one transaction must not move the counters twice.
+pub async fn repeated_spend_does_not_double_credit<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = setup_keyset(&db).await;
+
+    let proofs = vec![Proof {
+        amount: Amount::from(100),
+        keyset_id,
+        secret: Secret::generate(),
+        c: SecretKey::generate().public_key(),
+        witness: None,
+        dleq: None,
+        p2pk_e: None,
+    }];
+
+    seed_issuance(&db, &proofs).await;
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut records = tx
+        .add_proofs(
+            proofs.clone(),
+            None,
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+        )
+        .await
+        .unwrap();
+    tx.update_proofs_state(&mut records, State::Spent)
+        .await
+        .unwrap();
+    tx.update_proofs_state(&mut records, State::Spent)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        db.get_total_redeemed()
+            .await
+            .unwrap()
+            .get(&keyset_id)
+            .copied(),
+        Some(Amount::from(100)),
+        "the second spend must not credit again"
+    );
+    assert_eq!(
+        db.get_total_reserved()
+            .await
+            .unwrap()
+            .get(&keyset_id)
+            .copied(),
+        Some(Amount::ZERO)
+    );
+}
+
+/// `remove_proofs` returns `AttemptRemoveSpentProof` when the batch contains a
+/// spent proof, and callers swallow that error and commit anyway, so the debit
+/// has to cover exactly the rows the delete actually removed.
+pub async fn partial_removal_debits_only_the_deleted_rows<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = setup_keyset(&db).await;
+
+    let proofs = vec![
+        Proof {
+            amount: Amount::from(100),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        },
+        Proof {
+            amount: Amount::from(200),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        },
+    ];
+
+    let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+    seed_issuance(&db, &proofs).await;
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_proofs(
+        proofs.clone(),
+        None,
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut spent = tx.get_proofs(&[ys[0]]).await.unwrap();
+    tx.update_proofs_state(&mut spent, State::Spent)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        db.get_total_reserved()
+            .await
+            .unwrap()
+            .get(&keyset_id)
+            .copied(),
+        Some(Amount::from(200)),
+        "only the unspent proof is still in custody"
+    );
+
+    // Mirror the melt rollback path, which logs this error and commits anyway.
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let refusal = tx.remove_proofs(&ys, None).await.err();
+    tx.commit().await.unwrap();
+
+    assert!(
+        matches!(refusal, Some(Error::AttemptRemoveSpentProof)),
+        "removing a batch holding a spent proof must report it, got {refusal:?}"
+    );
+
+    assert_eq!(
+        db.get_total_reserved()
+            .await
+            .unwrap()
+            .get(&keyset_id)
+            .copied(),
+        Some(Amount::ZERO),
+        "the deleted row's amount must be released even though the call errored"
+    );
+    assert_eq!(
+        db.get_total_redeemed()
+            .await
+            .unwrap()
+            .get(&keyset_id)
+            .copied(),
+        Some(Amount::from(100)),
+        "the spent proof stays redeemed"
+    );
+    assert_eq!(
+        db.get_total_issued()
+            .await
+            .unwrap()
+            .get(&keyset_id)
+            .copied(),
+        Some(Amount::from(300))
+    );
+
+    let states = db.get_proofs_states(&ys).await.unwrap();
+    assert_eq!(states[0], Some(State::Spent), "the spent proof survives");
+    assert!(states[1].is_none(), "the unspent proof is gone");
+}
+
+/// `total_reserved` has to stay equal to the proofs the mint is actually
+/// holding. That identity is what makes the counter auditable, and it is the
+/// only reason the cap can be trusted after a restart.
+pub async fn reserved_matches_the_proofs_in_custody<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = setup_keyset(&db).await;
+
+    let proofs: Vec<Proof> = (1..=4)
+        .map(|i| Proof {
+            amount: Amount::from(i * 100),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        })
+        .collect();
+
+    let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+    seed_issuance(&db, &proofs).await;
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_proofs(
+        proofs.clone(),
+        None,
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // Give the four proofs different fates: burned, handed back, moved to
+    // pending, and left untouched.
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut burned = tx.get_proofs(&[ys[0]]).await.unwrap();
+    tx.update_proofs_state(&mut burned, State::Spent)
+        .await
+        .unwrap();
+    tx.remove_proofs(&[ys[1]], None).await.unwrap();
+    let mut pending = tx.get_proofs(&[ys[2]]).await.unwrap();
+    tx.update_proofs_state(&mut pending, State::Pending)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let (held, states) = db.get_proofs_by_keyset_id(&keyset_id).await.unwrap();
+    let in_custody = held
+        .iter()
+        .zip(states.iter())
+        .filter(|(_, state)| **state != Some(State::Spent))
+        .fold(Amount::ZERO, |total, (proof, _)| {
+            total.checked_add(proof.amount).expect("no overflow")
+        });
+
+    assert_eq!(
+        db.get_total_reserved()
+            .await
+            .unwrap()
+            .get(&keyset_id)
+            .copied(),
+        Some(in_custody),
+        "total_reserved must equal the amount of every proof that is not spent"
+    );
+    assert_eq!(
+        in_custody,
+        Amount::from(700),
+        "pending and untouched proofs are still in custody, burned and removed are not"
+    );
+}
+
+/// Two operations racing for the last of a keyset's float: exactly one can win.
+///
+/// This test is intended for database backends with row-level locking. It is
+/// invoked explicitly by the PostgreSQL test suite rather than the generic
+/// database macro because SQLite serializes writes at the database level.
+pub async fn concurrent_reservations_cannot_race_past_the_cap(db: DynMintDatabase) {
+    let keyset_id = Id::from_str("00916bbf7ef91a38").unwrap();
+
+    let create_proof = || Proof {
+        amount: Amount::from(100),
+        keyset_id,
+        secret: Secret::generate(),
+        c: SecretKey::generate().public_key(),
+        witness: None,
+        dleq: None,
+        p2pk_e: None,
+    };
+
+    // Issuance covers one of the two reservations, never both.
+    let issued = vec![create_proof()];
+    seed_issuance(&*db, &issued).await;
+
+    let first_proofs = vec![create_proof()];
+    let second_proofs = vec![create_proof()];
+
+    let barrier = Arc::new(Barrier::new(2));
+    let first_db = db.clone();
+    let first_barrier = Arc::clone(&barrier);
+    let first = tokio::spawn(async move {
+        let mut tx = first_db.begin_transaction().await?;
+        first_barrier.wait().await;
+        tx.add_proofs(
+            first_proofs,
+            None,
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+        )
+        .await?;
+        tx.commit().await
+    });
+
+    let second = tokio::spawn(async move {
+        let mut tx = db.begin_transaction().await?;
+        barrier.wait().await;
+        tx.add_proofs(
+            second_proofs,
+            None,
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+        )
+        .await?;
+        tx.commit().await
+    });
+
+    let (first_result, second_result) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(first, second)
+    })
+    .await
+    .expect("concurrent reservations should not deadlock");
+
+    let results = [first_result.unwrap(), second_result.unwrap()];
+    let winners = results.iter().filter(|result| result.is_ok()).count();
+    let refusals = results
+        .iter()
+        .filter_map(|result| result.as_ref().err())
+        .filter(|err| matches!(err, Error::KeysetOverRedeemed(id) if *id == keyset_id))
+        .count();
+
+    assert_eq!(
+        winners, 1,
+        "exactly one reservation fits the float, got {results:?}"
+    );
+    assert_eq!(
+        refusals, 1,
+        "the loser must be refused by the cap, got {results:?}"
+    );
 }

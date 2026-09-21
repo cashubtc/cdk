@@ -442,6 +442,14 @@ impl Mint {
             // Don't fail startup
         }
 
+        // Repair keysets whose recorded debits exceed what they issued, so an
+        // incomplete issuance history does not freeze every proof held against
+        // them. Each repair logs the keyset at error level.
+        if let Err(e) = self.localstore.reconcile_keyset_ledger().await {
+            tracing::error!("Failed to reconcile the keyset ledger: {}", e);
+            // Don't fail startup
+        }
+
         let mut task_state = self.task_state.lock().await;
 
         // Prevent starting if already running
@@ -1473,6 +1481,29 @@ impl Mint {
                 total_issued.entry(keyset.id).or_default();
             }
             Ok(total_issued)
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            metrics.record(result.is_ok());
+        }
+
+        result
+    }
+
+    /// Amount per keyset the mint is holding but has not yet burned
+    #[instrument(skip_all)]
+    pub async fn total_reserved(&self) -> Result<HashMap<Id, Amount>, Error> {
+        #[cfg(feature = "prometheus")]
+        let metrics = MintMetricGuard::new("total_reserved");
+
+        let result = async {
+            let mut total_reserved = self.localstore.get_total_reserved().await?;
+            for keyset in self.keysets().keysets {
+                total_reserved.entry(keyset.id).or_default();
+            }
+            Ok(total_reserved)
         }
         .await;
 

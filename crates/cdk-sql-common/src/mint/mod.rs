@@ -23,6 +23,7 @@ use crate::stmt::query;
 mod auth;
 mod completed_operations;
 mod keys;
+mod keyset_ledger;
 mod keyvalue;
 mod proofs;
 mod quotes;
@@ -186,6 +187,18 @@ where
         &self,
     ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {
         Self::begin_transaction_from_pool(&self.pool).await
+    }
+
+    async fn reconcile_keyset_ledger(&self) -> Result<(), Error> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let tx = ConnectionWithTransaction::new(conn).await?;
+        keyset_ledger::reconcile(&tx).await?;
+        tx.commit().await?;
+        Ok(())
     }
 }
 

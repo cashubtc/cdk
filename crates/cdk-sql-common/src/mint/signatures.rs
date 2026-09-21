@@ -9,6 +9,7 @@ use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
 use cdk_common::{Amount, BlindSignature, BlindSignatureDleq, Id, PublicKey, SecretKey};
 
+use super::keyset_ledger::{self, LedgerMove, LedgerMoves};
 use super::proofs::sql_row_to_hashmap_amount;
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
@@ -101,6 +102,8 @@ where
             left.to_bytes().cmp(&right.to_bytes())
         });
 
+        let mut issued = LedgerMoves::new();
+
         // Mutate rows in blinded-message order while retaining the request order index.
         for (i, (message, signature)) in ordered_signatures {
             match existing_rows.remove(message) {
@@ -133,18 +136,11 @@ where
                     .execute(&self.inner)
                     .await?;
 
-                    query(
-                        r#"
-                        INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                        VALUES (:keyset_id, :amount, 0)
-                        ON CONFLICT (keyset_id)
-                        DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
-                        "#,
-                    )?
-                    .bind("amount", u64::from(signature.amount) as i64)
-                    .bind("keyset_id", signature.keyset_id.to_string())
-                    .execute(&self.inner)
-                    .await?;
+                    keyset_ledger::accumulate(
+                        &mut issued,
+                        signature.keyset_id,
+                        LedgerMove::issue(signature.amount),
+                    )?;
                 }
                 Some((c, _dleq_e, _dleq_s)) => {
                     // Blind message exists: check if c is NULL
@@ -173,18 +169,11 @@ where
                             .execute(&self.inner)
                             .await?;
 
-                            query(
-                                r#"
-                                INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                                VALUES (:keyset_id, :amount, 0)
-                                ON CONFLICT (keyset_id)
-                                DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
-                                "#,
-                            )?
-                            .bind("amount", u64::from(signature.amount) as i64)
-                            .bind("keyset_id", signature.keyset_id.to_string())
-                            .execute(&self.inner)
-                            .await?;
+                            keyset_ledger::accumulate(
+                                &mut issued,
+                                signature.keyset_id,
+                                LedgerMove::issue(signature.amount),
+                            )?;
                         }
                         _ => {
                             // Blind message already has c: Error
@@ -212,6 +201,8 @@ where
                 "Did not check all existing rows".to_string(),
             ));
         }
+
+        keyset_ledger::apply(&self.inner, &issued).await?;
 
         Ok(())
     }

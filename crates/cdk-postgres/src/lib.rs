@@ -482,6 +482,15 @@ mod test {
         .await;
     }
 
+    #[tokio::test]
+    async fn concurrent_reservations_cannot_race_past_the_cap() {
+        let test_id = format!("test_concurrent_reservations_{}", uuid::Uuid::new_v4());
+        cdk_common::database::mint::test::concurrent_reservations_cannot_race_past_the_cap(
+            Arc::new(provide_mint_db(test_id).await),
+        )
+        .await;
+    }
+
     async fn provide_wallet_db(test_id: String) -> WalletPgDatabase {
         let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
             .or_else(|_| std::env::var("PG_DB_URL")) // Fallback for compatibility
