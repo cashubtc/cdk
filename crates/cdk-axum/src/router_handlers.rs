@@ -14,7 +14,7 @@ use paste::paste;
 use tracing::instrument;
 
 use crate::auth::AuthHeader;
-use crate::ws::serve;
+use crate::ws::{configure, serve};
 use crate::MintState;
 
 /// Macro to add cache to endpoint
@@ -138,7 +138,7 @@ pub(crate) async fn ws_handler(
         .await
         .map_err(into_response)?;
 
-    Ok(ws.on_upgrade(|ws| serve(ws, state)))
+    Ok(configure(ws).on_upgrade(|ws| serve(ws, state)))
 }
 
 /// Check whether a proof is spent already or is pending in a transaction

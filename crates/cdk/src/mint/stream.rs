@@ -9,13 +9,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cdk_common::nut17::NotificationPayload;
+use cdk_common::nut17::{
+    NotificationPayload, MAX_CUSTOM_KIND_LEN, MAX_FILTER_LEN, MAX_SUBSCRIPTION_ID_LEN,
+};
 use cdk_common::stream_channel::{StreamRx, StreamTx};
 use cdk_common::subscription::SubId;
 use cdk_common::ws::{
     notification_to_ws_message, NotificationInner, WsErrorBody, WsMessageOrResponse,
     WsMethodRequest, WsRequest, WsResponseResult,
 };
+use serde_json::error::Category;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::task::JoinHandle;
@@ -24,6 +27,31 @@ use super::{Mint, QuoteId};
 
 const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 100;
 const MAX_FILTERS_PER_SUBSCRIPTION: usize = 1000;
+
+/// Room for the JSON-RPC envelope around a maximal subscribe: method name,
+/// field keys, brackets and separators.
+const WS_ENVELOPE_SLACK: usize = 1024;
+
+/// Byte size of the largest subscribe request this runner will accept, from the
+/// limits it enforces: every filter at [`MAX_FILTER_LEN`] plus its quotes and
+/// comma, a maximal `subId` and a maximal custom `kind`.
+const MAX_LEGAL_REQUEST_SIZE: usize = MAX_FILTERS_PER_SUBSCRIPTION * (MAX_FILTER_LEN + 3)
+    + MAX_SUBSCRIPTION_ID_LEN
+    + MAX_CUSTOM_KIND_LEN
+    + WS_ENVELOPE_SLACK;
+
+/// Largest NUT-17 frame a transport should accept before the runner sees it.
+///
+/// Transports (the `cdk-axum` websocket adapter) clamp their reassembly buffer
+/// to this so an unbounded frame cannot be allocated on the mint's behalf. The
+/// assertion below ties it to the subscribe limits above, so tightening the cap
+/// can never silently start rejecting requests `handle_request` would accept.
+pub const MAX_WS_MESSAGE_SIZE: usize = 512 * 1024;
+
+const _: () = assert!(
+    MAX_WS_MESSAGE_SIZE >= MAX_LEGAL_REQUEST_SIZE,
+    "MAX_WS_MESSAGE_SIZE would reject a protocol-legal subscribe"
+);
 
 impl Mint {
     /// Run the NUT-17 subscription protocol over a caller-provided stream until
@@ -152,14 +180,35 @@ pub(super) async fn run_stream(mint: Mint, mut tx: StreamTx, mut rx: StreamRx) {
 /// Parse a request, recovering its `id` when the payload is valid JSON but not a
 /// valid request, so a rejected frame (an oversized `subId` or `kind`) can be
 /// answered with an error carrying the client's id instead of being dropped.
+///
+/// The happy path deserializes straight from the text; the intermediate
+/// `serde_json::Value` tree, several times the size of the frame, is built only
+/// on the error path where the `id` has to be dug out. A [`Category::Data`]
+/// error is what marks that path: the frame was valid JSON that did not match
+/// the request shape, so it can still carry an `id`. Any other category is
+/// malformed JSON, with nothing to recover.
 fn deserialize_request(text: &str) -> Result<WsRequest, (serde_json::Error, Option<usize>)> {
-    let value = serde_json::from_str::<serde_json::Value>(text).map_err(|err| (err, None))?;
-    let id = value
-        .get("id")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|id| usize::try_from(id).ok());
+    let err = match serde_json::from_str::<WsRequest>(text) {
+        Ok(request) => return Ok(request),
+        Err(err) => err,
+    };
 
-    serde_json::from_value(value).map_err(|err| (err, id))
+    if err.classify() != Category::Data {
+        return Err((err, None));
+    }
+
+    let id = match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) => value
+            .get("id")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|id| usize::try_from(id).ok()),
+        Err(reparse_err) => {
+            tracing::debug!("ws request id recovery re-parse failed: {reparse_err}");
+            None
+        }
+    };
+
+    Err((err, id))
 }
 
 async fn handle_request(
@@ -253,7 +302,7 @@ fn internal_error() -> WsErrorBody {
 mod tests {
     use std::time::Duration;
 
-    use cdk_common::nut17::{Kind, MAX_CUSTOM_KIND_LEN, MAX_SUBSCRIPTION_ID_LEN};
+    use cdk_common::nut17::Kind;
     use cdk_common::stream_channel::in_memory_pair;
     use cdk_common::subscription::Params;
     use cdk_common::ws::WsUnsubscribeRequest;
@@ -361,6 +410,37 @@ mod tests {
             );
             assert_eq!(response["jsonrpc"], serde_json::json!("2.0"));
             assert_eq!(response["id"], request["id"]);
+        }
+    }
+
+    /// Guards the transport cap against being tightened below what the runner
+    /// accepts: a subscribe at every NUT-17 limit must still fit in one frame.
+    #[test]
+    fn maximal_legal_subscribe_fits_the_transport_cap() {
+        let params = Params {
+            kind: Kind::Custom("k".repeat(MAX_CUSTOM_KIND_LEN)),
+            filters: (0..MAX_FILTERS_PER_SUBSCRIPTION)
+                .map(|_| "f".repeat(MAX_FILTER_LEN))
+                .collect(),
+            id: Arc::new(SubId::from("a".repeat(MAX_SUBSCRIPTION_ID_LEN))),
+        };
+        let frame =
+            serde_json::to_string(&WsRequest::from((WsMethodRequest::Subscribe(params), 0)))
+                .expect("a serializable subscribe");
+
+        assert!(
+            frame.len() <= MAX_WS_MESSAGE_SIZE,
+            "a protocol-legal subscribe is {} bytes, over the {MAX_WS_MESSAGE_SIZE} byte cap",
+            frame.len()
+        );
+        deserialize_request(&frame).expect("a maximal subscribe is a valid request");
+    }
+
+    #[test]
+    fn malformed_json_recovers_no_request_id() {
+        for frame in ["{not json", "", "[1, 2", "\u{feff}{}"] {
+            let (_, id) = deserialize_request(frame).expect_err("malformed frame");
+            assert!(id.is_none(), "{frame:?} should carry no recoverable id");
         }
     }
 

@@ -54,9 +54,9 @@ impl Drop for WsReceiver {
     }
 }
 
-// A `Sink<String>` rather than inherent send/close methods so a boxed adapter
-// (`stream_channel::from_ws`) forwards `poll_close` to `WebSocket::close`, which
-// tells the browser to send a `Close` frame to the mint.
+/// A `Sink<String>` rather than inherent send/close methods so a boxed adapter
+/// (`stream_channel::from_ws`) forwards `poll_close` to `WebSocket::close`, which
+/// tells the browser to send a `Close` frame to the mint.
 impl Sink<String> for WsSender {
     type Error = WsError;
 

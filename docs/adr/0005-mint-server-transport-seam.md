@@ -256,6 +256,17 @@ both.
   * **Keys shape**: the HTTP `GET /v1/keys/{id}` returns a `KeysResponse`
     envelope, whereas `MintServer::get_mint_keyset` returns a single `KeySet`
     (the client-side convenience shape). A transport picks whichever it needs.
+* **Breaking:** `WsSender` (public as `cdk_common::ws_client::WsSender`) loses its
+  inherent `send(String)` and `close()` in favour of `impl Sink<String>`, on both
+  the native and wasm backends. `from_ws` boxes the sender through
+  `sink_map_err`, which needs the `Sink` shape; an inherent `send` would also
+  shadow `SinkExt::send` at every call site, so keeping both was rejected.
+  Downstream code calling `sender.send(text).await` or `sender.close().await`
+  adds `use futures::SinkExt;` and otherwise stays as written. `close()` changes
+  behaviour as well as shape: it used to push a `Message::Close(None)` through
+  the sink without closing it, and now runs the underlying close handshake, so
+  the peer sees a clean teardown. The break is compile-time, with no silent
+  change in meaning.
 * `MintServer` is used by static dispatch on `Mint`; it is not currently used as
   `Arc<dyn MintServer>`. A generic server adapter over `S: MintServer` is
   possible, but making `cdk-axum` fully generic over the trait was left out of

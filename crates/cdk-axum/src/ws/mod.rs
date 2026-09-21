@@ -8,7 +8,8 @@
 
 use std::time::Duration;
 
-use axum::extract::ws::{CloseFrame, Message, WebSocket};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use cdk::mint::MAX_WS_MESSAGE_SIZE;
 use cdk::stream_channel::{StreamError, StreamRx, StreamTx};
 use cdk_common::terminal::escape_control;
 use futures::{SinkExt, StreamExt};
@@ -16,8 +17,29 @@ use tokio::time::timeout;
 
 use crate::MintState;
 
-/// Capacity of the in-process channels bridging the socket and the runner.
-const BRIDGE_CAP: usize = 128;
+/// Cap on tungstenite's outbound write buffer.
+///
+/// The buffer only grows past its 128 KiB working size when writes to the
+/// socket are erroring, so this bounds that path rather than the ordinary
+/// slow-reader one, which already pends on the socket and trips
+/// [`STALL_TIMEOUT`]. Kept well above one maximal message, as tungstenite
+/// requires.
+pub(crate) const MAX_WS_WRITE_BUFFER: usize = 1024 * 1024;
+
+/// Capacity of the socket-to-runner channel.
+///
+/// Inbound frames are attacker-sized and attacker-paced, so this queue stays
+/// shallow: the bridge stops reading the socket almost as soon as the runner
+/// falls behind, which closes the receive window on a flooder instead of
+/// buffering its frames on the heap. Kept just deep enough that
+/// [`STALL_TIMEOUT`] measures a wedged runner rather than one slow request.
+const INBOUND_CAP: usize = 4;
+
+/// Capacity of the runner-to-socket channel.
+///
+/// Outbound notifications are mint-generated and size-bounded, so this queue can
+/// absorb a burst and keep the publisher off the socket's write path.
+const OUTBOUND_CAP: usize = 128;
 
 /// Max time any bridge send (to the socket or to the runner) may block before we
 /// treat the peer/runner as stalled and tear the connection down, so a client
@@ -27,6 +49,17 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Best-effort budget for the teardown Close frame; the peer is likely already
 /// gone, so we never block long on it.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Apply the transport limits every NUT-17 socket runs under.
+///
+/// Clamping at the upgrade is the only place that bounds a frame: tungstenite
+/// reassembles fragments into one buffer before [`bridge`] ever sees a message,
+/// so no channel capacity can stop an oversized allocation.
+pub(crate) fn configure(ws: WebSocketUpgrade) -> WebSocketUpgrade {
+    ws.max_message_size(MAX_WS_MESSAGE_SIZE)
+        .max_frame_size(MAX_WS_MESSAGE_SIZE)
+        .max_write_buffer_size(MAX_WS_WRITE_BUFFER)
+}
 
 /// Gate the upgraded socket onto the shared NUT-17 runner.
 ///
@@ -43,12 +76,16 @@ pub(crate) async fn serve(socket: WebSocket, state: MintState) {
 /// translates frames: Text/Binary become inbound `String`s, Ping is answered
 /// with Pong (axum does not auto-reply), Pong is ignored, and Close or a
 /// transport error ends the stream.
+///
+/// NUT-17 frames are JSON, so a Binary payload that is not UTF-8 is malformed
+/// and tears the connection down instead of reaching the parser as the mangled
+/// text a lossy conversion would produce.
 fn bridge(mut socket: WebSocket) -> (StreamTx, StreamRx) {
     // outbound: the runner's StreamTx -> socket
-    let (out_tx, mut out_rx) = futures::channel::mpsc::channel::<String>(BRIDGE_CAP);
+    let (out_tx, mut out_rx) = futures::channel::mpsc::channel::<String>(OUTBOUND_CAP);
     // inbound: socket -> the runner's StreamRx
     let (mut in_tx, in_rx) =
-        futures::channel::mpsc::channel::<Result<String, StreamError>>(BRIDGE_CAP);
+        futures::channel::mpsc::channel::<Result<String, StreamError>>(INBOUND_CAP);
 
     tokio::spawn(async move {
         // One task owns both directions of the socket, so a stall in either arm
@@ -95,7 +132,13 @@ fn bridge(mut socket: WebSocket) -> (StreamTx, StreamRx) {
                             }
                         }
                         Some(Ok(Message::Binary(bin))) => {
-                            let text = String::from_utf8_lossy(&bin).to_string();
+                            let text = match String::from_utf8(bin.into()) {
+                                Ok(text) => text,
+                                Err(err) => {
+                                    tracing::warn!("ws-recv: binary frame is not utf-8: {err}");
+                                    break true;
+                                }
+                            };
                             match timeout(STALL_TIMEOUT, in_tx.send(Ok(text))).await {
                                 Ok(Ok(())) => {}
                                 Ok(Err(err)) => {
@@ -185,4 +228,96 @@ fn bridge(mut socket: WebSocket) -> (StreamTx, StreamRx) {
     let tx = StreamTx::new(out_tx.sink_map_err(|e| StreamError::Send(e.to_string())));
     let rx = StreamRx::new(in_rx);
     (tx, rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::routing::get;
+    use axum::Router;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message as ClientMessage;
+    use tokio_tungstenite::{connect_async, tungstenite};
+
+    use super::*;
+
+    /// Echo the bridged stream back, so a test exercises the real `configure`
+    /// limits and the real `bridge` frame translation without a mint.
+    async fn echo_handler(ws: WebSocketUpgrade) -> axum::response::Response {
+        configure(ws).on_upgrade(|socket| async move {
+            let (mut tx, mut rx) = bridge(socket);
+            while let Some(Ok(message)) = rx.recv().await {
+                if tx.send(message).await.is_err() {
+                    break;
+                }
+            }
+        })
+    }
+
+    async fn echo_server() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("a port");
+        let addr = listener.local_addr().expect("a local addr");
+        let app = Router::new().route("/ws", get(echo_handler));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("the server runs");
+        });
+        format!("ws://{addr}/ws")
+    }
+
+    #[tokio::test]
+    async fn a_maximal_legal_frame_round_trips() {
+        let (mut socket, _) = connect_async(echo_server().await).await.expect("connected");
+        let frame = "a".repeat(MAX_WS_MESSAGE_SIZE - 1024);
+
+        socket
+            .send(ClientMessage::Text(frame.clone().into()))
+            .await
+            .expect("send a maximal frame");
+
+        let echoed = socket.next().await.expect("a reply").expect("no error");
+        assert_eq!(echoed, ClientMessage::Text(frame.into()));
+    }
+
+    /// The server may tear the connection down mid-write, so the refusal surfaces
+    /// either as a failed send or as a reply that is not the echo.
+    #[tokio::test]
+    async fn an_oversized_frame_is_refused() {
+        let (mut socket, _) = connect_async(echo_server().await).await.expect("connected");
+
+        if socket
+            .send(ClientMessage::Text(
+                "a".repeat(MAX_WS_MESSAGE_SIZE + 1).into(),
+            ))
+            .await
+            .is_err()
+        {
+            return;
+        }
+
+        let outcome = socket.next().await;
+        assert!(
+            !matches!(outcome, Some(Ok(ClientMessage::Text(_)))),
+            "an oversized frame must not be echoed, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_utf8_binary_frame_is_refused() {
+        let (mut socket, _) = connect_async(echo_server().await).await.expect("connected");
+
+        socket
+            .send(ClientMessage::Binary(vec![0xff, 0xfe, 0xfd].into()))
+            .await
+            .expect("send an invalid utf-8 frame");
+
+        let outcome = socket.next().await;
+        assert!(
+            matches!(
+                outcome,
+                None | Some(Ok(ClientMessage::Close(_)))
+                    | Some(Err(tungstenite::Error::ConnectionClosed))
+                    | Some(Err(tungstenite::Error::Protocol(_)))
+            ),
+            "a non-utf8 binary frame must tear the connection down, got {outcome:?}"
+        );
+    }
 }

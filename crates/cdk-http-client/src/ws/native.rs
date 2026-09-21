@@ -38,9 +38,9 @@ impl std::fmt::Debug for WsReceiver {
     }
 }
 
-// A `Sink<String>` rather than inherent send/close methods so a boxed adapter
-// (`stream_channel::from_ws`) forwards `poll_close` to the underlying
-// `WebSocketStream`, whose close handshake sends a `Close` frame to the mint.
+/// A `Sink<String>` rather than inherent send/close methods so a boxed adapter
+/// (`stream_channel::from_ws`) forwards `poll_close` to the underlying
+/// `WebSocketStream`, whose close handshake sends a `Close` frame to the mint.
 impl Sink<String> for WsSender {
     type Error = WsError;
 

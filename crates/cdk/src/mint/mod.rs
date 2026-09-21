@@ -51,6 +51,7 @@ pub use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 pub use issue::MintInput;
 pub use melt::PendingMelt;
 pub use server::MintServer;
+pub use stream::MAX_WS_MESSAGE_SIZE;
 pub use verification::Verification;
 
 pub use self::melt_resolution::{
