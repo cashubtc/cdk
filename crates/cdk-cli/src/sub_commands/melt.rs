@@ -1,4 +1,6 @@
+use core::fmt;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::str::FromStr;
 
 use anyhow::{bail, Result};
@@ -15,8 +17,8 @@ use lightning::offers::offer::Offer;
 use crate::terminal::escape_control;
 use crate::utils::{get_number_input, get_or_create_wallet, get_user_input};
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub enum PaymentType {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MeltPaymentMethod {
     /// BOLT11 invoice
     Bolt11,
     /// BOLT12 offer
@@ -25,6 +27,34 @@ pub enum PaymentType {
     Bip353,
     /// Onchain Bitcoin address
     Onchain,
+    /// Custom payment method
+    Custom(String),
+}
+
+impl FromStr for MeltPaymentMethod {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "bolt11" => Ok(Self::Bolt11),
+            "bolt12" => Ok(Self::Bolt12),
+            "bip353" => Ok(Self::Bip353),
+            "onchain" => Ok(Self::Onchain),
+            custom => Ok(Self::Custom(custom.to_string())),
+        }
+    }
+}
+
+impl fmt::Display for MeltPaymentMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bolt11 => write!(f, "bolt11"),
+            Self::Bolt12 => write!(f, "bolt12"),
+            Self::Bip353 => write!(f, "bip353"),
+            Self::Onchain => write!(f, "onchain"),
+            Self::Custom(custom) => write!(f, "{custom}"),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -50,7 +80,7 @@ impl From<BitcoinNetwork> for bitcoin::Network {
     }
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct MeltSubCommand {
     /// Use Multi-Path Payment (split payment across multiple mints, BOLT11 only)
     #[arg(short, long, conflicts_with = "mint_url")]
@@ -58,27 +88,33 @@ pub struct MeltSubCommand {
     /// Mint URL to use for melting
     #[arg(long, conflicts_with = "mpp")]
     mint_url: Option<String>,
-    /// Payment method (bolt11, bolt12, bip353, or onchain)
+    /// Payment method (bolt11, bolt12, bip353, onchain, or custom)
     #[arg(long, default_value = "bolt11")]
-    method: PaymentType,
+    method: MeltPaymentMethod,
     /// BOLT11 invoice to pay (for bolt11 method)
-    #[arg(long, conflicts_with_all = ["offer", "address"])]
+    #[arg(long, conflicts_with_all = ["offer", "address", "request"])]
     invoice: Option<String>,
     /// BOLT12 offer to pay (for bolt12 method)
-    #[arg(long, conflicts_with_all = ["invoice", "address"])]
+    #[arg(long, conflicts_with_all = ["invoice", "address", "request"])]
     offer: Option<String>,
     /// BIP353 or onchain address to pay
-    #[arg(long, conflicts_with_all = ["invoice", "offer"])]
+    #[arg(long, conflicts_with_all = ["invoice", "offer", "request"])]
     address: Option<String>,
+    /// Generic payment request (for custom methods)
+    #[arg(long, conflicts_with_all = ["invoice", "offer", "address"])]
+    request: Option<String>,
     /// Bitcoin network to use for BIP353 (bitcoin, testnet, signet, regtest)
     #[arg(long, default_value = "bitcoin")]
     network: BitcoinNetwork,
-    /// Amount in sats for amountless payments or onchain melts
+    /// Amount in unit for amountless payments, onchain melts, or custom melts
     #[arg(long)]
     amount: Option<u64>,
     /// MPP split entry in the form <mint_url>=<amount_sats>; repeat for multiple mints
     #[arg(long = "mpp-split", value_name = "MINT_URL=AMOUNT", action = clap::ArgAction::Append, requires = "mpp")]
     mpp_split: Vec<String>,
+    /// Extra JSON data for custom payment methods
+    #[arg(long)]
+    extra: Option<String>,
 }
 
 /// Helper function to check if there are enough funds and create appropriate MeltOptions
@@ -185,6 +221,9 @@ pub async fn pay(
 
     // Handle MPP mode separately
     if sub_command_args.mpp {
+        if sub_command_args.method != MeltPaymentMethod::Bolt11 {
+            bail!("MPP is only supported for BOLT11 invoices");
+        }
         return pay_mpp(wallet_repository, sub_command_args, unit).await;
     }
 
@@ -240,8 +279,8 @@ pub async fn pay(
     let available_funds = <cdk::Amount as Into<u64>>::into(total_balance) * MSAT_IN_SAT;
 
     // Process payment based on payment method using individual wallets
-    match sub_command_args.method {
-        PaymentType::Bolt11 => {
+    match &sub_command_args.method {
+        MeltPaymentMethod::Bolt11 => {
             // Process BOLT11 payment
             let bolt11_str =
                 input_or_prompt(sub_command_args.invoice.as_ref(), "Enter bolt11 invoice")?;
@@ -317,7 +356,7 @@ pub async fn pay(
                 println!("Payment preimage: {}", escape_control(preimage));
             }
         }
-        PaymentType::Bolt12 => {
+        MeltPaymentMethod::Bolt12 => {
             // Process BOLT12 payment (offer)
             let offer_str = input_or_prompt(sub_command_args.offer.as_ref(), "Enter BOLT12 offer")?;
             let offer = Offer::from_str(&offer_str)
@@ -389,7 +428,7 @@ pub async fn pay(
                 println!("Payment preimage: {}", escape_control(preimage));
             }
         }
-        PaymentType::Bip353 => {
+        MeltPaymentMethod::Bip353 => {
             let bip353_addr =
                 input_or_prompt(sub_command_args.address.as_ref(), "Enter Bip353 address")?;
 
@@ -449,7 +488,7 @@ pub async fn pay(
                 println!("Payment preimage: {}", escape_control(preimage));
             }
         }
-        PaymentType::Onchain => {
+        MeltPaymentMethod::Onchain => {
             let onchain_address =
                 input_or_prompt(sub_command_args.address.as_ref(), "Enter onchain address")?;
 
@@ -510,6 +549,75 @@ pub async fn pay(
                 println!("Payment proof: {}", escape_control(payment_proof));
             }
         }
+        MeltPaymentMethod::Custom(custom_method) => {
+            let request_str = input_or_prompt(
+                sub_command_args
+                    .request
+                    .as_ref()
+                    .or(sub_command_args.invoice.as_ref())
+                    .or(sub_command_args.offer.as_ref())
+                    .or(sub_command_args.address.as_ref()),
+                &format!("Enter payment request for {custom_method}"),
+            )?;
+
+            if let Some(amount) = sub_command_args.amount {
+                if Amount::from(amount) > total_balance {
+                    bail!("Not enough funds: balance is {} {}", total_balance, unit);
+                }
+            }
+
+            let options = sub_command_args.amount.map(MeltOptions::new_amountless);
+
+            let mint_url = if let Some(specific_mint) = selected_mint {
+                specific_mint
+            } else {
+                let balances = wallet_repository.get_balances().await?;
+
+                balances
+                    .into_iter()
+                    .find(|(key, balance)| key.unit == *unit && *balance > Amount::ZERO)
+                    .map(|(key, _)| key.mint_url)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("No mint with sufficient balance for unit {}", unit)
+                    })?
+            };
+
+            let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
+
+            let payment_method = PaymentMethod::from_str(custom_method)?;
+
+            let quote = wallet
+                .melt_quote(
+                    payment_method,
+                    request_str,
+                    options,
+                    sub_command_args.extra.clone(),
+                )
+                .await?;
+
+            println!("Melt quote created:");
+            println!("  Quote ID: {}", escape_control(&quote.id));
+            println!("  Amount: {}", quote.amount);
+            println!("  Fee Reserve: {}", quote.fee_reserve);
+            println!("  State: {}", quote.state);
+            println!("  Expiry: {}", quote.expiry);
+
+            let melted = wallet
+                .prepare_melt(&quote.id, HashMap::new())
+                .await?
+                .confirm()
+                .await?;
+
+            println!(
+                "Payment successful: state={}, amount={}, fee_paid={}",
+                melted.state(),
+                melted.amount(),
+                melted.fee_paid()
+            );
+            if let Some(payment_proof) = melted.payment_proof() {
+                println!("Payment proof: {}", escape_control(payment_proof));
+            }
+        }
     }
 
     Ok(())
@@ -521,7 +629,7 @@ async fn pay_mpp(
     sub_command_args: &MeltSubCommand,
     unit: &CurrencyUnit,
 ) -> Result<()> {
-    if !matches!(sub_command_args.method, PaymentType::Bolt11) {
+    if sub_command_args.method != MeltPaymentMethod::Bolt11 {
         bail!("MPP is only supported for BOLT11 invoices");
     }
 
@@ -668,4 +776,106 @@ async fn pay_mpp(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[derive(Parser, Debug)]
+    struct TestMeltCli {
+        #[command(flatten)]
+        melt: MeltSubCommand,
+    }
+
+    #[test]
+    fn parses_default_method_as_bolt11() {
+        let cli = TestMeltCli::try_parse_from(["test"]).expect("parse test");
+        assert_eq!(cli.melt.method, MeltPaymentMethod::Bolt11);
+        assert_eq!(cli.melt.method.to_string(), "bolt11");
+    }
+
+    #[test]
+    fn parses_standard_methods() {
+        let cases = [
+            ("bolt11", MeltPaymentMethod::Bolt11),
+            ("bolt12", MeltPaymentMethod::Bolt12),
+            ("bip353", MeltPaymentMethod::Bip353),
+            ("onchain", MeltPaymentMethod::Onchain),
+        ];
+
+        for (input, expected) in cases {
+            let cli = TestMeltCli::try_parse_from(["test", "--method", input])
+                .unwrap_or_else(|e| panic!("failed to parse {input}: {e}"));
+            assert_eq!(cli.melt.method, expected);
+            assert_eq!(cli.melt.method.to_string(), input);
+        }
+    }
+
+    #[test]
+    fn parses_custom_payment_methods() {
+        let custom_methods = ["branch", "fake", "strike", "custom_pay"];
+
+        for method in custom_methods {
+            let cli = TestMeltCli::try_parse_from(["test", "--method", method])
+                .unwrap_or_else(|e| panic!("failed to parse custom method {method}: {e}"));
+            assert_eq!(
+                cli.melt.method,
+                MeltPaymentMethod::Custom(method.to_string())
+            );
+            assert_eq!(cli.melt.method.to_string(), method);
+        }
+    }
+
+    #[test]
+    fn parses_custom_melt_args() {
+        let cli = TestMeltCli::try_parse_from([
+            "test",
+            "--method",
+            "branch",
+            "--request",
+            "branch_req_123",
+            "--amount",
+            "500",
+            "--extra",
+            r#"{"branch_id":"abc"}"#,
+        ])
+        .expect("parse full custom melt");
+
+        assert_eq!(
+            cli.melt.method,
+            MeltPaymentMethod::Custom("branch".to_string())
+        );
+        assert_eq!(cli.melt.request.as_deref(), Some("branch_req_123"));
+        assert_eq!(cli.melt.amount, Some(500));
+        assert_eq!(cli.melt.extra.as_deref(), Some(r#"{"branch_id":"abc"}"#));
+    }
+
+    #[test]
+    fn request_conflicts_with_invoice_offer_and_address() {
+        assert!(TestMeltCli::try_parse_from([
+            "test",
+            "--request",
+            "req123",
+            "--invoice",
+            "lnbc123",
+        ])
+        .is_err());
+
+        assert!(
+            TestMeltCli::try_parse_from(["test", "--request", "req123", "--offer", "lno123",])
+                .is_err()
+        );
+
+        assert!(TestMeltCli::try_parse_from([
+            "test",
+            "--request",
+            "req123",
+            "--address",
+            "bc1q123",
+        ])
+        .is_err());
+    }
 }

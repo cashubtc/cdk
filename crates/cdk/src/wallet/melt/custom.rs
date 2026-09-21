@@ -11,23 +11,25 @@ impl Wallet {
     /// # Arguments
     /// * `method` - Custom payment method name
     /// * `request` - Payment request string (method-specific format)
-    /// * `_options` - Melt options (currently unused for custom methods)
+    /// * `options` - Optional melt options (e.g. for specifying amount)
     /// * `extra` - Optional extra payment-method-specific data as JSON
     #[instrument(skip(self, request, extra))]
     pub(crate) async fn melt_quote_custom(
         &self,
         method: &str,
         request: String,
-        _options: Option<MeltOptions>,
+        options: Option<MeltOptions>,
         extra: Option<serde_json::Value>,
     ) -> Result<MeltQuote, Error> {
         self.keysets(Default::default()).await?;
+
+        let amount = options.map(|o| o.amount_msat());
 
         let quote_request = MeltQuoteCustomRequest {
             method: method.to_string(),
             request: request.clone(),
             unit: self.unit.clone(),
-            amount: None,
+            amount,
             extra: extra.unwrap_or(serde_json::Value::Null),
         };
         let quote_res = self
