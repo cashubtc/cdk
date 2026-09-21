@@ -11,8 +11,12 @@ use std::pin::Pin;
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
 
+#[cfg(feature = "http")]
+use crate::ws_client::WsError;
+
 /// Error carried by a [`StreamTx`] / [`StreamRx`].
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum StreamError {
     /// Sending a message failed.
     #[error("stream send error: {0}")]
@@ -20,6 +24,11 @@ pub enum StreamError {
     /// Receiving a message failed.
     #[error("stream receive error: {0}")]
     Receive(String),
+    /// The stream failed permanently, so re-dialing it soon is pointless. The
+    /// consumer keeps retrying, just on a slower schedule than a transient
+    /// failure.
+    #[error("stream terminal error: {0}")]
+    Terminal(String),
 }
 
 // The halves are `Send` off wasm (so they cross the mint's and axum's task
@@ -125,18 +134,32 @@ pub fn from_ws(
     sender: crate::ws_client::WsSender,
     receiver: crate::ws_client::WsReceiver,
 ) -> (StreamTx, StreamRx) {
-    let tx = StreamTx::new(sender.sink_map_err(|e| StreamError::Send(e.to_string())));
+    let tx = StreamTx::new(sender.sink_map_err(|e| classify_ws_error(e, StreamError::Send)));
     let rx = StreamRx::new(futures::stream::unfold(
         receiver,
         |mut receiver| async move {
             match receiver.recv().await {
                 Some(Ok(message)) => Some((Ok(message), receiver)),
-                Some(Err(e)) => Some((Err(StreamError::Receive(e.to_string())), receiver)),
+                Some(Err(e)) => Some((Err(classify_ws_error(e, StreamError::Receive)), receiver)),
                 None => None,
             }
         },
     ));
     (tx, rx)
+}
+
+/// Preserve a WebSocket failure's classification across the channel, so the
+/// consumer can tell a flaky network from a stream that cannot work and pick
+/// its retry schedule accordingly. `NotSupported` only originates from a
+/// handshake status, so on an established socket it is terminal too.
+#[cfg(feature = "http")]
+fn classify_ws_error(err: WsError, transient: fn(String) -> StreamError) -> StreamError {
+    match err {
+        WsError::Terminal(message) | WsError::NotSupported(message) => {
+            StreamError::Terminal(message)
+        }
+        WsError::Transient(message) => transient(message),
+    }
 }
 
 /// Create a connected in-memory duplex: the two returned endpoints are wired to

@@ -474,10 +474,11 @@ fn new_subscription_id() -> String {
 
 /// Classify an `open_stream` failure for the remote-consumer loop.
 ///
-/// `NotSupported` and `Terminal` both latch the consumer to polling, so reserve
-/// them for a transport that cannot stream at all and for a dial that failed
-/// permanently. Any other error keeps streaming enabled and lets the consumer
-/// retry with backoff while it polls in the meantime.
+/// `NotSupported` is the only outcome that stops the consumer dialing for good,
+/// so reserve it for a transport with no streaming capability at all. `Terminal`
+/// means the dial failed permanently but the endpoint may recover, so the
+/// consumer retries it on a slow schedule; any other error retries fast. Either
+/// way the consumer polls while the stream is down.
 fn map_open_stream_error(err: Error) -> PubsubError {
     match err {
         Error::StreamingNotSupported => PubsubError::NotSupported,
@@ -486,10 +487,15 @@ fn map_open_stream_error(err: Error) -> PubsubError {
     }
 }
 
-/// A send or receive failure on an open stream is transient: the consumer
-/// reconnects with backoff.
+/// Classify a send or receive failure on an open stream. A terminal failure
+/// (protocol violation, TLS, an oversized frame) puts the consumer on its slow
+/// retry schedule rather than ending streaming, since the mint may recover;
+/// anything else retries fast.
 fn map_stream_error(err: StreamError) -> PubsubError {
-    PubsubError::InternalStr(err.to_string())
+    match err {
+        StreamError::Terminal(message) => PubsubError::Terminal(message),
+        other => PubsubError::InternalStr(other.to_string()),
+    }
 }
 
 async fn stream_client(
@@ -729,6 +735,13 @@ mod tests {
         let error = map_stream_error(StreamError::Receive("temporary disconnect".to_string()));
 
         assert!(matches!(error, PubsubError::InternalStr(_)));
+    }
+
+    #[test]
+    fn terminal_stream_failure_is_classified_terminal() {
+        let error = map_stream_error(StreamError::Terminal("protocol violation".to_string()));
+
+        assert!(matches!(error, PubsubError::Terminal(_)));
     }
 
     #[test]
