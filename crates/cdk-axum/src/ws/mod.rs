@@ -135,8 +135,14 @@ fn bridge(mut socket: WebSocket) -> (StreamTx, StreamRx) {
                             // `SendAfterClosing` (state is no longer active) and skip
                             // the flush, dropping the socket with the reply unsent and
                             // leaving the peer to observe a connection reset.
-                            if let Err(err) = socket.flush().await {
-                                tracing::debug!("ws-close: flushing the close reply failed: {err}");
+                            match timeout(CLOSE_TIMEOUT, socket.flush()).await {
+                                Ok(Ok(())) => {}
+                                Ok(Err(err)) => tracing::debug!(
+                                    "ws-close: flushing the close reply failed: {err}"
+                                ),
+                                Err(_) => tracing::debug!(
+                                    "ws-close: flushing the close reply timed out after {CLOSE_TIMEOUT:?}"
+                                ),
                             }
                             // Peer initiated close and we replied; nothing owed.
                             break false;
