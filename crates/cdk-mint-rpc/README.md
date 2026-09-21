@@ -23,7 +23,7 @@ versioned package under `src/proto/` and is served on the same port.
 | Service | Package | Scope |
 |---|---|---|
 | `MintInfoService` | `cdk_mint_info_v1` | Mint metadata: name, descriptions, MOTD, icon and terms-of-service URLs, mint URLs, contacts |
-| `KeysetService` | `cdk_mint_keyset_v1` | Keyset rotation |
+| `KeysetService` | `cdk_mint_keyset_v1` | Keyset rotation and ecash issuance/redemption totals |
 | `PaymentMethodService` | `cdk_mint_payment_method_v1` | Mint (NUT-04) and melt (NUT-05) method settings, and the mint-wide disabled flags |
 | `QuoteService` | `cdk_mint_quote_v1` | Melt quote inspection and resolution, quote time-to-live settings, and mint quote state overrides |
 | `WalletService` | `cdk_mint_wallet_v1` | On-chain wallet balance, deposit addresses, and transactions |
@@ -61,9 +61,34 @@ cdk-mint-cli update-motd "Maintenance tonight at 22:00 UTC"
 # Rotate to the next keyset for a unit
 cdk-mint-cli rotate-next-keyset --unit sat
 
+# Query ecash issued and redeemed totals
+cdk-mint-cli get-keyset-totals
+cdk-mint-cli get-keyset-totals --unit sat
+cdk-mint-cli get-keyset-totals --keyset-id "$KEYSET_ID"
+
 # Point at a specific mint
 cdk-mint-cli --addr https://127.0.0.1:8086 get-info
 ```
+
+### Keyset and ecash accounting totals
+
+`KeysetService.GetKeysetTotals` is a read-only management RPC returning ecash
+issuance and redemption totals across the mint.
+
+Accounting is grouped and aggregated per currency unit in `unit_totals` (keeping
+currency units distinct, e.g. `sat` and `usd` are never summed together), and also
+provides a granular breakdown per keyset in `keyset_totals`. Filtering by `--unit`
+or `--keyset-id` is supported. The endpoint is read-only and remains available
+during pending restarts.
+
+> **Migration Note for Legacy `GetInfo` Consumers:** In earlier versions,
+> legacy monolithic `CdkMint.GetInfo` returned `total_issued` and `total_redeemed`
+> as a flat sum across all keysets regardless of unit, which produced invalid
+> totals on multi-unit mints. When `CdkMint` was split into domain services,
+> `MintInfoService.GetInfo` was scoped strictly to public NUT-06 metadata.
+> Applications and dashboards tracking mint ecash accounting should migrate to
+> `KeysetService.GetKeysetTotals` (using `unit_totals`).
+
 
 ### Investigate a reported pending melt
 

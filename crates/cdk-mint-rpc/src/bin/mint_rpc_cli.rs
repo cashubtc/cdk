@@ -115,6 +115,9 @@ enum Commands {
     UpdateMintQuoteState(subcommands::UpdateMintQuoteStateCommand),
     /// Rotate next keyset
     RotateNextKeyset(subcommands::RotateNextKeysetCommand),
+    /// Get ecash issued and redeemed totals by unit and keyset
+    #[command(alias = "get-totals", alias = "get-keyset-totals")]
+    GetKeysetTotals(subcommands::GetKeysetTotalsCommand),
     /// Get the BDK on-chain wallet balance
     GetWalletBalance,
     /// Create an on-chain address for operator wallet deposits
@@ -261,6 +264,10 @@ async fn main() -> Result<()> {
         Commands::RotateNextKeyset(sub_command_args) => {
             let mut keyset_client = KeysetServiceClient::with_interceptor(channel, interceptor);
             subcommands::rotate_next_keyset(&mut keyset_client, &sub_command_args).await?;
+        }
+        Commands::GetKeysetTotals(sub_command_args) => {
+            let mut keyset_client = KeysetServiceClient::with_interceptor(channel, interceptor);
+            subcommands::get_keyset_totals(&mut keyset_client, &sub_command_args).await?;
         }
         Commands::GetWalletBalance => {
             subcommands::get_wallet_balance(&mut wallet_client).await?;
