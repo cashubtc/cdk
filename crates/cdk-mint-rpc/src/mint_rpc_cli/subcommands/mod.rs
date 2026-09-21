@@ -2,6 +2,8 @@
 
 /// Module for fetching the mint's public metadata
 mod get_info;
+/// Module for retrieving ecash issued and redeemed totals
+mod get_keyset_totals;
 /// Module for inspecting melt quotes.
 mod list_melt_quotes;
 /// Module for applying operator melt resolutions.
@@ -38,6 +40,7 @@ mod update_urls;
 mod wallet;
 
 pub use get_info::get_info;
+pub use get_keyset_totals::{get_keyset_totals, GetKeysetTotalsCommand};
 pub use rotate_next_keyset::{rotate_next_keyset, RotateNextKeysetCommand};
 pub use update_contact::{add_contact, remove_contact, AddContactCommand, RemoveContactCommand};
 pub use update_disabled::{update_disabled, UpdateDisabledCommand};
