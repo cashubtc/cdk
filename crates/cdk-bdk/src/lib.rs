@@ -34,6 +34,7 @@ use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 pub use crate::chain::{BitcoinRpcConfig, ChainSource, ElectrumConfig, EsploraConfig};
 pub use crate::error::Error;
@@ -391,7 +392,7 @@ impl CdkBdk {
 
         let wallet_exists = match fs::metadata(&wallet_path) {
             Ok(metadata) if metadata.is_file() => true,
-            Ok(_) => true,
+            Ok(_) => return Err(Error::ExistingWalletNotInitialized { path: wallet_path }),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(error) => return Err(Error::Io(error)),
         };
@@ -451,53 +452,48 @@ impl CdkBdk {
 
                 fs::create_dir_all(&storage_dir_path)?;
 
-                let _file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create_new(true)
-                    .open(&wallet_path)
-                    .map_err(|e| {
-                        if e.kind() == std::io::ErrorKind::AlreadyExists {
-                            Error::ExistingWalletNotInitialized {
-                                path: wallet_path.clone(),
-                            }
-                        } else {
-                            Error::Io(e)
-                        }
-                    })?;
-                drop(_file);
+                let temp_wallet_path =
+                    storage_dir_path.join(format!(".bdk_wallet.sqlite.tmp-{}", Uuid::new_v4()));
 
-                let init_fresh_wallet =
-                    || -> Result<(Connection, PersistedWallet<Connection>), Error> {
-                        let mut db = Connection::open(&wallet_path)?;
+                let init_fresh_wallet = || -> Result<PersistedWallet<Connection>, Error> {
+                    let mut db = Connection::open(&temp_wallet_path)?;
 
-                        let mut wallet = Wallet::create(descriptor, change_descriptor)
-                            .network(network)
-                            .create_wallet(&mut db)
+                    let mut wallet = Wallet::create(descriptor, change_descriptor)
+                        .network(network)
+                        .create_wallet(&mut db)
+                        .map_err(|e| Error::Wallet(e.to_string()))?;
+
+                    if let Some(block_id) = initial_checkpoint {
+                        let checkpoint = wallet.latest_checkpoint().insert(block_id);
+                        wallet
+                            .apply_update(Update {
+                                chain: Some(checkpoint),
+                                ..Default::default()
+                            })
                             .map_err(|e| Error::Wallet(e.to_string()))?;
+                    }
 
-                        if let Some(block_id) = initial_checkpoint {
-                            let checkpoint = wallet.latest_checkpoint().insert(block_id);
-                            wallet
-                                .apply_update(Update {
-                                    chain: Some(checkpoint),
-                                    ..Default::default()
-                                })
-                                .map_err(|e| Error::Wallet(e.to_string()))?;
-                        }
+                    wallet.persist(&mut db)?;
 
-                        wallet.persist(&mut db)?;
+                    Ok(wallet)
+                };
 
-                        Ok((db, wallet))
-                    };
-
-                match init_fresh_wallet() {
-                    Ok((db, wallet)) => (db, wallet),
+                let wallet = match init_fresh_wallet() {
+                    Ok(wallet) => wallet,
                     Err(e) => {
-                        let _ = fs::remove_file(&wallet_path);
+                        let _ = fs::remove_file(&temp_wallet_path);
                         return Err(e);
                     }
+                };
+
+                if let Err(e) = fs::rename(&temp_wallet_path, &wallet_path) {
+                    let _ = fs::remove_file(&temp_wallet_path);
+                    return Err(Error::Io(e));
                 }
+
+                let db = Connection::open(&wallet_path)?;
+
+                (db, wallet)
             }
         };
 
@@ -1313,6 +1309,51 @@ mod tests {
 
         assert!(wallet_path.exists());
         assert!(validate_existing_wallet(mnemonic, Network::Regtest, tempdir.path()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn directory_at_wallet_path_fails_as_not_initialized() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let mnemonic = Mnemonic::from_str(TEST_MNEMONIC).expect("mnemonic");
+        let wallet_path = tempdir.path().join("bdk_wallet/bdk_wallet.sqlite");
+        fs::create_dir_all(&wallet_path).expect("create directory at wallet_path");
+
+        let kv = cdk_sqlite::mint::memory::empty()
+            .await
+            .expect("in-memory kv store");
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: Amount::new(1, CurrencyUnit::Sat).into(),
+            percent_fee_reserve: 0.02,
+        };
+        let chain_source = ChainSource::Esplora(EsploraConfig {
+            url: "http://127.0.0.1:1".to_string(),
+            parallel_requests: 1,
+        });
+
+        let result = CdkBdk::new(
+            mnemonic.clone(),
+            Network::Regtest,
+            chain_source,
+            tempdir.path().to_string_lossy().into_owned(),
+            fee_reserve,
+            Arc::new(kv),
+            None,
+            1,
+            0,
+            546,
+            60,
+            Some(1),
+            None,
+        );
+
+        assert!(matches!(
+            result,
+            Err(Error::ExistingWalletNotInitialized { path }) if path == wallet_path
+        ));
+        assert!(matches!(
+            validate_existing_wallet(mnemonic, Network::Regtest, tempdir.path()),
+            Err(Error::ExistingWalletNotInitialized { path }) if path == wallet_path
+        ));
     }
 
     #[cfg(feature = "bitcoin-rpc")]
