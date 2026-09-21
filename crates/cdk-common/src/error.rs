@@ -1081,6 +1081,14 @@ impl From<Error> for ErrorResponse {
                 detail: "Invoice already paid or pending".to_string(),
             },
 
+            Error::Database(crate::database::Error::KeysetOverRedeemed(keyset_id)) => {
+                tracing::error!(%keyset_id, "refused: keyset would owe more than it issued");
+                ErrorResponse {
+                    code: ErrorCode::Unknown(50000),
+                    detail: "Operation refused".to_string(),
+                }
+            }
+
             // DHKE errors - TokenNotVerified for actual verification failures
             Error::DHKE(crate::dhke::Error::TokenNotVerified) => ErrorResponse {
                 code: ErrorCode::TokenNotVerified,
