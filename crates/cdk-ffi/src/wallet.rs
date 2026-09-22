@@ -349,6 +349,9 @@ impl Wallet {
     /// **Note:** The mint quote must be known to the wallet (stored locally) for this
     /// function to work. If the quote is not stored locally, use `fetch_mint_quote`
     /// instead.
+    ///
+    /// # Errors
+    /// Returns an error for a mismatched response quote ID before changing local state.
     pub async fn check_mint_quote_status(&self, quote_id: String) -> Result<MintQuote, FfiError> {
         let quote = self.inner.check_mint_quote_status(&quote_id).await?;
         Ok(quote.into())
@@ -367,6 +370,9 @@ impl Wallet {
     /// * `payment_method` - The payment method for the quote. Required if the quote
     ///   is not already stored locally. If the quote exists locally, the stored
     ///   payment method will be used and this parameter is ignored.
+    ///
+    /// # Errors
+    /// Returns an error for a mismatched response quote ID before storing the quote.
     pub async fn fetch_mint_quote(
         &self,
         quote_id: String,

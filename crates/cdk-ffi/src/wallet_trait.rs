@@ -273,6 +273,7 @@ impl WalletTraitDef for Wallet {
         Wallet::mint_unissued_quotes(self).await
     }
 
+    /// Propagates quote ID validation errors before any local status update.
     async fn check_mint_quote_status(
         &self,
         quote_id: &str,
@@ -282,6 +283,7 @@ impl WalletTraitDef for Wallet {
         Ok(quote.into())
     }
 
+    /// Propagates quote ID validation errors before storing the fetched quote.
     async fn fetch_mint_quote(
         &self,
         quote_id: &str,
