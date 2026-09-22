@@ -135,10 +135,12 @@ where
 /// Apply `moves`, refusing any that would leave a keyset owing more than it
 /// issued.
 ///
-/// Only a movement that raises what a keyset owes can be refused. Burning
-/// proofs the mint already holds moves the amount from reserved to redeemed
-/// and leaves the total untouched, which is what makes it safe to call this on
-/// the melt path after the invoice has been paid.
+/// Only a movement taking proofs into custody can be refused, and only when it
+/// raises what the keyset owes. Burning proofs the mint already holds, handing
+/// them back, and issuing against the keyset are recorded whatever the counters
+/// say, which is what makes it safe to call this on the melt path after the
+/// invoice has been paid. A keyset whose counters have drifted is logged rather
+/// than frozen.
 pub(super) async fn apply<C>(conn: &C, moves: &LedgerMoves) -> Result<(), Error>
 where
     C: DatabaseExecutor + Send + Sync,
@@ -167,7 +169,7 @@ where
         let owed = add(redeemed, reserved)?;
 
         if owed > issued {
-            if owed > owed_before {
+            if movement.reserved_in > Amount::ZERO && owed > owed_before {
                 tracing::error!(
                     "refusing to let keyset {} owe {} against the {} it issued",
                     keyset_id,
@@ -178,7 +180,7 @@ where
             }
 
             tracing::error!(
-                "keyset {} already owes {} against the {} it issued, allowing a movement that does not raise it",
+                "keyset {} already owes {} against the {} it issued, allowing a movement that takes nothing into custody",
                 keyset_id,
                 owed,
                 issued
