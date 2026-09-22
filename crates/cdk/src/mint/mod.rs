@@ -34,7 +34,6 @@ mod check_spendable;
 mod issue;
 mod keysets;
 mod melt;
-mod melt_resolution;
 mod payment_backend;
 mod proofs;
 mod saga_recovery;
@@ -49,10 +48,6 @@ pub use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 pub use issue::MintInput;
 pub use melt::PendingMelt;
 pub use verification::Verification;
-
-pub use self::melt_resolution::{
-    MeltQuoteResolution, MeltQuoteResolutionAction, MeltQuoteResolutionError,
-};
 
 const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
 const CDK_MINT_CONFIG_SECONDARY_NAMESPACE: &str = "config";

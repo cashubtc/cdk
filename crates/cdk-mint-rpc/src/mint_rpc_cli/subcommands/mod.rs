@@ -19,8 +19,7 @@ pub use self::payment_method::{
     UpdateMeltMethodCommand, UpdateMintMethodCommand,
 };
 pub use self::quote::{
-    get_quote_ttl, list_melt_quotes, resolve_melt_quote, update_mint_quote_state, update_quote_ttl,
-    ListMeltQuotesCommand, ResolveMeltQuoteCommand, UpdateMintQuoteStateCommand,
+    get_quote_ttl, update_mint_quote_state, update_quote_ttl, UpdateMintQuoteStateCommand,
     UpdateQuoteTtlCommand,
 };
 pub use self::wallet::{

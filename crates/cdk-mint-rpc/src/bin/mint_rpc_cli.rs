@@ -106,10 +106,6 @@ enum Commands {
     UpdateQuoteTtl(subcommands::UpdateQuoteTtlCommand),
     /// Get quote ttl
     GetQuoteTtl,
-    /// Inspect stored melt quotes and recovery details, oldest first
-    ListMeltQuotes(subcommands::ListMeltQuotesCommand),
-    /// Finalize or compensate a specific melt operation after investigation
-    ResolveMeltQuote(subcommands::ResolveMeltQuoteCommand),
     /// Update mint quote state
     #[command(alias = "update-nut04-quote-state")]
     UpdateMintQuoteState(subcommands::UpdateMintQuoteStateCommand),
@@ -241,14 +237,6 @@ async fn main() -> Result<()> {
         Commands::GetQuoteTtl => {
             let mut quote_client = QuoteServiceClient::with_interceptor(channel, interceptor);
             subcommands::get_quote_ttl(&mut quote_client).await?;
-        }
-        Commands::ListMeltQuotes(sub_command_args) => {
-            let mut quote_client = QuoteServiceClient::with_interceptor(channel, interceptor);
-            subcommands::list_melt_quotes(&mut quote_client, &sub_command_args).await?;
-        }
-        Commands::ResolveMeltQuote(sub_command_args) => {
-            let mut quote_client = QuoteServiceClient::with_interceptor(channel, interceptor);
-            subcommands::resolve_melt_quote(&mut quote_client, &sub_command_args).await?;
         }
         Commands::UpdateQuoteTtl(sub_command_args) => {
             let mut quote_client = QuoteServiceClient::with_interceptor(channel, interceptor);
