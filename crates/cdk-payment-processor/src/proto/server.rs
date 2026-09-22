@@ -600,35 +600,36 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
         let shutdown_clone = self.shutdown.clone();
         let ln = self.inner.clone();
         tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = shutdown_clone.notified() => {
-                        tracing::info!("Shutdown signal received, stopping task");
-                        ln.cancel_payment_event_stream();
-                        break;
-                    }
-                    result = ln.wait_payment_event() => {
-                        match result {
-                            Ok(mut stream) => {
-                                while let Some(event) = stream.next().await {
-                                    match tx.send(Result::<_, Status>::Ok(event.into())).await {
-                                        Ok(_) => {
-                                            // Response was queued to be sent to client
-                                        }
-                                        Err(item) => {
-                                            tracing::error!("Error adding payment event to stream: {}", item);
-                                            break;
-                                        }
-                                    }
+            let forward_events = async {
+                loop {
+                    match ln.wait_payment_event().await {
+                        Ok(mut stream) => {
+                            while let Some(event) = stream.next().await {
+                                if tx
+                                    .send(Result::<_, Status>::Ok(event.into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
                                 }
                             }
-                            Err(err) => {
-                                tracing::warn!("Could not get invoice stream: {}", err);
-                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!("Could not get invoice stream: {}", err);
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                         }
                     }
                 }
+            };
+
+            // Keep cancellation active during subscription setup, forwarding, and retries.
+            tokio::select! {
+                _ = tx.closed() => {}
+                _ = shutdown_clone.notified() => {
+                    tracing::info!("Shutdown signal received, stopping task");
+                    ln.cancel_payment_event_stream();
+                }
+                _ = forward_events => {}
             }
         });
 
@@ -642,4 +643,155 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
 fn parse_quote_id(s: &str) -> Result<QuoteId, Status> {
     s.parse()
         .map_err(|err| Status::invalid_argument(format!("Invalid quote_id: {err}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use cdk_common::payment;
+    use tokio::time::timeout;
+
+    use super::*;
+
+    #[derive(Debug, Clone, Copy)]
+    enum SubscriptionState {
+        Subscribing,
+        Idle,
+        Retrying,
+    }
+
+    struct TestPayment {
+        state: SubscriptionState,
+        started: Arc<Notify>,
+        cancelled: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl MintPayment for TestPayment {
+        type Err = payment::Error;
+
+        async fn wait_payment_event(
+            &self,
+        ) -> Result<Pin<Box<dyn Stream<Item = payment::Event> + Send>>, Self::Err> {
+            self.started.notify_one();
+            match self.state {
+                SubscriptionState::Subscribing => std::future::pending().await,
+                SubscriptionState::Idle => Ok(Box::pin(futures::stream::pending())),
+                SubscriptionState::Retrying => Err(payment::Error::Custom(
+                    "subscription unavailable".to_owned(),
+                )),
+            }
+        }
+
+        fn cancel_payment_event_stream(&self) {
+            self.cancelled.store(true, Ordering::SeqCst);
+        }
+
+        fn is_payment_event_stream_active(&self) -> bool {
+            unimplemented!()
+        }
+
+        async fn get_settings(&self) -> Result<payment::SettingsResponse, Self::Err> {
+            unimplemented!()
+        }
+
+        async fn create_incoming_payment_request(
+            &self,
+            _options: IncomingPaymentOptions,
+        ) -> Result<payment::CreateIncomingPaymentResponse, Self::Err> {
+            unimplemented!()
+        }
+
+        async fn get_payment_quote(
+            &self,
+            _unit: &CurrencyUnit,
+            _options: payment::OutgoingPaymentOptions,
+        ) -> Result<payment::PaymentQuoteResponse, Self::Err> {
+            unimplemented!()
+        }
+
+        async fn make_payment(
+            &self,
+            _unit: &CurrencyUnit,
+            _options: payment::OutgoingPaymentOptions,
+        ) -> Result<payment::MakePaymentResponse, Self::Err> {
+            unimplemented!()
+        }
+
+        async fn check_incoming_payment_status(
+            &self,
+            _payment_identifier: &payment::PaymentIdentifier,
+        ) -> Result<Vec<payment::WaitPaymentResponse>, Self::Err> {
+            unimplemented!()
+        }
+
+        async fn check_outgoing_payment(
+            &self,
+            _payment_identifier: &payment::PaymentIdentifier,
+        ) -> Result<payment::MakePaymentResponse, Self::Err> {
+            unimplemented!()
+        }
+    }
+
+    async fn assert_forwarding_stops(state: SubscriptionState, shutdown: bool) {
+        let started = Arc::new(Notify::new());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let backend = Arc::new(TestPayment {
+            state,
+            started: started.clone(),
+            cancelled: cancelled.clone(),
+        });
+        let server = PaymentProcessorServer::new(backend, "127.0.0.1", 0).unwrap();
+        let stream = server
+            .wait_payment_event(Request::new(EmptyRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        timeout(Duration::from_secs(1), started.notified())
+            .await
+            .expect("backend subscription should start");
+
+        // Keep the client connected in the shutdown case, so only shutdown can
+        // release the task. In the disconnect case, do not notify shutdown.
+        let _connected_stream = if shutdown {
+            server.shutdown.notify_waiters();
+            Some(stream)
+        } else {
+            drop(stream);
+            None
+        };
+        // Keep the server alive: dropping it also signals shutdown. Once the
+        // task exits, only the server should retain the backend.
+        timeout(Duration::from_secs(1), async {
+            while Arc::strong_count(&server.inner) > 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("forwarding task retained the backend in {state:?}"));
+        assert_eq!(cancelled.load(Ordering::SeqCst), shutdown);
+    }
+
+    #[tokio::test]
+    async fn client_disconnect_stops_payment_event_forwarding() {
+        for state in [
+            SubscriptionState::Subscribing,
+            SubscriptionState::Idle,
+            SubscriptionState::Retrying,
+        ] {
+            assert_forwarding_stops(state, false).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_stops_payment_event_forwarding() {
+        for state in [
+            SubscriptionState::Subscribing,
+            SubscriptionState::Idle,
+            SubscriptionState::Retrying,
+        ] {
+            assert_forwarding_stops(state, true).await;
+        }
+    }
 }
