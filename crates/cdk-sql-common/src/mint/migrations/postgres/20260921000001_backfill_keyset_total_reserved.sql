@@ -1,12 +1,15 @@
--- Re-derive every counter from the rows that are authoritative for it, so the
--- cap starts from a balance the database can vouch for instead of one that has
--- only ever been maintained incrementally. fee_collected is not derivable and
--- is never named here.
+-- total_reserved is a new column, so it has no stored value to preserve and has
+-- to be derived from the proofs the mint is currently holding.
 --
--- The zeroing pass is needed because the join below cannot reach a keyset_amounts
--- row whose source rows have all gone away.
-UPDATE keyset_amounts SET total_issued = 0, total_redeemed = 0, total_reserved = 0;
-
+-- total_issued and total_redeemed are left alone. Re-deriving them would lower
+-- the cap on any mint whose issuance history is incomplete, a restore from a
+-- partial backup or an import from another implementation, and freeze proofs
+-- the mint really did issue. The counters the mint already keeps are the better
+-- evidence, and proofs in custody were counted in neither of them before, so
+-- the reservation only takes up headroom that was already accounted for.
+--
+-- A keyset with no row yet has nothing to preserve, so it is seeded from the
+-- source tables.
 INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed, total_reserved)
 SELECT
     COALESCE(bs.keyset_id, p.keyset_id),
@@ -28,6 +31,4 @@ FULL OUTER JOIN (
     GROUP BY keyset_id
 ) p ON bs.keyset_id = p.keyset_id
 ON CONFLICT (keyset_id) DO UPDATE SET
-    total_issued   = EXCLUDED.total_issued,
-    total_redeemed = EXCLUDED.total_redeemed,
     total_reserved = EXCLUDED.total_reserved;
