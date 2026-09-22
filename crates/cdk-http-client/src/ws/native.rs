@@ -10,7 +10,8 @@ use tokio_tungstenite::WebSocketStream;
 
 use super::WsError;
 
-/// WebSocket sender half
+/// WebSocket sender half. Sending goes through `Sink<String>`, so callers need
+/// `use futures::SinkExt;` for `send` and `close`.
 pub struct WsSender {
     inner: Box<
         dyn futures::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin + Send,

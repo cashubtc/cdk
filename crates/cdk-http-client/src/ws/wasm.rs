@@ -12,11 +12,13 @@ use web_sys::{BinaryType, CloseEvent, ErrorEvent, MessageEvent, WebSocket};
 
 use super::WsError;
 
-/// WebSocket sender half
+/// WebSocket sender half. Sending goes through `Sink<String>`, so callers need
+/// `use futures::SinkExt;` for `send` and `close`.
 pub struct WsSender {
     ws: WebSocket,
-    // Store closures to prevent leak; dropped when WsSender is dropped
+    /// Held so the closure outlives the socket; dropped with the `WsSender`.
     _onopen: Closure<dyn FnMut(JsValue)>,
+    /// Held so the closure outlives the socket; dropped with the `WsSender`.
     _onerror: Closure<dyn FnMut(ErrorEvent)>,
 }
 
