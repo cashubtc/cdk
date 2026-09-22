@@ -97,13 +97,18 @@ pub(super) fn sql_row_to_proof_with_state(row: Vec<Column>) -> Result<(Proof, St
     ))
 }
 
-/// Move the amount being spent out of each keyset's reservation and into its
-/// redeemed total.
+/// Stage the move of the amount being spent out of each keyset's reservation
+/// and into its redeemed total.
 ///
 /// The amount was already reserved when the mint took custody of the proofs, so
-/// this cannot raise what the keyset owes and cannot be refused. That matters
-/// on the melt path, which reaches here only after the invoice has been paid.
-async fn credit_redeemed<C>(conn: &C, ys: &[PublicKey]) -> Result<(), Error>
+/// this cannot raise what the keyset owes. Only a transaction that also takes
+/// proofs into custody can be refused, and the post-payment melt transaction
+/// takes none, so a melt that paid can always settle.
+async fn credit_redeemed<C>(
+    conn: &C,
+    moves: &mut LedgerMoves,
+    ys: &[PublicKey],
+) -> Result<(), Error>
 where
     C: DatabaseExecutor + Send + Sync,
 {
@@ -126,12 +131,11 @@ where
     .map(sql_row_to_hashmap_amount)
     .collect::<Result<Vec<_>, _>>()?;
 
-    let mut moves = LedgerMoves::new();
     for (keyset_id, amount) in spent_per_keyset {
-        keyset_ledger::accumulate(&mut moves, keyset_id, LedgerMove::redeem(amount))?;
+        keyset_ledger::accumulate(moves, keyset_id, LedgerMove::redeem(amount))?;
     }
 
-    keyset_ledger::apply(conn, &moves).await
+    Ok(())
 }
 
 pub(super) fn sql_row_to_hashmap_amount(row: Vec<Column>) -> Result<(Id, Amount), Error> {
@@ -165,9 +169,12 @@ where
     /// state set to `Unspent`, indicating the rows are locked for the duration of
     /// the transaction.
     ///
-    /// Taking custody also reserves the amount against each keyset, so proofs a
-    /// keyset cannot back are refused here with [`Error::KeysetOverRedeemed`],
-    /// before the mint acts on them.
+    /// Taking custody also reserves the amount against each keyset. The
+    /// reservation is staged and checked when the transaction commits, so
+    /// proofs a keyset cannot back are refused with
+    /// [`Error::KeysetOverRedeemed`] from `commit`. Both callers commit this
+    /// transaction before they sign or pay anything, so the refusal still
+    /// lands before the mint acts on the proofs.
     async fn add_proofs(
         &mut self,
         proofs: Proofs,
@@ -226,15 +233,13 @@ where
             .await?;
         }
 
-        let mut moves = LedgerMoves::new();
         for proof in proofs.iter() {
             keyset_ledger::accumulate(
-                &mut moves,
+                &mut self.pending_ledger,
                 proof.keyset_id,
                 LedgerMove::reserve(proof.amount),
             )?;
         }
-        keyset_ledger::apply(&self.inner, &moves).await?;
 
         Ok(ProofsWithState::new(proofs, State::Unspent).into())
     }
@@ -280,7 +285,7 @@ where
                 .copied()
                 .collect::<Vec<_>>();
 
-            credit_redeemed(&self.inner, &newly_spent).await?;
+            credit_redeemed(&self.inner, &mut self.pending_ledger, &newly_spent).await?;
         }
 
         proofs.state = new_state;
@@ -291,12 +296,11 @@ where
     /// Deletes proofs that are not spent and returns their amount to each
     /// keyset's reservation.
     ///
-    /// The release happens before the spent-proof error below, because callers
-    /// swallow that error and commit anyway; releasing after it would commit
-    /// the deletes without the matching debit. The diagnostic read for that
-    /// error takes no locks: the keyset rows are already held by then, and
-    /// locking proof rows after them would invert the order every other path
-    /// takes.
+    /// The release is staged before the spent-proof error below, because
+    /// callers swallow that error and commit anyway, and the transaction would
+    /// otherwise commit the deletes without the matching debit. The diagnostic
+    /// read for that error takes no locks, since locking more proof rows on the
+    /// way out of a failed call buys nothing.
     async fn remove_proofs(
         &mut self,
         ys: &[PublicKey],
@@ -319,12 +323,11 @@ where
         .fetch_all(&self.inner)
         .await?;
 
-        let mut moves = LedgerMoves::new();
         for row in removable.iter() {
             let keyset_id = column_as_string!(&row[1], Id::from_str, Id::from_bytes);
             let amount: u64 = column_as_number!(row[2].clone());
             keyset_ledger::accumulate(
-                &mut moves,
+                &mut self.pending_ledger,
                 keyset_id,
                 LedgerMove::release(Amount::from(amount)),
             )?;
@@ -347,8 +350,6 @@ where
                 removable.len()
             )));
         }
-
-        keyset_ledger::apply(&self.inner, &moves).await?;
 
         if total_deleted != ys.len() {
             let current_states = get_current_states(&self.inner, ys, false).await?;

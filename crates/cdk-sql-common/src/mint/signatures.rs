@@ -202,7 +202,7 @@ where
             ));
         }
 
-        keyset_ledger::apply(&self.inner, &issued).await?;
+        keyset_ledger::merge(&mut self.pending_ledger, &issued)?;
 
         Ok(())
     }

@@ -675,6 +675,11 @@ pub trait CompletedOperationsDatabase {
 /// acquire all quote locks before taking row locks, and implementations must
 /// acquire a batch in stable order. Locks are held until the transaction
 /// commits or rolls back.
+///
+/// Per-keyset accounting rows are the implementation's business: it takes them
+/// once, at commit, after every other lock, so that a transaction holding one
+/// never goes on to wait for anything else. Callers must not take keyset-scoped
+/// locks of their own, which is why there is no `lock_keysets`.
 #[async_trait]
 pub trait Transaction<Error>:
     DbTransactionFinalizer<Err = Error>

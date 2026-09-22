@@ -1,11 +1,13 @@
 //! Proofs tests
 
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use cashu::nut00::KnownMethod;
 use cashu::secret::Secret;
-use cashu::{Amount, Id, SecretKey, State};
+use cashu::{Amount, BlindSignature, Id, PaymentMethod, PublicKey, SecretKey, State};
 use tokio::sync::Barrier;
 
 use crate::database::mint::test::{seed_issuance, setup_keyset};
@@ -408,6 +410,125 @@ pub async fn concurrent_multi_keyset_spends_use_consistent_lock_order(db: DynMin
 
     first_result.unwrap().unwrap();
     second_result.unwrap().unwrap();
+}
+
+/// A swap and a melt returning change must take the keyset accounting rows in
+/// the same order.
+///
+/// A swap burns inputs on one keyset and signs outputs on another; a melt signs
+/// its change first and only reaches the input keyset later, when it records
+/// the fees it collected. If each of those steps took the keyset rows as it
+/// went, the two paths would visit the same two rows in opposite orders, which
+/// is the keyset-rotation shape: old keyset in, active keyset out. The
+/// implementation instead stages every movement and applies it in one keyset
+/// ordered pass at commit.
+///
+/// The failure signal is a task returning an error, not the timeout:
+/// PostgreSQL resolves a deadlock itself, aborting one of the two backends.
+///
+/// Both keysets are seeded with a real row before the race, so the contention
+/// is a row lock rather than a race to insert the same primary key, and the two
+/// transactions sign disjoint outputs, so the keyset accounting is the only row
+/// they share.
+///
+/// This test is intended for database backends with row-level locking. It is
+/// invoked explicitly by the PostgreSQL test suite rather than the generic
+/// database macro because SQLite serializes writes at the database level.
+pub async fn swap_and_melt_change_take_keyset_rows_in_one_order(db: DynMintDatabase) {
+    let inputs_keyset = Id::from_str("00916bbf7ef91a39").unwrap();
+    let outputs_keyset = Id::from_str("00916bbf7ef91a40").unwrap();
+
+    let create_proof = |keyset_id| Proof {
+        amount: Amount::from(100),
+        keyset_id,
+        secret: Secret::generate(),
+        c: SecretKey::generate().public_key(),
+        witness: None,
+        dleq: None,
+        p2pk_e: None,
+    };
+
+    let sign_outputs = |keyset_id| {
+        let message = SecretKey::generate().public_key();
+        let signature = BlindSignature {
+            amount: Amount::from(100),
+            keyset_id,
+            c: SecretKey::generate().public_key(),
+            dleq: None,
+        };
+        (vec![message], vec![signature])
+    };
+
+    let input_proofs = vec![create_proof(inputs_keyset)];
+    let input_ys: Vec<PublicKey> = input_proofs
+        .iter()
+        .map(|proof| proof.y().unwrap())
+        .collect();
+    seed_issuance(&*db, &input_proofs).await;
+    seed_issuance(&*db, &[create_proof(outputs_keyset)]).await;
+
+    let mut tx = db.begin_transaction().await.unwrap();
+    tx.add_proofs(
+        input_proofs,
+        None,
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let (swap_messages, swap_signatures) = sign_outputs(outputs_keyset);
+    let (melt_messages, melt_signatures) = sign_outputs(outputs_keyset);
+
+    let fees = HashMap::from([(inputs_keyset, Amount::from(1))]);
+
+    let barrier = Arc::new(Barrier::new(2));
+    let swap_db = db.clone();
+    let swap_barrier = Arc::clone(&barrier);
+    let swap_fees = fees.clone();
+    let swap = tokio::spawn(async move {
+        let mut tx = swap_db.begin_transaction().await?;
+        let mut proofs = tx.get_proofs(&input_ys).await?;
+        tx.update_proofs_state(&mut proofs, State::Spent).await?;
+        swap_barrier.wait().await;
+        tx.add_blind_signatures(&swap_messages, &swap_signatures, None)
+            .await?;
+        tx.add_completed_operation(
+            &Operation::new_swap(Amount::from(100), Amount::from(100), Amount::from(1)),
+            &swap_fees,
+        )
+        .await?;
+        tx.commit().await
+    });
+
+    let melt = tokio::spawn(async move {
+        let mut tx = db.begin_transaction().await?;
+        tx.add_blind_signatures(&melt_messages, &melt_signatures, None)
+            .await?;
+        barrier.wait().await;
+        tx.add_completed_operation(
+            &Operation::new_melt(
+                Amount::from(100),
+                Amount::from(1),
+                PaymentMethod::Known(KnownMethod::Bolt11),
+            ),
+            &fees,
+        )
+        .await?;
+        tx.commit().await
+    });
+
+    let (swap_result, melt_result) =
+        tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(swap, melt) })
+            .await
+            .expect("a swap and a melt returning change should not deadlock");
+
+    swap_result
+        .unwrap()
+        .expect("the swap-shaped transaction must commit");
+    melt_result
+        .unwrap()
+        .expect("the melt-change-shaped transaction must commit");
 }
 
 /// Test removing proofs
@@ -1156,7 +1277,8 @@ where
 /// This is the safeguard against a leaked signing key: forged proofs carry
 /// valid signatures and fresh secrets, so the only thing separating them from
 /// honest ones is that the keyset has already paid out everything it took in.
-/// The refusal lands when the mint takes custody, before it acts on them.
+/// Taking custody stages the reservation and committing checks it, so the
+/// refusal lands before the mint acts on the proofs and leaves nothing behind.
 pub async fn reserving_beyond_issuance_is_refused<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
@@ -1193,15 +1315,14 @@ where
     tx.commit().await.unwrap();
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let refusal = tx
-        .add_proofs(
-            forged.clone(),
-            None,
-            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
-        )
-        .await
-        .err();
-    tx.rollback().await.unwrap();
+    tx.add_proofs(
+        forged.clone(),
+        None,
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .expect("the reservation is staged, not checked, while the transaction is open");
+    let refusal = tx.commit().await.err();
 
     assert!(
         matches!(refusal, Some(Error::KeysetOverRedeemed(id)) if id == keyset_id),

@@ -16,9 +16,14 @@ use crate::database::DatabaseExecutor;
 use crate::stmt::query;
 use crate::{column_as_number, column_as_string, unpack_into};
 
-/// Movements to apply to each keyset, keyed in ID order because every entry
-/// locks its row for the rest of the transaction, and concurrent operations
-/// sharing a keyset would otherwise deadlock by locking in opposite orders.
+/// Movements to apply to each keyset, keyed in ID order.
+///
+/// A transaction stages every movement here and applies them in one pass at
+/// commit, after every other lock it will take. The keyset rows are therefore
+/// the last locks a transaction acquires, so a transaction holding one never
+/// goes on to wait for anything else and no cycle can form through them. Doing
+/// it in several passes instead would let two paths that sequence their
+/// keysets differently, a swap and a melt returning change, deadlock.
 pub(super) type LedgerMoves = BTreeMap<Id, LedgerMove>;
 
 /// What one keyset's counters move by in a single locked pass.
@@ -28,6 +33,7 @@ pub(super) struct LedgerMove {
     reserved_in: Amount,
     reserved_out: Amount,
     redeemed_in: Amount,
+    fees_in: Amount,
 }
 
 impl LedgerMove {
@@ -64,6 +70,15 @@ impl LedgerMove {
             ..Default::default()
         }
     }
+
+    /// Input fees the keyset collected. Bookkeeping only: fees are not part of
+    /// what the keyset owes and never affect the cap.
+    pub(super) fn fee(amount: Amount) -> Self {
+        Self {
+            fees_in: amount,
+            ..Default::default()
+        }
+    }
 }
 
 /// Fold one movement into `moves`, so a whole batch costs a single locked pass
@@ -79,6 +94,17 @@ pub(super) fn accumulate(
     entry.reserved_in = add(entry.reserved_in, movement.reserved_in)?;
     entry.reserved_out = add(entry.reserved_out, movement.reserved_out)?;
     entry.redeemed_in = add(entry.redeemed_in, movement.redeemed_in)?;
+    entry.fees_in = add(entry.fees_in, movement.fees_in)?;
+
+    Ok(())
+}
+
+/// Fold every movement in `src` into `dst`, for a caller that built its batch
+/// separately and only commits it to the transaction once it has succeeded.
+pub(super) fn merge(dst: &mut LedgerMoves, src: &LedgerMoves) -> Result<(), Error> {
+    for (keyset_id, movement) in src {
+        accumulate(dst, *keyset_id, *movement)?;
+    }
 
     Ok(())
 }
@@ -132,16 +158,21 @@ where
     })
 }
 
-/// Apply `moves`, refusing any that would leave a keyset owing more than it
-/// issued.
+/// Apply `moves` in keyset ID order, refusing any that would leave a keyset
+/// owing more than it issued.
+///
+/// This runs once per transaction, immediately before COMMIT, which is what
+/// makes the keyset rows the last locks a transaction takes.
 ///
 /// Only a movement taking proofs into custody can be refused, and only when it
 /// raises what the keyset owes. Burning proofs the mint already holds, handing
-/// them back, and issuing against the keyset are recorded whatever the counters
-/// say, which is what makes it safe to call this on the melt path after the
-/// invoice has been paid. A keyset whose counters have drifted is logged rather
-/// than frozen.
-pub(super) async fn apply<C>(conn: &C, moves: &LedgerMoves) -> Result<(), Error>
+/// them back, issuing against the keyset and collecting fees are recorded
+/// whatever the counters say, which is what makes it safe to reach here on the
+/// melt path after the invoice has been paid. The check sees the transaction's
+/// net effect, so a reservation the same transaction hands back again nets to
+/// zero and is not refused. A keyset whose counters have drifted is logged
+/// rather than frozen.
+pub(super) async fn commit_moves<C>(conn: &C, moves: &LedgerMoves) -> Result<(), Error>
 where
     C: DatabaseExecutor + Send + Sync,
 {
@@ -193,19 +224,21 @@ where
 
         query(
             r#"
-            INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed, total_reserved)
-            VALUES (:keyset_id, :total_issued, :total_redeemed, :total_reserved)
+            INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed, total_reserved, fee_collected)
+            VALUES (:keyset_id, :total_issued, :total_redeemed, :total_reserved, :fee_collected)
             ON CONFLICT (keyset_id)
             DO UPDATE SET
                 total_issued   = keyset_amounts.total_issued   + EXCLUDED.total_issued,
                 total_redeemed = keyset_amounts.total_redeemed + EXCLUDED.total_redeemed,
-                total_reserved = keyset_amounts.total_reserved + EXCLUDED.total_reserved
+                total_reserved = keyset_amounts.total_reserved + EXCLUDED.total_reserved,
+                fee_collected  = keyset_amounts.fee_collected  + EXCLUDED.fee_collected
             "#,
         )?
         .bind("keyset_id", keyset_id.to_string())
         .bind("total_issued", to_delta(movement.issued_in)?)
         .bind("total_redeemed", to_delta(movement.redeemed_in)?)
         .bind("total_reserved", reserved_delta)
+        .bind("fee_collected", to_delta(movement.fees_in)?)
         .execute(conn)
         .await?;
     }

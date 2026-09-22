@@ -252,15 +252,15 @@ where
         &'a self,
     ) -> Result<Box<dyn MintAuthTransaction<database::Error> + Send + Sync + 'a>, database::Error>
     {
-        Ok(Box::new(SQLTransaction {
-            inner: ConnectionWithTransaction::new(
+        Ok(Box::new(SQLTransaction::new(
+            ConnectionWithTransaction::new(
                 self.pool
                     .get()
                     .await
                     .map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
-        }))
+        )))
     }
 
     async fn get_active_keyset_id(&self) -> Result<Option<Id>, Self::Err> {

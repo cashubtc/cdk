@@ -491,6 +491,15 @@ mod test {
         .await;
     }
 
+    #[tokio::test]
+    async fn swap_and_melt_change_take_keyset_rows_in_one_order() {
+        let test_id = format!("test_swap_melt_keyset_order_{}", uuid::Uuid::new_v4());
+        cdk_common::database::mint::test::swap_and_melt_change_take_keyset_rows_in_one_order(
+            Arc::new(provide_mint_db(test_id).await),
+        )
+        .await;
+    }
+
     async fn provide_wallet_db(test_id: String) -> WalletPgDatabase {
         let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
             .or_else(|_| std::env::var("PG_DB_URL")) // Fallback for compatibility

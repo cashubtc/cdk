@@ -350,10 +350,6 @@ impl SwapSaga<'_, Signed> {
     ///
     /// - `TokenAlreadySpent`: Input proofs were already spent by another operation
     /// - Propagates any database errors
-    ///
-    /// Inputs are marked spent before the outputs are signed, so the move out of
-    /// each keyset's reservation and the move into its issued total are ordered
-    /// the way the ledger reads them.
     #[instrument(skip_all)]
     pub async fn finalize(mut self) -> Result<cdk_common::nuts::SwapResponse, Error> {
         let blinded_secrets: Vec<PublicKey> = self
