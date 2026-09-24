@@ -532,6 +532,7 @@ mod tests {
                     witness: None,
                     dleq: None,
                     p2pk_e: None,
+                    spend_info: None,
                 };
                 ProofInfo::new(proof, mint_url.clone(), State::Unspent, CurrencyUnit::Sat).unwrap()
             })

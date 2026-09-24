@@ -181,6 +181,7 @@ impl From<AuthProof> for Proof {
             witness: None,
             dleq: value.dleq,
             p2pk_e: None,
+            spend_info: None,
         }
     }
 }

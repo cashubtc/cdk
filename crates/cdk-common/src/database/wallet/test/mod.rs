@@ -88,6 +88,7 @@ fn test_proof(keyset_id: Id, amount: u64) -> Proof {
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     }
 }
 
@@ -1674,6 +1675,31 @@ where
     assert_eq!(stored[0].used_by_operation, Some(operation_id));
 }
 
+/// Test preserving Nutroot spend information across proof storage and state changes.
+pub async fn nutroot_spend_info_roundtrip<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mut info = test_proof_info(test_keyset_id(), 1, test_mint_url());
+    let key = SecretKey::generate();
+    let spend_info = cashu::nuts::nut10::nutroot::SpendInfo {
+        bearer_key: Some(key.clone()),
+        internal_key: Some(*key.public_key().as_secp256k1().unwrap()),
+        ..Default::default()
+    };
+    info.proof.spend_info = Some(spend_info.clone());
+    db.update_proofs(vec![info.clone()], vec![]).await.unwrap();
+    let stored = db.get_proofs_by_ys(vec![info.y]).await.unwrap();
+    assert_eq!(stored[0].proof.spend_info, Some(spend_info.clone()));
+    let all = db.get_proofs(None, None, None, None).await.unwrap();
+    assert_eq!(all[0].proof.spend_info, Some(spend_info.clone()));
+    db.update_proofs_state(vec![info.y], State::Reserved)
+        .await
+        .unwrap();
+    let stored = db.get_proofs_by_ys(vec![info.y]).await.unwrap();
+    assert_eq!(stored[0].proof.spend_info, Some(spend_info));
+}
+
 /// Test getting proofs reserved by an operation
 pub async fn get_reserved_proofs<DB>(db: DB)
 where
@@ -1817,6 +1843,7 @@ macro_rules! wallet_db_test {
             add_mint_quote_optimistic_locking,
             add_melt_quote_optimistic_locking,
             add_and_get_proofs,
+            nutroot_spend_info_roundtrip,
             get_proofs_in_transaction,
             update_proofs,
             update_proofs_state,

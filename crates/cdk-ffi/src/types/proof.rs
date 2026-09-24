@@ -61,6 +61,9 @@ pub struct Proof {
     pub dleq: Option<ProofDleq>,
     /// Optional P2BK Ephemeral Public Key (NUT-28)
     pub p2pk_e: Option<String>,
+    /// Nutroot spend information for transfers and recovery.
+    #[serde(default)]
+    pub spend_info: Option<NutrootSpendInfo>,
 }
 
 impl fmt::Debug for Proof {
@@ -87,6 +90,7 @@ impl From<cdk::nuts::Proof> for Proof {
             witness: proof.witness.map(|w| w.into()),
             dleq: proof.dleq.map(|d| d.into()),
             p2pk_e: proof.p2pk_e.map(|p| p.to_string()),
+            spend_info: proof.spend_info.map(Into::into),
         }
     }
 }
@@ -109,6 +113,7 @@ impl TryFrom<Proof> for cdk::nuts::Proof {
                 .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?,
             witness: proof.witness.map(|w| w.into()),
             dleq: proof.dleq.map(TryInto::try_into).transpose()?,
+            spend_info: proof.spend_info.map(TryInto::try_into).transpose()?,
             p2pk_e: proof
                 .p2pk_e
                 .map(|p| cdk::nuts::PublicKey::from_str(&p))
@@ -391,6 +396,11 @@ pub fn encode_conditions(conditions: Conditions) -> Result<String, FfiError> {
 /// FFI-compatible Witness
 #[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
 pub enum Witness {
+    /// Exact serialized Nutroot witness, including script-path fields.
+    Nutroot {
+        /// Witness JSON string.
+        witness: String,
+    },
     /// P2PK Witness
     P2PK {
         /// Signatures
@@ -408,6 +418,7 @@ pub enum Witness {
 impl fmt::Debug for Witness {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Nutroot { .. } => f.write_str("Nutroot([REDACTED])"),
             Self::P2PK { signatures } => f
                 .debug_struct("P2PK")
                 .field("signatures", signatures)
@@ -427,6 +438,7 @@ impl fmt::Debug for Witness {
 impl From<cdk::nuts::Witness> for Witness {
     fn from(witness: cdk::nuts::Witness) -> Self {
         match witness {
+            cdk::nuts::Witness::NutrootWitness(witness) => Self::Nutroot { witness },
             cdk::nuts::Witness::P2PKWitness(p2pk) => Self::P2PK {
                 signatures: p2pk.signatures,
             },
@@ -441,6 +453,7 @@ impl From<cdk::nuts::Witness> for Witness {
 impl From<Witness> for cdk::nuts::Witness {
     fn from(witness: Witness) -> Self {
         match witness {
+            Witness::Nutroot { witness } => Self::NutrootWitness(witness),
             Witness::P2PK { signatures } => {
                 Self::P2PKWitness(cdk::nuts::nut11::P2PKWitness { signatures })
             }
@@ -708,6 +721,7 @@ mod tests {
                 r: "secret-blinding-factor".to_string(),
             }),
             p2pk_e: None,
+            spend_info: None,
         };
 
         let debug = format!("{proof:?}");
@@ -718,5 +732,60 @@ mod tests {
         assert!(!debug.contains("dleq-e-scalar"));
         assert!(!debug.contains("dleq-s-scalar"));
         assert!(!debug.contains("secret-blinding-factor"));
+    }
+}
+
+/// Nutroot transfer metadata, with hex-encoded keys and serialized leaves.
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct NutrootSpendInfo {
+    /// Bearer private key; mutually exclusive with the ephemeral key.
+    pub bearer_key: Option<String>,
+    /// Sender ephemeral public key.
+    pub ephemeral_key: Option<String>,
+    /// Disclosed internal public key.
+    pub internal_key: Option<String>,
+    /// Full serialized leaves in hex.
+    pub tree: Option<Vec<String>>,
+    /// NUMS offset scalar.
+    pub nums_offset: Option<String>,
+}
+
+impl fmt::Debug for NutrootSpendInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("NutrootSpendInfo([REDACTED])")
+    }
+}
+
+impl From<cdk::nuts::nut10::nutroot::SpendInfo> for NutrootSpendInfo {
+    fn from(info: cdk::nuts::nut10::nutroot::SpendInfo) -> Self {
+        Self {
+            bearer_key: info.bearer_key.map(|key| key.to_secret_hex()),
+            ephemeral_key: info.ephemeral_key.map(|key| key.to_string()),
+            internal_key: info.internal_key.map(|key| key.to_string()),
+            tree: info.tree,
+            nums_offset: info.nums_offset.map(|key| key.to_secret_hex()),
+        }
+    }
+}
+
+impl TryFrom<NutrootSpendInfo> for cdk::nuts::nut10::nutroot::SpendInfo {
+    type Error = FfiError;
+    fn try_from(info: NutrootSpendInfo) -> Result<Self, Self::Error> {
+        let private = |value: String| {
+            value
+                .parse::<cdk::nuts::SecretKey>()
+                .map_err(|e| FfiError::internal(e.to_string()))
+        };
+        let point = |value: String| {
+            cdk::nuts::nut10::nutroot::parse_secret(&value)
+                .map_err(|e| FfiError::internal(e.to_string()))
+        };
+        Ok(Self {
+            bearer_key: info.bearer_key.map(private).transpose()?,
+            ephemeral_key: info.ephemeral_key.map(point).transpose()?,
+            internal_key: info.internal_key.map(point).transpose()?,
+            tree: info.tree,
+            nums_offset: info.nums_offset.map(private).transpose()?,
+        })
     }
 }

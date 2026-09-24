@@ -300,7 +300,7 @@ impl PartialOrd for BlindSignature {
 }
 
 /// Witness
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Witness {
     /// HTLC Witness
@@ -309,6 +309,18 @@ pub enum Witness {
     /// P2PK Witness
     #[serde(with = "serde_p2pk_witness")]
     P2PKWitness(P2PKWitness),
+    /// Exact Nutroot witness JSON, retained for spend commitments.
+    NutrootWitness(String),
+}
+
+impl fmt::Debug for Witness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::HTLCWitness(witness) => f.debug_tuple("HTLCWitness").field(witness).finish(),
+            Self::P2PKWitness(witness) => f.debug_tuple("P2PKWitness").field(witness).finish(),
+            Self::NutrootWitness(_) => f.write_str("NutrootWitness([REDACTED])"),
+        }
+    }
 }
 
 impl From<P2PKWitness> for Witness {
@@ -327,6 +339,16 @@ impl Witness {
     /// Add signatures to [`Witness`]
     pub fn add_signatures(&mut self, signatures: Vec<String>) {
         match self {
+            Self::NutrootWitness(raw) => {
+                if let Ok(mut witness) =
+                    serde_json::from_str::<crate::nuts::nut10::nutroot::Witness>(raw)
+                {
+                    witness.signatures.extend(signatures);
+                    if let Ok(updated) = serde_json::to_string(&witness) {
+                        *raw = updated;
+                    }
+                }
+            }
             Self::P2PKWitness(p2pk_witness) => p2pk_witness.signatures.extend(signatures),
             Self::HTLCWitness(htlc_witness) => match &mut htlc_witness.signatures {
                 Some(sigs) => sigs.extend(signatures),
@@ -338,6 +360,11 @@ impl Witness {
     /// Get signatures on [`Witness`]
     pub fn signatures(&self) -> Option<Vec<String>> {
         match self {
+            Self::NutrootWitness(raw) => {
+                serde_json::from_str::<crate::nuts::nut10::nutroot::Witness>(raw)
+                    .ok()
+                    .map(|w| w.signatures)
+            }
             Self::P2PKWitness(witness) => Some(witness.signatures.clone()),
             Self::HTLCWitness(witness) => witness.signatures.clone(),
         }
@@ -346,6 +373,11 @@ impl Witness {
     /// Get preimage from [`Witness`]
     pub fn preimage(&self) -> Option<String> {
         match self {
+            Self::NutrootWitness(raw) => {
+                serde_json::from_str::<crate::nuts::nut10::nutroot::Witness>(raw)
+                    .ok()
+                    .and_then(|w| w.preimage)
+            }
             Self::P2PKWitness(_witness) => None,
             Self::HTLCWitness(witness) => Some(witness.preimage.clone()),
         }
@@ -364,6 +396,7 @@ impl std::fmt::Display for Witness {
 
 /// Proofs
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ProofWire")]
 pub struct Proof {
     /// Amount
     pub amount: Amount,
@@ -385,6 +418,51 @@ pub struct Proof {
     /// Used for Pay-to-Blinded-Key privacy feature
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p2pk_e: Option<PublicKey>,
+    /// Nutroot transfer and spending information; preserve across storage and transport.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_info: Option<crate::nuts::nut10::nutroot::SpendInfo>,
+}
+
+#[derive(Deserialize)]
+struct ProofWire {
+    amount: Amount,
+    #[serde(rename = "id")]
+    keyset_id: Id,
+    secret: Secret,
+    #[serde(rename = "C")]
+    c: PublicKey,
+    #[serde(default)]
+    witness: Option<String>,
+    #[serde(default)]
+    dleq: Option<ProofDleq>,
+    #[serde(default)]
+    p2pk_e: Option<PublicKey>,
+    #[serde(default)]
+    spend_info: Option<crate::nuts::nut10::nutroot::SpendInfo>,
+}
+
+impl TryFrom<ProofWire> for Proof {
+    type Error = serde_json::Error;
+
+    fn try_from(wire: ProofWire) -> Result<Self, Self::Error> {
+        let witness = wire
+            .witness
+            .map(|raw| match wire.keyset_id.get_version() {
+                crate::nuts::KeySetVersion::Version02 => Ok(Witness::NutrootWitness(raw)),
+                _ => serde_json::from_value(serde_json::Value::String(raw)),
+            })
+            .transpose()?;
+        Ok(Self {
+            amount: wire.amount,
+            keyset_id: wire.keyset_id,
+            secret: wire.secret,
+            c: wire.c,
+            witness,
+            dleq: wire.dleq,
+            p2pk_e: wire.p2pk_e,
+            spend_info: wire.spend_info,
+        })
+    }
 }
 
 impl Proof {
@@ -398,6 +476,7 @@ impl Proof {
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         }
     }
 
@@ -460,6 +539,14 @@ pub struct ProofV4 {
     /// P2BK Ephemeral Public Key (NUT-28)
     #[serde(rename = "pe", default, skip_serializing_if = "Option::is_none")]
     pub p2pk_e: Option<PublicKey>,
+    /// Nutroot spend information, encoded as CBOR byte strings.
+    #[serde(
+        rename = "si",
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::nuts::nut10::nutroot::serde_spend_info"
+    )]
+    pub spend_info: Option<crate::nuts::nut10::nutroot::SpendInfo>,
 }
 
 impl ProofV4 {
@@ -470,9 +557,14 @@ impl ProofV4 {
             keyset_id: *keyset_id,
             secret: self.secret.clone(),
             c: self.c,
-            witness: self.witness.clone(),
+            witness: if keyset_id.get_version() == crate::nuts::KeySetVersion::Version02 {
+                None
+            } else {
+                self.witness.clone()
+            },
             dleq: self.dleq.clone(),
             p2pk_e: self.p2pk_e,
+            spend_info: self.spend_info.clone(),
         }
     }
 }
@@ -484,7 +576,10 @@ impl Hash for ProofV4 {
 }
 
 impl From<Proof> for ProofV4 {
-    fn from(proof: Proof) -> ProofV4 {
+    fn from(mut proof: Proof) -> ProofV4 {
+        if proof.keyset_id.get_version() == crate::nuts::KeySetVersion::Version02 {
+            proof.witness = None;
+        }
         let Proof {
             amount,
             secret,
@@ -492,6 +587,7 @@ impl From<Proof> for ProofV4 {
             witness,
             dleq,
             p2pk_e,
+            spend_info,
             ..
         } = proof;
         ProofV4 {
@@ -501,6 +597,7 @@ impl From<Proof> for ProofV4 {
             witness,
             dleq,
             p2pk_e,
+            spend_info,
         }
     }
 }
@@ -514,6 +611,7 @@ impl From<ProofV3> for ProofV4 {
             witness: proof.witness,
             dleq: proof.dleq,
             p2pk_e: None,
+            spend_info: proof.spend_info,
         }
     }
 }
@@ -537,6 +635,9 @@ pub struct ProofV3 {
     /// DLEQ Proof
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dleq: Option<ProofDleq>,
+    /// Nutroot spend information, retained when converting token formats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_info: Option<crate::nuts::nut10::nutroot::SpendInfo>,
 }
 
 impl ProofV3 {
@@ -547,15 +648,23 @@ impl ProofV3 {
             keyset_id: *keyset_id,
             secret: self.secret.clone(),
             c: self.c,
-            witness: self.witness.clone(),
+            witness: if keyset_id.get_version() == crate::nuts::KeySetVersion::Version02 {
+                None
+            } else {
+                self.witness.clone()
+            },
             dleq: self.dleq.clone(),
             p2pk_e: None,
+            spend_info: self.spend_info.clone(),
         }
     }
 }
 
 impl From<Proof> for ProofV3 {
-    fn from(proof: Proof) -> ProofV3 {
+    fn from(mut proof: Proof) -> ProofV3 {
+        if proof.keyset_id.get_version() == crate::nuts::KeySetVersion::Version02 {
+            proof.witness = None;
+        }
         let Proof {
             amount,
             keyset_id,
@@ -563,6 +672,7 @@ impl From<Proof> for ProofV3 {
             c,
             witness,
             dleq,
+            spend_info,
             ..
         } = proof;
         ProofV3 {
@@ -571,6 +681,7 @@ impl From<Proof> for ProofV3 {
             c,
             witness,
             dleq,
+            spend_info,
             keyset_id: keyset_id.into(),
         }
     }

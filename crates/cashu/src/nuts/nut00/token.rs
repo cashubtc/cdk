@@ -264,6 +264,7 @@ impl TryFrom<&Vec<u8>> for Token {
 
 /// Token V3 Token
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "TokenV3TokenWire", into = "TokenV3TokenWire")]
 pub struct TokenV3Token {
     /// Url of mint
     pub mint: MintUrl,
@@ -277,6 +278,41 @@ impl TokenV3Token {
         Self {
             mint: mint_url,
             proofs: proofs.into_iter().map(ProofV3::from).collect(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct TokenV3TokenWire {
+    mint: MintUrl,
+    proofs: Vec<ProofV3>,
+}
+
+impl From<TokenV3TokenWire> for TokenV3Token {
+    fn from(mut wire: TokenV3TokenWire) -> Self {
+        for proof in &mut wire.proofs {
+            if proof.keyset_id.to_bytes().first() == Some(&2) {
+                proof.witness = None;
+            }
+        }
+        Self {
+            mint: wire.mint,
+            proofs: wire.proofs,
+        }
+    }
+}
+
+impl From<TokenV3Token> for TokenV3TokenWire {
+    fn from(token: TokenV3Token) -> Self {
+        let mut proofs = token.proofs;
+        for proof in &mut proofs {
+            if proof.keyset_id.to_bytes().first() == Some(&2) {
+                proof.witness = None;
+            }
+        }
+        Self {
+            mint: token.mint,
+            proofs,
         }
     }
 }
@@ -408,6 +444,7 @@ impl From<TokenV4> for TokenV3 {
             .into_iter()
             .flat_map(|token| {
                 token.proofs.into_iter().map(move |p| ProofV3 {
+                    spend_info: p.spend_info,
                     amount: p.amount,
                     keyset_id: token.keyset_id.clone(),
                     secret: p.secret,
@@ -580,6 +617,7 @@ impl TryFrom<TokenV3> for TokenV4 {
 
 /// Token V4 Token
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "TokenV4TokenWire", into = "TokenV4TokenWire")]
 pub struct TokenV4Token {
     /// `Keyset id`
     #[serde(
@@ -591,6 +629,47 @@ pub struct TokenV4Token {
     /// Proofs
     #[serde(rename = "p")]
     pub proofs: Vec<ProofV4>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TokenV4TokenWire {
+    #[serde(
+        rename = "i",
+        serialize_with = "serialize_v4_keyset_id",
+        deserialize_with = "deserialize_v4_keyset_id"
+    )]
+    keyset_id: ShortKeysetId,
+    #[serde(rename = "p")]
+    proofs: Vec<ProofV4>,
+}
+
+impl From<TokenV4TokenWire> for TokenV4Token {
+    fn from(mut wire: TokenV4TokenWire) -> Self {
+        if wire.keyset_id.to_bytes().first() == Some(&2) {
+            for proof in &mut wire.proofs {
+                proof.witness = None;
+            }
+        }
+        Self {
+            keyset_id: wire.keyset_id,
+            proofs: wire.proofs,
+        }
+    }
+}
+
+impl From<TokenV4Token> for TokenV4TokenWire {
+    fn from(token: TokenV4Token) -> Self {
+        let mut proofs = token.proofs;
+        if token.keyset_id.to_bytes().first() == Some(&2) {
+            for proof in &mut proofs {
+                proof.witness = None;
+            }
+        }
+        Self {
+            keyset_id: token.keyset_id,
+            proofs,
+        }
+    }
 }
 
 fn serialize_v4_keyset_id<S>(keyset_id: &ShortKeysetId, serializer: S) -> Result<S::Ok, S::Error>
@@ -810,6 +889,7 @@ mod tests {
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         };
 
         let token = Token::new(
@@ -903,6 +983,7 @@ mod tests {
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         };
 
         let proof2 = proof1.clone(); // Duplicate proof
@@ -945,6 +1026,7 @@ mod tests {
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         };
 
         let proofs = vec![proof1, proof3].into_iter().collect();

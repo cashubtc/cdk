@@ -322,3 +322,48 @@ fn transaction_and_input_digest_vectors() {
         );
     }
 }
+
+#[test]
+fn token_spend_info_vectors_and_witness_stripping() {
+    use std::str::FromStr;
+    let vectors = vectors();
+    for vector in &vectors[27..=31] {
+        let mut token = crate::nuts::TokenV4::from_str(vector["token"].as_str().unwrap()).unwrap();
+        let expected: SpendInfo = serde_json::from_value(vector["spend_info"].clone()).unwrap();
+        assert_eq!(
+            token.token[0].proofs[0].spend_info.as_ref(),
+            Some(&expected)
+        );
+        token.token[0].proofs[0].witness = Some(crate::nuts::Witness::NutrootWitness(
+            "{\"signatures\":[]}".to_owned(),
+        ));
+        let encoded = token.to_string();
+        let decoded = crate::nuts::TokenV4::from_str(&encoded).unwrap();
+        assert!(decoded.token[0].proofs[0].witness.is_none());
+        assert_eq!(
+            decoded.token[0].proofs[0].spend_info.as_ref(),
+            Some(&expected)
+        );
+        // A token received with a transaction witness must drop it too.
+        let mut value = serde_json::to_value(&decoded).unwrap();
+        value["t"][0]["p"][0]["witness"] = "{\"signatures\":[]}".into();
+        let decoded: crate::nuts::TokenV4 = serde_json::from_value(value).unwrap();
+        assert!(decoded.token[0].proofs[0].witness.is_none());
+        let raw = decoded.to_raw_bytes().unwrap();
+        let restored = crate::nuts::TokenV4::try_from(&raw).unwrap();
+        assert_eq!(restored, decoded);
+    }
+}
+
+#[test]
+fn proof_preserves_exact_nutroot_witness_for_commitments() {
+    let mut value = vectors()[14]["inputs"][0].clone();
+    let witness = "{ \"signatures\": [] }";
+    value["witness"] = witness.into();
+    let proof: crate::Proof = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        proof.witness,
+        Some(crate::nuts::Witness::NutrootWitness(witness.to_owned()))
+    );
+    assert_eq!(serde_json::to_value(proof).unwrap()["witness"], witness);
+}

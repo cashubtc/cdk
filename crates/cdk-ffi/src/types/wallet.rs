@@ -1153,6 +1153,7 @@ mod tests {
                 witness: None,
                 dleq: None,
                 p2pk_e: None,
+                spend_info: None,
             }]),
             amount: Amount::new(100),
             fee_paid: Amount::new(1),

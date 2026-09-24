@@ -442,6 +442,7 @@ mod tests {
             witness,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         }
     }
 
@@ -481,6 +482,7 @@ mod tests {
             witness: Some(Witness::HTLCWitness(htlc_witness)),
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         };
 
         // Valid HTLC should verify successfully
@@ -566,6 +568,7 @@ mod tests {
             witness: Some(Witness::HTLCWitness(htlc_witness)),
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         };
 
         // Verification should fail with wrong preimage
@@ -702,6 +705,7 @@ mod tests {
             witness: Some(Witness::HTLCWitness(htlc_witness)),
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         };
 
         // Verification should fail with invalid hash
@@ -801,6 +805,7 @@ mod tests {
             })),
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         };
 
         // Verification should fail with wrong witness type
@@ -839,6 +844,7 @@ mod tests {
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         };
 
         // Initially, witness should be None
@@ -918,6 +924,7 @@ mod tests {
             witness: Some(Witness::HTLCWitness(htlc_witness)),
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         };
 
         // Should FAIL because:
@@ -969,6 +976,7 @@ mod tests {
             witness: Some(Witness::HTLCWitness(htlc_witness)),
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         };
 
         assert!(proof.verify_htlc().is_ok());
@@ -1004,6 +1012,7 @@ mod tests {
             witness: Some(Witness::HTLCWitness(htlc_witness)),
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         };
 
         assert!(matches!(

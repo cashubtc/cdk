@@ -537,22 +537,18 @@ where
                 used_by_operation,
                 created_by_operation,
                 derivation_index,
-                p2pk_e
+                p2pk_e,
+                spend_info
             FROM proof
             "#,
         )?
         .fetch_all(&*conn)
         .await?
         .into_iter()
-        .filter_map(|row| {
-            let row = sql_row_to_proof_info(row).ok()?;
-
-            if row.matches_conditions(&mint_url, &unit, &state, &spending_conditions) {
-                Some(row)
-            } else {
-                None
-            }
-        })
+        .map(sql_row_to_proof_info)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|row| row.matches_conditions(&mint_url, &unit, &state, &spending_conditions))
         .collect::<Vec<_>>())
     }
 
@@ -585,7 +581,8 @@ where
                 used_by_operation,
                 created_by_operation,
                 derivation_index,
-                p2pk_e
+                p2pk_e,
+                spend_info
             FROM proof
             WHERE y IN (:ys)
         "#,
@@ -594,8 +591,8 @@ where
         .fetch_all(&*conn)
         .await?
         .into_iter()
-        .filter_map(|row| sql_row_to_proof_info(row).ok())
-        .collect::<Vec<_>>())
+        .map(sql_row_to_proof_info)
+        .collect::<Result<Vec<_>, _>>()?)
     }
 
     async fn get_balance(
@@ -771,9 +768,9 @@ where
             query(
                 r#"
     INSERT INTO proof
-    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r, used_by_operation, created_by_operation, derivation_index, p2pk_e)
+    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r, used_by_operation, created_by_operation, derivation_index, p2pk_e, spend_info)
     VALUES
-    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r, :used_by_operation, :created_by_operation, :derivation_index, :p2pk_e)
+    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r, :used_by_operation, :created_by_operation, :derivation_index, :p2pk_e, :spend_info)
     ON CONFLICT(y) DO UPDATE SET
         mint_url = excluded.mint_url,
         state = excluded.state,
@@ -790,7 +787,8 @@ where
         used_by_operation = excluded.used_by_operation,
         created_by_operation = excluded.created_by_operation,
         derivation_index = COALESCE(excluded.derivation_index, proof.derivation_index),
-        p2pk_e = excluded.p2pk_e
+        p2pk_e = excluded.p2pk_e,
+        spend_info = excluded.spend_info
     ;
             "#,
             )?
@@ -830,6 +828,7 @@ where
             .bind("used_by_operation", proof.used_by_operation.map(|id| id.to_string()))
             .bind("created_by_operation", proof.created_by_operation.map(|id| id.to_string()))
             .bind("derivation_index", proof.derivation_index.map(i64::from))
+            .bind("spend_info", proof.proof.spend_info.as_ref().map(serde_json::to_string).transpose().map_err(Error::from)?)
             .bind(
                 "p2pk_e",
                 proof
@@ -1721,7 +1720,8 @@ where
                 used_by_operation,
                 created_by_operation,
                 derivation_index,
-                p2pk_e
+                p2pk_e,
+                spend_info
             FROM proof
             WHERE used_by_operation = :operation_id
             "#,
@@ -2188,7 +2188,8 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
             used_by_operation,
             created_by_operation,
             derivation_index,
-            p2pk_e
+            p2pk_e,
+            spend_info
         ) = row
     );
 
@@ -2217,6 +2218,9 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
         }),
         c: column_as_string!(c, PublicKey::from_str, PublicKey::from_slice),
         dleq,
+        spend_info: column_as_nullable_string!(spend_info)
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?,
         p2pk_e: column_as_nullable_binary!(p2pk_e)
             .map(|bytes| PublicKey::from_slice(&bytes))
             .transpose()?,

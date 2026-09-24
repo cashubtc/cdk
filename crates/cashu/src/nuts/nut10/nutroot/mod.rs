@@ -18,6 +18,7 @@ use thiserror::Error;
 
 mod derivation;
 mod leaf;
+pub(crate) mod serde_spend_info;
 mod spend_info;
 mod transaction;
 mod tree;

@@ -425,6 +425,7 @@ mod tests {
                 r: "b".repeat(64),
             }),
             p2pk_e: None,
+            spend_info: None,
         };
 
         let result: Result<cdk::nuts::Proof, _> = proof.try_into();
