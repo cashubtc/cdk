@@ -127,6 +127,20 @@ async fn nutroot_disclosure_opens_only_the_exercised_leaf_commitment() {
                 && pending.witness.is_none()
                 && pending.input_digest.is_none()
         );
+        let receipt = nutroot::SpendReceipt::new(
+            "https://mint.test".parse().unwrap(),
+            CurrencyUnit::Sat,
+            &proofs,
+            &transaction,
+            0,
+        )
+        .unwrap();
+        let params = cdk_common::nut17::Params {
+            kind: cdk_common::nut17::Kind::ProofState,
+            filters: vec![y.to_string()],
+            id: std::sync::Arc::new(cdk_common::subscription::SubId::from("nutroot-live")),
+        };
+        let mut live = mint.pubsub_manager().subscribe(params.clone()).unwrap();
         mint.process_swap_request(SwapRequest::new(proofs, outputs.blinded_messages()))
             .await
             .unwrap();
@@ -150,6 +164,48 @@ async fn nutroot_disclosure_opens_only_the_exercised_leaf_commitment() {
         let roundtrip: cdk_common::ProofState =
             serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
         assert_eq!(roundtrip, state);
+        let keysets = vec![cdk_common::nuts::KeySetInfo {
+            id,
+            unit: CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        }];
+        receipt
+            .verify(&keysets, &[state.clone()], cdk_common::util::unix_time())
+            .unwrap();
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let event = live.recv().await.unwrap();
+                if let cdk_common::NotificationPayload::ProofState(value) = event.inner() {
+                    if value.state == cdk_common::State::Spent {
+                        break value.clone();
+                    }
+                    assert!(
+                        value.commitment.is_none()
+                            && value.witness.is_none()
+                            && value.input_digest.is_none()
+                    );
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(observed, state);
+        let mut snapshot = mint
+            .pubsub_manager()
+            .subscribe(cdk_common::nut17::Params {
+                id: std::sync::Arc::new(cdk_common::subscription::SubId::from("nutroot-snapshot")),
+                ..params
+            })
+            .unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), snapshot.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(event.inner(), cdk_common::NotificationPayload::ProofState(value) if value == &state)
+        );
         mint.stop().await.unwrap();
     }
 }

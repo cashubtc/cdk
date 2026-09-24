@@ -329,7 +329,7 @@ pub fn batch_verify_bls_messages(
         .iter()
         .map(|message| decode_bls_secret(message))
         .collect::<Result<Vec<_>, _>>()?;
-    let messages: Vec<&[u8]> = decoded.iter().map(|message| message.as_slice()).collect();
+    let messages: Vec<&[u8]> = decoded.iter().map(<[u8; 33]>::as_slice).collect();
     if bls::batch_verify_pairing(&mint_pubkeys, &unblinded_messages, &messages) {
         return Ok(());
     }
@@ -706,7 +706,7 @@ mod tests {
         let owned: Vec<_> = (0..3)
             .map(|_| SecretKey::generate().public_key().to_string())
             .collect();
-        let secrets: Vec<&[u8]> = owned.iter().map(|secret| secret.as_bytes()).collect();
+        let secrets: Vec<&[u8]> = owned.iter().map(String::as_bytes).collect();
         let mint_secret_1 = SecretKey::generate_bls();
         let mint_secret_2 = SecretKey::generate_bls();
 

@@ -25,6 +25,10 @@ pub struct NutrootOption {
 }
 
 /// BIP341's NUMS point, used to request script-only locking.
+///
+/// # Panics
+/// Panics only if the fixed, validated NUMS encoding in this module is changed
+/// to an invalid point.
 pub fn nums_point() -> PublicKey {
     super::parse_secret("0250929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0")
         .expect("fixed valid NUMS point")
@@ -44,8 +48,8 @@ impl NutrootOption {
         let keys: HashSet<_> = tree
             .as_ref()
             .into_iter()
-            .flat_map(|tree| tree.leaves())
-            .flat_map(|leaf| leaf.keys())
+            .flat_map(Tree::leaves)
+            .flat_map(Leaf::keys)
             .copied()
             .collect();
         let mut blind = HashSet::new();
@@ -239,7 +243,7 @@ impl NutrootOption {
         }
         let blind_keys = blind.then(|| {
             let mut keys = vec![];
-            for key in leaves.iter().flat_map(|leaf| leaf.keys()) {
+            for key in leaves.iter().flat_map(Leaf::keys) {
                 if !keys.contains(key) {
                     keys.push(*key);
                 }

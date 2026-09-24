@@ -600,3 +600,41 @@ fn authorized_request_binds_exact_http_bytes() {
     assert!(authorized_request_digest("post", "/v1/swap", b"").is_err());
     assert!(authorized_request_digest("POST", "https://mint/v1/swap", b"").is_err());
 }
+
+#[test]
+fn upstream_spend_commitment_vector() {
+    let vectors = vectors();
+    let receipt: SpendReceipt = serde_json::from_value(vectors[26].clone()).unwrap();
+    let opening = &receipt.receipts[0];
+    let digest: [u8; 32] = hex::decode(&opening.input_digest)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(
+        hex::encode(spend_commitment(&opening.y, digest, &opening.witness)),
+        opening.commitment
+    );
+    let transaction = Transaction::from_bytes(&hex::decode(&opening.transcript).unwrap()).unwrap();
+    assert_eq!(transaction.input_digest(0).unwrap(), digest);
+}
+
+#[test]
+fn upstream_authorized_request_vectors() {
+    let vectors: Vec<Value> = serde_json::from_str(include_str!("auth_vectors.json")).unwrap();
+    for (vector, body) in vectors
+        .iter()
+        .zip([&b"illustrative request body"[..], &b""[..]])
+    {
+        let digest = authorized_request_digest(
+            vector["method"].as_str().unwrap(),
+            vector["target"].as_str().unwrap(),
+            body,
+        )
+        .unwrap();
+        assert_eq!(digest, hash(&vector["digest"]));
+        let witness: Witness = serde_json::from_value(vector["witness"].clone()).unwrap();
+        witness
+            .verify(vector["secret"].as_str().unwrap(), digest, 0)
+            .unwrap();
+    }
+}
