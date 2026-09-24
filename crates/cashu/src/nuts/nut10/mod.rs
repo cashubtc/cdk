@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use super::nut01::PublicKey;
 use crate::{nut11, nut14};
 
+pub mod nutroot;
+
 pub mod spending_conditions;
 pub use spending_conditions::{Conditions, SpendingConditions};
 
