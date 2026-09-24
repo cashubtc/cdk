@@ -89,6 +89,14 @@ impl PublicKey {
         Self::from_slice(&bytes)
     }
 
+    /// Return the secp256k1 key, rejecting BLS points.
+    pub fn as_secp256k1(&self) -> Result<&secp256k1::PublicKey, Error> {
+        match self {
+            Self::Secp256k1(inner) => Ok(inner),
+            Self::BlsG1(_) | Self::BlsG2(_) => Err(Error::WrongKeyKind),
+        }
+    }
+
     /// Return compressed bytes.
     #[inline]
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -230,6 +238,21 @@ impl<'de> Deserialize<'de> for PublicKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secp_accessor_preserves_secp_keys_and_rejects_bls_points() {
+        let secp = crate::nuts::SecretKey::generate().public_key();
+        assert_eq!(
+            secp.as_secp256k1().unwrap().serialize().to_vec(),
+            secp.to_bytes()
+        );
+
+        let g1 = PublicKey::from(BlsG1PublicKey::hash_to_curve(b"key-kind validation"));
+        let g2 = crate::nuts::SecretKey::generate_bls().public_key();
+        for key in [g1, g2] {
+            assert!(matches!(key.as_secp256k1(), Err(Error::WrongKeyKind)));
+        }
+    }
 
     #[test]
     fn test_public_key_from_hex() {

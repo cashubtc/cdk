@@ -139,8 +139,8 @@ impl<'a> ReceiveSaga<'a, Initial> {
         let mut p2pk_signing_keys: HashMap<XOnlyPublicKey, SecretKey> = opts
             .p2pk_signing_keys
             .iter()
-            .map(|s| (s.x_only_public_key(&SECP256K1).0, s.clone()))
-            .collect();
+            .map(|s| Ok((s.as_secp256k1()?.x_only_public_key(&SECP256K1).0, s.clone())))
+            .collect::<Result<_, Error>>()?;
 
         // Process each proof: verify mint signature, handle P2PK/HTLC
         for proof in &mut proofs {
@@ -210,7 +210,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
                             Kind::P2PK => i as u8,
                             _ => (i + 1) as u8, // HTLC skips slot 0 since it's a hash, not a pubkey
                         };
-                        let x_only_pubkey = pubkey.x_only_public_key();
+                        let x_only_pubkey = pubkey.as_secp256k1()?.x_only_public_key().0;
 
                         if let std::collections::hash_map::Entry::Vacant(entry) =
                             p2pk_signing_keys.entry(x_only_pubkey)

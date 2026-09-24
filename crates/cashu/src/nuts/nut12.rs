@@ -79,7 +79,7 @@ fn verify_dleq(
     mint_pubkey: PublicKey, // A
 ) -> Result<(), Error> {
     let e_bytes: [u8; 32] = e.to_secret_bytes();
-    let e: Scalar = e.as_scalar();
+    let e: Scalar = Scalar::from(*e.as_secp256k1()?);
 
     // a = e*A
     let a: PublicKey = mint_pubkey.mul_tweak(&SECP256K1, &e)?.into();
@@ -116,6 +116,9 @@ fn derive_deterministic_nonce(
     blinded_message: &PublicKey,  // B'
     mint_secret_key: &SecretKey,  // a
 ) -> Result<SecretKey, Error> {
+    mint_secret_key.as_secp256k1()?;
+    blinded_message.as_secp256k1()?;
+    blinded_signature.as_secp256k1()?;
     for counter in u8::MIN..=u8::MAX {
         let mut message = Vec::with_capacity(16 + (3 * 65) + 1);
         message.extend_from_slice(b"Cashu_DLEQ_R_v1");
@@ -174,7 +177,7 @@ impl Proof {
             Some(dleq) => {
                 let y = hash_to_curve(self.secret.as_bytes())?;
 
-                let r: Scalar = dleq.r.as_scalar();
+                let r: Scalar = Scalar::from(*dleq.r.as_secp256k1()?);
                 let bs1: PublicKey = mint_pubkey.mul_tweak(&SECP256K1, &r)?.into();
 
                 let blinded_signature: PublicKey = self.c.combine(&bs1)?.into();

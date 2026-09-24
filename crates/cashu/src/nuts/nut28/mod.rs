@@ -97,6 +97,7 @@ pub fn ecdh_kdf(
         return Err(Error::InvalidCanonicalSlot(canonical_slot));
     }
 
+    secret_key.as_secp256k1()?;
     // Compute shared point Z = secret_key * pubkey
     // Use SharedSecret if available (produces 32 bytes typically equal to x-coordinate)
     let shared = pubkey.mul_tweak(&SECP, &secret_key.as_scalar())?;
@@ -169,6 +170,8 @@ pub fn derive_signing_key_bip340(
     r: &SecretKey,
     blinded_pubkey: &PublicKey,
 ) -> Result<SecretKey, Error> {
+    privkey.as_secp256k1()?;
+    r.as_secp256k1()?;
     // Unblind the public key
     let r_pubkey = r.public_key();
     let r_pubkey_neg = r_pubkey.negate(&SECP);
