@@ -86,6 +86,7 @@ where
         ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
         ProtectedEndpoint::new(Method::Post, RoutePath::Checkstate),
         ProtectedEndpoint::new(Method::Post, RoutePath::Restore),
+        ProtectedEndpoint::new(Method::Get, RoutePath::Ws),
     ];
 
     let blind_auth_endpoints =
