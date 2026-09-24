@@ -439,3 +439,164 @@ fn legacy_keyless_policies_are_not_silently_weakened_for_nutroot() {
     };
     assert!(NutrootOption::from_spending_conditions(&policy, false).is_err());
 }
+
+#[test]
+fn receipt_requires_exact_transcript_witness_and_trusted_spent_commitment() {
+    use crate::nuts::{CurrencyUnit, ProofState, State};
+    let vectors = vectors();
+    let mut proofs: Vec<crate::Proof> =
+        serde_json::from_value(vectors[14]["inputs"].clone()).unwrap();
+    let outputs: Vec<crate::BlindedMessage> =
+        serde_json::from_value(vectors[14]["outputs"].clone()).unwrap();
+    let transaction = Transaction::new(&proofs, &[], &outputs, &[]).unwrap();
+    assert_eq!(
+        Transaction::from_bytes(transaction.as_bytes()).unwrap(),
+        transaction
+    );
+    assert_eq!(
+        transaction.proof_digest(&proofs[0]).unwrap(),
+        transaction.input_digest(0).unwrap()
+    );
+    for length in 0..transaction.as_bytes().len() {
+        // A prefix containing complete containers can itself be a valid transaction.
+        if let Ok(prefix) = Transaction::from_bytes(&transaction.as_bytes()[..length]) {
+            assert_ne!(
+                prefix.proof_digest(&proofs[0]).unwrap(),
+                transaction.input_digest(0).unwrap()
+            );
+        }
+    }
+    let raw = serde_json::to_string_pretty(&vectors[16]).unwrap();
+    proofs[0].witness = Some(crate::nuts::Witness::NutrootWitness(raw));
+    let receipt = SpendReceipt::new(
+        "https://mint.test".parse().unwrap(),
+        CurrencyUnit::Sat,
+        &proofs,
+        &transaction,
+        0,
+    )
+    .unwrap();
+    let encoded = receipt.encode().unwrap();
+    let decoded: SpendReceipt = encoded.parse().unwrap();
+    assert_eq!(receipt, decoded);
+    let mut state = ProofState::from((proofs[0].y().unwrap(), State::Spent));
+    let record = SpendRecord::new(&proofs[0], &transaction, 0, 0).unwrap();
+    record.apply_to(&mut state);
+    let keysets = vec![crate::KeySetInfo {
+        id: proofs[0].keyset_id,
+        unit: CurrencyUnit::Sat,
+        active: true,
+        input_fee_ppk: 0,
+        final_expiry: None,
+    }];
+    receipt.verify(&keysets, &[state.clone()], 0).unwrap();
+    let mut wrong = receipt.clone();
+    wrong.receipts[0].witness.push(' ');
+    assert!(wrong.verify(&keysets, &[state.clone()], 0).is_err());
+    wrong.receipts[0].commitment = hex::encode(spend_commitment(
+        &state.y,
+        record.input_digest,
+        &wrong.receipts[0].witness,
+    ));
+    assert!(wrong.verify(&keysets, &[state.clone()], 0).is_err());
+    wrong = receipt.clone();
+    wrong.receipts[0].transcript = hex::encode([0; 64]);
+    assert!(wrong.verify(&keysets, &[state.clone()], 0).is_err());
+    state.state = State::Pending;
+    assert!(receipt.verify(&keysets, &[state], 0).is_err());
+    assert!(receipt.verify(&keysets, &[], 0).is_err());
+}
+
+#[test]
+fn signing_packages_merge_only_matching_transactions_and_distinct_signers() {
+    use bitcoin::secp256k1::SecretKey;
+    let vectors = vectors();
+    let mut proofs: Vec<crate::Proof> =
+        serde_json::from_value(vectors[14]["inputs"].clone()).unwrap();
+    let outputs: Vec<crate::BlindedMessage> =
+        serde_json::from_value(vectors[14]["outputs"].clone()).unwrap();
+    let keys = [
+        SecretKey::from_slice(&[1; 32]).unwrap(),
+        SecretKey::from_slice(&[2; 32]).unwrap(),
+    ];
+    let ephemeral = SecretKey::from_slice(&[3; 32]).unwrap();
+    let ephemeral_public = PublicKey::from_secret_key(&crate::SECP256K1, &ephemeral);
+    let public = keys.map(|k| {
+        sender_key(
+            &PublicKey::from_secret_key(&crate::SECP256K1, &k),
+            &ephemeral,
+            17,
+        )
+        .unwrap()
+    });
+    let tree = Tree::new(vec![Leaf::new(
+        2,
+        public.to_vec(),
+        Condition::Threshold,
+        false,
+    )
+    .unwrap()])
+    .unwrap();
+    let internal = nums_point();
+    let secret = tweaked_key(internal, Some(tree.root()))
+        .unwrap()
+        .to_string();
+    proofs[0].secret = secret.parse().unwrap();
+    proofs[0].spend_info = Some(SpendInfo {
+        bearer_key: Some(crate::nuts::SecretKey::from_slice(&[7; 32]).unwrap()),
+        ..Default::default()
+    });
+    let witness = Witness::script_path(&tree, 0, internal).unwrap();
+    let mut package = SigningPackage::new(
+        &proofs,
+        &outputs,
+        None,
+        vec![SigningSpend {
+            secret,
+            witness,
+            ephemeral_key: Some(ephemeral_public),
+            slots: Some(vec![1, 2]),
+        }],
+    )
+    .unwrap();
+    let encoded = package.encode().unwrap();
+    assert_eq!(encoded.parse::<SigningPackage>().unwrap(), package);
+    assert!(!serde_json::to_string(&package)
+        .unwrap()
+        .contains("spend_info"));
+    let mut second = package.clone();
+    assert_eq!(package.sign(&keys[..1]).unwrap(), 1);
+    assert!(package.apply(&mut proofs, &outputs, None, 0).is_err());
+    assert!(proofs[0].witness.is_none());
+    assert_eq!(package.sign(&keys[..1]).unwrap(), 0);
+    assert_eq!(second.sign(&keys[1..]).unwrap(), 1);
+    package.merge(&second).unwrap();
+    package.merge(&second).unwrap();
+    package.apply(&mut proofs, &outputs, None, 0).unwrap();
+    let transaction = Transaction::new(&proofs, &[], &outputs, &[]).unwrap();
+    SpendRecord::new(&proofs[0], &transaction, 0, 0).unwrap();
+    let mut wrong_outputs = outputs.clone();
+    wrong_outputs[0].amount = 99.into();
+    assert!(package.apply(&mut proofs, &wrong_outputs, None, 0).is_err());
+    let altered = SigningPackage::new(&proofs, &wrong_outputs, None, second.spends().to_vec());
+    assert!(altered.is_err());
+}
+
+#[test]
+fn authorized_request_binds_exact_http_bytes() {
+    let digest = authorized_request_digest("POST", "/v1/swap?x=1", b"{}").unwrap();
+    assert_ne!(
+        digest,
+        authorized_request_digest("POST", "/v1/swap?x=1", b"{ }").unwrap()
+    );
+    assert_ne!(
+        digest,
+        authorized_request_digest("POST", "/v1/swap?x=2", b"{}").unwrap()
+    );
+    assert_ne!(
+        digest,
+        authorized_request_digest("GET", "/v1/swap?x=1", b"{}").unwrap()
+    );
+    assert!(authorized_request_digest("post", "/v1/swap", b"").is_err());
+    assert!(authorized_request_digest("POST", "https://mint/v1/swap", b"").is_err());
+}

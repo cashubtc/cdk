@@ -197,6 +197,20 @@ impl<'a> SwapSaga<'a, Initial> {
             }
         };
 
+        if input_proofs
+            .iter()
+            .any(|p| p.keyset_id.get_version() == cdk_common::nuts::KeySetVersion::Version02)
+        {
+            let transaction = cdk_common::nuts::nut10::nutroot::Transaction::new(
+                input_proofs,
+                &[],
+                blinded_messages,
+                &[],
+            )
+            .map_err(cdk_common::nuts::nut10::Error::from)?;
+            Mint::record_nutroot_spends(&mut tx, input_proofs, &transaction).await?;
+        }
+
         let ys = match input_proofs.ys() {
             Ok(ys) => ys,
             Err(err) => return Err(Error::NUT00(err)),
@@ -436,10 +450,10 @@ impl SwapSaga<'_, Signed> {
             // Don't rollback - swap succeeded, orphaned saga is harmless
         }
 
+        let states = Mint::spent_proof_states(&mut tx, &self.state_data.ys).await?;
         tx.commit().await?;
-        // Publish proof state changes
-        for pk in &self.state_data.ys {
-            self.pubsub.proof_state((*pk, State::Spent));
+        for state in states {
+            self.pubsub.proof_state(state);
         }
         // Clear compensations - swap is complete
         self.compensations.clear();

@@ -618,6 +618,10 @@ pub fn encode_proof_info(info: ProofInfo) -> Result<String, FfiError> {
 /// FFI-compatible ProofStateUpdate
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct ProofStateUpdate {
+    /// Published v3 input digest for disclosure leaves.
+    pub input_digest: Option<String>,
+    /// Spent v3 commitment.
+    pub commitment: Option<String>,
     /// Y value (hash_to_curve of secret)
     pub y: String,
     /// Current state
@@ -629,6 +633,8 @@ pub struct ProofStateUpdate {
 impl From<cdk::nuts::nut07::ProofState> for ProofStateUpdate {
     fn from(proof_state: cdk::nuts::nut07::ProofState) -> Self {
         Self {
+            input_digest: proof_state.input_digest,
+            commitment: proof_state.commitment,
             y: proof_state.y.to_string(),
             state: proof_state.state.into(),
             witness: proof_state.witness.map(Into::into),
@@ -678,6 +684,8 @@ mod tests {
     fn proof_state_update_debug_redacts_htlc_preimage() {
         let secret = "htlc-preimage-that-authorizes-spending";
         let proof_state = cdk::nuts::nut07::ProofState {
+            input_digest: None,
+            commitment: None,
             y: cdk::nuts::SecretKey::generate().public_key(),
             state: CdkState::Spent,
             witness: Some(cdk::nuts::Witness::HTLCWitness(

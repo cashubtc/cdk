@@ -8,6 +8,7 @@ use cdk_common::database::mint::Acquired;
 use cdk_common::database::{self, Error, MintProofsDatabase};
 use cdk_common::mint::{Operation, ProofsWithState};
 use cdk_common::nut00::ProofsMethods;
+use cdk_common::nuts::nut10::nutroot::SpendRecord;
 use cdk_common::quote_id::QuoteId;
 use cdk_common::secret::Secret;
 use cdk_common::util::unix_time;
@@ -18,6 +19,31 @@ use crate::database::DatabaseExecutor;
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
 use crate::{column_as_nullable_string, column_as_number, column_as_string, unpack_into};
+
+async fn get_spends<C>(conn: &C, ys: &[PublicKey]) -> Result<Vec<Option<SpendRecord>>, Error>
+where
+    C: DatabaseExecutor + Send + Sync,
+{
+    if ys.is_empty() {
+        return Ok(vec![]);
+    }
+    let rows = query("SELECT y, nutroot_spend FROM proof WHERE y IN (:ys)")?
+        .bind_vec("ys", ys.iter().map(|y| y.to_bytes()).collect())?
+        .fetch_all(conn)
+        .await?;
+    let mut records = HashMap::new();
+    for row in rows {
+        let y = column_as_string!(&row[0], PublicKey::from_hex, PublicKey::from_slice);
+        let record = column_as_nullable_string!(&row[1])
+            .map(|text| serde_json::from_str(&text))
+            .transpose()?;
+        records.insert(y, record);
+    }
+    Ok(ys
+        .iter()
+        .map(|y| records.get(y).cloned().flatten())
+        .collect())
+}
 
 pub(super) async fn get_current_states<C>(
     conn: &C,
@@ -127,6 +153,28 @@ where
     RM: DatabasePool + 'static,
 {
     type Err = Error;
+
+    async fn set_proof_spends(
+        &mut self,
+        records: &[(PublicKey, SpendRecord)],
+    ) -> Result<(), Self::Err> {
+        for (y, record) in records {
+            let updated = query("UPDATE proof SET nutroot_spend = :record WHERE y = :y AND state IN ('UNSPENT', 'PENDING') AND nutroot_spend IS NULL")?
+                .bind("record", serde_json::to_string(record)?).bind("y", y.to_bytes())
+                .execute(&self.inner).await?;
+            if updated != 1 {
+                return Err(Error::Duplicate);
+            }
+        }
+        Ok(())
+    }
+
+    async fn get_proof_spends(
+        &mut self,
+        ys: &[PublicKey],
+    ) -> Result<Vec<Option<SpendRecord>>, Self::Err> {
+        get_spends(&self.inner, ys).await
+    }
 
     /// Adds proofs to the database with initial state `Unspent`.
     ///
@@ -437,6 +485,18 @@ where
     RM: DatabasePool + 'static,
 {
     type Err = Error;
+
+    async fn get_proof_spends(
+        &self,
+        ys: &[PublicKey],
+    ) -> Result<Vec<Option<SpendRecord>>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        get_spends(&*conn, ys).await
+    }
 
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
         let conn = self

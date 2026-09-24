@@ -326,6 +326,9 @@ impl MeltSaga<Initial> {
             None
         };
         melt_request.verify_spending_conditions_with_transaction(nutroot_transaction.as_ref())?;
+        if let Some(transaction) = &nutroot_transaction {
+            Mint::record_nutroot_spends(&mut tx, melt_request.inputs(), transaction).await?;
+        }
 
         match previous_state {
             MeltQuoteState::Unpaid | MeltQuoteState::Failed => {}

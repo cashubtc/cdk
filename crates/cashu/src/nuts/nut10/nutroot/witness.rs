@@ -63,6 +63,64 @@ impl Witness {
         })
     }
 
+    /// Validate a script opening and return its committed leaf, without requiring
+    /// signatures, a preimage, or an elapsed timelock.
+    pub fn committed_leaf(&self, secret: &str) -> Result<Leaf, Error> {
+        let secret = parse_secret(secret)?;
+        let leaf = self.leaf.as_ref().ok_or(Error::InvalidWitness)?;
+        let control = self.control.as_ref().ok_or(Error::InvalidWitness)?;
+        if control.path.len() > 3 || leaf.len() > 1026 {
+            return Err(Error::InvalidWitness);
+        }
+        let leaf = Leaf::from_bytes(&hex::decode(leaf)?)?;
+        let mut root = leaf.hash();
+        for sibling in &control.path {
+            if sibling.len() != 64 {
+                return Err(Error::InvalidWitness);
+            }
+            let sibling: [u8; 32] = hex::decode(sibling)?
+                .try_into()
+                .map_err(|_| Error::InvalidWitness)?;
+            root = branch(root, sibling);
+        }
+        if tweaked_key(parse_secret(&control.internal_key)?, Some(root))? != secret {
+            return Err(Error::InvalidWitness);
+        }
+        if matches!(leaf.condition(), Condition::Commit(_)) {
+            return Err(Error::InvalidWitness);
+        }
+        Ok(leaf)
+    }
+
+    /// Validate collected signatures without requiring the threshold yet.
+    /// Returns the distinct leaf-key indices represented by those signatures.
+    pub fn partial_signers(&self, secret: &str, digest: [u8; 32]) -> Result<Vec<usize>, Error> {
+        let leaf = self.committed_leaf(secret)?;
+        if self.signatures.len() > leaf.keys().len() {
+            return Err(Error::InvalidWitness);
+        }
+        let mut signers = vec![];
+        for encoded in &self.signatures {
+            if encoded.len() != 128 {
+                return Err(Error::InvalidWitness);
+            }
+            let signature =
+                Signature::from_slice(&hex::decode(encoded)?).map_err(|_| Error::InvalidWitness)?;
+            let signer = leaf
+                .keys()
+                .iter()
+                .position(|key| {
+                    verify_signature(&signature, &Message::from_digest(digest), key).is_ok()
+                })
+                .ok_or(Error::InvalidWitness)?;
+            if signers.contains(&signer) {
+                return Err(Error::InvalidWitness);
+            }
+            signers.push(signer);
+        }
+        Ok(signers)
+    }
+
     /// Verify against an input digest and the verifier's Unix clock.
     /// Returns whether the exercised path requires public disclosure.
     pub fn verify(&self, secret: &str, input_digest: [u8; 32], now: u64) -> Result<bool, Error> {
@@ -82,31 +140,15 @@ impl Witness {
                 Signature::from_slice(&hex::decode(sig)?).map_err(|_| Error::InvalidWitness)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let Some(leaf) = &self.leaf else {
+        let Some(_) = &self.leaf else {
             if signatures.len() != 1 || self.control.is_some() || self.preimage.is_some() {
                 return Err(Error::InvalidWitness);
             }
             verify_signature(&signatures[0], &message, &secret)?;
             return Ok(false);
         };
-        let control = self.control.as_ref().ok_or(Error::InvalidWitness)?;
-        if control.path.len() > 3 || leaf.len() > 1026 {
-            return Err(Error::InvalidWitness);
-        }
-        let leaf = Leaf::from_bytes(&hex::decode(leaf)?)?;
-        let mut root = leaf.hash();
-        for sibling in &control.path {
-            if sibling.len() != 64 {
-                return Err(Error::InvalidWitness);
-            }
-            let sibling: [u8; 32] = hex::decode(sibling)?
-                .try_into()
-                .map_err(|_| Error::InvalidWitness)?;
-            root = branch(root, sibling);
-        }
-        if tweaked_key(parse_secret(&control.internal_key)?, Some(root))? != secret
-            || signatures.len() > leaf.keys().len()
-        {
+        let leaf = self.committed_leaf(&secret.to_string())?;
+        if signatures.len() > leaf.keys().len() {
             return Err(Error::InvalidWitness);
         }
         match leaf.condition() {

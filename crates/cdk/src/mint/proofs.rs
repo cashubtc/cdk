@@ -7,6 +7,46 @@ use cdk_common::{Error, State};
 use crate::Mint;
 
 impl Mint {
+    pub(crate) async fn record_nutroot_spends(
+        tx: &mut DynMintTransaction,
+        proofs: &[cdk_common::Proof],
+        transaction: &cdk_common::nuts::nut10::nutroot::Transaction,
+    ) -> Result<(), Error> {
+        let mut records = vec![];
+        for (index, proof) in proofs.iter().enumerate() {
+            if proof.keyset_id.get_version() == cdk_common::nuts::KeySetVersion::Version02 {
+                let record = cdk_common::nuts::nut10::nutroot::SpendRecord::new(
+                    proof,
+                    transaction,
+                    index,
+                    cdk_common::util::unix_time(),
+                )
+                .map_err(cdk_common::nuts::nut10::Error::from)?;
+                records.push((proof.y()?, record));
+            }
+        }
+        tx.set_proof_spends(&records).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn spent_proof_states(
+        tx: &mut DynMintTransaction,
+        ys: &[cdk_common::PublicKey],
+    ) -> Result<Vec<cdk_common::ProofState>, Error> {
+        let records = tx.get_proof_spends(ys).await?;
+        Ok(ys
+            .iter()
+            .zip(records)
+            .map(|(y, record)| {
+                let mut state = (*y, State::Spent).into();
+                if let Some(record) = record {
+                    record.apply_to(&mut state);
+                }
+                state
+            })
+            .collect())
+    }
+
     /// Updates the state of proofs with validation and error handling.
     ///
     /// This method:

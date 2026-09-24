@@ -63,15 +63,26 @@ impl Mint {
                 .collect()
         };
 
-        // Construct response without additional queries
+        let spends = self.localstore.get_proof_spends(&check_state.ys).await?;
+
+        // Construct response with the same disclosure policy as WebSocket events.
         let proof_states = check_state
             .ys
             .iter()
             .zip(states.iter())
-            .map(|(y, state)| ProofState {
-                y: *y,
-                state: state.unwrap_or(State::Unspent),
-                witness: witness_map.get(y).cloned().flatten(),
+            .zip(spends)
+            .map(|((y, state), record)| {
+                let mut result = ProofState {
+                    y: *y,
+                    state: state.unwrap_or(State::Unspent),
+                    witness: witness_map.get(y).cloned().flatten(),
+                    commitment: None,
+                    input_digest: None,
+                };
+                if let Some(record) = record {
+                    record.apply_to(&mut result);
+                }
+                result
             })
             .collect();
 
