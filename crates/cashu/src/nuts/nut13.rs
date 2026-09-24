@@ -565,9 +565,9 @@ mod tests {
     fn test_v3_secret_derivation_vector() {
         let seed = b"nut13 v3 test seed";
         let keyset_id =
-            Id::from_str("02abd02ebc1ff44652153375162407deaf0b30e590844cca0b6e4894a08a8828dd")
+            Id::from_str("02b7e077d020fabed456a6be138a8e20e9ef40b44d873fa12c005b656eb0cf99f6")
                 .unwrap();
-        let counter = 3;
+        let counter = 0;
 
         let secret = Secret::derive(seed, keyset_id, counter).unwrap();
         let (blinding_factor, accepted_attempt) =
@@ -575,13 +575,13 @@ mod tests {
 
         assert_eq!(
             secret.to_string(),
-            "7a45e04943504b25273e9569ab7019ab62f814dade23998c12f5f4cb1bb7978a"
+            "1b46679baea2775038059f5c6aa74a1d82526b33836668219ccdec01aa7d82ef"
         );
         assert_eq!(
             blinding_factor.to_secret_hex(),
-            "236dbcb12fc064ceeae6c5e2de7f79258374dccbf23ac0afdf72cf9eb53540c9"
+            "513d1a0f0f01a09fdad2f7cea1403143fb86a1be2d152969b46b45cdaabd21aa"
         );
-        assert_eq!(accepted_attempt, 1);
+        assert_eq!(accepted_attempt, 3);
     }
 
     #[test]

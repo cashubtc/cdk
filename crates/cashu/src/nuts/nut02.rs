@@ -231,17 +231,41 @@ impl Id {
         }
     }
 
-    /// *** V3 KEYSET ***
-    /// Create [`Id`] v3 using the v2 data string shape over BLS G2 compressed keys.
+    /// Create a v3 keyset ID from length-prefixed binary public data.
+    ///
+    /// Amounts and fees use minimal big-endian encoding; public keys are
+    /// compressed G2 bytes. Expiry is metadata and is not committed by v3 IDs.
     pub fn v3_from_data(
         map: &Keys,
         unit: &CurrencyUnit,
         input_fee_ppk: u64,
-        expiry: Option<u64>,
+        _expiry: Option<u64>,
     ) -> Self {
-        let mut id = Self::v2_from_data(map, unit, input_fee_ppk, expiry);
-        id.version = KeySetVersion::Version02;
-        id
+        fn append_frame(target: &mut Vec<u8>, bytes: &[u8]) {
+            target.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            target.extend_from_slice(bytes);
+        }
+
+        fn minimal_be(value: u64) -> Vec<u8> {
+            let bytes = value.to_be_bytes();
+            bytes[(value.leading_zeros() / 8) as usize..].to_vec()
+        }
+
+        let mut keys = Vec::new();
+        // Keys is a BTreeMap ordered by amount.
+        for (amount, key) in map.iter() {
+            append_frame(&mut keys, &minimal_be(amount.to_u64()));
+            append_frame(&mut keys, &key.to_bytes());
+        }
+        let mut preimage = Vec::new();
+        append_frame(&mut preimage, &keys);
+        append_frame(&mut preimage, unit.to_string().as_bytes());
+        append_frame(&mut preimage, &minimal_be(input_fee_ppk));
+
+        Self {
+            version: KeySetVersion::Version02,
+            id: IdBytes::V2(Sha256::hash(&preimage).to_byte_array()),
+        }
     }
 
     /// *** V1 VERSION ***
@@ -913,11 +937,20 @@ mod test {
         }
     "#;
 
-    const BLS_V3_KEYSET_VECTOR_KEY: &str = "93e02b6052719f607dacd3a088274f65596bd0d09920b61ab5da61bbdc7f5049334cf11213945d57e5ac7d055d042b7e024aa2b2f08f0a91260805272dc51051c6e47ad4fa403b02b4510b647ae3d1770bac0326a805bbefd48056c8c121bdb8";
+    const BLS_V3_KEYSET_VECTOR_1_KEYS: &str = r#"{
+  "1": "8d0273f6bf31ed37c3b8d68083ec3d8e20b5f2cc170fa24b9b5be35b34ed013f9a921f1cad1644d4bdb14674247234c8049cd1dbb2d2c3581e54c088135fef36505a6823d61b859437bfc79b617030dc8b40e32bad1fa85b9c0f368af6d38d3c",
+  "2": "8bf78a97086750eb166986ed8e428ca1d23ae3bbf8b2ee67451d7dd84445311e8bc8ab558b0bc008199f577195fc39b7152110e866f1a6e8c5348f6e005dbd93de671b7d0fbfa04d6614bcdd27a3cb2a70f0deacb3608ba95226268481a0be7c"
+}"#;
     const BLS_V3_KEYSET_VECTOR_1_ID: &str =
-        "02ce4c47836fd0e64f37a08254777b7fd0dedb95fc1ddd0acadf5600674c743c5d";
+        "02b7e077d020fabed456a6be138a8e20e9ef40b44d873fa12c005b656eb0cf99f6";
+    const BLS_V3_KEYSET_VECTOR_2_KEYS: &str = r#"{
+  "1": "8d0273f6bf31ed37c3b8d68083ec3d8e20b5f2cc170fa24b9b5be35b34ed013f9a921f1cad1644d4bdb14674247234c8049cd1dbb2d2c3581e54c088135fef36505a6823d61b859437bfc79b617030dc8b40e32bad1fa85b9c0f368af6d38d3c",
+  "2": "8bf78a97086750eb166986ed8e428ca1d23ae3bbf8b2ee67451d7dd84445311e8bc8ab558b0bc008199f577195fc39b7152110e866f1a6e8c5348f6e005dbd93de671b7d0fbfa04d6614bcdd27a3cb2a70f0deacb3608ba95226268481a0be7c",
+  "4": "8c60dae92451206390e30b5daa7151d63624dee496753c87dd54eadc92dc9602081fae02a1a53bac97e984a571923a5d0a29e38da2d42fd4712052800c7c8dd6e94fd9f506e946068aaac799d60b94c2d7515769ffdd32ea95d3910330ec47de",
+  "8": "a55dafcdf339360f74e3fd32296d062d5e36db3c2570e13a889b38502c0ff71864b19e324bc9c661c29b07c9cc378b5919c1656979648d7c3ef4bd6501fcc96490a34e47fe25afc8b14d60f1c3772138acaf8a0a5e4f940f57206eba74fdc973"
+}"#;
     const BLS_V3_KEYSET_VECTOR_2_ID: &str =
-        "02b532391cadf8c5d98bf0ff05b85e3cfb76a8175d71822140df3396c20cf40588";
+        "027f0dcd008156363a8418b88f38ddd5155a38c46a3f27c15c7eb40ec5f04cb4b3";
 
     #[test]
     fn test_deserialization_and_id_generation() {
@@ -963,32 +996,41 @@ mod test {
         assert_eq!(id, id_from_str);
     }
 
+    // NUTs PR #371, head 68840ccd: tests/02-tests.md, Version 3.
     #[test]
     fn test_v3_deserialization_and_id_generation() {
-        let unit = CurrencyUnit::Sat;
-        let vector_1 = format!(
-            r#"{{
-                "1":"{key}",
-                "2":"{key}"
-            }}"#,
-            key = BLS_V3_KEYSET_VECTOR_KEY
-        );
-        let keys: Keys = serde_json::from_str(&vector_1).unwrap();
-        let id = Id::v3_from_data(&keys, &unit, 0, None);
-        assert_eq!(id, Id::from_str(BLS_V3_KEYSET_VECTOR_1_ID).unwrap());
+        for (json, expected, fee) in [
+            (BLS_V3_KEYSET_VECTOR_1_KEYS, BLS_V3_KEYSET_VECTOR_1_ID, 0),
+            (BLS_V3_KEYSET_VECTOR_2_KEYS, BLS_V3_KEYSET_VECTOR_2_ID, 100),
+        ] {
+            let keys: Keys = serde_json::from_str(json).unwrap();
+            let expected = Id::from_str(expected).unwrap();
+            for expiry in [None, Some(0), Some(2_000_000_000)] {
+                let id = Id::v3_from_data(&keys, &CurrencyUnit::Sat, fee, expiry);
+                assert_eq!(id, expected);
+                super::KeySet {
+                    id,
+                    unit: CurrencyUnit::Sat,
+                    active: Some(true),
+                    keys: keys.clone(),
+                    input_fee_ppk: fee,
+                    final_expiry: expiry,
+                }
+                .verify_id()
+                .unwrap();
+            }
+        }
+    }
 
-        let vector_2 = format!(
-            r#"{{
-                "1":"{key}",
-                "2":"{key}",
-                "4":"{key}",
-                "8":"{key}"
-            }}"#,
-            key = BLS_V3_KEYSET_VECTOR_KEY
+    #[test]
+    fn test_v3_id_encodes_multibyte_amount_and_fee() {
+        let keys: Keys = serde_json::from_str(BLS_V3_KEYSET_VECTOR_1_KEYS).unwrap();
+        let key = keys.amount_key(crate::Amount::from(1)).unwrap();
+        let keys = Keys::new([(crate::Amount::from(256), key)].into_iter().collect());
+        assert_eq!(
+            Id::v3_from_data(&keys, &CurrencyUnit::Sat, 256, None).to_string(),
+            "02943fd6ddb5c3c07916b545c4bc4ceb6d3dba67b356e9fa12204581ee8c26205b",
         );
-        let keys: Keys = serde_json::from_str(&vector_2).unwrap();
-        let id = Id::v3_from_data(&keys, &unit, 100, Some(2_000_000_000));
-        assert_eq!(id, Id::from_str(BLS_V3_KEYSET_VECTOR_2_ID).unwrap());
     }
 
     #[cfg(feature = "mint")]
