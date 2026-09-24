@@ -31,6 +31,20 @@ pub(super) fn is_selected_bark_observer(
     rank < required.saturating_add(fallback).min(members.len())
 }
 
+/// Keep receive evidence collection stable while allowing the current leased
+/// worker to prepare HTLCs even when it is outside the observer prefix.
+pub(super) fn is_selected_bark_receive_observer(
+    members: impl IntoIterator<Item = MemberId>,
+    intent_actor: MemberId,
+    receive_worker: MemberId,
+    member: MemberId,
+    required: usize,
+    fallback_round: u32,
+) -> bool {
+    member == receive_worker
+        || is_selected_bark_observer(members, intent_actor, member, required, fallback_round)
+}
+
 pub(super) fn required_bark_result_observers(
     signature_threshold: u16,
     payment_observation_threshold: u16,
@@ -67,7 +81,8 @@ mod tests {
 
     use super::{
         bark_outgoing_terminal_pending_wait, is_selected_bark_observer,
-        required_bark_result_observers, unselected_bark_observer_wait,
+        is_selected_bark_receive_observer, required_bark_result_observers,
+        unselected_bark_observer_wait,
     };
     use crate::federation::payment_schedule::FederationPaymentAdvancement;
 
@@ -90,6 +105,48 @@ mod tests {
         assert_eq!(selected(1), vec![1, 2, 4, 5]);
         assert_eq!(selected(2), vec![1, 2, 3, 4, 5]);
         assert_eq!(selected(u32::MAX), vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn receive_lease_rotation_preserves_evidence_observers_and_includes_the_worker() {
+        for (actor, evidence_observers) in [(1, [1, 2, 3]), (4, [1, 4, 5])] {
+            for worker in 1..=5 {
+                let selected = (1..=5)
+                    .filter(|id| {
+                        is_selected_bark_receive_observer(
+                            members(),
+                            member(actor),
+                            member(worker),
+                            member(*id),
+                            3,
+                            0,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                assert!(evidence_observers.iter().all(|id| selected.contains(id)));
+                assert!(selected.contains(&worker));
+                assert_eq!(
+                    selected.len(),
+                    if evidence_observers.contains(&worker) {
+                        3
+                    } else {
+                        4
+                    }
+                );
+            }
+        }
+        // Existing fallback still admits every roster member if the initial
+        // collector/observer prefix is unavailable.
+        for id in 1..=5 {
+            assert!(is_selected_bark_receive_observer(
+                members(),
+                member(1),
+                member(5),
+                member(id),
+                3,
+                2,
+            ));
+        }
     }
 
     #[test]

@@ -29,7 +29,8 @@ use super::bark_evidence::{
     persist_local_bark_evidence_attestation, scheduled_bark_evidence_collector_round,
 };
 use super::bark_observer::{
-    is_selected_bark_observer, required_bark_result_observers, unselected_bark_observer_wait,
+    is_selected_bark_observer, is_selected_bark_receive_observer, required_bark_result_observers,
+    unselected_bark_observer_wait,
 };
 use super::bark_secret::FederationBarkReceiveSecretCoordinator;
 use super::payment_schedule::FederationPaymentAdvancement;
@@ -275,7 +276,7 @@ async fn advance_federated_bark_mint_quote_inner(
             });
             let evidence_collector = bark_evidence_collector(
                 federation.public_config().members.keys().copied(),
-                receive_actor,
+                intent.actor,
                 collector_fallback_round,
             )
             .ok_or(cdk::Error::Internal)?;
@@ -294,8 +295,9 @@ async fn advance_federated_bark_mint_quote_inner(
                         Some(action.latest_operation_id),
                     )
                 })?;
-            if !is_selected_bark_observer(
+            if !is_selected_bark_receive_observer(
                 federation.public_config().members.keys().copied(),
+                intent.actor,
                 receive_actor,
                 federation.member_id(),
                 usize::from(threshold),

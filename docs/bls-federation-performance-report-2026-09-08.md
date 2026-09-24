@@ -1,8 +1,8 @@
 # Federation performance optimization report
 
-Status: original campaign closed; targeted digest/collector follow-up is in progress. Full campaign acceptance remains incomplete. Two DKG arithmetic changes, dispatched/queued recovery-barrier
+Status: original campaign closed; targeted digest/collector follow-up completed with explicitly approved memory exceptions. Full campaign acceptance remains incomplete. Two DKG arithmetic changes, dispatched/queued recovery-barrier
 cleanup, the disclosed-claim recovery correction, and accepted-state broadcaster
-notifications are retained. The incoming
+notifications are retained. In the original campaign, the incoming
 collector was reverted after ten matched pairs because its CPU/receipt guard
 remained inconclusive. Checkpoint-summary digest reuse was also reverted after
 ten idle pairs: CPU and instruction savings were clear, but memory intervals
@@ -27,7 +27,7 @@ Evidence and decisions: [experiment journal](bls-federation-performance-journal-
 | Proposal wakeup (E10) | Reverted | Ten pairs and 100 receipts; median benefit, but p95/CPU guards remained inconclusive |
 | Session-scoped replay cursor (E07) | Reverted at closeout | Quorum/recovery tests and original-state recovery with five BDK outgoing receipts; matched performance acceptance remains open |
 | One final exponentiation per BLS batch (E11) | Reverted | Ten real ecash pairs: 11.31% lower SDK CPU and 2.32% lower combined execution CPU, but p95 guard remained inconclusive |
-| Stable incoming evidence collector | Reverted | Ten-pair CPU/receipt guard remained inconclusive despite more window completions |
+| Stable incoming evidence collector | Retained with explicit physical-memory exception approved September 24 | Five-pair comparison doubles finite-window receipts and lowers CPU/receipt; physical footprint exceeds the original guard |
 | Configuration digest reuse in checkpoint summaries | Retained with approved RSS exception | Current ten-pair CPU/instruction benefit and physical-footprint guard pass; RSS remains inconclusive |
 
 These retained changes have their documented local gates; they do not constitute
@@ -892,3 +892,80 @@ because replay state grew between arms; an older baseline also lost session
 convergence. Their [diagnostic observations](benchmarks/2026-09-09-checkpoint-digest-rejected-designs.csv)
 remain available and are excluded from acceptance. Two setup failures produced
 no measurement. All original custody and backend state is preserved.
+
+
+## September 9 collector reconsideration
+
+The isolated change anchors receive-evidence collection and observer selection
+to the durable intent actor while retaining HTLC preparation by the leased
+worker. Both arms include digest reuse at `afd479f79`; the Bark revision, wire
+formats, validation, payment identities and timeouts are unchanged.
+
+Five alternating pairs used fresh five-member HTTP/SQLite federations with four
+simultaneous 2,048-sat incoming Lightning requests, a 60-second window and the
+existing 120-second drain. Both arms use the same persistent SDK binary and
+matched release settings/backend inputs. Compilation, funding and startup are
+excluded. No temporary production probes were added.
+
+Candidate completed **20/20 requests in-window**, versus **10/20 for baseline**.
+Every baseline left two requests pending at drain; no late completions occurred.
+All original invoices and custody state remain preserved; no payment was retried.
+This is a finite-burst completion result, not sustainable throughput.
+
+| Metric | Candidate/baseline | Run-level 95% CI | Interpretation |
+| --- | ---: | --- | --- |
+| CPU per in-window receipt | 0.71081 | 0.65162–0.77537 | 28.92% lower |
+| CPU per receipt over full observation, including unfinished work | 0.45534 | 0.43027–0.48187 | 54.47% lower |
+| Aggregate CPU during the fixed window | 1.42162 | 1.30324–1.55075 | 42.16% higher while twice as many receipts complete |
+| Aggregate CPU over full observation | 0.91067 | 0.86053–0.96374 | 8.93% lower; observation durations differ |
+| Pending evidence collections | 0.66232 | 0.60090–0.73001 | 33.77% fewer over each full observation |
+| Peak RSS | 1.03790 | 1.03082–1.04503 | Within the 5% guard |
+| Peak physical footprint | 1.08611 | 1.06893–1.10356 | Confirmed regression beyond the 5% guard |
+| Pre-payment idle CPU | 1.00868 | 0.94276–1.07921 | No reproducible increase established |
+
+Mean peak physical footprint was **189.07 → 205.34 MB across five members**,
+about **3.25 MB more per member**. Mean peak RSS was 448.79 → 465.79 MB. The
+candidate completes more work and retains more accepted state; this experiment
+does not isolate the cause of the memory difference. Full-observation CPU
+includes the baseline's unfinished-work drain, whereas fixed-window CPU uses
+matched 60-second windows. Neither CPU/receipt metric discards unfinished-work
+cost. Pending-collection totals span different observation durations and must
+not be described as fixed-window RPC savings.
+
+Exact unconditional baseline p50/p95 remain unavailable because of censoring;
+there are insufficient samples for a p99 conclusion. A separately labeled
+analysis, introduced after the first two pairs, uses only started baseline
+requests still pending at drain to establish duration lower bounds. Candidate
+requests must all complete; no missing arm is excluded. By monotonicity of
+quantiles, candidate exact p95 divided by baseline lower-bound p95 is an upper
+bound on the ratio. The paired upper-bound ratio is 0.10873 (95% CI
+0.10591–0.11162), supporting a conservative p95 improvement for this workload,
+without assigning invented completion times to the baseline.
+
+All five candidate post-window health checks passed. The third baseline
+reported `recovery_required` on one Bark backend; all members nevertheless
+agreed on accepted state and paid/issued balances. The runner stopped, the
+failure was inspected and preserved, and only unrun fresh arms were resumed.
+Its cause remains unresolved; it is not counted as a passing health check.
+The final audit verified member agreement across all ten fixtures and preserved
+61,440 sat in independently confirmed wallet receipts. A candidate restart
+preserved its four original receipts, 8,192 sat and 32 accepted operations with
+unchanged logical state, matching member digests and bounded shutdown.
+
+Scoped validation passed: 24 Bark tests; 46 recovery tests with one manual
+benchmark ignored; strict Axum lib/test Clippy. No ordinary API, feature, FFI,
+serialization or dependency change is part of this collector patch.
+
+**Retained with the user's explicit September 24 physical-memory exception.**
+The 8.61% increase (about 3.25 MB/member) remains a confirmed regression above
+the original 5% guard; that guard did not pass. Approval accepts this specific
+tradeoff for the measured completion and CPU-efficiency benefits, independently
+of the earlier digest RSS exception. The original campaign thresholds remain
+unchanged. The committed production source matches the validated candidate
+byte for byte; no additional production edits or benchmark reruns were needed.
+
+The [ten-run ledger](benchmarks/2026-09-09-bark-collector-reconsider-5-pairs-runs.csv),
+[all forty request outcomes](benchmarks/2026-09-09-bark-collector-reconsider-5-pairs-requests.csv)
+and [explicit latency bounds](benchmarks/2026-09-09-bark-collector-reconsider-5-pairs-latency-bounds.csv)
+retain every result. Broader campaign gates and unmeasured transports/scales
+remain outside this targeted reconsideration.

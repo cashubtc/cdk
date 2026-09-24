@@ -1,0 +1,11 @@
+pair,arm,pending_lower_bounds,p95_receipt_bound_ms,interpretation
+26,baseline,2,179999.68925,baseline lower bound
+26,candidate,0,19564.770542,"candidate exact, only if all completed"
+27,baseline,2,179999.998917,baseline lower bound
+27,candidate,0,20191.478666,"candidate exact, only if all completed"
+28,baseline,2,179999.999125,baseline lower bound
+28,candidate,0,19193.868125,"candidate exact, only if all completed"
+29,baseline,2,179999.826375,baseline lower bound
+29,candidate,0,19197.374041,"candidate exact, only if all completed"
+30,baseline,2,179999.763291,baseline lower bound
+30,candidate,0,19725.49575,"candidate exact, only if all completed"

@@ -5410,3 +5410,183 @@ acceptance result is changed. Physical-footprint and scoped correctness gates
 passed and remain mandatory. Commit this isolated optimization before modifying
 the Bark collector. The exception does not extend to the collector or any other
 experiment.
+
+
+### Bark incoming collector reconsideration: hypothesis
+
+Start from `afd479f79`, including accepted digest reuse in both arms. Restore
+only stable receive-evidence observer/collector selection. The durable intent
+actor determines certificate collection while the current leased worker retains
+HTLC preparation responsibility. The hypothesis is fewer disrupted collections
+after lease rotation, reducing time to independently receipted spendable ecash.
+No external payment identity, retry permission or authorization check changes.
+
+Use fresh five-member HTTP/SQLite release fixtures and the existing persistent
+SDK driver, independent payer receipts and native resource accounting. Preserve
+failed, unfinished and late operations; do not infer unconditional latency from
+successful receipts alone. The digest RSS exception does not apply here.
+Baseline/candidate builds and correctness checks precede measurement.
+
+
+Pre-measurement workload decision: use four simultaneous 2,048-sat incoming
+Lightning requests at concurrency four, a 60-second measurement window and the
+existing 120-second drain. Every request can start without waiting for an earlier
+payment, avoiding the previous eight-request closed-loop admission imbalance.
+Do not lengthen any payment timeout. Record window completions separately from
+late completions, unfinished outcomes and CPU over the actual observation.
+Five alternating pairs, extending to ten only if inconclusive. Use the existing
+run-level paired log confidence intervals; do not combine this workload with
+the original eight-request experiment. Primary metric is receipt latency with
+completion counts; resource guards include CPU/receipt, RSS and physical
+footprint. A comparison with incomplete receipts cannot establish unconditional
+latency improvement. No production probes or speculative cache are added.
+
+
+Add a separate 30-second pre-payment idle CPU observation to each arm. Keep
+helper hashes and source/binary fingerprints privately. The baseline binary is
+reused from the digest experiment only after checking that its exact production
+patch equals the accepted commit; both arms retain the same pinned release
+profile. All performance measurement waits for compilation and validation to
+finish. One redundant validation retry was canceled while waiting on Cargo's
+build lock; the original compiler resumed without being terminated. Bounded
+compiler diagnostics are private and excluded from performance evidence.
+
+
+Validation encountered repeated idle Axum compiler processes. The original
+Axum attempt and its retry were stopped after sustained lack of CPU progress;
+no test failure was observed. A single-job retry subsequently showed active
+compilation. Retain all logs, including the earlier canceled lock-waiting retry.
+Use one Cargo build job for the release candidate too; optimization settings,
+codegen configuration and dependency versions remain unchanged. Update the
+private helper fingerprint before the first measurement and preserve its prior
+version. This build-environment adjustment is not a production optimization.
+
+
+Scoped Bark validation passed: `RUST_MIN_STACK=16777216 cargo test -j 1
+--locked -p cdk-axum --features federation-bdk,federation-bark,prometheus,iroh
+--lib bark` in the pinned stable shell: 24 passed, zero failed or ignored.
+Strict lint initially used one job; after completed dependency checks, that
+lint process tree was stopped and restarted with four jobs to avoid serial
+dependency waiting. Both logs are retained. This does not overlap performance
+measurement or alter compiler optimization settings. No lint success or
+collector performance result is claimed before the remaining commands finish.
+
+
+Strict lint passed with four jobs and `-D warnings`. Recovery tests passed:
+`RUST_MIN_STACK=16777216 cargo test -j 1 --locked -p cdk-axum --features
+federation-bdk,federation-bark,prometheus,iroh --lib recovery`: 46 passed, zero
+failed, one manual benchmark ignored. The tests use the validated collector
+source; no production change followed them.
+
+The release build initially used one job, then was stopped and resumed with
+four jobs while recompiling unchanged dependencies. Preserve both build logs
+and the exact candidate source snapshot; tests were not unnecessarily repeated.
+The immutable baseline source comparison passed. Release features remain
+`fakewallet,sqlite,info-page,federation-bdk,federation-bark,prometheus,iroh`,
+with `--locked --release -p cdk-mintd --no-default-features` in pinned Nix stable.
+No compilation overlaps payment measurements.
+
+
+After two matched pairs, all eight candidate requests completed in-window; four
+of eight baseline requests remained pending at the unchanged drain limit. Keep
+all exact-latency metrics unchanged and unavailable when requests are censored.
+Add a separately labeled conservative p95 analysis: only baseline requests that
+started and remain pending receive a lower-bound duration at the 180-second
+drain limit, measured from their own SDK scheduled offset. All candidate requests
+must have completed, otherwise this bound is unavailable. Failed or rejected
+requests do not qualify, and no arm is dropped.
+
+Quantiles are monotone in the unknown durations. Thus candidate exact p95 divided
+by baseline lower-bound p95 is an upper bound on the latency ratio. Apply the
+existing paired log Student-t interval to those upper bounds, labeling it as a
+bound comparison, not an estimate of exact baseline latency. This supplementary
+analysis was added after inspecting the first two pairs; retain that chronology
+and the original exact metrics. It does not alter a timeout, sample, workload,
+production change or regression threshold.
+
+
+The third baseline arm stopped the runner on its post-window health guard.
+It completed two of four payments, with two pending at drain. All five members
+agreed on 22 accepted operations, digests, two `receive_claimed` and two
+`receive_prepared` actions, and 4,096 sat paid/issued. Member two's Bark backend
+reported `recovery_required` despite zero projection lag. Every local Bark
+wallet had two settled receives and no pending local receive rows. The reason
+for the degraded flag is not established; do not call it benign or attribute
+it to the candidate. All original services stopped and state was preserved.
+
+Continue with the unrun third candidate and remaining fresh pairs, retaining
+the failed baseline exactly as observed, including health exit one. The resume
+helper explicitly skips only that already-recorded baseline; it never reruns a
+payment or changes an old result. This is a baseline failure outcome, not a
+passing correctness check. Candidate health checks and future failure stops
+remain strict. Preserve the read-only diagnostic and all phase/resource data.
+
+
+### Collector five-pair result and retention boundary
+
+`resume_e08c_pairs.py --first 28 --last 30` completed the remaining fresh arms.
+`analyze_e08c.py --first 26 --last 30`,
+`analyze_e08c_latency_bounds.py --last 30`, and `audit_e08c.py --last 30`
+passed. Preserve all ten runs and forty planned requests, including the third
+baseline's health exit one. Candidate: 20/20 in-window receipts, zero pending;
+baseline: 10/20 in-window receipts, ten pending at drain. No late completion,
+request omission or payment retry occurred. All five candidate health checks
+passed. Every stopped fixture has member agreement and preserved receipts.
+
+Paired geometric ratios (two-sided 95% log Student-t CIs): CPU/window receipt
+0.710808 (0.651618–0.775374); CPU/full-observation receipt 0.455336
+(0.430265–0.481868); fixed-window aggregate CPU 1.421615
+(1.303235–1.550748); peak RSS 1.037900 (1.030822–1.045027); peak physical
+footprint 1.086109 (1.068932–1.103563); pending evidence collections
+0.662315 (0.600901–0.730006); pre-payment idle CPU 1.008680
+(0.942762–1.079207). Pending backend waits and projection-readiness checks
+remain inconclusive. The exact-latency metrics retain their censoring status.
+The separately labeled p95 upper-bound ratio is 0.108728
+(0.105913–0.111619); no arm was unavailable to that bound analysis.
+
+The aggregate full-observation CPU ratio is twice its per-receipt ratio because
+every candidate completed four requests and every baseline completed two:
+0.910672 (0.860531–0.963736). Report the differing observation durations and
+higher fixed-window aggregate CPU, rather than claiming lower CPU load without
+qualification. Raw per-run records retain the original durations and totals.
+
+Physical footprint arithmetic means are 189,070,345.6 → 205,339,753.6 bytes
+across five members: 16,269,408 bytes more in aggregate, about 3.25 MB/member.
+This is a confirmed physical-memory guard failure despite the substantial
+completion and CPU/receipt benefits. The digest RSS exception does not apply.
+No further pairs are necessary merely to establish this confirmed failure;
+retention requires a new explicit exception or the production change is removed.
+
+`restart_e08c_candidate.py` restarted the original final candidate fixture,
+without creating a payment or cloning custody. Four original payer receipts,
+unique spendable wallet proofs totaling 8,192 sat, 32 accepted operations,
+member digests and logical database state were preserved. The restart and
+bounded shutdown passed; all original backend state remains intact.
+`export_e08c.py` published only numeric/bounded-category run and request evidence,
+with health exits included. The latency-bound CSV remains explicitly labeled.
+
+Recommendation pending approval: retain the collector only with an explicit
+physical-memory tradeoff of about 3.25 MB/member. Do not claim the original
+physical-memory guard passed or extend the prior digest exception silently.
+
+
+Final formatting (`cargo fmt --all -- --check` in pinned Nix stable),
+`git diff --check`, exact candidate source comparison and restart cleanup
+verification passed. Collector production source is still uncommitted pending
+the physical-memory decision.
+
+### September 24: collector retention approved
+
+The user explicitly approved keeping and committing the collector with its
+8.61% physical-footprint increase, about 3.25 MB/member. This is a specific
+physical-memory exception, separate from the digest RSS exception; the original
+5% guard remains failed and the campaign thresholds are unchanged. Retain all
+five matched pairs, the baseline health failure and latency-censoring caveats.
+
+Both production files were compared byte for byte with the frozen, validated
+candidate and matched. No production edits followed the successful tests,
+strict lint, formatting, payment audit and restart recovery recorded above.
+No additional benchmark or payment run was needed for this approval. The
+collector and its sanitized evidence are retained in this commit. This closes
+the two targeted reconsiderations, not the broader campaign's unfulfilled
+verification matrix.
