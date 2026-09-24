@@ -423,6 +423,7 @@ impl Signatory for DbSignatory {
     /// Generate new keyset
     #[tracing::instrument(skip(self))]
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
+        args.keyset_id_type.validate_unit(&args.unit)?;
         // Serialize local rotations. The standalone signatory gRPC server
         // invokes this directly (no embedded single-runner), so without this two
         // concurrent local rotations could open nested transactions on a
@@ -522,6 +523,48 @@ mod test {
     use cdk_common::{Amount, MintKeySet, PublicKey};
 
     use super::*;
+
+    #[tokio::test]
+    async fn invalid_v2_v3_unit_does_not_mutate_keysets() {
+        let store = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let signatory = DbSignatory::new(
+            store.clone(),
+            b"unit-validation-test-seed",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        let epoch = store.keysets_epoch().await.unwrap();
+        for keyset_id_type in [KeySetVersion::Version01, KeySetVersion::Version02] {
+            let result = signatory
+                .rotate_keyset(RotateKeyArguments {
+                    unit: CurrencyUnit::custom("usd cents"),
+                    amounts: vec![1, 2],
+                    input_fee_ppk: 0,
+                    keyset_id_type,
+                    final_expiry: None,
+                })
+                .await;
+            assert!(matches!(
+                result,
+                Err(Error::NUT02(cdk_common::nut02::Error::InvalidUnit { .. },))
+            ));
+            assert_eq!(store.keysets_epoch().await.unwrap(), epoch);
+            assert!(signatory.keysets().await.unwrap().keysets.is_empty());
+        }
+        // V1 keeps its historical unit policy.
+        signatory
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::custom("usd cents"),
+                amounts: vec![1, 2],
+                input_fee_ppk: 0,
+                keyset_id_type: KeySetVersion::Version00,
+                final_expiry: None,
+            })
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn keysets_epoch_moves_only_on_change() {

@@ -51,6 +51,18 @@ pub enum Error {
     /// Short keyset id is ill-formed
     #[error("Short keyset id is ill-formed")]
     MalformedShortKeysetId,
+    /// Unit is not valid for a V2 or V3 keyset
+    #[error("Keyset unit must match [a-z0-9_-]+: {unit}")]
+    InvalidUnit {
+        /// Invalid unit string
+        unit: String,
+    },
+    /// Public key curve does not match the keyset version
+    #[error("Public key curve does not match keyset version {version}")]
+    InvalidPublicKeyVersion {
+        /// Keyset version requiring a different public key curve
+        version: KeySetVersion,
+    },
     /// Slice Error
     #[error(transparent)]
     Slice(#[from] TryFromSliceError),
@@ -68,6 +80,25 @@ pub enum KeySetVersion {
 }
 
 impl KeySetVersion {
+    /// Validate the unit string required by this keyset version.
+    ///
+    /// V2 and V3 units must match `[a-z0-9_-]+`. V1 units retain their
+    /// historical behavior.
+    pub fn validate_unit(&self, unit: &CurrencyUnit) -> Result<(), Error> {
+        if *self == Self::Version00 {
+            return Ok(());
+        }
+        let unit = unit.to_string();
+        if unit.is_empty()
+            || !unit.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+            })
+        {
+            return Err(Error::InvalidUnit { unit });
+        }
+        Ok(())
+    }
+
     /// [`KeySetVersion`] to byte
     pub fn to_byte(&self) -> u8 {
         match self {
@@ -563,6 +594,20 @@ pub struct KeySet {
 impl KeySet {
     /// Verify the keyset id matches keys
     pub fn verify_id(&self) -> Result<(), Error> {
+        self.id.version.validate_unit(&self.unit)?;
+        for (_, key) in self.keys.iter() {
+            let matches_version = match self.id.version {
+                KeySetVersion::Version00 | KeySetVersion::Version01 => {
+                    matches!(key, super::PublicKey::Secp256k1(_))
+                }
+                KeySetVersion::Version02 => matches!(key, super::PublicKey::BlsG2(_)),
+            };
+            if !matches_version {
+                return Err(Error::InvalidPublicKeyVersion {
+                    version: self.id.version,
+                });
+            }
+        }
         let keys_id = match self.id.version {
             KeySetVersion::Version00 => Id::v1_from_keys(&self.keys),
             KeySetVersion::Version01 => Id::v2_from_data(
@@ -1026,6 +1071,65 @@ mod test {
                 .unwrap();
             }
         }
+    }
+
+    #[test]
+    fn test_keyset_unit_rules_are_version_specific() {
+        for version in [KeySetVersion::Version01, KeySetVersion::Version02] {
+            for unit in ["", "usd cents", "usd:cent", "éuro", "usd/cent"] {
+                let unit = CurrencyUnit::Custom(unit.into());
+                assert!(matches!(
+                    version.validate_unit(&unit),
+                    Err(Error::InvalidUnit { .. })
+                ));
+                KeySetVersion::Version00.validate_unit(&unit).unwrap();
+            }
+            for unit in [
+                CurrencyUnit::Sat,
+                CurrencyUnit::custom("usd-cent_2"),
+                CurrencyUnit::Custom("USD".into()),
+            ] {
+                version.validate_unit(&unit).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn test_keyset_verification_rejects_invalid_unit_and_curve() {
+        for version in [KeySetVersion::Version01, KeySetVersion::Version02] {
+            let keys: Keys = serde_json::from_str(match version {
+                KeySetVersion::Version01 => SHORT_KEYSET,
+                _ => BLS_V3_KEYSET_VECTOR_1_KEYS,
+            })
+            .unwrap();
+            let unit = CurrencyUnit::custom("usd cents");
+            let id = match version {
+                KeySetVersion::Version01 => Id::v2_from_data(&keys, &unit, 0, None),
+                _ => Id::v3_from_data(&keys, &unit, 0, None),
+            };
+            let keyset = super::KeySet {
+                id,
+                unit,
+                active: Some(true),
+                keys,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            };
+            assert!(matches!(keyset.verify_id(), Err(Error::InvalidUnit { .. })));
+        }
+        let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
+        let keyset = super::KeySet {
+            id: Id::v3_from_data(&keys, &CurrencyUnit::Sat, 0, None),
+            unit: CurrencyUnit::Sat,
+            active: Some(true),
+            keys,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+        assert!(matches!(
+            keyset.verify_id(),
+            Err(Error::InvalidPublicKeyVersion { .. })
+        ));
     }
 
     #[test]
