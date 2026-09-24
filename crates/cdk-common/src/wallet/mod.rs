@@ -995,6 +995,15 @@ pub enum KeysetLoadPolicy {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait Wallet: Send + Sync {
+    /// Journal identifiers for signed Nutroot transactions, including attempts.
+    async fn nutroot_receipt_ids(&self) -> Result<Vec<String>, Self::Error>;
+    /// Export a receipt after verifying it against the mint's spent commitments.
+    async fn export_nutroot_receipt(&self, id: &str) -> Result<String, Self::Error>;
+    /// Verify receipt signatures, transcript, and current mint commitments.
+    async fn verify_nutroot_receipt(&self, encoded: &str) -> Result<(), Self::Error>;
+    /// Sign a caller-approved package with matching wallet keyring keys.
+    async fn sign_nutroot_package(&self, encoded: &str) -> Result<String, Self::Error>;
+
     /// Error type
     type Error: std::error::Error + Send + Sync + 'static;
     /// Amount type (e.g. `cdk_common::Amount` or FFI `Amount`)

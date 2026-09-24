@@ -58,4 +58,36 @@ async fn wallet_signs_blinded_multisig_leaves_without_key_path_bypass() {
         .await
         .unwrap();
     assert_eq!(signed.inputs()[0].witness, before);
+    let ids = wallet.nutroot_receipt_ids().await.unwrap();
+    assert_eq!(ids.len(), 1, "replay preserves the exact receipt opening");
+    let bytes = wallet
+        .localstore
+        .kv_read("nutroot_receipts", &wallet.mint_url.to_string(), &ids[0])
+        .await
+        .unwrap()
+        .unwrap();
+    let receipt: super::nutroot::SpendReceipt = serde_json::from_slice(&bytes).unwrap();
+    let transaction = super::Transaction::new(signed.inputs(), &[], signed.outputs(), &[]).unwrap();
+    let mut state = cdk_common::nuts::ProofState::from((
+        signed.inputs()[0].y().unwrap(),
+        cdk_common::nuts::State::Spent,
+    ));
+    super::nutroot::SpendRecord::new(
+        &signed.inputs()[0],
+        &transaction,
+        0,
+        cdk_common::util::unix_time(),
+    )
+    .unwrap()
+    .apply_to(&mut state);
+    let keysets = vec![cdk_common::nuts::KeySetInfo {
+        id,
+        unit: wallet.unit.clone(),
+        active: true,
+        input_fee_ppk: 0,
+        final_expiry: None,
+    }];
+    receipt
+        .verify(&keysets, &[state], cdk_common::util::unix_time())
+        .unwrap();
 }

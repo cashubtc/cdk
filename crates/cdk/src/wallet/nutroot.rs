@@ -12,6 +12,73 @@ fn error(error: nutroot::Error) -> Error {
 }
 
 impl Wallet {
+    /// List journal identifiers for signed Nutroot transactions. An entry is
+    /// evidence of an attempted spend until verified against the mint.
+    #[tracing::instrument(skip_all)]
+    pub async fn nutroot_receipt_ids(&self) -> Result<Vec<String>, Error> {
+        Ok(self
+            .localstore
+            .kv_list("nutroot_receipts", &self.mint_url.to_string())
+            .await?)
+    }
+
+    /// Export a journaled receipt only after checking signatures and the mint's
+    /// spent commitments. Receipts reveal the entire transaction to recipients.
+    #[tracing::instrument(skip_all)]
+    pub async fn export_nutroot_receipt(&self, id: &str) -> Result<String, Error> {
+        let bytes = self
+            .localstore
+            .kv_read("nutroot_receipts", &self.mint_url.to_string(), id)
+            .await?
+            .ok_or_else(|| error(nutroot::Error::InvalidTransaction))?;
+        let receipt: nutroot::SpendReceipt = serde_json::from_slice(&bytes)?;
+        let encoded = receipt.encode().map_err(error)?;
+        self.verify_nutroot_receipt(&encoded).await?;
+        Ok(encoded)
+    }
+
+    /// Verify a receipt against this wallet's mint, including mint signatures,
+    /// the complete transcript, witnesses, and independently fetched spend state.
+    #[tracing::instrument(skip_all)]
+    pub async fn verify_nutroot_receipt(&self, encoded: &str) -> Result<(), Error> {
+        let receipt: nutroot::SpendReceipt = encoded.parse().map_err(error)?;
+        let token: cdk_common::nuts::Token = receipt.token.parse()?;
+        self.verify_token_signatures(&token).await?;
+        let proofs = self.token_proofs(&token).await?;
+        let keysets: Vec<_> = proofs
+            .iter()
+            .map(|proof| cdk_common::nuts::KeySetInfo {
+                id: proof.keyset_id,
+                unit: self.unit.clone(),
+                active: false,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            })
+            .collect();
+        let states = self
+            .client
+            .post_check_state(cdk_common::nuts::CheckStateRequest { ys: proofs.ys()? })
+            .await?;
+        receipt
+            .verify(&keysets, &states.states, cdk_common::util::unix_time())
+            .map_err(error)
+    }
+
+    /// Sign a caller-approved Nutroot package with matching wallet keyring keys.
+    /// Inspect its transaction and quote amount before calling this method.
+    #[tracing::instrument(skip_all)]
+    pub async fn sign_nutroot_package(&self, encoded: &str) -> Result<String, Error> {
+        let mut package: nutroot::SigningPackage = encoded.parse().map_err(error)?;
+        let mut keys = vec![];
+        for stored in self.localstore.list_p2pk_keys().await? {
+            if let Some(key) = self.get_signing_key(&stored.pubkey).await? {
+                keys.push(*key.as_secp256k1()?);
+            }
+        }
+        package.sign(&keys).map_err(error)?;
+        package.encode().map_err(error)
+    }
+
     /// Include the transfer scalar for a seed-derived bare proof when sending it.
     pub(crate) async fn attach_nutroot_transfer_keys(
         &self,
@@ -255,6 +322,26 @@ impl Wallet {
             }
             // Transfer keys and unexercised tree leaves are wallet data, not mint inputs.
             proof.spend_info = None;
+        }
+        if inputs
+            .iter()
+            .any(|proof| proof.keyset_id.get_version() == KeySetVersion::Version02)
+        {
+            let receipt = nutroot::SpendReceipt::new(
+                self.mint_url.clone(),
+                self.unit.clone(),
+                inputs,
+                transaction,
+                now,
+            )
+            .map_err(error)?;
+            // Retain each exact signed attempt, even across proof deletion and
+            // retries whose randomized signatures produce different openings.
+            let bytes = serde_json::to_vec(&receipt)?;
+            let id = sha256::Hash::hash(&bytes).to_string();
+            self.localstore
+                .kv_write("nutroot_receipts", &self.mint_url.to_string(), &id, &bytes)
+                .await?;
         }
         if !updates.is_empty() {
             self.localstore.update_proofs(updates, vec![]).await?;
