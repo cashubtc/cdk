@@ -3475,7 +3475,7 @@ mod tests {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = crate::wallet::test_utils::test_keyset_id();
-        let proof_info = crate::wallet::test_utils::test_proof_info(keyset_id, 1200, mint_url);
+        let proof_info = crate::wallet::test_utils::test_proof_info(keyset_id, 1011, mint_url);
         let proof_y = proof_info.y;
         let proof = proof_info.proof.clone();
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();

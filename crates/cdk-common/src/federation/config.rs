@@ -767,6 +767,7 @@ impl FederatedKeyset {
         &self,
         members: &BTreeMap<MemberId, MemberConfigPublic>,
     ) -> Result<()> {
+        KeySetVersion::Version02.validate_unit(&self.unit)?;
         if self.aggregate_keys.is_empty() {
             return Err(FederationError::EmptyFederatedKeyset { keyset_id: self.id });
         }

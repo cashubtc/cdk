@@ -153,6 +153,7 @@ pub(crate) fn sign_proofs(
         let ephemeral_key = proof.p2pk_e;
         let mut signed_with_ephemeral_key = false;
         for (i, pubkey) in pubkeys.iter().enumerate() {
+            let x_only_pubkey = pubkey.try_x_only_public_key()?;
             let already_signed = proof
                 .witness
                 .as_ref()
@@ -182,7 +183,7 @@ pub(crate) fn sign_proofs(
                         }
                     }
                 }
-            } else if let Some(signing) = key_map.get(&pubkey.try_x_only_public_key()?) {
+            } else if let Some(signing) = key_map.get(&x_only_pubkey) {
                 proof.sign_p2pk((*signing).clone())?;
             }
         }

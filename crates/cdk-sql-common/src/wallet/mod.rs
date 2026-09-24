@@ -719,7 +719,7 @@ where
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
+        let rows = query(
             r#"
             SELECT
                 mint_url,
@@ -727,7 +727,6 @@ where
                 unit,
                 amount,
                 fee,
-                ys,
                 timestamp,
                 memo,
                 metadata,
@@ -736,18 +735,21 @@ where
                 payment_proof,
                 payment_method,
                 saga_id,
-                status
+                status,
+                transactions.id,
+                transaction_ys.y
             FROM
                 transactions
+            LEFT JOIN transaction_ys ON transaction_ys.transaction_id = transactions.id
             WHERE
-                id = :id
+                transactions.id = :id
+            ORDER BY transaction_ys.position
             "#,
         )?
         .bind("id", transaction_id.as_slice().to_vec())
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_transaction)
-        .transpose()?)
+        .fetch_all(&*conn)
+        .await?;
+        Ok(sql_rows_to_transactions(rows)?.into_iter().next())
     }
 
     #[instrument(skip(self))]
@@ -763,7 +765,7 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
 
-        Ok(query(
+        let rows = query(
             r#"
             SELECT
                 mint_url,
@@ -771,7 +773,6 @@ where
                 unit,
                 amount,
                 fee,
-                ys,
                 timestamp,
                 memo,
                 metadata,
@@ -780,24 +781,21 @@ where
                 payment_proof,
                 payment_method,
                 saga_id,
-                status
+                status,
+                transactions.id,
+                transaction_ys.y
             FROM
                 transactions
+            LEFT JOIN transaction_ys ON transaction_ys.transaction_id = transactions.id
+            ORDER BY transactions.id, transaction_ys.position
             "#,
         )?
         .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .filter_map(|row| {
-            // TODO: Avoid a table scan by passing the heavy lifting of checking to the DB engine
-            let transaction = sql_row_to_transaction(row).ok()?;
-            if transaction.matches_conditions(&mint_url, &direction, &unit) {
-                Some(transaction)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>())
+        .await?;
+        Ok(sql_rows_to_transactions(rows)?
+            .into_iter()
+            .filter(|transaction| transaction.matches_conditions(&mint_url, &direction, &unit))
+            .collect())
     }
 
     async fn update_proofs(
@@ -945,16 +943,16 @@ where
         let unit = transaction.unit.to_string();
         let amount = u64::from(transaction.amount) as i64;
         let fee = u64::from(transaction.fee) as i64;
-        let ys = serde_json::to_vec(&transaction.ys)?;
+        let tx = ConnectionWithTransaction::new(conn).await?;
 
         let id = transaction.id();
 
         query(
                r#"
    INSERT INTO transactions
-   (id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata, quote_id, payment_request, payment_proof, payment_method, saga_id, status)
+   (id, mint_url, direction, unit, amount, fee, timestamp, memo, metadata, quote_id, payment_request, payment_proof, payment_method, saga_id, status)
    VALUES
-   (:id, :mint_url, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata, :quote_id, :payment_request, :payment_proof, :payment_method, :saga_id, :status)
+   (:id, :mint_url, :direction, :unit, :amount, :fee, :timestamp, :memo, :metadata, :quote_id, :payment_request, :payment_proof, :payment_method, :saga_id, :status)
    ON CONFLICT(id) DO UPDATE SET
        mint_url = excluded.mint_url,
        direction = excluded.direction,
@@ -979,7 +977,6 @@ where
            .bind("unit", unit)
            .bind("amount", amount)
            .bind("fee", fee)
-           .bind("ys", ys)
            .bind("timestamp", transaction.timestamp as i64)
            .bind("memo", transaction.memo)
            .bind(
@@ -992,9 +989,22 @@ where
            .bind("payment_method", transaction.payment_method.map(|pm| pm.to_string()))
            .bind("saga_id", transaction.saga_id.map(|id| id.to_string()))
            .bind("status", transaction.status.to_string())
-           .execute(&*conn)
+           .execute(&tx)
            .await?;
 
+        query("DELETE FROM transaction_ys WHERE transaction_id = :id")?
+            .bind("id", id.as_slice().to_vec())
+            .execute(&tx)
+            .await?;
+        for (position, y) in transaction.ys.iter().enumerate() {
+            query("INSERT INTO transaction_ys (transaction_id, position, y) VALUES (:id, :position, :y)")?
+                .bind("id", id.as_slice().to_vec())
+                .bind("position", position as i64)
+                .bind("y", y.to_bytes().to_vec())
+                .execute(&tx)
+                .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -1479,11 +1489,17 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
 
+        let tx = ConnectionWithTransaction::new(conn).await?;
+        query("DELETE FROM transaction_ys WHERE transaction_id = :id")?
+            .bind("id", transaction_id.as_slice().to_vec())
+            .execute(&tx)
+            .await?;
         query(r#"DELETE FROM transactions WHERE id=:id"#)?
             .bind("id", transaction_id.as_slice().to_vec())
-            .execute(&*conn)
+            .execute(&tx)
             .await?;
 
+        tx.commit().await?;
         Ok(())
     }
 
@@ -2343,7 +2359,38 @@ fn sql_row_to_wallet_saga(row: Vec<Column>) -> Result<wallet::WalletSaga, Error>
     })
 }
 
-fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
+// Both transaction queries use one join, avoiding a separate query per transaction.
+fn sql_rows_to_transactions(rows: Vec<Vec<Column>>) -> Result<Vec<Transaction>, Error> {
+    let mut transactions: Vec<Transaction> = Vec::new();
+    let mut indices = HashMap::new();
+    for mut row in rows {
+        let y = row
+            .pop()
+            .ok_or_else(|| Error::Internal("Missing transaction point column".to_owned()))?;
+        let id = row
+            .pop()
+            .ok_or_else(|| Error::Internal("Missing transaction ID column".to_owned()))?;
+        let id = column_as_binary!(id);
+        let y = column_as_nullable_binary!(y)
+            .map(|bytes| PublicKey::from_slice(&bytes))
+            .transpose()?;
+        let index = match indices.get(&id) {
+            Some(index) => *index,
+            None => {
+                let index = transactions.len();
+                transactions.push(sql_row_to_transaction(row, Vec::new())?);
+                indices.insert(id, index);
+                index
+            }
+        };
+        if let Some(y) = y {
+            transactions[index].ys.push(y);
+        }
+    }
+    Ok(transactions)
+}
+
+fn sql_row_to_transaction(row: Vec<Column>, ys: Vec<PublicKey>) -> Result<Transaction, Error> {
     unpack_into!(
         let (
             mint_url,
@@ -2351,7 +2398,6 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
             unit,
             amount,
             fee,
-            ys,
             timestamp,
             memo,
             metadata,
@@ -2366,7 +2412,6 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
 
     let amount: u64 = column_as_number!(amount);
     let fee: u64 = column_as_number!(fee);
-    let ys = deserialize_transaction_ys(&column_as_binary!(ys))?;
 
     let saga_id: Option<Uuid> = column_as_nullable_string!(saga_id)
         .map(|id| Uuid::from_str(&id).ok())
@@ -2397,27 +2442,6 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
     })
 }
 
-fn deserialize_transaction_ys(bytes: &[u8]) -> Result<Vec<PublicKey>, Error> {
-    match serde_json::from_slice(bytes) {
-        Ok(ys) => Ok(ys),
-        Err(json_error) => {
-            for key_size in [33, 48] {
-                if bytes.len().is_multiple_of(key_size) {
-                    if let Ok(ys) = bytes
-                        .chunks(key_size)
-                        .map(PublicKey::from_slice)
-                        .collect::<Result<Vec<_>, _>>()
-                    {
-                        return Ok(ys);
-                    }
-                }
-            }
-
-            Err(Error::Serde(json_error))
-        }
-    }
-}
-
 fn sql_row_to_p2pk_signing_key(row: Vec<Column>) -> Result<wallet::P2PKSigningKey, Error> {
     unpack_into!(
         let (
@@ -2438,30 +2462,7 @@ fn sql_row_to_p2pk_signing_key(row: Vec<Column>) -> Result<wallet::P2PKSigningKe
 
 #[cfg(test)]
 mod tests {
-    use cdk_common::nuts::nut01::BlsG1PublicKey;
-
     use super::*;
-
-    #[test]
-    fn transaction_ys_decode_new_and_legacy_encodings() {
-        let secp = SecretKey::generate().public_key();
-        let bls = PublicKey::from(BlsG1PublicKey::hash_to_curve(b"federation transaction"));
-
-        let encoded = serde_json::to_vec(&vec![secp, bls]).expect("serialize public keys");
-        assert_eq!(
-            deserialize_transaction_ys(&encoded).expect("new encoding"),
-            vec![secp, bls]
-        );
-
-        assert_eq!(
-            deserialize_transaction_ys(&secp.to_bytes()).expect("legacy secp encoding"),
-            vec![secp]
-        );
-        assert_eq!(
-            deserialize_transaction_ys(&bls.to_bytes()).expect("legacy BLS encoding"),
-            vec![bls]
-        );
-    }
 
     #[test]
     fn proof_query_pushes_supported_filters_into_sql() {

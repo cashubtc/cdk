@@ -1314,14 +1314,22 @@ pub trait Wallet: Send + Sync {
 
     /// Verify token proof signatures against the mint keys.
     ///
-    /// This verifies DLEQ proofs for v1/v2 keysets and BLS pairings for v3 keysets.
-    async fn verify_token_signatures(&self, token_str: &str) -> Result<(), Self::Error>;
+    /// The default delegates to the legacy DLEQ verifier for compatibility with
+    /// existing wallet implementations. Implementations supporting v3 keysets
+    /// must override this method to verify BLS pairings as well as v1/v2 DLEQ
+    /// proofs. Unsupported signatures must return an error, never be skipped.
+    #[allow(deprecated)]
+    async fn verify_token_signatures(&self, token_str: &str) -> Result<(), Self::Error> {
+        self.verify_token_dleq(token_str).await
+    }
 
     /// Verify DLEQ proofs in a token.
+    ///
+    /// Implementations must reject proofs they cannot verify, including BLS
+    /// proofs when only DLEQ verification is supported. This remains required
+    /// so the compatibility default cannot recurse between the two methods.
     #[deprecated(note = "use verify_token_signatures instead")]
-    async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error> {
-        self.verify_token_signatures(token_str).await
-    }
+    async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error>;
 
     /// Subscribe to mint quote state updates
     ///

@@ -25,7 +25,8 @@ impl KeysetService for MintRPCServer {
         let keyset_version = match request.keyset_version.as_deref() {
             Some("v1") | Some("00") => KeySetVersion::Version00,
             Some("v2") | Some("01") => KeySetVersion::Version01,
-            Some("v3") | Some("02") => KeySetVersion::Version02,
+            Some("v3") | Some("02") => KeySetVersion::from_proto_i32(3)
+                .map_err(|_| Status::invalid_argument("BLS keysets are not enabled"))?,
             Some(version) => {
                 return Err(Status::invalid_argument(format!(
                     "Invalid keyset version: {version}"
@@ -34,7 +35,7 @@ impl KeysetService for MintRPCServer {
             None => match request.use_keyset_v2 {
                 Some(true) => KeySetVersion::Version01,
                 Some(false) => KeySetVersion::Version00,
-                None => KeySetVersion::Version02,
+                None => KeySetVersion::from_proto_i32(3).unwrap_or(KeySetVersion::Version01),
             },
         };
 

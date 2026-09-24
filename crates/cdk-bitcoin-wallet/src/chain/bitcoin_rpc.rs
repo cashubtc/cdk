@@ -1447,7 +1447,6 @@ mod transport_tests {
             password: "password".to_string(),
             wallet_rescan_from_height,
             request_timeout_secs: 15,
-            request_timeout_secs: 15,
         }
     }
 

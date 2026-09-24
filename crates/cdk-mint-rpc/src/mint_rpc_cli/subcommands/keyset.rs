@@ -22,9 +22,7 @@ pub struct RotateNextKeysetCommand {
     /// The input fee in parts per thousand to apply when minting with this keyset
     #[arg(short, long)]
     input_fee_ppk: Option<u64>,
-    /// Use keyset v2.
-    ///
-    /// Deprecated: use --keyset-version instead.
+    /// Use keyset v2 (deprecated; prefer --keyset-version)
     #[arg(long)]
     use_keyset_v2: Option<bool>,
     /// Keyset version to create: v1, v2, or v3
@@ -62,8 +60,8 @@ pub async fn rotate_next_keyset(
             amounts,
             input_fee_ppk: sub_command_args.input_fee_ppk,
             use_keyset_v2: sub_command_args.use_keyset_v2,
-            final_expiry: sub_command_args.final_expiry,
             keyset_version: sub_command_args.keyset_version.clone(),
+            final_expiry: sub_command_args.final_expiry,
         }))
         .await?;
 

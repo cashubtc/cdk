@@ -47,9 +47,24 @@ pub enum Error {
     /// Short keyset id does not match any of the provided IDv2s
     #[error("Short keyset id does not match any of the provided IDv2s")]
     UnknownShortKeysetId,
+    /// Short keyset id matches multiple distinct full IDs
+    #[error("Short keyset id is ambiguous")]
+    AmbiguousShortKeysetId,
     /// Short keyset id is ill-formed
     #[error("Short keyset id is ill-formed")]
     MalformedShortKeysetId,
+    /// Unit is not valid for a V2 or V3 keyset
+    #[error("Keyset unit must match [a-z0-9_-]+: {unit}")]
+    InvalidUnit {
+        /// Invalid unit string
+        unit: String,
+    },
+    /// Public key curve does not match the keyset version
+    #[error("Public key curve does not match keyset version {version}")]
+    InvalidPublicKeyVersion {
+        /// Keyset version requiring a different public key curve
+        version: KeySetVersion,
+    },
     /// Slice Error
     #[error(transparent)]
     Slice(#[from] TryFromSliceError),
@@ -75,6 +90,25 @@ impl KeySetVersion {
             #[cfg(feature = "federation")]
             Self::Version02 => true,
         }
+    }
+
+    /// Validate the unit string required by this keyset version.
+    ///
+    /// V2 and V3 units must match `[a-z0-9_-]+`. V1 units retain their
+    /// historical behavior.
+    pub fn validate_unit(&self, unit: &CurrencyUnit) -> Result<(), Error> {
+        if *self == Self::Version00 {
+            return Ok(());
+        }
+        let unit = unit.to_string();
+        if unit.is_empty()
+            || !unit.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+            })
+        {
+            return Err(Error::InvalidUnit { unit });
+        }
+        Ok(())
     }
 
     /// [`KeySetVersion`] to byte
@@ -246,18 +280,42 @@ impl Id {
         }
     }
 
-    /// *** V3 KEYSET ***
-    /// Create [`Id`] v3 using the v2 data string shape over BLS G2 compressed keys.
+    /// Create a v3 keyset ID from length-prefixed binary public data.
+    ///
+    /// Amounts and fees use minimal big-endian encoding; public keys are
+    /// compressed G2 bytes. Expiry is metadata and is not committed by v3 IDs.
     #[cfg(feature = "federation")]
     pub fn v3_from_data(
         map: &Keys,
         unit: &CurrencyUnit,
         input_fee_ppk: u64,
-        expiry: Option<u64>,
+        _expiry: Option<u64>,
     ) -> Self {
-        let mut id = Self::v2_from_data(map, unit, input_fee_ppk, expiry);
-        id.version = KeySetVersion::Version02;
-        id
+        fn append_frame(target: &mut Vec<u8>, bytes: &[u8]) {
+            target.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            target.extend_from_slice(bytes);
+        }
+
+        fn minimal_be(value: u64) -> Vec<u8> {
+            let bytes = value.to_be_bytes();
+            bytes[(value.leading_zeros() / 8) as usize..].to_vec()
+        }
+
+        let mut keys = Vec::new();
+        // Keys is a BTreeMap ordered by amount.
+        for (amount, key) in map.iter() {
+            append_frame(&mut keys, &minimal_be(amount.to_u64()));
+            append_frame(&mut keys, &key.to_bytes());
+        }
+        let mut preimage = Vec::new();
+        append_frame(&mut preimage, &keys);
+        append_frame(&mut preimage, unit.to_string().as_bytes());
+        append_frame(&mut preimage, &minimal_be(input_fee_ppk));
+
+        Self {
+            version: KeySetVersion::Version02,
+            id: IdBytes::V2(Sha256::hash(&preimage).to_byte_array()),
+        }
     }
 
     /// *** V1 VERSION ***
@@ -317,15 +375,18 @@ impl Id {
                 })
             }
             _ => {
-                // We return the first match or error
-                for keyset_info in keysets_info.iter() {
+                let mut resolved = None;
+                for keyset_info in keysets_info {
                     if keyset_info.id.version == short_id.version
                         && keyset_info.id.id.to_vec().starts_with(&short_id.prefix)
                     {
-                        return Ok(keyset_info.id);
+                        if resolved.is_some_and(|id| id != keyset_info.id) {
+                            return Err(Error::AmbiguousShortKeysetId);
+                        }
+                        resolved = Some(keyset_info.id);
                     }
                 }
-                Err(Error::UnknownShortKeysetId)
+                resolved.ok_or(Error::UnknownShortKeysetId)
             }
         }
     }
@@ -550,6 +611,21 @@ pub struct KeySet {
 impl KeySet {
     /// Verify the keyset id matches keys
     pub fn verify_id(&self) -> Result<(), Error> {
+        self.id.version.validate_unit(&self.unit)?;
+        #[cfg(feature = "federation")]
+        for (_, key) in self.keys.iter() {
+            let matches_version = match self.id.version {
+                KeySetVersion::Version00 | KeySetVersion::Version01 => {
+                    matches!(key, super::PublicKey::Secp256k1(_))
+                }
+                KeySetVersion::Version02 => matches!(key, super::PublicKey::BlsG2(_)),
+            };
+            if !matches_version {
+                return Err(Error::InvalidPublicKeyVersion {
+                    version: self.id.version,
+                });
+            }
+        }
         let keys_id = match self.id.version {
             KeySetVersion::Version00 => Id::v1_from_keys(&self.keys),
             KeySetVersion::Version01 => Id::v2_from_data(
@@ -934,11 +1010,24 @@ mod test {
         }
     "#;
 
-    const BLS_V3_KEYSET_VECTOR_KEY: &str = "93e02b6052719f607dacd3a088274f65596bd0d09920b61ab5da61bbdc7f5049334cf11213945d57e5ac7d055d042b7e024aa2b2f08f0a91260805272dc51051c6e47ad4fa403b02b4510b647ae3d1770bac0326a805bbefd48056c8c121bdb8";
+    #[cfg(feature = "federation")]
+    const BLS_V3_KEYSET_VECTOR_1_KEYS: &str = r#"{
+  "1": "8d0273f6bf31ed37c3b8d68083ec3d8e20b5f2cc170fa24b9b5be35b34ed013f9a921f1cad1644d4bdb14674247234c8049cd1dbb2d2c3581e54c088135fef36505a6823d61b859437bfc79b617030dc8b40e32bad1fa85b9c0f368af6d38d3c",
+  "2": "8bf78a97086750eb166986ed8e428ca1d23ae3bbf8b2ee67451d7dd84445311e8bc8ab558b0bc008199f577195fc39b7152110e866f1a6e8c5348f6e005dbd93de671b7d0fbfa04d6614bcdd27a3cb2a70f0deacb3608ba95226268481a0be7c"
+}"#;
+    #[cfg(feature = "federation")]
     const BLS_V3_KEYSET_VECTOR_1_ID: &str =
-        "02ce4c47836fd0e64f37a08254777b7fd0dedb95fc1ddd0acadf5600674c743c5d";
+        "02b7e077d020fabed456a6be138a8e20e9ef40b44d873fa12c005b656eb0cf99f6";
+    #[cfg(feature = "federation")]
+    const BLS_V3_KEYSET_VECTOR_2_KEYS: &str = r#"{
+  "1": "8d0273f6bf31ed37c3b8d68083ec3d8e20b5f2cc170fa24b9b5be35b34ed013f9a921f1cad1644d4bdb14674247234c8049cd1dbb2d2c3581e54c088135fef36505a6823d61b859437bfc79b617030dc8b40e32bad1fa85b9c0f368af6d38d3c",
+  "2": "8bf78a97086750eb166986ed8e428ca1d23ae3bbf8b2ee67451d7dd84445311e8bc8ab558b0bc008199f577195fc39b7152110e866f1a6e8c5348f6e005dbd93de671b7d0fbfa04d6614bcdd27a3cb2a70f0deacb3608ba95226268481a0be7c",
+  "4": "8c60dae92451206390e30b5daa7151d63624dee496753c87dd54eadc92dc9602081fae02a1a53bac97e984a571923a5d0a29e38da2d42fd4712052800c7c8dd6e94fd9f506e946068aaac799d60b94c2d7515769ffdd32ea95d3910330ec47de",
+  "8": "a55dafcdf339360f74e3fd32296d062d5e36db3c2570e13a889b38502c0ff71864b19e324bc9c661c29b07c9cc378b5919c1656979648d7c3ef4bd6501fcc96490a34e47fe25afc8b14d60f1c3772138acaf8a0a5e4f940f57206eba74fdc973"
+}"#;
+    #[cfg(feature = "federation")]
     const BLS_V3_KEYSET_VECTOR_2_ID: &str =
-        "02b532391cadf8c5d98bf0ff05b85e3cfb76a8175d71822140df3396c20cf40588";
+        "027f0dcd008156363a8418b88f38ddd5155a38c46a3f27c15c7eb40ec5f04cb4b3";
 
     #[test]
     fn test_deserialization_and_id_generation() {
@@ -984,33 +1073,111 @@ mod test {
         assert_eq!(id, id_from_str);
     }
 
+    // NUTs PR #371, head 68840ccd: tests/02-tests.md, Version 3.
     #[test]
     #[cfg(feature = "federation")]
     fn test_v3_deserialization_and_id_generation() {
-        let unit = CurrencyUnit::Sat;
-        let vector_1 = format!(
-            r#"{{
-                "1":"{key}",
-                "2":"{key}"
-            }}"#,
-            key = BLS_V3_KEYSET_VECTOR_KEY
-        );
-        let keys: Keys = serde_json::from_str(&vector_1).unwrap();
-        let id = Id::v3_from_data(&keys, &unit, 0, None);
-        assert_eq!(id, Id::from_str(BLS_V3_KEYSET_VECTOR_1_ID).unwrap());
+        for (json, expected, fee) in [
+            (BLS_V3_KEYSET_VECTOR_1_KEYS, BLS_V3_KEYSET_VECTOR_1_ID, 0),
+            (BLS_V3_KEYSET_VECTOR_2_KEYS, BLS_V3_KEYSET_VECTOR_2_ID, 100),
+        ] {
+            let keys: Keys = serde_json::from_str(json).unwrap();
+            let expected = Id::from_str(expected).unwrap();
+            for expiry in [None, Some(0), Some(2_000_000_000)] {
+                let id = Id::v3_from_data(&keys, &CurrencyUnit::Sat, fee, expiry);
+                assert_eq!(id, expected);
+                super::KeySet {
+                    id,
+                    unit: CurrencyUnit::Sat,
+                    active: Some(true),
+                    keys: keys.clone(),
+                    input_fee_ppk: fee,
+                    final_expiry: expiry,
+                }
+                .verify_id()
+                .unwrap();
+            }
+        }
+    }
 
-        let vector_2 = format!(
-            r#"{{
-                "1":"{key}",
-                "2":"{key}",
-                "4":"{key}",
-                "8":"{key}"
-            }}"#,
-            key = BLS_V3_KEYSET_VECTOR_KEY
+    #[test]
+    fn test_keyset_unit_rules_are_version_specific() {
+        for version in [
+            KeySetVersion::Version01,
+            #[cfg(feature = "federation")]
+            KeySetVersion::Version02,
+        ] {
+            for unit in ["", "usd cents", "usd:cent", "éuro", "usd/cent"] {
+                let unit = CurrencyUnit::Custom(unit.into());
+                assert!(matches!(
+                    version.validate_unit(&unit),
+                    Err(Error::InvalidUnit { .. })
+                ));
+                KeySetVersion::Version00.validate_unit(&unit).unwrap();
+            }
+            for unit in [
+                CurrencyUnit::Sat,
+                CurrencyUnit::custom("usd-cent_2"),
+                CurrencyUnit::Custom("USD".into()),
+            ] {
+                version.validate_unit(&unit).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "federation")]
+    fn test_keyset_verification_rejects_invalid_unit_and_curve() {
+        for version in [
+            KeySetVersion::Version01,
+            #[cfg(feature = "federation")]
+            KeySetVersion::Version02,
+        ] {
+            let keys: Keys = serde_json::from_str(match version {
+                KeySetVersion::Version01 => SHORT_KEYSET,
+                _ => BLS_V3_KEYSET_VECTOR_1_KEYS,
+            })
+            .unwrap();
+            let unit = CurrencyUnit::custom("usd cents");
+            let id = match version {
+                KeySetVersion::Version01 => Id::v2_from_data(&keys, &unit, 0, None),
+                _ => Id::v3_from_data(&keys, &unit, 0, None),
+            };
+            let keyset = super::KeySet {
+                id,
+                unit,
+                active: Some(true),
+                keys,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            };
+            assert!(matches!(keyset.verify_id(), Err(Error::InvalidUnit { .. })));
+        }
+        let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
+        let keyset = super::KeySet {
+            id: Id::v3_from_data(&keys, &CurrencyUnit::Sat, 0, None),
+            unit: CurrencyUnit::Sat,
+            active: Some(true),
+            keys,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+        assert!(matches!(
+            keyset.verify_id(),
+            Err(Error::InvalidPublicKeyVersion { .. })
+        ));
+    }
+
+    #[test]
+    #[cfg(feature = "federation")]
+    fn test_v3_id_encodes_multibyte_amount_and_fee() {
+        let keys: Keys = serde_json::from_str(BLS_V3_KEYSET_VECTOR_1_KEYS).unwrap();
+        let key = keys.amount_key(crate::Amount::from(1)).unwrap();
+        let keys = Keys::new([(crate::Amount::from(256), key)].into_iter().collect());
+        assert_eq!(
+            Id::v3_from_data(&keys, &CurrencyUnit::Sat, 256, None).to_string(),
+            "02943fd6ddb5c3c07916b545c4bc4ceb6d3dba67b356e9fa12204581ee8c26205b",
         );
-        let keys: Keys = serde_json::from_str(&vector_2).unwrap();
-        let id = Id::v3_from_data(&keys, &unit, 100, Some(2_000_000_000));
-        assert_eq!(id, Id::from_str(BLS_V3_KEYSET_VECTOR_2_ID).unwrap());
     }
 
     #[cfg(feature = "mint")]
@@ -1273,6 +1440,43 @@ mod test {
         let id_with_same_inputs = Id::v2_from_data(&keys, &unit, 0, Some(2059210353));
 
         assert_eq!(id_without_fee, id_with_same_inputs);
+    }
+
+    #[test]
+    fn test_short_keyset_resolution_requires_a_unique_full_id() {
+        for version in [
+            1,
+            #[cfg(feature = "federation")]
+            2,
+        ] {
+            let mut bytes = [0x11; 33];
+            bytes[0] = version;
+            let first = Id::from_bytes(&bytes).unwrap();
+            bytes[32] = 0x22;
+            let second = Id::from_bytes(&bytes).unwrap();
+            let keyset = |id| KeySetInfo {
+                id,
+                unit: CurrencyUnit::Sat,
+                active: true,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            };
+            let short = ShortKeysetId::from(first);
+            for ids in [[first, second], [second, first]] {
+                let keysets = ids.map(keyset);
+                assert!(matches!(
+                    Id::from_short_keyset_id(&short, &keysets),
+                    Err(Error::AmbiguousShortKeysetId),
+                ));
+                let full = ShortKeysetId::from_bytes(&first.to_bytes()).unwrap();
+                assert_eq!(Id::from_short_keyset_id(&full, &keysets).unwrap(), first);
+            }
+            // Repeated metadata for one full ID does not create ambiguity.
+            assert_eq!(
+                Id::from_short_keyset_id(&short, &[keyset(first), keyset(first)],).unwrap(),
+                first
+            );
+        }
     }
 
     #[test]

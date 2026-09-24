@@ -822,7 +822,7 @@ mod tests {
                     PaymentProcessorKey::new(CurrencyUnit::Sat, method),
                     backend.clone() as DynMintPayment,
                 )]);
-                let manager = PubSubManager::new((db.clone(), Arc::new(processors)));
+                let manager = PubSubManager::new((db.clone(), Arc::new(processors), true));
                 let params = Params {
                     kind,
                     filters: vec![quote.id.to_string()],
@@ -886,7 +886,7 @@ mod tests {
         let db: DynMintDatabase =
             Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
         let db_weak = Arc::downgrade(&db);
-        let manager = PubSubManager::new((db, Arc::new(HashMap::new())));
+        let manager = PubSubManager::new((db, Arc::new(HashMap::new()), true));
         let manager_weak = Arc::downgrade(&manager);
         drop(manager);
         assert!(manager_weak.upgrade().is_none());

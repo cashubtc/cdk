@@ -246,9 +246,8 @@ test = false
 doc = false
 bench = false
 
-# Structured bins: sibling bins that consume `arbitrary_ext`
-# wrappers directly. They complement -- they do not replace -- the
-# raw-bytes parsing bins above.
+# BLS12-381 (v3) bins: cover the pairing-based protocol added for `02`
+# keysets and the BLS points that can reach secp256k1-only code paths.
 
 [[bin]]
 name = "fuzz_proof_structured"

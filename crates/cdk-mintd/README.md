@@ -568,7 +568,7 @@ The mint supports rotating keysets to newer versions (e.g., migrating from V1/V2
 **Policy Configuration:**
 By default, the mint will use V3 (Version02) for *new* keysets but will preserve existing active keysets to avoid unnecessary rotation. You can force a legacy policy in an initialization or apply document:
 
-- `use_keyset_v2 = true`: Forces V2. If the current active keyset is V1, it will be rotated to V2 on startup.
+- `use_keyset_v2 = true`: Forces V2. If the current active keyset is V1 or V3, it will be rotated to V2 on startup.
 - `use_keyset_v2 = false`: Forces V1. If the current active keyset is V2 or V3, it will be rotated to V1 on startup.
 - **Unset (Default)**: Preserves the current keyset version. If no keyset exists, V3 is created.
 

@@ -109,6 +109,7 @@ fn arbitrary_operation(
             state: melt_quote_state(u)?,
             amount: AmountArb::arbitrary(u)?.into_inner(),
             fee_reserve: AmountArb::arbitrary(u)?.into_inner(),
+            total_spent: Option::<AmountArb>::arbitrary(u)?.map(|amount| amount.into_inner()),
             payment_id: None,
             payment_proof: optional_bounded_string(u, 24)?,
         }),

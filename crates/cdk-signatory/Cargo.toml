@@ -10,7 +10,7 @@ rust-version.workspace = true # MSRV
 license.workspace = true
 
 [features]
-federation = ["cdk-common/federation"]
+federation = ["cdk-common/federation", "cdk-sqlite?/federation"]
 default = ["grpc", "sqlite"]
 sqlite = ["cdk-sqlite"]
 sqlcipher = ["cdk-sqlite/sqlcipher"]

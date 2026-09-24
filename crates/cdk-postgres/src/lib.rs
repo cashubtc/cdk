@@ -503,6 +503,133 @@ mod test {
             .expect("database")
     }
 
+    #[tokio::test]
+    async fn wallet_transaction_ys_migration() {
+        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .unwrap_or(
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned(),
+            );
+        let (mut client, connection) = tokio_postgres::connect(&db_url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            connection.await.unwrap();
+        });
+        // Temporary tables keep this migration fixture isolated from other tests.
+        client.batch_execute("CREATE TEMP TABLE transactions (id BYTEA PRIMARY KEY, ys BYTEA NOT NULL, memo TEXT);").await.unwrap();
+        let first = cdk_common::SecretKey::generate().public_key().to_bytes();
+        let second = cdk_common::SecretKey::generate().public_key().to_bytes();
+        let points = [first.clone(), second, first];
+        client
+            .execute(
+                "INSERT INTO transactions VALUES ($1, $2, 'retained'), ($3, $4, 'empty')",
+                &[&vec![1u8], &points.concat(), &vec![2u8], &Vec::<u8>::new()],
+            )
+            .await
+            .unwrap();
+        let json_points = vec![cdk_common::SecretKey::generate().public_key()];
+        let additional_cases = vec![(
+            vec![3u8],
+            serde_json::to_vec(&json_points).unwrap(),
+            json_points
+                .iter()
+                .map(|key| key.to_bytes().to_vec())
+                .collect::<Vec<_>>(),
+        )];
+        #[cfg(feature = "federation")]
+        let additional_cases = {
+            let mut cases = additional_cases;
+            let bls = cdk_common::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"migration proof");
+            let mixed = vec![cdk_common::PublicKey::from(bls), json_points[0], bls.into()];
+            cases.push((
+                vec![4u8],
+                serde_json::to_vec(&mixed).unwrap(),
+                mixed.iter().map(|key| key.to_bytes()).collect(),
+            ));
+            cases.push((
+                vec![5u8],
+                bls.to_bytes().to_vec(),
+                vec![bls.to_bytes().to_vec()],
+            ));
+            cases
+        };
+        for (id, encoded, _) in &additional_cases {
+            client
+                .execute(
+                    "INSERT INTO transactions VALUES ($1, $2, 'encoded')",
+                    &[id, encoded],
+                )
+                .await
+                .unwrap();
+        }
+        // The migration's child table is temporary too, so all fixture data is removed on disconnect.
+        let migration = include_str!("../../cdk-sql-common/src/wallet/migrations/postgres/20260924000000_normalize_transaction_ys.sql")
+            .replace("CREATE TABLE transaction_ys", "CREATE TEMP TABLE transaction_ys");
+        let tx = client.transaction().await.unwrap();
+        tx.batch_execute(&migration).await.unwrap();
+        tx.commit().await.unwrap();
+        let rows = client
+            .query(
+                "SELECT y FROM transaction_ys WHERE transaction_id = $1 ORDER BY position",
+                &[&vec![1u8]],
+            )
+            .await
+            .unwrap();
+        let stored: Vec<Vec<u8>> = rows.iter().map(|row| row.get(0)).collect();
+        assert_eq!(stored, points);
+        for (id, _, expected) in &additional_cases {
+            let rows = client
+                .query(
+                    "SELECT y FROM transaction_ys WHERE transaction_id = $1 ORDER BY position",
+                    &[id],
+                )
+                .await
+                .unwrap();
+            let actual: Vec<Vec<u8>> = rows.iter().map(|row| row.get(0)).collect();
+            assert_eq!(&actual, expected);
+        }
+
+        let empty_count: i64 = client
+            .query_one(
+                "SELECT count(*) FROM transaction_ys WHERE transaction_id = $1",
+                &[&vec![2u8]],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(empty_count, 0);
+        let memo: String = client
+            .query_one("SELECT memo FROM transactions WHERE id = $1", &[&vec![1u8]])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(memo, "retained");
+        assert!(client
+            .query("SELECT ys FROM transactions", &[])
+            .await
+            .is_err());
+
+        client.batch_execute("DROP TABLE transaction_ys; DROP TABLE transactions; CREATE TEMP TABLE transactions (id BYTEA PRIMARY KEY, ys BYTEA NOT NULL);").await.unwrap();
+        client
+            .execute(
+                "INSERT INTO transactions VALUES ($1, $2)",
+                &[&vec![1u8], &vec![2u8; 34]],
+            )
+            .await
+            .unwrap();
+        let tx = client.transaction().await.unwrap();
+        assert!(tx.batch_execute(&migration).await.is_err());
+        tx.rollback().await.unwrap();
+        let stored: Vec<u8> = client
+            .query_one("SELECT ys FROM transactions", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(stored, vec![2u8; 34]);
+    }
+
     wallet_db_test!(provide_wallet_db);
 
     #[cfg(feature = "federation")]
@@ -854,7 +981,7 @@ mod test {
 
         let config = PgConfig::from(db_url.as_str());
         let schema = config.schema.clone().expect("test schema");
-        let (client, connection) = connect(&config.url, NoTls)
+        let (client, connection) = tokio_postgres::connect(&config.url, NoTls)
             .await
             .expect("postgres connection");
         let connection_handle = tokio::spawn(async move {
@@ -1096,7 +1223,7 @@ mod test {
 
         let config = PgConfig::from(db_url.as_str());
         let schema = config.schema.clone().expect("test schema");
-        let (client, connection) = connect(&config.url, NoTls)
+        let (client, connection) = tokio_postgres::connect(&config.url, NoTls)
             .await
             .expect("postgres connection");
         let connection_handle = tokio::spawn(async move {

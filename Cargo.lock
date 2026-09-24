@@ -1389,6 +1389,7 @@ dependencies = [
  "pairing",
  "rand_core 0.6.4",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -1533,6 +1534,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "serde_with",
+ "sha2 0.10.9",
  "sha2 0.9.9",
  "thiserror 2.0.20",
  "tracing",
@@ -2289,6 +2291,7 @@ dependencies = [
  "paste",
  "percent-encoding",
  "postgres-native-tls",
+ "serde_json",
  "tokio",
  "tokio-postgres",
  "uuid",

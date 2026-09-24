@@ -2500,6 +2500,32 @@ mod tests {
     }
 
     #[test]
+    fn federation_keysets_reject_units_invalid_under_nut02() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let (mut keyset, _) = test_keyset(&members);
+        keyset.unit = CurrencyUnit::custom("usd cents");
+        keyset.id = FederatedKeyset::derive_keyset_id(
+            &keyset.unit,
+            keyset.input_fee_ppk,
+            keyset.final_expiry,
+            &keyset.aggregate_keys,
+        );
+        assert!(matches!(
+            keyset.validate(params, &members),
+            Err(FederationError::Nut02(
+                crate::nuts::nut02::Error::InvalidUnit { .. }
+            ))
+        ));
+        assert!(matches!(
+            FederationDkgKeysetSpec::new(keyset.unit, true, 0, None, [Amount::from(1)].into()),
+            Err(FederationError::Nut02(
+                crate::nuts::nut02::Error::InvalidUnit { .. }
+            ))
+        ));
+    }
+
+    #[test]
     fn federation_config_uses_safe_payment_policy_and_rejects_missing_policy() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
@@ -3328,7 +3354,7 @@ mod tests {
         .expect("pedersen DKG transcript");
         assert_eq!(
             transcript.transcript_hash.to_hex(),
-            "043f061260b7edf6fbe18ed67116d3257539cb528a142c2a78d4b39f70141dcd"
+            "539207dff801c2e1d3174aa0cba18be33b29cd3fa298598bb821858a2fabe2ac"
         );
         assert_eq!(
             transcript.payload.setup_method,

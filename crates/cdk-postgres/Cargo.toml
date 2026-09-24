@@ -30,6 +30,7 @@ native-tls = "=0.2.18"
 percent-encoding = "2"
 
 [dev-dependencies]
+serde_json.workspace = true
 cdk-common = { workspace = true, features = ["test"] }
 cdk-sql-common = { workspace = true, features = ["test"] }
 # Needed at macro-expansion sites of cdk-common's `*_db_test!` macros

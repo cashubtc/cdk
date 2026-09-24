@@ -241,7 +241,7 @@ impl Serialize for SecretKey {
                 Self::Secp256k1(_) => serializer.serialize_bytes(&self.to_secret_bytes()),
                 Self::Bls(_) => {
                     let mut tagged = [0_u8; 33];
-                    tagged[0] = 1;
+                    tagged[0] = 2;
                     tagged[1..].copy_from_slice(&self.to_secret_bytes());
                     serializer.serialize_bytes(&tagged)
                 }
@@ -279,7 +279,8 @@ impl<'de> Deserialize<'de> for SecretKey {
                         E: serde::de::Error,
                     {
                         match value {
-                            [1, secret_key @ ..] if secret_key.len() == 32 => {
+                            // Accept the earlier federation tag when reading stored keys.
+                            [1 | 2, secret_key @ ..] if secret_key.len() == 32 => {
                                 SecretKey::bls_from_slice(secret_key).map_err(E::custom)
                             }
                             _ => SecretKey::from_slice(value).map_err(E::custom),
@@ -369,5 +370,92 @@ mod tests {
                 ciborium::from_reader(encoded.as_slice()).expect("deserialize binary key");
             assert_eq!(decoded, key);
         }
+    }
+    #[test]
+    fn serde_preserves_key_kind_and_legacy_secp_encoding() {
+        let bytes = [7u8; 32];
+        let secp = SecretKey::from_slice(&bytes).unwrap();
+        let bls = SecretKey::bls_from_slice(&bytes).unwrap();
+
+        assert_eq!(
+            serde_json::to_string(&secp).unwrap(),
+            format!("\"{}\"", secp.to_secret_hex())
+        );
+        assert_eq!(
+            serde_json::to_string(&bls).unwrap(),
+            format!("\"bls:{}\"", bls.to_secret_hex())
+        );
+
+        for key in [secp, bls] {
+            let json = serde_json::to_string(&key).unwrap();
+            let from_json: SecretKey = serde_json::from_str(&json).unwrap();
+            let mut cbor = Vec::new();
+            ciborium::into_writer(&key, &mut cbor).unwrap();
+            let from_cbor: SecretKey = ciborium::from_reader(cbor.as_slice()).unwrap();
+            assert_eq!(key, from_json);
+            assert_eq!(key, from_cbor);
+            assert_eq!(key.public_key(), from_cbor.public_key());
+
+            let expected_bytes = match key {
+                SecretKey::Secp256k1(_) => bytes.to_vec(),
+                SecretKey::Bls(_) => [&[0x02][..], &bytes].concat(),
+            };
+            let mut expected_cbor = Vec::new();
+            ciborium::into_writer(
+                &serde_bytes::Bytes::new(&expected_bytes),
+                &mut expected_cbor,
+            )
+            .unwrap();
+            assert_eq!(cbor, expected_cbor);
+        }
+    }
+    #[test]
+    fn serde_reads_legacy_federation_bls_tag() {
+        let scalar = [7u8; 32];
+        let legacy = [&[1u8][..], &scalar].concat();
+        let mut encoded = Vec::new();
+        ciborium::into_writer(&serde_bytes::Bytes::new(&legacy), &mut encoded).unwrap();
+        let key: SecretKey = ciborium::from_reader(encoded.as_slice()).unwrap();
+        assert_eq!(key, SecretKey::bls_from_slice(&scalar).unwrap());
+    }
+
+    #[test]
+    fn serde_rejects_invalid_bls_scalars_and_tags() {
+        for text in [
+            "bls:01".to_string(),
+            format!("bls:{}", "ff".repeat(32)),
+            format!("unknown:{}", "01".repeat(32)),
+        ] {
+            assert!(
+                serde_json::from_str::<SecretKey>(&serde_json::to_string(&text).unwrap()).is_err()
+            );
+        }
+        for bytes in [
+            vec![0x02; 32 + 2],
+            [&[0x03][..], &[1u8; 32]].concat(),
+            [&[0x02][..], &[0xff; 32]].concat(),
+        ] {
+            let mut cbor = Vec::new();
+            ciborium::into_writer(&serde_bytes::Bytes::new(&bytes), &mut cbor).unwrap();
+            assert!(ciborium::from_reader::<SecretKey, _>(cbor.as_slice()).is_err());
+        }
+    }
+    #[test]
+    fn restored_bls_blinding_factor_can_unblind_signature() {
+        use crate::dhke::{blind_message_for_version, sign_message, verify_bls_message};
+        use crate::nuts::KeySetVersion;
+
+        let message = b"persisted blinding factor";
+        let (blinded, r) =
+            blind_message_for_version(message, None, KeySetVersion::Version02).unwrap();
+        let mint_key = SecretKey::generate_bls();
+        let signature = sign_message(&mint_key, &blinded).unwrap();
+        let stored = serde_json::to_vec(&r).unwrap();
+        let restored: SecretKey = serde_json::from_slice(&stored).unwrap();
+        let unblinded = signature
+            .as_bls_g1()
+            .unwrap()
+            .mul(&restored.as_bls().unwrap().invert().unwrap());
+        verify_bls_message(mint_key.public_key(), unblinded.into(), message).unwrap();
     }
 }

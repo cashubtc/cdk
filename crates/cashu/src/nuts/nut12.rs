@@ -116,6 +116,9 @@ fn derive_deterministic_nonce(
     blinded_message: &PublicKey,  // B'
     mint_secret_key: &SecretKey,  // a
 ) -> Result<SecretKey, Error> {
+    mint_secret_key.as_secp256k1()?;
+    blinded_message.try_to_uncompressed_bytes()?;
+    blinded_signature.try_to_uncompressed_bytes()?;
     for counter in u8::MIN..=u8::MAX {
         let mut message = Vec::with_capacity(16 + (3 * 65) + 1);
         message.extend_from_slice(b"Cashu_DLEQ_R_v1");

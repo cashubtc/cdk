@@ -347,11 +347,11 @@ mod tests {
         let keyset_error = KeysetService::rotate_next_keyset(
             &server,
             Request::new(crate::keyset::RotateNextKeysetRequest {
-                keyset_version: None,
                 unit: "sat".to_owned(),
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: Some(1),
                 use_keyset_v2: Some(true),
+                keyset_version: None,
                 final_expiry: None,
             }),
         )

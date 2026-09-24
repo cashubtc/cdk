@@ -1267,10 +1267,8 @@ mod tests {
     #[tokio::test]
     async fn single_quote_status_rejects_mismatched_id_without_updates() {
         let (wallet, mock_client, quotes) = batch_claim_wallet(2).await;
-        mock_client.set_mint_quote_status_response(
-            &quotes[0].id,
-            issued_bolt11_quote_response(&quotes[1]),
-        );
+        mock_client
+            .set_quote_status_response(&quotes[0].id, issued_bolt11_quote_response(&quotes[1]));
 
         let result = wallet.check_mint_quote_status(&quotes[0].id).await;
         assert!(matches!(result, Err(Error::InvalidMintResponse(_))));
@@ -1281,10 +1279,8 @@ mod tests {
             );
         }
 
-        mock_client.set_mint_quote_status_response(
-            &quotes[0].id,
-            issued_bolt11_quote_response(&quotes[0]),
-        );
+        mock_client
+            .set_quote_status_response(&quotes[0].id, issued_bolt11_quote_response(&quotes[0]));
         let refreshed = wallet.check_mint_quote_status(&quotes[0].id).await.unwrap();
         assert_eq!(refreshed.state, MintQuoteState::Issued);
         assert_eq!(refreshed.amount_issued, quotes[0].amount_paid);
@@ -1295,7 +1291,7 @@ mod tests {
         let (wallet, mock_client, quotes) = batch_claim_wallet(2).await;
         for quote_id in [quotes[0].id.as_str(), "unknown-quote"] {
             mock_client
-                .set_mint_quote_status_response(quote_id, issued_bolt11_quote_response(&quotes[1]));
+                .set_quote_status_response(quote_id, issued_bolt11_quote_response(&quotes[1]));
             let result = wallet
                 .fetch_mint_quote(quote_id, Some(PaymentMethod::BOLT11))
                 .await;

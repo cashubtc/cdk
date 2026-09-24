@@ -8,7 +8,10 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::rand::rngs::OsRng;
 use bitcoin::secp256k1::rand::RngCore;
 use bls12_381::hash_to_curve::{ExpandMsgXmd, HashToCurve};
-use bls12_381::{pairing, G1Affine, G1Projective, G2Affine, G2Projective, Gt, Scalar};
+use bls12_381::{
+    multi_miller_loop, pairing, G1Affine, G1Projective, G2Affine, G2Prepared, G2Projective, Gt,
+    Scalar,
+};
 use group::Curve;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2_09::Sha256;
@@ -104,7 +107,7 @@ impl BlsSecretKey {
 
 impl Zeroize for BlsSecretKey {
     fn zeroize(&mut self) {
-        self.scalar = Scalar::zero();
+        self.scalar.zeroize();
     }
 }
 
@@ -1120,15 +1123,22 @@ pub(crate) fn batch_verify_pairing(
             .or_insert((*mint_pubkey, weighted_message));
     }
 
-    let left = pairing(&weighted_signatures.to_affine(), &G2Affine::generator());
-    let right = weighted_messages.into_values().fold(
-        Gt::identity(),
-        |acc, (mint_pubkey, weighted_message)| {
-            acc + pairing(&weighted_message.to_affine(), &mint_pubkey.point())
-        },
+    // Move the signature pairing to the other side by negating its G1 point:
+    // e(-sum(w_i * C_i), G2) * product_k e(sum(w_i * Y_i), K_k) == 1.
+    // Evaluate all terms together with just one final exponentiation.
+    let mut terms = Vec::with_capacity(weighted_messages.len() + 1);
+    terms.push((
+        (-weighted_signatures).to_affine(),
+        G2Prepared::from(G2Affine::generator()),
+    ));
+    terms.extend(
+        weighted_messages
+            .into_values()
+            .map(|(key, message)| (message.to_affine(), G2Prepared::from(key.point()))),
     );
+    let term_refs: Vec<_> = terms.iter().map(|(message, key)| (message, key)).collect();
 
-    left == right
+    multi_miller_loop(&term_refs).final_exponentiation() == Gt::identity()
 }
 
 /// Batch verify `e(signature, G2) == e(blinded_message, mint_pubkey)`.
@@ -1162,15 +1172,22 @@ pub(crate) fn batch_verify_blind_signature_pairing(
             .or_insert((*mint_pubkey, weighted_message));
     }
 
-    let left = pairing(&weighted_signatures.to_affine(), &G2Affine::generator());
-    let right = weighted_messages.into_values().fold(
-        Gt::identity(),
-        |acc, (mint_pubkey, weighted_message)| {
-            acc + pairing(&weighted_message.to_affine(), &mint_pubkey.point())
-        },
+    // Move the signature pairing to the other side by negating its G1 point:
+    // e(-sum(w_i * C_i), G2) * product_k e(sum(w_i * Y_i), K_k) == 1.
+    // Evaluate all terms together with just one final exponentiation.
+    let mut terms = Vec::with_capacity(weighted_messages.len() + 1);
+    terms.push((
+        (-weighted_signatures).to_affine(),
+        G2Prepared::from(G2Affine::generator()),
+    ));
+    terms.extend(
+        weighted_messages
+            .into_values()
+            .map(|(key, message)| (message.to_affine(), G2Prepared::from(key.point()))),
     );
+    let term_refs: Vec<_> = terms.iter().map(|(message, key)| (message, key)).collect();
 
-    left == right
+    multi_miller_loop(&term_refs).final_exponentiation() == Gt::identity()
 }
 
 #[cfg(test)]
@@ -1275,6 +1292,79 @@ mod tests {
             "6d026a181a6215b233e73b121d01908a1a1eb6911955bea5130bbf2f2966554d"
         );
         assert!(batch_verify_pairing(&mint_pubkeys, &signatures, &messages));
+    }
+
+    #[test]
+    fn test_batch_pairing_single_and_mixed_keys() {
+        let first_key = BlsSecretKey {
+            scalar: Scalar::from(2u64),
+        };
+        let second_key = BlsSecretKey {
+            scalar: Scalar::from(3u64),
+        };
+        let keys = [&first_key, &first_key, &second_key];
+        let messages: [&[u8]; 3] = [b"first", b"second", b"third"];
+        let pubkeys = keys.map(BlsSecretKey::public_key_g2);
+        let signatures: Vec<_> = messages
+            .iter()
+            .zip(keys)
+            .map(|(message, key)| BlsG1PublicKey::hash_to_curve(message).mul(key))
+            .collect();
+
+        for count in 1..=messages.len() {
+            assert!(batch_verify_pairing(
+                &pubkeys[..count],
+                &signatures[..count],
+                &messages[..count]
+            ));
+        }
+
+        for index in 0..messages.len() {
+            let mut wrong_messages = messages;
+            wrong_messages[index] = b"different";
+            assert!(!batch_verify_pairing(
+                &pubkeys,
+                &signatures,
+                &wrong_messages
+            ));
+
+            let mut wrong_signatures = signatures.clone();
+            wrong_signatures[index] = signatures[(index + 1) % signatures.len()];
+            assert!(!batch_verify_pairing(
+                &pubkeys,
+                &wrong_signatures,
+                &messages
+            ));
+
+            let mut wrong_pubkeys = pubkeys;
+            wrong_pubkeys[index] = match index {
+                2 => first_key.public_key_g2(),
+                _ => second_key.public_key_g2(),
+            };
+            assert!(!batch_verify_pairing(
+                &wrong_pubkeys,
+                &signatures,
+                &messages
+            ));
+        }
+    }
+
+    #[test]
+    fn test_batch_pairing_empty_and_mismatched_lengths() {
+        assert!(batch_verify_pairing(&[], &[], &[]));
+
+        let key = BlsSecretKey {
+            scalar: Scalar::from(2u64),
+        };
+        let message: &[u8] = b"message";
+        let signature = BlsG1PublicKey::hash_to_curve(message).mul(&key);
+        let pubkey = key.public_key_g2();
+        assert!(!batch_verify_pairing(&[pubkey], &[], &[]));
+        assert!(!batch_verify_pairing(&[], &[signature], &[]));
+        assert!(!batch_verify_pairing(&[], &[], &[message]));
+        assert!(!batch_verify_pairing(&[pubkey], &[signature], &[]));
+        assert!(!batch_verify_pairing(&[pubkey], &[], &[message]));
+        assert!(!batch_verify_pairing(&[], &[signature], &[message]));
     }
 
     #[test]

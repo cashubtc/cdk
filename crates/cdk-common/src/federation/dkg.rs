@@ -287,6 +287,7 @@ impl FederationDkgKeysetSpec {
 
     /// Validate that this ceremony creates a bounded, non-empty denomination set.
     pub fn validate(&self) -> Result<()> {
+        crate::nuts::nut02::KeySetVersion::Version02.validate_unit(&self.unit)?;
         if self.amounts.is_empty() {
             return Err(FederationError::EmptyDkgKeyset {
                 unit: self.unit.clone(),

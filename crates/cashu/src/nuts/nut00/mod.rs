@@ -606,6 +606,7 @@ mod proof_y_tests {
     use super::*;
     use crate::nuts::nut02::KeySetVersion;
 
+    #[cfg(feature = "federation")]
     fn keyset_id(version: KeySetVersion) -> Id {
         match version {
             KeySetVersion::Version00 => {
@@ -617,6 +618,7 @@ mod proof_y_tests {
     }
 
     #[test]
+    #[cfg(feature = "federation")]
     fn proof_y_matches_keyset_version() {
         let secret = Secret::from_str("test proof secret").expect("secret");
         let secp_c = crate::nuts::SecretKey::generate().public_key();
@@ -1363,7 +1365,6 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-
     #[test]
     fn test_proof_serialize() {
         let proof = "[{\"id\":\"009a1f293253e41e\",\"amount\":2,\"secret\":\"407915bc212be61a77e3e6d2aeb4c727980bda51cd06a6afc29e2861768a7837\",\"C\":\"02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea\"},{\"id\":\"009a1f293253e41e\",\"amount\":8,\"secret\":\"fe15109314e61d7756b0f8ee0f23a624acaa3f4e042f61433c728c7057b931be\",\"C\":\"029e8e5050b890a7d6c0968db16bc1d5d5fa040ea1de284f6ec69d61299f671059\"}]";

@@ -78,9 +78,13 @@ fuzz_target!(|input: Input| {
             blind_message(secret.as_bytes(), Some(secret_key_from(input.r_bytes)))
                 .expect("valid secret and scalar must produce a blinded message");
         let blinded_signature_point = blinded_message
-            .mul_tweak(&SECP256K1, &mint_secret_key.as_scalar())
-            .expect("valid mint scalar must sign a blinded message")
-            .into();
+            .try_mul_tweak(
+                &SECP256K1,
+                &mint_secret_key
+                    .try_as_scalar()
+                    .expect("generated secp256k1 key"),
+            )
+            .expect("valid mint scalar must sign a blinded message");
 
         let blind_signature = BlindSignature::new(
             Amount::from(input.amount),

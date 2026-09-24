@@ -49,7 +49,7 @@ use self::state::{Finalized, Initial, Prepared, PreparedMintRequest};
 use crate::amount::SplitTarget;
 #[cfg(feature = "federation")]
 use crate::dhke::batch_verify_bls_messages;
-use crate::dhke::{construct_proofs, hash_to_curve};
+use crate::dhke::{construct_proofs, hash_to_curve_for_version};
 use crate::nuts::nut00::ProofsMethods;
 #[cfg(feature = "federation")]
 use crate::nuts::KeySetVersion;
@@ -947,7 +947,7 @@ impl<'a> MintSaga<'a, Prepared> {
             let transaction_ys = premint_secrets
                 .secrets
                 .iter()
-                .map(|pre_mint| hash_to_curve(pre_mint.secret.as_bytes()))
+                .map(|pre_mint| hash_to_curve_for_version(pre_mint.secret.as_bytes(), pre_mint.blinded_message.keyset_id.get_version()))
                 .collect::<Result<Vec<_>, _>>()?;
             let is_batch = quote_ids.len() > 1;
             let mut output_offset: usize = 0;

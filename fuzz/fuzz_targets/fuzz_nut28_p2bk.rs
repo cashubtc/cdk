@@ -66,8 +66,13 @@ fuzz_target!(|input: Input| {
     let signing_key = derive_signing_key_bip340(&receiver, &receiver_blinding, &blinded)
         .expect("receiver must recover the blinded signing key");
     assert_eq!(
-        signing_key.public_key().x_only_public_key(),
-        blinded.x_only_public_key(),
+        signing_key
+            .public_key()
+            .try_x_only_public_key()
+            .expect("generated secp256k1 key"),
+        blinded
+            .try_x_only_public_key()
+            .expect("blinded secp256k1 key"),
         "recovered BIP-340 key must match the blinded x-only key"
     );
 
