@@ -96,6 +96,15 @@ impl Witness {
     /// Returns the distinct leaf-key indices represented by those signatures.
     pub fn partial_signers(&self, secret: &str, digest: [u8; 32]) -> Result<Vec<usize>, Error> {
         let leaf = self.committed_leaf(secret)?;
+        self.partial_signers_for_leaf(&leaf, digest)
+    }
+
+    // Only use with the committed leaf validated for this witness.
+    pub(super) fn partial_signers_for_leaf(
+        &self,
+        leaf: &Leaf,
+        digest: [u8; 32],
+    ) -> Result<Vec<usize>, Error> {
         if self.signatures.len() > leaf.keys().len() {
             return Err(Error::InvalidWitness);
         }

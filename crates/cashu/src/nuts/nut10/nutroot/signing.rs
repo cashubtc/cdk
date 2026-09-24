@@ -5,7 +5,7 @@ use bitcoin::secp256k1::{PublicKey, SecretKey};
 use serde::{Deserialize, Serialize};
 
 use super::receipt::{decode_transport, encode_transport};
-use super::{receiver_key, Error, Quote, Transaction, Witness};
+use super::{receiver_key, Error, Leaf, Quote, Transaction, Witness};
 use crate::nuts::{BlindedMessage, Id, KeySetVersion, Proof};
 use crate::secret::Secret;
 use crate::Amount;
@@ -96,6 +96,14 @@ pub struct SigningPackage {
     spends: Vec<SigningSpend>,
 }
 
+// Results are scoped to one operation, never retained across package mutations.
+struct ValidatedSpend {
+    index: usize,
+    digest: [u8; 32],
+    leaf: Leaf,
+    signers: Vec<usize>,
+}
+
 impl SigningPackage {
     /// Build a package. A quote selects melt semantics; its amount includes the
     /// selected fee reserve and must be checked against trusted quote state.
@@ -178,11 +186,16 @@ impl SigningPackage {
 
     /// Validate all openings and every collected signature, allowing incomplete thresholds.
     pub fn validate(&self) -> Result<(), Error> {
+        self.validated_spends().map(|_| ())
+    }
+
+    fn validated_spends(&self) -> Result<(Transaction, Vec<ValidatedSpend>), Error> {
         let transaction = self.transaction()?;
         if self.spends.is_empty() || self.spends.len() > self.inputs.len() {
             return Err(Error::InvalidWitness);
         }
         let mut seen = HashSet::new();
+        let mut validated = Vec::with_capacity(self.spends.len());
         for spend in &self.spends {
             if !seen.insert(&spend.secret) {
                 return Err(Error::InvalidWitness);
@@ -196,11 +209,16 @@ impl SigningPackage {
             {
                 return Err(Error::InvalidWitness);
             }
-            spend
-                .witness
-                .partial_signers(&spend.secret, transaction.input_digest(index)?)?;
+            let digest = transaction.input_digest(index)?;
+            let signers = spend.witness.partial_signers_for_leaf(&leaf, digest)?;
+            validated.push(ValidatedSpend {
+                index,
+                digest,
+                leaf,
+                signers,
+            });
         }
-        Ok(())
+        Ok((transaction, validated))
     }
 
     fn input_index(&self, secret: &str) -> Result<usize, Error> {
@@ -219,20 +237,11 @@ impl SigningPackage {
     /// Append signatures from matching keys. Incorrect slot hints never select
     /// an unrelated key. Caller must approve the transaction before this call.
     pub fn sign(&mut self, keys: &[SecretKey]) -> Result<usize, Error> {
-        self.validate()?;
-        let transaction = self.transaction()?;
-        let indices = self
-            .spends
-            .iter()
-            .map(|s| self.input_index(&s.secret))
-            .collect::<Result<Vec<_>, _>>()?;
+        let (_, validated) = self.validated_spends()?;
         let mut added = 0;
-        for (spend, index) in self.spends.iter_mut().zip(indices) {
-            let digest = transaction.input_digest(index)?;
-            let leaf = spend.witness.committed_leaf(&spend.secret)?;
-            let signers = spend.witness.partial_signers(&spend.secret, digest)?;
-            for (key_index, public) in leaf.keys().iter().enumerate() {
-                if signers.contains(&key_index) {
+        for (spend, validated) in self.spends.iter_mut().zip(validated) {
+            for (key_index, public) in validated.leaf.keys().iter().enumerate() {
+                if validated.signers.contains(&key_index) {
                     continue;
                 }
                 let mut found = keys
@@ -263,7 +272,7 @@ impl SigningPackage {
                     spend
                         .witness
                         .signatures
-                        .extend(Witness::key_path(&key, digest).signatures);
+                        .extend(Witness::key_path(&key, validated.digest).signatures);
                     added += 1;
                 }
             }
@@ -274,8 +283,8 @@ impl SigningPackage {
     /// Merge signatures only when transaction and script-opening metadata match.
     /// Keeps one valid signature per distinct leaf key. Changes are atomic.
     pub fn merge(&mut self, other: &Self) -> Result<(), Error> {
-        self.validate()?;
-        other.validate()?;
+        let (_, validated) = self.validated_spends()?;
+        let (_, other_validated) = other.validated_spends()?;
         let mut left = self.clone();
         let mut right = other.clone();
         for spend in &mut left.spends {
@@ -287,12 +296,15 @@ impl SigningPackage {
         if left != right {
             return Err(Error::InvalidTransaction);
         }
-        let transaction = self.transaction()?;
         let mut merged = self.clone();
-        for (index, (target, source)) in merged.spends.iter_mut().zip(&other.spends).enumerate() {
-            let digest = transaction.input_digest(self.input_index(&self.spends[index].secret)?)?;
-            let mut signers = target.witness.partial_signers(&target.secret, digest)?;
-            let source_signers = source.witness.partial_signers(&source.secret, digest)?;
+        for ((target, source), (validated, other_validated)) in merged
+            .spends
+            .iter_mut()
+            .zip(&other.spends)
+            .zip(validated.into_iter().zip(other_validated))
+        {
+            let mut signers = validated.signers;
+            let source_signers = other_validated.signers;
             for (signature, signer) in source.witness.signatures.iter().zip(source_signers) {
                 if !signers.contains(&signer) {
                     target.witness.signatures.push(signature.clone());
@@ -314,18 +326,16 @@ impl SigningPackage {
         quote: Option<Quote>,
         now: u64,
     ) -> Result<(), Error> {
-        self.validate()?;
+        let (expected, validated) = self.validated_spends()?;
         let quotes: Vec<_> = quote.into_iter().collect();
         let transaction = Transaction::new(inputs, &[], outputs, &quotes)?;
-        if transaction != self.transaction()? {
+        if transaction != expected {
             return Err(Error::InvalidTransaction);
         }
         let mut witnesses = vec![];
-        for spend in &self.spends {
-            let index = self.input_index(&spend.secret)?;
-            spend
-                .witness
-                .verify(&spend.secret, transaction.input_digest(index)?, now)?;
+        for (spend, validated) in self.spends.iter().zip(validated) {
+            let index = validated.index;
+            spend.witness.verify(&spend.secret, validated.digest, now)?;
             let raw = serde_json::to_string(&spend.witness).map_err(|_| Error::InvalidWitness)?;
             witnesses.push((index, crate::nuts::Witness::NutrootWitness(raw)));
         }

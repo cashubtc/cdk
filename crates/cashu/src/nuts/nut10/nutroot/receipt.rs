@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use bitcoin::base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -55,9 +56,6 @@ impl SpendReceipt {
                 continue;
             }
             let record = SpendRecord::new(proof, transaction, index, now)?;
-            if transaction.proof_digest(proof)? != record.input_digest {
-                return Err(Error::InvalidTransaction);
-            }
             let y = proof.y().map_err(|_| Error::InvalidTransaction)?;
             receipts.push(ReceiptOpening {
                 y,
@@ -108,24 +106,41 @@ impl SpendReceipt {
         if proofs.is_empty() || proofs.len() != self.receipts.len() {
             return Err(Error::InvalidTransaction);
         }
+        let mut receipts = HashMap::with_capacity(self.receipts.len());
+        for receipt in &self.receipts {
+            if receipts.insert(receipt.y, receipt).is_some() {
+                return Err(Error::InvalidTransaction);
+            }
+        }
+        // Duplicate states for a requested proof are ambiguous. Unrelated states
+        // remain irrelevant, including duplicates, as in the original lookup.
+        let mut states_by_y = HashMap::with_capacity(states.len());
+        for state in states {
+            states_by_y
+                .entry(state.y)
+                .and_modify(|entry| *entry = None)
+                .or_insert(Some(state));
+        }
+        let mut transactions = HashMap::new();
         let mut seen = HashSet::new();
         for proof in proofs {
             let y = proof.y().map_err(|_| Error::InvalidTransaction)?;
             if !seen.insert(y) {
                 return Err(Error::InvalidTransaction);
             }
-            let mut matches = self.receipts.iter().filter(|r| r.y == y);
-            let receipt = matches.next().ok_or(Error::InvalidTransaction)?;
-            if matches.next().is_some()
-                || receipt.keyset_id != proof.keyset_id
-                || receipt.witness.len() > 4096
-            {
+            let receipt = receipts.get(&y).ok_or(Error::InvalidTransaction)?;
+            if receipt.keyset_id != proof.keyset_id || receipt.witness.len() > 4096 {
                 return Err(Error::InvalidTransaction);
             }
             if receipt.transcript.len() > 8 * 1024 * 1024 {
                 return Err(Error::InvalidTransaction);
             }
-            let transaction = Transaction::from_bytes(&hex::decode(&receipt.transcript)?)?;
+            let transaction = match transactions.entry(receipt.transcript.as_str()) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    entry.insert(Transaction::from_bytes(&hex::decode(&receipt.transcript)?)?)
+                }
+            };
             let digest = transaction.proof_digest(proof)?;
             let commitment = hex::encode(spend_commitment(&y, digest, &receipt.witness));
             if receipt.input_digest != hex::encode(digest) || receipt.commitment != commitment {
@@ -134,12 +149,12 @@ impl SpendReceipt {
             let witness: Witness =
                 serde_json::from_str(&receipt.witness).map_err(|_| Error::InvalidWitness)?;
             witness.verify(&proof.secret.to_string(), digest, now)?;
-            let mut matches = states.iter().filter(|state| state.y == y);
-            let state = matches.next().ok_or(Error::InvalidTransaction)?;
-            if matches.next().is_some()
-                || state.state != State::Spent
-                || state.commitment.as_ref() != Some(&commitment)
-            {
+            let state = states_by_y
+                .get(&y)
+                .copied()
+                .flatten()
+                .ok_or(Error::InvalidTransaction)?;
+            if state.state != State::Spent || state.commitment.as_ref() != Some(&commitment) {
                 return Err(Error::InvalidTransaction);
             }
         }

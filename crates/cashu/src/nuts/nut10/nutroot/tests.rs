@@ -315,6 +315,10 @@ fn transaction_and_input_digest_vectors() {
     outputs[0].amount = 8.into();
     let transaction = Transaction::new(&multiple, &[], &outputs, &[]).unwrap();
     assert_eq!(transaction.digest(), hash(&vectors[18]["digest"]));
+    assert_eq!(
+        Transaction::from_bytes(transaction.as_bytes()).unwrap(),
+        transaction
+    );
     for index in 0..2 {
         assert_eq!(
             transaction.input_digest(index).unwrap(),
@@ -476,6 +480,16 @@ fn receipt_requires_exact_transcript_witness_and_trusted_spent_commitment() {
         0,
     )
     .unwrap();
+    let mut mismatched = proofs.clone();
+    mismatched[0].amount = 99.into();
+    assert!(SpendReceipt::new(
+        "https://mint.test".parse().unwrap(),
+        CurrencyUnit::Sat,
+        &mismatched,
+        &transaction,
+        0,
+    )
+    .is_err());
     let encoded = receipt.encode().unwrap();
     let decoded: SpendReceipt = encoded.parse().unwrap();
     assert_eq!(receipt, decoded);
@@ -564,6 +578,15 @@ fn signing_packages_merge_only_matching_transactions_and_distinct_signers() {
     assert!(!serde_json::to_string(&package)
         .unwrap()
         .contains("spend_info"));
+    let mut invalid = serde_json::to_value(&package).unwrap();
+    invalid["spends"][0]["signatures"] = serde_json::json!(["invalid"]);
+    let mut invalid: SigningPackage = serde_json::from_value(invalid).unwrap();
+    let before = invalid.clone();
+    assert!(invalid.sign(&keys).is_err());
+    assert_eq!(invalid, before);
+    let before = package.clone();
+    assert!(package.merge(&invalid).is_err());
+    assert_eq!(package, before);
     let mut second = package.clone();
     assert_eq!(package.sign(&keys[..1]).unwrap(), 1);
     assert!(package.apply(&mut proofs, &outputs, None, 0).is_err());
@@ -636,5 +659,110 @@ fn upstream_authorized_request_vectors() {
         witness
             .verify(vector["secret"].as_str().unwrap(), digest, 0)
             .unwrap();
+    }
+}
+
+#[test]
+fn receipt_indexes_preserve_duplicate_and_distinct_transcript_checks() {
+    use bitcoin::secp256k1::SecretKey;
+
+    use crate::nuts::{CurrencyUnit, ProofState, State};
+    let vectors = vectors();
+    let template: Vec<crate::Proof> =
+        serde_json::from_value(vectors[14]["inputs"].clone()).unwrap();
+    let outputs: Vec<crate::BlindedMessage> =
+        serde_json::from_value(vectors[14]["outputs"].clone()).unwrap();
+    let keys = [
+        SecretKey::from_slice(&[1; 32]).unwrap(),
+        SecretKey::from_slice(&[2; 32]).unwrap(),
+    ];
+    let mut proofs: Vec<_> = keys
+        .iter()
+        .map(|key| {
+            let mut proof = template[0].clone();
+            proof.secret = PublicKey::from_secret_key(&crate::SECP256K1, key)
+                .to_string()
+                .parse()
+                .unwrap();
+            proof
+        })
+        .collect();
+    let keysets = [crate::KeySetInfo {
+        id: proofs[0].keyset_id,
+        unit: CurrencyUnit::Sat,
+        active: true,
+        input_fee_ppk: 0,
+        final_expiry: None,
+    }];
+    for shared_transcript in [true, false] {
+        let shared = Transaction::new(&proofs, &[], &outputs, &[]).unwrap();
+        let mut openings = vec![];
+        let mut states = vec![];
+        for (i, (proof, key)) in proofs.iter_mut().zip(keys).enumerate() {
+            let individual =
+                Transaction::new(std::slice::from_ref(proof), &[], &outputs, &[]).unwrap();
+            let (transaction, index) = if shared_transcript {
+                (&shared, i)
+            } else {
+                (&individual, 0)
+            };
+            let witness = Witness::key_path(&key, transaction.input_digest(index).unwrap());
+            proof.witness = Some(crate::nuts::Witness::NutrootWitness(
+                serde_json::to_string(&witness).unwrap(),
+            ));
+            let record = SpendRecord::new(proof, transaction, index, 0).unwrap();
+            let mut state = ProofState::from((proof.y().unwrap(), State::Spent));
+            record.apply_to(&mut state);
+            states.push(state);
+            if !shared_transcript {
+                openings.extend(
+                    SpendReceipt::new(
+                        "https://mint.test".parse().unwrap(),
+                        CurrencyUnit::Sat,
+                        std::slice::from_ref(proof),
+                        &individual,
+                        0,
+                    )
+                    .unwrap()
+                    .receipts,
+                );
+            }
+        }
+        let mut receipt = if shared_transcript {
+            SpendReceipt::new(
+                "https://mint.test".parse().unwrap(),
+                CurrencyUnit::Sat,
+                &proofs,
+                &shared,
+                0,
+            )
+            .unwrap()
+        } else {
+            SpendReceipt {
+                token: crate::nuts::Token::new(
+                    "https://mint.test".parse().unwrap(),
+                    proofs.clone(),
+                    None,
+                    CurrencyUnit::Sat,
+                )
+                .to_string(),
+                receipts: openings,
+            }
+        };
+        receipt.receipts.reverse();
+        states.reverse();
+        receipt.verify(&keysets, &states, 0).unwrap();
+        let mut duplicate = receipt.clone();
+        duplicate.receipts[1] = duplicate.receipts[0].clone();
+        assert!(duplicate.verify(&keysets, &states, 0).is_err());
+        let mut duplicate_states = states.clone();
+        duplicate_states.push(states[0].clone());
+        assert!(receipt.verify(&keysets, &duplicate_states, 0).is_err());
+        assert!(receipt.verify(&keysets, &states[..1], 0).is_err());
+        let unrelated = ProofState::from((template[0].y().unwrap(), State::Unspent));
+        states.extend([unrelated.clone(), unrelated]);
+        receipt.verify(&keysets, &states, 0).unwrap();
+        receipt.receipts[0].transcript = hex::encode([0; 4]);
+        assert!(receipt.verify(&keysets, &states, 0).is_err());
     }
 }

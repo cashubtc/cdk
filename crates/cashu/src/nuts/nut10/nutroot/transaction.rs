@@ -21,6 +21,7 @@ pub struct Quote {
 pub struct Transaction {
     transcript: Vec<u8>,
     inputs: Vec<Vec<u8>>,
+    digest: [u8; 32],
 }
 
 impl Transaction {
@@ -37,10 +38,8 @@ impl Transaction {
         {
             return Err(Error::InvalidTransaction);
         }
-        let mut result = Self {
-            transcript: vec![],
-            inputs: vec![],
-        };
+        let mut transcript = vec![];
+        let mut inputs = vec![];
         let mut ys = HashSet::new();
         for proof in proofs {
             let y = match proof.keyset_id.get_version() {
@@ -62,8 +61,8 @@ impl Transaction {
                 proof.c.to_bytes(),
             ];
             let record = container(1, &fields)?;
-            result.transcript.extend_from_slice(&record);
-            result.inputs.push(record);
+            transcript.extend_from_slice(&record);
+            inputs.push(record);
         }
         let mut ids = HashSet::new();
         for quote in mint_quotes {
@@ -77,11 +76,11 @@ impl Transaction {
                     quote.id.as_bytes().to_vec(),
                 ],
             )?;
-            result.transcript.extend_from_slice(&record);
-            result.inputs.push(record);
+            transcript.extend_from_slice(&record);
+            inputs.push(record);
         }
         for output in outputs {
-            result.transcript.extend(container(
+            transcript.extend(container(
                 3,
                 &[
                     integer(u64::from(output.amount)),
@@ -91,7 +90,7 @@ impl Transaction {
             )?);
         }
         for quote in melt_quotes {
-            result.transcript.extend(container(
+            transcript.extend(container(
                 4,
                 &[
                     integer(u64::from(quote.amount)),
@@ -99,7 +98,7 @@ impl Transaction {
                 ],
             )?);
         }
-        Ok(result)
+        Ok(Self::from_parts(transcript, inputs))
     }
 
     /// Parse a canonical transaction transcript for receipt verification.
@@ -174,10 +173,16 @@ impl Transaction {
         if inputs.is_empty() || !output {
             return Err(Error::InvalidTransaction);
         }
-        Ok(Self {
-            transcript: bytes.to_vec(),
+        Ok(Self::from_parts(bytes.to_vec(), inputs))
+    }
+
+    fn from_parts(transcript: Vec<u8>, inputs: Vec<Vec<u8>>) -> Self {
+        let digest = Sha256::digest(&transcript).into();
+        Self {
+            transcript,
             inputs,
-        })
+            digest,
+        }
     }
 
     /// Find the digest of a held proof's exact input record in this transcript.
@@ -205,7 +210,7 @@ impl Transaction {
     }
     /// Shared transaction digest, which is not itself a signing message.
     pub fn digest(&self) -> [u8; 32] {
-        Sha256::digest(&self.transcript).into()
+        self.digest
     }
     /// Input identity, hashing its complete outer container record.
     pub fn input_id(&self, index: usize) -> Result<[u8; 32], Error> {
