@@ -109,4 +109,27 @@ mod tests {
         assert_eq!(response.amounts, vec![1, 2, 4, 8]);
         assert_eq!(response.input_fee_ppk, 1);
     }
+
+    #[tokio::test]
+    async fn test_keyset_service_selects_bls_version() {
+        let server = create_test_rpc_server().await;
+        for (keyset_version, legacy_version) in [(None, None), (Some("v3"), Some(false))] {
+            let response = KeysetService::rotate_next_keyset(
+                &server,
+                Request::new(crate::keyset::RotateNextKeysetRequest {
+                    unit: "sat".to_string(),
+                    amounts: vec![1, 2, 4, 8],
+                    input_fee_ppk: Some(0),
+                    use_keyset_v2: legacy_version,
+                    keyset_version: keyset_version.map(str::to_owned),
+                    final_expiry: None,
+                }),
+            )
+            .await
+            .unwrap()
+            .into_inner();
+            let id = cdk::nuts::Id::from_str(&response.id).unwrap();
+            assert_eq!(id.get_version(), KeySetVersion::Version02);
+        }
+    }
 }
