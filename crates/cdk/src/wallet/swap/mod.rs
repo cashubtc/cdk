@@ -53,6 +53,7 @@ impl Wallet {
             include_fees,
             use_p2bk,
             ProofReservation::Reserve,
+            &[],
         )
         .await
     }
@@ -62,7 +63,7 @@ impl Wallet {
     /// This is intended for internal use by parent sagas (send, melt, receive)
     /// that have already reserved the proofs. Calling this on unreserved proofs
     /// bypasses the reservation safety check.
-    #[instrument(skip(self, input_proofs))]
+    #[instrument(skip(self, input_proofs, signing_keys))]
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn swap_no_reserve(
         &self,
@@ -72,6 +73,7 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
         use_p2bk: bool,
+        signing_keys: &[crate::nuts::SecretKey],
     ) -> Result<Option<Proofs>, Error> {
         self.swap_internal(
             amount,
@@ -81,6 +83,7 @@ impl Wallet {
             include_fees,
             use_p2bk,
             ProofReservation::Skip,
+            signing_keys,
         )
         .await
     }
@@ -96,6 +99,7 @@ impl Wallet {
         include_fees: bool,
         use_p2bk: bool,
         proof_reservation: ProofReservation,
+        signing_keys: &[crate::nuts::SecretKey],
     ) -> Result<Option<Proofs>, Error> {
         tracing::info!("Swapping");
 
@@ -112,7 +116,7 @@ impl Wallet {
                     proof_reservation,
                 )
                 .await?;
-            let saga = saga.execute().await?;
+            let saga = saga.execute_with_keys(signing_keys).await?;
             Ok(saga.into_send_proofs())
         })
         .await

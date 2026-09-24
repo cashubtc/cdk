@@ -17,6 +17,7 @@ use thiserror::Error;
 
 mod derivation;
 mod leaf;
+mod locking;
 pub(crate) mod serde_spend_info;
 mod spend_info;
 mod transaction;
@@ -28,7 +29,8 @@ mod tests;
 
 pub use self::derivation::{derive_blinding_factor, derive_key, derive_quote_key, KeyPurpose};
 pub use self::leaf::{Condition, Leaf};
-pub use self::spend_info::{nums_key, receiver_key, SpendInfo};
+pub use self::locking::{nums_point, NutrootOption};
+pub use self::spend_info::{nums_key, receiver_key, sender_key, SpendInfo};
 pub use self::transaction::{Quote, Transaction};
 pub use self::tree::Tree;
 pub use self::witness::{ControlBlock, Witness};

@@ -208,8 +208,16 @@ impl<'a> SwapSaga<'a, Prepared> {
     ///
     /// Updates saga state for recovery, posts swap to mint, constructs new
     /// proofs from response, updates database, and deletes saga record.
+    #[cfg(test)]
     #[instrument(skip_all)]
-    pub async fn execute(mut self) -> Result<SwapSaga<'a, Finalized>, Error> {
+    pub async fn execute(self) -> Result<SwapSaga<'a, Finalized>, Error> {
+        self.execute_with_keys(&[]).await
+    }
+
+    pub(crate) async fn execute_with_keys(
+        mut self,
+        signing_keys: &[crate::nuts::SecretKey],
+    ) -> Result<SwapSaga<'a, Finalized>, Error> {
         tracing::info!(
             "Executing swap for operation {}",
             self.state_data.operation_id
@@ -231,7 +239,11 @@ impl<'a> SwapSaga<'a, Prepared> {
         }
 
         self.wallet
-            .sign_nutroot_swap(&mut self.state_data.pre_swap.swap_request, &[], &[])
+            .sign_nutroot_swap(
+                &mut self.state_data.pre_swap.swap_request,
+                signing_keys,
+                &[],
+            )
             .await?;
 
         let swap_response = match self
@@ -289,6 +301,9 @@ impl<'a> SwapSaga<'a, Prepared> {
                     post_swap_proofs.into_iter().partition(|p| {
                         let nut10_secret: Result<nut10::Secret, _> = p.secret.clone().try_into();
                         nut10_secret.is_ok()
+                            || p.spend_info.as_ref().is_some_and(|info| {
+                                info.tree.is_some() || info.ephemeral_key.is_some()
+                            })
                     });
 
                 let (mut proofs_to_send, proofs_to_keep) =
@@ -327,7 +342,9 @@ impl<'a> SwapSaga<'a, Prepared> {
                         } else {
                             &ephemeral_keys[i]
                         };
-                        proof.p2pk_e = Some(e_key.public_key());
+                        if proof.keyset_id.get_version() != crate::nuts::KeySetVersion::Version02 {
+                            proof.p2pk_e = Some(e_key.public_key());
+                        }
                     }
                 }
 

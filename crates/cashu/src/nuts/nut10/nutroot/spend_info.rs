@@ -161,7 +161,22 @@ pub fn receiver_key(
     ephemeral: &PublicKey,
     slot: u8,
 ) -> Result<SecretKey, Error> {
-    let shared = ephemeral.mul_tweak(&SECP256K1, &Scalar::from(*receiver))?;
+    let scalar = blinding_scalar(receiver, ephemeral, slot)?;
+    Ok(receiver.add_tweak(&Scalar::from(scalar))?)
+}
+
+/// Blind a receiver public key in any of the 256 Nutroot NUT-28 slots.
+pub fn sender_key(
+    receiver: &PublicKey,
+    ephemeral: &SecretKey,
+    slot: u8,
+) -> Result<PublicKey, Error> {
+    let scalar = blinding_scalar(ephemeral, receiver, slot)?;
+    Ok(receiver.add_exp_tweak(&SECP256K1, &Scalar::from(scalar))?)
+}
+
+fn blinding_scalar(private: &SecretKey, public: &PublicKey, slot: u8) -> Result<SecretKey, Error> {
+    let shared = public.mul_tweak(&SECP256K1, &Scalar::from(*private))?;
     let mut message = b"Cashu_P2BK_v1".to_vec();
     message.extend_from_slice(&shared.x_only_public_key().0.serialize());
     message.push(slot);
@@ -173,5 +188,5 @@ pub fn receiver_key(
             SecretKey::from_slice(&Sha256::digest(&message))?
         }
     };
-    Ok(receiver.add_tweak(&Scalar::from(scalar))?)
+    Ok(scalar)
 }

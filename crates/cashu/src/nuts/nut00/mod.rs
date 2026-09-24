@@ -1230,6 +1230,22 @@ impl PreMintSecrets {
         ephemeral_keys: &[crate::nuts::nut01::SecretKey],
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
+        if keyset_id.get_version() == crate::nuts::KeySetVersion::Version02 {
+            let policy = nut10::SpendingConditions::P2PKConditions {
+                data: receiver_pubkey,
+                conditions,
+            };
+            let lock = nut10::nutroot::NutrootOption::from_spending_conditions(&policy, true)
+                .map_err(nut10::Error::from)?;
+            return Self::with_nutroot_keys(
+                keyset_id,
+                amount,
+                amount_split_target,
+                &lock,
+                Some(ephemeral_keys),
+                fee_and_amounts,
+            );
+        }
         use crate::nuts::nut10::spending_conditions::{check_locking_slots, validate_p2pk};
         use crate::nuts::nut28::{blind_public_key, ecdh_kdf};
 
@@ -1325,6 +1341,17 @@ impl PreMintSecrets {
         conditions: &nut10::SpendingConditions,
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
+        if keyset_id.get_version() == crate::nuts::KeySetVersion::Version02 {
+            let lock = nut10::nutroot::NutrootOption::from_spending_conditions(conditions, false)
+                .map_err(nut10::Error::from)?;
+            return Self::with_nutroot(
+                keyset_id,
+                amount,
+                amount_split_target,
+                &lock,
+                fee_and_amounts,
+            );
+        }
         let amount_split = amount.split_targeted(amount_split_target, fee_and_amounts)?;
 
         let mut output = Vec::with_capacity(amount_split.len());
@@ -1352,6 +1379,73 @@ impl PreMintSecrets {
             secrets: output,
             keyset_id,
         })
+    }
+
+    /// Create v3 outputs satisfying a Nutroot payment-request locking policy.
+    pub fn with_nutroot(
+        keyset_id: Id,
+        amount: Amount,
+        amount_split_target: &SplitTarget,
+        locking: &nut10::nutroot::NutrootOption,
+        fee_and_amounts: &FeeAndAmounts,
+    ) -> Result<Self, Error> {
+        Self::with_nutroot_keys(
+            keyset_id,
+            amount,
+            amount_split_target,
+            locking,
+            None,
+            fee_and_amounts,
+        )
+    }
+
+    fn with_nutroot_keys(
+        keyset_id: Id,
+        amount: Amount,
+        amount_split_target: &SplitTarget,
+        locking: &nut10::nutroot::NutrootOption,
+        ephemeral_keys: Option<&[SecretKey]>,
+        fee_and_amounts: &FeeAndAmounts,
+    ) -> Result<Self, Error> {
+        if keyset_id.get_version() != crate::nuts::KeySetVersion::Version02 {
+            return Err(nut10::Error::from(nut10::nutroot::Error::InvalidKeyset).into());
+        }
+        let amounts = amount.split_targeted(amount_split_target, fee_and_amounts)?;
+        if ephemeral_keys.is_some_and(|keys| keys.len() != amounts.len()) {
+            return Err(nut10::Error::from(nut10::nutroot::Error::InvalidSpendInfo).into());
+        }
+        if let Some(keys) = ephemeral_keys {
+            let unique: std::collections::HashSet<_> =
+                keys.iter().map(SecretKey::public_key).collect();
+            if unique.len() != keys.len() {
+                return Err(nut10::Error::from(nut10::nutroot::Error::InvalidSpendInfo).into());
+            }
+        }
+        let mut secrets = Vec::with_capacity(amounts.len());
+        for (index, amount) in amounts.into_iter().enumerate() {
+            let ephemeral = ephemeral_keys
+                .map(|keys| keys[index].clone())
+                .unwrap_or_else(SecretKey::generate);
+            let offset = SecretKey::generate();
+            let (secret, info) = locking
+                .create_output(
+                    ephemeral.as_secp256k1().map_err(nut10::Error::from)?,
+                    offset.as_secp256k1().map_err(nut10::Error::from)?,
+                )
+                .map_err(nut10::Error::from)?;
+            let secret = Secret::new(secret);
+            let (blinded, r) =
+                blind_message_for_version(secret.as_bytes(), None, keyset_id.get_version())?;
+            secrets.push(PreMint {
+                blinded_message: BlindedMessage::new(amount, keyset_id, blinded),
+                secret,
+                r,
+                amount,
+                spend_info: Some(info),
+                derivation_index: None,
+            });
+        }
+        Ok(Self { secrets, keyset_id })
     }
 
     /// Iterate over secrets

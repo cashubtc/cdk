@@ -321,3 +321,15 @@ pub(crate) fn sign_mint_request(
     }
     Ok(())
 }
+
+/// Receiver-keyed and script-only proofs cannot be transferred as fresh bearer ecash.
+pub(crate) fn requires_swap_before_send(proof: &crate::nuts::Proof) -> bool {
+    proof.keyset_id.get_version() == KeySetVersion::Version02
+        && proof
+            .spend_info
+            .as_ref()
+            .is_some_and(|info| info.bearer_key.is_none())
+}
+
+#[cfg(test)]
+mod tests;

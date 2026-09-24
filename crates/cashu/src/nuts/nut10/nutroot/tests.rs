@@ -367,3 +367,75 @@ fn proof_preserves_exact_nutroot_witness_for_commitments() {
     );
     assert_eq!(serde_json::to_value(proof).unwrap()["witness"], witness);
 }
+
+#[test]
+fn locking_policies_preserve_thresholds_and_blind_all_slots() {
+    use bitcoin::secp256k1::SecretKey;
+    let one = SecretKey::from_slice(&[1; 32]).unwrap();
+    let two = SecretKey::from_slice(&[2; 32]).unwrap();
+    let ephemeral = SecretKey::from_slice(&[3; 32]).unwrap();
+    let offset = SecretKey::from_slice(&[4; 32]).unwrap();
+    let keys = [one, two].map(|key| PublicKey::from_secret_key(&crate::SECP256K1, &key));
+    let leaf = Leaf::new(2, keys.to_vec(), Condition::Threshold, false).unwrap();
+    let option = NutrootOption {
+        key: nums_point(),
+        leaves: Some(vec![hex::encode(leaf.to_bytes())]),
+        blind_keys: Some(keys.to_vec()),
+    };
+    let (secret, info) = option.create_output(&ephemeral, &offset).unwrap();
+    let internal = info.verify(&secret, None).unwrap();
+    option.verify_output(&secret, &info, &[one, two]).unwrap();
+    let mut wrong_policy = option.clone();
+    wrong_policy.leaves = Some(vec![hex::encode(
+        Leaf::new(1, keys.to_vec(), Condition::Threshold, false)
+            .unwrap()
+            .to_bytes(),
+    )]);
+    assert!(wrong_policy
+        .verify_output(&secret, &info, &[one, two])
+        .is_err());
+    let mut wrong_ephemeral = info.clone();
+    wrong_ephemeral.ephemeral_key = Some(keys[0]);
+    assert!(option
+        .verify_output(&secret, &wrong_ephemeral, &[one, two])
+        .is_err());
+    assert!(info.key_path_key(&secret, Some(&one)).is_err());
+    let tree = info.parsed_tree().unwrap().unwrap();
+    let mut witness = Witness::script_path(&tree, 0, internal).unwrap();
+    let e = info.ephemeral_key.unwrap();
+    let first = receiver_key(&one, &e, 1).unwrap();
+    let second = receiver_key(&two, &e, 2).unwrap();
+    witness
+        .signatures
+        .extend(Witness::key_path(&first, [42; 32]).signatures);
+    assert!(witness.verify(&secret, [42; 32], 0).is_err());
+    witness
+        .signatures
+        .extend(Witness::key_path(&second, [42; 32]).signatures);
+    witness.verify(&secret, [42; 32], 0).unwrap();
+    assert!(witness.verify(&secret, [43; 32], 0).is_err());
+    assert_eq!(
+        sender_key(&keys[0], &ephemeral, 255).unwrap(),
+        PublicKey::from_secret_key(&crate::SECP256K1, &receiver_key(&one, &e, 255).unwrap())
+    );
+    let (_, another) = option.create_output(&ephemeral, &two).unwrap();
+    assert_ne!(info.internal_key, another.internal_key);
+}
+
+#[test]
+fn legacy_keyless_policies_are_not_silently_weakened_for_nutroot() {
+    let key = crate::nuts::SecretKey::generate();
+    let policy = crate::nuts::SpendingConditions::P2PKConditions {
+        data: key.public_key(),
+        conditions: Some(crate::nuts::Conditions {
+            locktime: Some(100),
+            ..Default::default()
+        }),
+    };
+    assert!(NutrootOption::from_spending_conditions(&policy, false).is_err());
+    let policy = crate::nuts::SpendingConditions::HTLCConditions {
+        data: "00".repeat(32).parse().unwrap(),
+        conditions: None,
+    };
+    assert!(NutrootOption::from_spending_conditions(&policy, false).is_err());
+}
