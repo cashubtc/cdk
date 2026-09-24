@@ -60,6 +60,8 @@ pub struct Info {
     pub input_fee_ppk: Option<u64>,
     /// Use keyset v2
     pub use_keyset_v2: Option<bool>,
+    /// Explicit issuance version: "00", "01", or "02".
+    pub keyset_version: Option<cdk::nuts::KeySetVersion>,
 
     pub http_cache: cache::Config,
 
@@ -90,6 +92,7 @@ impl Default for Info {
             mnemonic: None,
             input_fee_ppk: None,
             use_keyset_v2: None,
+            keyset_version: None,
             http_cache: cache::Config::default(),
             enable_info_page: Some(true),
             logging: LoggingConfig::default(),
@@ -117,6 +120,7 @@ impl std::fmt::Debug for Info {
             .field("mnemonic", &mnemonic_display)
             .field("input_fee_ppk", &self.input_fee_ppk)
             .field("use_keyset_v2", &self.use_keyset_v2)
+            .field("keyset_version", &self.keyset_version)
             .field("http_cache", &self.http_cache)
             .field("logging", &self.logging)
             .field("enable_info_page", &self.enable_info_page)
@@ -1397,6 +1401,26 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn explicit_issuance_version_config_is_validated() {
+        for (text, version) in [
+            ("00", cdk::nuts::KeySetVersion::Version00),
+            ("01", cdk::nuts::KeySetVersion::Version01),
+            ("02", cdk::nuts::KeySetVersion::Version02),
+        ] {
+            let info: super::Info =
+                serde_json::from_value(serde_json::json!({ "keyset_version": text })).unwrap();
+            assert_eq!(info.keyset_version, Some(version));
+        }
+        assert!(serde_json::from_value::<super::Info>(
+            serde_json::json!({ "keyset_version": "03" })
+        )
+        .is_err());
+        assert!(
+            serde_json::from_value::<super::Info>(serde_json::json!({ "keyset_version": 2 }))
+                .is_err()
+        );
+    }
 
     use super::*;
 
