@@ -20,6 +20,11 @@ use crate::SECP256K1;
 /// material explicitly with [`Self::to_secret_hex`] when it is required by a
 /// persistence or interoperability boundary.
 ///
+/// Serde preserves legacy secp256k1 encodings (hex strings or 32 raw bytes).
+/// BLS scalars use a `bls:` prefix in human-readable formats and a `0x02`
+/// tag followed by 32 scalar bytes in binary formats. These tags identify
+/// locally serialized key material; raw protocol exports remain untagged.
+///
 /// ```compile_fail
 /// use cashu::nuts::SecretKey;
 ///
@@ -219,9 +224,18 @@ impl FromStr for SecretKey {
 
 impl Serialize for SecretKey {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match serializer.is_human_readable() {
-            true => serializer.serialize_str(&self.to_secret_hex()),
-            false => serializer.serialize_bytes(&self.to_secret_bytes()),
+        match (self, serializer.is_human_readable()) {
+            (Self::Secp256k1(_), true) => serializer.serialize_str(&self.to_secret_hex()),
+            (Self::Secp256k1(_), false) => serializer.serialize_bytes(&self.to_secret_bytes()),
+            (Self::Bls(_), true) => {
+                serializer.serialize_str(&format!("bls:{}", self.to_secret_hex()))
+            }
+            (Self::Bls(_), false) => {
+                let mut tagged = [0u8; 33];
+                tagged[0] = 0x02;
+                tagged[1..].copy_from_slice(&self.to_secret_bytes());
+                serializer.serialize_bytes(&tagged)
+            }
         }
     }
 }
@@ -231,7 +245,14 @@ impl<'de> Deserialize<'de> for SecretKey {
         match deserializer.is_human_readable() {
             true => {
                 let secret_key: String = String::deserialize(deserializer)?;
-                SecretKey::from_hex(secret_key).map_err(serde::de::Error::custom)
+                match secret_key.strip_prefix("bls:") {
+                    Some(hex) => {
+                        let bytes =
+                            crate::util::hex::decode(hex).map_err(serde::de::Error::custom)?;
+                        Self::bls_from_slice(&bytes).map_err(serde::de::Error::custom)
+                    }
+                    None => Self::from_hex(secret_key).map_err(serde::de::Error::custom),
+                }
             }
             false => {
                 struct SecretKeyVisitor;
@@ -240,14 +261,19 @@ impl<'de> Deserialize<'de> for SecretKey {
                     type Value = SecretKey;
 
                     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                        formatter.write_str("a byte array")
+                        formatter.write_str("32 secp256k1 bytes or 0x02 followed by 32 BLS bytes")
                     }
 
                     fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
                     where
                         E: serde::de::Error,
                     {
-                        SecretKey::from_slice(value).map_err(serde::de::Error::custom)
+                        match value {
+                            [0x02, scalar @ ..] if scalar.len() == 32 => {
+                                SecretKey::bls_from_slice(scalar).map_err(serde::de::Error::custom)
+                            }
+                            _ => SecretKey::from_slice(value).map_err(serde::de::Error::custom),
+                        }
                     }
                 }
 
@@ -269,6 +295,86 @@ impl Drop for SecretKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serde_preserves_key_kind_and_legacy_secp_encoding() {
+        let bytes = [7u8; 32];
+        let secp = SecretKey::from_slice(&bytes).unwrap();
+        let bls = SecretKey::bls_from_slice(&bytes).unwrap();
+
+        assert_eq!(
+            serde_json::to_string(&secp).unwrap(),
+            format!("\"{}\"", secp.to_secret_hex())
+        );
+        assert_eq!(
+            serde_json::to_string(&bls).unwrap(),
+            format!("\"bls:{}\"", bls.to_secret_hex())
+        );
+
+        for key in [secp, bls] {
+            let json = serde_json::to_string(&key).unwrap();
+            let from_json: SecretKey = serde_json::from_str(&json).unwrap();
+            let mut cbor = Vec::new();
+            ciborium::into_writer(&key, &mut cbor).unwrap();
+            let from_cbor: SecretKey = ciborium::from_reader(cbor.as_slice()).unwrap();
+            assert_eq!(key, from_json);
+            assert_eq!(key, from_cbor);
+            assert_eq!(key.public_key(), from_cbor.public_key());
+
+            let expected_bytes = match key {
+                SecretKey::Secp256k1(_) => bytes.to_vec(),
+                SecretKey::Bls(_) => [&[0x02][..], &bytes].concat(),
+            };
+            let mut expected_cbor = Vec::new();
+            ciborium::into_writer(
+                &serde_bytes::Bytes::new(&expected_bytes),
+                &mut expected_cbor,
+            )
+            .unwrap();
+            assert_eq!(cbor, expected_cbor);
+        }
+    }
+
+    #[test]
+    fn restored_bls_blinding_factor_can_unblind_signature() {
+        use crate::dhke::{blind_message_for_version, sign_message, verify_bls_message};
+        use crate::nuts::KeySetVersion;
+
+        let message = b"persisted blinding factor";
+        let (blinded, r) =
+            blind_message_for_version(message, None, KeySetVersion::Version02).unwrap();
+        let mint_key = SecretKey::generate_bls();
+        let signature = sign_message(&mint_key, &blinded).unwrap();
+        let stored = serde_json::to_vec(&r).unwrap();
+        let restored: SecretKey = serde_json::from_slice(&stored).unwrap();
+        let unblinded = signature
+            .as_bls_g1()
+            .unwrap()
+            .mul(&restored.as_bls().unwrap().invert().unwrap());
+        verify_bls_message(mint_key.public_key(), unblinded.into(), message).unwrap();
+    }
+
+    #[test]
+    fn serde_rejects_invalid_bls_scalars_and_tags() {
+        for text in [
+            "bls:01".to_string(),
+            format!("bls:{}", "ff".repeat(32)),
+            format!("unknown:{}", "01".repeat(32)),
+        ] {
+            assert!(
+                serde_json::from_str::<SecretKey>(&serde_json::to_string(&text).unwrap()).is_err()
+            );
+        }
+        for bytes in [
+            vec![0x02; 32 + 2],
+            [&[0x03][..], &[1u8; 32]].concat(),
+            [&[0x02][..], &[0xff; 32]].concat(),
+        ] {
+            let mut cbor = Vec::new();
+            ciborium::into_writer(&serde_bytes::Bytes::new(&bytes), &mut cbor).unwrap();
+            assert!(ciborium::from_reader::<SecretKey, _>(cbor.as_slice()).is_err());
+        }
+    }
 
     #[test]
     fn secret_hex_export_is_explicit() {
