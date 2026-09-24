@@ -47,8 +47,24 @@ impl Wallet {
     pub async fn verify_nutroot_receipt(&self, encoded: &str) -> Result<(), Error> {
         let receipt: nutroot::SpendReceipt = encoded.parse().map_err(error)?;
         let token: cdk_common::nuts::Token = receipt.token.parse()?;
-        self.verify_token_signatures(&token).await?;
+        if token.mint_url()? != self.mint_url || token.unit().as_ref() != Some(&self.unit) {
+            return Err(error(nutroot::Error::InvalidTransaction));
+        }
         let proofs = self.token_proofs(&token).await?;
+        // Receipts open v3 spends; mixed legacy inputs may have no DLEQ.
+        // Their records remain bound by the mint-accepted transaction digest.
+        let v3_proofs = proofs
+            .iter()
+            .filter(|proof| proof.keyset_id.get_version() == KeySetVersion::Version02)
+            .cloned()
+            .collect();
+        self.verify_token_signatures(&cdk_common::nuts::Token::new(
+            self.mint_url.clone(),
+            v3_proofs,
+            None,
+            self.unit.clone(),
+        ))
+        .await?;
         let keysets: Vec<_> = proofs
             .iter()
             .map(|proof| cdk_common::nuts::KeySetInfo {
